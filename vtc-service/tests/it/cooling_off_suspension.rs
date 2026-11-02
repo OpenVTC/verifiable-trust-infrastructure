@@ -988,6 +988,7 @@ async fn a_suspension_records_the_removals_owed_from_community_rooms() {
             offered_at: "2026-01-01T00:00:00Z".into(),
             admitted_at: Some("2026-01-01T00:00:00Z".into()),
             removed_at: None,
+            suspended_at: None,
             credentials: None,
             welcome: None,
             admitted_epoch: Some(2),

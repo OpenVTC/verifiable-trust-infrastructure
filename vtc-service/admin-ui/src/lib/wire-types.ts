@@ -291,25 +291,39 @@ export type SealedStorageCredential = Schemas["VtcStorageCredentialsSetV0_3Seale
 // The published `vtc/rooms/community/*` shapes (`lib/community-rooms-api.ts`),
 // answered from `vtc.rooms.manage` — the owner's authority, not the host's.
 // Signed documents only; no REST route.
-// The console reads and creates at 0.2 — `CommunityRoomV2`, with each room's
-// description, tags and who last changed them — and changes them with
-// `update/0.1`.
-export type CommunityRoom = Schemas["VtcRoomsCommunityListV0_3CommunityRoomV2"];
-export type CommunityRoomsListResponse = Schemas["VtcRoomsCommunityListV0_3Response"];
-export type CommunityRoomGetResponse = Schemas["VtcRoomsCommunityGetV0_3Response"];
+// The console reads at `list`/`get` 0.4 — `CommunityRoomV3`, each room's details
+// and its `status` in its owner's lifecycle — creates at `create/0.4`, changes
+// details with `update/0.3`, admits and lists members at 0.2 (the `suspended`
+// state), and archives and removes rooms with `archive`, `unarchive`, `remove`
+// and `removal/cancel` 0.1.
+export type CommunityRoom = Schemas["VtcRoomsCommunityListV0_4CommunityRoomV3"];
+export type CommunityRoomStatus = Schemas["VtcRoomsCommunityListV0_4RoomStatus"];
+export type CommunityRoomState = Schemas["VtcRoomsCommunityListV0_4RoomState"];
+export type CommunityRoomArchiveAccess = Schemas["VtcRoomsCommunityListV0_4ArchiveAccess"];
+export type CommunityRoomsListPayload = Schemas["VtcRoomsCommunityListV0_4Payload"];
+export type CommunityRoomsListResponse = Schemas["VtcRoomsCommunityListV0_4Response"];
+export type CommunityRoomGetResponse = Schemas["VtcRoomsCommunityGetV0_4Response"];
 export type CommunityRoomCreatePayload = Schemas["VtcRoomsCommunityCreateV0_4Payload"];
 export type CommunityRoomCreateResponse = Schemas["VtcRoomsCommunityCreateV0_4Response"];
 export type CommunityRoomUpdatePayload = Schemas["VtcRoomsCommunityUpdateV0_3Payload"];
 export type CommunityRoomUpdateResponse = Schemas["VtcRoomsCommunityUpdateV0_3Response"];
-export type CommunityRoomMember = Schemas["VtcRoomsCommunityMembersListV0_1RoomMember"];
-export type CommunityRoomMemberState = Schemas["VtcRoomsCommunityMembersListV0_1MemberState"];
-export type CommunityRoomMemberAction = Schemas["VtcRoomsCommunityMembersAddV0_1MemberAction"];
-export type CommunityRoomMembersListPayload = Schemas["VtcRoomsCommunityMembersListV0_1Payload"];
-export type CommunityRoomMembersListResponse = Schemas["VtcRoomsCommunityMembersListV0_1Response"];
-export type CommunityRoomMembersAddPayload = Schemas["VtcRoomsCommunityMembersAddV0_1Payload"];
-export type CommunityRoomMembersAddResponse = Schemas["VtcRoomsCommunityMembersAddV0_1Response"];
+export type CommunityRoomMember = Schemas["VtcRoomsCommunityMembersListV0_2RoomMemberV2"];
+export type CommunityRoomMemberState = Schemas["VtcRoomsCommunityMembersListV0_2MemberStateV2"];
+export type CommunityRoomMemberAction = Schemas["VtcRoomsCommunityMembersAddV0_2MemberAction"];
+export type CommunityRoomMembersListPayload = Schemas["VtcRoomsCommunityMembersListV0_2Payload"];
+export type CommunityRoomMembersListResponse = Schemas["VtcRoomsCommunityMembersListV0_2Response"];
+export type CommunityRoomMembersAddPayload = Schemas["VtcRoomsCommunityMembersAddV0_2Payload"];
+export type CommunityRoomMembersAddResponse = Schemas["VtcRoomsCommunityMembersAddV0_2Response"];
 export type CommunityRoomMembersRemovePayload = Schemas["VtcRoomsCommunityMembersRemoveV0_2Payload"];
 export type CommunityRoomMembersRemoveResponse = Schemas["VtcRoomsCommunityMembersRemoveV0_2Response"];
+export type CommunityRoomArchivePayload = Schemas["VtcRoomsCommunityArchiveV0_1Payload"];
+export type CommunityRoomArchiveResponse = Schemas["VtcRoomsCommunityArchiveV0_1Response"];
+export type CommunityRoomUnarchivePayload = Schemas["VtcRoomsCommunityUnarchiveV0_1Payload"];
+export type CommunityRoomUnarchiveResponse = Schemas["VtcRoomsCommunityUnarchiveV0_1Response"];
+export type CommunityRoomRemovePayload = Schemas["VtcRoomsCommunityRemoveV0_1Payload"];
+export type CommunityRoomRemoveResponse = Schemas["VtcRoomsCommunityRemoveV0_1Response"];
+export type CommunityRoomRemovalCancelPayload = Schemas["VtcRoomsCommunityRemovalCancelV0_1Payload"];
+export type CommunityRoomRemovalCancelResponse = Schemas["VtcRoomsCommunityRemovalCancelV0_1Response"];
 
 // ── Member directory (`vtc/directory/*`) ─────────────────────────────────
 export type DirectoryFieldDefinition = Schemas["VtcDirectoryFieldsListV0_1FieldDefinition"];

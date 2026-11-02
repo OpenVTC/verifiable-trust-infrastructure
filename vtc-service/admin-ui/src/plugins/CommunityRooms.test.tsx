@@ -3,7 +3,14 @@ import { useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  COMMUNITY_ROOMS_ARCHIVE_TASK,
   COMMUNITY_ROOMS_CREATE_TASK,
+  COMMUNITY_ROOMS_REMOVAL_CANCEL_TASK,
+  COMMUNITY_ROOMS_REMOVE_TASK,
+  COMMUNITY_ROOMS_UNARCHIVE_TASK,
+  archivePreview,
+  lifecycleOutcome,
+  roomStateLabel,
   COMMUNITY_ROOMS_GET_TASK,
   COMMUNITY_ROOMS_LIST_TASK,
   COMMUNITY_ROOMS_MEMBERS_ADD_TASK,
@@ -691,5 +698,245 @@ describe("community-rooms-api", () => {
 
   it("writes validUntil as a whole-second RFC 3339 instant", () => {
     expect(validUntilIn(1, new Date("2026-10-16T10:00:00.123Z"))).toBe("2026-10-17T10:00:00Z");
+  });
+});
+
+describe("a room's owner lifecycle", () => {
+  const page = `/rooms/community/${encodeURIComponent(ROOM)}`;
+  const withStatus = (status: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    ...communityRoom(),
+    status,
+    ...extra,
+  });
+
+  it("marks each room's state in the list, and hides removed rooms until asked", async () => {
+    const ARCHIVED = "did:webvh:QmScid:vtc.example.com:room-dids:old";
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_LIST_TASK, (p) => {
+        const states = (p as { states?: string[] }).states;
+        const items = [
+          withStatus({ state: "active" }),
+          {
+            ...withStatus({ state: "archived", access: "noAccess" }, { suspended: 2 }),
+            room: { ...hosted(), roomId: ARCHIVED },
+            label: "Old board",
+          },
+        ];
+        if (states?.includes("removed")) {
+          items.push({
+            ...withStatus({ state: "removed", removedAt: "2026-11-01T00:00:00Z" }),
+            room: { ...hosted(), roomId: "did:webvh:QmScid:vtc.example.com:room-dids:gone" },
+            label: "Gone room",
+          });
+        }
+        return { items };
+      }),
+    ]);
+    mount("/rooms/community");
+    expect(await screen.findByText("Archived · no access")).toBeTruthy();
+    expect(screen.getByText("Active", { selector: "span.chip" })).toBeTruthy();
+    expect(screen.getByText("2 suspended")).toBeTruthy();
+    expect(screen.queryByText("Gone room")).toBeNull();
+    // The default read names no states: the VTC lists all but removed.
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_LIST_TASK)[0]).toEqual({ limit: 100 });
+
+    const filter = screen.getByRole("group", { name: "Filter by state" });
+    fireEvent.click(within(filter).getByRole("button", { name: "Archived" }));
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Board pack" })).toBeNull());
+    expect(screen.getByRole("link", { name: "Old board" })).toBeTruthy();
+
+    fireEvent.click(within(filter).getByRole("button", { name: "Removed" }));
+    expect(await screen.findByRole("link", { name: "Gone room" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Old board" })).toBeNull();
+    const withRemoved = sentPayloads(requests, COMMUNITY_ROOMS_LIST_TASK).at(-1) as { states?: string[] };
+    expect(withRemoved.states).toContain("removed");
+  });
+
+  it("archives a room read-only, saying what it does before the gesture", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, { room: withStatus({ state: "active" }) }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [offered, admitted] }),
+      taskRoute(COMMUNITY_ROOMS_ARCHIVE_TASK, {
+        room: withStatus({
+          state: "archived",
+          access: "readOnly",
+          changedAt: "2026-11-02T10:00:00Z",
+          changedBy: "did:key:z6MkViewer",
+        }),
+        changed: true,
+        withdrawnOffers: 1,
+        revocation: { sequence: 2, digest: "zQmHead" },
+        revokedAt: "2026-11-02T10:00:00Z",
+      }),
+    ]);
+    mount(page);
+    fireEvent.click(await screen.findByRole("button", { name: /Archive…/ }));
+    const form = screen.getByRole("region", { name: "Archive this room" });
+    // What it does, before anything is signed: one open offer withdrawn, nothing recalled.
+    expect(within(form).getByText(/1 open offer is withdrawn/)).toBeTruthy();
+    expect(within(form).getByText(/Nothing a member already read or saved can be recalled/)).toBeTruthy();
+    fireEvent.click(within(form).getByRole("radio", { name: /No access/ }));
+    expect(within(form).getByText(/withdrawn at its host, from everyone/)).toBeTruthy();
+    fireEvent.click(within(form).getByRole("radio", { name: /Read-only/ }));
+    fireEvent.change(within(form).getByLabelText(/^Reason/), { target: { value: "the cycle closed" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Archive" }));
+    expect(await screen.findByText(/Now archived · read-only\. 1 open offer\(s\) withdrawn/)).toBeTruthy();
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_ARCHIVE_TASK)).toEqual([
+      { roomId: ROOM, access: "readOnly", reason: "the cycle closed" },
+    ]);
+    expect(stepUp.calls).toEqual([COMMUNITY_ROOMS_ARCHIVE_TASK]);
+  });
+
+  it("hides admission on an archived room, and offers unarchive and remove", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, { room: withStatus({ state: "archived", access: "readOnly" }) }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [admitted] }),
+    ]);
+    mount(page);
+    expect(await screen.findByRole("button", { name: /Unarchive/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Change access…/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Remove…/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Add a member/ })).toBeNull();
+    expect(screen.getByText("This room admits no one until it is active again.")).toBeTruthy();
+  });
+
+  it("removes a room only once its label is typed exactly", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, { room: withStatus({ state: "archived", access: "noAccess" }) }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_REMOVE_TASK, {
+        room: withStatus({ state: "purging", purgeAt: "2026-11-02T10:00:00Z", purge: { attempts: 0 } }),
+      }),
+    ]);
+    mount(page);
+    fireEvent.click(await screen.findByRole("button", { name: /Remove…/ }));
+    const form = screen.getByRole("region", { name: "Remove this room" });
+    fireEvent.click(within(form).getByRole("checkbox", { name: /Remove now/ }));
+    expect(within(form).getByText(/deleted at once\. This cannot be undone/)).toBeTruthy();
+    fireEvent.change(within(form).getByLabelText(/^Reason/), { target: { value: "no longer needed" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Remove now…" }));
+    const dialog = await screen.findByRole("dialog");
+    const go = within(dialog).getByRole("button", { name: "Remove now" }) as HTMLButtonElement;
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "board pack" } });
+    expect(go.disabled).toBe(true);
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_REMOVE_TASK)).toEqual([]);
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "Board pack" } });
+    expect(go.disabled).toBe(false);
+    fireEvent.click(go);
+    expect(await screen.findByText("Now purging.")).toBeTruthy();
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_REMOVE_TASK)).toEqual([
+      { roomId: ROOM, reason: "no longer needed", graceDays: 0 },
+    ]);
+  });
+
+  it("schedules a removal with the community default when no grace period is given", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, { room: withStatus({ state: "archived", access: "readOnly" }) }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_REMOVE_TASK, {
+        room: withStatus({ state: "removalScheduled", access: "noAccess", purgeAt: "2026-12-02T10:00:00Z" }),
+      }),
+    ]);
+    mount(page);
+    fireEvent.click(await screen.findByRole("button", { name: /Remove…/ }));
+    const form = screen.getByRole("region", { name: "Remove this room" });
+    expect(within(form).getByText(/community's default grace period/)).toBeTruthy();
+    fireEvent.change(within(form).getByLabelText(/^Reason/), { target: { value: "wound down" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Remove…" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "Board pack" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    expect(await screen.findByText(/Now removal scheduled 2026-12-02/)).toBeTruthy();
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_REMOVE_TASK)).toEqual([{ roomId: ROOM, reason: "wound down" }]);
+  });
+
+  it("cancels a scheduled removal, and shows the purge date", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, {
+        room: withStatus({ state: "removalScheduled", access: "noAccess", purgeAt: "2099-01-01T00:00:00Z" }),
+      }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_REMOVAL_CANCEL_TASK, { room: withStatus({ state: "archived", access: "noAccess" }) }),
+    ]);
+    mount(page);
+    expect(await screen.findByText("Content deleted")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Cancel removal/ }));
+    fireEvent.change(screen.getByLabelText(/^Reason/), { target: { value: "by mistake" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel removal" }));
+    expect(await screen.findByText("Now archived · no access.")).toBeTruthy();
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_REMOVAL_CANCEL_TASK)).toEqual([
+      { roomId: ROOM, reason: "by mistake" },
+    ]);
+  });
+
+  it("shows a removed room as a tombstone, with nothing left to change", async () => {
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, {
+        room: withStatus({ state: "removed", removedAt: "2026-11-02T10:05:00Z", purgeAt: "2026-11-02T10:00:00Z" }),
+        ext: { "org.openvtc": { lifecycle: { didRetirement: "not retired: the VTA refused: permissionDenied" } } },
+      }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [{ ...admitted, state: "removed", removedAt: "2026-11-02T10:05:00Z" }] }),
+    ]);
+    mount(page);
+    expect(await screen.findByText(/not retired: the VTA refused/)).toBeTruthy();
+    expect(screen.getByText("This room was removed: these records are its history.")).toBeTruthy();
+    for (const name of [/Edit details/, /Add a member/, /^Remove$/, /Archive/, /Unarchive/, /Cancel removal/]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+  });
+
+  it("names the fix for a change the room's state does not allow", () => {
+    expect(
+      refusalFix({ code: "vtc/rooms/community/remove:wrongState", details: { state: "active" } }),
+    ).toMatch(/Archive the room first/);
+    expect(
+      refusalFix({ code: "vtc/rooms/community/archive:wrongState", details: { state: "removalScheduled" } }),
+    ).toMatch(/Cancel the removal first/);
+    expect(
+      refusalFix({ code: "vtc/rooms/community/members/add:wrongState", details: { state: "archived" } }),
+    ).toMatch(/Unarchive it first/);
+    expect(refusalFix({ code: "vtc/rooms/community/archive:keyHolderUnavailable" })).toMatch(
+      /finishes it by itself/,
+    );
+  });
+
+  it("says each state in words and reports outcomes from the answer", () => {
+    expect(roomStateLabel({ state: "archived", access: "readOnly" })).toBe("Archived · read-only");
+    expect(roomStateLabel({ state: "removalScheduled", purgeAt: "2026-12-02T10:00:00Z" })).toBe(
+      "Removal scheduled 2026-12-02",
+    );
+    expect(archivePreview("open", "readOnly", 0)).not.toMatch(/group/);
+    expect(archivePreview("private", "noAccess", 2)).toMatch(/2 open offers are withdrawn.*refused only the ciphertext/);
+    const room = withStatus({ state: "archived", access: "readOnly" }) as Parameters<typeof lifecycleOutcome>[0]["room"];
+    expect(lifecycleOutcome({ room, changed: false })).toMatch(/Nothing changed/);
+  });
+
+  it("unarchives through the bound gesture", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, {
+        room: withStatus({ state: "archived", access: "noAccess" }, { suspended: 1 }),
+      }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_UNARCHIVE_TASK, {
+        room: withStatus({ state: "active", restoring: 1 }),
+        changed: true,
+      }),
+    ]);
+    mount(page);
+    fireEvent.click(await screen.findByRole("button", { name: /Unarchive/ }));
+    expect(screen.getByText(/suspended members are restored with fresh credentials/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText(/^Reason/), { target: { value: "reopened" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unarchive" }));
+    expect(await screen.findByText(/1 suspended member\(s\) being restored/)).toBeTruthy();
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_UNARCHIVE_TASK)).toEqual([{ roomId: ROOM, reason: "reopened" }]);
+    expect(stepUp.calls).toEqual([COMMUNITY_ROOMS_UNARCHIVE_TASK]);
   });
 });

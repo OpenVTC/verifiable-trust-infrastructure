@@ -589,6 +589,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         };
 
         // The presenter is the agent: the leaf was granted to it, and a VAC is not a bearer
@@ -670,6 +671,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         };
 
         // The member holds strictly more authority than the agent, and still cannot use
@@ -834,6 +836,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         }
     }
 

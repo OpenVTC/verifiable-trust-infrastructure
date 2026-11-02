@@ -23,6 +23,7 @@ import {
   formatBytes,
   openFailure,
   roomName,
+  roomStateWords,
   shareRefusalHint,
   walletRooms,
   type OfferAccepted,
@@ -267,8 +268,15 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
                   ? "joined"
                   : o.state === "removed"
                     ? `removed${o.removedAt ? ` ${new Date(o.removedAt).toLocaleDateString()}` : ""}`
-                    : "needs re-admission"}
+                    : o.state === "suspended"
+                      ? "closed for now"
+                      : "needs re-admission"}
+                {(() => {
+                  const w = roomStateWords(o);
+                  return w && w.label !== "closed for now" ? ` · ${w.label}` : "";
+                })()}
               </span>
+              {roomStateWords(o) && <span className="muted small">{roomStateWords(o)!.hint}</span>}
               {o.state === "needsReadmission" && (
                 <span className="muted small">
                   Your agent never joined this room, and the community no longer keeps what it needs to finish. Ask
@@ -436,6 +444,7 @@ function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
         {room.member ? (room.member === me ? " · as you" : ` · as ${shortDid(room.member)}`) : ""}
         {" · shared until "}
         {new Date(room.expiresAt).toLocaleDateString()}
+        {roomStateWords(room) ? ` · ${roomStateWords(room)!.label}` : ""}
       </span>
     </li>
   );

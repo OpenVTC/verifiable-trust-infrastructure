@@ -115,6 +115,7 @@ async fn task_subject(
     let bare = type_uri.split('#').next().unwrap_or(type_uri);
     if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_9
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_10
     {
         return super::room_act::act_subject(state, auth, payload).await;
     }

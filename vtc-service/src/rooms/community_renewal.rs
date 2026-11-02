@@ -384,8 +384,58 @@ pub async fn sweep(state: &AppState, now: DateTime<Utc>) -> Result<SweepReport, 
     Ok(report)
 }
 
+/// After a room reset (`vtc/rooms/community/archive/0.1` item 5): have the VTA issue the
+/// community a fresh membership and `admin` authority in `room` — the reset withdrew the
+/// ones it held — and record them as a renewal would. Answers the new expiry. The caller
+/// waits until the credentials issued now are later than the reset.
+pub(crate) async fn reissue_after_reset(
+    state: &AppState,
+    holder: &KeyHolder,
+    room: &OwnedRoom,
+) -> Result<String, String> {
+    let (community, vtc_did) = {
+        let config = state.config.read().await;
+        (config.rooms.community.clone(), config.vtc_did.clone())
+    };
+    let (Some(community), Some(vtc_did)) = (community, vtc_did) else {
+        return Err("`[rooms.community]` or `vtc_did` is not configured".into());
+    };
+    let now = Utc::now();
+    let mut rec = record(&state.community_rooms, &room.room_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| RenewalRecord::new(&room.room_id));
+    let new_until = now + chrono::Duration::days(i64::from(community.authority_valid_days()));
+    renew(holder, &community, &vtc_did, room, &mut rec, new_until).await?;
+    rec.attempts = 0;
+    rec.next_attempt_at = None;
+    rec.last_error = None;
+    rec.last_attempt_at = Some(rfc3339(now));
+    rec.last_renewed_at = Some(rfc3339(now));
+    put_record(&state.community_rooms, &rec)
+        .await
+        .map_err(|e| e.to_string())?;
+    audit(
+        state,
+        &vtc_did,
+        room,
+        "authorityRenewed",
+        format!(
+            "re-issued after the room's credentials were reset; valid until {}",
+            rfc3339(new_until)
+        ),
+    )
+    .await;
+    Ok(rfc3339(new_until))
+}
+
 /// Whether `room` is still one this community hosts and owns, and not past its retention.
 async fn renewable(state: &AppState, room: &OwnedRoom, vtc_did: &str, now: DateTime<Utc>) -> bool {
+    // An archived room, and one scheduled for removal, keep the community's authority: it is
+    // what unarchives, removes members and cancels. A room being purged needs none.
+    if room.status.state.purged_or_purging() {
+        return false;
+    }
     match vti_rooms::storage::get_room(&state.rooms_ks, &room.room_id).await {
         Ok(hosted) => {
             hosted.owner_did == vtc_did
@@ -637,6 +687,7 @@ mod tests {
             mediator_did: None,
             authority_valid_days: None,
             authority_renew_within_days: None,
+            removal_grace_days: None,
         };
         assert_eq!(c.authority_renew_within(), chrono::Duration::days(30));
         c.authority_renew_within_days = Some(400);

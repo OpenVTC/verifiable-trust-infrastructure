@@ -161,7 +161,7 @@ export const CAPABILITIES: CapabilityInfo[] = [
   { id: "vtc.registry.admin", gates: "registry sync and recognition", conferring: false, qualifiers: [] },
   { id: "vtc.sessions.revoke", gates: "revoking others' sessions and console keys", conferring: false, qualifiers: [] },
   { id: "vtc.rooms.admin", gates: "hosting data rooms: storage configs, room storage, limits and usage", conferring: false, qualifiers: [] },
-  { id: "vtc.rooms.manage", gates: "running the rooms the community owns: create them, admit and remove their members", conferring: false, qualifiers: [] },
+  { id: "vtc.rooms.manage", gates: "running the rooms the community owns: create them, admit and remove their members, archive and remove them", conferring: false, qualifiers: [] },
   { id: "vtc.directory.admin", gates: "the member directory: its fields and their ceilings, administrator-asserted values, and reading every entry whole", conferring: false, qualifiers: [] },
   { id: "vtc.directory.notes", gates: "administrators' notes about members: writing them, reading them, and exporting a member's notes for their data request", conferring: false, qualifiers: [] },
   { id: "vtc.groups.manage", gates: "the community's groups: creating them, and their members, requests and settings; qualified by a group, that one group", conferring: false, qualifiers: ["group"] },

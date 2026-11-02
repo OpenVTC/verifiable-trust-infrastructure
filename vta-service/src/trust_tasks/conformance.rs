@@ -3269,6 +3269,35 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_ACT_0_10,
+            checked!(
+                specs::rooms::keys::act::v0_10::Payload,
+                specs::rooms::keys::act::v0_10::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a7",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.2#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:12:00Z",
+                        "payload": {}
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a7",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.2#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:12:00Z",
+                        "payload": {},
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_LIST_0_2,
             checked!(
                 specs::rooms::keys::list::v0_2::Payload,

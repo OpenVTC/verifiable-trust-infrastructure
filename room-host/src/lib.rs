@@ -761,6 +761,7 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         record_retention: record_retention.filter(|r| !r.is_empty() || r.ext.is_some()),
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
     };
     match storage::create_room(&state.rooms, &room).await {
         Ok(()) => {
@@ -1983,6 +1984,7 @@ mod tests {
                 record_retention: None,
                 last_prune: None,
                 epoch_floor: None,
+                frozen_at: None,
                 next_version: 1,
                 ..f.room.clone()
             },
@@ -2075,6 +2077,7 @@ mod tests {
                 record_retention: None,
                 last_prune: None,
                 epoch_floor: None,
+                frozen_at: None,
                 ..f.room.clone()
             },
         )

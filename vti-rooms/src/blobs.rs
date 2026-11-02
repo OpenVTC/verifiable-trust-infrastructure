@@ -58,6 +58,8 @@ pub use migrate::{
     MIGRATION_MAX_ATTEMPTS, MIN_MIGRATION_BYTES_PER_SECOND, Migration, MigrationPlan,
     MigrationRequest, MigrationStart, MigrationState, MigrationStep, PAUSED_RETRY_SECS, PauseCause,
 };
+#[cfg(test)]
+mod purge_tests;
 mod usage;
 pub use usage::{
     Activity, DailyUsage, LimitTarget, MemberUsage, OverrideChange, OverrideError, RETENTION_DAYS,
@@ -810,6 +812,37 @@ pub struct SweepStats {
     pub released: usize,
     /// Finished upload and expired download records dropped.
     pub forgotten: usize,
+}
+
+/// What one [`BlobHost::purge_room`] call did.
+///
+/// The purge is **complete only when `remaining == 0`**: a store deletion that failed
+/// leaves its row in place, so calling again retries exactly what is left.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PurgeStats {
+    /// Stored objects this call deleted from their stores: committed and orphaned blobs,
+    /// the old copies of blobs a migration moved, and a migration's unswitched copy.
+    pub deleted: u64,
+    /// Objects (or direct uploads) whose deletion at their store failed, and whose rows
+    /// are therefore still held for the next call.
+    pub remaining: u64,
+    /// The last store error, when `remaining > 0`. For an operator's log, never a reply:
+    /// a store's error may name a bucket or an object.
+    pub last_error: Option<String>,
+}
+
+impl PurgeStats {
+    /// Whether every byte the host held for the room is gone.
+    pub fn is_complete(&self) -> bool {
+        self.remaining == 0
+    }
+
+    pub(crate) fn failed(&mut self, what: &str, e: &AppError) {
+        tracing::warn!(what, error = %e, "a room purge could not delete from storage; retry next call");
+        self.remaining += 1;
+        self.last_error = Some(format!("{what}: {e}"));
+    }
 }
 
 /// A room's limits as a host enforces them, and where each scope's came from.
@@ -2660,6 +2693,179 @@ impl BlobHost {
             }
         }
         self.roll_days().await?;
+        Ok(stats)
+    }
+
+    /// Delete **every byte and every row this host holds for one room's files**
+    /// (`vtc/rooms/community/remove/0.1`): each blob's bytes at its store — at once, with
+    /// no orphan grace — the old copies of blobs a migration moved, the room's migration
+    /// and its unswitched copy, its open uploads (aborted at storage, staged bytes
+    /// dropped, reservations given back), its download handles, and every room-scoped
+    /// row: record references, usage counters, the daily history, the usage index and
+    /// limit overrides.
+    ///
+    /// # Resumable, and complete only at `remaining == 0`
+    ///
+    /// Meant to be called repeatedly, with backoff, until [`PurgeStats::is_complete`]. A
+    /// store deletion that fails leaves that blob's row in place and is counted in
+    /// [`PurgeStats::remaining`], so the next call retries it; the room-scoped bookkeeping
+    /// goes only on a call that left nothing remaining. A call on a room already purged
+    /// deletes nothing and is complete.
+    ///
+    /// # Shared counters
+    ///
+    /// Only the host-wide `usage:storage` and the per-config `usage:config:<id>` outlive
+    /// the room, and they move exactly as collection would move them: a blob row —
+    /// committed with references, committed unreferenced or orphaned alike — counts one
+    /// file and its bytes against its config and the host until its row goes, so each
+    /// takes that back as its row goes, in one batch with the row. A moved blob's old
+    /// copy counts the same way; reservations (open uploads, an open migration's target)
+    /// count `reservedBytes` and are given back. The room's and members' own counters are
+    /// removed whole rather than decremented.
+    ///
+    /// Never touches another room: every row is found by the room's hash, or — for the
+    /// upload and download records, which are keyed by id — by the exact room id it
+    /// carries.
+    pub async fn purge_room(&self, room_id: &str) -> Result<PurgeStats, AppError> {
+        let _guard = self.lock.lock().await;
+        let mut stats = PurgeStats::default();
+        let mut changed = false;
+
+        // Downloads first: nothing more is served from the room.
+        for (key, raw) in self.blobs.prefix_iter_raw(b"download:".to_vec()).await? {
+            if let Ok(rec) = serde_json::from_slice::<DownloadRecord>(&raw)
+                && rec.room_id == room_id
+            {
+                self.blobs.remove(key).await?;
+            }
+        }
+
+        // Open uploads: aborted at storage, staged bytes dropped, reservation given
+        // back, in one batch with the record, so a retried call never gives it back
+        // twice.
+        for (key, raw) in self.blobs.prefix_iter_raw(b"upload:".to_vec()).await? {
+            let Ok(rec) = serde_json::from_slice::<UploadRecord>(&raw) else {
+                continue;
+            };
+            if rec.room_id != room_id {
+                continue;
+            }
+            let reserved = rec.phase == UploadPhase::Open && !rec.already_committed;
+            if rec.phase == UploadPhase::Open {
+                if rec.direct.is_some() {
+                    if let Err(e) = self.abort_direct(&rec).await {
+                        stats.failed("abort a direct upload", &e);
+                        continue;
+                    }
+                } else if !rec.already_committed
+                    && let Err(e) =
+                        backup_transfer::abort(&self.transfers, &rec.opener, &rec.upload_id).await
+                    && !matches!(e, AppError::NotFound(_))
+                {
+                    stats.failed("abort a staged upload", &e);
+                    continue;
+                }
+            }
+            let mut batch = vti_common::store::Batch::new();
+            if reserved {
+                for k in storage_keys(rec.config_id.as_deref()) {
+                    let mut s = self.counter(&k).await?;
+                    s.reserved_bytes = checked_sub(s.reserved_bytes, rec.size, "storage reserved");
+                    batch.insert(k, &s)?;
+                }
+            }
+            batch.remove(key);
+            let index = upload_index_key(&rec.opener, &rec.room_id, &rec.blob_ref);
+            if self.blobs.get::<Uuid>(index.clone()).await? == Some(rec.upload_id) {
+                batch.remove(index);
+            }
+            if let Some(k) = &rec.upload_key_did {
+                let index = signer_index_key(k);
+                if self.blobs.get::<Uuid>(index.clone()).await? == Some(rec.upload_id) {
+                    batch.remove(index);
+                }
+            }
+            self.blobs.apply_batch(batch).await?;
+            changed = true;
+        }
+
+        // The room's migration — its target reservation and unswitched copy — then the
+        // old copies of blobs it (or an earlier one) moved. Before the blob rows, so a
+        // moved row naming the object its entry names is recognised as live.
+        changed |= self.purge_migration(room_id, &mut stats).await?;
+        changed |= self.purge_moved(room_id, &mut stats).await?;
+
+        // Every blob row: bytes first, then the row and the shared counters together.
+        let prefix = format!("blob:{}:", room_hash(room_id));
+        for (key, raw) in self.blobs.prefix_iter_raw(prefix.into_bytes()).await? {
+            let Ok(entry) = serde_json::from_slice::<BlobEntry>(&raw) else {
+                continue;
+            };
+            if entry.room_id != room_id {
+                continue;
+            }
+            let deleted = match self
+                .stores
+                .store_for(&entry.config_id, &entry.room_id)
+                .await
+            {
+                Ok(store) => store.delete(&entry.backend_ref).await,
+                Err(e) => Err(e),
+            };
+            match deleted {
+                Ok(Deletion::Deleted) | Ok(Deletion::Lapses { .. }) => stats.deleted += 1,
+                Ok(Deletion::Unsupported) => {
+                    tracing::warn!(blob = %entry.blob_ref, "store cannot delete; forgetting the purged room's blob");
+                }
+                Err(e) => {
+                    stats.failed("delete a blob", &e);
+                    continue;
+                }
+            }
+            let mut batch = vti_common::store::Batch::new();
+            for k in [
+                STORAGE_USAGE_KEY.to_string(),
+                config_usage_key(&entry.config_id),
+            ] {
+                let mut s = self.counter(&k).await?;
+                s.files = checked_sub(s.files, 1, "storage files");
+                s.bytes = checked_sub(s.bytes, entry.size, "storage bytes");
+                batch.insert(k, &s)?;
+            }
+            batch.remove(key);
+            self.blobs.apply_batch(batch).await?;
+            changed = true;
+        }
+
+        // The bookkeeping goes last, and only once nothing is left to retry: a purge
+        // still under way keeps the room's rows as they were.
+        if stats.remaining == 0 {
+            let h = room_hash(room_id);
+            let mut batch = vti_common::store::Batch::new();
+            let mut n = 0usize;
+            for prefix in [format!("refs:{h}:"), format!("usage:member:{h}:")] {
+                for k in self.blobs.prefix_keys(prefix.into_bytes()).await? {
+                    batch.remove(k);
+                    n += 1;
+                }
+            }
+            let room_usage = room_usage_key(room_id);
+            if self.blobs.get_raw(room_usage.clone()).await?.is_some() {
+                batch.remove(room_usage);
+                n += 1;
+            }
+            if n > 0 {
+                self.blobs.apply_batch(batch).await?;
+                changed = true;
+            }
+            changed |= self.purge_usage_rows(room_id).await?;
+        }
+
+        if changed {
+            // A storage config's holdings moved, and the room left the reports
+            // (`crate::observe`).
+            crate::observe::changed();
+        }
         Ok(stats)
     }
 

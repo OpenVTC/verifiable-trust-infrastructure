@@ -102,13 +102,19 @@ digest = "sha256:576083d47c1cc049040ab9352653cc0793a7ccc43774817d91ce198c6be1923
 slug = "rooms/keys/act"
 version = "0.8"
 type_uri = "https://trusttasks.org/spec/rooms/keys/act/0.8"
-digest = "sha256:a5fca31854f7d918b86928e4ec8dce7b110be3360abba5cea8ac8715786e9a0e"
+digest = "sha256:e1c7b9902274e7cc3df66e9d51c75be35b2b0f3eab642d35cbc77f4a4ed6ed52"
 
 [[task]]
 slug = "rooms/keys/act"
 version = "0.9"
 type_uri = "https://trusttasks.org/spec/rooms/keys/act/0.9"
-digest = "sha256:a1d7e0d143c4d35edb48ed68d2ffb64b3d8c7a1d15ab0b4caae3042f977674d1"
+digest = "sha256:2a90fc3212de399c2cfdf5d7842474cf8735465b15a7ae2813648b5832029b33"
+
+[[task]]
+slug = "rooms/keys/act"
+version = "0.10"
+type_uri = "https://trusttasks.org/spec/rooms/keys/act/0.10"
+digest = "sha256:b3f1ed60feaf9aa38b11d619b32a29b41ebef2e6756433ea6c58069994dfd3ce"
 
 [[task]]
 slug = "rooms/keys/backfill"

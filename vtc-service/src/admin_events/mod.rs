@@ -1011,13 +1011,16 @@ async fn community_rooms_fingerprint(
             .map(|m| {
                 // An admission renewed: the record's own expiry moves with it, and
                 // the renewal kept for the member to collect is named by when.
-                let mut v = m.wire();
+                let mut v = m.wire_v2();
                 v["renewedAt"] = serde_json::json!(m.renewal.as_ref().map(|r| &r.issued_at));
                 v
             })
             .collect();
         shape.push(serde_json::json!({
             "roomId": room.room_id,
+            // Archived, scheduled, purging, removed — and a pending change, a purge's
+            // attempts, a restore's failures: what `get`/`list` 0.4 show of it.
+            "status": room.status,
             "label": room.label,
             "description": room.description,
             "tags": room.tags,

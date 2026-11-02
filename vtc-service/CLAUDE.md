@@ -248,7 +248,23 @@ When adding a flow, add it here and a line to the root index.
   record, a credential or `register`. A write that did not land is `pending`, never a failed
   request; the profile sweeper is its one retry owner and always writes the room as it is
   then. Needs `room-open` on the community's VTA entry.
-- **Code**: `vtc-service/src/rooms/{community,community_profile}.rs`,
+- **Archive and remove** (`vtc/rooms/community/{archive,unarchive,remove}/0.1`,
+  `removal/cancel/0.1`; `rooms::community_lifecycle`): the **owner's** lifecycle, stored on
+  `OwnedRoom.status` — `active → archived(readOnly|noAccess) → removalScheduled → purging →
+  removed` — beside the host's, which stays computed and never set. `readOnly` freezes the
+  host record (`vti_rooms::Room::frozen_at`: every task but a read refused, the owner's
+  Admin acts excepted); `noAccess` and every removal **reset** the room (one `room`
+  withdrawal, the only one a private room's host applies), then re-issue the community's
+  own credentials **after** the reset's second (`validFrom < revokedAt` is withdrawn) —
+  admitted members become `suspended`, open offers withdrawn. A reset is recorded as a
+  `Pending` change **before** it is asked for and finished by the lifecycle worker (the
+  one retry owner, also for purges and for restoring suspended members by renewal);
+  never reset twice once the host accepted one. Removal only from archived; the purge
+  deletes host rows, every blob (incl. moved copies), assignment, bindings, the served DID
+  log, then asks the VTA to delete the DID (a SHOULD: reported, never holding the purge),
+  and keeps a tombstone (`hosted_snapshot`, members' records without credentials). The
+  0.3 / 0.1 reads stay served: purged rooms hidden, `suspended` read as `admitted`.
+- **Code**: `vtc-service/src/rooms/{community,community_profile,community_lifecycle}.rs`,
   `vtc-service/src/trust_tasks/community_room_tasks.rs`,
   `cnm-cli/src/rooms.rs` (`cnm rooms …`).
 - **Docs**: `docs/03-vtc/community-rooms.md`.

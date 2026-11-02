@@ -376,6 +376,25 @@ pub struct Room {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch_floor: Option<u32>,
 
+    /// When the room's **owner archived it**, in unix seconds — a write freeze on this
+    /// host's copy (`vtc/rooms/community/archive/0.1`).
+    ///
+    /// `Some(_)` means this host refuses every task on the room but a read, except the
+    /// owner's own `admin` acts: records, files and history stay readable and exportable,
+    /// and nothing new is accepted until `vtc/rooms/community/unarchive/0.1` clears it.
+    /// Like [`Room::mirror_of`], this is not an authorization decision about any caller —
+    /// a chain may confer exactly what was asked — it is a statement about the room.
+    ///
+    /// Set only **by the owner's request**, never by a host judgement: a host that froze a
+    /// room on its own initiative would be making a lifecycle decision the room's owner is
+    /// accountable for. The lapse gate ([`lifecycle`]) is the host's clock; this is the
+    /// owner's switch, and the two are independent.
+    ///
+    /// `None` — every room stored before this field existed — means **not frozen**, so a
+    /// deploy never turns an existing room read-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_at: Option<u64>,
+
     /// Unix-epoch seconds.
     pub created_at: u64,
     /// Unix-epoch seconds; bumped on epoch advance and on record writes.
@@ -386,6 +405,12 @@ impl Room {
     /// Whether this host holds a read mirror of a room primaried elsewhere.
     pub fn is_mirror(&self) -> bool {
         self.mirror_of.is_some()
+    }
+
+    /// Whether the room's owner has archived it, freezing it read-only on this host
+    /// (see [`Room::frozen_at`]).
+    pub fn is_frozen(&self) -> bool {
+        self.frozen_at.is_some()
     }
 
     /// The highest version this host has, which is the watermark a puller

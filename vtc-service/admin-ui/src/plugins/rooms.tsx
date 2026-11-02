@@ -442,6 +442,15 @@ function RoomCell({ roomId, name }: { roomId: string; name: RoomName }) {
           {name.label}
         </Link>{" "}
         <CommunityRoomBadge roomId={roomId} />
+        {name.state && (
+          <span className="chip warning" title="Its state as the community, its owner, set it">
+            {name.state === "archived"
+              ? "archived"
+              : name.state === "removalScheduled"
+                ? "removal scheduled"
+                : name.state}
+          </span>
+        )}
         {name.description && (
           <div className="muted rooms-sub rooms-description-preview" title={name.description}>
             {name.description}

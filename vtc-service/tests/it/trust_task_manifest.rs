@@ -1069,12 +1069,18 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // Each room with its description, tags and who last changed them; a create or update
     // also writes the label and description into the room as its profile.
     "https://trusttasks.org/spec/vtc/rooms/community/create/0.4",
-    "https://trusttasks.org/spec/vtc/rooms/community/get/0.3",
-    "https://trusttasks.org/spec/vtc/rooms/community/list/0.3",
+    // Each room's state in its owner's lifecycle, and archiving and removing it
+    // (`rooms::community_lifecycle`).
+    "https://trusttasks.org/spec/vtc/rooms/community/get/0.4",
+    "https://trusttasks.org/spec/vtc/rooms/community/list/0.4",
     "https://trusttasks.org/spec/vtc/rooms/community/update/0.3",
-    "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
-    "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.2",
     "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/community/archive/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/unarchive/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/remove/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/removal/cancel/0.1",
     // The console's signing keys (`trust_tasks::signing_key_tasks`).
     "https://trusttasks.org/spec/auth/signing-key/enroll/0.2",
     "https://trusttasks.org/spec/auth/signing-key/list/0.1",

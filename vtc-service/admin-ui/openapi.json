@@ -13982,6 +13982,416 @@
           "admin"
         ]
       },
+      "VtcRoomsCommunityArchiveV0_1ArchiveAccess": {
+        "type": "string",
+        "description": "What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.",
+        "enum": [
+          "readOnly",
+          "noAccess"
+        ]
+      },
+      "VtcRoomsCommunityArchiveV0_1CommunityRoomV3": {
+        "type": "object",
+        "description": "What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then.",
+        "required": [
+          "room",
+          "label",
+          "admitted",
+          "offered",
+          "status"
+        ],
+        "properties": {
+          "admitted": {
+            "type": "integer",
+            "description": "Members in state `admitted`.",
+            "minimum": 0
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "The administrator who created it.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1RoomDescription"
+          },
+          "detailsUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle."
+          },
+          "detailsUpdatedBy": {
+            "type": "string",
+            "description": "The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1RoomLabel"
+          },
+          "offered": {
+            "type": "integer",
+            "description": "Offers not yet accepted or withdrawn.",
+            "minimum": 0
+          },
+          "ownerAuthorityValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before."
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1HostedRoom"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1RoomStatus"
+          },
+          "storageConfig": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1StorageConfigId"
+          },
+          "suspended": {
+            "type": "integer",
+            "description": "Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero.",
+            "minimum": 0
+          },
+          "tags": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1RoomTags"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityArchiveV0_1DigestMultibase": {
+        "type": "string",
+        "description": "A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.\n\nMultihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.\n\nThis definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.\n\nRestricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that \"interoperability is not guaranteed between implementations using such values\", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.",
+        "minLength": 16,
+        "pattern": "^(z[1-9A-HJ-NP-Za-km-z]+|u[A-Za-z0-9_-]+)$"
+      },
+      "VtcRoomsCommunityArchiveV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsCommunityArchiveV0_1HostedRoom": {
+        "type": "object",
+        "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
+        "required": [
+          "roomId",
+          "ownerDid",
+          "visibility",
+          "retentionPolicy",
+          "epoch",
+          "lifecycle",
+          "retentionDays",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "epochExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "live",
+              "lapsed",
+              "dormant",
+              "reclaimable"
+            ]
+          },
+          "mirrorOf": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1
+          },
+          "ownerDid": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "retentionDays": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retentionPolicy": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1RetentionPolicy"
+          },
+          "roomId": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1Visibility"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityArchiveV0_1Payload": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "access",
+          "reason"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1ArchiveAccess"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1Ext"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1Reason"
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier: its DID.",
+            "maxLength": 512,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityArchiveV0_1PendingChange": {
+        "type": "object",
+        "description": "A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished.",
+        "required": [
+          "state",
+          "beganAt"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1ArchiveAccess"
+          },
+          "beganAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityArchiveV0_1PurgeProgress": {
+        "type": "object",
+        "description": "How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has.",
+        "required": [
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "description": "Passes made so far; 0 until the first.",
+            "minimum": 0
+          },
+          "lastAttemptAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the next pass is due. Absent while one runs."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityArchiveV0_1Reason": {
+        "type": "string",
+        "description": "Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityArchiveV0_1Response": {
+        "type": "object",
+        "description": "Success response to vtc/rooms/community/archive. Type https://trusttasks.org/spec/vtc/rooms/community/archive/0.1#response. The room as it now stands; whether anything changed; and, where the community's VTA withdrew credentials at the room's host, the revocation list in force there.",
+        "required": [
+          "room",
+          "changed"
+        ],
+        "properties": {
+          "changed": {
+            "type": "boolean",
+            "description": "`false` when the room was already archived with `access`: nothing was written, withdrawn or audited."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1Ext"
+          },
+          "revocation": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1RevocationHead"
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present with `revocation`: the withdrawal's time. The host refuses every credential the withdrawal names that was issued before it."
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1CommunityRoomV3"
+          },
+          "withdrawnOffers": {
+            "type": "integer",
+            "description": "Open offers this archival withdrew. Absent when there were none.",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityArchiveV0_1RetentionPolicy": {
+        "type": "string",
+        "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
+        "enum": [
+          "chained",
+          "fromJoin"
+        ]
+      },
+      "VtcRoomsCommunityArchiveV0_1RevocationHead": {
+        "type": "object",
+        "description": "Which `RevocationList` a party holds, without its entries: comparable between the room's key holder and a host, and between two hosts, without disclosing whom the room withdrew.",
+        "required": [
+          "sequence",
+          "digest"
+        ],
+        "properties": {
+          "digest": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1DigestMultibase"
+          },
+          "sequence": {
+            "type": "integer",
+            "description": "The list's `sequence`.",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityArchiveV0_1RoomDescription": {
+        "type": "string",
+        "description": "What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+        "maxLength": 1000,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityArchiveV0_1RoomLabel": {
+        "type": "string",
+        "description": "A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityArchiveV0_1RoomState": {
+        "type": "string",
+        "description": "Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.",
+        "enum": [
+          "active",
+          "archived",
+          "removalScheduled",
+          "purging",
+          "removed"
+        ]
+      },
+      "VtcRoomsCommunityArchiveV0_1RoomStatus": {
+        "type": "object",
+        "description": "A room's state in its owner's lifecycle, and what that state needs to be understood.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1ArchiveAccess"
+          },
+          "changedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the room entered `state`. Absent for a room that has been `active` since it was created."
+          },
+          "changedBy": {
+            "type": "string",
+            "description": "The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "pendingChange": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1PendingChange"
+          },
+          "purge": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1PurgeProgress"
+          },
+          "purgeAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due."
+          },
+          "removedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present exactly when `state` is `removed`: when the last of the room's content was deleted."
+          },
+          "restoring": {
+            "type": "integer",
+            "description": "Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none.",
+            "minimum": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityArchiveV0_1RoomTag": {
+        "type": "string",
+        "description": "A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing.",
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+      },
+      "VtcRoomsCommunityArchiveV0_1RoomTags": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcRoomsCommunityArchiveV0_1RoomTag"
+        },
+        "description": "The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading.",
+        "maxItems": 8,
+        "uniqueItems": true
+      },
+      "VtcRoomsCommunityArchiveV0_1StorageConfigId": {
+        "type": "string",
+        "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
+      "VtcRoomsCommunityArchiveV0_1Visibility": {
+        "type": "string",
+        "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
+        "enum": [
+          "open",
+          "attributed",
+          "private"
+        ]
+      },
       "VtcRoomsCommunityCreateV0_4CommunityRoomV2": {
         "type": "object",
         "description": "What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`.",
@@ -14240,14 +14650,23 @@
           "private"
         ]
       },
-      "VtcRoomsCommunityGetV0_3CommunityRoomV2": {
+      "VtcRoomsCommunityGetV0_4ArchiveAccess": {
+        "type": "string",
+        "description": "What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.",
+        "enum": [
+          "readOnly",
+          "noAccess"
+        ]
+      },
+      "VtcRoomsCommunityGetV0_4CommunityRoomV3": {
         "type": "object",
-        "description": "What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`.",
+        "description": "What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then.",
         "required": [
           "room",
           "label",
           "admitted",
-          "offered"
+          "offered",
+          "status"
         ],
         "properties": {
           "admitted": {
@@ -14262,7 +14681,7 @@
             "pattern": "^did:"
           },
           "description": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3RoomDescription"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4RoomDescription"
           },
           "detailsUpdatedAt": {
             "type": "string",
@@ -14276,7 +14695,7 @@
             "pattern": "^did:"
           },
           "label": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3RoomLabel"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4RoomLabel"
           },
           "offered": {
             "type": "integer",
@@ -14289,24 +14708,32 @@
             "description": "When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before."
           },
           "room": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3HostedRoom"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4HostedRoom"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4RoomStatus"
           },
           "storageConfig": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3StorageConfigId"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4StorageConfigId"
+          },
+          "suspended": {
+            "type": "integer",
+            "description": "Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero.",
+            "minimum": 0
           },
           "tags": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3RoomTags"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4RoomTags"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityGetV0_3Ext": {
+      "VtcRoomsCommunityGetV0_4Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcRoomsCommunityGetV0_3HostedRoom": {
+      "VtcRoomsCommunityGetV0_4HostedRoom": {
         "type": "object",
         "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
         "required": [
@@ -14357,7 +14784,7 @@
             "minimum": 0
           },
           "retentionPolicy": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3RetentionPolicy"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4RetentionPolicy"
           },
           "roomId": {
             "type": "string",
@@ -14369,28 +14796,85 @@
             "format": "date-time"
           },
           "visibility": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3Visibility"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4Visibility"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityGetV0_3Response": {
+      "VtcRoomsCommunityGetV0_4PendingChange": {
         "type": "object",
-        "description": "Success response to vtc/rooms/community/get. Type https://trusttasks.org/spec/vtc/rooms/community/get/0.2#response. One room the community owns, with its counts. Its members are vtc/rooms/community/members/list's.",
+        "description": "A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished.",
+        "required": [
+          "state",
+          "beganAt"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4ArchiveAccess"
+          },
+          "beganAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityGetV0_4PurgeProgress": {
+        "type": "object",
+        "description": "How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has.",
+        "required": [
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "description": "Passes made so far; 0 until the first.",
+            "minimum": 0
+          },
+          "lastAttemptAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the next pass is due. Absent while one runs."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityGetV0_4Response": {
+        "type": "object",
+        "description": "Success response to vtc/rooms/community/get. Type https://trusttasks.org/spec/vtc/rooms/community/get/0.4#response. One room the community owns, in any state of its owner's lifecycle, with its counts. Its members are vtc/rooms/community/members/list's.",
         "required": [
           "room"
         ],
         "properties": {
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4Ext"
           },
           "room": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3CommunityRoomV2"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4CommunityRoomV3"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityGetV0_3RetentionPolicy": {
+      "VtcRoomsCommunityGetV0_4RetentionPolicy": {
         "type": "string",
         "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
         "enum": [
@@ -14398,42 +14882,101 @@
           "fromJoin"
         ]
       },
-      "VtcRoomsCommunityGetV0_3RoomDescription": {
+      "VtcRoomsCommunityGetV0_4RoomDescription": {
         "type": "string",
         "description": "What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
         "maxLength": 1000,
         "minLength": 1
       },
-      "VtcRoomsCommunityGetV0_3RoomLabel": {
+      "VtcRoomsCommunityGetV0_4RoomLabel": {
         "type": "string",
         "description": "A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data.",
         "maxLength": 128,
         "minLength": 1
       },
-      "VtcRoomsCommunityGetV0_3RoomTag": {
+      "VtcRoomsCommunityGetV0_4RoomState": {
+        "type": "string",
+        "description": "Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.",
+        "enum": [
+          "active",
+          "archived",
+          "removalScheduled",
+          "purging",
+          "removed"
+        ]
+      },
+      "VtcRoomsCommunityGetV0_4RoomStatus": {
+        "type": "object",
+        "description": "A room's state in its owner's lifecycle, and what that state needs to be understood.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4ArchiveAccess"
+          },
+          "changedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the room entered `state`. Absent for a room that has been `active` since it was created."
+          },
+          "changedBy": {
+            "type": "string",
+            "description": "The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "pendingChange": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4PendingChange"
+          },
+          "purge": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4PurgeProgress"
+          },
+          "purgeAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due."
+          },
+          "removedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present exactly when `state` is `removed`: when the last of the room's content was deleted."
+          },
+          "restoring": {
+            "type": "integer",
+            "description": "Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none.",
+            "minimum": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityGetV0_4RoomTag": {
         "type": "string",
         "description": "A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing.",
         "maxLength": 32,
         "minLength": 1,
         "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
       },
-      "VtcRoomsCommunityGetV0_3RoomTags": {
+      "VtcRoomsCommunityGetV0_4RoomTags": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_3RoomTag"
+          "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_4RoomTag"
         },
         "description": "The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading.",
         "maxItems": 8,
         "uniqueItems": true
       },
-      "VtcRoomsCommunityGetV0_3StorageConfigId": {
+      "VtcRoomsCommunityGetV0_4StorageConfigId": {
         "type": "string",
         "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
         "maxLength": 64,
         "minLength": 1,
         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
       },
-      "VtcRoomsCommunityGetV0_3Visibility": {
+      "VtcRoomsCommunityGetV0_4Visibility": {
         "type": "string",
         "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
         "enum": [
@@ -14442,14 +14985,23 @@
           "private"
         ]
       },
-      "VtcRoomsCommunityListV0_3CommunityRoomV2": {
+      "VtcRoomsCommunityListV0_4ArchiveAccess": {
+        "type": "string",
+        "description": "What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.",
+        "enum": [
+          "readOnly",
+          "noAccess"
+        ]
+      },
+      "VtcRoomsCommunityListV0_4CommunityRoomV3": {
         "type": "object",
-        "description": "What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`.",
+        "description": "What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then.",
         "required": [
           "room",
           "label",
           "admitted",
-          "offered"
+          "offered",
+          "status"
         ],
         "properties": {
           "admitted": {
@@ -14464,7 +15016,7 @@
             "pattern": "^did:"
           },
           "description": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3RoomDescription"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RoomDescription"
           },
           "detailsUpdatedAt": {
             "type": "string",
@@ -14478,7 +15030,7 @@
             "pattern": "^did:"
           },
           "label": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3RoomLabel"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RoomLabel"
           },
           "offered": {
             "type": "integer",
@@ -14491,24 +15043,32 @@
             "description": "When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before."
           },
           "room": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3HostedRoom"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4HostedRoom"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RoomStatus"
           },
           "storageConfig": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3StorageConfigId"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4StorageConfigId"
+          },
+          "suspended": {
+            "type": "integer",
+            "description": "Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero.",
+            "minimum": 0
           },
           "tags": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3RoomTags"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RoomTags"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityListV0_3Ext": {
+      "VtcRoomsCommunityListV0_4Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcRoomsCommunityListV0_3HostedRoom": {
+      "VtcRoomsCommunityListV0_4HostedRoom": {
         "type": "object",
         "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
         "required": [
@@ -14559,7 +15119,7 @@
             "minimum": 0
           },
           "retentionPolicy": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3RetentionPolicy"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RetentionPolicy"
           },
           "roomId": {
             "type": "string",
@@ -14571,12 +15131,12 @@
             "format": "date-time"
           },
           "visibility": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3Visibility"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4Visibility"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityListV0_3Payload": {
+      "VtcRoomsCommunityListV0_4Payload": {
         "type": "object",
         "properties": {
           "cursor": {
@@ -14586,7 +15146,7 @@
             "minLength": 1
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4Ext"
           },
           "limit": {
             "type": "integer",
@@ -14594,26 +15154,93 @@
             "maximum": 100,
             "minimum": 1
           },
+          "states": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RoomState"
+            },
+            "description": "Only rooms in one of these states of their owner's lifecycle. Absent: every state but `removed`, so that a removed room — a record that it existed, and nothing in it — leaves the list unless asked for.",
+            "maxItems": 5,
+            "minItems": 1,
+            "uniqueItems": true
+          },
           "tag": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3RoomTag"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RoomTag"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityListV0_3Response": {
+      "VtcRoomsCommunityListV0_4PendingChange": {
         "type": "object",
-        "description": "Success response to vtc/rooms/community/list. Type https://trusttasks.org/spec/vtc/rooms/community/list/0.2#response. One page of the rooms the community owns.",
+        "description": "A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished.",
+        "required": [
+          "state",
+          "beganAt"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4ArchiveAccess"
+          },
+          "beganAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityListV0_4PurgeProgress": {
+        "type": "object",
+        "description": "How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has.",
+        "required": [
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "description": "Passes made so far; 0 until the first.",
+            "minimum": 0
+          },
+          "lastAttemptAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the next pass is due. Absent while one runs."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityListV0_4Response": {
+        "type": "object",
+        "description": "Success response to vtc/rooms/community/list. Type https://trusttasks.org/spec/vtc/rooms/community/list/0.4#response. One page of the rooms the community owns, in the states asked for.",
         "required": [
           "items"
         ],
         "properties": {
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4Ext"
           },
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3CommunityRoomV2"
+              "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4CommunityRoomV3"
             },
             "maxItems": 100
           },
@@ -14626,7 +15253,7 @@
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityListV0_3RetentionPolicy": {
+      "VtcRoomsCommunityListV0_4RetentionPolicy": {
         "type": "string",
         "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
         "enum": [
@@ -14634,42 +15261,101 @@
           "fromJoin"
         ]
       },
-      "VtcRoomsCommunityListV0_3RoomDescription": {
+      "VtcRoomsCommunityListV0_4RoomDescription": {
         "type": "string",
         "description": "What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
         "maxLength": 1000,
         "minLength": 1
       },
-      "VtcRoomsCommunityListV0_3RoomLabel": {
+      "VtcRoomsCommunityListV0_4RoomLabel": {
         "type": "string",
         "description": "A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data.",
         "maxLength": 128,
         "minLength": 1
       },
-      "VtcRoomsCommunityListV0_3RoomTag": {
+      "VtcRoomsCommunityListV0_4RoomState": {
+        "type": "string",
+        "description": "Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.",
+        "enum": [
+          "active",
+          "archived",
+          "removalScheduled",
+          "purging",
+          "removed"
+        ]
+      },
+      "VtcRoomsCommunityListV0_4RoomStatus": {
+        "type": "object",
+        "description": "A room's state in its owner's lifecycle, and what that state needs to be understood.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4ArchiveAccess"
+          },
+          "changedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the room entered `state`. Absent for a room that has been `active` since it was created."
+          },
+          "changedBy": {
+            "type": "string",
+            "description": "The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "pendingChange": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4PendingChange"
+          },
+          "purge": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4PurgeProgress"
+          },
+          "purgeAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due."
+          },
+          "removedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present exactly when `state` is `removed`: when the last of the room's content was deleted."
+          },
+          "restoring": {
+            "type": "integer",
+            "description": "Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none.",
+            "minimum": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityListV0_4RoomTag": {
         "type": "string",
         "description": "A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing.",
         "maxLength": 32,
         "minLength": 1,
         "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
       },
-      "VtcRoomsCommunityListV0_3RoomTags": {
+      "VtcRoomsCommunityListV0_4RoomTags": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/VtcRoomsCommunityListV0_3RoomTag"
+          "$ref": "#/components/schemas/VtcRoomsCommunityListV0_4RoomTag"
         },
         "description": "The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading.",
         "maxItems": 8,
         "uniqueItems": true
       },
-      "VtcRoomsCommunityListV0_3StorageConfigId": {
+      "VtcRoomsCommunityListV0_4StorageConfigId": {
         "type": "string",
         "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
         "maxLength": 64,
         "minLength": 1,
         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
       },
-      "VtcRoomsCommunityListV0_3Visibility": {
+      "VtcRoomsCommunityListV0_4Visibility": {
         "type": "string",
         "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
         "enum": [
@@ -14678,13 +15364,13 @@
           "private"
         ]
       },
-      "VtcRoomsCommunityMembersAddV0_1Ext": {
+      "VtcRoomsCommunityMembersAddV0_2Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcRoomsCommunityMembersAddV0_1MemberAction": {
+      "VtcRoomsCommunityMembersAddV0_2MemberAction": {
         "type": "string",
         "description": "What a member of a community-owned room may do there. `admin` is not among them: minting epochs, admitting and removing members are the community's, as the room's owner, and are exercised through the vtc/rooms/community/* tasks rather than by any member's credential. `curate` is not implied by `write`.",
         "enum": [
@@ -14693,26 +15379,27 @@
           "curate"
         ]
       },
-      "VtcRoomsCommunityMembersAddV0_1MemberActions": {
+      "VtcRoomsCommunityMembersAddV0_2MemberActions": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_1MemberAction"
+          "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_2MemberAction"
         },
         "description": "The actions granted, at least one. An empty list confers nothing rather than everything, and a schema that allowed it would make the more dangerous reading available to a careless consumer.",
         "maxItems": 3,
         "minItems": 1,
         "uniqueItems": true
       },
-      "VtcRoomsCommunityMembersAddV0_1MemberState": {
+      "VtcRoomsCommunityMembersAddV0_2MemberStateV2": {
         "type": "string",
-        "description": "Where an admission stands. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `removed`: an administrator removed them; on a sealed tier the room has advanced past them.",
+        "description": "`MemberState` plus `suspended`. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `suspended`: admitted, but the room was archived with `noAccess` (or scheduled for removal), so the room's host refuses the member's credentials; on a sealed tier they are still in the room's group. Restored to `admitted` with freshly issued credentials when the room leaves that state, and never restored if it is removed. `removed`: an administrator removed them, or withdrew their offer — archiving withdraws every open offer; on a sealed tier the room has advanced past an admitted member.",
         "enum": [
           "offered",
           "admitted",
+          "suspended",
           "removed"
         ]
       },
-      "VtcRoomsCommunityMembersAddV0_1Payload": {
+      "VtcRoomsCommunityMembersAddV0_2Payload": {
         "type": "object",
         "required": [
           "roomId",
@@ -14723,10 +15410,10 @@
         ],
         "properties": {
           "actions": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_1MemberActions"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_2MemberActions"
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_1Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_2Ext"
           },
           "member": {
             "type": "string",
@@ -14735,7 +15422,7 @@
             "pattern": "^did:"
           },
           "reason": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_1Reason"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_2Reason"
           },
           "roomId": {
             "type": "string",
@@ -14751,31 +15438,31 @@
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityMembersAddV0_1Reason": {
+      "VtcRoomsCommunityMembersAddV0_2Reason": {
         "type": "string",
         "description": "Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
         "maxLength": 500,
         "minLength": 1
       },
-      "VtcRoomsCommunityMembersAddV0_1Response": {
+      "VtcRoomsCommunityMembersAddV0_2Response": {
         "type": "object",
-        "description": "Success response to vtc/rooms/community/members/add. Type https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1#response. The member as recorded, in state `offered`.",
+        "description": "Success response to vtc/rooms/community/members/add. Type https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2#response. The member as recorded, in state `offered`.",
         "required": [
           "member"
         ],
         "properties": {
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_1Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_2Ext"
           },
           "member": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_1RoomMember"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_2RoomMemberV2"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityMembersAddV0_1RoomMember": {
+      "VtcRoomsCommunityMembersAddV0_2RoomMemberV2": {
         "type": "object",
-        "description": "One party the community admitted to a room it owns, or offered admission to.",
+        "description": "`RoomMember` with `MemberStateV2`, and `suspendedAt`.",
         "required": [
           "member",
           "actions",
@@ -14785,7 +15472,7 @@
         ],
         "properties": {
           "actions": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_1MemberActions"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_2MemberActions"
           },
           "admittedAt": {
             "type": "string",
@@ -14805,7 +15492,12 @@
             "format": "date-time"
           },
           "state": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_1MemberState"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersAddV0_2MemberStateV2"
+          },
+          "suspendedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present exactly when `state` is `suspended`."
           },
           "validUntil": {
             "type": "string",
@@ -14815,13 +15507,13 @@
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityMembersListV0_1Ext": {
+      "VtcRoomsCommunityMembersListV0_2Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcRoomsCommunityMembersListV0_1MemberAction": {
+      "VtcRoomsCommunityMembersListV0_2MemberAction": {
         "type": "string",
         "description": "What a member of a community-owned room may do there. `admin` is not among them: minting epochs, admitting and removing members are the community's, as the room's owner, and are exercised through the vtc/rooms/community/* tasks rather than by any member's credential. `curate` is not implied by `write`.",
         "enum": [
@@ -14830,26 +15522,27 @@
           "curate"
         ]
       },
-      "VtcRoomsCommunityMembersListV0_1MemberActions": {
+      "VtcRoomsCommunityMembersListV0_2MemberActions": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_1MemberAction"
+          "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_2MemberAction"
         },
         "description": "The actions granted, at least one. An empty list confers nothing rather than everything, and a schema that allowed it would make the more dangerous reading available to a careless consumer.",
         "maxItems": 3,
         "minItems": 1,
         "uniqueItems": true
       },
-      "VtcRoomsCommunityMembersListV0_1MemberState": {
+      "VtcRoomsCommunityMembersListV0_2MemberStateV2": {
         "type": "string",
-        "description": "Where an admission stands. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `removed`: an administrator removed them; on a sealed tier the room has advanced past them.",
+        "description": "`MemberState` plus `suspended`. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `suspended`: admitted, but the room was archived with `noAccess` (or scheduled for removal), so the room's host refuses the member's credentials; on a sealed tier they are still in the room's group. Restored to `admitted` with freshly issued credentials when the room leaves that state, and never restored if it is removed. `removed`: an administrator removed them, or withdrew their offer — archiving withdraws every open offer; on a sealed tier the room has advanced past an admitted member.",
         "enum": [
           "offered",
           "admitted",
+          "suspended",
           "removed"
         ]
       },
-      "VtcRoomsCommunityMembersListV0_1Payload": {
+      "VtcRoomsCommunityMembersListV0_2Payload": {
         "type": "object",
         "required": [
           "roomId"
@@ -14862,7 +15555,7 @@
             "minLength": 1
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_1Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_2Ext"
           },
           "limit": {
             "type": "integer",
@@ -14877,25 +15570,25 @@
             "minLength": 1
           },
           "state": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_1MemberState"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_2MemberStateV2"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityMembersListV0_1Response": {
+      "VtcRoomsCommunityMembersListV0_2Response": {
         "type": "object",
-        "description": "Success response to vtc/rooms/community/members/list. Type https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1#response. One page of the room's members and offers.",
+        "description": "Success response to vtc/rooms/community/members/list. Type https://trusttasks.org/spec/vtc/rooms/community/members/list/0.2#response. One page of the room's members and offers, in every state including `suspended`.",
         "required": [
           "items"
         ],
         "properties": {
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_1Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_2Ext"
           },
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_1RoomMember"
+              "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_2RoomMemberV2"
             },
             "maxItems": 100
           },
@@ -14908,9 +15601,9 @@
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityMembersListV0_1RoomMember": {
+      "VtcRoomsCommunityMembersListV0_2RoomMemberV2": {
         "type": "object",
-        "description": "One party the community admitted to a room it owns, or offered admission to.",
+        "description": "`RoomMember` with `MemberStateV2`, and `suspendedAt`.",
         "required": [
           "member",
           "actions",
@@ -14920,7 +15613,7 @@
         ],
         "properties": {
           "actions": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_1MemberActions"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_2MemberActions"
           },
           "admittedAt": {
             "type": "string",
@@ -14940,7 +15633,12 @@
             "format": "date-time"
           },
           "state": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_1MemberState"
+            "$ref": "#/components/schemas/VtcRoomsCommunityMembersListV0_2MemberStateV2"
+          },
+          "suspendedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present exactly when `state` is `suspended`."
           },
           "validUntil": {
             "type": "string",
@@ -15113,6 +15811,1139 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1ArchiveAccess": {
+        "type": "string",
+        "description": "What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.",
+        "enum": [
+          "readOnly",
+          "noAccess"
+        ]
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1CommunityRoomV3": {
+        "type": "object",
+        "description": "What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then.",
+        "required": [
+          "room",
+          "label",
+          "admitted",
+          "offered",
+          "status"
+        ],
+        "properties": {
+          "admitted": {
+            "type": "integer",
+            "description": "Members in state `admitted`.",
+            "minimum": 0
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "The administrator who created it.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1RoomDescription"
+          },
+          "detailsUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle."
+          },
+          "detailsUpdatedBy": {
+            "type": "string",
+            "description": "The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1RoomLabel"
+          },
+          "offered": {
+            "type": "integer",
+            "description": "Offers not yet accepted or withdrawn.",
+            "minimum": 0
+          },
+          "ownerAuthorityValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before."
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1HostedRoom"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1RoomStatus"
+          },
+          "storageConfig": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1StorageConfigId"
+          },
+          "suspended": {
+            "type": "integer",
+            "description": "Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero.",
+            "minimum": 0
+          },
+          "tags": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1RoomTags"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1HostedRoom": {
+        "type": "object",
+        "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
+        "required": [
+          "roomId",
+          "ownerDid",
+          "visibility",
+          "retentionPolicy",
+          "epoch",
+          "lifecycle",
+          "retentionDays",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "epochExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "live",
+              "lapsed",
+              "dormant",
+              "reclaimable"
+            ]
+          },
+          "mirrorOf": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1
+          },
+          "ownerDid": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "retentionDays": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retentionPolicy": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1RetentionPolicy"
+          },
+          "roomId": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1Visibility"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1Payload": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "reason"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1Ext"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1Reason"
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier: its DID.",
+            "maxLength": 512,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1PendingChange": {
+        "type": "object",
+        "description": "A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished.",
+        "required": [
+          "state",
+          "beganAt"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1ArchiveAccess"
+          },
+          "beganAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1PurgeProgress": {
+        "type": "object",
+        "description": "How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has.",
+        "required": [
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "description": "Passes made so far; 0 until the first.",
+            "minimum": 0
+          },
+          "lastAttemptAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the next pass is due. Absent while one runs."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1Reason": {
+        "type": "string",
+        "description": "Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1Response": {
+        "type": "object",
+        "description": "Success response to vtc/rooms/community/removal/cancel. Type https://trusttasks.org/spec/vtc/rooms/community/removal/cancel/0.1#response. The room as it now stands: `archived` with `noAccess`.",
+        "required": [
+          "room"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1Ext"
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1CommunityRoomV3"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1RetentionPolicy": {
+        "type": "string",
+        "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
+        "enum": [
+          "chained",
+          "fromJoin"
+        ]
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1RoomDescription": {
+        "type": "string",
+        "description": "What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+        "maxLength": 1000,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1RoomLabel": {
+        "type": "string",
+        "description": "A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1RoomState": {
+        "type": "string",
+        "description": "Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.",
+        "enum": [
+          "active",
+          "archived",
+          "removalScheduled",
+          "purging",
+          "removed"
+        ]
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1RoomStatus": {
+        "type": "object",
+        "description": "A room's state in its owner's lifecycle, and what that state needs to be understood.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1ArchiveAccess"
+          },
+          "changedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the room entered `state`. Absent for a room that has been `active` since it was created."
+          },
+          "changedBy": {
+            "type": "string",
+            "description": "The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "pendingChange": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1PendingChange"
+          },
+          "purge": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1PurgeProgress"
+          },
+          "purgeAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due."
+          },
+          "removedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present exactly when `state` is `removed`: when the last of the room's content was deleted."
+          },
+          "restoring": {
+            "type": "integer",
+            "description": "Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none.",
+            "minimum": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1RoomTag": {
+        "type": "string",
+        "description": "A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing.",
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1RoomTags": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcRoomsCommunityRemovalCancelV0_1RoomTag"
+        },
+        "description": "The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading.",
+        "maxItems": 8,
+        "uniqueItems": true
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1StorageConfigId": {
+        "type": "string",
+        "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
+      "VtcRoomsCommunityRemovalCancelV0_1Visibility": {
+        "type": "string",
+        "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
+        "enum": [
+          "open",
+          "attributed",
+          "private"
+        ]
+      },
+      "VtcRoomsCommunityRemoveV0_1ArchiveAccess": {
+        "type": "string",
+        "description": "What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.",
+        "enum": [
+          "readOnly",
+          "noAccess"
+        ]
+      },
+      "VtcRoomsCommunityRemoveV0_1CommunityRoomV3": {
+        "type": "object",
+        "description": "What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then.",
+        "required": [
+          "room",
+          "label",
+          "admitted",
+          "offered",
+          "status"
+        ],
+        "properties": {
+          "admitted": {
+            "type": "integer",
+            "description": "Members in state `admitted`.",
+            "minimum": 0
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "The administrator who created it.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1RoomDescription"
+          },
+          "detailsUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle."
+          },
+          "detailsUpdatedBy": {
+            "type": "string",
+            "description": "The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1RoomLabel"
+          },
+          "offered": {
+            "type": "integer",
+            "description": "Offers not yet accepted or withdrawn.",
+            "minimum": 0
+          },
+          "ownerAuthorityValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before."
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1HostedRoom"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1RoomStatus"
+          },
+          "storageConfig": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1StorageConfigId"
+          },
+          "suspended": {
+            "type": "integer",
+            "description": "Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero.",
+            "minimum": 0
+          },
+          "tags": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1RoomTags"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemoveV0_1DigestMultibase": {
+        "type": "string",
+        "description": "A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.\n\nMultihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.\n\nThis definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.\n\nRestricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that \"interoperability is not guaranteed between implementations using such values\", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.",
+        "minLength": 16,
+        "pattern": "^(z[1-9A-HJ-NP-Za-km-z]+|u[A-Za-z0-9_-]+)$"
+      },
+      "VtcRoomsCommunityRemoveV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsCommunityRemoveV0_1HostedRoom": {
+        "type": "object",
+        "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
+        "required": [
+          "roomId",
+          "ownerDid",
+          "visibility",
+          "retentionPolicy",
+          "epoch",
+          "lifecycle",
+          "retentionDays",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "epochExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "live",
+              "lapsed",
+              "dormant",
+              "reclaimable"
+            ]
+          },
+          "mirrorOf": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1
+          },
+          "ownerDid": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "retentionDays": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retentionPolicy": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1RetentionPolicy"
+          },
+          "roomId": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1Visibility"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemoveV0_1Payload": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "reason"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1Ext"
+          },
+          "graceDays": {
+            "type": "integer",
+            "description": "Days from now until the room's content is purged. `0` purges at once, and cannot be undone. Absent: the community's configured default (30 days in the reference implementation). On a room already scheduled for removal, replaces its `purgeAt` with now plus this.",
+            "maximum": 365,
+            "minimum": 0
+          },
+          "reason": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1Reason"
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier: its DID.",
+            "maxLength": 512,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemoveV0_1PendingChange": {
+        "type": "object",
+        "description": "A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished.",
+        "required": [
+          "state",
+          "beganAt"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1ArchiveAccess"
+          },
+          "beganAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemoveV0_1PurgeProgress": {
+        "type": "object",
+        "description": "How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has.",
+        "required": [
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "description": "Passes made so far; 0 until the first.",
+            "minimum": 0
+          },
+          "lastAttemptAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the next pass is due. Absent while one runs."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemoveV0_1Reason": {
+        "type": "string",
+        "description": "Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityRemoveV0_1Response": {
+        "type": "object",
+        "description": "Success response to vtc/rooms/community/remove. Type https://trusttasks.org/spec/vtc/rooms/community/remove/0.1#response. The room as it now stands — `removalScheduled` with its `purgeAt`, or `purging` when `graceDays` was `0` — and, where the community's VTA reset the room's credentials at its host, the revocation list in force there.",
+        "required": [
+          "room"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1Ext"
+          },
+          "revocation": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1RevocationHead"
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present with `revocation`: the reset's time."
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1CommunityRoomV3"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemoveV0_1RetentionPolicy": {
+        "type": "string",
+        "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
+        "enum": [
+          "chained",
+          "fromJoin"
+        ]
+      },
+      "VtcRoomsCommunityRemoveV0_1RevocationHead": {
+        "type": "object",
+        "description": "Which `RevocationList` a party holds, without its entries: comparable between the room's key holder and a host, and between two hosts, without disclosing whom the room withdrew.",
+        "required": [
+          "sequence",
+          "digest"
+        ],
+        "properties": {
+          "digest": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1DigestMultibase"
+          },
+          "sequence": {
+            "type": "integer",
+            "description": "The list's `sequence`.",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemoveV0_1RoomDescription": {
+        "type": "string",
+        "description": "What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+        "maxLength": 1000,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityRemoveV0_1RoomLabel": {
+        "type": "string",
+        "description": "A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityRemoveV0_1RoomState": {
+        "type": "string",
+        "description": "Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.",
+        "enum": [
+          "active",
+          "archived",
+          "removalScheduled",
+          "purging",
+          "removed"
+        ]
+      },
+      "VtcRoomsCommunityRemoveV0_1RoomStatus": {
+        "type": "object",
+        "description": "A room's state in its owner's lifecycle, and what that state needs to be understood.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1ArchiveAccess"
+          },
+          "changedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the room entered `state`. Absent for a room that has been `active` since it was created."
+          },
+          "changedBy": {
+            "type": "string",
+            "description": "The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "pendingChange": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1PendingChange"
+          },
+          "purge": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1PurgeProgress"
+          },
+          "purgeAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due."
+          },
+          "removedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present exactly when `state` is `removed`: when the last of the room's content was deleted."
+          },
+          "restoring": {
+            "type": "integer",
+            "description": "Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none.",
+            "minimum": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityRemoveV0_1RoomTag": {
+        "type": "string",
+        "description": "A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing.",
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+      },
+      "VtcRoomsCommunityRemoveV0_1RoomTags": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcRoomsCommunityRemoveV0_1RoomTag"
+        },
+        "description": "The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading.",
+        "maxItems": 8,
+        "uniqueItems": true
+      },
+      "VtcRoomsCommunityRemoveV0_1StorageConfigId": {
+        "type": "string",
+        "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
+      "VtcRoomsCommunityRemoveV0_1Visibility": {
+        "type": "string",
+        "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
+        "enum": [
+          "open",
+          "attributed",
+          "private"
+        ]
+      },
+      "VtcRoomsCommunityUnarchiveV0_1ArchiveAccess": {
+        "type": "string",
+        "description": "What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.",
+        "enum": [
+          "readOnly",
+          "noAccess"
+        ]
+      },
+      "VtcRoomsCommunityUnarchiveV0_1CommunityRoomV3": {
+        "type": "object",
+        "description": "What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then.",
+        "required": [
+          "room",
+          "label",
+          "admitted",
+          "offered",
+          "status"
+        ],
+        "properties": {
+          "admitted": {
+            "type": "integer",
+            "description": "Members in state `admitted`.",
+            "minimum": 0
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "The administrator who created it.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "description": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1RoomDescription"
+          },
+          "detailsUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle."
+          },
+          "detailsUpdatedBy": {
+            "type": "string",
+            "description": "The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "label": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1RoomLabel"
+          },
+          "offered": {
+            "type": "integer",
+            "description": "Offers not yet accepted or withdrawn.",
+            "minimum": 0
+          },
+          "ownerAuthorityValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before."
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1HostedRoom"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1RoomStatus"
+          },
+          "storageConfig": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1StorageConfigId"
+          },
+          "suspended": {
+            "type": "integer",
+            "description": "Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero.",
+            "minimum": 0
+          },
+          "tags": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1RoomTags"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityUnarchiveV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsCommunityUnarchiveV0_1HostedRoom": {
+        "type": "object",
+        "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
+        "required": [
+          "roomId",
+          "ownerDid",
+          "visibility",
+          "retentionPolicy",
+          "epoch",
+          "lifecycle",
+          "retentionDays",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "epochExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "live",
+              "lapsed",
+              "dormant",
+              "reclaimable"
+            ]
+          },
+          "mirrorOf": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1
+          },
+          "ownerDid": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "retentionDays": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retentionPolicy": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1RetentionPolicy"
+          },
+          "roomId": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1Visibility"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityUnarchiveV0_1Payload": {
+        "type": "object",
+        "required": [
+          "roomId",
+          "reason"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1Ext"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1Reason"
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier: its DID.",
+            "maxLength": 512,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityUnarchiveV0_1PendingChange": {
+        "type": "object",
+        "description": "A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished.",
+        "required": [
+          "state",
+          "beganAt"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1ArchiveAccess"
+          },
+          "beganAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityUnarchiveV0_1PurgeProgress": {
+        "type": "object",
+        "description": "How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has.",
+        "required": [
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "description": "Passes made so far; 0 until the first.",
+            "minimum": 0
+          },
+          "lastAttemptAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string",
+            "description": "What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the next pass is due. Absent while one runs."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityUnarchiveV0_1Reason": {
+        "type": "string",
+        "description": "Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityUnarchiveV0_1Response": {
+        "type": "object",
+        "description": "Success response to vtc/rooms/community/unarchive. Type https://trusttasks.org/spec/vtc/rooms/community/unarchive/0.1#response. The room as it now stands, `active`, and whether anything changed. Suspended members still being restored are counted in `room.status.restoring`.",
+        "required": [
+          "room",
+          "changed"
+        ],
+        "properties": {
+          "changed": {
+            "type": "boolean",
+            "description": "`false` when the room was already `active` with no change pending: nothing was written or audited."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1Ext"
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1CommunityRoomV3"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityUnarchiveV0_1RetentionPolicy": {
+        "type": "string",
+        "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
+        "enum": [
+          "chained",
+          "fromJoin"
+        ]
+      },
+      "VtcRoomsCommunityUnarchiveV0_1RoomDescription": {
+        "type": "string",
+        "description": "What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+        "maxLength": 1000,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityUnarchiveV0_1RoomLabel": {
+        "type": "string",
+        "description": "A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data.",
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "VtcRoomsCommunityUnarchiveV0_1RoomState": {
+        "type": "string",
+        "description": "Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.",
+        "enum": [
+          "active",
+          "archived",
+          "removalScheduled",
+          "purging",
+          "removed"
+        ]
+      },
+      "VtcRoomsCommunityUnarchiveV0_1RoomStatus": {
+        "type": "object",
+        "description": "A room's state in its owner's lifecycle, and what that state needs to be understood.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1ArchiveAccess"
+          },
+          "changedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the room entered `state`. Absent for a room that has been `active` since it was created."
+          },
+          "changedBy": {
+            "type": "string",
+            "description": "The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "pendingChange": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1PendingChange"
+          },
+          "purge": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1PurgeProgress"
+          },
+          "purgeAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due."
+          },
+          "removedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present exactly when `state` is `removed`: when the last of the room's content was deleted."
+          },
+          "restoring": {
+            "type": "integer",
+            "description": "Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none.",
+            "minimum": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1RoomState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsCommunityUnarchiveV0_1RoomTag": {
+        "type": "string",
+        "description": "A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing.",
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+      },
+      "VtcRoomsCommunityUnarchiveV0_1RoomTags": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/VtcRoomsCommunityUnarchiveV0_1RoomTag"
+        },
+        "description": "The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading.",
+        "maxItems": 8,
+        "uniqueItems": true
+      },
+      "VtcRoomsCommunityUnarchiveV0_1StorageConfigId": {
+        "type": "string",
+        "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
+      "VtcRoomsCommunityUnarchiveV0_1Visibility": {
+        "type": "string",
+        "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
+        "enum": [
+          "open",
+          "attributed",
+          "private"
+        ]
       },
       "VtcRoomsCommunityUpdateV0_3CommunityRoomV2": {
         "type": "object",

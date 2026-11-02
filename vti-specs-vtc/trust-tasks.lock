@@ -903,6 +903,12 @@ type_uri = "https://trusttasks.org/spec/vtc/roles/show/0.1"
 digest = "sha256:ed69782258e0ba1a1d1689247f631a54bc9fce1a7a03f860fb56fdb353f14672"
 
 [[task]]
+slug = "vtc/rooms/community/archive"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/archive/0.1"
+digest = "sha256:7472c9acc76d5096595c88118864e664f52c619b58158b3670423ba81fea33e0"
+
+[[task]]
 slug = "vtc/rooms/community/create"
 version = "0.4"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4"
@@ -912,31 +918,67 @@ digest = "sha256:dc38f206b5b8b3c2178c16f9d280f9aed3b4fd75bc3adaea6129acac659a371
 slug = "vtc/rooms/community/get"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3"
-digest = "sha256:ecc9697493ade7016151a907762ecb6d9abaf4da93cc1f34feb310a978389704"
+digest = "sha256:c39f7159237366edbd937fad12bd5379be99854f12477a34ae23afc74eca275f"
+
+[[task]]
+slug = "vtc/rooms/community/get"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.4"
+digest = "sha256:f0c85aeb7b2ef0d4d3f60538636b94803090e30002e068c9f3d885a05b41d9a1"
 
 [[task]]
 slug = "vtc/rooms/community/list"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/list/0.3"
-digest = "sha256:2dd63beab08c7e7c8c69dbb6baeac2d65d0d50699a51db62e28c7df6b5334adc"
+digest = "sha256:8881990df4c1308e454171d623631ec32f6acb02e26ee35770a0cd68424e4872"
+
+[[task]]
+slug = "vtc/rooms/community/list"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/list/0.4"
+digest = "sha256:8bfa102cad912d6cd7543a00a53429b0caa0bec58123b178a18c37ca00d65c15"
 
 [[task]]
 slug = "vtc/rooms/community/members/add"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1"
-digest = "sha256:1fa9ac0392b93f018b18269004771f3f55637d885471fb4739838bd316f6d265"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2"
+digest = "sha256:b0a23b1aa3208db1d023f09a2822d6b140a2db93dc942f1de1d65688ab6b5c35"
 
 [[task]]
 slug = "vtc/rooms/community/members/list"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1"
-digest = "sha256:741762c5b9f8692a2e35ded3c6fe4296af88256d3ed7ded33fe58490a6605755"
+digest = "sha256:dde6840bad24d178e4e9394dbf1bafaaf1b257ff26df5e4372e0d239d6e00999"
+
+[[task]]
+slug = "vtc/rooms/community/members/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.2"
+digest = "sha256:6882fd0c9d745e21f266479cbbdf35258073a006e425340b777bca4c84ed08da"
 
 [[task]]
 slug = "vtc/rooms/community/members/remove"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2"
 digest = "sha256:72866c9ce3050974c85e99676fe8ea3257169333d0b0aca8985aac7d484d1430"
+
+[[task]]
+slug = "vtc/rooms/community/removal/cancel"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/removal/cancel/0.1"
+digest = "sha256:2bc82d6f9ef542e4defca9aa5e143f13db8d9c8c207e577d0f3ff34c63f2b95b"
+
+[[task]]
+slug = "vtc/rooms/community/remove"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/remove/0.1"
+digest = "sha256:17d46de99391749379104668485c77613406ce47dc685db37d1d3a8e3db307a8"
+
+[[task]]
+slug = "vtc/rooms/community/unarchive"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/unarchive/0.1"
+digest = "sha256:c3d3c8a57401304aec38618cc17ce6494cb99d124114f5ebf00a60bde011c206"
 
 [[task]]
 slug = "vtc/rooms/community/update"
@@ -966,7 +1008,13 @@ digest = "sha256:e226a2735e97b2260a7757cd0373868ecb4a2c3d0d73b88e6f559ef01491ad9
 slug = "vtc/rooms/memberships/list"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1"
-digest = "sha256:e9f3391572fea47054b34bc4e14bd0cb1ea1c620ed66c3084e91cb791d8dd814"
+digest = "sha256:40a8fdbd80ed5765a69236979c0b9cf4771886cd17dec2c98a29364ae9505c75"
+
+[[task]]
+slug = "vtc/rooms/memberships/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.2"
+digest = "sha256:a74c13ce9666e64df99c2874dd5555d25465258ce4dd49e7fbbcdbd85c4adf39"
 
 [[task]]
 slug = "vtc/rooms/offers/accept"

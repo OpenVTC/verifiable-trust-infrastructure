@@ -6,7 +6,7 @@
 //!
 //! - the operator's **VTA**, over the client's existing session, to complete each
 //!   host-bound request **as the member** ([`VtaClient::room_act`],
-//!   `rooms/keys/act/0.9`), to seal a record body signed as the member
+//!   `rooms/keys/act/0.10`), to seal a record body signed as the member
 //!   ([`VtaClient::room_seal_as_principal`]) and to open a sealed record
 //!   ([`VtaClient::room_open`]);
 //! - the room's **host**, unauthenticated, receiving the completed document unchanged.
@@ -149,7 +149,7 @@ pub fn session_from_minted(
 }
 
 /// Send one room request to the host **as the member**: built here without presentation
-/// or proof, completed by the VTA with `rooms/keys/act/0.9`, sent unchanged. Returns the
+/// or proof, completed by the VTA with `rooms/keys/act/0.10`, sent unchanged. Returns the
 /// member the VTA acted as and the host's response payload.
 ///
 /// Nothing this client holds goes to the host: not its DID, not its key.
@@ -554,7 +554,7 @@ impl RecordProvenance {
 
 /// Why `rooms put` will not state provenance on an `open` room, and what to do instead.
 ///
-/// An open room carries provenance in `rooms/records/put/0.3`'s cleartext. `rooms/keys/act/0.9`
+/// An open room carries provenance in `rooms/records/put/0.3`'s cleartext. `rooms/keys/act/0.10`
 /// completes put 0.3, which this client now sends, but it does not yet put the provenance
 /// members into the cleartext; until it does, it refuses rather than drop them.
 fn open_tier_provenance_refused(target: &RoomTarget<'_>) -> String {
@@ -1505,7 +1505,7 @@ async fn room_tier_and_epoch(
 }
 
 /// Have the VTA sign `content` **as the member** and seal it (`rooms/keys/seal/0.2`), and
-/// put it as the member (`rooms/keys/act/0.9`), re-sealing at the version the host assigned
+/// put it as the member (`rooms/keys/act/0.10`), re-sealing at the version the host assigned
 /// whenever that is not the one sealed for. Returns the version written.
 ///
 /// The record's associated data and its signed body both name the version, and the host
@@ -2635,7 +2635,7 @@ pub async fn cmd_rooms_owner_group_add(
 // document goes to the community over its Trust Task HTTPS endpoint, unchanged: a
 // persona-signed document rides HTTPS, never this client's own DIDComm session.
 //
-// The listing is `vtc/rooms/offers/list/0.4`, completed at `rooms/keys/act/0.9`: the
+// The listing is `vtc/rooms/offers/list/0.4`, completed at `rooms/keys/act/0.10`: the
 // community's offers with their descriptions, and the renewals of the rooms the member is
 // already in (`renewsAt`). A VTA or a community that serves neither is reported, never
 // read at an older version.
@@ -2670,7 +2670,7 @@ impl OfferStepError {
             Self::Act(e) => {
                 let text = e.to_string();
                 let hint = if matches!(e, VtaError::UnsupportedTaskType { .. }) {
-                    "\n\nYour VTA does not serve rooms/keys/act/0.9, which signs this request \
+                    "\n\nYour VTA does not serve rooms/keys/act/0.10, which signs this request \
                      as you: upgrade it."
                         .to_string()
                 } else if text.contains("issuerNotPrincipal") {
@@ -2696,7 +2696,7 @@ impl OfferStepError {
 }
 
 /// Have the VTA complete a request to the community as `target.member`
-/// (`rooms/keys/act/0.9`) and send
+/// (`rooms/keys/act/0.10`) and send
 /// it to the community. Returns the community's response
 /// payload, or the party that failed.
 async fn act_and_send_offer(
@@ -2751,7 +2751,7 @@ fn offers_page(
 }
 
 /// Every offer the community has made to the member, and the renewals of the rooms they are
-/// in: `vtc/rooms/offers/list/0.4`, signed as the member through `rooms/keys/act/0.9`, one
+/// in: `vtc/rooms/offers/list/0.4`, signed as the member through `rooms/keys/act/0.10`, one
 /// page at a time. A VTA or a community that serves neither is told so; nothing older is
 /// asked.
 async fn list_offers(
@@ -3156,17 +3156,18 @@ async fn offered_key_package(
     Ok(kp.key_package.to_string())
 }
 
-/// `vtc/rooms/memberships/list/0.1`, signed as the member: the community's whole record of
-/// their admissions (one page at a time).
+/// `vtc/rooms/memberships/list/0.2`, signed as the member through `rooms/keys/act/0.10`:
+/// the community's whole record of their admissions, with each room's own state (one page at
+/// a time). A community that does not serve 0.2 is reported, never read at 0.1.
 async fn list_memberships(
     client: &VtaClient,
     target: &OfferTarget<'_>,
 ) -> Result<
-    Vec<vti_specs::vtc::rooms::memberships::list::v0_1::RoomMembership>,
+    Vec<vti_specs::vtc::rooms::memberships::list::v0_2::RoomMembershipV2>,
     Box<dyn std::error::Error>,
 > {
     use trust_tasks_rs::Payload as _;
-    use vti_specs::vtc::rooms::memberships::list::v0_1 as list;
+    use vti_specs::vtc::rooms::memberships::list::v0_2 as list;
     let mut items = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -3186,7 +3187,7 @@ async fn list_memberships(
     }
 }
 
-/// What a surface shows for one room — `vtc/rooms/memberships/list/0.1` *One record, every
+/// What a surface shows for one room — `vtc/rooms/memberships/list/0.2` *One record, every
 /// surface*: the community's state and the key holder's custody, read the same way by
 /// every surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3201,16 +3202,21 @@ pub enum RoomStanding {
     /// Admitted to a sealed room whose group the VTA does not hold, and the Welcome is no
     /// longer kept: only an administrator re-admitting the member repairs it.
     NeedsReadmission,
+    /// Admitted, but the room was closed to every member — archived with no access, or
+    /// scheduled for removal: its host refuses the member's credentials, and the community
+    /// restores them if the room reopens.
+    Suspended,
     /// Removed by an administrator.
     Removed,
 }
 
 impl RoomStanding {
-    /// The table in `vtc/rooms/memberships/list/0.1`.
+    /// The table in `vtc/rooms/memberships/list/0.2`.
     pub fn of(state: &str, sealed: bool, held: bool, welcome_kept: bool) -> Self {
         match state {
             "offered" => Self::Offered,
             "removed" => Self::Removed,
+            "suspended" => Self::Suspended,
             _ if !sealed || held => Self::Joined,
             _ if welcome_kept => Self::Unfinished,
             _ => Self::NeedsReadmission,
@@ -3223,8 +3229,44 @@ impl RoomStanding {
             Self::Joined => "joined",
             Self::Unfinished => "accepted, not finished",
             Self::NeedsReadmission => "admitted, not openable here",
+            Self::Suspended => "suspended",
             Self::Removed => "removed",
         }
+    }
+}
+
+/// What the room's own state means to the member, in a line — `None` for an active room.
+/// `room_state` and `room_access` are `vtc/rooms/memberships/list/0.2`'s `roomState` and
+/// `roomAccess`; `purge_at` its `purgeAt`, RFC 3339.
+pub fn room_condition(
+    room_state: &str,
+    room_access: Option<&str>,
+    purge_at: Option<&str>,
+) -> Option<String> {
+    match (room_state, room_access) {
+        ("active", _) => None,
+        ("archived", Some("readOnly")) => Some(
+            "Archived, read-only: you can still read it; nothing can be written, uploaded or \
+             curated until an administrator unarchives it."
+                .into(),
+        ),
+        ("archived", _) => Some(
+            "Archived, closed for now: the community withdrew everyone's access and kept the \
+             content. If it is reopened your access is restored — collect it with \
+             `pnm rooms offers renew`."
+                .into(),
+        ),
+        ("removalScheduled", _) | ("purging", _) => Some(match purge_at {
+            Some(at) => format!(
+                "Being removed: closed to every member, and its content is deleted on {at}. \
+                 Nothing of it can be read from now on."
+            ),
+            None => {
+                "Being removed: closed to every member, and its content is being deleted.".into()
+            }
+        }),
+        ("removed", _) => Some("Removed: the community deleted the room and its content.".into()),
+        (other, _) => Some(format!("The room is {other}.")),
     }
 }
 
@@ -3257,22 +3299,38 @@ pub async fn cmd_rooms_memberships(
             r.repeat_accept_until.is_some(),
         );
         let actions: Vec<String> = r.actions.0.iter().map(ToString::to_string).collect();
+        let room_state = r.room_state.to_string();
+        let room_access = r.room_access.as_ref().map(ToString::to_string);
+        let purge_at = r
+            .purge_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        let condition = room_condition(&room_state, room_access.as_deref(), purge_at.as_deref());
         println!(
-            "{room_id}  {}  [{}]  {}  {}",
+            "{room_id}  {}  [{}]  {}  {}{}",
             inert(r.label.as_str()),
             r.visibility,
             actions.join(","),
             standing.label(),
+            if condition.is_some() {
+                format!("  ({room_state})")
+            } else {
+                String::new()
+            },
         );
+        if let Some(c) = &condition {
+            println!("  {c}");
+        }
+        // No acceptance to finish, or re-admission to ask for, in a room that admits no one.
+        let room_admits = room_state == "active";
         match standing {
-            RoomStanding::Offered | RoomStanding::Unfinished => {
+            RoomStanding::Offered | RoomStanding::Unfinished if room_admits => {
                 println!("  accept: {}", accept_command(room_id, &target));
             }
-            RoomStanding::NeedsReadmission => println!(
+            RoomStanding::NeedsReadmission if room_admits => println!(
                 "  Your VTA never joined this room's group and the community no longer keeps \
                  the Welcome: ask an administrator to remove and re-admit you."
             ),
-            RoomStanding::Joined | RoomStanding::Removed => {}
+            _ => {}
         }
     }
     Ok(())
@@ -3427,6 +3485,35 @@ mod tests {
 
     /// `vtc/rooms/memberships/list/0.1`'s table: the same answers, the same standing.
     #[test]
+    fn a_rooms_condition_says_what_its_state_means() {
+        assert_eq!(room_condition("active", None, None), None);
+        assert!(
+            room_condition("archived", Some("readOnly"), None)
+                .unwrap()
+                .contains("read-only")
+        );
+        assert!(
+            room_condition("archived", Some("noAccess"), None)
+                .unwrap()
+                .contains("pnm rooms offers renew")
+        );
+        assert!(
+            room_condition(
+                "removalScheduled",
+                Some("noAccess"),
+                Some("2026-12-02T10:00:00Z")
+            )
+            .unwrap()
+            .contains("2026-12-02T10:00:00Z")
+        );
+        assert!(
+            room_condition("removed", None, None)
+                .unwrap()
+                .starts_with("Removed")
+        );
+    }
+
+    #[test]
     fn a_rooms_standing_follows_the_one_record() {
         use RoomStanding::*;
         assert_eq!(RoomStanding::of("offered", true, false, false), Offered);
@@ -3438,6 +3525,12 @@ mod tests {
             NeedsReadmission
         );
         assert_eq!(RoomStanding::of("removed", true, true, false), Removed);
+        // 0.2: an admission the room's closure withdrew, whatever the custody.
+        assert_eq!(RoomStanding::of("suspended", true, true, true), Suspended);
+        assert_eq!(
+            RoomStanding::of("suspended", false, false, false),
+            Suspended
+        );
     }
 
     fn minted(authority: Value) -> Value {

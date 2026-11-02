@@ -239,15 +239,36 @@ spec_types! {
     /// `vtc/rooms/community/create/0.4#response` — the room as the community owns
     /// it, with its details, and whether its profile was written (`roomProfile`).
     RoomsCommunityCreate04Response(rooms_community::create::v0_4::Response);
-    /// `vtc/rooms/community/list/0.3` payload — a page, optionally only the rooms
-    /// carrying one tag.
-    RoomsCommunityList03Payload(rooms_community::list::v0_3::Payload);
-    /// `vtc/rooms/community/list/0.3#response` — one page of the rooms the
-    /// community owns, with their details.
-    RoomsCommunityList03Response(rooms_community::list::v0_3::Response);
-    /// `vtc/rooms/community/get/0.3#response` — one room the community owns, with
-    /// its details.
-    RoomsCommunityGet03Response(rooms_community::get::v0_3::Response);
+    /// `vtc/rooms/community/list/0.4` payload — a page, optionally only the rooms
+    /// carrying one tag, or in the given states.
+    RoomsCommunityList04Payload(rooms_community::list::v0_4::Payload);
+    /// `vtc/rooms/community/list/0.4#response` — one page of the rooms the
+    /// community owns, with their details and their state (`status`).
+    RoomsCommunityList04Response(rooms_community::list::v0_4::Response);
+    /// `vtc/rooms/community/get/0.4#response` — one room the community owns, with
+    /// its details and its state (`status`).
+    RoomsCommunityGet04Response(rooms_community::get::v0_4::Response);
+    /// `vtc/rooms/community/archive/0.1` payload — archive a room read-only or with
+    /// no access, and why.
+    RoomsCommunityArchive01Payload(rooms_community::archive::v0_1::Payload);
+    /// `vtc/rooms/community/archive/0.1#response` — the room, whether it changed, the
+    /// offers withdrawn, and the revocation list in force where credentials were withdrawn.
+    RoomsCommunityArchive01Response(rooms_community::archive::v0_1::Response);
+    /// `vtc/rooms/community/unarchive/0.1` payload.
+    RoomsCommunityUnarchive01Payload(rooms_community::unarchive::v0_1::Payload);
+    /// `vtc/rooms/community/unarchive/0.1#response` — the room, and whether it changed.
+    RoomsCommunityUnarchive01Response(rooms_community::unarchive::v0_1::Response);
+    /// `vtc/rooms/community/remove/0.1` payload — remove an archived room after a grace
+    /// period, or at once.
+    RoomsCommunityRemove01Payload(rooms_community::remove::v0_1::Payload);
+    /// `vtc/rooms/community/remove/0.1#response` — the room, scheduled for removal or
+    /// being purged.
+    RoomsCommunityRemove01Response(rooms_community::remove::v0_1::Response);
+    /// `vtc/rooms/community/removal/cancel/0.1` payload.
+    RoomsCommunityRemovalCancel01Payload(rooms_community::removal::cancel::v0_1::Payload);
+    /// `vtc/rooms/community/removal/cancel/0.1#response` — the room, archived with no
+    /// access again.
+    RoomsCommunityRemovalCancel01Response(rooms_community::removal::cancel::v0_1::Response);
     /// `vtc/rooms/community/update/0.3` payload — a room's new label, description
     /// or tags, and the reason recorded with them; a new label or description is
     /// also written into the room as its profile.
@@ -255,11 +276,11 @@ spec_types! {
     /// `vtc/rooms/community/update/0.3#response` — the room, whether the request
     /// changed it, and its profile's state (`roomProfile`).
     RoomsCommunityUpdate03Response(rooms_community::update::v0_3::Response);
-    /// `vtc/rooms/community/members/add/0.1` payload — admit an active member
+    /// `vtc/rooms/community/members/add/0.2` payload — admit an active member
     /// with actions, an expiry and a reason.
-    RoomsCommunityMembersAdd01Payload(rooms_community::members::add::v0_1::Payload);
-    /// `vtc/rooms/community/members/add/0.1#response` — the member's record.
-    RoomsCommunityMembersAdd01Response(rooms_community::members::add::v0_1::Response);
+    RoomsCommunityMembersAdd02Payload(rooms_community::members::add::v0_2::Payload);
+    /// `vtc/rooms/community/members/add/0.2#response` — the member's record.
+    RoomsCommunityMembersAdd02Response(rooms_community::members::add::v0_2::Response);
     /// `vtc/rooms/community/members/remove/0.2` payload.
     RoomsCommunityMembersRemove02Payload(rooms_community::members::remove::v0_2::Payload);
     /// `vtc/rooms/community/members/remove/0.2#response` — the member's record; on
@@ -416,11 +437,11 @@ spec_types! {
     DirectoryExport02Payload(directory::export::v0_2::Payload);
     /// `vtc/directory/export/0.2#response` — one page of JSContact cards.
     DirectoryExport02Response(directory::export::v0_2::Response);
-    /// `vtc/rooms/community/members/list/0.1` payload.
-    RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
-    /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
-    /// members, offered, admitted or removed.
-    RoomsCommunityMembersList01Response(rooms_community::members::list::v0_1::Response);
+    /// `vtc/rooms/community/members/list/0.2` payload.
+    RoomsCommunityMembersList02Payload(rooms_community::members::list::v0_2::Payload);
+    /// `vtc/rooms/community/members/list/0.2#response` — one page of a room's
+    /// members, offered, admitted, suspended or removed.
+    RoomsCommunityMembersList02Response(rooms_community::members::list::v0_2::Response);
     /// `vtc/storage/configs/list/0.2#response` — with `roleArn` and `notAllowed`.
     StorageConfigsList02Response(storage_configs::list::v0_2::Response);
     /// `vtc/storage/configs/get/0.2#response` — one config, its facts and rooms.

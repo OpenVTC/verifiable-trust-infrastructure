@@ -42,6 +42,7 @@ use sha2::{Digest, Sha256};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+use super::community_lifecycle::OwnerStatus;
 use super::vta_storage::{PeerError, VtaChannel};
 use crate::server::AppState;
 
@@ -49,11 +50,14 @@ use crate::server::AppState;
 /// the error-code census.
 pub mod codes {
     use vti_specs::vtc::rooms::community::{
-        create::v0_4 as create, get::v0_3 as get, members::add::v0_1 as add,
-        members::list::v0_1 as members_list, members::remove::v0_2 as remove,
-        update::v0_3 as update,
+        archive::v0_1 as archive, create::v0_4 as create, get::v0_3 as get, get::v0_4 as get_v4,
+        members::add::v0_2 as add, members::list::v0_1 as members_list,
+        members::list::v0_2 as members_list_v2, members::remove::v0_2 as remove,
+        removal::cancel::v0_1 as removal_cancel, remove::v0_1 as remove_room,
+        unarchive::v0_1 as unarchive, update::v0_3 as update,
     };
     use vti_specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
+    use vti_specs::vtc::rooms::memberships::list::v0_2 as memberships_list_v2;
     use vti_specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_4 as list};
 
     pub const UPDATE_NOT_FOUND: &str = update::error_codes::NOT_FOUND.code;
@@ -72,6 +76,29 @@ pub mod codes {
     pub const ADD_ALREADY_MEMBER: &str = add::error_codes::ALREADY_MEMBER.code;
     pub const ADD_KEY_HOLDER_UNAVAILABLE: &str = add::error_codes::KEY_HOLDER_UNAVAILABLE.code;
     pub const ADD_KEY_HOLDER_REFUSED: &str = add::error_codes::KEY_HOLDER_REFUSED.code;
+    pub const ADD_WRONG_STATE: &str = add::error_codes::WRONG_STATE.code;
+    pub const GET_V4_NOT_FOUND: &str = get_v4::error_codes::NOT_FOUND.code;
+    pub const MEMBERS_LIST_V2_NOT_FOUND: &str = members_list_v2::error_codes::NOT_FOUND.code;
+    pub const MEMBERSHIPS_LIST_V2_NOT_A_MEMBER: &str =
+        memberships_list_v2::error_codes::NOT_A_MEMBER.code;
+    pub const ARCHIVE_NOT_FOUND: &str = archive::error_codes::NOT_FOUND.code;
+    pub const ARCHIVE_WRONG_STATE: &str = archive::error_codes::WRONG_STATE.code;
+    pub const ARCHIVE_KEY_HOLDER_UNAVAILABLE: &str =
+        archive::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+    pub const ARCHIVE_KEY_HOLDER_REFUSED: &str = archive::error_codes::KEY_HOLDER_REFUSED.code;
+    pub const UNARCHIVE_NOT_FOUND: &str = unarchive::error_codes::NOT_FOUND.code;
+    pub const UNARCHIVE_WRONG_STATE: &str = unarchive::error_codes::WRONG_STATE.code;
+    pub const UNARCHIVE_KEY_HOLDER_UNAVAILABLE: &str =
+        unarchive::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+    pub const UNARCHIVE_KEY_HOLDER_REFUSED: &str = unarchive::error_codes::KEY_HOLDER_REFUSED.code;
+    pub const REMOVE_ROOM_NOT_FOUND: &str = remove_room::error_codes::NOT_FOUND.code;
+    pub const REMOVE_ROOM_WRONG_STATE: &str = remove_room::error_codes::WRONG_STATE.code;
+    pub const REMOVE_ROOM_KEY_HOLDER_UNAVAILABLE: &str =
+        remove_room::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+    pub const REMOVE_ROOM_KEY_HOLDER_REFUSED: &str =
+        remove_room::error_codes::KEY_HOLDER_REFUSED.code;
+    pub const REMOVAL_CANCEL_NOT_FOUND: &str = removal_cancel::error_codes::NOT_FOUND.code;
+    pub const REMOVAL_CANCEL_WRONG_STATE: &str = removal_cancel::error_codes::WRONG_STATE.code;
     pub const REMOVE_NOT_FOUND: &str = remove::error_codes::NOT_FOUND.code;
     pub const REMOVE_NOT_IN_ROOM: &str = remove::error_codes::NOT_IN_ROOM.code;
     pub const REMOVE_KEY_HOLDER_UNAVAILABLE: &str =
@@ -146,6 +173,15 @@ pub struct OwnedRoom {
     /// The administrator who made that change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details_updated_by: Option<String>,
+    /// Where the room stands in its owner's lifecycle — archived, scheduled for removal,
+    /// purged ([`super::community_lifecycle`]). Absent, for every room stored before
+    /// archival existed: `active`.
+    #[serde(default, skip_serializing_if = "OwnerStatus::is_initial")]
+    pub status: OwnerStatus,
+    /// The host record as it last stood before the room was purged: what the owner's reads
+    /// show as a purging or removed room's `room` (`vtc/_shared/0.5` `CommunityRoomV3`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted_snapshot: Option<Value>,
 }
 
 /// The three credentials issued to a member, kept for them to collect.
@@ -180,13 +216,18 @@ pub struct MemberRecord {
     pub actions: Vec<String>,
     /// RFC 3339: when the member's authority credential expires.
     pub valid_until: String,
-    /// `offered`, `admitted` or `removed`.
+    /// `offered`, `admitted`, `suspended` or `removed`.
     pub state: String,
     pub offered_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admitted_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removed_at: Option<String>,
+    /// RFC 3339: when the room was closed to its members and this admission withdrawn with
+    /// everyone's (`suspended`, `vtc/rooms/community/archive/0.1`). Present exactly while
+    /// the record is `suspended`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspended_at: Option<String>,
     /// The offer's credentials. Dropped when the member is removed or the offer withdrawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<OfferCredentials>,
@@ -231,6 +272,10 @@ impl MemberRecord {
     pub const OFFERED: &'static str = "offered";
     pub const ADMITTED: &'static str = "admitted";
     pub const REMOVED: &'static str = "removed";
+    /// Admitted, but the room was closed to every member — archived with `noAccess`, or
+    /// scheduled for removal — and the admission's credentials withdrawn with everyone's.
+    /// Restored when the room reopens, never once it is purged.
+    pub const SUSPENDED: &'static str = "suspended";
     /// The source of an administrator's direct admission, where a binding covers
     /// the member too.
     pub const DIRECT: &'static str = "direct";
@@ -240,8 +285,22 @@ impl MemberRecord {
         self.sources.is_empty() || self.sources.iter().any(|s| s == Self::DIRECT)
     }
 
-    /// The `RoomMember` of `vtc/_shared/0.1/community-room`.
+    /// The `RoomMember` of `vtc/_shared/0.1/community-room`, which has no `suspended`: a
+    /// suspended admission is still one — the member is in the room, on a sealed tier in its
+    /// group — so it reads as `admitted` there.
     pub fn wire(&self) -> Value {
+        let mut v = self.wire_v2();
+        if self.state == Self::SUSPENDED {
+            v["state"] = Value::from(Self::ADMITTED);
+        }
+        if let Some(o) = v.as_object_mut() {
+            o.remove("suspendedAt");
+        }
+        v
+    }
+
+    /// The `RoomMemberV2` of `vtc/_shared/0.5/community-room`.
+    pub fn wire_v2(&self) -> Value {
         let mut v = serde_json::json!({
             "member": self.member,
             "actions": self.actions,
@@ -249,6 +308,13 @@ impl MemberRecord {
             "state": self.state,
             "offeredAt": self.offered_at,
         });
+        if let Some(at) = self
+            .suspended_at
+            .as_ref()
+            .filter(|_| self.state == Self::SUSPENDED)
+        {
+            v["suspendedAt"] = Value::from(at.clone());
+        }
         if let Some(at) = &self.admitted_at {
             v["admittedAt"] = Value::from(at.clone());
         }
@@ -636,11 +702,36 @@ impl CommunityRooms {
     }
 
     /// `(admitted, offered)`: members in state `admitted`, and offers not yet accepted or
-    /// withdrawn.
+    /// withdrawn. A `suspended` admission is counted as admitted, as the shapes this
+    /// answers for have no other place for it.
     pub async fn counts(&self, room_id: &str) -> Result<(u64, u64), AppError> {
+        let (admitted, offered, suspended) = self.counts_v2(room_id).await?;
+        Ok((admitted + suspended, offered))
+    }
+
+    /// `(admitted, offered, suspended)`.
+    pub async fn counts_v2(&self, room_id: &str) -> Result<(u64, u64, u64), AppError> {
         let members = self.members(room_id).await?;
         let count = |s: &str| members.iter().filter(|m| m.state == s).count() as u64;
-        Ok((count(MemberRecord::ADMITTED), count(MemberRecord::OFFERED)))
+        Ok((
+            count(MemberRecord::ADMITTED),
+            count(MemberRecord::OFFERED),
+            count(MemberRecord::SUSPENDED),
+        ))
+    }
+
+    /// Forget what this community keeps beside a purged room's record to act on it — the
+    /// renewal of its own authority and the profile it writes — leaving the record itself
+    /// as the room's tombstone.
+    pub async fn forget_room_state(&self, room_id: &str) -> Result<(), AppError> {
+        self.ks
+            .remove(format!("authority-renewal:{room_id}").into_bytes())
+            .await?;
+        self.ks
+            .remove(format!("room-profile:{room_id}").into_bytes())
+            .await?;
+        changed();
+        Ok(())
     }
 
     /// Record that `member` left the community: a [`PendingRemoval`] for every room the
@@ -875,6 +966,7 @@ mod tests {
             offered_at: now.to_rfc3339(),
             admitted_at: Some((now - chrono::Duration::days(6)).to_rfc3339()),
             removed_at: None,
+            suspended_at: None,
             credentials: None,
             welcome: None,
             admitted_epoch: Some(2),

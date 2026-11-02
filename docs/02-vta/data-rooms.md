@@ -1356,7 +1356,7 @@ pnm rooms file get <record-key> --room <room-did> --host … [--out ./term-sheet
 The CLI **never holds a room credential, a group key or a key of your
 persona's**. For `list`, `get`, `put`, `curate`, the `rooms/info` lookup and
 `keys commit --host`, it builds the room request **unsigned** — no
-presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.9`.
+presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.10`.
 The VTA completes it **as your persona**: it inserts the persona's own
 authority narrowed to exactly the action the request's type needs (`read`,
 `write`, `curate`, `admin`, from the specification's closed table) and granted
@@ -1962,7 +1962,7 @@ and `vtc-service`:
 | `rooms/keys/open/0.2` | `roomOpen` capability |
 | `rooms/keys/file-key/0.2` | `roomOpen` capability |
 | `rooms/keys/seal/0.2` | `roomOpen` capability; `signAsPrincipal` refused to a delegate |
-| `rooms/keys/act/0.8` | `roomPresent` capability; refused to a delegate |
+| `rooms/keys/act/0.8`, `0.9`, `0.10` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
 | `rooms/keys/browse/0.3` | `roomOpen` capability; passes the host's `lastPrune` through |

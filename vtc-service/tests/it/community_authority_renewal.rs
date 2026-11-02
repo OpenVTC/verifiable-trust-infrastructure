@@ -251,6 +251,7 @@ fn config() -> CommunityRoomsConfig {
         mediator_did: Some("did:example:mediator".into()),
         authority_valid_days: None,
         authority_renew_within_days: None,
+        removal_grace_days: None,
     }
 }
 
@@ -312,6 +313,7 @@ async fn seed_room_owned_by(
         record_retention: None,
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
     };
     vti_rooms::storage::create_room(&fix.vtc.state.rooms_ks, &room)
         .await
@@ -334,6 +336,8 @@ async fn seed_owner_record(fix: &Fixture, room_id: &str, authority_until: DateTi
         tags: vec!["board".into()],
         details_updated_at: None,
         details_updated_by: None,
+        status: Default::default(),
+        hosted_snapshot: None,
     };
     fix.vtc
         .state

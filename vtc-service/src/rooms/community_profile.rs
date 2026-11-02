@@ -394,6 +394,12 @@ pub async fn sweep(state: &AppState, now: DateTime<Utc>) -> Result<SweepReport, 
         return Ok(report);
     }
     for room in state.community_rooms.rooms().await? {
+        // An archived room is written to by nobody, its owner included
+        // (`vtc/rooms/community/archive/0.1` item 9): what is owed is written once it is
+        // unarchived, and a room on its way out never.
+        if room.status.state != super::community_lifecycle::RoomState::Active {
+            continue;
+        }
         let Some(rec) = record(&state.community_rooms, &room.room_id).await? else {
             continue;
         };

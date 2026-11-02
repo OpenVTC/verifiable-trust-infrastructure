@@ -111,6 +111,10 @@
 //! assertion from the other direction, and that direction is what tells you a
 //! fold landed.
 
+// `get`/`list` 0.3 and `members/list`/`memberships/list` 0.1 are superseded and still
+// served, so their samples stay; their generated types are marked deprecated.
+#![allow(deprecated)]
+
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -552,6 +556,14 @@ fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
 }
 
 /// A room the community owns, as `vtc/rooms/community/*` answers it.
+/// `CommunityRoomV3`: `CommunityRoomV2`, the room's `status`, its suspended admissions.
+fn sample_community_room_v3(status: serde_json::Value) -> serde_json::Value {
+    let mut v = sample_community_room_v2();
+    v["status"] = status;
+    v["suspended"] = json!(2);
+    v
+}
+
 fn sample_community_room_v2() -> serde_json::Value {
     json!({
         "room": {
@@ -1341,8 +1353,8 @@ fn table() -> Vec<Conformance> {
             json!({ "room": sample_community_room_v2(), "changed": true, "roomProfile": "written" })
         ),
         checked!(
-            s::rooms::community::members::add::v0_1::Payload,
-            s::rooms::community::members::add::v0_1::Response,
+            s::rooms::community::members::add::v0_2::Payload,
+            s::rooms::community::members::add::v0_2::Response,
             json!({
                 "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember",
                 "actions": ["read", "write"], "validUntil": "2027-10-01T00:00:00Z",
@@ -1379,6 +1391,99 @@ fn table() -> Vec<Conformance> {
                 "member": "did:key:z6MkMember", "actions": ["read"],
                 "validUntil": "2027-10-01T00:00:00Z", "state": "admitted",
                 "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+            }] })
+        ),
+        // ─── a room's owner lifecycle (`rooms::community_lifecycle`) ───
+        checked!(
+            s::rooms::community::list::v0_4::Payload,
+            s::rooms::community::list::v0_4::Response,
+            json!({ "limit": 10, "states": ["archived", "removalScheduled"] }),
+            json!({ "items": [sample_community_room_v3(json!({
+                "state": "archived", "access": "readOnly",
+                "changedAt": "2026-11-02T10:00:02Z", "changedBy": "did:key:z6MkAdmin",
+            }))] })
+        ),
+        checked!(
+            s::rooms::community::get::v0_4::Payload,
+            s::rooms::community::get::v0_4::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({ "room": sample_community_room_v3(json!({
+                "state": "purging", "changedAt": "2026-11-02T10:00:02Z",
+                "changedBy": "did:key:z6MkAdmin", "purgeAt": "2026-11-02T10:00:02Z",
+                "purge": { "attempts": 1, "lastAttemptAt": "2026-11-02T10:00:03Z",
+                    "nextAttemptAt": "2026-11-02T10:00:33Z",
+                    "lastError": "1 of the room's files could not be deleted from storage yet" },
+            })) })
+        ),
+        checked!(
+            s::rooms::community::archive::v0_1::Payload,
+            s::rooms::community::archive::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "access": "noAccess", "reason": "the cycle closed" }),
+            json!({
+                "room": sample_community_room_v3(json!({
+                    "state": "archived", "access": "noAccess",
+                    "changedAt": "2026-11-02T10:00:02Z", "changedBy": "did:key:z6MkAdmin",
+                })),
+                "changed": true, "withdrawnOffers": 1,
+                "revocation": { "sequence": 3,
+                    "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                "revokedAt": "2026-11-02T10:00:01Z",
+            })
+        ),
+        checked!(
+            s::rooms::community::unarchive::v0_1::Payload,
+            s::rooms::community::unarchive::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "reason": "reopened" }),
+            json!({
+                "room": sample_community_room_v3(json!({
+                    "state": "active", "changedAt": "2026-11-03T10:00:00Z",
+                    "changedBy": "did:key:z6MkAdmin", "restoring": 2,
+                })),
+                "changed": true,
+            })
+        ),
+        checked!(
+            s::rooms::community::remove::v0_1::Payload,
+            s::rooms::community::remove::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "graceDays": 30, "reason": "no longer needed" }),
+            json!({ "room": sample_community_room_v3(json!({
+                "state": "removalScheduled", "access": "noAccess",
+                "changedAt": "2026-11-02T10:00:02Z", "changedBy": "did:key:z6MkAdmin",
+                "purgeAt": "2026-12-02T10:00:02Z",
+            })) })
+        ),
+        checked!(
+            s::rooms::community::removal::cancel::v0_1::Payload,
+            s::rooms::community::removal::cancel::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "reason": "removed by mistake" }),
+            json!({ "room": sample_community_room_v3(json!({
+                "state": "archived", "access": "noAccess",
+                "changedAt": "2026-11-03T10:00:00Z", "changedBy": "did:key:z6MkAdmin",
+            })) })
+        ),
+        checked!(
+            s::rooms::community::members::list::v0_2::Payload,
+            s::rooms::community::members::list::v0_2::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "state": "suspended", "limit": 10 }),
+            json!({ "items": [{
+                "member": "did:key:z6MkMember", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "state": "suspended",
+                "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                "suspendedAt": "2026-11-02T10:00:02Z",
+            }] })
+        ),
+        checked!(
+            s::rooms::memberships::list::v0_2::Payload,
+            s::rooms::memberships::list::v0_2::Response,
+            json!({ "limit": 10 }),
+            json!({ "items": [{
+                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                "label": "Board pack", "visibility": "attributed", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "state": "suspended",
+                "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                "suspendedAt": "2026-11-02T10:00:02Z",
+                "roomState": "removalScheduled", "roomAccess": "noAccess",
+                "purgeAt": "2026-12-02T10:00:02Z",
             }] })
         ),
         // The offers, and on the first page the renewals of the admissions the
