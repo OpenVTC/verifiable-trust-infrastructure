@@ -743,19 +743,28 @@ async fn voter_preamble<P: DeserializeOwned>(
     Ok((context, str_of(doc, "community").to_string()))
 }
 
-/// `vta/pcs/voter/read/0.2`: `vtc/elections/list` or `show`, signed as the member (items 3 – 6).
+/// `vta/pcs/voter/read/0.3`: `vtc/elections/list/0.3` or `vtc/elections/show/0.3`, signed as
+/// the member (items 3 – 6); and 0.2, which signs `show/0.2` instead — the one difference
+/// between them, so the version the request names picks the `show` signed.
+#[allow(deprecated)] // vta/pcs/voter/read/0.2 and the vtc/elections/show/0.2 it signs: still served
 pub(super) async fn handle_voter_read(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::voter::read::v0_2 as t;
+    use spec::voter::read::v0_3 as t;
     use trust_tasks_rs::validate::ValidatedPayload as _;
-    use vti_specs::vtc::elections::{list::v0_3 as list, show::v0_2 as show};
+    use vti_specs::vtc::elections::{
+        list::v0_3 as list, show::v0_2 as show_0_2, show::v0_3 as show,
+    };
     let (_context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
     };
+    let signs_show_0_2 = doc
+        .type_uri
+        .to_string()
+        .starts_with(<spec::voter::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI);
     let read = doc.payload["read"].as_str().unwrap_or_default();
     let payload = value_of(&doc, "payload");
     // Item 3: the read's own payload, against its own schema.
@@ -763,6 +772,10 @@ pub(super) async fn handle_voter_read(
         "list" => (
             <list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             list::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+        ),
+        "show" if signs_show_0_2 => (
+            <show_0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            show_0_2::Payload::validate_value(&payload).map_err(|e| e.to_string()),
         ),
         "show" => (
             <show::Payload as trust_tasks_rs::Payload>::TYPE_URI,
@@ -784,6 +797,10 @@ pub(super) async fn handle_voter_read(
     )
     .await
     {
+        // Each version answers through its own response type: 0.2's names `show/0.2`.
+        Ok(document) if signs_show_0_2 => {
+            respond::<spec::voter::read::v0_2::Response>(&doc, json!({ "document": document }))
+        }
         Ok(document) => respond::<t::Response>(&doc, json!({ "document": document })),
         Err(e) => refuse(&doc, e, |e| match e {
             PcsError::MemberNotHeld(_) => Some(t::error_codes::MEMBER_NOT_HELD),
@@ -792,13 +809,15 @@ pub(super) async fn handle_voter_read(
     }
 }
 
-/// `vta/pcs/voter/register/0.2`.
+/// `vta/pcs/voter/register/0.3`, and 0.2: the same request over a manifest whose
+/// `textReleaseThreshold` is at least 10. The spine holds each to its own version's schema;
+/// both are read and answered as 0.3's types.
 pub(super) async fn handle_voter_register(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::voter::register::v0_2 as t;
+    use spec::voter::register::v0_3 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -907,13 +926,14 @@ pub(super) async fn handle_voter_accept(
     }
 }
 
-/// `vta/pcs/vote/0.2`.
+/// `vta/pcs/vote/0.3`, and 0.2 (the manifest's threshold at least 10), read and answered as
+/// 0.3's types once the spine has held the payload to its own version's schema.
 pub(super) async fn handle_vote(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::vote::v0_2 as t;
+    use spec::vote::v0_3 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1005,13 +1025,14 @@ pub(super) async fn handle_voter_receipt(
     }
 }
 
-/// `vta/pcs/vote-encrypted/0.3`: the key formed here from the trustees' signed steps.
+/// `vta/pcs/vote-encrypted/0.4`, and 0.3 (the manifest's threshold at least 10): the key formed
+/// here from the trustees' signed steps. Both are read and answered as 0.4's types.
 pub(super) async fn handle_vote_encrypted(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::vote_encrypted::v0_3 as t;
+    use spec::vote_encrypted::v0_4 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1090,13 +1111,14 @@ async fn trustee_audit(
     audit(state, action, auth, community, context, Some(&election)).await;
 }
 
-/// `vta/pcs/trustee/enrol/0.2`.
+/// `vta/pcs/trustee/enrol/0.3`, and 0.2 (the manifest's threshold at least 10), read and
+/// answered as 0.3's types.
 pub(super) async fn handle_trustee_enrol(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::enrol::v0_2 as t;
+    use spec::trustee::enrol::v0_3 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1125,13 +1147,14 @@ pub(super) async fn handle_trustee_enrol(
     }
 }
 
-/// `vta/pcs/trustee/deal/0.3`.
+/// `vta/pcs/trustee/deal/0.4`, and 0.3 (the manifest's threshold at least 10), read and
+/// answered as 0.4's types.
 pub(super) async fn handle_trustee_deal(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::deal::v0_3 as t;
+    use spec::trustee::deal::v0_4 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1164,13 +1187,14 @@ pub(super) async fn handle_trustee_deal(
     }
 }
 
-/// `vta/pcs/trustee/keys/0.3`.
+/// `vta/pcs/trustee/keys/0.4`, and 0.3 (the manifest's threshold at least 10), read and
+/// answered as 0.4's types.
 pub(super) async fn handle_trustee_keys(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::keys::v0_3 as t;
+    use spec::trustee::keys::v0_4 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1203,13 +1227,14 @@ pub(super) async fn handle_trustee_keys(
     }
 }
 
-/// `vta/pcs/trustee/justify/0.3`.
+/// `vta/pcs/trustee/justify/0.4`, and 0.3 (the manifest's threshold at least 10), read and
+/// answered as 0.4's types.
 pub(super) async fn handle_trustee_justify(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::justify::v0_3 as t;
+    use spec::trustee::justify::v0_4 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1252,19 +1277,32 @@ pub(super) async fn handle_trustee_justify(
     }
 }
 
-/// `vta/pcs/trustee/read/0.2`: `voting/trustees/status` or `voting/election/show`, signed as
-/// the trustee (items 3 – 5). Keeps nothing, so it is not audited, as `voter/read` is not.
+/// `vta/pcs/trustee/read/0.3`: `voting/trustees/status/0.1` or `voting/election/show/0.3`,
+/// signed as the trustee (items 3 – 5); and 0.2, which signs `voting/election/show/0.2`
+/// instead — the one difference between them. Keeps nothing, so it is not audited, as
+/// `voter/read` is not.
+#[allow(deprecated)] // vta/pcs/trustee/read/0.2 and the voting/election/show/0.2 it signs: still served
 pub(super) async fn handle_trustee_read(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::read::v0_2 as t;
+    use spec::trustee::read::v0_3 as t;
+    use vti_specs::voting::election::show::{v0_2 as show_0_2, v0_3 as show};
     let (_context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
             Err(r) => return r,
         };
+    let signs_show_0_2 = doc
+        .type_uri
+        .to_string()
+        .starts_with(<spec::trustee::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI);
+    let election_show = if signs_show_0_2 {
+        <show_0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    } else {
+        <show::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    };
     match crate::operations::pcs_trustee::sign_read(
         state,
         auth,
@@ -1273,9 +1311,14 @@ pub(super) async fn handle_trustee_read(
         str_of(&doc, "electionId"),
         str_of(&doc, "ballotBox"),
         str_of(&doc, "read"),
+        election_show,
     )
     .await
     {
+        // Each version answers through its own response type: 0.2's names `show/0.2`.
+        Ok(document) if signs_show_0_2 => {
+            respond::<spec::trustee::read::v0_2::Response>(&doc, json!({ "document": document }))
+        }
         Ok(document) => respond::<t::Response>(&doc, json!({ "document": document })),
         Err(e) => refuse(&doc, e, |e| match e {
             PcsError::TrusteeNotHeld(_) => Some(t::error_codes::TRUSTEE_NOT_HELD),

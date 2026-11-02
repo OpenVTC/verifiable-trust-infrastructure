@@ -27,7 +27,7 @@ use vti_voting::{
     election::{Election, ElectionId},
     rules::{digest_from_multibase, digest_multibase},
     scheme::VotingParams,
-    service::{BallotBox, Caller},
+    service::{BallotBox, Caller, ElectionVersion},
     voter::{Ticket, Voter},
 };
 
@@ -35,12 +35,12 @@ use crate::common::signed::{admin, call, party_with_role, payload, post, signed_
 
 // The declared codes, read from the generated bindings.
 use vti_specs::vtc::elections as el;
-const CREATE_ERR_ELECTION_EXISTS: &str = el::create::v0_1::error_codes::ELECTION_EXISTS.code;
-const CREATE_ERR_INVALID_MANIFEST: &str = el::create::v0_1::error_codes::INVALID_MANIFEST.code;
-const CREATE_ERR_COMMUNITY_MISMATCH: &str = el::create::v0_1::error_codes::COMMUNITY_MISMATCH.code;
+const CREATE_ERR_ELECTION_EXISTS: &str = el::create::v0_4::error_codes::ELECTION_EXISTS.code;
+const CREATE_ERR_INVALID_MANIFEST: &str = el::create::v0_4::error_codes::INVALID_MANIFEST.code;
+const CREATE_ERR_COMMUNITY_MISMATCH: &str = el::create::v0_4::error_codes::COMMUNITY_MISMATCH.code;
 const CREATE_ERR_BALLOT_BOX_NOT_TRUSTED: &str =
-    el::create::v0_1::error_codes::BALLOT_BOX_NOT_TRUSTED.code;
-const CREATE_ERR_BALLOT_BOX_REFUSED: &str = el::create::v0_1::error_codes::BALLOT_BOX_REFUSED.code;
+    el::create::v0_4::error_codes::BALLOT_BOX_NOT_TRUSTED.code;
+const CREATE_ERR_BALLOT_BOX_REFUSED: &str = el::create::v0_4::error_codes::BALLOT_BOX_REFUSED.code;
 const CLOSE_ERR_ELECTION_UNKNOWN: &str = el::close::v0_1::error_codes::ELECTION_UNKNOWN.code;
 const CLOSE_ERR_NOT_OPEN: &str = el::close::v0_1::error_codes::NOT_OPEN.code;
 const CLOSE_ERR_EARLY_CLOSE_NOT_ALLOWED: &str =
@@ -53,7 +53,7 @@ const CANCEL_ERR_NOT_OPEN: &str = el::cancel::v0_1::error_codes::NOT_OPEN.code;
 const CANCEL_ERR_BALLOT_BOX_UNAVAILABLE: &str =
     el::cancel::v0_1::error_codes::BALLOT_BOX_UNAVAILABLE.code;
 const CANCEL_ERR_BALLOT_BOX_REFUSED: &str = el::cancel::v0_1::error_codes::BALLOT_BOX_REFUSED.code;
-const SHOW_ERR_ELECTION_UNKNOWN: &str = el::show::v0_1::error_codes::ELECTION_UNKNOWN.code;
+const SHOW_ERR_ELECTION_UNKNOWN: &str = el::show::v0_3::error_codes::ELECTION_UNKNOWN.code;
 const ISSUE_ERR_ELECTION_UNKNOWN: &str =
     el::tickets::issue::v0_1::error_codes::ELECTION_UNKNOWN.code;
 const ISSUE_ERR_NOT_OPEN: &str = el::tickets::issue::v0_1::error_codes::NOT_OPEN.code;
@@ -80,12 +80,12 @@ const BOX: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
 const AUDITOR: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
 const SPEC: &str = "https://trusttasks.org/spec/";
 
-/// The served version of each `vtc/elections/*` task: create and list at 0.3 and show at
-/// 0.2 (the voting/_shared/0.2 manifest), the rest at 0.1.
+/// The current version of each `vtc/elections/*` task: create at 0.4 and show at 0.3 (the
+/// voting/_shared/0.3 manifest), list at 0.3, the rest at 0.1.
 fn uri(task: &str) -> String {
     let version = match task {
-        "create" | "list" => "0.3",
-        "show" => "0.2",
+        "create" => "0.4",
+        "list" | "show" => "0.3",
         _ => "0.1",
     };
     format!("{SPEC}vtc/elections/{task}/{version}")
@@ -126,6 +126,10 @@ struct InProcessBox {
     /// decryption authorization is kept on the board as the community signed it (CONVENTIONS
     /// §9.7), which the in-process channel otherwise never sees.
     signer: Mutex<Option<Arc<vtc_service::credentials::LocalSigner>>>,
+    /// Serve `voting/election/register` at 0.2 only, as a ballot box from before 0.3 does.
+    register_0_2_only: AtomicBool,
+    /// The `voting/election/register` versions the community sent, in order.
+    registered_at: Mutex<Vec<String>>,
 }
 
 impl InProcessBox {
@@ -137,6 +141,8 @@ impl InProcessBox {
             ahead: AtomicI64::new(0),
             tamper: Mutex::new(Tamper::None),
             signer: Mutex::new(None),
+            register_0_2_only: AtomicBool::new(false),
+            registered_at: Mutex::new(Vec::new()),
         })
     }
 
@@ -222,10 +228,19 @@ impl BallotBoxChannel for InProcessBox {
         if !self.up.load(Ordering::SeqCst) {
             return Err(LinkError::Unavailable("down".into()));
         }
-        let slug = type_uri
+        let (slug, version) = type_uri
             .strip_prefix(SPEC)
-            .and_then(|t| t.rsplit_once('/').map(|(slug, _)| slug))
+            .and_then(|t| t.rsplit_once('/'))
             .expect("a voting task");
+        if slug == "voting/election/register" {
+            self.registered_at.lock().unwrap().push(version.to_string());
+            if version != "0.2" && self.register_0_2_only.load(Ordering::SeqCst) {
+                return Ok(BoxAnswer::Refused {
+                    code: "unsupportedVersion".into(),
+                    message: "this ballot box serves voting/election/register at 0.2 only".into(),
+                });
+            }
+        }
         if self.refuse.load(Ordering::SeqCst) {
             return Ok(BoxAnswer::Refused {
                 code: format!("{slug}:refused"),
@@ -259,7 +274,16 @@ impl BallotBoxChannel for InProcessBox {
         let tamper = *self.tamper.lock().unwrap();
         let mut bb = self.bb.lock().unwrap();
         let out = match slug {
-            "voting/election/register" => bb.register(signer, payload, now),
+            "voting/election/register" => bb.register_at(
+                if version == "0.2" {
+                    ElectionVersion::V0_2
+                } else {
+                    ElectionVersion::V0_3
+                },
+                signer,
+                payload,
+                now,
+            ),
             "voting/trustees/authorize" => {
                 bb.trustees_authorize(signer, authorization.as_ref().unwrap(), now)
             }
@@ -702,6 +726,72 @@ async fn a_creation_is_refused_for_each_rule_it_breaks() {
             .is_empty(),
         "nothing was recorded for any of them"
     );
+}
+
+/// VTI-VOT-065: a `textReleaseThreshold` of 1 – 9 is created under `create/0.4` and shown under
+/// `show/0.3`; the versions whose voting/_shared/0.2 schema says 10 refuse it — `create/0.3` as
+/// a malformed request, `show/0.2` as `unsupportedVersion` naming 0.3.
+#[tokio::test]
+async fn vti_vot_065_a_threshold_below_ten_is_served_only_at_the_versions_that_admit_it() {
+    let bx = InProcessBox::new();
+    let tv = community(bx.clone()).await;
+    let chair = admin(&tv).await;
+
+    let mut low = manifest("small", false);
+    low["textReleaseThreshold"] = json!(1);
+    let old_create = format!("{SPEC}vtc/elections/create/0.3");
+    let (_, doc) = call(&tv, &chair, &old_create, json!({ "manifest": low.clone() })).await;
+    assert_eq!(tt_error_code(&doc), "malformedRequest", "{doc}");
+
+    let (status, doc) = create(&tv, &chair, low).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["state"], "registered");
+    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.3"]);
+
+    let (status, shown) = call(&tv, &chair, &uri("show"), json!({ "electionId": "small" })).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(payload(&shown)["manifest"]["textReleaseThreshold"], 1);
+
+    let old_show = format!("{SPEC}vtc/elections/show/0.2");
+    let (_, shown) = call(&tv, &chair, &old_show, json!({ "electionId": "small" })).await;
+    assert_eq!(tt_error_code(&shown), "unsupportedVersion", "{shown}");
+
+    // An election of 10 or more is served at every version, created under the old one too.
+    let (status, doc) = call(
+        &tv,
+        &chair,
+        &old_create,
+        json!({ "manifest": manifest("usual", false) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (status, shown) = call(&tv, &chair, &old_show, json!({ "electionId": "usual" })).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(payload(&shown)["manifest"]["textReleaseThreshold"], 10);
+}
+
+/// A ballot box from before `voting/election/register/0.3` refuses it by version: an election
+/// whose threshold is 10 or more is registered there at 0.2; one below 10 cannot be, and the
+/// refusal stands.
+#[tokio::test]
+async fn a_ballot_box_serving_register_0_2_only_takes_a_threshold_of_ten_or_more() {
+    let bx = InProcessBox::new();
+    bx.register_0_2_only.store(true, Ordering::SeqCst);
+    let tv = community(bx.clone()).await;
+    let chair = admin(&tv).await;
+
+    let (status, doc) = create(&tv, &chair, manifest("usual", false)).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["state"], "registered");
+    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.3", "0.2"]);
+
+    bx.registered_at.lock().unwrap().clear();
+    let mut low = manifest("small", false);
+    low["textReleaseThreshold"] = json!(3);
+    let (_, doc) = create(&tv, &chair, low).await;
+    assert_eq!(tt_error_code(&doc), CREATE_ERR_BALLOT_BOX_REFUSED, "{doc}");
+    assert_eq!(payload(&doc)["details"]["code"], "unsupportedVersion");
+    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.3"]);
 }
 
 #[tokio::test]
@@ -1233,7 +1323,7 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
         vti_voting::trustees::Threshold::new(2, 3).unwrap(),
     )
     .expect("show carries the election key once formed");
-    let typed: vti_specs::voting::election::register::v0_2::Manifest =
+    let typed: vti_specs::voting::election::register::v0_3::Manifest =
         serde_json::from_value(m).unwrap();
     for (party, choice) in [(&alice, "alice"), (&bob, "alice")] {
         let (voter, ticket) = take_ticket(&tv, party, &b).await;

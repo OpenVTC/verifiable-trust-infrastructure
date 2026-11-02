@@ -828,7 +828,7 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
     // Community elections (`voting`): the Elections page, shown only once
     // discovery lists `vtc/elections/list` (`lib/elections-api.ts`).
     (
-        "https://trusttasks.org/spec/vtc/elections/create/0.3",
+        "https://trusttasks.org/spec/vtc/elections/create/0.4",
         cfg!(feature = "voting"),
     ),
     (
@@ -836,7 +836,7 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
         cfg!(feature = "voting"),
     ),
     (
-        "https://trusttasks.org/spec/vtc/elections/show/0.2",
+        "https://trusttasks.org/spec/vtc/elections/show/0.3",
         cfg!(feature = "voting"),
     ),
     (

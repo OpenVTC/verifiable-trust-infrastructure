@@ -1614,13 +1614,25 @@ digest = "sha256:225f2f149ddfa60555584d6aafc77a31ba97f2dfc2bfc604dd7db331051db80
 slug = "voting/election/register"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/voting/election/register/0.2"
-digest = "sha256:65c61cccdc4bf0abcda279e7432c1556142579297537a7d5f4237e97f78c2684"
+digest = "sha256:8cd85c2bd274673d6003ba8ed1b7fb96f456ffe52ef085ca8cb00fd2800e28f0"
+
+[[task]]
+slug = "voting/election/register"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/voting/election/register/0.3"
+digest = "sha256:fd33687d9e53c733c41430df00d5dead048e40c0dfeaaccb6dafaba8a9addbbe"
 
 [[task]]
 slug = "voting/election/show"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/voting/election/show/0.2"
-digest = "sha256:6aec301754893d65e27209cd6fe41e7d3b7347199f7317558a76245552c3d77b"
+digest = "sha256:b8c08a851c66b85eb6e9111b55736068e3ac14183b7f71ef0ce570644492496c"
+
+[[task]]
+slug = "voting/election/show"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/voting/election/show/0.3"
+digest = "sha256:7b168d1c801bb217a30118558fe070505228e2d2cb7fe31828284fd8ef6bf6d1"
 
 [[task]]
 slug = "voting/result/show"

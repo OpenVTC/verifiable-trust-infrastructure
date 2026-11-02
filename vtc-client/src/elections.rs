@@ -18,8 +18,8 @@ use crate::{HolderKey, VtcClient, VtcError};
 /// on `trust-tasks-rs` itself.
 pub use vti_specs::vtc::elections::{
     ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
-    certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create, list::v0_3 as list,
-    show::v0_2 as show, tickets::issue::v0_1 as tickets_issue,
+    certify::v0_1 as certify, close::v0_1 as close, create::v0_4 as create, list::v0_3 as list,
+    show::v0_3 as show, tickets::issue::v0_1 as tickets_issue,
 };
 
 /// The Type URI of each task, read off the generated payloads.
@@ -37,7 +37,7 @@ pub mod task {
 }
 
 impl VtcClient {
-    /// `vtc/elections/create/0.3` — create an election from `manifest`, sent as given (its
+    /// `vtc/elections/create/0.4` — create an election from `manifest`, sent as given (its
     /// digest is taken over these bytes).
     ///
     /// # Errors
@@ -80,7 +80,7 @@ impl VtcClient {
         self.acl_task(task::LIST, payload, key, &[]).await
     }
 
-    /// `vtc/elections/show/0.2` — one election, with its parameters and disclosure.
+    /// `vtc/elections/show/0.3` — one election, with its parameters and disclosure.
     ///
     /// # Errors
     /// `electionUnknown` for an election the caller may not see; the VTC's refusal otherwise.

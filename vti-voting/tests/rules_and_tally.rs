@@ -1,7 +1,7 @@
 //! Manifest and ballot rules, and the count, over the generated wire types.
 
 use serde_json::{Value, json};
-use vti_specs::voting::{ballot::cast::v0_1::Ballot, election::register::v0_2::Manifest};
+use vti_specs::voting::{ballot::cast::v0_1::Ballot, election::register::v0_3::Manifest};
 use vti_voting::{
     rules::{RuleError, check_ballot, check_manifest, digest_multibase, manifest_digest},
     tally::tally,
@@ -117,7 +117,7 @@ fn vot_010_manifest_rules_are_enforced() {
 
 #[test]
 fn vot_062_trustee_rules_are_enforced_for_the_encrypted_levels() {
-    use vti_specs::voting::election::register::v0_2::SecrecyLevel;
+    use vti_specs::voting::election::register::v0_3::SecrecyLevel;
     use vti_voting::rules::check_manifest_serving;
     const ALL: &[SecrecyLevel] = &[
         SecrecyLevel::Open,
@@ -299,6 +299,44 @@ fn vot_070_the_count() {
     let (_, early) = tally(&m, &ballots, true).unwrap();
     assert_eq!(
         serde_json::to_value(&early[4]).unwrap()["withheld"],
+        json!(true)
+    );
+}
+
+/// VTI-VOT-065: a threshold as low as 1 is a valid manifest — the ballot box must not refuse
+/// 1 – 9 — and 0 is no manifest at all (the generated type is non-zero, as the schema's
+/// `minimum` of 1).
+#[test]
+fn vti_vot_065_a_threshold_of_one_to_nine_is_valid_and_zero_is_not() {
+    for t in [1, 3, 9] {
+        let mut v = manifest_json();
+        v["textReleaseThreshold"] = json!(t);
+        assert_eq!(check_manifest(&manifest(&v), Some(BOX)), Ok(()), "{t}");
+    }
+    let mut v = manifest_json();
+    v["textReleaseThreshold"] = json!(0);
+    assert!(serde_json::from_value::<Manifest>(v).is_err());
+}
+
+/// VTI-VOT-065: at a threshold of 1, text is released from the first counted ballot — and still
+/// never in a provisional count.
+#[test]
+fn vti_vot_065_text_is_released_at_a_threshold_of_one() {
+    let mut v = manifest_json();
+    v["textReleaseThreshold"] = json!(1);
+    let (m, d) = (manifest(&v), manifest_digest(&v).unwrap());
+    let one = [ballot(&d, full_answers())];
+    let (_, rows) = tally(&m, &one, false).unwrap();
+    let text = serde_json::to_value(&rows[4]).unwrap();
+    assert_eq!(text["text"], json!(["Longer weekend hours"]));
+    let (_, early) = tally(&m, &one, true).unwrap();
+    assert_eq!(
+        serde_json::to_value(&early[4]).unwrap()["withheld"],
+        json!(true)
+    );
+    let (_, none) = tally(&m, &one[..0], false).unwrap();
+    assert_eq!(
+        serde_json::to_value(&none[4]).unwrap()["withheld"],
         json!(true)
     );
 }

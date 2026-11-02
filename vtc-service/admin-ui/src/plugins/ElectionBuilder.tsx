@@ -8,7 +8,7 @@
 // trimmed to fit.
 //
 // What is checked here is a convenience, never the authority: the community
-// checks the manifest on create (`vtc/elections/create/0.3`) and the ballot box
+// checks the manifest on create (`vtc/elections/create/0.4`) and the ballot box
 // at registration. The draft is kept in this tab (sessionStorage) until it is created or
 // discarded, because a manifest is long to write and a reload should not lose
 // it.
@@ -31,6 +31,7 @@ import {
   type TrustedBallotBox,
 } from "@/lib/elections-api";
 import {
+  MANIFEST_LIMITS,
   OPTION_PRESETS,
   QUESTION_TYPE_TEXT,
   ROLL_TEXT,
@@ -49,6 +50,7 @@ import {
   retypeQuestion,
   slugKey,
   suggestElectionId,
+  textReleaseWarning,
   toLocalInput,
   type Issue,
   type ManifestDraft,
@@ -761,6 +763,7 @@ function CountingStep({
   trusted,
 }: StepProps & { trusted: TrustedBallotBox[] | null | undefined }) {
   const hasText = draft.questions.some((q) => q.type === "text");
+  const lowRelease = draft.textReleaseThreshold.trim() ? textReleaseWarning(Number(draft.textReleaseThreshold)) : null;
   const box = draft.ballotBox.trim();
   const listed = trusted?.find((b) => b.did === box);
   // Typing is the fallback: a VTC that cannot list them, a failed read, or a DID not listed.
@@ -897,16 +900,21 @@ function CountingStep({
       )}
       <Field
         label="Ballots counted before text answers are shown"
-        hint={hasText ? "At least 10, so a written answer is harder to tie to its writer." : "Only matters for free-text questions. At least 10."}
+        hint={
+          hasText
+            ? "10 or more is advised, so a written answer is harder to tie to its writer."
+            : "Only matters for free-text questions. 10 or more is advised."
+        }
         error={errorFor(issues, "textReleaseThreshold")}
       >
         <input
           type="number"
-          min={10}
+          min={MANIFEST_LIMITS.textReleaseThresholdMin}
           value={draft.textReleaseThreshold}
           onChange={(e) => patch({ textReleaseThreshold: e.target.value })}
         />
       </Field>
+      {lowRelease && <p className="warning-text">{lowRelease}</p>}
     </>
   );
 }
@@ -1005,6 +1013,14 @@ function ReviewStep({
         </dd>
         <dt>Changing a vote</dt>
         <dd>{draft.revote === "replace" ? "A later vote replaces the earlier one" : "The first vote stands"}</dd>
+        <dt>Written answers</dt>
+        <dd>
+          Shown once {draft.textReleaseThreshold || "—"} ballots are counted, never while voting is open
+          {(() => {
+            const w = draft.textReleaseThreshold.trim() ? textReleaseWarning(Number(draft.textReleaseThreshold)) : null;
+            return w && <div className="warning-text">{w}</div>;
+          })()}
+        </dd>
         <dt>Manifest digest</dt>
         <dd>
           <code>{digest ?? "…"}</code>

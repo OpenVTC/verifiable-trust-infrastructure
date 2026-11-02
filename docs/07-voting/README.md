@@ -192,6 +192,16 @@ From there, [Community elections](../03-vtc/elections.md) is the community's gui
 An election a caller may not read is answered `electionUnknown`, exactly as one that does not
 exist.
 
+**Versions.** `voting/election/register` and `show` are served at 0.3 and 0.2, `voting/board/read`
+at 0.2, every other task at 0.1; any other version is refused `unsupportedVersion`, naming the
+ones served. Register and show differ between 0.2 and 0.3 only in the manifest's least
+`textReleaseThreshold` — the counted ballots before any written answer is disclosed: 10 under
+0.2, 1 under 0.3 (VTI-VOT-065). The ballot box never refuses 1 – 9 at 0.3. A 0.2 registration
+below 10 fails its schema (`malformedRequest`), and a 0.2 `show` of an election below 10 is
+refused `unsupportedVersion`, naming 0.3, rather than answered in a shape 0.2 forbids. An
+election registered at either version is one election, read at either where its threshold
+allows.
+
 Each trustee step goes on the board as the trustee's signed request, as received
 (`trusteeStep`). That lets anyone check who took it, and stops a ballot box dealing in a
 trustee's name to hold the election key itself. `voting/trustees/status` returns those steps

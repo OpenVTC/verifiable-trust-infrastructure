@@ -45,8 +45,8 @@ election stays `pendingRegistration` and is delivered as soon as they are.
 | Step | Task | Who |
 |---|---|---|
 | Read the trusted ballot boxes | `vtc/elections/ballot-boxes/list/0.1` | `vtc.elections.manage` |
-| Create from a manifest | `vtc/elections/create/0.3` | `vtc.elections.manage` |
-| Read | `vtc/elections/list/0.3`, `vtc/elections/show/0.2` | managers see all; anyone else an election whose roll admits them now |
+| Create from a manifest | `vtc/elections/create/0.4` (0.3 still served) | `vtc.elections.manage` |
+| Read | `vtc/elections/list/0.3`, `vtc/elections/show/0.3` (0.2 still served) | managers see all; anyone else an election whose roll admits them now |
 | Take a ticket | `vtc/elections/tickets/issue/0.1` | a party the roll admits, once per election — normally through their VTA (`vta/pcs/voter/register`) |
 | Close early | `vtc/elections/close/0.1` | `vtc.elections.manage`, only where the manifest allows it |
 | Cancel | `vtc/elections/cancel/0.1` | `vtc.elections.manage` |
@@ -82,7 +82,7 @@ admin console has the same under **Governance → Elections**.
 `cnm elections manifest init --ballot-box <DID> [--id …] [--title …] [--out <file>]` writes a
 starting manifest for the community — one yes/no question, open voting by its members for a
 week from tomorrow — and `cnm elections manifest check <file>` checks one offline, printing its
-digest: the schema of `vtc/elections/create/0.3`, then `vti_voting::rules::check_new_manifest`
+digest: the schema of `vtc/elections/create/0.4`, then `vti_voting::rules::check_new_manifest`
 (the same function the community runs on create: the rules between fields and voting not
 already closed), then that it names this community. Only what needs the community itself — a
 trusted ballot box (VTI-VOT-082) and an unused identifier — waits for `create`. Neither command
@@ -137,6 +137,36 @@ running totals, and a tallied-encrypted one asks choice questions only (VTI-VOT-
 `registered` only once the ballot box said so; refused at once means nothing is kept
 (`ballotBoxRefused`); no answer leaves it `pendingRegistration`, and the community's own sweeper
 is the one retry owner, with a capped backoff. No ticket is issued before registration.
+
+### When written answers are released
+
+A text question's answers are disclosed only once `textReleaseThreshold` ballots are counted,
+and never in a count taken while voting is open (VTI-VOT-065). The threshold may be anything
+from 1; 10 or more is advised, and the console's builder starts at 10. A written answer can
+identify its author by what it says or how it is phrased, and the fewer ballots released
+together, the easier that is. So below 10:
+
+- the builder warns the administrator in **Counting** and again in **Review**
+  (`vtc/elections/create/0.4` says a composing client should);
+- the election page's **What members are told** says when written answers are released, with
+  the same warning;
+- every member is told before they take a ticket (VTI-VOT-090): `pnm elections show` and
+  `ticket` print it, and the wallet and portal derive it from the manifest's
+  `textReleaseThreshold` — the disclosure itself carries no separate member for it.
+
+The manifest a threshold below 10 can travel in is voting/_shared/0.3: `vtc/elections/create/0.4`
+and `show/0.3`, `voting/election/register/0.3` and `show/0.3`, and the `vta/pcs/*` versions
+that carry it (`voter/register/0.3`, `vote/0.3`, `vote-encrypted/0.4`, `trustee/enrol/0.3`,
+`trustee/{deal,keys,justify}/0.4`; `voter/read/0.3` and `trustee/read/0.3` sign the 0.3 shows).
+The previous versions stay served for clients that send them, and their schema still holds the
+threshold to 10: `create/0.3` refuses a lower one as a malformed request, and `show/0.2`
+answers an election below 10 with `unsupportedVersion`, naming 0.3. An election of 10 or more
+reads the same at either version — the manifest's members, and so its digest, do not change.
+
+The community registers an election with its ballot box at `voting/election/register/0.3`. A
+ballot box from before that version refuses it `unsupportedVersion`; the community then
+registers an election of 10 or more at 0.2 instead, and one below 10 is refused
+(`ballotBoxRefused`) until the ballot box is upgraded.
 
 ### Binding elections take two
 

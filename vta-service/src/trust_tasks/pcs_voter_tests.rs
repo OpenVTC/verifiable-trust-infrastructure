@@ -127,7 +127,7 @@ fn ballot(manifest: &Value, choice: &str) -> Value {
 
 fn register_doc(params: &Value, m: &Value) -> TrustTask<Value> {
     doc(
-        uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,
+        uris::TASK_VTA_PCS_VOTER_REGISTER_0_3,
         json!({ "contextId": "member", "community": COMMUNITY, "parameters": params, "manifest": m }),
     )
 }
@@ -143,7 +143,7 @@ fn accept_doc(election: &str, params: &Value, pre: &str) -> TrustTask<Value> {
 
 fn vote_doc(params: &Value, m: &Value, b: Value) -> TrustTask<Value> {
     doc(
-        uris::TASK_VTA_PCS_VOTE_0_2,
+        uris::TASK_VTA_PCS_VOTE_0_3,
         json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
                 "manifest": m, "ballot": b }),
     )
@@ -383,7 +383,7 @@ async fn the_voter_tasks_need_the_voter_capability() {
         &state,
         &auth,
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_3,
             json!({ "contextId": "member", "community": COMMUNITY }),
         ),
     )
@@ -419,7 +419,7 @@ async fn the_ticket_request_is_signed_as_the_member_and_kept() {
     let m = manifest("agm-2028", &box_did, true, "open");
     let with_member = |did: &str| {
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_3,
             json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
                     "manifest": m, "member": did }),
         )
@@ -504,7 +504,7 @@ async fn the_vta_keeps_no_clear_pairing_and_discards_after_the_election() {
         &state,
         &auth,
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_3,
             json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
                     "manifest": m, "member": persona.did }),
         ),
@@ -630,7 +630,7 @@ async fn an_election_read_is_signed_as_the_member() {
     .await;
     let read = |member: &str, which: &str, payload: Value| {
         doc(
-            uris::TASK_VTA_PCS_VOTER_READ_0_2,
+            uris::TASK_VTA_PCS_VOTER_READ_0_3,
             json!({ "contextId": "member", "community": COMMUNITY, "member": member,
                     "read": which, "payload": payload }),
         )
@@ -645,6 +645,17 @@ async fn an_election_read_is_signed_as_the_member() {
     let d = &shown["document"];
     assert_eq!(
         d["type"],
+        "https://trusttasks.org/spec/vtc/elections/show/0.3"
+    );
+    // voter/read 0.2, still served, signs the show its version names: 0.2.
+    let old = doc(
+        uris::TASK_VTA_PCS_VOTER_READ_0_2,
+        json!({ "contextId": "member", "community": COMMUNITY, "member": persona.did,
+                "read": "show", "payload": { "electionId": "agm-2028" } }),
+    );
+    let old = ok(&handle_voter_read(&state, &auth, old).await);
+    assert_eq!(
+        old["document"]["type"],
         "https://trusttasks.org/spec/vtc/elections/show/0.2"
     );
     assert_eq!(d["issuer"], persona.did.as_str());
