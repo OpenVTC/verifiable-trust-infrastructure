@@ -12783,6 +12783,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "vti-vtn"
+version = "0.1.0"
+dependencies = [
+ "affinidi-data-integrity",
+ "affinidi-secrets-resolver",
+ "base64 0.23.1",
+ "chrono",
+ "dtg-credentials",
+ "flate2",
+ "multibase",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "vti-webauthn"
 version = "0.3.0"
 dependencies = [
