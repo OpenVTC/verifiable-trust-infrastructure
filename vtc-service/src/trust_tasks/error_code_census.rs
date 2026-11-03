@@ -98,6 +98,43 @@ fn witnesses() -> Vec<Witness> {
 
     #[allow(unused_mut)]
     let mut table = vec![
+        // `vtc/notifications/*` (`crate::notifications::inbox`), through the spine.
+        witness!(
+            s::notifications::show::v0_1::error_codes::NOTIFICATION_UNKNOWN,
+            crate::trust_tasks::notification_tasks::SHOW_ERR_UNKNOWN,
+            "notifications_admin.rs",
+            "vti_ntf_070_administrators_list_and_read_received_notifications"
+        ),
+        witness!(
+            s::notifications::relay::v0_1::error_codes::NOTIFICATION_UNKNOWN,
+            crate::trust_tasks::notification_tasks::RELAY_ERR_UNKNOWN,
+            "notifications_admin.rs",
+            "vti_ntf_071_a_relay_decision_is_refused_for_each_declared_reason"
+        ),
+        witness!(
+            s::notifications::relay::v0_1::error_codes::NOT_RELAYABLE,
+            crate::trust_tasks::notification_tasks::RELAY_ERR_NOT_RELAYABLE,
+            "notifications_admin.rs",
+            "vti_ntf_071_a_relay_decision_is_refused_for_each_declared_reason"
+        ),
+        witness!(
+            s::notifications::relay::v0_1::error_codes::LAPSED,
+            crate::trust_tasks::notification_tasks::RELAY_ERR_LAPSED,
+            "notifications_admin.rs",
+            "vti_ntf_071_a_relay_decision_is_refused_for_each_declared_reason"
+        ),
+        witness!(
+            s::notifications::relay::v0_1::error_codes::DISCLOSURE_NOT_ACKNOWLEDGED,
+            crate::trust_tasks::notification_tasks::RELAY_ERR_NOT_ACKNOWLEDGED,
+            "notifications_admin.rs",
+            "vti_ntf_071_a_relay_decision_is_refused_for_each_declared_reason"
+        ),
+        witness!(
+            s::notifications::relay::v0_1::error_codes::GROUP_UNKNOWN,
+            crate::trust_tasks::notification_tasks::RELAY_ERR_GROUP_UNKNOWN,
+            "notifications_admin.rs",
+            "vti_ntf_071_a_relay_decision_is_refused_for_each_declared_reason"
+        ),
         // `vtc/networks/*` (`crate::networks`), against a fake network.
         witness!(
             s::networks::join::v0_1::error_codes::NOT_LISTED,

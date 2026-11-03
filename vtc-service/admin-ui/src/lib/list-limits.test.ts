@@ -60,6 +60,7 @@ const GROUPS_LIST = `${T}/vtc/groups/list/0.2`;
 const GROUPS_MEMBERS = `${T}/vtc/groups/members/list/0.2`;
 const GROUPS_REQUESTS = `${T}/vtc/groups/requests/list/0.2`;
 const ELECTIONS = `${T}/vtc/elections/list/0.5`;
+const NOTIFICATIONS = `${T}/vtc/notifications/list/0.1`;
 const AUDIT = `${T}/audit/list/0.2`;
 const POLICIES = `${T}/policy/list/0.3`;
 const ACL_LIST = `${T}/acl/list/0.3`;
@@ -133,6 +134,8 @@ const SITES: Site[] = [
   { file: "lib/community-rooms-api.ts", site: "roomId,\n      limit: COMMUNITY_PAGE", uri: COMMUNITY_ROOM_MEMBERS, from: ["COMMUNITY_PAGE"] },
   // The community's elections, every page.
   { file: "lib/elections-api.ts", site: "{ limit: PAGE, ...(cursor ? { cursor } : {}) }", uri: ELECTIONS, from: ["PAGE"] },
+  // The notifications the community holds, a page at a time.
+  { file: "lib/notifications-api.ts", site: "{ ...payload, limit: PAGE, ...(cursor ? { cursor } : {}) }", uri: NOTIFICATIONS, from: ["PAGE"] },
   // Room usage, every page (room detail, Room usage).
   { file: "lib/rooms-api.ts", site: "limit: USAGE_PAGE", uri: ROOMS_USAGE, from: ["USAGE_PAGE"] },
   // Storage configs, every page (Storage, a room's "other storage").

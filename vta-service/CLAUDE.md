@@ -930,7 +930,8 @@ When adding a flow, add it here and a line to the root index.
 - **What**: The VTA as **recipient** of `notifications/notify/0.1` and `notifications/relay/0.1`
   (VTI-NTF-001 – 053): every layer verified, held by the stated acceptance policy in the
   trust context of the DID it was addressed to, and served to the principal's clients as
-  `vta/notifications/{list,show,dismiss}/0.1` (`pnm notifications …`).
+  `vta/notifications/{list,show,dismiss}/0.1` (`pnm notifications …`); a client hands over
+  what it received for a persona DID with `vta/notifications/deposit/0.1`.
 - **Invariants to preserve**: notify/relay are counterparty tasks (zero-authority claim for a
   sender the ACL does not know, `notifications::is_counterparty_task`); nothing is kept on the
   claim. `vta_sdk::notifications::verify_delivery` is the only way to a notification's members —
@@ -945,7 +946,14 @@ When adding a flow, add it here and a line to the root index.
   context only; another context's record is `notificationUnknown`. Nothing here sends a
   message (VTI-NTF-053). Keyspace `notifications` is backed up; lapsed/withdrawn records are
   swept after `retain_lapsed_days`. Only documents addressed to the VTA's own DID arrive (the
-  spine checks `recipient`).
+  spine checks `recipient`); one addressed to a persona DID whose socket a client holds comes
+  in by **`vta/notifications/deposit/0.1`** (VTI-NTF-054 – 056): standing in `contextId` first,
+  then `notAddressedHere` unless `recipient` is a DID held in that context, then exactly the
+  direct-delivery path — `verify_delivery`, then `trust_tasks::admit_carried_document` (the
+  acceptance window, `expiresAt` and the same replay guard, at the hand-over) — anything failing
+  is `documentInvalid`; `receive` counts the delivering party, never the depositing client;
+  a repeat answers the same receipt. Never let the client's ACL entry stand in for the
+  relationship, and never deposit a re-serialised document.
 - **Code**: `vta-sdk/src/notifications.rs`, `vta-sdk/src/client/notifications.rs`,
   `vta-service/src/operations/notifications.rs`,
   `vta-service/src/trust_tasks/{notifications,notifications_tests}.rs`,

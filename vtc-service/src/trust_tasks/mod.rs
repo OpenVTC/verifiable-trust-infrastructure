@@ -187,7 +187,7 @@ pub(crate) mod network_tasks;
 // with the PCS key they issue tickets under.
 #[cfg(feature = "voting")]
 pub(crate) mod election_tasks;
-mod notification_tasks;
+pub(crate) mod notification_tasks;
 
 // The integration tests' soft WebAuthn authenticator, for the spine tests that
 // drive a real passkey ceremony.
@@ -1440,6 +1440,15 @@ fn dispatch_typed<'a>(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("election_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if notification_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match notification_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("notification_tasks::URIS names {uri}, which it does not route")
+                }
             }
         }),
         uri if network_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -3142,6 +3151,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // Verifiable Trust Network membership (`crate::networks`): an administrator's reads and
     // writes, and a member's evidence for a network room pass. No REST route; the relay
     // endpoint a network delivers broadcasts to is `routes::networks`.
+    // A community's received notifications (VTI-NTF-070 – 074): its administrators' reads and
+    // relay decision.
+    notification_tasks::LIST_TYPE,
+    notification_tasks::SHOW_TYPE,
+    notification_tasks::RELAY_TYPE,
     network_tasks::LIST_TYPE,
     network_tasks::SHOW_TYPE,
     network_tasks::JOIN_TYPE,

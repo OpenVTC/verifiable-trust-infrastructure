@@ -330,7 +330,7 @@ pub(crate) enum Commands {
     /// The notifications this VTA holds for you — an election you were told of, and who
     /// passed it on.
     ///
-    /// Backed by the `vta/notifications/{list,show,dismiss}/0.1` Trust Tasks
+    /// Backed by the `vta/notifications/{list,show,dismiss,deposit}/0.1` Trust Tasks
     /// (VTI-NTF-050). A notification is no evidence that you may take part: open the thing
     /// it points at from its holder, when you choose to. Listing, reading and dismissing tell
     /// nobody anything.
@@ -1732,6 +1732,19 @@ pub(crate) enum NotificationsCommands {
         /// The record identifier `list` printed.
         record_id: String,
         /// TARGET SCOPE: the context it is held in.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Hand the VTA a notification received for one of its DIDs elsewhere — a persona DID
+    /// whose mediator socket another client holds — exactly as received
+    /// (`vta/notifications/deposit/0.1`). The VTA verifies it and decides by its own
+    /// acceptance policy, as for a direct delivery; the answer is the same receipt whatever
+    /// it decided.
+    Deposit {
+        /// A file holding the `notifications/notify` or `notifications/relay` document as
+        /// received (`-` for stdin). Never edit it: its proofs cover it as it is.
+        file: String,
+        /// TARGET SCOPE: the context the addressed DID belongs to.
         #[arg(long = "context", alias = "context-id", value_name = "ID")]
         context: String,
     },

@@ -2408,7 +2408,8 @@ pub const TASK_VTA_WITNESS_LIST_0_2: &str =
 // stands for, may take part in (`notify`); a party that stands for others passes
 // the originator's signed document on unchanged (`relay`). A VTA holds what it
 // accepts per trust context and serves its principal's clients `list` / `show` /
-// `dismiss`. trust-tasks-tf #1012. Docs: docs/02-vta/notifications.md.
+// `dismiss`, and takes what a client received for a persona DID by `deposit`.
+// trust-tasks-tf #1012, #1017. Docs: docs/02-vta/notifications.md.
 
 /// `notifications/notify/0.1` — an originator's signed notification, addressed to one DID: where a thing is held, how to open it, whom it concerns.
 pub const TASK_NOTIFICATIONS_NOTIFY_0_1: &str =
@@ -2429,6 +2430,10 @@ pub const TASK_VTA_NOTIFICATIONS_SHOW_0_1: &str =
 /// `vta/notifications/dismiss/0.1` — take one held notification out of the principal's default list, telling nobody.
 pub const TASK_VTA_NOTIFICATIONS_DISMISS_0_1: &str =
     <vti_specs::vta::notifications::dismiss::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/notifications/deposit/0.1` — a client hands its VTA a notify or relay it received for a DID the VTA holds keys of (a persona DID whose mediator socket the client holds), exactly as received; the VTA verifies and holds it as a direct delivery (VTI-NTF-054 – 056).
+pub const TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1: &str =
+    <vti_specs::vta::notifications::deposit::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Every URI registered in this module — handy for the dispatcher's
 /// parity harness and for operator tooling that wants to enumerate
@@ -2731,6 +2736,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_NOTIFICATIONS_LIST_0_1,
     TASK_VTA_NOTIFICATIONS_SHOW_0_1,
     TASK_VTA_NOTIFICATIONS_DISMISS_0_1,
+    TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
     TASK_VTA_APP_STATE_PUT_1_1,

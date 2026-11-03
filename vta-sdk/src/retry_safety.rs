@@ -558,6 +558,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1, RetrySafe),
     (trust_tasks::TASK_NOTIFICATIONS_RELAY_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_NOTIFICATIONS_DISMISS_0_1, RetrySafe),
+    // `vta/notifications/deposit`: retry class 2 by specification — the VTA holds one record
+    // per originator and notificationId, so a repeat of the same document (or another
+    // document carrying the same revision) changes nothing and answers the same receipt.
+    (trust_tasks::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1, RetrySafe),
     // Reads of what the VTA holds; nothing is marked or sent.
     (trust_tasks::TASK_VTA_NOTIFICATIONS_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_VTA_NOTIFICATIONS_SHOW_0_1, ReadOnly),

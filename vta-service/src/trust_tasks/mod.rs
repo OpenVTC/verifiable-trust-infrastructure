@@ -1731,6 +1731,62 @@ fn retain_until(
 static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
     std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
 
+/// Apply this node's own §7.2 receipt checks to a document **carried** to it rather than sent
+/// to it — a notification a client deposits (`vta/notifications/deposit/0.1`, VTI-NTF-055):
+/// the acceptance window, `expiresAt`, and the record of accepted document identifiers
+/// (VTI-OPS-024, VTI-OPS-026, VTI-OPS-027, VTI-KEY-107), all at `now`, the time of the
+/// hand-over. The caller has already established that the document is addressed to a DID this
+/// VTA holds keys of; its `recipient` is not compared with the VTA's own DID.
+///
+/// `Ok(true)`: first seen, and its identifier is now recorded in the same guard direct
+/// deliveries are. `Ok(false)`: a repeat of a document already accepted — answered as the
+/// original was, never refused (§7.2 *Disposition of a duplicate*). A *different* document
+/// under an accepted identifier is `IdConflict`.
+pub(crate) async fn admit_carried_document(
+    doc: &TrustTask<Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<bool, RejectReason> {
+    doc.validate_freshness(now, &freshness_policy())?;
+    if let Some(recipient) = doc.recipient.as_deref() {
+        doc.validate_basic(now, recipient)?;
+    }
+    let digest =
+        trust_tasks_rs::document_digest(doc).map_err(|e| RejectReason::MalformedRequest {
+            reason: format!("cannot canonicalise the carried document: {e}"),
+        })?;
+    match trust_tasks_rs::ReplayGuard::claim(
+        &*REPLAY_GUARD,
+        &doc.id,
+        &digest,
+        retain_until(doc, now),
+        now,
+    )
+    .await
+    {
+        Ok(trust_tasks_rs::ReplayVerdict::Fresh) => Ok(true),
+        Ok(trust_tasks_rs::ReplayVerdict::Duplicate { .. }) => Ok(false),
+        Ok(trust_tasks_rs::ReplayVerdict::Conflict) => Err(RejectReason::IdConflict),
+        Err(e) => {
+            tracing::error!(error = %e, id = %doc.id, "replay guard unavailable");
+            Err(RejectReason::Unavailable { retry_after: None })
+        }
+        Ok(other) => {
+            tracing::error!(verdict = ?other, id = %doc.id, "replay guard verdict unknown");
+            Err(RejectReason::Unavailable { retry_after: None })
+        }
+    }
+}
+
+/// Release a claim [`admit_carried_document`] took, when the hand-over failed after it for a
+/// reason the producer may correct and resend.
+pub(crate) async fn release_carried_document(doc: &TrustTask<Value>) {
+    if let Ok(digest) = trust_tasks_rs::document_digest(doc)
+        && let Err(e) = trust_tasks_rs::ReplayGuard::release(&*REPLAY_GUARD, &doc.id, &digest).await
+    {
+        tracing::warn!(error = %e, id = %doc.id, "replay guard: carried claim not released");
+    }
+}
+
 async fn dispatch_trust_task_validated(
     state: &AppState,
     auth: &AuthClaims,
@@ -2843,6 +2899,10 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_SHOW_0_1 => notifications::handle_show
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_DISMISS_0_1 => notifications::handle_dismiss
+        [ Mutating None false ],
+    // A client hands over what it received for a persona DID (VTI-NTF-054 – 056); held
+    // exactly as a direct delivery would be.
+    vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1 => notifications::handle_deposit
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],

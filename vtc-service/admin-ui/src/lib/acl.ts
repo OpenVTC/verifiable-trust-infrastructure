@@ -165,6 +165,8 @@ export const CAPABILITIES: CapabilityInfo[] = [
   { id: "vtc.directory.admin", gates: "the member directory: its fields and their ceilings, administrator-asserted values, and reading every entry whole", conferring: false, qualifiers: [] },
   { id: "vtc.directory.notes", gates: "administrators' notes about members: writing them, reading them, and exporting a member's notes for their data request", conferring: false, qualifiers: [] },
   { id: "vtc.groups.manage", gates: "the community's groups: creating them, and their members, requests and settings; qualified by a group, that one group", conferring: false, qualifiers: ["group"] },
+  { id: "vtc.notifications.read", gates: "reading the notifications the community holds as their addressee, and the relay decisions made for them", conferring: false, qualifiers: [] },
+  { id: "vtc.notifications.relay", gates: "deciding that the community relays a notification it holds to its members; qualified by a group, to that group's members only", conferring: false, qualifiers: ["group"] },
   { id: "git.ns.admin", gates: "administering a git namespace", conferring: true, qualifiers: ["git-ns"] },
   { id: "git.repo.manage", gates: "creating, adopting, archiving and transferring repositories", conferring: false, qualifiers: ["git-ns", "git-repo"] },
 ];

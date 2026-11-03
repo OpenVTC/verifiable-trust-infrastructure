@@ -87,6 +87,7 @@ mod members_crud;
 mod members_role_set;
 mod networks;
 mod no_rebuild;
+mod notifications_admin;
 mod openapi_response_census;
 mod openapi_schema_names;
 mod openapi_snapshot;

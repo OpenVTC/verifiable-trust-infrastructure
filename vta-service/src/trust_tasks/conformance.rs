@@ -3045,6 +3045,18 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "recordId": "hn-4Tq8Zr2Lw9Ks6Pm1", "changed": true })
             ),
         ),
+        (
+            uris::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1,
+            checked!(
+                specs::vta::notifications::deposit::v0_1::Payload,
+                specs::vta::notifications::deposit::v0_1::Response,
+                json!({
+                    "contextId": "personal",
+                    "document": { "type": uris::TASK_NOTIFICATIONS_NOTIFY_0_1 }
+                }),
+                json!({ "notificationId": "ntf-9Lm4q2Wx8nT5", "revision": 1 })
+            ),
+        ),
         // ─── vta/memory ──────────────────────────────────────────
         (
             uris::TASK_VTA_MEMORY_PUT_0_1,

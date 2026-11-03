@@ -873,6 +873,24 @@ type_uri = "https://trusttasks.org/spec/vtc/networks/show/0.1"
 digest = "sha256:d9dede8575f3915abfb6fc13e2bf388172c8b8a313751f10e61fc95fc832902d"
 
 [[task]]
+slug = "vtc/notifications/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/notifications/list/0.1"
+digest = "sha256:3ea9236bd54e30eb33e5b9cecabf40a2e5fccfcd05ebcbf5dfa75d279e75fe5d"
+
+[[task]]
+slug = "vtc/notifications/relay"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/notifications/relay/0.1"
+digest = "sha256:a3ddd9732b443f275d1f6c03e3509c48472822e87847f232636f663b58b7874e"
+
+[[task]]
+slug = "vtc/notifications/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/notifications/show/0.1"
+digest = "sha256:56de09945395771d397e62a71383944e179bdf82154c65a8a513fddf7faecee7"
+
+[[task]]
 slug = "vtc/oid4vp/identities/list"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/oid4vp/identities/list/0.1"

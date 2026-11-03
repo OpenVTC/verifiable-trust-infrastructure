@@ -291,6 +291,12 @@ type_uri = "https://trusttasks.org/spec/vta/metrics/show/0.1"
 digest = "sha256:89bbb2da1950671ea4ce104de045cd578d76c0085f2eef0158791b6b0e603f5d"
 
 [[task]]
+slug = "vta/notifications/deposit"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/notifications/deposit/0.1"
+digest = "sha256:47803439a1572a70439b9aade612784988bb4a0e97c59542e46a9440d0afea8a"
+
+[[task]]
 slug = "vta/notifications/dismiss"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/notifications/dismiss/0.1"

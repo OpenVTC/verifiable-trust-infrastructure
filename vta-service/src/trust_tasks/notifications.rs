@@ -12,6 +12,12 @@
 //!   same receipt whether it was held, declined or discarded (VTI-NTF-023).
 //! - `vta/notifications/{list,show,dismiss}/0.1` — the principal's clients, with standing in the
 //!   context the notification is held in (VTI-NTF-050, VTI-NTF-051).
+//! - `vta/notifications/deposit/0.1` — a client hands over a notify or relay it received for a
+//!   DID this VTA holds keys of (a persona DID whose mediator socket the client holds). Verified
+//!   and held **exactly as a direct delivery** (VTI-NTF-054 – 056): the same layer-by-layer
+//!   check, this node's own §7.2 checks applied to the carried document at the hand-over
+//!   ([`super::admit_carried_document`]), the same acceptance policy counting the party that
+//!   delivered the document — never the depositing client — and the same receipt.
 //!
 //! Nothing here sends a message: receiving, reading and dismissing a notification tell nobody
 //! anything (VTI-NTF-053).
@@ -85,15 +91,7 @@ async fn handle_delivery(state: &AppState, doc: TrustTask<Value>, relay: bool) -
         Ok(disposition) => {
             // Every verified delivery leaves a trail here, whatever the policy decided: the
             // audit log is this VTA's own, never part of the answer (VTI-NTF-023).
-            let outcome = match &disposition {
-                Disposition::Held { record_id } => format!("held as {record_id}"),
-                Disposition::Replaced { record_id } => format!("replaced {record_id}"),
-                Disposition::Unchanged => "unchanged (revision already held)".into(),
-                Disposition::Lapsed => "discarded (period ended)".into(),
-                Disposition::NotHeldHere => "discarded (not addressed to a DID held here)".into(),
-                Disposition::Declined => "declined (no relationship with the deliverer)".into(),
-                Disposition::OverBound => "declined (bound reached)".into(),
-            };
+            let outcome = disposition_label(&disposition);
             audit(
                 state,
                 "notifications.receive",
@@ -302,6 +300,120 @@ pub(super) async fn handle_dismiss(
             respond::<t::Response>(&doc, json!({ "recordId": record_id, "changed": changed }))
         }
         Err(e) => refuse_read(&doc, e, Some(t::error_codes::NOTIFICATION_UNKNOWN)),
+    }
+}
+
+/// `vta/notifications/deposit/0.1`. See the module docs.
+pub(super) async fn handle_deposit(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::deposit::v0_1 as t;
+    if let Err(r) = parse_payload::<t::Payload>(&doc) {
+        return r;
+    }
+    let context = str_of(&doc.payload, "contextId")
+        .unwrap_or_default()
+        .to_string();
+    // Consumer item 1: standing before the document is read at all. Standing puts a document
+    // before the acceptance policy and nothing more (VTI-NTF-055).
+    if !auth.has_context_access(&context) {
+        return reject_with(
+            &doc,
+            RejectReason::PermissionDenied {
+                reason: "no standing in this context".into(),
+            },
+        );
+    }
+    // The document as the client received it, inside the deposit as this VTA received that.
+    let carried = super::received::document_as_received(&doc)["payload"]["document"].clone();
+
+    // Consumer item 2 (VTI-NTF-056): addressed to a DID this VTA holds keys of, in `contextId`.
+    let addressed_here = match carried["recipient"].as_str() {
+        Some(recipient) => match engine::held_context_of(state, recipient).await {
+            Ok(held) => held.as_deref() == Some(context.as_str()),
+            Err(e) => return app_error_to_reject(&doc, e),
+        },
+        None => false,
+    };
+    if !addressed_here {
+        return reject_declared(
+            &doc,
+            t::error_codes::NOT_ADDRESSED_HERE,
+            "the deposited document is not addressed to a DID this VTA holds keys of in this \
+             context",
+        );
+    }
+
+    // Consumer item 3: exactly as a direct delivery — every layer, then this node's own
+    // receipt checks on the carried document, at the time of the hand-over.
+    let invalid = |reason: String| reject_declared(&doc, t::error_codes::DOCUMENT_INVALID, reason);
+    let inner: TrustTask<Value> = match serde_json::from_value(carried.clone()) {
+        Ok(d) => d,
+        Err(e) => return invalid(format!("not a Trust Task document: {e}")),
+    };
+    let delivery = match verify_delivery(&carried, &state.trust_task_vm_resolver()).await {
+        Ok(d) => d,
+        Err(e) => return invalid(e.to_string()),
+    };
+    let now = chrono::Utc::now();
+    let first_seen = match super::admit_carried_document(&inner, now).await {
+        Ok(first) => first,
+        Err(RejectReason::Unavailable { retry_after }) => {
+            return reject_with(&doc, RejectReason::Unavailable { retry_after });
+        }
+        Err(e) => return invalid(format!("{e:?}")),
+    };
+
+    let notification_id = delivery.notification().notification_id.to_string();
+    let revision = delivery.notification().revision.get();
+    // A repeat of a document already accepted is answered as the original was: nothing to do
+    // (retry class 2), and the receipt says nothing either way (VTI-NTF-023).
+    if first_seen {
+        // Consumer items 4 and 5: the same policy and the same one record a direct delivery
+        // meets. `receive` reads the delivery alone, so the depositing client is never the
+        // relationship counted.
+        match engine::receive(state, &delivery, now).await {
+            Ok(disposition) => {
+                audit(
+                    state,
+                    "notifications.deposit",
+                    &auth.did,
+                    Some(&context),
+                    &format!(
+                        "{}; delivered by {}, kind {}, originator {}",
+                        disposition_label(&disposition),
+                        delivery.delivered_by(),
+                        delivery.notification().kind.as_str(),
+                        delivery.originator()
+                    ),
+                )
+                .await;
+            }
+            Err(e) => {
+                // Nothing was held: a corrected resend of the same document must not meet a
+                // spent identifier.
+                super::release_carried_document(&inner).await;
+                return app_error_to_reject(&doc, e);
+            }
+        }
+    }
+    respond::<t::Response>(
+        &doc,
+        json!({ "notificationId": notification_id, "revision": revision }),
+    )
+}
+
+fn disposition_label(disposition: &Disposition) -> String {
+    match disposition {
+        Disposition::Held { record_id } => format!("held as {record_id}"),
+        Disposition::Replaced { record_id } => format!("replaced {record_id}"),
+        Disposition::Unchanged => "unchanged (revision already held)".into(),
+        Disposition::Lapsed => "discarded (period ended)".into(),
+        Disposition::NotHeldHere => "discarded (not addressed to a DID held here)".into(),
+        Disposition::Declined => "declined (no relationship with the deliverer)".into(),
+        Disposition::OverBound => "declined (bound reached)".into(),
     }
 }
 

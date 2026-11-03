@@ -20,7 +20,10 @@
 //!    the push and recording it queues the same revision again — the same `notificationId` and
 //!    `revision`, which the party holds as one notification (VTI-NTF-021, VTI-NTF-022).
 //!
-//! Nothing is sent once voting has closed: the notification has lapsed (Appendix G).
+//! Nothing is sent once voting has closed: the notification has lapsed (Appendix G). A revision
+//! that still offers the election is sent only while the party is an active member, checked at
+//! every document issued (VTI-NTF-005); a withdrawal is sent whatever the party's standing, and
+//! keeps the voting period of the revision it replaces (VTI-NTF-025).
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -131,6 +134,17 @@ pub async fn settle(
     if notice.queued_revision >= notice.revision {
         return Ok(());
     }
+    // VTI-NTF-005, at every document issued: a revision that still offers the election goes
+    // only to a party the community's records still show as concerned — an active member. A
+    // withdrawal is exempt: it goes to every party an earlier revision went to (VTI-NTF-024).
+    if !notice.withdrawn && !still_concerned(state, &notice.party).await? {
+        tracing::info!(
+            election = %rec.election_id,
+            revision = notice.revision,
+            "election notification not sent: the member party is no longer an active member"
+        );
+        return Ok(());
+    }
     let community = super::own_did(state)
         .await
         .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))?;
@@ -155,6 +169,15 @@ pub async fn settle(
         "election notification queued for the member party the roll names"
     );
     Ok(())
+}
+
+/// Whether the community's records still show `party` as concerned by a member-party election:
+/// an active member (VTI-NTF-005). The roll that names it is the election's, recorded at create
+/// and never re-derived.
+async fn still_concerned(state: &AppState, party: &str) -> Result<bool, AppError> {
+    Ok(crate::member_portal::active::active_member(state, party)
+        .await?
+        .is_some())
 }
 
 #[cfg(test)]
@@ -188,5 +211,89 @@ mod tests {
         assert!(!p.to_string().contains("Board 2027"));
         let schema = vti_specs::schema_index::schema_for(TASK_NOTIFICATIONS_NOTIFY_0_1).unwrap();
         trust_tasks_rs::validate::against_schema(schema, &p).expect("valid notify payload");
+    }
+
+    /// VTI-NTF-025: a withdrawal states the same period as the revision it replaces.
+    #[test]
+    fn vti_ntf_025_a_withdrawal_keeps_the_period_it_replaces() {
+        let now = Utc::now();
+        let rec = crate::elections::store::test_record(now);
+        let mut notice = PartyNotice {
+            election_id: rec.election_id.clone(),
+            party: "did:web:partner.example".into(),
+            notification_id: "ntf-abc".into(),
+            revision: 1,
+            withdrawn: false,
+            queued_revision: 0,
+        };
+        let first = payload("did:web:community.example", &rec, &notice);
+        notice.revision = 2;
+        notice.withdrawn = true;
+        let withdrawal = payload("did:web:community.example", &rec, &notice);
+        assert_eq!(withdrawal["notification"]["status"], "withdrawn");
+        for member in ["validFrom", "validUntil"] {
+            assert_eq!(
+                withdrawal["notification"][member], first["notification"][member],
+                "{member}"
+            );
+        }
+    }
+
+    /// VTI-NTF-005: a revision that offers the election is issued only to a party the
+    /// community's records still show as concerned — an active member — checked at every
+    /// document issued; a withdrawal is issued whatever the party's standing (VTI-NTF-024).
+    #[tokio::test]
+    async fn vti_ntf_005_an_offer_goes_only_to_a_party_still_concerned() {
+        use crate::acl::{AdminAuthority, VtcAclEntry, VtcRole};
+        let community = vta_sdk::provision_client::EphemeralSetupKey::generate().unwrap();
+        let party = vta_sdk::provision_client::EphemeralSetupKey::generate()
+            .unwrap()
+            .did;
+        let tv = crate::test_support::TestVtc::builder()
+            .vtc_did(community.did.clone())
+            .build()
+            .await;
+        let state = &tv.state;
+        let now = Utc::now();
+        let mut rec = crate::elections::store::test_record(now);
+        rec.manifest = json!({ "roll": { "rule": "credential", "memberOf": party } });
+        rec.roll_party = Some(crate::elections::store::RollParty::MemberParty);
+
+        // Not (or no longer) a member: the offer is recorded but never sent.
+        settle(state, &rec, now).await.unwrap();
+        let notice = get(state, &rec.election_id).await.unwrap().unwrap();
+        assert_eq!((notice.revision, notice.queued_revision), (1, 0));
+
+        // An active member: issued. The party's DID advertises no transport here, so the
+        // attempt to queue it is what shows it was issued (the next pass tries again).
+        let entry = VtcAclEntry::new(&party, VtcRole::Member, AdminAuthority::none(), "test");
+        crate::acl::storage::store_acl_entry(&state.acl_ks, &entry)
+            .await
+            .unwrap();
+        let m: crate::members::Member =
+            serde_json::from_value(json!({ "did": party, "joinedAt": now.to_rfc3339() })).unwrap();
+        crate::members::storage::store_member(&state.members_ks, &m)
+            .await
+            .unwrap();
+        assert!(
+            settle(state, &rec, now).await.is_err(),
+            "an active member is sent the offer"
+        );
+
+        // The party leaves: the offer is no longer issued to it.
+        crate::acl::storage::delete_acl_entry(&state.acl_ks, &party)
+            .await
+            .unwrap();
+        settle(state, &rec, now).await.unwrap();
+
+        // Then the election is cancelled: the withdrawal is issued whatever its standing.
+        rec.standing = Standing::Cancelled;
+        assert!(
+            settle(state, &rec, now).await.is_err(),
+            "the withdrawal is sent to a party that has left"
+        );
+        let notice = get(state, &rec.election_id).await.unwrap().unwrap();
+        assert!(notice.withdrawn);
+        assert_eq!(notice.revision, 2);
     }
 }

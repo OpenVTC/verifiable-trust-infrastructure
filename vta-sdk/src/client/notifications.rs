@@ -23,7 +23,17 @@
 //! [`VtaClient::notifications_show_json`] and [`VtaClient::notifications_list_json`] answer the
 //! VTA's JSON unchanged.
 //!
-//! Declared refusals (`notificationUnknown`) arrive as [`VtaError::Rejected`] with their code.
+//! # Deposit
+//!
+//! A notification addressed to a persona DID whose mediator socket this client holds arrives
+//! here, not at the VTA. [`VtaClient::notifications_deposit_json`] hands it to the VTA **exactly
+//! as received** (VTI-NTF-054): pass the received JSON itself, never a value re-serialised from a
+//! typed form, and deposit every such document — choosing not to deposit one is declining it,
+//! which is the VTA's acceptance policy's decision, not the client's. Answer the sender yourself
+//! with the receipt `notifications/notify` defines, the same whatever the VTA answers.
+//!
+//! Declared refusals (`notificationUnknown`, `notAddressedHere`, `documentInvalid`) arrive as
+//! [`VtaError::Rejected`] with their code.
 
 use vti_specs::vta::notifications;
 
@@ -118,6 +128,34 @@ impl VtaClient {
     ) -> Result<serde_json::Value, VtaError> {
         self.dispatch_trust_task(
             trust_tasks::TASK_VTA_NOTIFICATIONS_DISMISS_0_1,
+            req,
+            NOTIFICATIONS_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/notifications/deposit/0.1` — hand the VTA a `notifications/notify` or
+    /// `notifications/relay` document this client received for a DID the VTA holds keys of in
+    /// `contextId` (VTI-NTF-054 – 056). The VTA verifies and holds it exactly as a direct
+    /// delivery and answers the same receipt whatever it did. Prefer
+    /// [`Self::notifications_deposit_json`]: the typed payload keeps `document` as an opaque
+    /// map, but only the received JSON is guaranteed to be the bytes its proofs cover.
+    pub async fn notifications_deposit(
+        &self,
+        req: &notifications::deposit::v0_1::Payload,
+    ) -> Result<notifications::deposit::v0_1::Response, VtaError> {
+        self.notifications_call(trust_tasks::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1, req)
+            .await
+    }
+
+    /// [`Self::notifications_deposit`], with the payload and the answer as JSON:
+    /// `{"contextId": …, "document": <the document exactly as received>}`.
+    pub async fn notifications_deposit_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1,
             req,
             NOTIFICATIONS_TT_TIMEOUT,
         )
