@@ -335,7 +335,7 @@ sha2 = { workspace = true, optional = true }
 # workspace's pinned DIDComm decrypt path will accept (ECDH-ES+A256KW +
 # A256CBC-HS512). Same pinned version as `vta-service`.
 affinidi-messaging-didcomm = { version = "0.15.9", optional = true }
-hpke = { version = "0.14", optional = true }
+hpke = { version = "0.15", optional = true }
 # `jose` carries the ECDSA verifiers (`verify_p256`, `verify_secp256k1`) the
 # `jws` module uses; the TDK keeps the curve code in one place.
 affinidi-crypto = { workspace = true, optional = true, features = ["jose"] }
