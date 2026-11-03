@@ -19,4 +19,4 @@ Used by:
 | `rooms` | Network room passes issued on chained group evidence |
 | `client`, `link`, `status_client` (feature `client`) | HTTPS client with DID sign-in, `vtn-signin:` links, and a status-list checker |
 
-The VTN profile predicates (`lists/1`, `repudiates/1`, `servesRole/1`, `groupRegistered/1`) live in the `https://openvtc.org/vtn/vsc/` namespace until the DTG working group registers them. See [dtgwg-cred-spec discussion #82](https://github.com/trustoverip/dtgwg-cred-spec/discussions/82).
+Listings and repudiations use the DTG VSC registry's [`lists/1`](https://github.com/trustoverip/dtgwg-vsc-registry/tree/main/predicates/lists/1) and [`repudiates/1`](https://github.com/trustoverip/dtgwg-vsc-registry/tree/main/predicates/repudiates/1); a listing's `object.value` is `{ nodeType: "VTC" | "VTN", framework }`. The group predicates (`servesRole/1`, `groupRegistered/1`) stay in the `https://openvtc.org/vtn/vsc/` namespace until the DTG working group registers them. See [dtgwg-cred-spec discussion #82](https://github.com/trustoverip/dtgwg-cred-spec/discussions/82).

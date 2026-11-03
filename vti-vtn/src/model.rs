@@ -16,6 +16,25 @@ pub enum EntryKind {
     Network,
 }
 
+impl EntryKind {
+    /// The DTG `nodeType` a listing carries for this kind (`lists/1`, VTI-VTN-031).
+    pub fn node_type(self) -> &'static str {
+        match self {
+            EntryKind::Community => "VTC",
+            EntryKind::Network => "VTN",
+        }
+    }
+
+    /// The kind a listing's DTG `nodeType` names, if it is one a network lists.
+    pub fn from_node_type(node_type: &str) -> Option<Self> {
+        match node_type {
+            "VTC" => Some(EntryKind::Community),
+            "VTN" => Some(EntryKind::Network),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for EntryKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
