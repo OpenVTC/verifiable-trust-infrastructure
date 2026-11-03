@@ -617,7 +617,9 @@ impl VerifiedAdmission for Admission {
     fn room_precharged(&self) -> bool {
         self.room.is_some()
     }
+}
 
+impl vti_trust_task_server::VerifiedAdmission for Admission {
     fn admit_verified(&self, signer: &str) -> bool {
         // A room document is charged when its room authorizes it, not here.
         if self.room.is_some() {
@@ -728,6 +730,7 @@ async fn known_principal(state: &AppState, did: &str, type_uri: Option<&str>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vti_trust_task_server::VerifiedAdmission as _;
 
     fn limits(signed_address_burst: u32, signer_burst: u32) -> TrustTaskLimits {
         limits_with_sign_in(signed_address_burst, signer_burst, 10)

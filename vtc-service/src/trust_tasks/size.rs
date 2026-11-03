@@ -83,7 +83,12 @@ use crate::server::AppState;
 /// Every type that declares nothing accepts a document of at most 64 KiB —
 /// generous for a document of identifiers, a credential or a presentation, and
 /// small enough that an unauthenticated flood of them is cheap to refuse.
-pub(crate) const DEFAULT_MAX_DOCUMENT_BYTES: usize = 64 * 1024;
+/// The spine's own default (`vti_trust_task_server::size`).
+pub(crate) use vti_trust_task_server::size::DEFAULT_MAX_DOCUMENT_BYTES;
+/// The `details` member naming the limit a refused document exceeded.
+#[cfg(test)]
+use vti_trust_task_server::size::DETAILS_MAX_BYTES;
+use vti_trust_task_server::size::{peek_issuer, peek_type};
 
 /// `policy/upsert/0.3`: 192 KiB.
 ///
@@ -150,9 +155,6 @@ fn largest_in(served: &[&str], declared: impl Fn(&str) -> Option<usize>) -> usiz
         .filter_map(|uri| declared(uri))
         .fold(DEFAULT_MAX_DOCUMENT_BYTES, usize::max)
 }
-
-/// The `details` member naming the limit a refused document exceeded.
-pub(crate) const DETAILS_MAX_BYTES: &str = "maxBytes";
 
 /// The largest document `type_uri` accepts, in bytes, from a known issuer.
 pub(crate) fn max_document_bytes(type_uri: &str) -> usize {
@@ -527,65 +529,46 @@ async fn is_known_issuer(state: &AppState, issuer: &str) -> bool {
     }
 }
 
-/// The longest `type` a refusal names. A caller's own `type` is echoed back
-/// only when it is short enough to be a Type URI; anything longer is not one,
-/// and repeating it would turn the refusal into an echo of the caller's body.
-const MAX_NAMED_TYPE_CHARS: usize = 256;
-
+/// [`vti_trust_task_server::size::check_size`] against this node's default.
 fn check_with(body: &[u8], limit: impl Fn(&str) -> usize) -> Result<(), TrustTaskOutcome> {
-    if body.len() <= DEFAULT_MAX_DOCUMENT_BYTES {
-        return Ok(());
-    }
-    let type_uri = peek_type(body);
-    let max = type_uri
-        .as_deref()
-        .map_or(DEFAULT_MAX_DOCUMENT_BYTES, &limit);
-    if body.len() <= max {
-        return Ok(());
-    }
-    let named = match type_uri.as_deref() {
-        Some(t) if t.chars().count() <= MAX_NAMED_TYPE_CHARS => t,
-        Some(_) => "its type",
-        None => "a document of no readable type",
-    };
-    let payload: ErrorPayload = RejectReason::MalformedRequest {
-        reason: format!(
-            "the document is {} bytes; {named} accepts at most {max}",
-            body.len()
-        ),
-    }
-    .into();
-    Err(unrouted_error_response(payload.with_details(
-        serde_json::json!({ DETAILS_MAX_BYTES: max }),
-    )))
+    vti_trust_task_server::size::check_size(body, DEFAULT_MAX_DOCUMENT_BYTES, limit)
 }
 
-/// The document's top-level `type`, read without keeping anything else.
-///
-/// `None` for a body that is not a JSON object with a string `type` — which
-/// then takes the default limit, as a type that declares nothing does.
-fn peek_type(body: &[u8]) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct TypeOnly {
-        #[serde(rename = "type")]
-        type_uri: String,
-    }
-    serde_json::from_slice::<TypeOnly>(body)
-        .ok()
-        .map(|t| t.type_uri)
+/// The spine's size gate for this community: [`check_for_known_issuer_with`]
+/// on admission, [`settle_large_document_charge`] once the proof has been
+/// checked.
+pub(crate) struct KnownIssuerSizeGate<'a> {
+    pub(crate) state: &'a AppState,
+    /// The address a raised-limit document's budget is charged to.
+    pub(crate) address: &'a str,
+    /// The transport has already charged this document to a room budget.
+    pub(crate) room_precharged: bool,
 }
 
-/// The document's top-level `issuer`, read the same way as [`peek_type`]: a
-/// duplicated or non-string one reads as none, and the body is held to the
-/// default.
-fn peek_issuer(body: &[u8]) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct IssuerOnly {
-        issuer: String,
+#[async_trait::async_trait]
+impl vti_trust_task_server::SizeGate for KnownIssuerSizeGate<'_> {
+    async fn admit(
+        &self,
+        body: &[u8],
+    ) -> Result<Option<vti_trust_task_server::SizeCharge>, TrustTaskOutcome> {
+        let charge = check_for_known_issuer_with(
+            self.state,
+            body,
+            self.address,
+            crate::auth::session::now_epoch(),
+            self.room_precharged,
+        )
+        .await?;
+        Ok(charge.map(vti_trust_task_server::SizeCharge::new))
     }
-    serde_json::from_slice::<IssuerOnly>(body)
-        .ok()
-        .map(|t| t.issuer)
+
+    fn settle(&self, charge: &vti_trust_task_server::SizeCharge, verified_signer: Option<&str>) {
+        settle_large_document_charge(
+            &self.state.large_document_budget,
+            charge.downcast_ref::<LargeDocumentCharge>(),
+            verified_signer,
+        );
+    }
 }
 
 #[cfg(test)]

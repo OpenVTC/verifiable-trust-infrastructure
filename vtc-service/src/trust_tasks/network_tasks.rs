@@ -21,8 +21,7 @@
 //! stolen or delegated signing key alone cannot do any of it.
 
 use serde_json::{Value, json};
-use trust_tasks_rs::validate::ValidatedPayload;
-use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::error::AppError;
 use vti_specs::vtc::networks::{
     evidence::v0_1 as evidence, groups::register::v0_1 as register, join::v0_1 as join,
@@ -30,8 +29,7 @@ use vti_specs::vtc::networks::{
 };
 
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
-    success_response, task_error_to_reject,
+    TrustTaskOutcome, app_error_to_reject, extended_code, reject_with_code, task_error_to_reject,
 };
 use super::{JoinAuthCtx, capable_signer, parse_spec_payload};
 use crate::acl::Capability;
@@ -115,27 +113,9 @@ pub(super) async fn dispatch(
     })
 }
 
-/// Answer with `body` held to the generated `#response` type and its schema.
-fn respond<R>(doc: &TrustTask<Value>, body: Value) -> TrustTaskOutcome
-where
-    R: serde::de::DeserializeOwned + serde::Serialize + ValidatedPayload,
-{
-    let checked = R::validate_value(&body)
-        .map_err(|e| e.to_string())
-        .and_then(|()| serde_json::from_value::<R>(body).map_err(|e| e.to_string()));
-    match checked {
-        Ok(response) => success_response(doc, response),
-        Err(e) => {
-            tracing::error!(task = %doc.type_uri, error = %e, "response does not match its published schema");
-            reject_with(
-                doc,
-                RejectReason::InternalError {
-                    reason: format!("response does not match its published schema: {e}"),
-                },
-            )
-        }
-    }
-}
+// Answer with `body` held to the generated `#response` type and its schema
+// (an `internalError` when it is not: the mismatch is this service's fault).
+use vti_trust_task_server::typed::respond;
 
 fn membership_json(m: &networks::Membership) -> Value {
     serde_json::to_value(m).unwrap_or(Value::Null)

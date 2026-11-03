@@ -287,6 +287,10 @@ affinidi-secrets-resolver = { workspace = true }
 dtg-credentials = { workspace = true }
 # The Verifiable Trust Network protocol: the community as a network member (`crate::networks`).
 vti-vtn = { path = "../vti-vtn", version = "0.1", features = ["client"] }
+# The Trust Task receive pipeline (`crate::trust_tasks`'s spine): size,
+# freshness, recipient, spec policy, proof, sender binding, duplicate-id record,
+# dispatch and signed replies. Shared with the VTN service.
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.1" }
 # JSON Schema validation of issued credentials against their credentialSchema.
 jsonschema = { workspace = true }
 # DCQL (via OpenID4VP) — the schema store's Accepts criterion is a DCQL query.
