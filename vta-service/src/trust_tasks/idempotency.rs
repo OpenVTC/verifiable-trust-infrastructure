@@ -49,13 +49,14 @@ use super::helpers::{TrustTaskOutcome, reject_with};
 /// The document member carrying the key.
 pub(crate) const IDEMPOTENCY_KEY_MEMBER: &str = "idempotencyKey";
 
-/// How long an in-flight claim is honoured before a retry may reclaim it.
+/// How long an in-flight claim is reported as running (`unavailable`, ask
+/// again) before it is reported as abandoned (outcome unknown).
 ///
-/// Only reached when a process died between claiming and completing — a live
-/// request is bounded by its own handler timeout, and the longest of those is
-/// 60s. Too short and a slow-but-live operation gets double-dispatched, which
-/// is the failure this module exists to prevent; too long and a genuine crash
-/// blocks the retry that would have recovered from it.
+/// Past this the claiming attempt cannot still be running — a live request is
+/// bounded by its own handler timeout, and the longest of those is 60s — so it
+/// died. The key is still never reclaimed: the attempt may have committed its
+/// effect before dying, and a re-run would be the second effect VTI-OPS-061
+/// forbids (#2402). The grace only decides which answer the retry gets.
 const IN_FLIGHT_GRACE_MINS: i64 = 10;
 
 /// Largest response body kept for replay, in bytes.
@@ -124,17 +125,19 @@ pub(crate) enum Claim {
     Proceed { key: String, safety: RetrySafety },
     /// Answer with this instead of dispatching.
     Answer(Box<TrustTaskOutcome>),
-    /// Not keyed, not a task worth keying, or the store is unavailable.
-    /// Dispatch normally and record nothing.
+    /// Not keyed, or not a task worth keying. Dispatch normally and record
+    /// nothing.
     Skip,
 }
 
 /// Claim `(actor, key)` for this request, or report what already happened to it.
 ///
-/// A store error never blocks the request. Idempotency is an improvement on the
-/// status quo, not a precondition for it — failing closed here would turn a
-/// storage blip into an outage of every keyed operation, in order to prevent a
-/// duplicate that only matters when a reply is *also* lost.
+/// A store error answers `unavailable` rather than dispatching unguarded. A
+/// keyed request is one whose repeat matters, and a node MUST perform it at
+/// most once per key (VTI-OPS-061); without the claim nothing stops a retry
+/// arriving after the store recovers from running it a second time. The
+/// refusal is transient, so `VtaClient::idempotent` retries it under the same
+/// key.
 pub(crate) async fn claim(
     ks: &vti_common::store::KeyspaceHandle,
     actor: &str,
@@ -172,8 +175,15 @@ pub(crate) async fn claim(
     {
         Ok(o) => o,
         Err(e) => {
-            tracing::warn!(error = %e, actor, key, "idempotency claim failed; dispatching unguarded");
-            return Claim::Skip;
+            tracing::warn!(error = %e, actor, key, %type_uri, "idempotency claim failed; refusing the keyed request rather than running it unguarded");
+            let retry_after =
+                chrono::Utc::now() + chrono::Duration::seconds(IN_FLIGHT_RETRY_AFTER_SECS);
+            return Claim::Answer(Box::new(reject_with(
+                doc,
+                RejectReason::Unavailable {
+                    retry_after: Some(retry_after),
+                },
+            )));
         }
     };
 
@@ -194,6 +204,39 @@ pub(crate) async fn claim(
                 },
             )))
         }
+        ClaimOutcome::Abandoned { claimed_at } => {
+            // The attempt that claimed this key died without recording an
+            // outcome, and may or may not have taken effect. Running it again
+            // could be the duplicate the key exists to prevent, so the answer
+            // is "unknown" — terminal, not transient: the same key can never
+            // be answered differently while the record lives.
+            tracing::warn!(
+                actor,
+                key,
+                %type_uri,
+                claimed_at = %claimed_at.to_rfc3339(),
+                "keyed request's earlier attempt was abandoned with its outcome unknown; not re-running it"
+            );
+            Claim::Answer(Box::new(reject_with(
+                doc,
+                RejectReason::TaskFailed {
+                    reason: "outcome unknown: an earlier attempt under this idempotency key \
+                             did not finish"
+                        .to_string(),
+                    details: Some(serde_json::json!({
+                        "idempotencyKey": key,
+                        "task": type_uri,
+                        "claimedAt": claimed_at.to_rfc3339(),
+                        "reason": "an earlier attempt under this key was interrupted before \
+                                   its outcome was recorded, so whether it took effect is \
+                                   unknown, and it is not run again because that could \
+                                   duplicate it. Check whether the effect exists with the \
+                                   corresponding read operation; if it does not and is still \
+                                   wanted, send the request under a new key",
+                    })),
+                },
+            )))
+        }
         ClaimOutcome::Conflict => Claim::Answer(Box::new(reject_with(
             doc,
             RejectReason::TaskFailed {
@@ -211,6 +254,14 @@ pub(crate) async fn claim(
         ClaimOutcome::Completed(entry) => {
             Claim::Answer(Box::new(replay(doc, &entry, &key, &type_uri)))
         }
+        // `ClaimOutcome` is non-exhaustive. An outcome this build does not
+        // know is not a licence to run the task: refuse it.
+        _ => Claim::Answer(Box::new(reject_with(
+            doc,
+            RejectReason::InternalError {
+                reason: "unrecognised idempotency claim outcome".to_string(),
+            },
+        ))),
     }
 }
 
@@ -296,7 +347,7 @@ pub(crate) async fn record_outcome(
     });
 
     if let Err(e) = store.complete(&principal, key, response).await {
-        tracing::warn!(error = %e, actor, key, "failed to record an idempotent outcome; a retry may re-run this task");
+        tracing::warn!(error = %e, actor, key, "failed to record an idempotent outcome; a retry under this key will be answered outcome-unknown");
     }
 }
 

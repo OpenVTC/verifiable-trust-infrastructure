@@ -121,7 +121,7 @@ and both run.
 |---|---|
 | nothing | claim it, run the handler, record the outcome |
 | in flight, fresh | `unavailable` (503) + `retryAfter` — the first attempt is still running |
-| in flight, stale (>10 min) | the process died mid-request; reclaim and run |
+| in flight, stale (>10 min) | `taskFailed`, outcome unknown — the attempt died; **never** re-run (below) |
 | completed, same request, replayable | the original response, verbatim |
 | completed, same request, not replayable | `taskFailed` naming the first outcome |
 | completed, **different** request | `taskFailed` — one key, two different requests |
@@ -134,6 +134,26 @@ Two orderings worth knowing:
 - **A failed task releases its claim** rather than recording it. The effect never
   happened, so the retry should actually run. Caching failures would turn one
   transient error into a sticky one for the record's whole lifetime.
+
+### A dead attempt is never re-run
+
+The handler commits its effect, then `record_outcome` marks the key done. The
+two are not one write, so a process can die between them: the effect exists and
+the record still says "in flight". Nothing distinguishes that from a process
+that died *before* the effect, so the claim is never reclaimed. Inside the
+10-minute grace a retry gets `unavailable` (the attempt may be alive); after
+it, `taskFailed` with `details.claimedAt` — outcome unknown. The caller checks
+whether the effect exists with the corresponding read operation and, if it is
+still wanted, sends the request under a **new** key. Reclaiming instead would
+perform the operation twice in exactly the case the key exists for
+(VTI-OPS-061 — "at most once per key"; #2402, which measured it: a reclaimed
+`keys/create` minted a second key). The refusal is terminal, so
+`VtaClient::idempotent` does not loop on it. The key is free again only when
+its record expires.
+
+`vta-service/tests/it/idempotency_trust_task.rs` holds this across a real
+restart: two app lifetimes over one retained store, the second built only after
+fjall has released the first's directory lock.
 
 ### Retention window
 
@@ -164,12 +184,15 @@ and naming the read operation that can fetch the result. Responses over 64 KiB
 take the same path, so one large listing cannot let a caller size a dedup record
 with whatever it asked for.
 
-### Failure is not fatal
+### A store error refuses the request
 
-A store error **logs and dispatches unguarded**. Idempotency is an improvement on
-the status quo, not a precondition for it: failing closed would turn a storage
-blip into an outage of every keyed operation, in order to prevent a duplicate
-that only matters when a reply is *also* lost.
+A store error while claiming answers `unavailable` (transient, so the client
+retries under the same key). It used to dispatch unguarded, on the reasoning
+that idempotency was an improvement rather than a precondition — but
+VTI-OPS-061 makes at-most-once per key a MUST, and a request run without its
+claim is one a later retry can run again (#2402). A failure *recording* an
+outcome leaves the claim in flight, which the rule above then answers as
+outcome unknown.
 
 ---
 

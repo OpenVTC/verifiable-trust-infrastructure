@@ -213,13 +213,20 @@ impl IdempotencyStore {
     /// prevent. Claiming closes it — the write is `insert_if_absent`, so
     /// exactly one attempt wins and the other is told to wait.
     ///
-    /// It also survives a crash. An attempt that dies between claiming and
-    /// completing leaves an [`EntryState::InFlight`] record, which
-    /// [`ClaimOutcome`] reports as stale once `in_flight_grace` has passed so
-    /// the retry can reclaim it rather than being blocked forever.
+    /// It also survives a crash, without performing the operation twice. An
+    /// attempt that dies between claiming and completing leaves an
+    /// [`EntryState::InFlight`] record. Within `in_flight_grace` of the claim
+    /// that is [`ClaimOutcome::InFlight`] (it may still be running); after
+    /// it, [`ClaimOutcome::Abandoned`] — and the key is **never reclaimed**
+    /// while the record lives. The dead attempt may have committed its effect
+    /// and died before recording it, and nothing here can tell that apart from
+    /// one that died first, so running it again could be the second effect the
+    /// key exists to prevent (VTI-OPS-061, #2402). Only an *expired* record —
+    /// past the class TTL, the window inside which a key means anything — is
+    /// claimed afresh.
     ///
     /// The caller must finish with [`Self::complete`] or [`Self::release`];
-    /// a claim left dangling blocks retries until it goes stale.
+    /// a claim left dangling holds its key until the record expires.
     pub async fn claim(
         &self,
         principal_hash: &[u8; 32],
@@ -263,16 +270,19 @@ impl IdempotencyStore {
             // caller error whichever stage the first attempt is in, and
             // reporting "wait and try again" to a request that will never be
             // accepted would send the caller round a loop it cannot exit.
-            let reclaim = existing.is_expired(now)
-                || (existing.request_hash == request_hash
-                    && existing.is_in_flight()
-                    // The claiming attempt cannot still be running; it died.
-                    && now - existing.created_at > in_flight_grace);
-            if !reclaim {
+            if !existing.is_expired(now) {
                 if existing.request_hash != request_hash {
                     return Ok(ClaimOutcome::Conflict);
                 }
                 if existing.is_in_flight() {
+                    // Past the grace the claiming attempt cannot still be
+                    // running: it died, and whether its effect happened is
+                    // unknown. Never reclaimed — see the method docs.
+                    if now - existing.created_at > in_flight_grace {
+                        return Ok(ClaimOutcome::Abandoned {
+                            claimed_at: existing.created_at,
+                        });
+                    }
                     return Ok(ClaimOutcome::InFlight);
                 }
                 return Ok(ClaimOutcome::Completed(Box::new(existing)));
@@ -378,12 +388,23 @@ pub struct CompletedResponse {
 
 /// What [`IdempotencyStore::claim`] found.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ClaimOutcome {
     /// The key is ours. Run the operation, then `complete` or `release`.
     Claimed,
     /// An attempt with the same request is still running. Answer "try again"
     /// — not "duplicate", because at this instant nobody knows the outcome.
     InFlight,
+    /// An attempt with the same request claimed the key longer ago than the
+    /// grace and never recorded an outcome: it died, and whether it took
+    /// effect is unknown. The key is not handed out again until the record
+    /// expires, because running the operation a second time could be the
+    /// duplicate the key exists to prevent (VTI-OPS-061). Answer "outcome
+    /// unknown" — the caller must find out what happened and use a new key.
+    Abandoned {
+        /// When the dead attempt claimed the key.
+        claimed_at: DateTime<Utc>,
+    },
     /// The request already ran. Replay it if
     /// [`CacheEntry::has_replayable_response`], otherwise say it happened and
     /// the result is not retained.
@@ -509,10 +530,10 @@ mod tests {
         );
     }
 
-    /// Attempts racing to reclaim one stale record: exactly one wins. An
+    /// Attempts racing to reclaim one expired record: exactly one wins. An
     /// unconditional write after the read let every one of them reclaim it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn racing_reclaims_of_a_stale_claim_have_one_winner() {
+    async fn racing_reclaims_of_an_expired_claim_have_one_winner() {
         let (store, _d) = temp_store();
         let p = Principal::Did("did:web:alice".into()).hash();
         for round in 0..40 {
@@ -521,7 +542,8 @@ mod tests {
             stale.idempotency_key = key.clone();
             stale.state = EntryState::InFlight;
             stale.request_hash = [1u8; 32];
-            stale.created_at = Utc::now() - Duration::hours(1);
+            stale.created_at = Utc::now() - Duration::hours(25);
+            stale.expires_at = Utc::now() - Duration::hours(1);
             store.put(&p, &stale).await.unwrap();
 
             let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
@@ -543,7 +565,7 @@ mod tests {
             for t in tasks {
                 won += t.await.unwrap() as usize;
             }
-            assert_eq!(won, 1, "{won} attempts reclaimed one stale claim");
+            assert_eq!(won, 1, "{won} attempts reclaimed one expired claim");
         }
     }
 
@@ -680,10 +702,11 @@ mod tests {
         assert!(matches!(other, ClaimOutcome::Conflict), "got {other:?}");
     }
 
-    /// A process that dies between claiming and completing must not block the
-    /// retry that would recover it.
+    /// A process that dies between claiming and completing may have committed
+    /// its effect, so its claim is never handed to a retry: past the grace it
+    /// is `Abandoned`, however often it is asked (VTI-OPS-061, #2402).
     #[tokio::test]
-    async fn a_stale_in_flight_claim_is_reclaimed() {
+    async fn a_stale_in_flight_claim_is_abandoned_not_reclaimed() {
         let (store, _d) = temp_store();
         let p = Principal::Did("did:web:alice".into()).hash();
         store
@@ -691,14 +714,51 @@ mod tests {
             .await
             .expect("claim");
         // Zero grace: any in-flight claim is already stale.
-        let again = store
+        for _ in 0..3 {
+            let again = store
+                .claim(
+                    &p,
+                    "k",
+                    [1u8; 32],
+                    IdempotencyClass::NonDestructive,
+                    chrono::Duration::zero(),
+                )
+                .await
+                .expect("claim");
+            assert!(
+                matches!(again, ClaimOutcome::Abandoned { .. }),
+                "got {again:?}"
+            );
+        }
+        // A different request under the key is still a conflict, not "unknown".
+        let other = store
             .claim(
                 &p,
                 "k",
-                [1u8; 32],
+                [2u8; 32],
                 IdempotencyClass::NonDestructive,
                 chrono::Duration::zero(),
             )
+            .await
+            .expect("claim");
+        assert!(matches!(other, ClaimOutcome::Conflict), "got {other:?}");
+    }
+
+    /// Once the record expires the key means nothing any more, abandoned or
+    /// not, and is claimed afresh.
+    #[tokio::test]
+    async fn an_expired_abandoned_claim_is_claimed_afresh() {
+        let (store, _d) = temp_store();
+        let p = Principal::Did("did:web:alice".into()).hash();
+        let mut dead = sample_entry();
+        dead.idempotency_key = "k".into();
+        dead.state = EntryState::InFlight;
+        dead.request_hash = [1u8; 32];
+        dead.created_at = Utc::now() - Duration::hours(25);
+        dead.expires_at = Utc::now() - Duration::hours(1);
+        store.put(&p, &dead).await.unwrap();
+        let again = store
+            .claim(&p, "k", [1u8; 32], IdempotencyClass::NonDestructive, GRACE)
             .await
             .expect("claim");
         assert!(matches!(again, ClaimOutcome::Claimed), "got {again:?}");

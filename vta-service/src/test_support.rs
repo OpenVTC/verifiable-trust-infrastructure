@@ -1049,6 +1049,19 @@ pub struct TestAppOptions {
     /// [`BudgetClock::manual`](crate::trust_tasks::operation_budget::BudgetClock::manual),
     /// so no token refills while it runs and it moves time itself.
     pub operation_budget_clock: Option<crate::trust_tasks::operation_budget::BudgetClock>,
+
+    /// A store directory the caller owns and keeps, for a test that builds the
+    /// app twice over the same disk — a restart (#2402). `None` (the default)
+    /// is a fresh temporary directory owned by the returned context, as every
+    /// other test has always had.
+    ///
+    /// An empty directory is seeded from the keyspace template, like the
+    /// default; a directory already holding a store is reopened as it is, so
+    /// the second app sees exactly what the first one left. fjall locks the
+    /// directory for as long as any handle on the database lives, so the
+    /// reopen succeeds only once the first app — router, context and every
+    /// keyspace handle — has been dropped.
+    pub data_dir: Option<std::path::PathBuf>,
 }
 
 /// A mediator-backed transport identity for the mock VTA
@@ -1252,9 +1265,20 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     init_jwt_provider();
 
     let dir = tempfile::tempdir().expect("temp dir");
-    let store =
-        vti_common::store::test_fixture::open_with_keyspaces(dir.path(), crate::keyspaces::ALL)
-            .expect("open store");
+    let data_dir = opts
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| dir.path().to_path_buf());
+    let reopening = std::fs::read_dir(&data_dir).is_ok_and(|mut d| d.next().is_some());
+    let store = if reopening {
+        vti_common::store::Store::open(&vti_common::config::StoreConfig {
+            data_dir: data_dir.clone(),
+        })
+        .expect("reopen the retained store — is a handle from the previous app still alive?")
+    } else {
+        vti_common::store::test_fixture::open_with_keyspaces(&data_dir, crate::keyspaces::ALL)
+            .expect("open store")
+    };
 
     let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
     let sessions_ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();
@@ -1293,7 +1317,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
     let sealed_nonces_ks = store.keyspace(crate::keyspaces::SEALED_NONCES).unwrap();
     let backup_bundles_ks = store.keyspace(crate::keyspaces::BACKUP_BUNDLES).unwrap();
-    let backup_blob_dir = dir.path().join("backups");
+    let backup_blob_dir = data_dir.join("backups");
     let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
     #[cfg(feature = "webvh")]
     let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
@@ -1328,7 +1352,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     ) = if opts.provisionable_vta {
         let (did, ps, signer) = provision_vta_signing_identity(
             &keys_ks,
-            dir.path(),
+            &data_dir,
             opts.vta_transport.as_ref().map(|t| t.did.as_str()),
         )
         .await;
@@ -1353,11 +1377,11 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         [auth]
         jwt_signing_key = "{}"
         "#,
-        dir.path().display(),
+        data_dir.display(),
         BASE64.encode(jwt_seed),
     ))
     .expect("parse config");
-    config.config_path = dir.path().join("config.toml");
+    config.config_path = data_dir.join("config.toml");
     config.server.operation_rate_limit_per_sec = opts.operation_rate_limit_per_sec;
     config.server.operation_rate_limit_per_subject_per_sec =
         opts.operation_rate_limit_per_subject_per_sec;
@@ -2279,6 +2303,7 @@ impl MockVta {
             operation_rate_limit_per_sec: None,
             operation_rate_limit_per_subject_per_sec: None,
             operation_budget_clock: None,
+            data_dir: None,
         };
         let mut mock = Self::serve(build_test_app_with(opts).await).await;
         mock.webvh_host = Some(host);
