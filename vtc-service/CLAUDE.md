@@ -898,8 +898,21 @@ When adding a flow, add it here and a line to the root index.
   `inbox::disclosure` (VTI-NTF-046), and records the members before it queues anything; every
   later revision goes to the same members (`inbox::settle`, the one retry owner); the record
   is kept until the period ends (30 days without one) and used for nothing else; nothing is
-  ever reported to the originator (VTI-NTF-043). There is no remote surface for the relay
-  decision yet — it needs a task in the specification first.
+  ever reported to the originator (VTI-NTF-043). The policy also counts a network the
+  community is an **acknowledged** member of by its own record (VTI-NTF-034); a listing never
+  acknowledged does not count. Administrators read with `vtc/notifications/{list,show}/0.1`
+  (`vtc.notifications.read`) and decide with `vtc/notifications/relay/0.1`
+  (`vtc.notifications.relay`, qualifiable `group:<id>`, which permits only that group): the
+  selection — all members, one group, one role — is resolved once at the decision to **active**
+  members, never the community, the originator or any relayer in the chain (VTI-NTF-047, also
+  re-checked for every later revision), and the relay is allowed while the received chain has
+  at most three relays (VTI-NTF-041). `allMembers` takes the requester's bound step-up
+  (VTI-NTF-074). Each decision is recorded with its selection and count, audited as
+  `NotificationRelayDecided`, and never names or returns whom it reached (VTI-NTF-073). The
+  election notice re-checks that the member party is still an active member before every
+  offering revision; a withdrawal goes regardless (VTI-NTF-005).
 - **Code**: `vtc-service/src/notifications/{mod,election,inbox}.rs`,
-  `vtc-service/src/trust_tasks/notification_tasks.rs`, `vtc-service/src/elections/sweeper.rs`.
-- **Docs**: `docs/02-vta/notifications.md`, `docs/03-vtc/elections.md`.
+  `vtc-service/src/trust_tasks/notification_tasks.rs`, `vtc-service/src/elections/sweeper.rs`,
+  `vtc-service/tests/it/notifications_admin.rs`, console `admin-ui/src/plugins/notifications.tsx`.
+- **Docs**: `docs/02-vta/notifications.md`, `docs/03-vtc/notifications.md`,
+  `docs/03-vtc/elections.md`.

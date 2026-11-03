@@ -928,6 +928,10 @@ pub enum AuditEvent {
     /// The community's membership of a Verifiable Trust Network changed, or it relayed one of
     /// the network's broadcasts to a group (`vtc/networks/*`).
     NetworkMembershipChanged(NetworkMembershipChangedData),
+    /// An administrator decided that the community relays a notification it received to its
+    /// members (`vtc/notifications/relay`, VTI-NTF-073). Names the selection and how many it
+    /// added, never whom it reached.
+    NotificationRelayDecided(NotificationRelayDecidedData),
 
     /// A change to where a community keeps its rooms' files: a storage config
     /// created, changed or retired (`vtc/storage/configs/*`), a room pointed
@@ -1073,6 +1077,30 @@ pub struct CapabilityModuleChangedData {
     /// Why a projection failed (`projectionFailed` only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// Payload for [`AuditEvent::NotificationRelayDecided`] (VTI-NTF-073): the administrator is
+/// the row's actor. **Never** carries the parties the decision reached (VTI-NTF-044).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationRelayDecidedData {
+    /// The community's record of the received notification.
+    pub record_id: String,
+    /// The notification's originator and identifier.
+    pub originator: String,
+    pub notification_id: String,
+    /// The revision relayed.
+    pub revision: u64,
+    /// `allMembers`, `group` or `role`.
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// How many parties the decision added.
+    pub recipient_count: u32,
+    /// Whether the administrator acknowledged what the relay discloses (VTI-NTF-046).
+    pub disclosure_acknowledged: bool,
 }
 
 /// Payload for [`AuditEvent::NetworkMembershipChanged`].
@@ -1298,6 +1326,7 @@ impl AuditEvent {
             Self::AclKeyRotated(..) => "AclKeyRotated",
             Self::CapabilityModuleChanged(..) => "CapabilityModuleChanged",
             Self::NetworkMembershipChanged(..) => "NetworkMembershipChanged",
+            Self::NotificationRelayDecided(..) => "NotificationRelayDecided",
             Self::RoomStorageChanged(..) => "RoomStorageChanged",
             Self::RoomLimitsChanged(..) => "RoomLimitsChanged",
             Self::CommunityRoomChanged(..) => "CommunityRoomChanged",

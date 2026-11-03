@@ -15,6 +15,8 @@ kinds are its Appendix G. The tasks:
 | `vta/notifications/list/0.1` | the principal's client | its VTA |
 | `vta/notifications/show/0.1` | the principal's client | its VTA |
 | `vta/notifications/dismiss/0.1` | the principal's client | its VTA |
+| `vta/notifications/deposit/0.1` | the principal's client, for a persona DID whose socket it holds | its VTA |
+| `vtc/notifications/{list,show,relay}/0.1` | a community administrator | the community ([`docs/03-vtc/notifications.md`](../03-vtc/notifications.md)) |
 
 ## Relays
 
@@ -62,9 +64,39 @@ Holding, listing, reading and dismissing a notification send nothing to anyone (
 Opening the thing — `subject.openWith` sent to `subject.heldBy` — is the client's step, at the
 principal's choice.
 
-**Addressing.** The VTA receives only what is addressed to its own DID (the transports deliver
-to it, and the dispatch spine checks `recipient`). A notification addressed to a persona DID
-whose mediator socket a client holds reaches that client, not the VTA.
+**Addressing.** The VTA receives directly only what is addressed to its own DID (the transports
+deliver to it, and the dispatch spine checks `recipient`). A notification addressed to a persona
+DID whose mediator socket a client holds reaches that client, which hands it over.
+
+## Deposit: what a client received for a persona DID
+
+A client that receives a `notifications/notify` or `notifications/relay` for a DID whose keys
+the principal's VTA holds **must** deposit it with `vta/notifications/deposit/0.1`, exactly as
+received (VTI-NTF-054): the received JSON itself, never a value re-serialised from a typed form
+or re-signed. It applies no acceptance policy of its own — not depositing is declining, and that
+is the VTA's decision — and answers the sender itself with the receipt `notifications/notify`
+defines, the same whatever the VTA answers.
+
+The VTA treats a deposit exactly as a direct delivery (VTI-NTF-055, VTI-NTF-056):
+
+1. the client needs standing in `contextId` (`permissionDenied` otherwise), before the document
+   is read;
+2. the document's `recipient` must be a DID the VTA holds keys of **in that context**, else
+   `vta/notifications/deposit:notAddressedHere`;
+3. every layer is verified as for a direct delivery, and the VTA's own receipt checks — the
+   acceptance window, `expiresAt`, and the record of accepted document identifiers — are applied
+   to the deposited document **at the time of the deposit**; any failure is
+   `vta/notifications/deposit:documentInvalid`, and nothing is held;
+4. the acceptance policy counts the party that **delivered** the document (its originator, or
+   the last relayer) — never the depositing client or its ACL entry;
+5. the same one record per originator and `notificationId`, and the same receipt
+   (`notificationId`, `revision`) whatever was done. A repeat changes nothing (retry class 2).
+
+```sh
+pnm notifications deposit received.json --context personal    # `-` reads stdin
+```
+
+SDK: `VtaClient::notifications_deposit_json` (and the typed `notifications_deposit`).
 
 ## The principal's view
 
@@ -92,10 +124,8 @@ holds no record of them. The notification names the community (`heldBy`), the `e
 At the VTC the notice is recorded before it is sent and the election sweeper is its only
 sender, through the durable member push (`docs/03-vtc/elections.md`).
 
-A VTC that receives a notification holds it by its own stated policy (an ACL entry here, or a
-relationship in force with the community's DID) and relays it to its members only when an
-administrator decides to, after being shown what a relay discloses — for an election, that the
-community is a member of the one holding it (VTI-NTF-046). It remembers whom it relayed to until
-the notification's period ends (30 days without one) and relays every later revision, a
-withdrawal included, to the same members (VTI-NTF-044). The administrator surface for that
-decision awaits a task in the specification.
+A VTC that receives a notification holds it by its own stated policy and relays it to its
+members only when an administrator decides to, after being shown what a relay discloses — for an
+election, that the community is a member of the one holding it (VTI-NTF-046). The
+administrators' view and the relay decision are described in
+[`docs/03-vtc/notifications.md`](../03-vtc/notifications.md).

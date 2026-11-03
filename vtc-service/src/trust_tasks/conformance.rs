@@ -366,6 +366,53 @@ fn base_disclosure() -> Value {
     .expect("the base schema gives a statement")
 }
 
+/// A received notification as `crate::notifications::inbox` answers it (`ReceivedNotification`),
+/// with one relay decision.
+fn sample_received_notification() -> serde_json::Value {
+    use crate::notifications::inbox::{ReceivedNotification, RelayDecision, Selection};
+    let at = DateTime::parse_from_rfc3339("2027-03-01T09:00:02Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let rec = ReceivedNotification {
+        record_id: "rn-4Tq8Zr2Lw9Ks6Pm1".into(),
+        originator: "did:web:community.example".into(),
+        relayed_by: vec![],
+        delivered_by: "did:web:community.example".into(),
+        notification: json!({
+            "notificationId": "ntf-7Qk2p9Xv3mR8",
+            "revision": 1,
+            "kind": "election",
+            "subject": {
+                "heldBy": "did:web:community.example",
+                "id": "board-2027",
+                "openWith": "https://trusttasks.org/spec/vtc/elections/show/0.6",
+            },
+            "audience": "did:web:partner.example",
+            "status": "available",
+            "relayable": true,
+            "validUntil": "2027-03-15T00:00:00Z",
+        }),
+        revision: 1,
+        kind: "election".into(),
+        relayable: true,
+        withdrawn: false,
+        valid_until: None,
+        received_at: at,
+        document: json!({}),
+        relay_decisions: vec![RelayDecision {
+            decided_at: at,
+            decided_by: "did:web:carol.example".into(),
+            recipients: Selection::AllMembers,
+            recipient_count: 42,
+            revision: 1,
+            disclosure_acknowledged: true,
+        }],
+        relayed_to: vec![],
+        keep_until: at,
+    };
+    rec.to_wire(at)
+}
+
 /// A network membership as `crate::networks` stores and answers it — the shared
 /// `vtc/_shared/0.6` `NetworkMembership` — with its admins group registered.
 fn sample_network_membership() -> serde_json::Value {
@@ -1146,6 +1193,28 @@ fn table() -> Vec<Conformance> {
 
     #[allow(unused_mut)]
     let mut table = vec![
+        // ─── received notifications (`crate::notifications::inbox`) ──
+        checked!(
+            s::notifications::list::v0_1::Payload,
+            s::notifications::list::v0_1::Response,
+            json!({ "kind": "election", "includeLapsed": false, "limit": 50 }),
+            json!({ "items": [sample_received_notification()] })
+        ),
+        checked!(
+            s::notifications::show::v0_1::Payload,
+            s::notifications::show::v0_1::Response,
+            json!({ "recordId": "rn-4Tq8Zr2Lw9Ks6Pm1" }),
+            json!({ "item": sample_received_notification(),
+                    "document": { "type": "https://trusttasks.org/spec/notifications/notify/0.1" } })
+        ),
+        checked!(
+            s::notifications::relay::v0_1::Payload,
+            s::notifications::relay::v0_1::Response,
+            json!({ "recordId": "rn-4Tq8Zr2Lw9Ks6Pm1",
+                    "recipients": { "scope": "group", "groupId": "grp_Q2xpbWJpbmdDbHViMjAyNw" },
+                    "disclosureAcknowledged": true }),
+            json!({ "recordId": "rn-4Tq8Zr2Lw9Ks6Pm1", "revision": 1, "recipientCount": 42 })
+        ),
         // ─── network membership (`crate::networks`) ──────────────────
         checked!(
             s::networks::list::v0_1::Payload,

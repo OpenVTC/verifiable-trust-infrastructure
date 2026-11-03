@@ -13,6 +13,7 @@
 
 import {
   BadgeCheck,
+  Bell,
   BookUser,
   ClipboardList,
   Vote,
@@ -52,6 +53,7 @@ import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
 import { MyPasskeys } from "@/plugins/myPasskeys";
+import { Notifications } from "@/plugins/notifications";
 import { Profile } from "@/plugins/profile";
 import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
@@ -182,6 +184,19 @@ export function registerBuiltinPlugins(): void {
     path: "/relationships",
     iconComponent: Share2,
     reactComponent: Relationships,
+  });
+
+  // Notifications the community holds as their addressee (an election another
+  // community holds, say), and the decision to relay one to members
+  // (vtc/notifications/*, VTI-NTF-070 – 074).
+  registerPlugin({
+    id: "notifications",
+    group: "membership",
+    label: "Notifications",
+    path: "/notifications",
+    iconComponent: Bell,
+    reactComponent: Notifications,
+    capabilities: ["vtc.notifications.read"],
   });
 
   // ── Governance ──

@@ -112,6 +112,18 @@ pub enum Capability {
     /// resource grant (`vtc/groups/managers/add`). Not conferring: a group
     /// confers authority only through a binding, whose consent is its own.
     GroupsManage,
+    /// Listing and reading the notifications addressed to the community
+    /// (`vtc/notifications/{list,show}`, VTI-NTF-070). Apart from
+    /// [`Capability::NotificationsRelay`] so a community can let an
+    /// administrator see what it has been told without letting them pass it
+    /// on: what a community has been told says what it belongs to. Not
+    /// conferring.
+    NotificationsRead,
+    /// Deciding that the community relays a notification it received to its
+    /// members (`vtc/notifications/relay`, VTI-NTF-071): unqualified, any
+    /// selection; qualified `group:<groupId>`, only that group's members. Not
+    /// conferring: a relay grants its recipients nothing (VTI-NTF-004).
+    NotificationsRelay,
     /// A git namespace (qualified by namespace).
     GitNsAdmin,
     /// Repository create, adopt, archive, transfer.
@@ -122,7 +134,7 @@ pub enum Capability {
 
 impl Capability {
     /// Every capability, in registry order.
-    pub const ALL: [Capability; 26] = [
+    pub const ALL: [Capability; 28] = [
         Capability::RolesAssign,
         Capability::ApprovalsAdmin,
         Capability::PolicyAdmin,
@@ -146,6 +158,8 @@ impl Capability {
         Capability::ElectionsManage,
         Capability::DirectoryNotes,
         Capability::GroupsManage,
+        Capability::NotificationsRead,
+        Capability::NotificationsRelay,
         Capability::GitNsAdmin,
         Capability::GitRepoManage,
         Capability::GitCommitSign,
@@ -177,6 +191,8 @@ impl Capability {
             Capability::ElectionsManage => "vtc.elections.manage",
             Capability::DirectoryNotes => "vtc.directory.notes",
             Capability::GroupsManage => "vtc.groups.manage",
+            Capability::NotificationsRead => "vtc.notifications.read",
+            Capability::NotificationsRelay => "vtc.notifications.relay",
             Capability::GitNsAdmin => "git.ns.admin",
             Capability::GitRepoManage => "git.repo.manage",
             Capability::GitCommitSign => "git.commit.sign",
@@ -231,7 +247,9 @@ impl Capability {
             Capability::PolicyAdmin => matches!(resource, Q::Policy(_)),
             Capability::VettingManage => matches!(resource, Q::Criterion(_)),
             Capability::GitNsAdmin => matches!(resource, Q::GitNs(_)),
-            Capability::GroupsManage => matches!(resource, Q::Group(_)),
+            Capability::GroupsManage | Capability::NotificationsRelay => {
+                matches!(resource, Q::Group(_))
+            }
             Capability::GitRepoManage | Capability::GitCommitSign => {
                 matches!(resource, Q::GitNs(_) | Q::GitRepo(_))
             }
