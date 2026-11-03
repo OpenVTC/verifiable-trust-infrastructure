@@ -325,7 +325,7 @@ and stay in `trust_tasks_rs`.
 
 The versions VTI speaks are pinned with the `trust-tasks` CLI
 (`cargo install trust-tasks-cli`), per generated crate — `vti-specs-rooms` for
-`rooms/*`, `-vta` for `vta/*`, `-vtc` for `vtc/*`, `-core` for everything else:
+`rooms/*`, `-vta` for `vta/*`, `-vtc` for `vtc/*`, `-vtn` for `vtn/*`, `-core` for everything else:
 
 ```sh
 trust-tasks -C vti-specs-vtc add vtc/members/list/0.3   # a version; `<slug>` alone pins the latest

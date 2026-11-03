@@ -12676,6 +12676,7 @@ dependencies = [
  "vti-specs-rooms",
  "vti-specs-vta",
  "vti-specs-vtc",
+ "vti-specs-vtn",
 ]
 
 [[package]]
@@ -12705,6 +12706,14 @@ dependencies = [
 [[package]]
 name = "vti-specs-vtc"
 version = "0.3.0"
+dependencies = [
+ "trust-tasks-build",
+ "trust-tasks-rs",
+]
+
+[[package]]
+name = "vti-specs-vtn"
+version = "0.1.0"
 dependencies = [
  "trust-tasks-build",
  "trust-tasks-rs",
