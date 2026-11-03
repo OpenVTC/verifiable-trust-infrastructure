@@ -828,15 +828,15 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
     // Community elections (`voting`): the Elections page, shown only once
     // discovery lists `vtc/elections/list` (`lib/elections-api.ts`).
     (
-        "https://trusttasks.org/spec/vtc/elections/create/0.4",
+        "https://trusttasks.org/spec/vtc/elections/create/0.5",
         cfg!(feature = "voting"),
     ),
     (
-        "https://trusttasks.org/spec/vtc/elections/list/0.3",
+        "https://trusttasks.org/spec/vtc/elections/list/0.5",
         cfg!(feature = "voting"),
     ),
     (
-        "https://trusttasks.org/spec/vtc/elections/show/0.3",
+        "https://trusttasks.org/spec/vtc/elections/show/0.6",
         cfg!(feature = "voting"),
     ),
     (
