@@ -825,6 +825,54 @@ type_uri = "https://trusttasks.org/spec/vtc/members/vmc/0.1"
 digest = "sha256:1a24ae31b8e99bdb1025d5533b8904ca41e75da598d4fb28efdb23ec53f2c375"
 
 [[task]]
+slug = "vtc/networks/evidence"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/networks/evidence/0.1"
+digest = "sha256:24a69d43ac89160f270d3774768d6d5cd8e938aeca0e4fc78fb55876e89f77b4"
+
+[[task]]
+slug = "vtc/networks/groups/register"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/networks/groups/register/0.1"
+digest = "sha256:e0187734293e4f40105ba51e3a63022c130890085d06fc01aee19f2c1fd2de23"
+
+[[task]]
+slug = "vtc/networks/join"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/networks/join/0.1"
+digest = "sha256:028d5633f07de434b3e7904ef9642f4b7e0406b903abd65c051e75c08a0b902b"
+
+[[task]]
+slug = "vtc/networks/leave"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/networks/leave/0.1"
+digest = "sha256:f6e2c2b9da5b8c1e3ad0e6cf766a9531751857de8fabb207414cb8a837cfca66"
+
+[[task]]
+slug = "vtc/networks/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/networks/list/0.1"
+digest = "sha256:3152fce9872e6c0f8a87ad98e83390dffe52c15d24991e446593139ded9d8547"
+
+[[task]]
+slug = "vtc/networks/notice"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/networks/notice/0.1"
+digest = "sha256:b80bec4a28f6b324f1c655e8618216ee8accea6eeeb3812770667ef5a9255a7d"
+
+[[task]]
+slug = "vtc/networks/repudiate"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/networks/repudiate/0.1"
+digest = "sha256:d0856036218d4712263f15ff6ea062dabe5aad27fb15661e880c91bfc47df14f"
+
+[[task]]
+slug = "vtc/networks/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/networks/show/0.1"
+digest = "sha256:d9dede8575f3915abfb6fc13e2bf388172c8b8a313751f10e61fc95fc832902d"
+
+[[task]]
 slug = "vtc/oid4vp/identities/list"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/oid4vp/identities/list/0.1"
