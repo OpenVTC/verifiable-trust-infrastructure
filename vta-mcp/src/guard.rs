@@ -696,6 +696,9 @@ mod tests {
         // `vta/notifications/dismiss`: hides a held notification from the default list; it
         // stays readable and listable when asked for (VTI-NTF-052). Removes nothing.
         "dismiss",
+        // `vta/notifications/deposit`: a client hands over a notification it received for a
+        // persona DID; the VTA holds it exactly as a direct delivery would (VTI-NTF-055).
+        "deposit",
         // `rooms/keys/act`: signs a host-bound room request as the member — a write or a
         // curation as readily as a read. It changes nothing here itself, but what it signs
         // can change a room, so it is never a read.

@@ -419,3 +419,225 @@ async fn vti_ntf_052_dismissing_an_unknown_record_is_notification_unknown() {
     .await;
     assert_eq!(code(&out), "vta/notifications/dismiss:notificationUnknown");
 }
+
+/// VTI-NTF-041: four relays in all is the bound, and a delivery that reaches it is held — a
+/// relayer that received the notification through three relays may relay it once more.
+#[tokio::test]
+async fn vti_ntf_041_a_fourth_relay_is_accepted() {
+    let (state, _dir, member) = state().await;
+    acl(&state, 49).await;
+    // community → 46 → 47 → 48 → 49 → member: four relays.
+    let mut layer = notify_doc(
+        COMMUNITY,
+        &did_for_seed(46).0,
+        notification("four", 1, "available", true),
+    );
+    for (from, to) in [(46u8, 47u8), (47, 48), (48, 49)] {
+        layer = relay_doc(from, &did_for_seed(to).0, layer);
+    }
+    ok(&deliver(&state, relay_doc(49, &member, layer)).await);
+    let page = ok(&list(&state, CTX, json!({})).await);
+    assert_eq!(page["items"][0]["relayedBy"].as_array().unwrap().len(), 4);
+}
+
+// ─── vta/notifications/deposit/0.1 (VTI-NTF-054 – 056) ─────────────────────────
+
+/// Deposit `document` as a client holding `claims` in `context`.
+async fn deposit(
+    state: &AppState,
+    claims: &AuthClaims,
+    context: &str,
+    document: Value,
+) -> TrustTaskOutcome {
+    handle_deposit(
+        state,
+        claims,
+        task(
+            uris::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1,
+            json!({ "contextId": context, "document": document }),
+        ),
+    )
+    .await
+}
+
+/// VTI-NTF-055: a document a client deposits for a persona DID is held exactly as a direct
+/// delivery would be — in the DID's context, with the document whole as the client received
+/// it — and answered with the same receipt.
+#[tokio::test]
+async fn vti_ntf_055_a_deposited_notification_is_held_as_if_delivered_directly() {
+    let (state, _dir, member) = state().await;
+    acl(&state, COMMUNITY).await;
+    let sent = notify_doc(
+        COMMUNITY,
+        &member,
+        notification("dep-1", 1, "available", true),
+    );
+    let receipt = ok(&deposit(&state, &admin_claims_for_context(CTX), CTX, sent.clone()).await);
+    assert_eq!(receipt, json!({ "notificationId": "dep-1", "revision": 1 }));
+
+    let page = ok(&list(&state, CTX, json!({})).await);
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["originator"], json!(did_for_seed(COMMUNITY).0));
+    let record_id = items[0]["recordId"].as_str().unwrap().to_string();
+    let shown = ok(&handle_show(
+        &state,
+        &admin_claims_for_context(CTX),
+        task(
+            uris::TASK_VTA_NOTIFICATIONS_SHOW_0_1,
+            json!({ "contextId": CTX, "recordId": record_id }),
+        ),
+    )
+    .await);
+    assert_eq!(shown["document"], sent, "the document exactly as deposited");
+
+    // A repeat of the same document: the same receipt, still one record (retry class 2).
+    let again = ok(&deposit(&state, &admin_claims_for_context(CTX), CTX, sent).await);
+    assert_eq!(again, receipt);
+    assert_eq!(
+        ok(&list(&state, CTX, json!({})).await)["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// VTI-NTF-055: the acceptance policy counts the party that delivered the document, never the
+/// depositing client — a client with standing cannot make the VTA hold a stranger's
+/// notification — and the receipt does not say it was declined (VTI-NTF-023). A relay is
+/// counted on its last relayer, as a direct one is.
+#[tokio::test]
+async fn vti_ntf_055_the_depositing_client_is_never_the_relationship_counted() {
+    let (state, _dir, member) = state().await;
+    let from_stranger = notify_doc(
+        STRANGER,
+        &member,
+        notification("dep-s", 1, "available", true),
+    );
+    let receipt = ok(&deposit(&state, &admin_claims_for_context(CTX), CTX, from_stranger).await);
+    assert_eq!(receipt, json!({ "notificationId": "dep-s", "revision": 1 }));
+    assert!(
+        ok(&list(&state, CTX, json!({ "includeLapsed": true })).await)["items"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "declined: the stranger has no relationship with the principal"
+    );
+
+    acl(&state, PARTNER).await;
+    let partner = did_for_seed(PARTNER).0;
+    let inner = notify_doc(
+        COMMUNITY,
+        &partner,
+        notification("dep-r", 1, "available", true),
+    );
+    ok(&deposit(
+        &state,
+        &admin_claims_for_context(CTX),
+        CTX,
+        relay_doc(PARTNER, &member, inner),
+    )
+    .await);
+    let page = ok(&list(&state, CTX, json!({})).await);
+    assert_eq!(page["items"][0]["relayedBy"], json!([partner]));
+}
+
+/// VTI-NTF-056 (consumer item 1): a client without standing in the named context is refused
+/// before the document is read.
+#[tokio::test]
+async fn vti_ntf_056_a_deposit_needs_standing_in_the_context() {
+    let (state, _dir, member) = state().await;
+    acl(&state, COMMUNITY).await;
+    let sent = notify_doc(
+        COMMUNITY,
+        &member,
+        notification("dep-p", 1, "available", true),
+    );
+    let out = deposit(&state, &admin_claims_for_context(OTHER), CTX, sent).await;
+    assert_eq!(code(&out), "permissionDenied");
+}
+
+/// `vta/notifications/deposit:notAddressedHere` (VTI-NTF-056): a document addressed to a DID
+/// this VTA holds no keys of, or to one it holds in another context, holds nothing.
+#[tokio::test]
+async fn vti_ntf_056_a_document_not_addressed_to_a_did_held_in_the_context_is_refused() {
+    let (state, _dir, member) = state().await;
+    acl(&state, COMMUNITY).await;
+    let elsewhere = notify_doc(
+        COMMUNITY,
+        &did_for_seed(STRANGER).0,
+        notification("dep-a", 1, "available", true),
+    );
+    let out = deposit(&state, &admin_claims_for_context(CTX), CTX, elsewhere).await;
+    assert_eq!(code(&out), "vta/notifications/deposit:notAddressedHere");
+
+    // Addressed to the persona, which is held in CTX — not in OTHER.
+    let sent = notify_doc(
+        COMMUNITY,
+        &member,
+        notification("dep-b", 1, "available", true),
+    );
+    let out = deposit(&state, &admin_claims_for_context(OTHER), OTHER, sent).await;
+    assert_eq!(code(&out), "vta/notifications/deposit:notAddressedHere");
+}
+
+/// `vta/notifications/deposit:documentInvalid` (consumer item 3): a document that would not
+/// have been accepted had it been delivered directly — a broken proof, a type that is not a
+/// notification, one past its acceptance window at the hand-over, a relay with a misaddressed
+/// layer — holds nothing.
+#[tokio::test]
+async fn vti_ntf_055_a_document_a_direct_delivery_would_refuse_is_document_invalid() {
+    let (state, _dir, member) = state().await;
+    acl(&state, COMMUNITY).await;
+    acl(&state, PARTNER).await;
+    let claims = admin_claims_for_context(CTX);
+
+    let mut tampered = notify_doc(
+        COMMUNITY,
+        &member,
+        notification("i-1", 1, "available", true),
+    );
+    tampered["payload"]["notification"]["subject"]["id"] = json!("another");
+    let out = deposit(&state, &claims, CTX, tampered).await;
+    assert_eq!(code(&out), "vta/notifications/deposit:documentInvalid");
+
+    let not_a_notification = signed(
+        uris::TASK_VTA_NOTIFICATIONS_LIST_0_1,
+        COMMUNITY,
+        &member,
+        json!({ "contextId": CTX }),
+    );
+    let out = deposit(&state, &claims, CTX, not_a_notification).await;
+    assert_eq!(code(&out), "vta/notifications/deposit:documentInvalid");
+
+    // Signed two hours ago: outside the acceptance window at the time of the deposit.
+    let stale_at = (chrono::Utc::now() - chrono::Duration::hours(2))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut stale = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": uris::TASK_NOTIFICATIONS_NOTIFY_0_1,
+        "issuer": did_for_seed(COMMUNITY).0,
+        "recipient": member,
+        "issuedAt": stale_at,
+        "payload": { "notification": notification("i-3", 1, "available", true) },
+    });
+    sign_received_as(COMMUNITY, "authentication", &stale_at, &mut stale);
+    let out = deposit(&state, &claims, CTX, stale).await;
+    assert_eq!(code(&out), "vta/notifications/deposit:documentInvalid");
+
+    let inner = notify_doc(
+        COMMUNITY,
+        &did_for_seed(STRANGER).0,
+        notification("i-4", 1, "available", true),
+    );
+    let out = deposit(&state, &claims, CTX, relay_doc(PARTNER, &member, inner)).await;
+    assert_eq!(code(&out), "vta/notifications/deposit:documentInvalid");
+
+    assert!(
+        ok(&list(&state, CTX, json!({ "includeLapsed": true })).await)["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
