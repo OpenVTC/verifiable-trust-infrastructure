@@ -342,9 +342,13 @@ pub fn statement_body(
 /// signed bytes are a multiple of [`vti_rooms::profile::PADDING_BLOCK`] — so a host comparing
 /// ciphertext lengths learns nothing about how long the name or the description is.
 ///
-/// A proof's length varies by a byte or two from one signature to the next, so the padding
-/// is measured on what was signed and corrected; after a few attempts the closest result is
-/// kept, because padding is a SHOULD and refusing to name the room over it would be worse.
+/// A proof's length varies by a byte or two from one signature to the next (a base58
+/// Ed25519 signature is 88 characters about four times in five, otherwise 87 or fewer), so
+/// the padding is measured on what was signed and corrected. Each attempt aims at the
+/// longest unpadded length seen so far, the common case, rather than at the last one: aiming
+/// at a short proof bets on the unlikely length twice running. After a few attempts the last
+/// result is kept, because padding is a SHOULD and refusing to name the room over it would
+/// be worse.
 pub async fn sign_padded<F, Fut>(mut body: Value, sign: F) -> Result<Vec<u8>, AppError>
 where
     F: Fn(Value) -> Fut,
@@ -353,23 +357,30 @@ where
     use vti_rooms::profile::{MAX_PADDING, PADDING_BLOCK};
     const ATTEMPTS: usize = 8;
     let mut signed = sign(body.clone()).await?;
-    let mut target = signed.len().div_ceil(PADDING_BLOCK) * PADDING_BLOCK;
     let mut padding = 0usize;
+    // The signed length less the padding, at its longest so far.
+    let mut unpadded = signed.len();
+    // Whole blocks added so the body differs from one already signed.
+    let mut extra = 0usize;
     for _ in 0..ATTEMPTS {
-        let len = signed.len();
-        if len % PADDING_BLOCK == 0 {
+        if signed.len() % PADDING_BLOCK == 0 {
             break;
         }
-        // A longer proof than last time can overshoot the block: aim for the next one.
-        if len > target {
-            target += PADDING_BLOCK;
+        unpadded = unpadded.max(signed.len() - padding);
+        let aim = (PADDING_BLOCK - unpadded % PADDING_BLOCK) % PADDING_BLOCK;
+        // Ed25519 is deterministic, so re-signing an unchanged body returns the same short
+        // proof. When the aim has not moved, move the body on by a whole block, and keep
+        // it moved: dropping back would re-sign a body already tried.
+        if aim + extra * PADDING_BLOCK == padding {
+            extra += 1;
         }
-        padding = (padding + (target - len)).min(MAX_PADDING);
+        let next = aim + extra * PADDING_BLOCK;
+        if next > MAX_PADDING {
+            break;
+        }
+        padding = next;
         body["roomProfile"]["padding"] = Value::String(" ".repeat(padding));
         signed = sign(body.clone()).await?;
-        if padding == MAX_PADDING {
-            break;
-        }
     }
     Ok(signed)
 }
