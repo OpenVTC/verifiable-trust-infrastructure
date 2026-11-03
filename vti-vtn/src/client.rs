@@ -16,12 +16,29 @@ pub enum ClientError {
     /// The network answered, but not as the network the caller expected.
     #[error("{0}")]
     Unexpected(String),
+    /// The network refused a Trust Task: its `trust-task-error` code (`notFound`,
+    /// `vtn/membership/acknowledge:rolesUnregistered`, ...), message and details.
+    #[error("{code}: {message}")]
+    Refused {
+        status: u16,
+        code: String,
+        message: String,
+        details: Option<serde_json::Value>,
+    },
 }
 
 impl ClientError {
     pub fn status(&self) -> Option<u16> {
         match self {
-            ClientError::Http { status, .. } => Some(*status),
+            ClientError::Http { status, .. } | ClientError::Refused { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+
+    /// The `trust-task-error` code of a refusal, if this is one.
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            ClientError::Refused { code, .. } => Some(code),
             _ => None,
         }
     }
@@ -56,6 +73,11 @@ impl VtnClient {
 
     pub fn base(&self) -> &str {
         &self.base
+    }
+
+    /// The HTTP client requests go out on.
+    pub(crate) fn http(&self) -> &reqwest::Client {
+        &self.http
     }
 
     /// The session token, once signed in.

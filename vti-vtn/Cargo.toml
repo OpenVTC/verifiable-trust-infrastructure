@@ -12,9 +12,14 @@ readme = "README.md"
 
 [features]
 default = []
-# Talking to a network over HTTPS: sign-in bound to the expected network DID,
-# `vtn-signin:` links, and resolving a credential's Bitstring Status List.
-client = ["dep:reqwest", "dep:tokio"]
+# Talking to a network over HTTPS: `vtn/*` Trust Tasks addressed to the expected
+# network DID, `vtn-signin:` links, and resolving a credential's Bitstring Status List.
+client = [
+  "dep:reqwest",
+  "dep:tokio",
+  "dep:trust-tasks-rs",
+  "dep:vti-specs-vtn",
+]
 
 [dependencies]
 affinidi-data-integrity = { workspace = true }
@@ -30,6 +35,8 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+trust-tasks-rs = { workspace = true, optional = true }
+vti-specs-vtn = { path = "../vti-specs-vtn", version = "0.1", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
