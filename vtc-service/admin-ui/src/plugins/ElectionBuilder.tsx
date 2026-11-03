@@ -100,10 +100,16 @@ export function NewElection() {
   const toast = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const community = useQuery({ queryKey: ["vtc-did"], queryFn: vtcDid, staleTime: Infinity });
+  const community = useQuery({
+    queryKey: ["vtc-did"],
+    queryFn: vtcDid,
+    staleTime: Infinity,
+  });
   const communityDid = community.data ?? "";
 
-  const [draft, setDraftState] = useState<ManifestDraft>(() => loadDraft() ?? emptyDraft());
+  const [draft, setDraftState] = useState<ManifestDraft>(
+    () => loadDraft() ?? emptyDraft(),
+  );
   const [step, setStep] = useState<StepId>("about");
   const [visited, setVisited] = useState<Set<StepId>>(() => new Set(["about"]));
   const [mode, setMode] = useState<Mode>("guided");
@@ -116,7 +122,10 @@ export function NewElection() {
   };
   const patch = (p: Partial<ManifestDraft>) => setDraft({ ...draft, ...p });
 
-  const manifest = useMemo(() => draftToManifest(draft, communityDid), [draft, communityDid]);
+  const manifest = useMemo(
+    () => draftToManifest(draft, communityDid),
+    [draft, communityDid],
+  );
   // The trusted ballot boxes, read live: `null` from a VTC that cannot list them (the field is
   // then a typed DID), `undefined` while loading or after a failed read.
   const trustedQuery = useQuery({
@@ -129,7 +138,12 @@ export function NewElection() {
     const out = checkDraft(draft, communityDid);
     const box = draft.ballotBox.trim();
     // The list is exactly the one create checks against, so naming another is a certain refusal.
-    if (trusted && box && !out.some((i) => i.field === "ballotBox") && !trusted.some((b) => b.did === box)) {
+    if (
+      trusted &&
+      box &&
+      !out.some((i) => i.field === "ballotBox") &&
+      !trusted.some((b) => b.did === box)
+    ) {
       out.push({
         step: "counting",
         field: "ballotBox",
@@ -145,7 +159,8 @@ export function NewElection() {
   if (mode === "json" && jsonText.trim()) {
     try {
       const v: unknown = JSON.parse(jsonText);
-      if (v && typeof v === "object" && !Array.isArray(v)) jsonParsed = v as Record<string, unknown>;
+      if (v && typeof v === "object" && !Array.isArray(v))
+        jsonParsed = v as Record<string, unknown>;
       else jsonParseError = "The manifest is a JSON object.";
     } catch (e) {
       jsonParseError = `Not JSON: ${(e as Error).message}`;
@@ -172,7 +187,9 @@ export function NewElection() {
     }
     const r = manifestToDraft(jsonParsed);
     if ("error" in r) {
-      setJsonError(`${r.error} Keep editing it as JSON, or remove it to use the form.`);
+      setJsonError(
+        `${r.error} Keep editing it as JSON, or remove it to use the form.`,
+      );
       return;
     }
     setDraft(r.draft);
@@ -183,7 +200,10 @@ export function NewElection() {
 
   const create = useMutation({
     mutationFn: () =>
-      createElection(mode === "json" ? (jsonParsed ?? {}) : manifest, gestureFromConfirm(confirm)),
+      createElection(
+        mode === "json" ? (jsonParsed ?? {}) : manifest,
+        gestureFromConfirm(confirm),
+      ),
     onSuccess: (r) => {
       saveDraft(null);
       toast.push(
@@ -219,9 +239,10 @@ export function NewElection() {
         <Link to="..">All elections</Link>
       </header>
       <p className="muted">
-        The manifest says what is asked, who may vote, when, and which ballot box counts. Every
-        ticket and every vote is bound to its digest, so it cannot be changed once the ballot box
-        registers it — check the review before you create it.
+        The manifest says what is asked, who may vote, when, and which ballot
+        box counts. Every ticket and every vote is bound to its digest, so it
+        cannot be changed once the ballot box registers it — check the review
+        before you create it.
       </p>
       <Tabs
         variant="segmented"
@@ -241,7 +262,8 @@ export function NewElection() {
       {mode === "json" ? (
         <section className="card form-stack">
           <p className="muted">
-            Sent exactly as written. Switch back to Guided to edit it in the form.
+            Sent exactly as written. Switch back to Guided to edit it in the
+            form.
           </p>
           <Field label="Manifest" error={jsonParseError}>
             <textarea
@@ -257,41 +279,88 @@ export function NewElection() {
           </Field>
           {jsonError && <p className="field-error">{jsonError}</p>}
           <div className="election-builder-nav">
-            <button className="primary" type="button" disabled={!jsonParsed || create.isPending} onClick={() => create.mutate()}>
+            <button
+              className="primary"
+              type="button"
+              disabled={!jsonParsed || create.isPending}
+              onClick={() => create.mutate()}
+            >
               Create
             </button>
           </div>
         </section>
       ) : (
         <>
-          <Stepper current={step} visited={visited} issues={issues} onPick={goto} />
+          <Stepper
+            current={step}
+            visited={visited}
+            issues={issues}
+            onPick={goto}
+          />
           <section className="card form-stack">
-            {step === "about" && <AboutStep draft={draft} patch={patch} setDraft={setDraft} issues={issues} />}
-            {step === "questions" && <QuestionsStep draft={draft} patch={patch} issues={issues} />}
-            {step === "voters" && (
-              <VotersStep draft={draft} patch={patch} issues={issues} communityDid={communityDid} />
+            {step === "about" && (
+              <AboutStep
+                draft={draft}
+                patch={patch}
+                setDraft={setDraft}
+                issues={issues}
+              />
             )}
-            {step === "schedule" && <ScheduleStep draft={draft} patch={patch} issues={issues} />}
+            {step === "questions" && (
+              <QuestionsStep draft={draft} patch={patch} issues={issues} />
+            )}
+            {step === "voters" && (
+              <VotersStep
+                draft={draft}
+                patch={patch}
+                issues={issues}
+                communityDid={communityDid}
+              />
+            )}
+            {step === "schedule" && (
+              <ScheduleStep draft={draft} patch={patch} issues={issues} />
+            )}
             {step === "counting" && (
-              <CountingStep draft={draft} patch={patch} issues={issues} trusted={trusted} />
+              <CountingStep
+                draft={draft}
+                patch={patch}
+                issues={issues}
+                trusted={trusted}
+              />
             )}
             {step === "review" && (
-              <ReviewStep draft={draft} manifest={manifest} issues={issues} onFix={goto} />
+              <ReviewStep
+                draft={draft}
+                manifest={manifest}
+                issues={issues}
+                onFix={goto}
+              />
             )}
             <div className="election-builder-nav">
               {stepIndex > 0 && (
-                <button type="button" className="secondary" onClick={() => goto(STEPS[stepIndex - 1]!.id)}>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => goto(STEPS[stepIndex - 1]!.id)}
+                >
                   Back
                 </button>
               )}
               {step !== "review" ? (
-                <button className="primary" type="button" onClick={() => goto(STEPS[stepIndex + 1]!.id)}>
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={() => goto(STEPS[stepIndex + 1]!.id)}
+                >
                   Next
                 </button>
               ) : (
-                <button className="primary"
+                <button
+                  className="primary"
                   type="button"
-                  disabled={issues.length > 0 || !communityDid || create.isPending}
+                  disabled={
+                    issues.length > 0 || !communityDid || create.isPending
+                  }
                   onClick={() => create.mutate()}
                 >
                   {draft.binding ? "Create and send for approval" : "Create"}
@@ -302,7 +371,12 @@ export function NewElection() {
         </>
       )}
       <Refusal title="The election was not created" error={create.error} />
-      {community.isError && <Refusal title="Could not read this community's DID" error={community.error} />}
+      {community.isError && (
+        <Refusal
+          title="Could not read this community's DID"
+          error={community.error}
+        />
+      )}
     </div>
   );
 }
@@ -321,8 +395,19 @@ function Stepper({
   return (
     <ol className="election-stepper" aria-label="Steps">
       {STEPS.map((s, i) => {
-        const wrong = s.id !== "review" && visited.has(s.id) && s.id !== current && issues.some((x) => x.step === s.id);
-        const state = s.id === current ? "current" : wrong ? "wrong" : visited.has(s.id) ? "done" : "todo";
+        const wrong =
+          s.id !== "review" &&
+          visited.has(s.id) &&
+          s.id !== current &&
+          issues.some((x) => x.step === s.id);
+        const state =
+          s.id === current
+            ? "current"
+            : wrong
+              ? "wrong"
+              : visited.has(s.id)
+                ? "done"
+                : "todo";
         return (
           <li key={s.id} className={state}>
             <button
@@ -335,7 +420,9 @@ function Stepper({
                 {wrong ? "!" : i + 1}
               </span>
               {s.label}
-              {wrong && <span className="visually-hidden"> (needs attention)</span>}
+              {wrong && (
+                <span className="visually-hidden"> (needs attention)</span>
+              )}
             </button>
           </li>
         );
@@ -350,7 +437,9 @@ function errorFor(issues: Issue[], field: string): string | undefined {
 }
 
 function errorsUnder(issues: Issue[], prefix: string): Issue[] {
-  return issues.filter((i) => i.field === prefix || i.field.startsWith(`${prefix}.`));
+  return issues.filter(
+    (i) => i.field === prefix || i.field.startsWith(`${prefix}.`),
+  );
 }
 
 interface StepProps {
@@ -359,7 +448,13 @@ interface StepProps {
   issues: Issue[];
 }
 
-function StepIntro({ title, children }: { title: string; children: ReactNode }) {
+function StepIntro({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
   return (
     <>
       <h2>{title}</h2>
@@ -377,7 +472,10 @@ function AboutStep({
   const confirm = useConfirm();
   const [from, setFrom] = useState("");
   const [fromError, setFromError] = useState<string | null>(null);
-  const previous = useQuery({ queryKey: [...ELECTIONS_KEY, "list"], queryFn: fetchElections });
+  const previous = useQuery({
+    queryKey: [...ELECTIONS_KEY, "list"],
+    queryFn: fetchElections,
+  });
 
   const copyFrom = async (electionId: string) => {
     setFrom(electionId);
@@ -385,7 +483,8 @@ function AboutStep({
     if (!electionId) return;
     const ok = await confirm({
       title: `Start from ${electionId}?`,
-      message: "Its questions, voters and counting replace this draft's. The identifier and schedule start fresh.",
+      message:
+        "Its questions, voters and counting replace this draft's. The identifier and schedule start fresh.",
       confirmLabel: "Replace the draft",
     });
     if (!ok) {
@@ -406,11 +505,15 @@ function AboutStep({
   return (
     <>
       <StepIntro title="About this election">
-        What members see first. The identifier is part of every ticket and vote, so it is fixed
-        once created.
+        What members see first. The identifier is part of every ticket and vote,
+        so it is fixed once created.
       </StepIntro>
       {previous.data && previous.data.length > 0 && (
-        <Field label="Start from a previous election" hint="Optional." error={fromError ?? undefined}>
+        <Field
+          label="Start from a previous election"
+          hint="Optional."
+          error={fromError ?? undefined}
+        >
           <select value={from} onChange={(e) => void copyFrom(e.target.value)}>
             <option value="">—</option>
             {previous.data.map((e) => (
@@ -429,7 +532,9 @@ function AboutStep({
           onChange={(e) =>
             patch({
               title: e.target.value,
-              ...(draft.autoId ? { electionId: suggestElectionId(e.target.value) } : {}),
+              ...(draft.autoId
+                ? { electionId: suggestElectionId(e.target.value) }
+                : {}),
             })
           }
         />
@@ -446,8 +551,16 @@ function AboutStep({
           onChange={(e) => patch({ electionId: e.target.value, autoId: false })}
         />
       </Field>
-      <Field label="Description" hint="Optional. Shown to members with the election." error={errorFor(issues, "description")}>
-        <textarea rows={4} value={draft.description} onChange={(e) => patch({ description: e.target.value })} />
+      <Field
+        label="Description"
+        hint="Optional. Shown to members with the election."
+        error={errorFor(issues, "description")}
+      >
+        <textarea
+          rows={4}
+          value={draft.description}
+          onChange={(e) => patch({ description: e.target.value })}
+        />
       </Field>
       <Switch
         label="Binding"
@@ -476,8 +589,8 @@ function QuestionsStep({ draft, patch, issues }: StepProps) {
   return (
     <>
       <StepIntro title="Questions">
-        Each question has a key that ballots and results name it by. Option keys work the same way
-        and follow their labels until you change them.
+        Each question has a key that ballots and results name it by. Option keys
+        work the same way and follow their labels until you change them.
       </StepIntro>
       {listIssues.map((x) => (
         <p key={x.message} className="field-error">
@@ -493,14 +606,23 @@ function QuestionsStep({ draft, patch, issues }: StepProps) {
           issues={errorsUnder(issues, `questions.${i}`)}
           onChange={(next) => setQ(i, next)}
           onMove={(by) => move(i, by)}
-          onRemove={() => patch({ questions: draft.questions.filter((_, j) => j !== i) })}
+          onRemove={() =>
+            patch({ questions: draft.questions.filter((_, j) => j !== i) })
+          }
         />
       ))}
       <div>
         <button
           type="button"
           className="secondary"
-          onClick={() => patch({ questions: [...draft.questions, newQuestion(draft.questions.length)] })}
+          onClick={() =>
+            patch({
+              questions: [
+                ...draft.questions,
+                newQuestion(draft.questions.length),
+              ],
+            })
+          }
         >
           Add a question
         </button>
@@ -538,28 +660,57 @@ function QuestionEditor({
             : { ...o, label, key: o.autoKey ? slugKey(label) : o.key },
       ),
     });
-  const optionIssues = issues.filter((x) => x.field.startsWith(`${at}.options`));
-  const exactlyOne = q.type === "choice" && q.minSelections.trim() === "1" && q.maxSelections.trim() === "1";
+  const optionIssues = issues.filter((x) =>
+    x.field.startsWith(`${at}.options`),
+  );
+  const exactlyOne =
+    q.type === "choice" &&
+    q.minSelections.trim() === "1" &&
+    q.maxSelections.trim() === "1";
   return (
     <fieldset className="election-question">
       <legend>Question {index + 1}</legend>
       <div className="election-question-tools">
-        <button type="button" className="link" disabled={index === 0} onClick={() => onMove(-1)}>
+        <button
+          type="button"
+          className="link"
+          disabled={index === 0}
+          onClick={() => onMove(-1)}
+        >
           Move up
         </button>
-        <button type="button" className="link" disabled={index === count - 1} onClick={() => onMove(1)}>
+        <button
+          type="button"
+          className="link"
+          disabled={index === count - 1}
+          onClick={() => onMove(1)}
+        >
           Move down
         </button>
-        <button type="button" className="link" disabled={count === 1} onClick={onRemove}>
+        <button
+          type="button"
+          className="link"
+          disabled={count === 1}
+          onClick={onRemove}
+        >
           Remove
         </button>
       </div>
       <Field label="What is asked" error={errorFor(issues, `${at}.text`)}>
-        <textarea rows={2} value={q.text} onChange={(e) => set({ text: e.target.value })} />
+        <textarea
+          rows={2}
+          value={q.text}
+          onChange={(e) => set({ text: e.target.value })}
+        />
       </Field>
       <div className="election-row">
         <Field label="Kind" hint={QUESTION_TYPE_TEXT[q.type].detail}>
-          <select value={q.type} onChange={(e) => onChange(retypeQuestion(q, e.target.value as QuestionType))}>
+          <select
+            value={q.type}
+            onChange={(e) =>
+              onChange(retypeQuestion(q, e.target.value as QuestionType))
+            }
+          >
             {(Object.keys(QUESTION_TYPE_TEXT) as QuestionType[]).map((t) => (
               <option key={t} value={t}>
                 {QUESTION_TYPE_TEXT[t].label}
@@ -568,7 +719,12 @@ function QuestionEditor({
           </select>
         </Field>
         <Field label="Key" error={errorFor(issues, `${at}.key`)}>
-          <input type="text" className="mono" value={q.key} onChange={(e) => set({ key: e.target.value })} />
+          <input
+            type="text"
+            className="mono"
+            value={q.key}
+            onChange={(e) => set({ key: e.target.value })}
+          />
         </Field>
       </div>
       {q.type !== "text" && (
@@ -595,7 +751,9 @@ function QuestionEditor({
                 type="button"
                 className="link"
                 aria-label={`Remove option ${j + 1}`}
-                onClick={() => set({ options: q.options.filter((_, k) => k !== j) })}
+                onClick={() =>
+                  set({ options: q.options.filter((_, k) => k !== j) })
+                }
               >
                 Remove
               </button>
@@ -610,12 +768,24 @@ function QuestionEditor({
             <button
               type="button"
               className="secondary"
-              onClick={() => set({ options: [...q.options, option(`Option ${q.options.length + 1}`)] })}
+              onClick={() =>
+                set({
+                  options: [
+                    ...q.options,
+                    option(`Option ${q.options.length + 1}`),
+                  ],
+                })
+              }
             >
               Add an option
             </button>
             {Object.entries(OPTION_PRESETS).map(([name, make]) => (
-              <button key={name} type="button" className="link" onClick={() => set({ options: make() })}>
+              <button
+                key={name}
+                type="button"
+                className="link"
+                onClick={() => set({ options: make() })}
+              >
                 Use {name}
               </button>
             ))}
@@ -624,15 +794,28 @@ function QuestionEditor({
       )}
       {q.type === "choice" && (
         <div className="election-row">
-          <Field label="Fewest choices" error={errorFor(issues, `${at}.minSelections`)}>
-            <input type="number" min={0} value={q.minSelections} onChange={(e) => set({ minSelections: e.target.value })} />
+          <Field
+            label="Fewest choices"
+            error={errorFor(issues, `${at}.minSelections`)}
+          >
+            <input
+              type="number"
+              min={0}
+              value={q.minSelections}
+              onChange={(e) => set({ minSelections: e.target.value })}
+            />
           </Field>
           <Field
             label="Most choices"
             hint={exactlyOne ? "A voter picks exactly one." : undefined}
             error={errorFor(issues, `${at}.maxSelections`)}
           >
-            <input type="number" min={1} value={q.maxSelections} onChange={(e) => set({ maxSelections: e.target.value })} />
+            <input
+              type="number"
+              min={1}
+              value={q.maxSelections}
+              onChange={(e) => set({ maxSelections: e.target.value })}
+            />
           </Field>
         </div>
       )}
@@ -641,29 +824,54 @@ function QuestionEditor({
           label="Partial rankings"
           checked={q.partial}
           onChange={(e) => set({ partial: e.target.checked })}
-          description={q.partial ? "A voter may rank only their top options." : "A voter ranks every option."}
+          description={
+            q.partial
+              ? "A voter may rank only their top options."
+              : "A voter ranks every option."
+          }
         />
       )}
       {q.type === "score" && (
         <div className="election-row">
           <Field label="Lowest score" error={errorFor(issues, `${at}.min`)}>
-            <input type="number" value={q.min} onChange={(e) => set({ min: e.target.value })} />
+            <input
+              type="number"
+              value={q.min}
+              onChange={(e) => set({ min: e.target.value })}
+            />
           </Field>
           <Field label="Highest score" error={errorFor(issues, `${at}.max`)}>
-            <input type="number" value={q.max} onChange={(e) => set({ max: e.target.value })} />
+            <input
+              type="number"
+              value={q.max}
+              onChange={(e) => set({ max: e.target.value })}
+            />
           </Field>
         </div>
       )}
       {q.type === "text" && (
-        <Field label="Longest answer, in characters" error={errorFor(issues, `${at}.maxLength`)}>
-          <input type="number" min={1} max={4096} value={q.maxLength} onChange={(e) => set({ maxLength: e.target.value })} />
+        <Field
+          label="Longest answer, in characters"
+          error={errorFor(issues, `${at}.maxLength`)}
+        >
+          <input
+            type="number"
+            min={1}
+            max={4096}
+            value={q.maxLength}
+            onChange={(e) => set({ maxLength: e.target.value })}
+          />
         </Field>
       )}
       <Switch
         label="Optional"
         checked={q.optional}
         onChange={(e) => set({ optional: e.target.checked })}
-        description={q.optional ? "A voter may leave it unanswered." : "Every ballot answers it."}
+        description={
+          q.optional
+            ? "A voter may leave it unanswered."
+            : "Every ballot answers it."
+        }
       />
     </fieldset>
   );
@@ -687,7 +895,13 @@ function Radios<T extends string>({
       <legend className="field-label">{legend}</legend>
       {options.map((o) => (
         <label key={o.value} className="checkbox">
-          <input type="radio" name={name} value={o.value} checked={value === o.value} onChange={() => onChange(o.value)} />
+          <input
+            type="radio"
+            name={name}
+            value={o.value}
+            checked={value === o.value}
+            onChange={() => onChange(o.value)}
+          />
           <span className="checkbox-text">
             <strong>{o.label}</strong>
             {o.detail && <span className="choice-hint">{o.detail}</span>}
@@ -708,31 +922,64 @@ interface MemberOfChoice {
 const MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/members/list/0.2";
 
 /** The parties a credential roll may name: this community, its groups (by their own DIDs),
- *  and its members, any of which may be a party — another community, a group of one, a
- *  network — that is itself a member. A convenience: the community checks the DID at create. */
+ *  and the members holding a membership credential this community issued (`currentVmcId`),
+ *  any of which may be a party — another community, a group of one, a network — that is
+ *  itself a member (VTI-VOT-026). The list cannot tell a party from a person, nor whether that
+ *  credential has since been revoked: a convenience, and the community checks the DID at
+ *  create. */
 function useMemberOfChoices(enabled: boolean, communityDid: string) {
-  const groups = useQuery({ queryKey: ["groups", "list"], queryFn: listGroups, enabled, staleTime: 60_000 });
+  const groups = useQuery({
+    queryKey: ["groups", "list"],
+    queryFn: listGroups,
+    enabled,
+    staleTime: 60_000,
+  });
   const members = useQuery({
     queryKey: ["election-builder", "member-parties"],
     queryFn: () =>
-      postSignedRead<{ items: { did: string; label?: string | null }[] }>(MEMBERS_LIST_TASK, { limit: 200 }),
+      postSignedRead<{
+        items: {
+          did: string;
+          label?: string | null;
+          currentVmcId?: string | null;
+        }[];
+      }>(MEMBERS_LIST_TASK, { limit: 200 }),
     enabled,
     staleTime: 60_000,
   });
   const choices: MemberOfChoice[] = [];
-  if (communityDid) choices.push({ did: communityDid, label: "This community", kind: "thisCommunity" });
+  if (communityDid)
+    choices.push({
+      did: communityDid,
+      label: "This community",
+      kind: "thisCommunity",
+    });
   for (const { group: g } of groups.data ?? []) {
-    if (g.groupDid) choices.push({ did: g.groupDid, label: `Group: ${g.name}`, kind: "communityGroup" });
+    if (g.groupDid)
+      choices.push({
+        did: g.groupDid,
+        label: `Group: ${g.name}`,
+        kind: "communityGroup",
+      });
   }
   for (const m of members.data?.items ?? []) {
-    if (m.did && m.did !== communityDid) {
-      choices.push({ did: m.did, label: `Member: ${m.label || shortenDid(m.did)}`, kind: "memberParty" });
+    if (m.did && m.did !== communityDid && m.currentVmcId) {
+      choices.push({
+        did: m.did,
+        label: `Member: ${m.label || shortenDid(m.did)}`,
+        kind: "memberParty",
+      });
     }
   }
   return choices;
 }
 
-function VotersStep({ draft, patch, issues, communityDid }: StepProps & { communityDid: string }) {
+function VotersStep({
+  draft,
+  patch,
+  issues,
+  communityDid,
+}: StepProps & { communityDid: string }) {
   const credential = draft.roll === "credential";
   const choices = useMemberOfChoices(credential, communityDid);
   const did = draft.memberOf.trim();
@@ -742,19 +989,32 @@ function VotersStep({ draft, patch, issues, communityDid }: StepProps & { commun
   return (
     <>
       <StepIntro title="Who votes">
-        The community issues each party the roll admits one ticket, blind. It never learns which
-        ballot is whose.
+        The community issues each party the roll admits one ticket, blind. It
+        never learns which ballot is whose.
       </StepIntro>
       <Radios<RollRule>
         name="roll"
         legend="Eligible"
         value={draft.roll}
         onChange={(roll) => patch({ roll })}
-        options={(Object.keys(ROLL_TEXT) as RollRule[]).map((r) => ({ value: r, label: ROLL_TEXT[r] }))}
+        options={(Object.keys(ROLL_TEXT) as RollRule[]).map((r) => ({
+          value: r,
+          label: ROLL_TEXT[r],
+        }))}
       />
       {(draft.roll === "listed" || draft.roll === "membersAndListed") && (
-        <Field label="Listed parties" hint="DIDs, one per line." error={errorFor(issues, "listed")}>
-          <textarea rows={5} className="mono" spellCheck={false} value={draft.listed} onChange={(e) => patch({ listed: e.target.value })} />
+        <Field
+          label="Listed parties"
+          hint="DIDs, one per line."
+          error={errorFor(issues, "listed")}
+        >
+          <textarea
+            rows={5}
+            className="mono"
+            spellCheck={false}
+            value={draft.listed}
+            onChange={(e) => patch({ listed: e.target.value })}
+          />
         </Field>
       )}
       {credential && (
@@ -765,7 +1025,10 @@ function VotersStep({ draft, patch, issues, communityDid }: StepProps & { commun
               hint="This community, one of its groups, or a party that is itself a member."
               error={errorFor(issues, "memberOf")}
             >
-              <select value={did} onChange={(e) => patch({ memberOf: e.target.value })}>
+              <select
+                value={did}
+                onChange={(e) => patch({ memberOf: e.target.value })}
+              >
                 <option value="">Choose…</option>
                 {choices.map((c) => (
                   <option key={`${c.kind}:${c.did}`} value={c.did}>
@@ -780,7 +1043,12 @@ function VotersStep({ draft, patch, issues, communityDid }: StepProps & { commun
               hint="The DID whose membership credentials admit their holders."
               error={errorFor(issues, "memberOf")}
             >
-              <input className="mono" spellCheck={false} value={draft.memberOf} onChange={(e) => patch({ memberOf: e.target.value })} />
+              <input
+                className="mono"
+                spellCheck={false}
+                value={draft.memberOf}
+                onChange={(e) => patch({ memberOf: e.target.value })}
+              />
             </Field>
           )}
           {choices.length > 0 && (
@@ -792,15 +1060,23 @@ function VotersStep({ draft, patch, issues, communityDid }: StepProps & { commun
                 setTyping(!typing);
               }}
             >
-              {typing ? "Choose from this community's parties" : "Type a DID instead"}
+              {typing
+                ? "Choose from this community's parties"
+                : "Type a DID instead"}
             </button>
           )}
-          {picked && <p className="muted">{did} is {MEMBER_OF_KIND_TEXT[picked.kind]}.</p>}
+          {picked && (
+            <p className="muted">
+              {did} is {MEMBER_OF_KIND_TEXT[picked.kind]}.
+            </p>
+          )}
           <div className="muted" role="note">
             {CREDENTIAL_ROLL_TRUST.map((t) => (
               <p key={t}>{t}</p>
             ))}
-            {(!picked || picked.kind === "memberParty") && <p>{MEMBER_PARTY_VISIBILITY}</p>}
+            {(!picked || picked.kind === "memberParty") && (
+              <p>{MEMBER_PARTY_VISIBILITY}</p>
+            )}
           </div>
         </>
       )}
@@ -819,8 +1095,15 @@ function zoneName(): string {
 function ScheduleStep({ draft, patch, issues }: StepProps) {
   const opens = Date.parse(draft.votingOpensAt);
   const closes = Date.parse(draft.votingClosesAt);
-  const span = !Number.isNaN(opens) && !Number.isNaN(closes) && closes > opens ? (closes - opens) / 1000 : null;
-  const time = (field: "registrationOpensAt" | "votingOpensAt" | "votingClosesAt", label: string, hint: string) => (
+  const span =
+    !Number.isNaN(opens) && !Number.isNaN(closes) && closes > opens
+      ? (closes - opens) / 1000
+      : null;
+  const time = (
+    field: "registrationOpensAt" | "votingOpensAt" | "votingClosesAt",
+    label: string,
+    hint: string,
+  ) => (
     <Field label={label} hint={hint} error={errorFor(issues, field)}>
       <input
         type="datetime-local"
@@ -831,10 +1114,22 @@ function ScheduleStep({ draft, patch, issues }: StepProps) {
   );
   return (
     <>
-      <StepIntro title="Schedule">Times are in {zoneName()} and stored in UTC.</StepIntro>
-      {time("registrationOpensAt", "Tickets from", "Members can take a ticket from this time.")}
+      <StepIntro title="Schedule">
+        Times are in {zoneName()} and stored in UTC.
+      </StepIntro>
+      {time(
+        "registrationOpensAt",
+        "Tickets from",
+        "Members can take a ticket from this time.",
+      )}
       {time("votingOpensAt", "Voting opens", "No earlier than tickets.")}
-      {time("votingClosesAt", "Voting closes", span ? `Voting runs for ${formatDuration(span)}.` : "After voting opens.")}
+      {time(
+        "votingClosesAt",
+        "Voting closes",
+        span
+          ? `Voting runs for ${formatDuration(span)}.`
+          : "After voting opens.",
+      )}
       <Switch
         label="Allow closing early"
         checked={draft.allowEarlyClose}
@@ -859,17 +1154,20 @@ function CountingStep({
   trusted,
 }: StepProps & { trusted: TrustedBallotBox[] | null | undefined }) {
   const hasText = draft.questions.some((q) => q.type === "text");
-  const lowRelease = draft.textReleaseThreshold.trim() ? textReleaseWarning(Number(draft.textReleaseThreshold)) : null;
+  const lowRelease = draft.textReleaseThreshold.trim()
+    ? textReleaseWarning(Number(draft.textReleaseThreshold))
+    : null;
   const box = draft.ballotBox.trim();
   const listed = trusted?.find((b) => b.did === box);
   // Typing is the fallback: a VTC that cannot list them, a failed read, or a DID not listed.
   const [typing, setTyping] = useState(() => !!box && !listed);
-  const choosing = !!trusted && trusted.length > 0 && !typing && (!box || !!listed);
+  const choosing =
+    !!trusted && trusted.length > 0 && !typing && (!box || !!listed);
   return (
     <>
       <StepIntro title="Counting">
-        The ballot box is a voting service, never this community: it admits the votes, keeps the
-        board and counts.
+        The ballot box is a voting service, never this community: it admits the
+        votes, keeps the board and counts.
       </StepIntro>
       {choosing ? (
         <Field
@@ -919,15 +1217,19 @@ function CountingStep({
       )}
       {choosing && listed?.sameOperator && (
         <p className="field-hint">
-          {listed.operator} runs both this community and this ballot box, so its members are told
-          that one party could link a ballot to its voter.
+          {listed.operator} runs both this community and this ballot box, so its
+          members are told that one party could link a ballot to its voter.
         </p>
       )}
       {!choosing && trusted && trusted.length > 0 && (
-        <button type="button" className="link" onClick={() => {
-          setTyping(false);
-          if (!listed) patch({ ballotBox: "" });
-        }}>
+        <button
+          type="button"
+          className="link"
+          onClick={() => {
+            setTyping(false);
+            if (!listed) patch({ ballotBox: "" });
+          }}
+        >
           Choose from the trusted ballot boxes
         </button>
       )}
@@ -935,14 +1237,21 @@ function CountingStep({
         name="secrecy"
         legend="Secrecy"
         value={draft.secrecy}
-        onChange={(secrecy) => patch({ secrecy, ...(secrecy !== "open" ? { resultsBeforeClose: false } : {}) })}
+        onChange={(secrecy) =>
+          patch({
+            secrecy,
+            ...(secrecy !== "open" ? { resultsBeforeClose: false } : {}),
+          })
+        }
         options={(Object.keys(SECRECY_TEXT) as Secrecy[]).map((s) => ({
           value: s,
           label: SECRECY_TEXT[s].label,
           detail: SECRECY_TEXT[s].detail,
         }))}
       />
-      {errorFor(issues, "secrecy") && <p className="field-error">{errorFor(issues, "secrecy")}</p>}
+      {errorFor(issues, "secrecy") && (
+        <p className="field-error">{errorFor(issues, "secrecy")}</p>
+      )}
       {draft.secrecy !== "open" && (
         <div className="election-row">
           <Field
@@ -950,14 +1259,25 @@ function CountingStep({
             hint="DIDs, one per line: at least two, neither this community nor the ballot box. Each runs the key ceremony from their own VTA."
             error={errorFor(issues, "trustees")}
           >
-            <textarea rows={4} className="mono" spellCheck={false} value={draft.trustees} onChange={(e) => patch({ trustees: e.target.value })} />
+            <textarea
+              rows={4}
+              className="mono"
+              spellCheck={false}
+              value={draft.trustees}
+              onChange={(e) => patch({ trustees: e.target.value })}
+            />
           </Field>
           <Field
             label="Trustees needed to decrypt"
             hint={`Of ${didList(draft.trustees).length} named.`}
             error={errorFor(issues, "threshold")}
           >
-            <input type="number" min={2} value={draft.threshold} onChange={(e) => patch({ threshold: e.target.value })} />
+            <input
+              type="number"
+              min={2}
+              value={draft.threshold}
+              onChange={(e) => patch({ threshold: e.target.value })}
+            />
           </Field>
         </div>
       )}
@@ -968,11 +1288,25 @@ function CountingStep({
         onChange={(boardVisibility) => patch({ boardVisibility })}
         options={[
           { value: "public", label: "Anyone" },
-          { value: "private", label: "The community and its auditors", detail: "and each voter, for their own vote" },
+          {
+            value: "private",
+            label: "The community and its auditors",
+            detail: "and each voter, for their own vote",
+          },
         ]}
       />
-      <Field label="Auditors" hint="Optional. DIDs, one per line, whose attestations certification keeps." error={errorFor(issues, "auditors")}>
-        <textarea rows={3} className="mono" spellCheck={false} value={draft.auditors} onChange={(e) => patch({ auditors: e.target.value })} />
+      <Field
+        label="Auditors"
+        hint="Optional. DIDs, one per line, whose attestations certification keeps."
+        error={errorFor(issues, "auditors")}
+      >
+        <textarea
+          rows={3}
+          className="mono"
+          spellCheck={false}
+          value={draft.auditors}
+          onChange={(e) => patch({ auditors: e.target.value })}
+        />
       </Field>
       <Radios
         name="revote"
@@ -981,7 +1315,11 @@ function CountingStep({
         onChange={(revote) => patch({ revote })}
         options={[
           { value: "replace", label: "Replaces the first" },
-          { value: "refuse", label: "Is refused", detail: "the first vote stands" },
+          {
+            value: "refuse",
+            label: "Is refused",
+            detail: "the first vote stands",
+          },
         ]}
       />
       {draft.secrecy === "open" && (
@@ -990,7 +1328,9 @@ function CountingStep({
           checked={draft.resultsBeforeClose}
           onChange={(e) => patch({ resultsBeforeClose: e.target.checked })}
           description={
-            draft.resultsBeforeClose ? "Totals can be read while voting is open." : "Totals only after voting closes."
+            draft.resultsBeforeClose
+              ? "Totals can be read while voting is open."
+              : "Totals only after voting closes."
           }
         />
       )}
@@ -1041,8 +1381,9 @@ function ReviewStep({
   return (
     <>
       <StepIntro title="Review">
-        This is what will be registered. Nothing in it can be changed afterwards: a mistake means
-        cancelling the election and creating another.
+        This is what will be registered. Nothing in it can be changed
+        afterwards: a mistake means cancelling the election and creating
+        another.
       </StepIntro>
       {issues.length > 0 && (
         <div className="election-issues" role="alert">
@@ -1051,7 +1392,11 @@ function ReviewStep({
             {issues.map((x, i) => (
               <li key={i}>
                 {x.message}{" "}
-                <button type="button" className="link" onClick={() => onFix(x.step)}>
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => onFix(x.step)}
+                >
                   Go to {label(x.step)}
                 </button>
               </li>
@@ -1062,10 +1407,15 @@ function ReviewStep({
       <dl className="kv">
         <dt>Election</dt>
         <dd>
-          {draft.title || <span className="muted">(no title)</span>} — <code>{draft.electionId}</code>
+          {draft.title || <span className="muted">(no title)</span>} —{" "}
+          <code>{draft.electionId}</code>
         </dd>
         <dt>Binding</dt>
-        <dd>{draft.binding ? "Yes — another administrator approves it before it is created" : "No"}</dd>
+        <dd>
+          {draft.binding
+            ? "Yes — another administrator approves it before it is created"
+            : "No"}
+        </dd>
         <dt>Questions</dt>
         <dd>
           <ol className="election-review-questions">
@@ -1074,7 +1424,8 @@ function ReviewStep({
                 {q.text || <code>{q.key}</code>}{" "}
                 <span className="muted">
                   ({QUESTION_TYPE_TEXT[q.type].label.toLowerCase()}
-                  {q.type !== "text" && `: ${q.options.map((o) => o.label || o.key).join(", ")}`}
+                  {q.type !== "text" &&
+                    `: ${q.options.map((o) => o.label || o.key).join(", ")}`}
                   {q.optional ? ", optional" : ""})
                 </span>
               </li>
@@ -1090,8 +1441,8 @@ function ReviewStep({
             <>
               : <code>{draft.memberOf.trim() || "—"}</code>
               <div className="muted">
-                Eligibility is proven when each member claims a ticket; turnout is counted against
-                tickets issued, never a roll size.
+                Eligibility is proven when each member claims a ticket; turnout
+                is counted against tickets issued, never a roll size.
               </div>
             </>
           )}
@@ -1106,7 +1457,8 @@ function ReviewStep({
         <dt>Secrecy</dt>
         <dd>
           {SECRECY_TEXT[draft.secrecy].label}
-          {draft.secrecy !== "open" && `, ${draft.threshold} of ${didList(draft.trustees).length} trustees to decrypt`}
+          {draft.secrecy !== "open" &&
+            `, ${draft.threshold} of ${didList(draft.trustees).length} trustees to decrypt`}
         </dd>
         <dt>Ballot box</dt>
         <dd>
@@ -1115,27 +1467,39 @@ function ReviewStep({
         <dt>Board</dt>
         <dd>
           {draft.boardVisibility === "public" ? "Public" : "Private"}
-          {didList(draft.auditors).length > 0 && `, ${didList(draft.auditors).length} auditor(s)`}
+          {didList(draft.auditors).length > 0 &&
+            `, ${didList(draft.auditors).length} auditor(s)`}
         </dd>
         <dt>Changing a vote</dt>
-        <dd>{draft.revote === "replace" ? "A later vote replaces the earlier one" : "The first vote stands"}</dd>
+        <dd>
+          {draft.revote === "replace"
+            ? "A later vote replaces the earlier one"
+            : "The first vote stands"}
+        </dd>
         <dt>Written answers</dt>
         <dd>
-          Shown once {draft.textReleaseThreshold || "—"} ballots are counted, never while voting is open
+          Shown once {draft.textReleaseThreshold || "—"} ballots are counted,
+          never while voting is open
           {(() => {
-            const w = draft.textReleaseThreshold.trim() ? textReleaseWarning(Number(draft.textReleaseThreshold)) : null;
+            const w = draft.textReleaseThreshold.trim()
+              ? textReleaseWarning(Number(draft.textReleaseThreshold))
+              : null;
             return w && <div className="warning-text">{w}</div>;
           })()}
         </dd>
         <dt>Manifest digest</dt>
         <dd>
           <code>{digest ?? "…"}</code>
-          <div className="muted">Computed here; the community computes it again on create.</div>
+          <div className="muted">
+            Computed here; the community computes it again on create.
+          </div>
         </dd>
       </dl>
       <details>
         <summary>The manifest as JSON</summary>
-        <pre className="mono election-json">{JSON.stringify(manifest, null, 2)}</pre>
+        <pre className="mono election-json">
+          {JSON.stringify(manifest, null, 2)}
+        </pre>
       </details>
     </>
   );
