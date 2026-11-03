@@ -214,6 +214,10 @@ pub struct AppState {
     /// reply converges on the first execution instead of producing a second
     /// durable effect.
     pub idempotency_ks: KeyspaceHandle,
+    /// The record of accepted Trust Task document identifiers (VTI-OPS-025 …
+    /// 027, SPEC §7.2 item 11), shared by every binding. Read through
+    /// [`Self::accepted_ids`].
+    pub accepted_ids_ks: KeyspaceHandle,
     /// In-flight backup-bundle records for the descriptor-pattern
     /// export/import slice (see
     /// `docs/05-design-notes/backup-descriptor-pattern.md`). Holds
@@ -441,6 +445,12 @@ impl AppState {
         }
     }
 
+    /// The accepted-document-id record over [`Self::accepted_ids_ks`]: the one
+    /// every binding claims a document's `id` in before executing it.
+    pub fn accepted_ids(&self) -> vti_trust_task_server::StoreAcceptedIds {
+        vti_trust_task_server::StoreAcceptedIds::new(self.accepted_ids_ks.clone())
+    }
+
     /// The resolver Trust Task Data-Integrity proofs are verified with.
     ///
     /// Carries the configured DID cache, so a proof by any DID that names a key
@@ -588,6 +598,9 @@ pub async fn build_app_state(
     // may hold response bodies — a `Keyed` record carries the original response
     // verbatim, which is caller data even when it is not secret material.
     let idempotency_ks = apply_encryption(store.keyspace(crate::keyspaces::IDEMPOTENCY)?);
+    // The accepted-document-id record. Encrypted for the same reason: a row
+    // carries the first execution's response.
+    let accepted_ids_ks = apply_encryption(store.keyspace(crate::keyspaces::ACCEPTED_IDS)?);
     let backup_bundles_ks = apply_encryption(store.keyspace(crate::keyspaces::BACKUP_BUNDLES)?);
     // Stage `.vtabak` blobs under `{data_dir}/backups`. Created lazily
     // by the op layer at first `initiate-*` call (so a VTA that never
@@ -723,6 +736,7 @@ pub async fn build_app_state(
         service_state_ks,
         sealed_nonces_ks,
         idempotency_ks,
+        accepted_ids_ks,
         backup_bundles_ks,
         backup_blob_dir,
         #[cfg(feature = "webvh")]
@@ -1225,6 +1239,8 @@ pub async fn run(
         let storage_acl_ks = acl_ks.clone();
         let storage_consent_ks = consent_ks.clone();
         let storage_idempotency_ks = idempotency_ks.clone();
+        let storage_accepted_ids_ks =
+            apply_encryption(store.keyspace(crate::keyspaces::ACCEPTED_IDS)?);
         let storage_task_consent_ks = task_consent_ks.clone();
         let storage_vault_ks = vault_ks.clone();
         let storage_witness_sessions_ks =
@@ -1741,6 +1757,7 @@ pub async fn run(
                     storage_acl_ks,
                     storage_consent_ks,
                     storage_idempotency_ks,
+                    storage_accepted_ids_ks,
                     storage_task_consent_ks,
                     storage_vault_ks,
                     storage_witness_sessions_ks,
@@ -1930,6 +1947,7 @@ fn run_storage_thread(
     acl_ks: KeyspaceHandle,
     consent_ks: KeyspaceHandle,
     idempotency_ks: KeyspaceHandle,
+    accepted_ids_ks: KeyspaceHandle,
     task_consent_ks: KeyspaceHandle,
     vault_ks: KeyspaceHandle,
     witness_sessions_ks: KeyspaceHandle,
@@ -1997,6 +2015,20 @@ fn run_storage_thread(
                         // this one logs rather than propagating, and why it is
                         // not audited (retry bookkeeping, not a security event).
                         crate::idempotency_sweeper::sweep_expired_logged(&idempotency_ks).await;
+                        // The accepted-document-id record, the same way: a claim
+                        // treats an expired row as absent, so a missed pass costs
+                        // space only. Its rows live minutes, so one tick's worth
+                        // is the steady-state size.
+                        match vti_trust_task_server::accepted_store::sweep_expired(
+                            &accepted_ids_ks,
+                            chrono::Utc::now(),
+                        )
+                        .await
+                        {
+                            Ok(n) if n > 0 => debug!("accepted-id sweeper pruned {n} rows"),
+                            Ok(_) => {}
+                            Err(e) => warn!("accepted-id sweeper error: {e}"),
+                        }
                         // Same for task-execution consent: an unanswered pending
                         // would otherwise sit in the keyspace forever, since the
                         // gate only expires one lazily when its digest is re-read.

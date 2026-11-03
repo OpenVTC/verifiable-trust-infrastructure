@@ -14,6 +14,7 @@
 //! <module>::`; see `.github/workflows/ci.yml` for the feature-gated
 //! examples.
 
+mod accepted_ids_record;
 mod api_integration;
 mod app_state_single_construction;
 mod approvals_breakglass_cli;
