@@ -8,6 +8,7 @@ specification versions it pins, and one Type URI index over all of them.
 | `vti-specs-rooms` | `rooms/*` (alone, so `vti-rooms-wasm` compiles nothing else) |
 | `vti-specs-vta` | `vta/*` |
 | `vti-specs-vtc` | `vtc/*` |
+| `vti-specs-vtn` | `vtn/*` |
 | `vti-specs-core` | every other family VTI speaks |
 
 Each version is generated in exactly one of them. This crate re-exports every
