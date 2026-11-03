@@ -11843,7 +11843,7 @@ dependencies = [
 
 [[package]]
 name = "vta-external"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -11870,7 +11870,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keys"
-version = "0.32.1"
+version = "0.33.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-crypto",
@@ -11962,7 +11962,7 @@ dependencies = [
 
 [[package]]
 name = "vta-persona"
-version = "0.32.1"
+version = "0.33.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11983,7 +11983,7 @@ dependencies = [
 
 [[package]]
 name = "vta-policy"
-version = "0.27.1"
+version = "0.28.0"
 dependencies = [
  "hex",
  "regorus",
@@ -12198,7 +12198,7 @@ dependencies = [
 
 [[package]]
 name = "vta-support"
-version = "0.29.1"
+version = "0.30.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "base64 0.23.1",
@@ -12223,7 +12223,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sweepers"
-version = "0.27.1"
+version = "0.28.0"
 dependencies = [
  "chrono",
  "serde_json",
@@ -12239,7 +12239,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.31.1"
+version = "0.32.0"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm 0.11.1",
@@ -12275,7 +12275,7 @@ dependencies = [
 
 [[package]]
 name = "vta-vault"
-version = "0.30.1"
+version = "0.31.0"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -12309,7 +12309,7 @@ dependencies = [
 
 [[package]]
 name = "vta-webvh"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "chrono",
  "serde",

@@ -181,18 +181,18 @@ vta-audit = { path = "../vta-audit", version = "0.27" }
 vta-config = { path = "../vta-config", version = "0.32", features = ["tee"] }
 # Shared mid-layer services (contexts, seal, sealed_nonce_store), re-exported
 # as crate::{contexts,seal,sealed_nonce_store}.
-vta-support = { path = "../vta-support", version = "0.29" }
+vta-support = { path = "../vta-support", version = "0.30" }
 # Key management (seed store, BIP-32 derivation, wrapping), extracted and
 # re-exported as `crate::keys`. Backend features chain to `vta-keys/*`.
-vta-keys = { path = "../vta-keys", version = "0.32" }
+vta-keys = { path = "../vta-keys", version = "0.33" }
 # Holder credential vault (storage/query/receive/present/status), extracted to
 # its own crate and re-exported as `crate::vault`. Feature edges: this crate's
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.
-vta-persona = { path = "../vta-persona", version = "0.32" }
-vta-vault = { path = "../vta-vault", version = "0.30" }
+vta-persona = { path = "../vta-persona", version = "0.33" }
+vta-vault = { path = "../vta-vault", version = "0.31" }
 # External accounts — the VTA as the key authority for cloud and third-party
 # accounts (`external/*`), re-exported as `crate::external`.
-vta-external = { path = "../vta-external", version = "0.15" }
+vta-external = { path = "../vta-external", version = "0.16" }
 # The hidden-vetting PCS engine (`vta/pcs/*`): the member-side vetter and
 # applicant engines this VTA runs for its principal. Always compiled — a hosted
 # VTA is what serves a wallet that cannot run PCS itself.
@@ -218,7 +218,7 @@ vti-rooms = { path = "../vti-rooms", version = "0.26", default-features = false,
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.28" }
 # Background TTL sweepers (acl/consent/vault), extracted and re-exported as
 # crate::{acl_sweeper,consent_sweeper,vault_sweeper}.
-vta-sweepers = { path = "../vta-sweepers", version = "0.27" }
+vta-sweepers = { path = "../vta-sweepers", version = "0.28" }
 # Backup/restore subsystem (export/import ops + backup-bundle store/sweeper),
 # extracted and re-exported as crate::operations::backup +
 # crate::{backup_bundle_store,backup_bundle_sweeper}. Feature edges: this
@@ -226,13 +226,13 @@ vta-sweepers = { path = "../vta-sweepers", version = "0.27" }
 vta-backup = { path = "../vta-backup", version = "0.32" }
 # TEE bootstrap subsystem (attestation, KMS, anchor MAC, DID autogen),
 # extracted and re-exported as crate::tee behind this crate's `tee` feature.
-vta-tee = { path = "../vta-tee", version = "0.31", optional = true }
+vta-tee = { path = "../vta-tee", version = "0.32", optional = true }
 # Policy subsystem (regorus engine, default bundle, consent model), extracted
 # and re-exported as crate::policy.
-vta-policy = { path = "../vta-policy", version = "0.27" }
+vta-policy = { path = "../vta-policy", version = "0.28" }
 # The local did:webvh store, extracted to its own crate and re-exported as
 # crate::webvh_store behind this crate's `webvh` feature.
-vta-webvh = { path = "../vta-webvh", version = "0.28", optional = true }
+vta-webvh = { path = "../vta-webvh", version = "0.29", optional = true }
 vta-sdk = { path = "../vta-sdk", version = "0.79", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup", "x509-issuers"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
