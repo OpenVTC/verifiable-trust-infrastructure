@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.19.0"
+version = "0.20.0"
 edition.workspace = true
 # Published, so an operator can install the VTC with `cargo install
 # vtc-service` (the `vtc` binary), the way `pnm-cli` and `cnm-cli` are installed.
@@ -286,7 +286,7 @@ affinidi-secrets-resolver = { workspace = true }
 # credential's shape from this catalog rather than hand-rolling each VC.
 dtg-credentials = { workspace = true }
 # The Verifiable Trust Network protocol: the community as a network member (`crate::networks`).
-vti-vtn = { path = "../vti-vtn", version = "0.1", features = ["client"] }
+vti-vtn = { path = "../vti-vtn", version = "0.2", features = ["client"] }
 # The Trust Task receive pipeline (`crate::trust_tasks`'s spine): size,
 # freshness, recipient, spec policy, proof, sender binding, duplicate-id record,
 # dispatch and signed replies. Shared with the VTN service.
