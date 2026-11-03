@@ -85,7 +85,7 @@ that branch. See [RELEASES.md](RELEASES.md#what-goes-on-a-release-branch).
 
 ## What gets published
 
-**26 of 35 crates.** The nine that stay internal set `publish = false` in their
+**27 of 36 crates.** The nine that stay internal set `publish = false` in their
 own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
 `vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`, `room-host`,
 `vti-rooms-wasm`, `vti-witness`.
@@ -100,6 +100,7 @@ own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
 | `pnm-cli`, `cnm-cli` | operator binaries, `cargo install` |
 | `vtc-service` | the VTC binary (`vtc`), `cargo install vtc-service` — see below |
 | `vta-service` | **openvtc-core**, as a dev-dependency — `test_support::MockVta` |
+| `vti-vtn` | `vtc-service`, and the VTN service and `nnm` in OpenVTC/verifiable-trust-network |
 | the subsystem crates (`vta-*`, `vti-webauthn`, `vti-rooms*`, `vti-vetting-pcs`) | nothing directly; they are `vta-service`'s and `vtc-service`'s closure |
 | `vti-specs`, `vti-specs-{rooms,vta,vtc,core}` | `vta-sdk`'s closure: the generated Trust Task types it re-exports as `vta_sdk::specs`. Each package carries its `trust-tasks.lock` and vendored bundles, which its `build.rs` generates from |
 

@@ -1,0 +1,38 @@
+[package]
+name = "vti-vtn"
+description = "The Verifiable Trust Network (VTN) protocol: listings, membership, DTG credentials, status lists, network index, group registration, broadcast envelopes, room passes — shared by the VTN service and the VTC"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+readme = "README.md"
+
+[features]
+default = []
+# Talking to a network over HTTPS: sign-in bound to the expected network DID,
+# `vtn-signin:` links, and resolving a credential's Bitstring Status List.
+client = ["dep:reqwest", "dep:tokio"]
+
+[dependencies]
+affinidi-data-integrity = { workspace = true }
+affinidi-secrets-resolver = { workspace = true }
+dtg-credentials = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+flate2 = "1"
+multibase = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true
