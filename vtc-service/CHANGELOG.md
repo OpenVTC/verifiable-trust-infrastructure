@@ -2,6 +2,46 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.19.0...vtc-service-v0.20.0) — 2026-11-03
+
+
+### Added
+
+- **vta-service**: The accepted-document-id record in the store, shared with the VTC (VTI-OPS-026, VTI-OPS-027) ([#2417](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2417))
+
+The VTA kept its record of accepted document ids (SPEC §7.2 item 11) in a
+  process-local InMemoryReplayGuard, so a document accepted before a restart
+  executed again when replayed after it, still inside its acceptance window
+  (VTI-OPS-026).
+
+  The VTC's store-backed record moves into vti-trust-task-server as
+  StoreAcceptedIds (with its sweep and tests) and the VTA adopts it over a new
+  `accepted_ids` keyspace: encrypted, excluded from backup, Unrelated to DID
+  deletion, swept on the storage thread's timer. Rows keep the `accepted:<id>`
+  shape, so the VTC needs no migration. admit_carried_document now returns the
+  claim it took, and the deposit handler settles it.
+
+  Also fixes a document refused after its claim (schema, spec policy, proof,
+  idempotency) keeping its id spent as in-flight: the corrected resend under
+  the same id was answered 202 and never ran. The post-claim work is now
+  dispatch_claimed, and the caller settles the claim on every outcome.
+
+  Retention is unchanged (issuedAt + max_age + skew); it moves to expiresAt when
+  the nodes adopt trust-tasks-rs 0.37.
+
+- **vti-vtn**: Group registration is the signed vtn/groups/register request; A20 lifetimes ([#2416](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2416))
+
+- groups::register_as signs a vtn/groups/register/0.1 request; verify_registration checks
+    its type, issuer, recipient and authentication proof. servesRole/1 is retired.
+  - groupRegistered binds registration_digest: JCS over the request including its proof.
+  - Registered endpoints are https.
+  - room_pass refuses a lifetime over 24h; relay::new_message and relay::verify refuse a
+    broadcast lasting more than 7 days after sentAt.
+  - request::{request_document, sign_request} move out of the client feature;
+    vti_vtn::specs re-exports the vtn/* types.
+
+
+
 ## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.18.0...vtc-service-v0.19.0) — 2026-11-03
 
 

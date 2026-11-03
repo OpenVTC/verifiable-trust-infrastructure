@@ -2,6 +2,38 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.31.0...vta-backup-v0.32.0) — 2026-11-03
+
+
+### Fixed
+
+- **contexts**: Context deletion purges the context's app-state and agent memory ([#2415](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2415))
+
+vta/contexts/delete removed a context's keys, DIDs, ACL entries and DID
+  templates, but left its application state (app:/appv:/appc:/appt:<ctx>:…)
+  and agent memory (mem:<ctx>:…) in place. Both are keyed by context id
+  alone, so a context later created under the same id inherited them.
+
+  Seen with OpenVTC: a profile wiped locally (config, keychain) and its VTA
+  context deleted, then re-provisioned into a fresh context under the same
+  id, synced the deleted profile's personas and communities straight back
+  from vta/app-state — personas whose keys were gone, so every one failed to
+  load with "not within the caller's scope".
+
+  - operations::app_state::purge_context removes every record family for a
+    context (records live and tombstoned, version index, write counters, reap
+    watermarks), so a recreated context starts with an empty store and a
+    change feed from zero.
+  - operations::memory::purge_context removes the context's memory entries.
+  - delete_context calls both for every context in the deleted subtree, and
+    logs the counts.
+  - Not added to the not-empty gate: the gate has to agree with
+    preview-delete, whose wire shape has no member for either, and a refusal
+    the preview cannot explain is the failure that function already warns
+    about. Surfacing them in the preview needs a spec revision.
+
+
+
 ## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.30.0...vta-backup-v0.31.0) — 2026-11-03
 
 

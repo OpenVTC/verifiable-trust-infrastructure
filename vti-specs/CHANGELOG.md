@@ -2,6 +2,18 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.4.0...vti-specs-v0.4.1) — 2026-11-03
+
+
+### Added
+
+- **vti-specs-vtn**: Generated vtn/* 0.1 wire types, re-exported as vti_specs::vtn ([#2412](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2412))
+
+The Verifiable Trust Network's own Trust Tasks (trustoverip/dtgwg-trust-tasks-tf#1020),
+  pinned in a fifth generated crate so vti-vtn and vtn-service can depend on it alone.
+
+
+
 ## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.3.0...vti-specs-v0.4.0) — 2026-11-03
 
 
