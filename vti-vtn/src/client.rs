@@ -5,6 +5,7 @@ use crate::verify::AUTHENTICATION;
 use serde_json::{Value, json};
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ClientError {
     /// The network answered with an error status.
     #[error("{status}: {message}")]

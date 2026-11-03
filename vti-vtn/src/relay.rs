@@ -197,6 +197,7 @@ pub struct Receipt {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum DeliveryStatus {
     /// Accepted by the group's endpoint.
     Delivered,

@@ -14,6 +14,7 @@ use crate::model::{Entry, EntryKind, EntryState, NetworkProfile, StatusIndex};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum NodeKind {
     Network,
     Community,
@@ -48,6 +49,7 @@ pub enum EdgeRole {
 /// Status as far as this network can determine it.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum EdgeStatus {
     Valid,
     Suspended,

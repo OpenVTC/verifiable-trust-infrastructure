@@ -10,6 +10,7 @@ use serde_json::Value;
 /// subjects, or a network whose members are further entries.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum EntryKind {
     Community,
     Network,

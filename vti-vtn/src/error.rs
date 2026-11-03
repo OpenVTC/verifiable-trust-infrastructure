@@ -3,6 +3,7 @@ use thiserror::Error;
 use crate::model::EntryState;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum VtnError {
     #[error("credential error: {0}")]
     Credential(#[from] dtg_credentials::DTGCredentialError),

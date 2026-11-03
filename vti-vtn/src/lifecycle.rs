@@ -26,6 +26,7 @@ use crate::model::EntryState;
 /// Something that happens to an entry.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Event {
     /// The network lists, or re-lists, the party.
     List,
