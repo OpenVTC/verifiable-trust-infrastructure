@@ -12832,7 +12832,9 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "trust-tasks-rs",
  "uuid",
+ "vti-specs-vtn",
 ]
 
 [[package]]

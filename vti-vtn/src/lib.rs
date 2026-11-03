@@ -36,13 +36,16 @@ pub mod vocab;
 
 pub use error::VtnError;
 
-/// Talking to a network over HTTPS: sign-in, sign-in links, and status-list checking.
+/// Talking to a network over HTTPS: `vtn/*` Trust Tasks, sign-in links, and status-list
+/// checking.
 #[cfg(feature = "client")]
 pub mod client;
 #[cfg(feature = "client")]
 pub mod link;
 #[cfg(feature = "client")]
 pub mod status_client;
+#[cfg(feature = "client")]
+pub mod tasks;
 #[cfg(feature = "client")]
 pub use client::{ClientError, VtnClient, encode_did, encode_query};
 #[cfg(feature = "client")]
