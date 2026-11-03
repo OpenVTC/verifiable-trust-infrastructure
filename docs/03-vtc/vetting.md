@@ -516,15 +516,35 @@ vetting (PCS)** section on its card under **Vetting → Requirements**:
   with how many members are enrolled under each vetter label and how many have
   asked to vet at each event. Counts only — never which members.
 - **Enrolment, and a lost answer** — a vetter enrols once per vetter label
-  (`vtc/vetting/vetters/pcs-root/0.1`), bound to one PCS identifier for good.
-  If their client loses the answer before opening it, asking again under the
+  (`vtc/vetting/vetters/pcs-root/0.1`), bound to the PCS identifier they
+  first enrolled with. If their client loses the answer before opening it, asking again under the
   same label with the same identifier is re-issued, up to three times per label
   (audited as `HiddenVetterReissued`, and not counted as another enrolled
   vetter); after that the answer is `pcs-root:alreadyEnrolled` until the next
-  label. A different identifier is always refused (`pcs-root:identifierRebound`).
+  label. A different identifier is refused (`pcs-root:identifierRebound`).
   A re-issue gives the vetter no second vote and no extra tokens: every
   credential is on the same key, so it attests with the same tag, and tokens
   are drawn per member per tick whatever the vetter holds.
+- **A lost key** — revoking and re-granting the vetter role does not change
+  the binding. A member reads the identifier they are bound to, the labels it
+  enrolled under and the state of any reset with
+  `vtc/vetting/vetters/pcs-binding/show/0.1` (members only, about themselves
+  only — `pcs-binding/show:notAMember` otherwise), so their client can recover
+  the matching key (`vta/pcs/vetter/recover` for a VTA-held one). If it cannot,
+  an administrator holding `vtc.vetting.manage` resets the binding with a
+  reason — the **Reset a hidden-vetting key** card under **Vetting →
+  Vetters**, or `vtc/vetting/vetters/pcs-binding/reset/0.1`
+  (`notBound` for a member who never enrolled; a repeated reset answers with
+  the first). Audited as `HiddenVetterBindingReset`, never with the identifier.
+  After a reset: enrolling again with the recorded identifier cancels it
+  (`HiddenVetterResetCancelled`). A new identifier is refused
+  (`pcs-root:identifierRebound`) while any label the old one enrolled under is
+  still live — judged at each request, so turning hidden vetting off and on
+  with an old label listed keeps refusing — and bound once none is
+  (`HiddenVetterRebound`): its labels start afresh and the old ones are retired
+  for good, so a publish that would make one of them live again is refused.
+  The wait is at most as long as old labels stay live; publishing a new current
+  label without the old ones shortens it, for every vetter.
 - **Drip rate and tick length** — how many attestation tokens a vetter's
   client may draw per tick, and how long a tick lasts (`tickLength`, default
   `P3D`). Vetters pull their own tokens whether or not they vetted anyone. A

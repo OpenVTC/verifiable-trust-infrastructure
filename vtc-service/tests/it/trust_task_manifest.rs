@@ -825,6 +825,12 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
         "https://trusttasks.org/spec/vtc/vetting/hidden/show/0.1",
         cfg!(feature = "vetting-pcs"),
     ),
+    // A vetter's hidden-vetting key binding reset after the key was lost
+    // (`VettersPanel.tsx`, shown only once discovery lists it).
+    (
+        "https://trusttasks.org/spec/vtc/vetting/vetters/pcs-binding/reset/0.1",
+        cfg!(feature = "vetting-pcs"),
+    ),
     // Community elections (`voting`): the Elections page, shown only once
     // discovery lists `vtc/elections/list` (`lib/elections-api.ts`).
     (

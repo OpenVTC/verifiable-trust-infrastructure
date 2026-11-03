@@ -2221,6 +2221,11 @@ pub const TASK_VTA_PCS_ATTEST_0_1: &str =
 pub const TASK_VTA_PCS_VETTER_SHOW_0_1: &str =
     <vti_specs::vta::pcs::vetter::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vta/pcs/vetter/recover/0.1` — restore the vetter key a community bound the member to, after
+/// the engine record that named it was lost or replaced.
+pub const TASK_VTA_PCS_VETTER_RECOVER_0_1: &str =
+    <vti_specs::vta::pcs::vetter::recover::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Voter role of the PCS engine (trust-tasks-tf #834, VTI-VOT-020 – 053) ──
 // The VTA holds a voter key per election, unblinds the community's ticket and
 // builds the cast; the client sends the cast itself, from its own connection.
@@ -2696,6 +2701,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_PCS_TOKENS_ABANDON_0_1,
     TASK_VTA_PCS_ATTEST_0_1,
     TASK_VTA_PCS_VETTER_SHOW_0_1,
+    TASK_VTA_PCS_VETTER_RECOVER_0_1,
     TASK_VTA_PCS_VOTER_REGISTER_0_2,
     TASK_VTA_PCS_VOTER_REGISTER_0_3,
     TASK_VTA_PCS_VOTER_REGISTER_0_5,

@@ -40,6 +40,7 @@ for) a community that runs hidden vetting.
 | Every tick of the drip | `vta/pcs/tokens/request` → `vtc/vetting/vetters/pcs-tokens` → `vta/pcs/tokens/accept` (or `vta/pcs/tokens/abandon` when the community refuses the draw) |
 | After a session | `vta/pcs/attest` → `vetting/attestation` to the applicant |
 | Any time | `vta/pcs/vetter/show` |
+| After `pcs-root:identifierRebound` | `vtc/vetting/vetters/pcs-binding/show` at the community for `boundId` → `vta/pcs/vetter/recover` → enrol again |
 
 The drip is unconditional by design: a vetter draws on its schedule whether or not
 it has vetted anyone, because a draw that tracked activity would report activity.
@@ -48,6 +49,31 @@ The first `root-request` for a context and community creates the vetter engine a
 records the member DID. The engine keeps **one key for its whole life** — a vetter
 with two keys would count as two vetters in one proof — and a later `root-request`
 naming another member DID is refused `memberMismatch`.
+
+### Recovering the bound key
+
+If the engine record is lost or replaced while the seed survives (a re-created
+engine, a VTA restored without the record), the next `root-request` makes a fresh
+key and the community refuses it with `pcs-root:identifierRebound`. The bound key
+is still derivable. `vta/pcs/vetter/recover` takes the identifier the community
+bound (`boundId`) and searches the keys the VTA can derive for the context:
+
+- every path the context's counter has handed out, under every seed generation
+  still held (a retired generation whose archive cannot be read is skipped), less
+  the paths another PCS engine record names;
+- at most `vta_keys::custody::PCS_SEARCH_MAX_DERIVATIONS` (4096) derivations. A
+  context with more candidates is refused `notFound`, saying so, rather than
+  searched in part;
+- through `key_custody::search_pcs_member_keys`, which holds every candidate
+  inside the context's base, loads each seed generation once, never returns a
+  seed, and audits the search once (`key.pcs_search`: how many keys were derived
+  and whether one matched — no path, seed or identifier).
+
+The engine's key is replaced only while it holds nothing a community issued (no
+class credential, token or attestation; otherwise `engineEnrolled`). Enrolments
+and draws in flight under the replaced key are discarded. An identifier held by
+an engine in another context the caller can act in is refused
+`heldInAnotherContext`, naming that context.
 
 ## Custody
 
@@ -67,7 +93,7 @@ naming another member DID is refused `memberMismatch`.
 
 | Capability | Tasks | Derived by |
 |---|---|---|
-| `pcs-vetter` (`pcsVetter`) | `root-request`, `root-accept`, `tokens/*`, `attest`, `vetter/show` | `admin`, `initiator` |
+| `pcs-vetter` (`pcsVetter`) | `root-request`, `root-accept`, `tokens/*`, `attest`, `vetter/show`, `vetter/recover` | `admin`, `initiator` |
 | `pcs-applicant` (`pcsApplicant`) | `applications/*`, `verify-attestation`, `prove` | `admin`, `initiator` |
 | `pcs-voter` (`pcsVoter`) | `voter/register`, `voter/read`, `voter/accept`, `vote`, `vote-encrypted`, `voter/receipt` | `admin`, `initiator` |
 | `pcs-trustee` (`pcsTrustee`) | `trustee/enrol`, `trustee/deal`, `trustee/keys`, `trustee/justify`, `trustee/decrypt` | `admin`, `initiator` |

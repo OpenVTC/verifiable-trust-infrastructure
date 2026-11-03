@@ -14,6 +14,7 @@
 // out below, since nothing else on this page names its task.
 
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
+import { TASK_DISCOVERY } from "@/lib/hidden-vetting";
 import { postSignedWithStepUp, type ConfirmGesture } from "@/lib/signed-act";
 import type {
   AcceptsCriterion,
@@ -113,6 +114,7 @@ export const vettingKeys = {
     ["vetting", "listing", body, cursor] as const,
   joinRequest: (id: string) => ["join-request-vetting", id] as const,
   branding: ["community-branding"] as const,
+  pcsResetServed: ["vetting", "pcs-reset-served"] as const,
 };
 
 // ── Grants ──────────────────────────────────────────────────────────────
@@ -135,6 +137,37 @@ export const revokeGrant = (endorsementId: string): Promise<unknown> =>
  * resend, `0.1`, carries no payload and names nobody else). */
 export const resendGrant = (memberDid: string): Promise<VetterResendResponse> =>
   postSignedTrustTask<VetterResendResponse>(TASK_VETTER_RESEND_0_2, { memberDid });
+
+// ── Hidden-vetting key reset ────────────────────────────────────────────
+
+export const TASK_PCS_BINDING_RESET =
+  "https://trusttasks.org/spec/vtc/vetting/vetters/pcs-binding/reset/0.1";
+/** `vtc/vetting/vetters/pcs-binding/reset:notBound` — the member never enrolled. */
+export const PCS_BINDING_RESET_NOT_BOUND = "vtc/vetting/vetters/pcs-binding/reset:notBound";
+
+/** `vtc/vetting/vetters/pcs-binding/reset/0.1`'s answer. */
+export interface PcsBindingResetResponse {
+  memberDid: string;
+  resetAt: string;
+  /** The old identifier's labels still live: a new key is accepted once none is. */
+  waitingOn: string[];
+  open: boolean;
+}
+
+/** Whether this build serves the reset — a build without hidden vetting does not. */
+export async function fetchPcsBindingResetServed(): Promise<boolean> {
+  const res = await postSignedRead<{ supportedTypes?: unknown[] }>(TASK_DISCOVERY, {
+    patterns: ["vtc/vetting/vetters/pcs-binding/*"],
+  });
+  return (res.supportedTypes ?? []).includes(TASK_PCS_BINDING_RESET);
+}
+
+/** Reset a vetter's hidden-vetting identifier binding after their key was lost. */
+export const resetPcsBinding = (args: {
+  memberDid: string;
+  reason: string;
+}): Promise<PcsBindingResetResponse> =>
+  postSignedTrustTask<PcsBindingResetResponse>(TASK_PCS_BINDING_RESET, args);
 
 const MAX_MEMBER_PAGES = 10;
 

@@ -199,4 +199,73 @@ describe("VettersPanel", () => {
       validitySeconds: 30 * 86_400,
     });
   });
+
+  const DISCOVERY_TASK = "https://trusttasks.org/spec/trust-task-discovery/0.3";
+  const PCS_RESET_TASK =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/pcs-binding/reset/0.1";
+
+  it("offers no hidden-vetting key reset on a build that does not serve it", async () => {
+    mockFetch(routes([taskRoute(DISCOVERY_TASK, { supportedTypes: [] })]));
+    renderWithProviders(<VettersPanel />);
+    await screen.findByText("Carol M.");
+    expect(screen.queryByText("Reset a hidden-vetting key")).toBeNull();
+  });
+
+  it("resets a hidden-vetting key with a reason, after a confirmation", async () => {
+    const requests = mockFetch(
+      routes([
+        taskRoute(DISCOVERY_TASK, { supportedTypes: [PCS_RESET_TASK] }),
+        taskRoute(PCS_RESET_TASK, {
+          memberDid: CAROL,
+          resetAt: "2026-11-02T14:20:00Z",
+          waitingOn: ["vetter/2026-10"],
+          open: false,
+        }),
+      ]),
+    );
+    renderWithProviders(<VettersPanel />);
+
+    expect(await screen.findByText("Reset a hidden-vetting key")).toBeTruthy();
+    const submit = screen.getByRole("button", { name: "Reset hidden-vetting key" });
+    fireEvent.click(submit);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("Say why. It is kept in the audit log.")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Vetter"), { target: { value: CAROL } });
+    fireEvent.change(screen.getByLabelText("Reason"), {
+      target: { value: "Rebuilt their VTA." },
+    });
+    fireEvent.click(submit);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toMatch(/cannot recover their key/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset hidden-vetting key" }));
+
+    await waitFor(() => expect(sentPayloads(requests, PCS_RESET_TASK)).toHaveLength(1));
+    expect(sentPayloads(requests, PCS_RESET_TASK)[0]).toEqual({
+      memberDid: CAROL,
+      reason: "Rebuilt their VTA.",
+    });
+  });
+
+  it("says plainly when the vetter never enrolled", async () => {
+    mockFetch(
+      routes([
+        taskRoute(DISCOVERY_TASK, { supportedTypes: [PCS_RESET_TASK] }),
+        taskRoute(
+          PCS_RESET_TASK,
+          { code: "vtc/vetting/vetters/pcs-binding/reset:notBound", message: "never enrolled" },
+          400,
+        ),
+      ]),
+    );
+    renderWithProviders(<VettersPanel />);
+
+    await screen.findByText("Reset a hidden-vetting key");
+    fireEvent.change(screen.getByLabelText("Vetter"), { target: { value: DAN } });
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Lost it." } });
+    fireEvent.click(screen.getByRole("button", { name: "Reset hidden-vetting key" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset hidden-vetting key" }));
+    expect(await screen.findByText(/has never enrolled for hidden vetting/)).toBeTruthy();
+  });
 });

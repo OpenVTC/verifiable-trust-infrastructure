@@ -2811,6 +2811,8 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1 => pcs::handle_vetter_show
         [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VETTER_RECOVER_0_1 => pcs::handle_vetter_recover
+        [ Mutating Metadata false ],
     // The voter role (`vta/pcs/voter/*`, `vta/pcs/vote`, trust-tasks-tf #834).
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_5 => pcs::handle_voter_register
         [ Mutating Metadata true ],

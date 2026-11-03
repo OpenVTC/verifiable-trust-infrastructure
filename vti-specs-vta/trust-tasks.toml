@@ -69,6 +69,7 @@ registry = "https://trusttasks.org"
 "vta/pcs/trustee/keys" = ["0.3", "0.4", "0.5"]
 "vta/pcs/trustee/read" = ["0.2", "0.3", "0.4"]
 "vta/pcs/verify-attestation" = "0.1"
+"vta/pcs/vetter/recover" = "0.1"
 "vta/pcs/vetter/show" = "0.1"
 "vta/pcs/vote" = ["0.2", "0.3", "0.4"]
 "vta/pcs/vote-encrypted" = ["0.3", "0.4", "0.5"]

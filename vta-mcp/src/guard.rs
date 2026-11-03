@@ -125,6 +125,11 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // subject: a disclosure to a third party, so approved per call.
     ("vault/credentials/present", Risk::Sensitive),
     ("vta/witness/accept", Risk::Mutating),
+    // `vta/pcs/vetter/recover`: replaces the key a vetter engine runs under
+    // (searching the context's derivable keys for it) and discards enrolments
+    // and draws in flight. It moves which key acts for the vetter, so a host
+    // confirms it rather than leaving it to a blanket approval.
+    ("vta/pcs/vetter/recover", Risk::Sensitive),
     // Key authority, exercised.
     ("keys/sign", Risk::Sensitive),
     ("keys/sign-sshsig", Risk::Sensitive),

@@ -61,6 +61,7 @@ pub enum PcsTask {
     VoterReceipt,
     VoterRead,
     VoteEncrypted,
+    VetterRecover,
 }
 
 fn invalid<E: std::fmt::Display>(e: E) -> FfiError {
@@ -135,6 +136,7 @@ pub fn build_pcs_task(
         PcsTask::VoterReceipt => signed::<pcs::voter::receipt::v0_1::Payload>(&env, p, s),
         PcsTask::VoterRead => signed::<pcs::voter::read::v0_6::Payload>(&env, p, s),
         PcsTask::VoteEncrypted => signed::<pcs::vote_encrypted::v0_5::Payload>(&env, p, s),
+        PcsTask::VetterRecover => signed::<pcs::vetter::recover::v0_1::Payload>(&env, p, s),
     }
 }
 
@@ -163,6 +165,7 @@ pub fn parse_pcs_response(task: PcsTask, json: String) -> Result<String, FfiErro
         PcsTask::VoterReceipt => response::<pcs::voter::receipt::v0_1::Response>(j),
         PcsTask::VoterRead => response::<pcs::voter::read::v0_6::Response>(j),
         PcsTask::VoteEncrypted => response::<pcs::vote_encrypted::v0_5::Response>(j),
+        PcsTask::VetterRecover => response::<pcs::vetter::recover::v0_1::Response>(j),
     }
 }
 
