@@ -21,7 +21,7 @@ use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse};
 
 use vtc_service::test_support::TestVtc;
 
-use super::signed::{post, signed};
+use super::signed::post;
 use super::webauthn_harness::SoftEd25519Authenticator;
 
 const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
@@ -109,7 +109,16 @@ impl Gesturer {
     /// `requester`'s passkey.
     pub async fn gesture(&mut self, vtc: &TestVtc, requester: &Party, refusal: &Value) {
         let payload = self.approval(vtc, refusal).await;
-        let doc = signed(requester, APPROVE_RESPONSE, payload).await;
+        // Addressed to the VTC under test, whatever DID it was configured with.
+        let recipient = vtc
+            .state
+            .config
+            .read()
+            .await
+            .vtc_did
+            .clone()
+            .unwrap_or_else(|| vtc_service::test_support::TEST_VTC_DID.to_string());
+        let doc = super::signed::signed_to(requester, &recipient, APPROVE_RESPONSE, payload).await;
         let (status, ack) = post(vtc, &doc).await;
         assert_eq!(status, StatusCode::OK, "{ack}");
         assert_eq!(ack["payload"]["status"], "recorded", "{ack}");

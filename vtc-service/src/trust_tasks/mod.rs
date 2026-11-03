@@ -178,6 +178,10 @@ pub(crate) mod admission_tasks;
 // projection are `crate::capability_modules`'s; this is their only door.
 pub(crate) mod capability_module_tasks;
 
+// A community's side of Verifiable Trust Network membership: `vtc/networks/*`
+// (`crate::networks`). `vtc/networks/notice` is sent, never served.
+pub(crate) mod network_tasks;
+
 // Community elections: `vtc/elections/*` (VTI-VOT-001 – 100). The registrar's
 // records and its link to ballot boxes are `crate::elections`'s; feature-gated
 // with the PCS key they issue tickets under.
@@ -1436,6 +1440,13 @@ fn dispatch_typed<'a>(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("election_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if network_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match network_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("network_tasks::URIS names {uri}, which it does not route"),
             }
         }),
         uri if capability_module_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -3128,6 +3139,16 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     capability_module_tasks::LIST_TYPE,
     capability_module_tasks::ENABLE_TYPE,
     capability_module_tasks::DISABLE_TYPE,
+    // Verifiable Trust Network membership (`crate::networks`): an administrator's reads and
+    // writes, and a member's evidence for a network room pass. No REST route; the relay
+    // endpoint a network delivers broadcasts to is `routes::networks`.
+    network_tasks::LIST_TYPE,
+    network_tasks::SHOW_TYPE,
+    network_tasks::JOIN_TYPE,
+    network_tasks::REPUDIATE_TYPE,
+    network_tasks::LEAVE_TYPE,
+    network_tasks::REGISTER_TYPE,
+    network_tasks::EVIDENCE_TYPE,
     // backup/* — the chunked transfer `vtc/backup/import` could never be,
     // because its envelope does not fit one document.
     backup_tasks::INITIATE_EXPORT_TYPE,

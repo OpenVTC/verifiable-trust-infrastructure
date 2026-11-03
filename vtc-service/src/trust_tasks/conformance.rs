@@ -366,6 +366,47 @@ fn base_disclosure() -> Value {
     .expect("the base schema gives a statement")
 }
 
+/// A network membership as `crate::networks` stores and answers it — the shared
+/// `vtc/_shared/0.6` `NetworkMembership` — with its admins group registered.
+fn sample_network_membership() -> serde_json::Value {
+    use crate::networks::{Membership, RegisteredGroup, State};
+    let at = DateTime::parse_from_rfc3339("2026-11-03T10:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let cred = |issuer: &str, subject: &str| {
+        json!({
+            "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
+            "issuer": issuer,
+            "credentialSubject": { "id": subject },
+        })
+    };
+    let net = "did:example:whn";
+    let vtc = "did:example:community";
+    let group = "did:example:community-admins";
+    serde_json::to_value(Membership {
+        network: net.into(),
+        url: "https://whn.example.org".into(),
+        name: Some("World Health Network".into()),
+        state: State::Acknowledged,
+        listing: cred(net, vtc),
+        grant: Some(cred(net, vtc)),
+        acknowledgement: Some(cred(vtc, net)),
+        repudiation: None,
+        groups: vec![RegisteredGroup {
+            role: "admins".into(),
+            group_id: "admins".into(),
+            group_did: group.into(),
+            endpoint: "https://community.example.org/v1/networks/relay/admins".into(),
+            registration: cred(vtc, group),
+            acceptance: cred(net, group),
+            registered_at: at,
+        }],
+        joined_at: Some(at),
+        updated_at: at,
+    })
+    .unwrap()
+}
+
 fn sample_binding() -> crate::groups::bindings::Binding {
     crate::groups::bindings::Binding {
         binding_id: "gb_P2k8W5qYc6Vd1MsKAAAAAA".into(),
@@ -1105,6 +1146,55 @@ fn table() -> Vec<Conformance> {
 
     #[allow(unused_mut)]
     let mut table = vec![
+        // ─── network membership (`crate::networks`) ──────────────────
+        checked!(
+            s::networks::list::v0_1::Payload,
+            s::networks::list::v0_1::Response,
+            json!({ "state": "acknowledged", "limit": 50 }),
+            json!({ "items": [sample_network_membership()] })
+        ),
+        checked!(
+            s::networks::show::v0_1::Payload,
+            s::networks::show::v0_1::Response,
+            json!({ "network": "did:example:whn" }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::join::v0_1::Payload,
+            s::networks::join::v0_1::Response,
+            json!({ "url": "https://whn.example.org", "network": "did:example:whn",
+                    "groups": [{ "role": "admins", "groupId": "admins" }] }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::repudiate::v0_1::Payload,
+            s::networks::repudiate::v0_1::Response,
+            json!({ "url": "https://whn.example.org", "network": "did:example:whn", "reason": "not ours" }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::leave::v0_1::Payload,
+            s::networks::leave::v0_1::Response,
+            json!({ "network": "did:example:whn", "reason": "merged" }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::groups::register::v0_1::Payload,
+            s::networks::groups::register::v0_1::Response,
+            json!({ "network": "did:example:whn", "role": "admins", "groupId": "admins" }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::evidence::v0_1::Payload,
+            s::networks::evidence::v0_1::Response,
+            json!({ "network": "did:example:whn" }),
+            json!({ "links": [{
+                "groupId": "admins", "groupDid": "did:example:community-admins",
+                "network": "did:example:whn", "role": "admins",
+                "registration": sample_network_membership()["groups"][0]["registration"],
+                "acceptance": sample_network_membership()["groups"][0]["acceptance"],
+            }] })
+        ),
         // ─── the action list (`crate::admin_actions`) ────────────────
         // `_shared/0.3` Actions: an approval, a cooling-off in the schema's own
         // terms, and an operator's offline write (`offline-write/0.2`).

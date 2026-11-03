@@ -50,6 +50,7 @@ pub mod member_portal;
 pub mod member_push;
 pub mod members;
 pub mod messaging;
+pub mod networks;
 pub mod notifications;
 pub mod oid4vp;
 pub mod oid4vp_cli;

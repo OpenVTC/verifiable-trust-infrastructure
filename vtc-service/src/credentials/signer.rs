@@ -330,6 +330,31 @@ impl LocalSigner {
         Ok(())
     }
 
+    /// Sign `doc` with the primary key for `proofPurpose: authentication` — proof of control
+    /// of this VTC's DID, as a sign-in challenge asks for. Unlike
+    /// [`sign_operational_doc`](Self::sign_operational_doc) it seals no Trust Task envelope,
+    /// so it signs any JSON object as it stands.
+    pub async fn sign_authentication_doc(
+        &self,
+        doc: &mut serde_json::Value,
+    ) -> Result<(), AppError> {
+        let obj = doc
+            .as_object_mut()
+            .ok_or_else(|| AppError::Internal("document is not a JSON object".into()))?;
+        obj.remove("proof");
+        let proof_value = self
+            .proof_value_from(
+                std::slice::from_ref(self.primary()),
+                &*doc,
+                SignOptions::new().with_proof_purpose("authentication"),
+            )
+            .await?;
+        doc.as_object_mut()
+            .expect("checked above")
+            .insert("proof".into(), proof_value);
+        Ok(())
+    }
+
     pub async fn sign_doc(&self, doc: &mut serde_json::Value) -> Result<(), AppError> {
         let obj = doc
             .as_object_mut()

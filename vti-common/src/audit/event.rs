@@ -925,6 +925,9 @@ pub enum AuditEvent {
     /// administrator's entry, which [`Self::AclGranted`] and its neighbours
     /// record.
     CapabilityModuleChanged(CapabilityModuleChangedData),
+    /// The community's membership of a Verifiable Trust Network changed, or it relayed one of
+    /// the network's broadcasts to a group (`vtc/networks/*`).
+    NetworkMembershipChanged(NetworkMembershipChangedData),
 
     /// A change to where a community keeps its rooms' files: a storage config
     /// created, changed or retired (`vtc/storage/configs/*`), a room pointed
@@ -1070,6 +1073,31 @@ pub struct CapabilityModuleChangedData {
     /// Why a projection failed (`projectionFailed` only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// Payload for [`AuditEvent::NetworkMembershipChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkMembershipChangedData {
+    /// The network's DID.
+    pub network: String,
+    /// `joined`, `repudiated`, `left`, `groupRegistered` or `broadcastRelayed`.
+    pub event: String,
+    /// The network role a group was registered for, or a broadcast was addressed to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// The community group concerned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// The administrator's reason, for a repudiation or a departure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// For `broadcastRelayed`: the broadcast's message id and how many members it was
+    /// queued for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipients: Option<u32>,
 }
 
 /// Payload for [`AuditEvent::AdminRoleDefined`] / [`AuditEvent::AdminRoleDeleted`].
@@ -1269,6 +1297,7 @@ impl AuditEvent {
             Self::AdminRoleDeleted(..) => "AdminRoleDeleted",
             Self::AclKeyRotated(..) => "AclKeyRotated",
             Self::CapabilityModuleChanged(..) => "CapabilityModuleChanged",
+            Self::NetworkMembershipChanged(..) => "NetworkMembershipChanged",
             Self::RoomStorageChanged(..) => "RoomStorageChanged",
             Self::RoomLimitsChanged(..) => "RoomLimitsChanged",
             Self::CommunityRoomChanged(..) => "CommunityRoomChanged",
