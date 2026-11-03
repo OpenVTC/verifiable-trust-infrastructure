@@ -760,21 +760,21 @@ digest = "sha256:6e8b5ec4e4471aa20d37c5fde9fedbeb1aeb8c170cb3e908f151a98af22f0c2
 
 [[task]]
 slug = "git-ns/bridge/event"
-version = "0.5"
-type_uri = "https://trusttasks.org/spec/git-ns/bridge/event/0.5"
-digest = "sha256:10ee2d0eb00caded8034421d84ff5aca970e9a3ee2150ce1ed8ab9ca962628ab"
+version = "0.6"
+type_uri = "https://trusttasks.org/spec/git-ns/bridge/event/0.6"
+digest = "sha256:a6e89599d8db9d0c6650660d6c2dbe64bc527b6512f91ef5ac89583216e5f6de"
 
 [[task]]
 slug = "git-ns/bridge/job"
-version = "0.6"
-type_uri = "https://trusttasks.org/spec/git-ns/bridge/job/0.6"
-digest = "sha256:c3026296106158774c2f15e981c07205bcd986bfb0f810a14a6045c5cbc8a7f4"
+version = "0.7"
+type_uri = "https://trusttasks.org/spec/git-ns/bridge/job/0.7"
+digest = "sha256:9cca80cd82e16eb93c6a25965651329985660920be6ef9df334fcc2c86d6cbc2"
 
 [[task]]
 slug = "git-ns/bridge/job/list"
 version = "0.4"
 type_uri = "https://trusttasks.org/spec/git-ns/bridge/job/list/0.4"
-digest = "sha256:4cf6fc1d6b4a7cc3723120b6c17f410e3dcd626dcc2c12ea55da54c0e516674c"
+digest = "sha256:ceec757eaa93a468ec6f253d4e5d800e6b5801f37898314e79572e350d65a674"
 
 [[task]]
 slug = "git-ns/bridge/result"

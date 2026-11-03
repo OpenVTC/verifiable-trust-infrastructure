@@ -69,7 +69,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
-use vti_specs::git_ns::bridge::event::v0_5 as event_wire;
+use vti_specs::git_ns::bridge::event::v0_6 as event_wire;
 
 use crate::acl::VtcRole;
 use crate::server::AppState;
@@ -823,7 +823,7 @@ pub async fn note_unenforced(state: &AppState, namespace_id: &str, bridge_did: &
         namespace = %namespace_id,
         bridge = %bridge_did,
         "the pull-request policy is configured but the bridge does not take \
-         git-ns/bridge/job 0.6, so it cannot close pull requests; upgrade the bridge"
+         git-ns/bridge/job 0.7, so it cannot close pull requests; upgrade the bridge"
     );
     let resource = super::store::get_namespace(&state.git_ns.ks, namespace_id)
         .await
