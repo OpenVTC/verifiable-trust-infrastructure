@@ -2946,6 +2946,12 @@ fn pcs_witnesses() -> Vec<Witness> {
             "publish_refuses_a_second_criterion_and_keys_its_signer_no_longer_derives"
         ),
         witness!(
+            s::vetting::hidden::publish::v0_1::error_codes::LABEL_RETIRED,
+            pcs::HIDDEN_PUBLISH_ERR_LABEL_RETIRED,
+            "hidden_vetting_tasks.rs",
+            "a_lost_key_is_shown_reset_and_rebound_over_the_wire"
+        ),
+        witness!(
             s::vetting::hidden::publish::v0_1::error_codes::OTHER_CRITERION,
             pcs::HIDDEN_PUBLISH_ERR_OTHER_CRITERION,
             "hidden_vetting_tasks.rs",

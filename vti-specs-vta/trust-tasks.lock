@@ -1,6 +1,6 @@
 # Written by `trust-tasks`. Do not edit by hand.
 version = 1
-registry = "/Users/glenngore/devel/dtgwg-trust-tasks-tf-worktrees/pcs-binding/website"
+registry = "https://trusttasks.org"
 
 [[task]]
 slug = "vta/app-state/delete"

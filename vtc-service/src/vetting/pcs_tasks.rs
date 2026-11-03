@@ -118,6 +118,10 @@ pub const HIDDEN_PUBLISH_ERR_SIGNER_CHANGED: &str =
 /// `vtc/vetting/hidden/publish:otherCriterion`: hidden vetting is on for another criterion.
 pub const HIDDEN_PUBLISH_ERR_OTHER_CRITERION: &str =
     vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::OTHER_CRITERION.code;
+/// `vtc/vetting/hidden/publish:labelRetired`: the live set names a vetter label retired by a
+/// re-binding (pcs-binding/reset/0.1 "Labels never come back").
+pub const HIDDEN_PUBLISH_ERR_LABEL_RETIRED: &str =
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::LABEL_RETIRED.code;
 /// `vtc/vetting/hidden/withdraw:noSuchCriterion`
 pub const HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION: &str =
     vti_specs::vtc::vetting::hidden::withdraw::v0_1::error_codes::NO_SUCH_CRITERION.code;

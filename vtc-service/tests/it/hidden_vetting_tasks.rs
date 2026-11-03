@@ -2113,5 +2113,10 @@ async fn a_lost_key_is_shown_reset_and_rebound_over_the_wire() {
         .post(&admin, pcs_tasks::HIDDEN_PUBLISH_TYPE, publish(&[OCT, SEP]))
         .await;
     assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::HIDDEN_PUBLISH_ERR_LABEL_RETIRED,
+        "{body}"
+    );
     assert!(body.to_string().contains("cannot be live again"), "{body}");
 }

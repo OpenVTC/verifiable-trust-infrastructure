@@ -29,9 +29,10 @@ use crate::trust_tasks::TrustTaskOutcome;
 use crate::vetting::pcs::{HiddenVettingConfig, HiddenVettingEvent};
 use crate::vetting::pcs_tasks::{
     HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT, HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER,
-    HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION, HIDDEN_PUBLISH_ERR_NO_VETTING,
-    HIDDEN_PUBLISH_ERR_OTHER_CRITERION, HIDDEN_PUBLISH_ERR_SIGNER_CHANGED,
-    HIDDEN_SHOW_ERR_NO_SUCH_CRITERION, HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
+    HIDDEN_PUBLISH_ERR_LABEL_RETIRED, HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION,
+    HIDDEN_PUBLISH_ERR_NO_VETTING, HIDDEN_PUBLISH_ERR_OTHER_CRITERION,
+    HIDDEN_PUBLISH_ERR_SIGNER_CHANGED, HIDDEN_SHOW_ERR_NO_SUCH_CRITERION,
+    HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
 };
 use trust_tasks_rs::TrustTask;
 use vti_common::audit::{AuditEvent, HiddenVettingChangedData};
@@ -344,21 +345,22 @@ pub(crate) async fn publish_hidden_vetting_core(
 
 /// Refuse a live set naming a retired vetter label.
 ///
-/// publish/0.1 declares no code for this, so it is a validation refusal (`badRequest`) whose
-/// text names the labels and why.
+/// publish/0.1 `labelRetired`, with text naming the labels and why.
 async fn refuse_retired(state: &AppState, vetter_labels: &[String]) -> Result<(), Halted> {
     let retired = crate::vetting::pcs_issue::retired_among(state, vetter_labels).await?;
     if retired.is_empty() {
         return Ok(());
     }
-    Err(AppError::Validation(format!(
-        "{} cannot be live again: a member's binding was reset and re-bound, and the identifier \
-         it replaced held {}. A credential under it on the old key would count beside the new \
-         one — publish a later period instead",
-        retired.join(", "),
-        if retired.len() == 1 { "it" } else { "them" },
+    Err(Halted::declared(
+        HIDDEN_PUBLISH_ERR_LABEL_RETIRED,
+        AppError::Conflict(format!(
+            "{} cannot be live again: a member's binding was reset and re-bound, and the \
+             identifier it replaced held {}. A credential under it on the old key would count \
+             beside the new one — publish a later period instead",
+            retired.join(", "),
+            if retired.len() == 1 { "it" } else { "them" },
+        )),
     ))
-    .into())
 }
 
 /// The approval rules publish/0.1 states (items 9 and 10): an event's `approvedBy`, when it is

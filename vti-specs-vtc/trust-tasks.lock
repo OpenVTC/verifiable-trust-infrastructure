@@ -1,6 +1,6 @@
 # Written by `trust-tasks`. Do not edit by hand.
 version = 1
-registry = "/Users/glenngore/devel/dtgwg-trust-tasks-tf-worktrees/pcs-binding/website"
+registry = "https://trusttasks.org"
 
 [[task]]
 slug = "vtc/admin/actions/acknowledge"
@@ -1278,7 +1278,7 @@ digest = "sha256:f35e25c181268588e661572ca70319966324626be0d45a10117fe4444279ec5
 slug = "vtc/vetting/hidden/publish"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1"
-digest = "sha256:2d92ca9da7913814b9f69fcc6783b9c9493456590fd64a95ce1751f52b789cab"
+digest = "sha256:d75e231cbf399cd31a7e6879ba6b4cf56343376193878502f5a998d3050c4f5a"
 
 [[task]]
 slug = "vtc/vetting/hidden/show"
@@ -1344,13 +1344,13 @@ digest = "sha256:d6fdba28052b1d41f179e8e28689a7bf38d32c5362b2077ce3db38687020cd2
 slug = "vtc/vetting/vetters/pcs-binding/show"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/pcs-binding/show/0.1"
-digest = "sha256:92323273e4744f66b220a588d7820a640db240a97bb2dd1600ab87e91eb91836"
+digest = "sha256:8384553f04fa094e7ad8ab3e49ecae188e6f3bf28626d8a12196b3b83bae7cc2"
 
 [[task]]
 slug = "vtc/vetting/vetters/pcs-root"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/pcs-root/0.1"
-digest = "sha256:45a78536b0288002a010d7d2e9d5b92ef841a23ad586a3cca1eb1eb172cf2a81"
+digest = "sha256:bd0acf6b34db5905ac539c24c832f2132cb4b61f6f3f1fa20e61dad7da00f6e4"
 
 [[task]]
 slug = "vtc/vetting/vetters/pcs-tokens"
