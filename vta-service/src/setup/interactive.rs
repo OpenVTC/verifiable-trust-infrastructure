@@ -1276,9 +1276,16 @@ async fn gather_inputs(
             true,
             Some(&|s: &str| {
                 for entry in s.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                    entry
+                    let cidr = entry
                         .parse::<ipnetwork::IpNetwork>()
                         .map_err(|e| format!("'{entry}' is not a valid CIDR: {e}"))?;
+                    // The config loader refuses it too; catch it here rather
+                    // than write a config the VTA will not start with.
+                    if cidr.prefix() == 0 {
+                        return Err(format!(
+                            "'{entry}' covers every address; list the proxies' own ranges"
+                        ));
+                    }
                 }
                 Ok(())
             }),

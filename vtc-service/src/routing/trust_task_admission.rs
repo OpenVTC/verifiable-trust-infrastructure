@@ -115,11 +115,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use affinidi_rate_limit::{KeyedRateLimiterState, TooManyRequests};
+use affinidi_rate_limit::{KeyedRateLimiterState, Refusal, TooManyRequests};
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
-use tower_governor::key_extractor::KeyExtractor;
 use vti_common::rate_limit::TrustedProxyKeyExtractor;
 
 use super::rate_limit::{
@@ -148,9 +147,6 @@ pub const SIGN_IN_PERIOD: Duration = Duration::from_secs(1);
 /// What a sign-in document whose proof never verifies costs the address's
 /// sign-in ceiling on top of the one it paid on arrival.
 pub const SIGN_IN_FAILURE_COST: u32 = 10;
-
-/// Most addresses the sign-in limiter tracks at once.
-const SIGN_IN_TRACKED_KEYS: usize = 10_000;
 
 /// The door's limiters, shared by every request.
 #[derive(Clone)]
@@ -195,9 +191,7 @@ impl TrustTaskLimits {
             address,
             signed_address: signed_address.limiter(),
             signer: signer.limiter(),
-            sign_in: sign_in
-                .limiter()
-                .with_max_tracked_keys(SIGN_IN_TRACKED_KEYS),
+            sign_in: sign_in.limiter(),
             rooms: Arc::new(OnceLock::new()),
             key_extractor,
         }
@@ -241,10 +235,6 @@ impl TrustTaskLimits {
 /// four a second once the burst is spent — the known-signer ceiling's rate.
 pub const ROOM_FAILURE_COST: u32 = 25;
 
-/// Most keys each room limiter tracks at once, so its map does not grow with
-/// every address that ever sent a room document.
-const ROOM_TRACKED_KEYS: usize = 10_000;
-
 /// The room budgets (see the module docs).
 pub(crate) struct RoomLimiters {
     address: KeyedRateLimiterState<IpAddr>,
@@ -264,15 +254,9 @@ impl RoomLimiters {
         let mut secret = [0u8; 32];
         rand::fill(&mut secret);
         Self {
-            address: q(address)
-                .limiter()
-                .with_max_tracked_keys(ROOM_TRACKED_KEYS),
-            presenter: q(presenter)
-                .limiter()
-                .with_max_tracked_keys(ROOM_TRACKED_KEYS),
-            transfer: q(transfer)
-                .limiter()
-                .with_max_tracked_keys(ROOM_TRACKED_KEYS),
+            address: q(address).limiter(),
+            presenter: q(presenter).limiter(),
+            transfer: q(transfer).limiter(),
             secret,
         }
     }
@@ -417,24 +401,37 @@ fn unauth_refusal(wait: u64) -> RateLimited {
     )
 }
 
-/// The address a request is charged to, as the governor keys it.
+/// The address a request is charged to, as the unauthenticated limiter keys it.
 #[derive(Clone, Copy, Debug)]
 pub struct ClientAddress(pub IpAddr);
 
-/// Resolve the request's [`ClientAddress`] exactly as the tower governor does
-/// (trusted proxies, then the peer), refusing as it does when there is none.
+/// Resolve the request's [`ClientAddress`] exactly as the unauthenticated
+/// limiter does (trusted proxies, then the peer), refusing as it does when
+/// there is none: `403` with no peer address, `400` for an unreadable chain
+/// from a trusted proxy, both naming the `unauth` limiter.
 pub async fn client_address(
     axum::extract::State(limits): axum::extract::State<TrustTaskLimits>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    match limits.key_extractor.extract(&request) {
+    let client = match request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+    {
+        None => Err(Refusal::NoClientIp),
+        Some(peer) => limits
+            .key_extractor
+            .clients()
+            .client_ip(peer.0.ip(), request.headers())
+            .map_err(|_| Refusal::InvalidForwardedFor),
+    };
+    match client {
         Ok(ip) => {
             request.extensions_mut().insert(ClientAddress(ip));
             request.extensions_mut().insert(limits);
             next.run(request).await
         }
-        Err(e) => super::rate_limit::governor_error_response(e),
+        Err(refusal) => limits.address.refuse(&refusal),
     }
 }
 
@@ -1002,5 +999,50 @@ mod tests {
         let k = limiters.member_key("ab", "c");
         assert_ne!(k, limiters.member_key("a", "bc"));
         assert_ne!(k, rooms(1, 1, 1).member_key("ab", "c"), "keyed per process");
+    }
+
+    /// A request the door cannot attribute is refused as the unauthenticated
+    /// layer refuses it, naming the `unauth` limiter: `400` for an unreadable
+    /// chain from a trusted proxy, `403` with no peer address. Neither is a
+    /// `429`, and neither reaches the door.
+    #[tokio::test]
+    async fn an_unattributable_request_is_refused_before_the_door() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let unauth = quota(Duration::from_secs(3600), 10)
+            .limiter()
+            .with_source(super::super::rate_limit::RATE_LIMIT_SOURCE)
+            .with_limiter_name(UNAUTH_LIMITER);
+        let limits = TrustTaskLimits::new(
+            unauth,
+            TrustedProxyKeyExtractor::new(vec!["127.0.0.1/32".parse().unwrap()]).unwrap(),
+        );
+        let app = axum::Router::new()
+            .route("/", axum::routing::post(|| async { "served" }))
+            .layer(axum::middleware::from_fn_with_state(limits, client_address));
+
+        let mut bad_chain = Request::post("/")
+            .header("x-forwarded-for", "not-an-address")
+            .body(Body::empty())
+            .unwrap();
+        bad_chain.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:1".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        let res = app.clone().oneshot(bad_chain).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vtc");
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "invalid_forwarded_for");
+        assert_eq!(body["limiter"], UNAUTH_LIMITER);
+
+        let no_peer = Request::post("/").body(Body::empty()).unwrap();
+        let res = app.oneshot(no_peer).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(res.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vtc");
     }
 }

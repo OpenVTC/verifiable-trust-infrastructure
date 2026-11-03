@@ -399,12 +399,10 @@ libc = { workspace = true, optional = true }
 zeroize = { version = "1", features = ["derive"] }
 tower = { version = "0.5", features = ["limit"] }
 # Per-IP rate limiting for unauthenticated endpoints (`/bootstrap/request`,
-# `/auth/*`) so a flood of requests can't burn CPU on attestation / crypto.
-tower_governor = "0.8"
+# `/auth/*`) so a flood of requests can't burn CPU on attestation / crypto
+# (`routes::rate_limit`).
 affinidi-rate-limit = "0.1.4"
-# Keyed token-bucket limiter behind `routes::rate_limit` — already in the graph
-# via tower_governor; used directly so a quota can be swapped at runtime.
-# tower_governor stays for its client-IP key extractors.
+# The operation budgets' weighted, keyed limiter (`trust_tasks::operation_budget`).
 governor = "0.10"
 ipnetwork = { workspace = true }
 metrics = "0.24"

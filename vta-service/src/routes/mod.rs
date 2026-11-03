@@ -201,10 +201,11 @@ pub fn router() -> Router<AppState> {
 /// (the default) keys on the socket peer — spoof-proof, and correct whenever
 /// clients reach the VTA directly. A non-empty list names the reverse proxies
 /// in front of the VTA, and only for a request whose peer is one of them does
-/// the limiter read `X-Forwarded-For`; see
-/// [`vti_common::rate_limit::TrustedProxyKeyExtractor`] for what that list
-/// asserts about the deployment, and `docs/02-vta/rate-limiting.md` for the
-/// operator view.
+/// the limiter read `X-Forwarded-For`. Naming a proxy asserts that it
+/// appends to (or rewrites) `X-Forwarded-For` and that nothing else can reach
+/// the VTA's socket; never name a layer-4 (TCP) forwarder, which passes the
+/// client's own header through. See the `vti_common::rate_limit` module docs
+/// for the rule, and `docs/02-vta/rate-limiting.md` for the operator view.
 ///
 /// The router assembled here deliberately carries **no** synthetic-`ConnectInfo`
 /// middleware. A request with no peer has no un-spoofable anchor and must be
@@ -441,6 +442,12 @@ pub fn openapi_spec() -> utoipa::openapi::OpenApi {
 /// allowed origins. Wraps [`build_api_router`] for callers (production VTA
 /// front-ends) that already hold a config; empty list = no layer = legacy
 /// behaviour.
+///
+/// # Panics
+///
+/// If `trust_xff_cidrs` holds a range covering every address (`0.0.0.0/0`,
+/// `::/0`). Configuration loading refuses one, so only a list built in code
+/// can reach this.
 pub fn router_with_cors(
     allowed_origins: &[String],
     trust_xff_cidrs: &[IpNetwork],
@@ -746,114 +753,57 @@ mod cors_tests {
     }
 }
 
-/// Pins the meaning of the two `[server]` rate-limit knobs against
-/// `tower_governor` itself: `per_second(n)` is a *replenishment interval*
-/// (one token every `n` seconds), and `burst_size(b)` is how many requests
-/// get through back-to-back before throttling starts.
+/// Pins the meaning of the two `[server]` rate-limit knobs on the limiter
+/// `rate_limit::Quota` builds (`RateLimiterState::per_period`): the interval
+/// is a *replenishment interval* (one token every `n` seconds), and the burst
+/// is how many requests get through back-to-back before throttling starts.
 ///
-/// This exercises `tower_governor` directly rather than [`rate_limit::apply`]:
-/// the production limiter is now our own middleware over the same `governor`
-/// quota (`Quota::with_period(interval).allow_burst(burst)`), and these pin
-/// the semantics that construction inherits. The wrapper (branch
-/// independence, the 429 contract) is covered in `rate_limit::tests`, the
-/// end-to-end wiring by the harness test
+/// The wrapper (branch independence, the 429 contract) is covered in
+/// `rate_limit::tests`, the end-to-end wiring by the harness test
 /// `unauth_endpoint_rate_limit_returns_429_after_burst`, and the clamp by
 /// `cors_tests::zero_rate_limit_config_is_clamped_not_panicked` above.
 #[cfg(test)]
 mod rate_limit_tests {
-    use std::sync::Arc;
+    use std::net::IpAddr;
+    use std::time::Duration;
 
-    use axum::http::{Request, StatusCode};
-    use axum::routing::get;
-    use tower::ServiceExt;
-    use tower_governor::GovernorLayer;
-    use tower_governor::governor::GovernorConfigBuilder;
+    use affinidi_rate_limit::RateLimiterState;
 
-    async fn handler() -> &'static str {
-        "ok"
-    }
-
-    /// Build a minimal rate-limited router (no AppState needed). Deliberately
-    /// does *not* clamp — clamping is the production path's job and is
-    /// asserted there, so a helper that repeated it would hide a regression.
-    fn limited_router(interval_secs: u64, burst: u32) -> axum::Router {
-        let cfg = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(interval_secs)
-                .burst_size(burst)
-                .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
-                .finish()
-                .unwrap(),
-        );
-        axum::Router::new()
-            .route("/test", get(handler))
-            .layer(GovernorLayer::new(cfg))
-    }
-
-    #[tokio::test]
-    async fn burst_2_rejects_third_request() {
-        let app = limited_router(60, 2);
-
-        let mut statuses = Vec::new();
-        for _ in 0..4 {
-            let req = Request::builder()
-                .uri("/test")
-                .header("x-forwarded-for", "10.0.0.1")
-                .body(axum::body::Body::empty())
-                .unwrap();
-            let resp = app.clone().oneshot(req).await.unwrap();
-            statuses.push(resp.status());
+    fn admitted_before_refusal(interval_secs: u64, burst: u32) -> u32 {
+        let limiter = RateLimiterState::per_period(Duration::from_secs(interval_secs), burst);
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        let mut admitted = 0;
+        while limiter.charge(client).is_ok() {
+            admitted += 1;
+            assert!(admitted <= burst, "the burst must end in a refusal");
         }
-        assert_eq!(statuses[0], StatusCode::OK);
-        assert_eq!(statuses[1], StatusCode::OK);
-        assert_eq!(
-            statuses[2],
-            StatusCode::TOO_MANY_REQUESTS,
-            "third request must be rejected when burst=2"
-        );
+        admitted
     }
 
-    #[tokio::test]
-    async fn burst_5_allows_five_then_rejects() {
-        let app = limited_router(60, 5);
-
-        let mut ok_count = 0u32;
-        let mut rejected = false;
-        for _ in 0..8 {
-            let req = Request::builder()
-                .uri("/test")
-                .header("x-forwarded-for", "10.0.0.1")
-                .body(axum::body::Body::empty())
-                .unwrap();
-            let resp = app.clone().oneshot(req).await.unwrap();
-            if resp.status() == StatusCode::OK {
-                ok_count += 1;
-            } else if resp.status() == StatusCode::TOO_MANY_REQUESTS {
-                rejected = true;
-                break;
-            }
-        }
-        assert_eq!(ok_count, 5, "expected exactly 5 OK before rejection");
-        assert!(rejected, "expected 429 after burst exhausted");
-    }
-
-    /// The reason the production path clamps: a zero period or burst makes
-    /// `finish()` return `None`, so an unclamped `.expect()` would panic.
     #[test]
-    fn zero_period_or_burst_has_no_governor_config() {
-        // Same builder chain as `rate_limit::apply`, minus the clamp.
-        let zero_period = GovernorConfigBuilder::default()
-            .per_second(0)
-            .burst_size(10)
-            .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
-            .finish();
-        assert!(zero_period.is_none(), "zero period must not yield a config");
+    fn burst_2_rejects_third_request() {
+        assert_eq!(admitted_before_refusal(60, 2), 2);
+    }
 
-        let zero_burst = GovernorConfigBuilder::default()
-            .per_second(5)
-            .burst_size(0)
-            .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
-            .finish();
-        assert!(zero_burst.is_none(), "zero burst must not yield a config");
+    #[test]
+    fn burst_5_allows_five_then_rejects() {
+        assert_eq!(admitted_before_refusal(60, 5), 5);
+    }
+
+    /// A refused client is told to come back after one interval: the
+    /// interval is seconds per token, so a bigger one is a tighter limit.
+    #[test]
+    fn the_interval_is_seconds_per_token() {
+        let limiter = RateLimiterState::per_period(Duration::from_secs(5), 1);
+        let client: IpAddr = "10.0.0.1".parse().unwrap();
+        limiter.charge(client).unwrap();
+        assert_eq!(limiter.charge(client).unwrap_err().retry_after_secs, 5);
+    }
+
+    /// The reason the production path clamps: a zero interval would turn the
+    /// limiter off rather than make it strict.
+    #[test]
+    fn a_zero_interval_disables_the_limiter() {
+        assert!(!RateLimiterState::per_period(Duration::ZERO, 10).is_enabled());
     }
 }

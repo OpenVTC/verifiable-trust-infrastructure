@@ -3111,11 +3111,10 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // have, not a test someone forgot to write:
         //
         // `rateLimited` is declared by the challenge task, but the limiter in
-        // front of it is the chain-wide per-IP governor, and
-        // `governor_error_response` is handed a `GovernorError` with no request
-        // — it cannot know which route was refused, so it cannot name a
-        // route-scoped code. Emitting this one means giving the limiter route
-        // context first.
+        // front of it is the chain-wide per-IP layer, which answers before any
+        // route runs — it cannot know which route was refused, so it cannot
+        // name a route-scoped code. Emitting this one means giving the
+        // limiter route context first.
         s::auth::recognise::challenge::v0_2::error_codes::RATE_LIMITED,
         // `issuerNotRecognised` comes from the trust registry answering "no".
         // Every fixture here wires `registry_client: None`, so the route stops

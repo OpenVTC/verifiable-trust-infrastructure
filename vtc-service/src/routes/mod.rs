@@ -450,6 +450,14 @@ pub fn router_with(
     router_with_inner(routing, website_state, &[])
 }
 
+/// The router, with the per-IP limiters attributing clients through
+/// `trust_xff_cidrs`.
+///
+/// # Panics
+///
+/// If `trust_xff_cidrs` holds a range covering every address (`0.0.0.0/0`,
+/// `::/0`). Configuration loading refuses one, so only a list built in code
+/// can reach this.
 #[cfg(feature = "website")]
 pub fn router_with_xff(
     routing: &RoutingConfig,
@@ -464,6 +472,14 @@ pub fn router_with(routing: &RoutingConfig) -> Router<AppState> {
     router_with_inner(routing, &[])
 }
 
+/// The router, with the per-IP limiters attributing clients through
+/// `trust_xff_cidrs`.
+///
+/// # Panics
+///
+/// If `trust_xff_cidrs` holds a range covering every address (`0.0.0.0/0`,
+/// `::/0`). Configuration loading refuses one, so only a list built in code
+/// can reach this.
 #[cfg(not(feature = "website"))]
 pub fn router_with_xff(routing: &RoutingConfig, trust_xff_cidrs: &[IpNetwork]) -> Router<AppState> {
     router_with_inner(routing, trust_xff_cidrs)

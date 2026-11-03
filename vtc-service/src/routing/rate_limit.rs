@@ -29,16 +29,20 @@
 //! | room operations the room has authorized ([`crate::routing::trust_task_admission`]) | [`ROOM_PRESENTER_LIMITER`] | (room, presenter) |
 //! | room file chunks, once the presenter holds the transfer ([`crate::routing::trust_task_admission`]) | [`ROOM_TRANSFER_LIMITER`] | (room, presenter) |
 //!
+//! The per-IP limiters refuse a request they cannot attribute as well: `403`
+//! with no peer address and `400` for an unreadable `X-Forwarded-For` chain
+//! from a trusted proxy, each with `x-rate-limit-source: vtc` and a JSON body
+//! naming the limiter, as `affinidi-rate-limit` answers them. They are not
+//! `429`s, so clients do not read them as a rate limit.
+//!
 //! All are HTTP-only: the Trust Task framework (`trust_tasks_rs::StandardCode`)
 //! defines no rate-limit error code, and neither limiter sits on the DIDComm or
 //! TSP dispatch path, so no Trust Task error document ever reports one.
 
 use axum::Json;
-use axum::body::Body;
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
-use tower_governor::GovernorError;
 use vta_sdk::rate_limit::SOURCE_HEADER;
 
 /// Header naming the service whose limiter refused the request. The name is
@@ -147,41 +151,9 @@ impl IntoResponse for RateLimited {
     }
 }
 
-/// `tower-governor` error handler for the unauthenticated chain.
-///
-/// Only the rate-limit refusal is reshaped. Key-extraction failures keep the
-/// governor's own response: they are a deployment fault (no peer address, no
-/// forwarding header), not a limit, and dressing them as a `429` would send an
-/// operator looking at the wrong thing.
-pub fn governor_error_response(err: GovernorError) -> Response<Body> {
-    match err {
-        GovernorError::TooManyRequests { wait_time, headers } => {
-            let limited = RateLimited::new(
-                UNAUTH_LIMITER,
-                wait_time,
-                "too many unauthenticated requests from this address; wait for \
-                 the Retry-After period before retrying",
-            );
-            let mut res = limited.into_response();
-            // Keep the governor's informational `x-ratelimit-*` headers, but
-            // never let one displace a contract header set above.
-            if let Some(extra) = headers {
-                for (name, value) in &extra {
-                    if !res.headers().contains_key(name) {
-                        res.headers_mut().insert(name.clone(), value.clone());
-                    }
-                }
-            }
-            res
-        }
-        other => other.into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderMap;
     use http_body_util::BodyExt;
 
     async fn json(res: Response) -> serde_json::Value {
@@ -212,26 +184,6 @@ mod tests {
         let res = RateLimited::new(UNAUTH_LIMITER, 0, "x").into_response();
         assert_eq!(res.headers()[header::RETRY_AFTER], "1");
         assert_eq!(json(res).await["retryAfterSecs"], 1);
-    }
-
-    #[tokio::test]
-    async fn governor_refusal_is_reshaped_and_keeps_its_informational_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-ratelimit-after", 4.into());
-        headers.insert("retry-after", 4.into());
-        let res = governor_error_response(GovernorError::TooManyRequests {
-            wait_time: 4,
-            headers: Some(headers),
-        });
-        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(res.headers()[SOURCE_HEADER], "vtc");
-        assert_eq!(res.headers()[header::RETRY_AFTER], "4");
-        assert_eq!(res.headers()["x-ratelimit-after"], "4");
-        assert_eq!(res.headers()[header::CONTENT_TYPE], "application/json");
-        let body = json(res).await;
-        assert_eq!(body["error"], "rate_limited");
-        assert_eq!(body["limiter"], "unauth");
-        assert_eq!(body["retryAfterSecs"], 4);
     }
 
     /// The SDK's parser reads this service's refusal back as the VTC's, with
@@ -274,12 +226,5 @@ mod tests {
             }
             other => panic!("expected RateLimited, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn a_key_extraction_failure_is_not_dressed_as_a_rate_limit() {
-        let res = governor_error_response(GovernorError::UnableToExtractKey);
-        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(!res.headers().contains_key(SOURCE_HEADER));
     }
 }

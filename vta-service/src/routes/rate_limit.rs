@@ -78,7 +78,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 
-use affinidi_rate_limit::{RateLimiterState, TooManyRequests};
+use affinidi_rate_limit::{RateLimiterState, Refusal, TooManyRequests};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Response, StatusCode, header};
@@ -86,8 +86,6 @@ use axum::middleware::Next;
 use axum::response::IntoResponse;
 use ipnetwork::IpNetwork;
 use tokio::sync::RwLock;
-use tower_governor::GovernorError;
-use tower_governor::key_extractor::KeyExtractor;
 use utoipa_axum::router::OpenApiRouter;
 use vta_config::{AppConfig, ServerConfig};
 use vti_common::rate_limit::TrustedProxyKeyExtractor;
@@ -335,8 +333,18 @@ impl LimiterState {
         Arc::clone(&current)
     }
 
-    fn client_ip(&self, req: &Request) -> Result<IpAddr, GovernorError> {
-        self.extractor.extract(req)
+    /// The client `req` is charged to, or the refusal for a request with no
+    /// peer address or an unreadable chain from a trusted proxy.
+    fn client_ip(&self, req: &Request) -> Result<IpAddr, Refusal> {
+        let peer = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip())
+            .ok_or(Refusal::NoClientIp)?;
+        self.extractor
+            .clients()
+            .client_ip(peer, req.headers())
+            .map_err(|_| Refusal::InvalidForwardedFor)
     }
 }
 
@@ -513,29 +521,18 @@ where
 /// `state`'s bucket: `None` if it was charged, or the response that refuses
 /// it. Takes the address rather than the request, which is not `Sync` and so
 /// cannot be borrowed across the quota lookup's await.
-async fn refusal(
-    state: &LimiterState,
-    ip: Result<IpAddr, GovernorError>,
-) -> Option<Response<Body>> {
+async fn refusal(state: &LimiterState, ip: Result<IpAddr, Refusal>) -> Option<Response<Body>> {
     let ip = match ip {
         Ok(ip) => ip,
-        // A chain from a trusted proxy that cannot be attributed.
-        Err(GovernorError::Other { code, msg, .. }) => {
+        // No attributable client means no request, not an unlimited one: a
+        // `403` with no peer, a `400` for an unreadable chain, each saying the
+        // VTA's limiter refused it, as the shared limiter's refusals do.
+        Err(refusal) => {
             return Some(
-                Response::builder()
-                    .status(code)
-                    .body(Body::from(msg.unwrap_or_default()))
-                    .expect("static response always builds"),
-            );
-        }
-        // Same outcome as the tower_governor layer this replaced: no
-        // attributable client means no request, not an unlimited one.
-        Err(_) => {
-            return Some(
-                Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Body::from("Unable To Extract Key!"))
-                    .expect("static response always builds"),
+                RateLimiterState::disabled()
+                    .with_source(RATE_LIMIT_SOURCE_VTA)
+                    .with_limiter_name(state.limiter.name())
+                    .refuse(&refusal),
             );
         }
     };
@@ -781,6 +778,27 @@ mod tests {
     /// attribution modes: the trusted-CIDR mode is the one that matters, since
     /// a placeholder peer inside a trusted CIDR would let the request name its
     /// own bucket through `x-forwarded-for`.
+    /// An unreadable chain from a trusted proxy is refused with `400`, saying
+    /// which VTA limiter refused it, rather than charged to the proxy.
+    #[tokio::test]
+    async fn an_unreadable_chain_from_a_trusted_proxy_is_refused() {
+        let app = two_branch_router(QuotaSource::Fixed(tight()));
+        for _ in 0..3 {
+            let resp = get_from(&app, "/auth", "not-an-ip").await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(resp.headers()[RATE_LIMIT_SOURCE_HEADER], "vta");
+            let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "invalid_forwarded_for");
+            assert_eq!(body["limiter"], "auth");
+        }
+        // The proxy's own bucket was not charged for them.
+        assert_eq!(
+            get_from(&app, "/auth", "198.51.100.9").await.status(),
+            StatusCode::OK
+        );
+    }
+
     #[tokio::test]
     async fn no_attributable_client_is_refused_not_unlimited() {
         for cidrs in [vec![], trusted_loopback()] {
@@ -792,11 +810,8 @@ mod tests {
             );
             let (app, _) = router.split_for_parts();
             let resp = get_from(&app, "/auth", "198.51.100.9").await;
-            assert_eq!(
-                resp.status(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "cidrs={cidrs:?}"
-            );
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "cidrs={cidrs:?}");
+            assert_eq!(resp.headers()[RATE_LIMIT_SOURCE_HEADER], "vta");
         }
     }
 
