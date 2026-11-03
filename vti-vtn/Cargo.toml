@@ -14,12 +14,7 @@ readme = "README.md"
 default = []
 # Talking to a network over HTTPS: `vtn/*` Trust Tasks addressed to the expected
 # network DID, `vtn-signin:` links, and resolving a credential's Bitstring Status List.
-client = [
-  "dep:reqwest",
-  "dep:tokio",
-  "dep:trust-tasks-rs",
-  "dep:vti-specs-vtn",
-]
+client = ["dep:reqwest", "dep:tokio"]
 
 [dependencies]
 affinidi-data-integrity = { workspace = true }
@@ -31,12 +26,14 @@ flate2 = "1"
 multibase = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
+sha2 = { workspace = true }
+trust-tasks-rs = { workspace = true }
+vti-specs-vtn = { path = "../vti-specs-vtn", version = "0.1" }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-trust-tasks-rs = { workspace = true, optional = true }
-vti-specs-vtn = { path = "../vti-specs-vtn", version = "0.1", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

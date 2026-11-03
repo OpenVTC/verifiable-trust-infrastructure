@@ -6,7 +6,7 @@
 //!
 //! 1. Their **membership credential** from a group (group → person).
 //! 2. For each network between that group and this one, a **chain link**:
-//!    - the group owner's `servesRole` registration;
+//!    - the group owner's signed `vtn/groups/register` request;
 //!    - the accepting network's `groupRegistered` acceptance.
 //!
 //!    The member community hands these to its group's members.
@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use crate::credentials::new_credential_id;
 use crate::error::{Result, VtnError};
-use crate::groups::verify_registration;
+use crate::groups::{registration_digest, verify_registration};
 use crate::verify::{KeyResolver, verify_signed_by};
 use crate::vocab::GROUP_REGISTERED_V1;
 
@@ -31,6 +31,10 @@ use crate::vocab::GROUP_REGISTERED_V1;
 pub const ROOM_ENTER: &str = "room:enter";
 /// The longest chain followed.
 pub const MAX_CHAIN: usize = 8;
+/// The longest a room pass may last (A20): it authorizes without being revocable.
+pub const MAX_PASS_LIFETIME: Duration = Duration::hours(24);
+/// A room's pass lifetime when its definition sets none.
+pub const DEFAULT_PASS_LIFETIME: Duration = Duration::minutes(60);
 
 /// One step up the chain: a group's registration with a network, and that network's
 /// acceptance.
@@ -77,10 +81,7 @@ pub async fn verify_link(
     let digest = acceptance
         .subject_digest()
         .ok_or_else(|| VtnError::Rejected("acceptance names no registration".into()))?;
-    if !digests_match(
-        digest,
-        &dtg_credentials::digest_multibase_json(&link.registration)?,
-    )? {
+    if !digests_match(digest, &registration_digest(&link.registration)?)? {
         return Err(VtnError::Rejected(
             "acceptance is for another registration".into(),
         ));
@@ -132,7 +133,8 @@ pub async fn verify_group_membership(
     Ok(group)
 }
 
-/// The (unsigned) room pass.
+/// The (unsigned) room pass, valid for `lifetime`: more than zero and at most
+/// [`MAX_PASS_LIFETIME`].
 pub fn room_pass(
     network: &str,
     holder: &str,
@@ -140,6 +142,12 @@ pub fn room_pass(
     valid_from: DateTime<Utc>,
     lifetime: Duration,
 ) -> Result<DTGCredential> {
+    if lifetime <= Duration::zero() || lifetime > MAX_PASS_LIFETIME {
+        return Err(VtnError::Rejected(format!(
+            "a room pass lasts more than zero and at most {} hours",
+            MAX_PASS_LIFETIME.num_hours()
+        )));
+    }
     Ok(DTGCredential::new_vac(
         network.to_string(),
         IssuerScope::Public,
@@ -150,4 +158,26 @@ pub fn room_pass(
         valid_from + lifetime,
     )?
     .with_id(new_credential_id()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_room_pass_lasts_at_most_a_day() {
+        let at = Utc::now();
+        assert!(room_pass("did:key:zN", "did:key:zP", "r", at, MAX_PASS_LIFETIME).is_ok());
+        assert!(
+            room_pass(
+                "did:key:zN",
+                "did:key:zP",
+                "r",
+                at,
+                MAX_PASS_LIFETIME + Duration::seconds(1)
+            )
+            .is_err()
+        );
+        assert!(room_pass("did:key:zN", "did:key:zP", "r", at, Duration::zero()).is_err());
+    }
 }
