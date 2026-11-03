@@ -35,12 +35,12 @@ use crate::common::signed::{admin, call, party_with_role, payload, post, signed_
 
 // The declared codes, read from the generated bindings.
 use vti_specs::vtc::elections as el;
-const CREATE_ERR_ELECTION_EXISTS: &str = el::create::v0_4::error_codes::ELECTION_EXISTS.code;
-const CREATE_ERR_INVALID_MANIFEST: &str = el::create::v0_4::error_codes::INVALID_MANIFEST.code;
-const CREATE_ERR_COMMUNITY_MISMATCH: &str = el::create::v0_4::error_codes::COMMUNITY_MISMATCH.code;
+const CREATE_ERR_ELECTION_EXISTS: &str = el::create::v0_5::error_codes::ELECTION_EXISTS.code;
+const CREATE_ERR_INVALID_MANIFEST: &str = el::create::v0_5::error_codes::INVALID_MANIFEST.code;
+const CREATE_ERR_COMMUNITY_MISMATCH: &str = el::create::v0_5::error_codes::COMMUNITY_MISMATCH.code;
 const CREATE_ERR_BALLOT_BOX_NOT_TRUSTED: &str =
-    el::create::v0_4::error_codes::BALLOT_BOX_NOT_TRUSTED.code;
-const CREATE_ERR_BALLOT_BOX_REFUSED: &str = el::create::v0_4::error_codes::BALLOT_BOX_REFUSED.code;
+    el::create::v0_5::error_codes::BALLOT_BOX_NOT_TRUSTED.code;
+const CREATE_ERR_BALLOT_BOX_REFUSED: &str = el::create::v0_5::error_codes::BALLOT_BOX_REFUSED.code;
 const CLOSE_ERR_ELECTION_UNKNOWN: &str = el::close::v0_1::error_codes::ELECTION_UNKNOWN.code;
 const CLOSE_ERR_NOT_OPEN: &str = el::close::v0_1::error_codes::NOT_OPEN.code;
 const CLOSE_ERR_EARLY_CLOSE_NOT_ALLOWED: &str =
@@ -53,15 +53,15 @@ const CANCEL_ERR_NOT_OPEN: &str = el::cancel::v0_1::error_codes::NOT_OPEN.code;
 const CANCEL_ERR_BALLOT_BOX_UNAVAILABLE: &str =
     el::cancel::v0_1::error_codes::BALLOT_BOX_UNAVAILABLE.code;
 const CANCEL_ERR_BALLOT_BOX_REFUSED: &str = el::cancel::v0_1::error_codes::BALLOT_BOX_REFUSED.code;
-const SHOW_ERR_ELECTION_UNKNOWN: &str = el::show::v0_3::error_codes::ELECTION_UNKNOWN.code;
+const SHOW_ERR_ELECTION_UNKNOWN: &str = el::show::v0_6::error_codes::ELECTION_UNKNOWN.code;
 const ISSUE_ERR_ELECTION_UNKNOWN: &str =
-    el::tickets::issue::v0_1::error_codes::ELECTION_UNKNOWN.code;
-const ISSUE_ERR_NOT_OPEN: &str = el::tickets::issue::v0_1::error_codes::NOT_OPEN.code;
+    el::tickets::issue::v0_3::error_codes::ELECTION_UNKNOWN.code;
+const ISSUE_ERR_NOT_OPEN: &str = el::tickets::issue::v0_3::error_codes::NOT_OPEN.code;
 const ISSUE_ERR_MANIFEST_MISMATCH: &str =
-    el::tickets::issue::v0_1::error_codes::MANIFEST_MISMATCH.code;
-const ISSUE_ERR_NOT_ELIGIBLE: &str = el::tickets::issue::v0_1::error_codes::NOT_ELIGIBLE.code;
-const ISSUE_ERR_ALREADY_ISSUED: &str = el::tickets::issue::v0_1::error_codes::ALREADY_ISSUED.code;
-const ISSUE_ERR_REQUEST_INVALID: &str = el::tickets::issue::v0_1::error_codes::REQUEST_INVALID.code;
+    el::tickets::issue::v0_3::error_codes::MANIFEST_MISMATCH.code;
+const ISSUE_ERR_NOT_ELIGIBLE: &str = el::tickets::issue::v0_3::error_codes::NOT_ELIGIBLE.code;
+const ISSUE_ERR_ALREADY_ISSUED: &str = el::tickets::issue::v0_3::error_codes::ALREADY_ISSUED.code;
+const ISSUE_ERR_REQUEST_INVALID: &str = el::tickets::issue::v0_3::error_codes::REQUEST_INVALID.code;
 const CERTIFY_ERR_ALREADY_CERTIFIED: &str = el::certify::v0_1::error_codes::ALREADY_CERTIFIED.code;
 const CERTIFY_ERR_AUDIT_ATTESTATION_INVALID: &str =
     el::certify::v0_1::error_codes::AUDIT_ATTESTATION_INVALID.code;
@@ -80,12 +80,14 @@ const BOX: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
 const AUDITOR: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
 const SPEC: &str = "https://trusttasks.org/spec/";
 
-/// The current version of each `vtc/elections/*` task: create at 0.4 and show at 0.3 (the
-/// voting/_shared/0.3 manifest), list at 0.3, the rest at 0.1.
+/// The current version of each `vtc/elections/*` task: create at 0.5 and show at 0.6 (the
+/// voting/_shared/0.4 manifest), list at 0.5, tickets/issue at 0.3, the rest at 0.1.
 fn uri(task: &str) -> String {
     let version = match task {
-        "create" => "0.4",
-        "list" | "show" => "0.3",
+        "create" => "0.5",
+        "show" => "0.6",
+        "list" => "0.5",
+        "tickets/issue" => "0.3",
         _ => "0.1",
     };
     format!("{SPEC}vtc/elections/{task}/{version}")
@@ -275,10 +277,10 @@ impl BallotBoxChannel for InProcessBox {
         let mut bb = self.bb.lock().unwrap();
         let out = match slug {
             "voting/election/register" => bb.register_at(
-                if version == "0.2" {
-                    ElectionVersion::V0_2
-                } else {
-                    ElectionVersion::V0_3
+                match version {
+                    "0.2" => ElectionVersion::V0_2,
+                    "0.3" => ElectionVersion::V0_3,
+                    _ => ElectionVersion::V0_4,
                 },
                 signer,
                 payload,
@@ -728,8 +730,8 @@ async fn a_creation_is_refused_for_each_rule_it_breaks() {
     );
 }
 
-/// VTI-VOT-065: a `textReleaseThreshold` of 1 – 9 is created under `create/0.4` and shown under
-/// `show/0.3`; the versions whose voting/_shared/0.2 schema says 10 refuse it — `create/0.3` as
+/// VTI-VOT-065: a `textReleaseThreshold` of 1 – 9 is created under `create/0.5` and shown under
+/// `show/0.6`; the versions whose voting/_shared/0.2 schema says 10 refuse it — `create/0.3` as
 /// a malformed request, `show/0.2` as `unsupportedVersion` naming 0.3.
 #[tokio::test]
 async fn vti_vot_065_a_threshold_below_ten_is_served_only_at_the_versions_that_admit_it() {
@@ -746,7 +748,7 @@ async fn vti_vot_065_a_threshold_below_ten_is_served_only_at_the_versions_that_a
     let (status, doc) = create(&tv, &chair, low).await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     assert_eq!(payload(&doc)["state"], "registered");
-    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.3"]);
+    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.4"]);
 
     let (status, shown) = call(&tv, &chair, &uri("show"), json!({ "electionId": "small" })).await;
     assert_eq!(status, StatusCode::OK, "{shown}");
@@ -783,7 +785,7 @@ async fn a_ballot_box_serving_register_0_2_only_takes_a_threshold_of_ten_or_more
     let (status, doc) = create(&tv, &chair, manifest("usual", false)).await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     assert_eq!(payload(&doc)["state"], "registered");
-    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.3", "0.2"]);
+    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.4", "0.3", "0.2"]);
 
     bx.registered_at.lock().unwrap().clear();
     let mut low = manifest("small", false);
@@ -791,7 +793,7 @@ async fn a_ballot_box_serving_register_0_2_only_takes_a_threshold_of_ten_or_more
     let (_, doc) = create(&tv, &chair, low).await;
     assert_eq!(tt_error_code(&doc), CREATE_ERR_BALLOT_BOX_REFUSED, "{doc}");
     assert_eq!(payload(&doc)["details"]["code"], "unsupportedVersion");
-    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.3"]);
+    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.4", "0.3"]);
 }
 
 #[tokio::test]
@@ -1323,7 +1325,7 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
         vti_voting::trustees::Threshold::new(2, 3).unwrap(),
     )
     .expect("show carries the election key once formed");
-    let typed: vti_specs::voting::election::register::v0_3::Manifest =
+    let typed: vti_specs::voting::election::register::v0_4::Manifest =
         serde_json::from_value(m).unwrap();
     for (party, choice) in [(&alice, "alice"), (&bob, "alice")] {
         let (voter, ticket) = take_ticket(&tv, party, &b).await;
@@ -1857,4 +1859,657 @@ async fn seed_member(tv: &TestVtc, did: &str) {
     )
     .await
     .unwrap();
+}
+
+// ─── credential rolls (VTI-VOT-015 – 018, 025 – 029) ─────────────────────
+
+const ISSUE_ERR_PRESENTATION_REQUIRED: &str =
+    el::tickets::issue::v0_3::error_codes::PRESENTATION_REQUIRED.code;
+const ISSUE_ERR_MEMBERSHIP_NOT_PROVEN: &str =
+    el::tickets::issue::v0_3::error_codes::MEMBERSHIP_NOT_PROVEN.code;
+const ISSUE_ERR_MEMBERSHIP_REVOKED: &str =
+    el::tickets::issue::v0_3::error_codes::MEMBERSHIP_REVOKED.code;
+const ISSUE_ERR_ROLL_UNTRUSTED: &str = el::tickets::issue::v0_3::error_codes::ROLL_UNTRUSTED.code;
+const CREATE_ERR_ROLL_UNTRUSTED: &str = el::create::v0_5::error_codes::ROLL_UNTRUSTED.code;
+
+/// The community's own revocation list, as its credentials name it.
+const OWN_LIST: &str = "https://vtc.example.org/status/revocation";
+
+/// A community whose DID is a `did:key` it signs with, returned as a [`Party`] so a test can
+/// issue the membership credentials it issues — and with its revocation list in place.
+async fn credential_community(bx: Arc<InProcessBox>) -> (TestVtc, Party) {
+    let p = Party::new();
+    let signer = Arc::new(vtc_service::credentials::LocalSigner::new(
+        p.did.clone(),
+        p.secret.clone(),
+    ));
+    let tv = TestVtc::builder()
+        .vtc_did(p.did.clone())
+        .with_signers(true)
+        .with_credential_signer(signer)
+        .with_audit(true)
+        .with_elections(
+            VotingConfig {
+                trusted_ballot_boxes: vec![TrustedBallotBox {
+                    did: BOX.into(),
+                    operator: "Independent Ballots Ltd".into(),
+                    same_operator: false,
+                }],
+            },
+            bx,
+        )
+        .build()
+        .await;
+    vtc_service::status_list::ensure_initial(
+        &tv.state.status_lists_ks,
+        vtc_service::status_list::StatusPurpose::Revocation,
+        OWN_LIST.into(),
+    )
+    .await
+    .unwrap();
+    (tv, p)
+}
+
+/// A manifest of `community`'s whose roll is the holders of a membership credential for
+/// `member_of`.
+fn credential_manifest(id: &str, community: &str, member_of: &str) -> Value {
+    let mut m = manifest(id, false);
+    m["community"] = json!(community);
+    m["roll"] = json!({ "rule": "credential", "memberOf": member_of });
+    m
+}
+
+/// A membership credential `issuer` issues `subject`, valid for a day, with `status` as its
+/// `credentialStatus` where given.
+async fn membership_credential(issuer: &Party, subject: &str, status: Option<Value>) -> Value {
+    use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+    let now = Utc::now();
+    let mut vc = json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": ["VerifiableCredential", "MembershipCredential"],
+        "issuer": issuer.did,
+        "validFrom": stamp(now - Duration::hours(1)),
+        "validUntil": stamp(now + Duration::days(1)),
+        "credentialSubject": { "id": subject },
+    });
+    if let Some(s) = status {
+        vc["credentialStatus"] = s;
+    }
+    let proof = DataIntegrityProof::sign(
+        &vc,
+        &issuer.secret,
+        SignOptions::new().with_proof_purpose("assertionMethod"),
+    )
+    .await
+    .expect("sign the credential");
+    vc["proof"] = serde_json::to_value(proof).unwrap();
+    vc
+}
+
+/// A document `from` signs to `recipient`, its payload carrying `from`'s presentation of `vc`
+/// bound to the document's own `id` and the recipient (tickets/issue/0.3, show/0.6).
+async fn with_presentation(
+    from: &Party,
+    recipient: &str,
+    type_uri: &str,
+    mut body: Value,
+    vc: &Value,
+) -> Value {
+    use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+    let mut doc =
+        vta_sdk::trust_task_sign::build_unsigned(type_uri, json!({}), &from.did, recipient)
+            .expect("build the document");
+    let mut vp = json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiablePresentation"],
+        "holder": from.did,
+        "nonce": doc.id,
+        "domain": recipient,
+        "verifiableCredential": [vc],
+    });
+    let proof = DataIntegrityProof::sign(
+        &vp,
+        &from.secret,
+        SignOptions::new().with_proof_purpose("authentication"),
+    )
+    .await
+    .expect("sign the presentation");
+    vp["proof"] = serde_json::to_value(proof).unwrap();
+    body["presentation"] = vp;
+    doc.payload = body;
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+        .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .expect("sign the document");
+    serde_json::to_value(doc).unwrap()
+}
+
+/// `party`'s claim of a ticket for `b`, presenting `vc` where given.
+async fn claim(tv: &TestVtc, party: &Party, b: &Ballot, vc: Option<&Value>) -> (StatusCode, Value) {
+    let voter = Voter::generate(&b.params, &mut vti_voting::rand::rngs::OsRng).unwrap();
+    let label = format!("voter/{}", b.election.id().as_str());
+    let (body, _) = ask(b, &voter, &label);
+    claim_body(tv, party, body, vc).await
+}
+
+async fn claim_body(
+    tv: &TestVtc,
+    party: &Party,
+    body: Value,
+    vc: Option<&Value>,
+) -> (StatusCode, Value) {
+    let community = tv.state.config.read().await.vtc_did.clone().unwrap();
+    match vc {
+        Some(vc) => {
+            let doc = with_presentation(party, &community, &uri("tickets/issue"), body, vc).await;
+            post(tv, &doc).await
+        }
+        None => call(tv, party, &uri("tickets/issue"), body).await,
+    }
+}
+
+/// A party admitted as a member of the community: its entry, its record, and a membership
+/// credential the community issued it, under a slot of its own revocation list.
+async fn member_party(tv: &TestVtc) -> (Party, u32) {
+    let p = party_with_role(tv, VtcRole::Member, &[]).await;
+    let slot = vtc_service::status_list::with_locked(
+        &tv.state.status_lists_ks,
+        vtc_service::status_list::StatusPurpose::Revocation,
+        |row| {
+            vtc_service::status_list::allocate(row)
+                .ok_or_else(|| vtc_service::error::AppError::Internal("full".into()))
+        },
+    )
+    .await
+    .unwrap();
+    let mut rec = vtc_service::members::Member::fresh(p.did.clone());
+    rec.status_list_index = Some(slot);
+    rec.current_vmc_id = Some(format!("urn:uuid:{}", uuid::Uuid::new_v4()));
+    vtc_service::members::store_member(&tv.state.members_ks, &rec)
+        .await
+        .unwrap();
+    (p, slot)
+}
+
+async fn flip_own(tv: &TestVtc, slot: u32) {
+    vtc_service::status_list::with_locked(
+        &tv.state.status_lists_ks,
+        vtc_service::status_list::StatusPurpose::Revocation,
+        move |row| {
+            vtc_service::status_list::flip(row, slot, true)
+                .map_err(|e| vtc_service::error::AppError::Internal(e.into()))
+        },
+    )
+    .await
+    .unwrap();
+}
+
+/// VTI-VOT-026: a credential roll names this community, one of its groups, or a party that is
+/// itself an active member holding the community's membership credential — and nothing else,
+/// whatever recognises it. Nothing is recorded for a refusal.
+#[tokio::test]
+async fn vti_vot_026_a_foreign_untrusted_did_is_refused_at_create() {
+    let bx = InProcessBox::new();
+    let (tv, me) = credential_community(bx.clone()).await;
+    let chair = admin(&tv).await;
+
+    let stranger = Party::new();
+    let (_, doc) = create(
+        &tv,
+        &chair,
+        credential_manifest("foreign", &me.did, &stranger.did),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), CREATE_ERR_ROLL_UNTRUSTED, "{doc}");
+
+    // A member with no membership credential of the community's is not a member party.
+    let plain = member(&tv).await;
+    let (_, doc) = create(
+        &tv,
+        &chair,
+        credential_manifest("plain", &me.did, &plain.did),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), CREATE_ERR_ROLL_UNTRUSTED, "{doc}");
+
+    // Nor one whose membership credential the community has revoked.
+    let (revoked, slot) = member_party(&tv).await;
+    flip_own(&tv, slot).await;
+    let (_, doc) = create(
+        &tv,
+        &chair,
+        credential_manifest("revoked", &me.did, &revoked.did),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), CREATE_ERR_ROLL_UNTRUSTED, "{doc}");
+    assert!(
+        vtc_service::elections::store::all(tv.state.elections.ks())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // The community itself, and a member party, are.
+    let (status, doc) = create(&tv, &chair, credential_manifest("own", &me.did, &me.did)).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (party, _) = member_party(&tv).await;
+    let (status, doc) = create(
+        &tv,
+        &chair,
+        credential_manifest("party", &me.did, &party.did),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(*bx.registered_at.lock().unwrap(), ["0.4", "0.4"]);
+}
+
+/// VTI-VOT-025, VTI-VOT-027, VTI-VOT-090: under a roll naming the community, a member who joined
+/// after the election was created claims with the community's credential; without one it is
+/// told a presentation is required; a second claim is refused; the disclosure names the roll.
+#[tokio::test]
+async fn vti_vot_025_a_late_joiner_claims_with_the_communitys_credential() {
+    let (tv, me) = credential_community(InProcessBox::new()).await;
+    let chair = admin(&tv).await;
+    let (status, doc) = create(&tv, &chair, credential_manifest("own", &me.did, &me.did)).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+
+    // Joined after the election was called.
+    let late = member(&tv).await;
+    let (status, shown) = call(&tv, &late, &uri("show"), json!({ "electionId": "own" })).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    let rc = &payload(&shown)["disclosure"]["rollCredential"];
+    assert_eq!(rc["memberOf"], me.did.as_str());
+    assert_eq!(rc["memberOfKind"], "thisCommunity");
+    assert_eq!(rc["presenterDisclosed"], true);
+
+    let b = read_election_of(&tv, &late, "own", &me.did).await;
+    let (_, doc) = claim(&tv, &late, &b, None).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        ISSUE_ERR_PRESENTATION_REQUIRED,
+        "{doc}"
+    );
+
+    // A credential the community did not issue proves nothing here.
+    let other = Party::new();
+    let foreign = membership_credential(&other, &late.did, None).await;
+    let (_, doc) = claim(&tv, &late, &b, Some(&foreign)).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        ISSUE_ERR_MEMBERSHIP_NOT_PROVEN,
+        "{doc}"
+    );
+    assert_eq!(payload(&doc)["details"]["reason"], "issuer");
+
+    // Another member's credential is not the signer's.
+    let someone = member(&tv).await;
+    let theirs = membership_credential(&me, &someone.did, None).await;
+    let (_, doc) = claim(&tv, &late, &b, Some(&theirs)).await;
+    assert_eq!(payload(&doc)["details"]["reason"], "holder", "{doc}");
+
+    let vmc = membership_credential(&me, &late.did, None).await;
+    let (status, doc) = claim(&tv, &late, &b, Some(&vmc)).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    // One ticket per subject.
+    let (_, doc) = claim(&tv, &late, &b, Some(&vmc)).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ALREADY_ISSUED, "{doc}");
+
+    // The old claim, which carries no presentation, is pointed at 0.3.
+    let voter = Voter::generate(&b.params, &mut vti_voting::rand::rngs::OsRng).unwrap();
+    let (body, _) = ask(&b, &voter, "voter/own");
+    let (_, doc) = call(
+        &tv,
+        &someone,
+        &format!("{SPEC}vtc/elections/tickets/issue/0.1"),
+        body,
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "unsupportedVersion", "{doc}");
+    // And an old show is too.
+    let (_, doc) = call(
+        &tv,
+        &someone,
+        &format!("{SPEC}vtc/elections/show/0.3"),
+        json!({ "electionId": "own" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "unsupportedVersion", "{doc}");
+
+    // A removed member is refused even with a credential not yet expired: the records win.
+    let mut rec = vtc_service::members::get_member(&tv.state.members_ks, &someone.did)
+        .await
+        .unwrap()
+        .unwrap();
+    rec.removed_at = Some(Utc::now());
+    vtc_service::members::store_member(&tv.state.members_ks, &rec)
+        .await
+        .unwrap();
+    let (_, doc) = claim(&tv, &someone, &b, Some(&theirs)).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ELECTION_UNKNOWN, "{doc}");
+}
+
+/// VTI-VOT-025 item 4: a credential its status list shows revoked is refused.
+#[tokio::test]
+async fn vti_vot_025_a_revoked_credential_is_refused() {
+    let (tv, me) = credential_community(InProcessBox::new()).await;
+    let chair = admin(&tv).await;
+    create(&tv, &chair, credential_manifest("own", &me.did, &me.did)).await;
+    let alice = member(&tv).await;
+    let b = read_election_of(&tv, &alice, "own", &me.did).await;
+    let slot = vtc_service::status_list::with_locked(
+        &tv.state.status_lists_ks,
+        vtc_service::status_list::StatusPurpose::Revocation,
+        |row| Ok(vtc_service::status_list::allocate(row).unwrap()),
+    )
+    .await
+    .unwrap();
+    let status = json!({
+        "type": "BitstringStatusListEntry",
+        "statusPurpose": "revocation",
+        "statusListIndex": slot.to_string(),
+        "statusListCredential": OWN_LIST,
+    });
+    let vmc = membership_credential(&me, &alice.did, Some(status)).await;
+    flip_own(&tv, slot).await;
+    let (_, doc) = claim(&tv, &alice, &b, Some(&vmc)).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_MEMBERSHIP_REVOKED, "{doc}");
+}
+
+/// VTI-VOT-015 – 017, VTI-VOT-027: an election put to a member party's members is shown and
+/// claimed, by anyone but a manager or the party itself, only on a presentation that passes;
+/// every other outcome is `electionUnknown`. A list shows it to nobody else, not even a stub;
+/// a read's presentation is accepted once.
+#[tokio::test]
+async fn vti_vot_017_a_non_member_of_a_member_party_election_is_answered_election_unknown() {
+    let (tv, me) = credential_community(InProcessBox::new()).await;
+    let chair = admin(&tv).await;
+    let (party, _) = member_party(&tv).await;
+    let (status, doc) = create(
+        &tv,
+        &chair,
+        credential_manifest("merger", &me.did, &party.did),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let b = read_election_of(&tv, &chair, "merger", &me.did).await;
+
+    // A member of the community, who is not the party, neither lists nor reads it.
+    let neighbour = member(&tv).await;
+    let (_, list) = call(&tv, &neighbour, &uri("list"), json!({})).await;
+    assert_eq!(payload(&list)["elections"], json!([]), "{list}");
+    let (_, shown) = call(
+        &tv,
+        &neighbour,
+        &uri("show"),
+        json!({ "electionId": "merger" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&shown), SHOW_ERR_ELECTION_UNKNOWN, "{shown}");
+    // The party and managers list it.
+    let (_, list) = call(&tv, &party, &uri("list"), json!({})).await;
+    assert_eq!(payload(&list)["elections"][0]["electionId"], "merger");
+    let (_, list) = call(&tv, &chair, &uri("list"), json!({})).await;
+    assert_eq!(payload(&list)["elections"][0]["electionId"], "merger");
+
+    // The party's member, unproven, is told nothing — whatever it sends.
+    let holder = Party::new();
+    let (_, doc) = claim(&tv, &holder, &b, None).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ELECTION_UNKNOWN, "{doc}");
+    let elsewhere = membership_credential(&Party::new(), &holder.did, None).await;
+    let (_, doc) = claim(&tv, &holder, &b, Some(&elsewhere)).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ELECTION_UNKNOWN, "{doc}");
+    let (_, doc) = claim(&tv, &neighbour, &b, None).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ELECTION_UNKNOWN, "{doc}");
+
+    // The party itself sees it, so is told why.
+    let (_, doc) = claim(&tv, &party, &b, None).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        ISSUE_ERR_PRESENTATION_REQUIRED,
+        "{doc}"
+    );
+
+    // Proven, the member reads it — once per document — and claims one ticket.
+    let vmc = membership_credential(&party, &holder.did, None).await;
+    let read = with_presentation(
+        &holder,
+        &me.did,
+        &uri("show"),
+        json!({ "electionId": "merger" }),
+        &vmc,
+    )
+    .await;
+    let (status, shown) = post(&tv, &read).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(
+        payload(&shown)["disclosure"]["rollCredential"]["memberOfKind"],
+        "memberParty"
+    );
+    // The presentation is bound to that read: carried in another, it proves nothing.
+    let mut lifted = with_presentation(
+        &holder,
+        &me.did,
+        &uri("show"),
+        json!({ "electionId": "merger" }),
+        &vmc,
+    )
+    .await;
+    lifted["payload"]["presentation"] = read["payload"]["presentation"].clone();
+    let lifted = {
+        let mut doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(lifted).unwrap();
+        doc.proof = None;
+        let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(
+            &holder.did,
+            &holder.secret_multibase,
+        )
+        .unwrap();
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .unwrap();
+        serde_json::to_value(doc).unwrap()
+    };
+    let (_, replayed) = post(&tv, &lifted).await;
+    assert_eq!(
+        tt_error_code(&replayed),
+        SHOW_ERR_ELECTION_UNKNOWN,
+        "{replayed}"
+    );
+
+    let (status, doc) = claim(&tv, &holder, &b, Some(&vmc)).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (_, doc) = claim(&tv, &holder, &b, Some(&vmc)).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ALREADY_ISSUED, "{doc}");
+
+    // Once the party's own membership is revoked, its members are told nothing, and a manager
+    // is told the roll is no longer trusted.
+    let slot = vtc_service::members::get_member(&tv.state.members_ks, &party.did)
+        .await
+        .unwrap()
+        .unwrap()
+        .status_list_index
+        .unwrap();
+    flip_own(&tv, slot).await;
+    let other = Party::new();
+    let theirs = membership_credential(&party, &other.did, None).await;
+    let (_, doc) = claim(&tv, &other, &b, Some(&theirs)).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ELECTION_UNKNOWN, "{doc}");
+    let chairs = membership_credential(&party, &chair.did, None).await;
+    let (_, doc) = claim(&tv, &chair, &b, Some(&chairs)).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ROLL_UNTRUSTED, "{doc}");
+}
+
+/// VTI-VOT-018: a presentation whose status list cannot be read is the framework's
+/// `indeterminate`, retryable, identically whether the election exists, and whatever its roll;
+/// nothing is recorded.
+#[tokio::test]
+async fn vti_vot_018_an_outage_is_the_same_indeterminate_for_an_existing_and_a_missing_election() {
+    let (tv, me) = credential_community(InProcessBox::new()).await;
+    let chair = admin(&tv).await;
+    let (party, _) = member_party(&tv).await;
+    create(
+        &tv,
+        &chair,
+        credential_manifest("merger", &me.did, &party.did),
+    )
+    .await;
+    let b = read_election_of(&tv, &chair, "merger", &me.did).await;
+    let holder = Party::new();
+    let unreachable = json!({
+        "type": "BitstringStatusListEntry",
+        "statusPurpose": "revocation",
+        "statusListIndex": "7",
+        "statusListCredential": "https://status.invalid/list",
+    });
+    let vmc = membership_credential(&party, &holder.did, Some(unreachable)).await;
+
+    let voter = Voter::generate(&b.params, &mut vti_voting::rand::rngs::OsRng).unwrap();
+    let (body, _) = ask(&b, &voter, "voter/merger");
+    let mut missing = body.clone();
+    missing["electionId"] = json!("no-such-election");
+    let mut answers = Vec::new();
+    for body in [body, missing] {
+        let (status, doc) = claim_body(&tv, &holder, body, Some(&vmc)).await;
+        assert_eq!(tt_error_code(&doc), "indeterminate", "{doc}");
+        assert_eq!(payload(&doc)["retryable"], true, "{doc}");
+        answers.push((status, payload(&doc)["details"].clone()));
+    }
+    assert_eq!(answers[0], answers[1]);
+    for id in ["merger", "no-such-election"] {
+        let read = with_presentation(
+            &holder,
+            &me.did,
+            &uri("show"),
+            json!({ "electionId": id }),
+            &vmc,
+        )
+        .await;
+        let (_, doc) = post(&tv, &read).await;
+        assert_eq!(tt_error_code(&doc), "indeterminate", "{id}: {doc}");
+    }
+    assert!(
+        vtc_service::elections::store::ticket(tv.state.elections.ks(), "merger", &holder.did)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// VTI-VOT-029: a roll naming a group the community has since deleted is shown only to
+/// managers, and every claim is refused — `rollUntrusted` to a manager, `electionUnknown` to
+/// anyone else. The group's DID is never read as a party outside the community.
+#[tokio::test]
+async fn vti_vot_029_a_deleted_groups_election_is_shown_to_managers_only() {
+    let (tv, me) = credential_community(InProcessBox::new()).await;
+    let chair = admin(&tv).await;
+    let alice = member(&tv).await;
+    let ks = tv.state.directory.ks();
+    let group = Party::new();
+    let slot = vtc_service::status_list::with_locked(
+        &tv.state.status_lists_ks,
+        vtc_service::status_list::StatusPurpose::Revocation,
+        |row| Ok(vtc_service::status_list::allocate(row).unwrap()),
+    )
+    .await
+    .unwrap();
+    let now = Utc::now();
+    let g: vtc_service::groups::Group = serde_json::from_value(json!({
+        "groupId": "grp_eng",
+        "groupDid": group.did,
+        "signingKeyId": "k",
+        "name": "Engineering",
+        "joinPolicy": "closed",
+        "visibility": "members",
+        "showMembers": "members",
+        "issuesCredentials": true,
+        "authority": { "credentialId": "urn:uuid:a", "validUntil": now + Duration::days(30),
+                       "statusListIndex": slot },
+        "createdAt": now,
+        "updatedAt": now,
+    }))
+    .unwrap();
+    vtc_service::groups::put(ks, &g).await.unwrap();
+    let card = vtc_service::directory::cards::ensure(
+        ks,
+        &alice.did,
+        &vtc_service::directory::model::Settings::default(),
+        None,
+    )
+    .await
+    .unwrap();
+    vtc_service::groups::put_membership(
+        ks,
+        &vtc_service::groups::Membership {
+            group_id: "grp_eng".into(),
+            entry_id: card.entry_id.clone(),
+            source: "added".into(),
+            since: now,
+            state: "active".into(),
+            credential_id: None,
+            credential_valid_until: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let (status, doc) = create(
+        &tv,
+        &chair,
+        credential_manifest("offsite", &me.did, &group.did),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (_, shown) = call(
+        &tv,
+        &alice,
+        &uri("show"),
+        json!({ "electionId": "offsite" }),
+    )
+    .await;
+    let rc = &payload(&shown)["disclosure"]["rollCredential"];
+    assert_eq!(rc["memberOfKind"], "communityGroup", "{shown}");
+    assert_eq!(rc["memberOfName"], "Engineering");
+    let b = read_election_of(&tv, &chair, "offsite", &me.did).await;
+    let gmc = membership_credential(&group, &alice.did, None).await;
+
+    // A member outside the group does not see it.
+    let bob = member(&tv).await;
+    let (_, list) = call(&tv, &bob, &uri("list"), json!({})).await;
+    assert_eq!(payload(&list)["elections"], json!([]));
+
+    vtc_service::groups::remove(ks, "grp_eng").await.unwrap();
+    let (_, shown) = call(
+        &tv,
+        &alice,
+        &uri("show"),
+        json!({ "electionId": "offsite" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&shown), SHOW_ERR_ELECTION_UNKNOWN, "{shown}");
+    let (_, doc) = claim(&tv, &alice, &b, Some(&gmc)).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ELECTION_UNKNOWN, "{doc}");
+    // Presenting the old group's credential does not reach the member-party path.
+    let read = with_presentation(
+        &alice,
+        &me.did,
+        &uri("show"),
+        json!({ "electionId": "offsite" }),
+        &gmc,
+    )
+    .await;
+    let (_, shown) = post(&tv, &read).await;
+    assert_eq!(tt_error_code(&shown), SHOW_ERR_ELECTION_UNKNOWN, "{shown}");
+
+    let (status, shown) = call(
+        &tv,
+        &chair,
+        &uri("show"),
+        json!({ "electionId": "offsite" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    let chair_gmc = membership_credential(&group, &chair.did, None).await;
+    let (_, doc) = claim(&tv, &chair, &b, Some(&chair_gmc)).await;
+    assert_eq!(tt_error_code(&doc), ISSUE_ERR_ROLL_UNTRUSTED, "{doc}");
 }

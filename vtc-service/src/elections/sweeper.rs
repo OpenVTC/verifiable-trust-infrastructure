@@ -9,6 +9,8 @@
 //!   final board to each.
 //! - **Pre-credentials** (tickets/issue item 10): discarded once voting has closed, when no
 //!   resend can be useful.
+//! - **Accepted presentations** (show/0.6 item 8.6): the `id` of a read whose presentation was
+//!   accepted is forgotten once its acceptance window has passed.
 
 use std::time::Duration;
 
@@ -50,6 +52,9 @@ pub fn spawn(
 /// A store failure reading the elections; a failure on one election is logged and the pass
 /// goes on.
 pub async fn pass(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> {
+    if let Err(e) = store::prune_presentations(state.elections.ks(), now).await {
+        warn!(error = %e, "could not forget expired presentation acceptances this pass");
+    }
     for rec in store::all(state.elections.ks()).await? {
         let id = rec.election_id.clone();
         if let Err(e) = settle(state, rec, now).await {
@@ -164,6 +169,7 @@ async fn audit(state: &AppState, election_id: &str, change: &str, answer: String
         binding: None,
         action_id: None,
         ballot_box_answer: Some(answer),
+        roll_member_of: None,
         reason: None,
         head_tree_size: None,
         head_root_hash: None,

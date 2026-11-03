@@ -2360,6 +2360,16 @@ mod spine_proof_tests {
             election_tasks::SHOW_0_2_TYPE,
             "a roll-scoped read; `election_tasks::caller` takes the caller from the proof and refuses an unsigned one as `proofRequired`",
         ),
+        #[cfg(feature = "voting")]
+        (
+            election_tasks::SHOW_0_3_TYPE,
+            "a roll-scoped read; `election_tasks::caller` takes the caller from the proof and refuses an unsigned one as `proofRequired`",
+        ),
+        #[cfg(feature = "voting")]
+        (
+            election_tasks::LIST_0_3_TYPE,
+            "a roll-scoped read; `election_tasks::caller` takes the caller from the proof and refuses an unsigned one as `proofRequired`",
+        ),
         (
             auth_tasks::CHALLENGE_TYPE,
             "names no identity to authorize — it is the first message of the handshake",
@@ -2931,13 +2941,20 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // taking a ticket. No REST route.
     #[cfg(feature = "voting")]
     election_tasks::CREATE_TYPE,
-    // Still served: a manifest whose textReleaseThreshold is 10 or more (voting/_shared/0.2).
+    // Still served: a manifest without a credential roll (voting/_shared/0.3), and one whose
+    // textReleaseThreshold is also 10 or more (voting/_shared/0.2).
+    #[cfg(feature = "voting")]
+    election_tasks::CREATE_0_4_TYPE,
     #[cfg(feature = "voting")]
     election_tasks::CREATE_0_3_TYPE,
     #[cfg(feature = "voting")]
     election_tasks::LIST_TYPE,
     #[cfg(feature = "voting")]
+    election_tasks::LIST_0_3_TYPE,
+    #[cfg(feature = "voting")]
     election_tasks::SHOW_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::SHOW_0_3_TYPE,
     #[cfg(feature = "voting")]
     election_tasks::SHOW_0_2_TYPE,
     #[cfg(feature = "voting")]
@@ -2946,6 +2963,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     election_tasks::CANCEL_TYPE,
     #[cfg(feature = "voting")]
     election_tasks::ISSUE_TYPE,
+    // Still served: a claim under a roll that takes no presentation.
+    #[cfg(feature = "voting")]
+    election_tasks::ISSUE_0_1_TYPE,
     #[cfg(feature = "voting")]
     election_tasks::CERTIFY_TYPE,
     #[cfg(feature = "voting")]

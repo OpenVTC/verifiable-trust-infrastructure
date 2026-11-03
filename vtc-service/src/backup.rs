@@ -465,6 +465,7 @@ async fn close_issuance_after_restore(state: &AppState) -> Result<(), AppError> 
             binding: None,
             action_id: None,
             ballot_box_answer: None,
+            roll_member_of: None,
             reason: Some(
                 "restored from a backup: tickets issued after it was taken are not in it".into(),
             ),

@@ -50,6 +50,34 @@ pub struct BoxRefusal {
     pub message: String,
 }
 
+/// Under a credential roll, what the DID `roll.memberOf` names was to this community when the
+/// election was created (VTI-VOT-026), kept so a claim reads the roll from the community's own
+/// records: a group the community has since deleted is still known as one of its groups, never
+/// mistaken for a party outside it (VTI-VOT-029).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum RollParty {
+    /// The community itself.
+    ThisCommunity,
+    /// One of the community's groups, by its local identifier.
+    #[serde(rename_all = "camelCase")]
+    CommunityGroup { group_id: String },
+    /// A party outside the community that is itself an active member of it.
+    MemberParty,
+}
+
+impl RollParty {
+    /// `RollCredentialDisclosure.memberOfKind`.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            RollParty::ThisCommunity => "thisCommunity",
+            RollParty::CommunityGroup { .. } => "communityGroup",
+            RollParty::MemberParty => "memberParty",
+        }
+    }
+}
+
 /// One election.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,9 +141,28 @@ pub struct ElectionRecord {
     /// (CONVENTIONS §9.7).
     #[serde(default)]
     pub decryption_authorized: bool,
+    /// Under a credential roll, what `roll.memberOf` was to the community at creation; absent
+    /// under every other rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll_party: Option<RollParty>,
 }
 
 impl ElectionRecord {
+    /// The DID a credential roll names, when the roll is one.
+    #[must_use]
+    pub fn roll_member_of(&self) -> Option<&str> {
+        (self.manifest["roll"]["rule"] == "credential")
+            .then(|| self.manifest["roll"]["memberOf"].as_str())
+            .flatten()
+    }
+
+    /// Whether the roll names a member party (VTI-VOT-015 item 3): the election is then shown
+    /// only to managers, the party itself, and a reader who presents its membership.
+    #[must_use]
+    pub fn is_member_party_election(&self) -> bool {
+        matches!(self.roll_party, Some(RollParty::MemberParty))
+    }
+
     /// The state a reader is shown (`RegistrarState`): the record's standing, with the clock
     /// read for a registered election as the ballot box would.
     #[must_use]
@@ -298,6 +345,78 @@ pub async fn replace_ticket(ks: &KeyspaceHandle, t: &TicketIssued) -> Result<(),
     ks.insert(ticket_key(&t.election_id, &t.signer), t).await
 }
 
+const PRESENTATION_PREFIX: &str = "presented:";
+
+/// A read document whose presentation was accepted (show/0.6 Conformance item 8.1), kept for
+/// the acceptance window so the same document cannot be accepted twice (VTI-CRD-022). Only its
+/// `id`: never the presentation, the credential or a claim of it (VTI-CRD-042).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PresentationAccepted {
+    until: DateTime<Utc>,
+}
+
+fn presentation_key(doc_id: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(doc_id.as_bytes());
+    format!("{PRESENTATION_PREFIX}{}", hex::encode(h.finalize()))
+}
+
+/// Whether a presentation was already accepted in the document `doc_id`, within its window.
+///
+/// # Errors
+/// A store failure.
+pub async fn presentation_accepted(
+    ks: &KeyspaceHandle,
+    doc_id: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, AppError> {
+    let seen: Option<PresentationAccepted> = ks.get(presentation_key(doc_id)).await?;
+    Ok(seen.is_some_and(|s| s.until > now))
+}
+
+/// Record that a presentation was accepted in `doc_id`, until `until`. `false` when one already
+/// was and its window has not passed.
+///
+/// # Errors
+/// A store failure.
+pub async fn accept_presentation(
+    ks: &KeyspaceHandle,
+    doc_id: &str,
+    until: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<bool, AppError> {
+    if presentation_accepted(ks, doc_id, now).await? {
+        return Ok(false);
+    }
+    ks.insert(presentation_key(doc_id), &PresentationAccepted { until })
+        .await?;
+    Ok(true)
+}
+
+/// Forget accepted presentations whose window has passed. Returns how many.
+///
+/// # Errors
+/// A store failure.
+pub async fn prune_presentations(
+    ks: &KeyspaceHandle,
+    now: DateTime<Utc>,
+) -> Result<usize, AppError> {
+    let mut gone = 0;
+    for (key, raw) in ks
+        .prefix_iter_raw(PRESENTATION_PREFIX.as_bytes().to_vec())
+        .await?
+    {
+        let expired =
+            serde_json::from_slice::<PresentationAccepted>(&raw).map_or(true, |p| p.until <= now);
+        if expired {
+            ks.remove(key).await?;
+            gone += 1;
+        }
+    }
+    Ok(gone)
+}
+
 /// A registered election opening tomorrow, for tests.
 #[cfg(all(test, feature = "voting"))]
 pub(crate) fn test_record(now: DateTime<Utc>) -> ElectionRecord {
@@ -336,6 +455,7 @@ mod tests {
             election_key: None,
             ceremony: None,
             decryption_authorized: false,
+            roll_party: None,
         }
     }
 
