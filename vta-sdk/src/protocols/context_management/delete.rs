@@ -81,14 +81,40 @@ impl std::fmt::Display for HostCleanupFailure {
     }
 }
 
-/// The DIDs a `vta/contexts/delete:hostCleanupFailed` refusal names, or `None`
-/// when `err` is any other error.
+/// What a `vta/contexts/delete:hostCleanupFailed` refusal established.
 ///
-/// The refusal means nothing local was deleted, so the caller can wait for
-/// the host and retry, or retry with `abandonHostCopies` — and the
-/// specification asks a producer to show these to a human before choosing the
-/// second.
-pub fn host_cleanup_failures(err: &crate::error::VtaError) -> Option<Vec<HostCleanupFailure>> {
+/// The code alone says only that the VTA refused; the DIDs in its required
+/// `details.hostCleanupFailures` are what make the follow-up decision — retry
+/// with `abandonHostCopies` and leave those logs published — an informed one.
+/// Nothing between the wire and this type checks the details against the
+/// code's `detailsSchema` (`VtaError::Rejected` carries them as sent, and the
+/// generated error-code tables do not hold the schema), so the check is made
+/// here, and a refusal whose evidence cannot be read is kept apart from one
+/// whose evidence can (#2404).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HostCleanupRefusal {
+    /// The details hold one or more well-formed entries: the DIDs whose
+    /// published logs were not confirmed removed. Only this case carries what
+    /// an operator must be shown before being offered `abandonHostCopies`.
+    Evidenced(Vec<HostCleanupFailure>),
+    /// The code matched but the details are absent, empty or malformed. Still
+    /// this refusal — nothing was deleted locally and a plain retry is still
+    /// right — but no basis for offering the abandonment, because nobody can
+    /// say which logs it would leave behind. `why` says what was wrong.
+    Unreadable { why: String },
+}
+
+/// Classify `err` as a `vta/contexts/delete:hostCleanupFailed` refusal, or
+/// `None` when it is any other error.
+///
+/// Matches the exact declared code only — never a generic `taskFailed`, however
+/// its message reads. The details are held to the code's `detailsSchema`:
+/// `hostCleanupFailures` present with at least one entry, each with a non-empty
+/// `did` and `reason` and, when present, a non-empty `server`. Unknown members
+/// are ignored rather than refused, so an addition the schema later makes does
+/// not hide the DIDs it came with.
+pub fn host_cleanup_refusal(err: &crate::error::VtaError) -> Option<HostCleanupRefusal> {
     use vti_specs::vta::contexts::delete::v1_1::error_codes::HOST_CLEANUP_FAILED;
     let crate::error::VtaError::Rejected { code, details, .. } = err else {
         return None;
@@ -96,13 +122,157 @@ pub fn host_cleanup_failures(err: &crate::error::VtaError) -> Option<Vec<HostCle
     if code != HOST_CLEANUP_FAILED.code {
         return None;
     }
-    // A refusal with this code and unreadable details is still this refusal;
-    // an empty list keeps the caller on the right branch.
-    Some(
-        details
-            .as_ref()
-            .and_then(|d| d.get("hostCleanupFailures"))
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default(),
-    )
+    Some(match read_failures(details.as_ref()) {
+        Ok(failures) => HostCleanupRefusal::Evidenced(failures),
+        Err(why) => HostCleanupRefusal::Unreadable { why },
+    })
+}
+
+fn read_failures(details: Option<&serde_json::Value>) -> Result<Vec<HostCleanupFailure>, String> {
+    let raw = details
+        .ok_or("the refusal carried no details")?
+        .get("hostCleanupFailures")
+        .ok_or("the refusal's details carried no `hostCleanupFailures`")?;
+    let failures: Vec<HostCleanupFailure> = serde_json::from_value(raw.clone())
+        .map_err(|e| format!("`hostCleanupFailures` is malformed: {e}"))?;
+    if failures.is_empty() {
+        return Err(
+            "`hostCleanupFailures` is empty; the specification requires at least one entry".into(),
+        );
+    }
+    for (i, f) in failures.iter().enumerate() {
+        if f.did.is_empty() {
+            return Err(format!("`hostCleanupFailures[{i}].did` is empty"));
+        }
+        if f.reason.is_empty() {
+            return Err(format!("`hostCleanupFailures[{i}].reason` is empty"));
+        }
+        if f.server.as_deref() == Some("") {
+            return Err(format!("`hostCleanupFailures[{i}].server` is empty"));
+        }
+    }
+    Ok(failures)
+}
+
+/// The DIDs a `vta/contexts/delete:hostCleanupFailed` refusal names, or `None`
+/// when `err` is any other error **or** the refusal's details cannot be read.
+///
+/// Until #2404 an unreadable refusal came back as `Some(vec![])`, which a
+/// caller could not tell from evidence and which led the CLI to offer
+/// abandoning host copies it could not name. Use [`host_cleanup_refusal`],
+/// which keeps that case as [`HostCleanupRefusal::Unreadable`].
+#[deprecated(note = "use `host_cleanup_refusal`, which reports unreadable evidence separately")]
+pub fn host_cleanup_failures(err: &crate::error::VtaError) -> Option<Vec<HostCleanupFailure>> {
+    match host_cleanup_refusal(err)? {
+        HostCleanupRefusal::Evidenced(failures) => Some(failures),
+        HostCleanupRefusal::Unreadable { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::VtaError;
+    use serde_json::{Value, json};
+    use vti_specs::vta::contexts::delete::v1_1::error_codes::HOST_CLEANUP_FAILED;
+
+    fn refusal(code: &str, details: Option<Value>) -> VtaError {
+        VtaError::Rejected {
+            code: code.to_string(),
+            message: "host cleanup failed".into(),
+            details,
+        }
+    }
+
+    fn declared(details: Option<Value>) -> VtaError {
+        refusal(HOST_CLEANUP_FAILED.code, details)
+    }
+
+    fn unreadable(err: &VtaError) -> bool {
+        matches!(
+            host_cleanup_refusal(err),
+            Some(HostCleanupRefusal::Unreadable { .. })
+        )
+    }
+
+    #[test]
+    fn well_formed_details_are_evidence() {
+        let err = declared(Some(json!({ "hostCleanupFailures": [
+            { "did": "did:webvh:a", "server": "host-1", "reason": "unreachable" },
+            { "did": "did:webvh:b", "reason": "refused" },
+        ]})));
+        let Some(HostCleanupRefusal::Evidenced(failures)) = host_cleanup_refusal(&err) else {
+            panic!("expected evidence");
+        };
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].server.as_deref(), Some("host-1"));
+        assert_eq!(failures[1].did, "did:webvh:b");
+    }
+
+    #[test]
+    fn an_unknown_member_does_not_hide_the_dids() {
+        let err = declared(Some(json!({ "hostCleanupFailures": [
+            { "did": "did:webvh:a", "reason": "unreachable", "retryAt": "later" },
+        ]})));
+        assert!(matches!(
+            host_cleanup_refusal(&err),
+            Some(HostCleanupRefusal::Evidenced(f)) if f.len() == 1
+        ));
+    }
+
+    #[test]
+    fn absent_details_are_not_evidence() {
+        assert!(unreadable(&declared(None)));
+        assert!(unreadable(&declared(Some(json!({})))));
+    }
+
+    #[test]
+    fn an_empty_list_is_not_evidence() {
+        assert!(unreadable(&declared(Some(
+            json!({ "hostCleanupFailures": [] })
+        ))));
+    }
+
+    #[test]
+    fn malformed_entries_are_not_an_empty_list() {
+        for bad in [
+            json!({ "hostCleanupFailures": [{ "reason": "unreachable" }] }),
+            json!({ "hostCleanupFailures": [{ "did": "did:webvh:a" }] }),
+            json!({ "hostCleanupFailures": [{ "did": "", "reason": "x" }] }),
+            json!({ "hostCleanupFailures": [{ "did": "did:webvh:a", "reason": "" }] }),
+            json!({ "hostCleanupFailures": [{ "did": "did:webvh:a", "reason": "x", "server": "" }] }),
+            json!({ "hostCleanupFailures": "did:webvh:a" }),
+            json!({ "hostCleanupFailures": [ "did:webvh:a" ] }),
+        ] {
+            let err = declared(Some(bad.clone()));
+            assert!(unreadable(&err), "{bad} read as evidence");
+            #[allow(deprecated)]
+            let legacy = host_cleanup_failures(&err);
+            assert_eq!(
+                legacy, None,
+                "{bad} read as a list by the deprecated helper"
+            );
+        }
+    }
+
+    #[test]
+    fn another_refusal_is_not_this_one_whatever_it_says() {
+        let details = Some(json!({ "hostCleanupFailures": [
+            { "did": "did:webvh:a", "reason": "unreachable" },
+        ]}));
+        assert_eq!(
+            host_cleanup_refusal(&refusal("taskFailed", details.clone())),
+            None
+        );
+        assert_eq!(
+            host_cleanup_refusal(&refusal("vta/contexts/delete:notEmpty", details)),
+            None
+        );
+        assert_eq!(
+            host_cleanup_refusal(&VtaError::Protocol(
+                "vta/contexts/delete:hostCleanupFailed".into()
+            )),
+            None
+        );
+    }
 }
