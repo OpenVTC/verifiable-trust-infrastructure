@@ -314,6 +314,8 @@ async fn write_state(
         let did_templates = target.keyspace(vta_keyspaces::DID_TEMPLATES)?;
         let audit = target.keyspace(vta_keyspaces::AUDIT)?;
         let imported = target.keyspace(vta_keyspaces::IMPORTED_SECRETS)?;
+        let memory = target.keyspace(vta_keyspaces::MEMORY)?;
+        let app_state = target.keyspace(vta_keyspaces::APP_STATE)?;
         #[cfg(feature = "webvh")]
         let webvh = target.keyspace(vta_keyspaces::WEBVH)?;
         let ks = vta_keyspaces::Keyspaces {
@@ -323,6 +325,8 @@ async fn write_state(
             did_templates: &did_templates,
             audit: &audit,
             imported: &imported,
+            memory: &memory,
+            app_state: &app_state,
             #[cfg(feature = "webvh")]
             webvh: &webvh,
         };

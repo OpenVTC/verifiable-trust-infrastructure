@@ -116,21 +116,8 @@ pub fn keyspaces_from_app_state(s: &crate::server::AppState) -> Keyspaces<'_> {
         did_templates: &s.did_templates_ks,
         audit: &s.audit_ks,
         imported: &s.imported_ks,
-        #[cfg(feature = "webvh")]
-        webvh: &s.webvh_ks,
-    }
-}
-
-/// Borrow keyspaces from a `VtaState` (DIDComm handlers).
-#[cfg(feature = "didcomm")]
-pub fn keyspaces_from_vta_state(s: &crate::messaging::router::VtaState) -> Keyspaces<'_> {
-    Keyspaces {
-        keys: &s.keys_ks,
-        acl: &s.acl_ks,
-        contexts: &s.contexts_ks,
-        did_templates: &s.did_templates_ks,
-        audit: &s.audit_ks,
-        imported: &s.imported_ks,
+        memory: &s.memory_ks,
+        app_state: &s.app_state_ks,
         #[cfg(feature = "webvh")]
         webvh: &s.webvh_ks,
     }
