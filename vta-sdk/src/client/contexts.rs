@@ -138,11 +138,14 @@ impl VtaClient {
     /// anything local. If one cannot be confirmed removed — the host is down,
     /// refuses, or is no longer registered — and `abandon_host_copies` is
     /// false, the call fails with a `vta/contexts/delete:hostCleanupFailed`
-    /// rejection and nothing local is deleted; read the DIDs with
-    /// [`host_cleanup_failures`](crate::protocols::context_management::delete::host_cleanup_failures),
-    /// show them to the operator, then wait and retry or retry abandoning
-    /// them. With `abandon_host_copies` the deletion completes and the
-    /// abandoned copies come back in `daemon_cleanup_errors`.
+    /// rejection and nothing local is deleted; classify it with
+    /// [`host_cleanup_refusal`](crate::protocols::context_management::delete::host_cleanup_refusal).
+    /// Only an `Evidenced` refusal names the DIDs: show them to the operator,
+    /// then wait and retry or retry abandoning them. An `Unreadable` one names
+    /// none, so offer only the plain retry. With `abandon_host_copies` the
+    /// deletion completes and the abandoned copies come back in
+    /// `daemon_cleanup_errors` — but check `deleted` first: a success carrying
+    /// `false` means the VTA declined to act.
     ///
     /// A VTA that predates 1.1 answers `unsupportedType`.
     pub async fn delete_context_settling_hosts(
