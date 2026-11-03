@@ -164,6 +164,7 @@ COPY vti-specs-vtc/ vti-specs-vtc/
 COPY vti-vetting-pcs/ vti-vetting-pcs/
 COPY vti-voting/ vti-voting/
 COPY vti-voting-service/ vti-voting-service/
+COPY vti-vtn/ vti-vtn/
 COPY vti-webauthn/ vti-webauthn/
 COPY vti-witness/ vti-witness/
 
