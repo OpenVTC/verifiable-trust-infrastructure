@@ -2994,6 +2994,18 @@ fn pcs_witnesses() -> Vec<Witness> {
             "the_enrolment_and_the_drip_refuse_with_the_codes_they_declare"
         ),
         witness!(
+            s::vetting::vetters::pcs_binding::show::v0_1::error_codes::NOT_A_MEMBER,
+            pcs::BINDING_SHOW_ERR_NOT_A_MEMBER,
+            "hidden_vetting_tasks.rs",
+            "a_lost_key_is_shown_reset_and_rebound_over_the_wire"
+        ),
+        witness!(
+            s::vetting::vetters::pcs_binding::reset::v0_1::error_codes::NOT_BOUND,
+            pcs::BINDING_RESET_ERR_NOT_BOUND,
+            "hidden_vetting_tasks.rs",
+            "a_lost_key_is_shown_reset_and_rebound_over_the_wire"
+        ),
+        witness!(
             s::vetting::vetters::pcs_root::v0_1::error_codes::IDENTIFIER_REBOUND,
             pcs::ROOT_ERR_IDENTIFIER_REBOUND,
             "hidden_vetting_tasks.rs",

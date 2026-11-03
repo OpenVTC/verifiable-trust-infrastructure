@@ -3986,6 +3986,38 @@ fn pcs_witnesses() -> Vec<Conformance> {
                 "requirementsDigest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
             })
         ),
+        // A member's own binding, with a reset waiting on a live label: what
+        // `pcs_tasks::handle_binding_show` builds from the enrolment record.
+        checked!(
+            s::vetting::vetters::pcs_binding::show::v0_1::Payload,
+            s::vetting::vetters::pcs_binding::show::v0_1::Response,
+            json!({}),
+            json!({
+                "bound": true,
+                "id": MB,
+                "enrolledLabels": ["vetter/2026-09", "vetter/2026-10"],
+                "reset": {
+                    "resetAt": "2026-11-02T14:20:00Z",
+                    "waitingOn": ["vetter/2026-10"],
+                    "open": false,
+                },
+            })
+        ),
+        // An administrator's reset: `pcs_tasks::handle_binding_reset`'s answer.
+        checked!(
+            s::vetting::vetters::pcs_binding::reset::v0_1::Payload,
+            s::vetting::vetters::pcs_binding::reset::v0_1::Response,
+            json!({
+                "memberDid": "did:key:z6MkVetter",
+                "reason": "Rebuilt their VTA; the old key cannot be recovered.",
+            }),
+            json!({
+                "memberDid": "did:key:z6MkVetter",
+                "resetAt": "2026-11-02T14:20:00Z",
+                "waitingOn": ["vetter/2026-10"],
+                "open": false,
+            })
+        ),
         // The stored configuration and its counts: the shape
         // `show_hidden_vetting_core` builds, an approved event included.
         checked!(

@@ -1202,6 +1202,16 @@ fn dispatch_typed<'a>(
         crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE => {
             Box::pin(async move { handle_pcs_challenge(state, ctx, doc).await })
         }
+        // A vetter who lost their key: the member reads their own binding, and an administrator
+        // resets it (`vtc/vetting/vetters/pcs-binding/{show,reset}/0.1`).
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::BINDING_SHOW_TYPE => {
+            Box::pin(async move { handle_pcs_binding_show(state, ctx, doc).await })
+        }
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::BINDING_RESET_TYPE => {
+            Box::pin(async move { handle_pcs_binding_reset(state, ctx, doc).await })
+        }
         // The community's own act of turning hidden vetting on for a criterion. Admin REST with
         // no Trust Task of its own until now; was `POST /vetting/hidden`.
         #[cfg(feature = "vetting-pcs")]
@@ -2960,6 +2970,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
+    // A vetter who lost their key: their own binding, and an administrator's reset of it.
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::BINDING_SHOW_TYPE,
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::BINDING_RESET_TYPE,
     // The admin publish that turns hidden vetting on. Was `POST /vetting/hidden`.
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE,
@@ -3912,6 +3927,58 @@ async fn handle_pcs_challenge(
         Err(reject) => return reject,
     };
     match crate::vetting::pcs_tasks::handle_pcs_challenge(state, &applicant_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/pcs-binding/show/0.1` — a member reads their own hidden-vetting binding.
+///
+/// The sender is the proven signer, and the answer is about them only: the request names nobody.
+/// Membership is checked in [`crate::vetting::pcs_tasks::handle_binding_show`].
+#[cfg(feature = "vetting-pcs")]
+async fn handle_pcs_binding_show(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let member_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_binding_show(state, &member_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/pcs-binding/reset/0.1` — an administrator resets a vetter's
+/// hidden-vetting binding after the key behind it was lost.
+///
+/// Held to `vtc.vetting.manage`, the capability `vtc/vetting/vetters/grant` takes (reset/0.1
+/// Authorization), resolved as for every administrative task — the proven signer, or the
+/// administrator a console key acts for. Like the grant, it is not parked for a second
+/// administrator: it confers nothing, and binds no new identifier while the old one could still
+/// attest.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_pcs_binding_reset(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let admin_did = match capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::VettingManage,
+        None,
+    )
+    .await
+    {
+        Ok(claims) => claims.did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_binding_reset(state, &admin_did, &doc).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }

@@ -257,6 +257,13 @@ pub(crate) async fn publish_hidden_vetting_core(
             .map_err(|e| AppError::Validation(format!("events: {e}")))?;
     }
 
+    // A label a re-bound member's old identifier held never comes back (pcs-binding/reset/0.1,
+    // "Labels never come back"): a credential under it on the old key would count beside the
+    // new one. Refused before the consent gate, so nobody is asked to approve it, and checked
+    // again under the enrolment lock just before the write.
+    let vetter_labels = crate::vetting::pcs_issue::vetter_labels(&config);
+    refuse_retired(state, &vetter_labels).await?;
+
     let previous: Vec<HiddenVettingEvent> = criterion
         .hidden_vetting
         .as_ref()
@@ -291,7 +298,13 @@ pub(crate) async fn publish_hidden_vetting_core(
         .await?;
     }
     criterion.hidden_vetting = Some(stored.clone());
-    store_accepts(&state.schemas_ks, &criterion).await?;
+    {
+        // A re-binding retires labels under this lock; holding it across the last check and the
+        // write means one cannot land between them.
+        let _paused = crate::vetting::pcs_issue::enrolment_paused().await;
+        refuse_retired(state, &vetter_labels).await?;
+        store_accepts(&state.schemas_ks, &criterion).await?;
+    }
 
     audit_change(
         state,
@@ -327,6 +340,25 @@ pub(crate) async fn publish_hidden_vetting_core(
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+/// Refuse a live set naming a retired vetter label.
+///
+/// publish/0.1 declares no code for this, so it is a validation refusal (`badRequest`) whose
+/// text names the labels and why.
+async fn refuse_retired(state: &AppState, vetter_labels: &[String]) -> Result<(), Halted> {
+    let retired = crate::vetting::pcs_issue::retired_among(state, vetter_labels).await?;
+    if retired.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::Validation(format!(
+        "{} cannot be live again: a member's binding was reset and re-bound, and the identifier \
+         it replaced held {}. A credential under it on the old key would count beside the new \
+         one — publish a later period instead",
+        retired.join(", "),
+        if retired.len() == 1 { "it" } else { "them" },
+    ))
+    .into())
 }
 
 /// The approval rules publish/0.1 states (items 9 and 10): an event's `approvedBy`, when it is

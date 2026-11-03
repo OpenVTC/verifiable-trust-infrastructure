@@ -34,7 +34,8 @@ use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use vti_common::audit::{
-    AuditEvent, HiddenVetterEnrolledData, HiddenVetterReissuedData, HiddenVetterTokensIssuedData,
+    AuditEvent, HiddenVetterBindingResetData, HiddenVetterEnrolledData, HiddenVetterReboundData,
+    HiddenVetterReissuedData, HiddenVetterResetCancelledData, HiddenVetterTokensIssuedData,
 };
 use vti_common::error::AppError;
 
@@ -87,6 +88,40 @@ pub struct EnrolmentRecord {
     /// Absent from a row written before re-issue existed, which reads as none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reissues: Vec<ReissueRecord>,
+    /// An administrator's reset of this binding, not yet completed by an enrolment under a new
+    /// identifier (`vtc/vetting/vetters/pcs-binding/reset/0.1`). The recorded `id` and its
+    /// `labels` stay as they were while it is pending: enrolling again with that `id` cancels it.
+    /// Absent from a row that was never reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset: Option<BindingReset>,
+    /// Every label an earlier identifier of this member enrolled under, retired when a reset was
+    /// completed by a re-binding. No such label is ever made live again
+    /// (pcs-binding/reset/0.1, "Labels never come back") — kept here so a publish can refuse it.
+    /// Absent from a row that was never re-bound.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_labels: Vec<String>,
+}
+
+/// A pending reset of a member's binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingReset {
+    /// When the administrator reset it. A repeated reset keeps the first one's time.
+    pub reset_at: DateTime<Utc>,
+    /// The administrator who reset it. The reason is in the audit record, not here.
+    pub reset_by: String,
+}
+
+/// A member's binding as [`show_binding`] and [`reset_binding`] report it, with `waiting_on`
+/// computed against the live labels they were given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingView {
+    /// The recorded identifier, `None` when the member never enrolled.
+    pub id: Option<String>,
+    /// The labels the recorded identifier enrolled under, oldest first.
+    pub enrolled_labels: Vec<String>,
+    /// The pending reset, if there is one: when, and the enrolled labels still live.
+    pub reset: Option<(DateTime<Utc>, Vec<String>)>,
 }
 
 /// How often one member has been re-issued the credential they hold under one label.
@@ -125,6 +160,175 @@ impl EnrolmentRecord {
         });
         1
     }
+
+    /// The labels the recorded identifier enrolled under that are in `live` — what a reset waits
+    /// on before a new identifier may be bound.
+    #[must_use]
+    pub fn waiting_on(&self, live: &[String]) -> Vec<String> {
+        self.labels
+            .iter()
+            .map(|(l, _)| l.clone())
+            .filter(|l| live.contains(l))
+            .collect()
+    }
+
+    fn view(&self, live: &[String]) -> BindingView {
+        BindingView {
+            id: (!self.id.is_empty()).then(|| self.id.clone()),
+            enrolled_labels: self.labels.iter().map(|(l, _)| l.clone()).collect(),
+            reset: self
+                .reset
+                .as_ref()
+                .map(|r| (r.reset_at, self.waiting_on(live))),
+        }
+    }
+}
+
+/// The vetter class labels this community accepts attestations under right now: the stored
+/// hidden-vetting criterion's `livePeriods`, as `vetter/<period>`. Empty when hidden vetting is
+/// off — nothing can attest under a label no criterion publishes.
+///
+/// # Errors
+///
+/// Whatever the store returns, or [`AppError::Internal`] if the stored parameters do not read.
+pub async fn live_vetter_labels(state: &AppState) -> Result<Vec<String>, AppError> {
+    for stored in crate::schemas::accepts::list_accepts(&state.schemas_ks).await? {
+        if let Some(raw) = stored.hidden_vetting {
+            let config: HiddenVettingConfig = serde_json::from_value(raw).map_err(|e| {
+                AppError::Internal(format!("stored hidden-vetting parameters: {e}"))
+            })?;
+            return Ok(vetter_labels(&config));
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// `config`'s live vetter class labels, `vetter/<period>`.
+#[must_use]
+pub fn vetter_labels(config: &HiddenVettingConfig) -> Vec<String> {
+    config
+        .live_periods
+        .iter()
+        .map(|p| format!("vetter/{p}"))
+        .collect()
+}
+
+/// A member's own binding (`vtc/vetting/vetters/pcs-binding/show/0.1`), with any pending reset's
+/// `waiting_on` computed against `live`. A member with no enrolment record — never enrolled, or
+/// not a vetter — has no identifier and no labels; whether they are a member at all is the
+/// caller's check.
+///
+/// # Errors
+///
+/// Whatever the store returns.
+pub async fn show_binding(
+    state: &AppState,
+    member_did: &str,
+    live: &[String],
+) -> Result<BindingView, AppError> {
+    let record: EnrolmentRecord = state
+        .vetting_pcs_issue_ks
+        .get(enrol_key(member_did))
+        .await?
+        .unwrap_or_default();
+    Ok(record.view(live))
+}
+
+/// Reset a member's binding after the key behind it was lost
+/// (`vtc/vetting/vetters/pcs-binding/reset/0.1`). The recorded identifier and its labels stay:
+/// enrolling with it again cancels the reset, and a new one is bound only once none of its labels
+/// is live ([`enrol`]). Idempotent: a binding already reset answers with the first reset's time
+/// and records nothing new.
+///
+/// Returns the reset's time and the labels it waits on, against `live`.
+///
+/// # Errors
+///
+/// - [`AppError::NotFound`] if the member holds no binding — they never enrolled.
+/// - [`AppError::Internal`] if no audit writer is configured, or the store fails.
+pub async fn reset_binding(
+    state: &AppState,
+    member_did: &str,
+    admin_did: &str,
+    reason: &str,
+    live: &[String],
+    now: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, Vec<String>), AppError> {
+    let audit = audit(state)?;
+    // The same lock enrolment holds: a reset that landed between an enrolment's read of the
+    // record and its write would be overwritten and lost.
+    let _serial = ENROL_LOCK.lock().await;
+    let mut record: EnrolmentRecord = state
+        .vetting_pcs_issue_ks
+        .get(enrol_key(member_did))
+        .await?
+        .filter(|r: &EnrolmentRecord| !r.id.is_empty())
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "{member_did} holds no hidden-vetting binding in this community: they never \
+                 enrolled, so there is nothing to reset"
+            ))
+        })?;
+    if let Some(existing) = &record.reset {
+        return Ok((existing.reset_at, record.waiting_on(live)));
+    }
+    let waiting_on = record.waiting_on(live);
+    record.reset = Some(BindingReset {
+        reset_at: now,
+        reset_by: admin_did.to_string(),
+    });
+    state
+        .vetting_pcs_issue_ks
+        .insert(enrol_key(member_did), &record)
+        .await?;
+    // Reason, administrator and member — never the identifier (reset/0.1 item 4).
+    audit
+        .write(
+            admin_did,
+            Some(member_did),
+            AuditEvent::HiddenVetterBindingReset(HiddenVetterBindingResetData {
+                reason: reason.to_string(),
+                waiting_on: waiting_on.clone(),
+            }),
+        )
+        .await?;
+    Ok((now, waiting_on))
+}
+
+/// The vetter class labels in `labels` that some member's earlier identifier held and gave up at a
+/// re-binding. A community never makes one of them live again (pcs-binding/reset/0.1, "Labels
+/// never come back"): a credential under it on the old key would count beside the new one.
+///
+/// # Errors
+///
+/// Whatever the store returns.
+pub async fn retired_among(state: &AppState, labels: &[String]) -> Result<Vec<String>, AppError> {
+    let mut retired = std::collections::BTreeSet::new();
+    for key in state
+        .vetting_pcs_issue_ks
+        .prefix_keys(b"pcs-enrol:".to_vec())
+        .await?
+    {
+        let Some(record) = state
+            .vetting_pcs_issue_ks
+            .get::<EnrolmentRecord>(key)
+            .await?
+        else {
+            continue;
+        };
+        for label in &record.retired_labels {
+            if labels.contains(label) {
+                retired.insert(label.clone());
+            }
+        }
+    }
+    Ok(retired.into_iter().collect())
+}
+
+/// Hold enrolment still while a publish makes its last check of the retired labels and stores the
+/// new live set — so a re-binding, which retires labels, cannot land between the two.
+pub(crate) async fn enrolment_paused() -> tokio::sync::MutexGuard<'static, ()> {
+    ENROL_LOCK.lock().await
 }
 
 /// What the community recorded when it served a tick of the drip.
@@ -306,8 +510,17 @@ pub fn issuer(
 ///
 /// - [`AppError::Forbidden`] if the member holds no live vetter grant.
 /// - [`AppError::Validation`] if the label is not this community's current one, if they present
-///   a different PCS identifier than the one they are bound to, or if they already hold a
+///   a different PCS identifier than the one they are bound to (after an administrator's reset:
+///   while any label the old one enrolled under is still live), or if they already hold a
 ///   credential under this label and have used up its re-issues.
+///
+/// # After a reset
+///
+/// `vtc/vetting/vetters/pcs-binding/reset/0.1`, "Enrolment after a reset": the recorded
+/// identifier enrols exactly as if there were no reset, and cancels it
+/// ([`AuditEvent::HiddenVetterResetCancelled`]); a new one is bound in its place once no label
+/// the old one enrolled under is live, its labels start afresh, and the old labels are retired
+/// for good ([`AuditEvent::HiddenVetterRebound`], [`retired_among`]).
 /// - [`AppError::Internal`] if the request does not verify, or the store fails.
 pub async fn enrol(
     state: &AppState,
@@ -342,12 +555,34 @@ pub async fn enrol(
     // The identifier first: every answer below depends on it. A member asking under a label
     // they hold, with another identifier, has not lost an answer — they have a second key, and
     // a second key is the thing that would count twice.
+    let mut rebind = false;
     if !record.id.is_empty() && record.id != request.id {
-        return Err(AppError::Validation(format!(
-            "{member_did} is bound to another PCS identifier; a member holds one"
-        )));
+        if record.reset.is_none() {
+            return Err(AppError::Validation(format!(
+                "{member_did} is bound to another PCS identifier; a member holds one. Read the \
+                 recorded identifier (vtc/vetting/vetters/pcs-binding/show) and recover its key, \
+                 or ask an administrator to reset the binding"
+            )));
+        }
+        // After a reset (pcs-binding/reset/0.1, "Enrolment after a reset", rule 2): a new
+        // identifier only once none of the old one's labels is live, judged now — not when the
+        // reset was made — so it holds however the live set has moved since. Live is what the
+        // caller was given *and* what is stored now, read under the lock: a publish that made an
+        // old label live again after the caller read its configuration is still seen.
+        let mut live = vetter_labels(config);
+        live.extend(live_vetter_labels(state).await?);
+        let waiting = record.waiting_on(&live);
+        if !waiting.is_empty() {
+            return Err(AppError::Validation(format!(
+                "{member_did} is bound to another PCS identifier; its binding was reset, and a new \
+                 identifier is accepted once no label the old one enrolled under is live — still \
+                 live: {}",
+                waiting.join(", ")
+            )));
+        }
+        rebind = true;
     }
-    let reissue = record.labels.iter().any(|(l, _)| *l == label);
+    let reissue = !rebind && record.labels.iter().any(|(l, _)| *l == label);
     if reissue {
         let used = record.reissued(&label);
         if used >= MAX_REISSUES_PER_LABEL {
@@ -375,7 +610,27 @@ pub async fn enrol(
     >(&pre)
     .map_err(|e| AppError::Internal(format!("encode pre-credential: {e}")))?;
 
-    let event = if reissue {
+    // A reset the member's own recorded identifier answers is cancelled: the key was found
+    // (rule 1). Audited beside the enrolment it rode on.
+    let cancelled = !rebind && record.reset.take().is_some();
+    let event = if rebind {
+        // Rule 3: the new identifier in place of the old, its labels afresh, the old labels
+        // retired for good, and the reset done.
+        let retired: Vec<String> = record.labels.drain(..).map(|(l, _)| l).collect();
+        for l in &retired {
+            if !record.retired_labels.contains(l) {
+                record.retired_labels.push(l.clone());
+            }
+        }
+        record.id = request.id.clone();
+        record.labels.push((label.clone(), now));
+        record.reissues.clear();
+        record.reset = None;
+        AuditEvent::HiddenVetterRebound(HiddenVetterReboundData {
+            label: label.clone(),
+            retired_labels: retired,
+        })
+    } else if reissue {
         // The label stays recorded once: `enrolled_counts` counts members, not signatures.
         let reissue = record.record_reissue(&label, now);
         AuditEvent::HiddenVetterReissued(HiddenVetterReissuedData {
@@ -402,6 +657,17 @@ pub async fn enrol(
     audit(state)?
         .write(community_did, Some(member_did), event)
         .await?;
+    if cancelled {
+        audit(state)?
+            .write(
+                community_did,
+                Some(member_did),
+                AuditEvent::HiddenVetterResetCancelled(HiddenVetterResetCancelledData {
+                    label: label.clone(),
+                }),
+            )
+            .await?;
+    }
 
     Ok(RootCredentialWire {
         label,
@@ -972,6 +1238,278 @@ mod tests {
             .await
             .expect_err("over the drip rate");
         assert!(format!("{err}").contains("drips 3 a tick"), "{err}");
+    }
+
+    /// A community whose live vetter labels are `periods`, current first, under the keys it
+    /// mints with.
+    fn live(state: &AppState, periods: &[&str]) -> HiddenVettingConfig {
+        publish(
+            state,
+            COMMUNITY,
+            periods.iter().map(|p| (*p).to_string()).collect(),
+            vec![TOKEN_LABEL.to_string()],
+            3,
+        )
+        .unwrap()
+    }
+
+    async fn record_of(state: &AppState, did: &str) -> EnrolmentRecord {
+        state
+            .vetting_pcs_issue_ks
+            .get(enrol_key(did))
+            .await
+            .unwrap()
+            .unwrap_or_default()
+    }
+
+    async fn audit_count(state: &AppState, event: &str) -> usize {
+        state
+            .audit_ks
+            .prefix_iter_raw(Vec::<u8>::new())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|(_, v)| String::from_utf8_lossy(v).contains(event))
+            .count()
+    }
+
+    const ADMIN: &str = "did:key:z6MkAdmin";
+    const OCT: &str = "2026-10";
+    const NOV: &str = "2026-11";
+    const DEC: &str = "2026-12";
+
+    /// pcs-binding/reset/0.1: nothing to reset for a member who never enrolled; a repeated reset
+    /// is the first one; and the member's own identifier, found again, cancels it.
+    #[tokio::test]
+    async fn a_reset_needs_a_binding_repeats_as_itself_and_the_old_key_cancels_it() {
+        let tv = TestVtc::builder()
+            .vtc_did(COMMUNITY)
+            .with_signers(true)
+            .with_audit(true)
+            .build()
+            .await;
+        let state = tv.state;
+        let mut rng = StdRng::seed_from_u64(0x2026_1103);
+        let config = live(&state, &[PERIOD]);
+        let issuer = issuer(&state, COMMUNITY, &config).unwrap();
+        grant_vetter(&state, VETTER).await;
+        let labels = vetter_labels(&config);
+
+        let err = reset_binding(&state, VETTER, ADMIN, "lost it", &labels, Utc::now())
+            .await
+            .expect_err("never enrolled");
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+
+        let first = root_request(&issuer, PERIOD, &mut rng);
+        enrol(&state, COMMUNITY, &config, VETTER, &first.wire, Utc::now())
+            .await
+            .unwrap();
+
+        let at = Utc::now() - chrono::Duration::minutes(5);
+        let (reset_at, waiting) = reset_binding(&state, VETTER, ADMIN, "lost it", &labels, at)
+            .await
+            .expect("a bound member is reset");
+        assert_eq!(reset_at, at);
+        assert_eq!(waiting, vec![format!("vetter/{PERIOD}")]);
+        let (again_at, _) = reset_binding(&state, VETTER, ADMIN, "again", &labels, Utc::now())
+            .await
+            .expect("a repeated reset answers");
+        assert_eq!(again_at, at, "the first reset's time, unchanged");
+        assert_eq!(audit_count(&state, "HiddenVetterBindingReset").await, 1);
+        let record = record_of(&state, VETTER).await;
+        assert_eq!(record.id, first.wire.id, "the recorded identifier stays");
+        assert_eq!(record.reset.as_ref().unwrap().reset_by, ADMIN);
+
+        // The key was found: the recorded identifier enrols as if there were no reset — here a
+        // re-issue under the label it holds — and the reset is gone.
+        let found = VetterSide::again(&issuer, PERIOD, first.id, copy_usk(&first.usk), &mut rng);
+        enrol(&state, COMMUNITY, &config, VETTER, &found.wire, Utc::now())
+            .await
+            .expect("the recorded identifier enrols after a reset");
+        let record = record_of(&state, VETTER).await;
+        assert!(record.reset.is_none(), "the reset is cleared");
+        assert_eq!(record.id, first.wire.id);
+        assert_eq!(record.reissued(&format!("vetter/{PERIOD}")), 1);
+        assert_eq!(audit_count(&state, "HiddenVetterResetCancelled").await, 1);
+    }
+
+    /// pcs-binding/reset/0.1, "Enrolment after a reset": a new identifier is refused while any
+    /// label the old one enrolled under is live — judged at each request, so turning the old
+    /// label live again keeps refusing — and bound once none is, its labels afresh, the old ones
+    /// retired for good.
+    #[tokio::test]
+    async fn a_new_identifier_is_bound_only_once_the_old_labels_are_gone() {
+        let tv = TestVtc::builder()
+            .vtc_did(COMMUNITY)
+            .with_signers(true)
+            .with_audit(true)
+            .build()
+            .await;
+        let state = tv.state;
+        let mut rng = StdRng::seed_from_u64(0x2026_1104);
+        let sep = live(&state, &[PERIOD]);
+        let issuer = issuer(&state, COMMUNITY, &sep).unwrap();
+        grant_vetter(&state, VETTER).await;
+
+        // Enrolled under September and October with one key, which is then lost.
+        let old = root_request(&issuer, PERIOD, &mut rng);
+        enrol(&state, COMMUNITY, &sep, VETTER, &old.wire, Utc::now())
+            .await
+            .unwrap();
+        let oct = live(&state, &[OCT, PERIOD]);
+        let old_oct = VetterSide::again(&issuer, OCT, old.id, copy_usk(&old.usk), &mut rng);
+        enrol(&state, COMMUNITY, &oct, VETTER, &old_oct.wire, Utc::now())
+            .await
+            .unwrap();
+
+        // Without a reset, a new key is refused as it always was.
+        let new_oct = root_request(&issuer, OCT, &mut rng);
+        let err = enrol(&state, COMMUNITY, &oct, VETTER, &new_oct.wire, Utc::now())
+            .await
+            .expect_err("bound");
+        assert!(
+            format!("{err}").contains("bound to another PCS identifier"),
+            "{err}"
+        );
+
+        let (_, waiting) = reset_binding(
+            &state,
+            VETTER,
+            ADMIN,
+            "lost",
+            &vetter_labels(&oct),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            waiting,
+            vec![format!("vetter/{PERIOD}"), format!("vetter/{OCT}")]
+        );
+
+        // November, October still live: the new key is still refused, under the same refusal
+        // (`identifierRebound`), naming what it waits on.
+        let nov = live(&state, &[NOV, OCT]);
+        let new_key = root_request(&issuer, NOV, &mut rng);
+        let err = enrol(&state, COMMUNITY, &nov, VETTER, &new_key.wire, Utc::now())
+            .await
+            .expect_err("October is live");
+        let text = format!("{err}");
+        assert!(text.contains("bound to another PCS identifier"), "{text}");
+        assert!(text.contains(&format!("vetter/{OCT}")), "{text}");
+        assert!(
+            !text.contains(&format!("vetter/{PERIOD}")),
+            "September left: {text}"
+        );
+
+        // Hidden vetting turned off and on again with October still listed: still refused. The
+        // rule is the live set at the request, not at the reset.
+        let back = live(&state, &[NOV, OCT]);
+        let again = VetterSide::again(&issuer, NOV, new_key.id, copy_usk(&new_key.usk), &mut rng);
+        enrol(&state, COMMUNITY, &back, VETTER, &again.wire, Utc::now())
+            .await
+            .expect_err("October is live again");
+        let view = show_binding(&state, VETTER, &vetter_labels(&back))
+            .await
+            .unwrap();
+        assert_eq!(
+            view.reset.as_ref().unwrap().1,
+            vec![format!("vetter/{OCT}")]
+        );
+
+        // December alone: nothing the old key holds is live, and the new key is bound.
+        let dec = live(&state, &[DEC, NOV]);
+        let view = show_binding(&state, VETTER, &vetter_labels(&dec))
+            .await
+            .unwrap();
+        assert!(view.reset.as_ref().unwrap().1.is_empty(), "open");
+        let new_dec = VetterSide::again(&issuer, DEC, new_key.id, copy_usk(&new_key.usk), &mut rng);
+        let answer = enrol(&state, COMMUNITY, &dec, VETTER, &new_dec.wire, Utc::now())
+            .await
+            .expect("re-bound");
+        assert_eq!(answer.label, format!("vetter/{DEC}"));
+        let record = record_of(&state, VETTER).await;
+        assert_eq!(
+            record.id, new_key.wire.id,
+            "the new identifier in place of the old"
+        );
+        assert_eq!(
+            record
+                .labels
+                .iter()
+                .map(|(l, _)| l.clone())
+                .collect::<Vec<_>>(),
+            vec![format!("vetter/{DEC}")],
+            "labels start afresh"
+        );
+        assert!(record.reset.is_none(), "the reset is done");
+        assert!(record.reissues.is_empty());
+        assert_eq!(
+            record.retired_labels,
+            vec![format!("vetter/{PERIOD}"), format!("vetter/{OCT}")]
+        );
+        assert_eq!(audit_count(&state, "HiddenVetterRebound").await, 1);
+        // The audit log never holds an identifier, old or new.
+        assert_eq!(audit_count(&state, &old.wire.id).await, 0);
+        assert_eq!(audit_count(&state, &new_key.wire.id).await, 0);
+
+        // Now the old key is the stranger: refused, and a further reset is a fresh one.
+        let stale = VetterSide::again(&issuer, DEC, old.id, copy_usk(&old.usk), &mut rng);
+        enrol(&state, COMMUNITY, &dec, VETTER, &stale.wire, Utc::now())
+            .await
+            .expect_err("the old key is not the bound one any more");
+
+        // And the old labels never come back.
+        let asked = vec![format!("vetter/{OCT}"), format!("vetter/{DEC}")];
+        assert_eq!(
+            retired_among(&state, &asked).await.unwrap(),
+            vec![format!("vetter/{OCT}")]
+        );
+    }
+
+    /// pcs-binding/show/0.1: the requester's own record and no one else's.
+    #[tokio::test]
+    async fn a_member_reads_only_their_own_binding() {
+        let tv = TestVtc::builder()
+            .vtc_did(COMMUNITY)
+            .with_signers(true)
+            .with_audit(true)
+            .build()
+            .await;
+        let state = tv.state;
+        let mut rng = StdRng::seed_from_u64(0x2026_1105);
+        let config = live(&state, &[PERIOD]);
+        let issuer = issuer(&state, COMMUNITY, &config).unwrap();
+        grant_vetter(&state, VETTER).await;
+        let vetter = root_request(&issuer, PERIOD, &mut rng);
+        enrol(&state, COMMUNITY, &config, VETTER, &vetter.wire, Utc::now())
+            .await
+            .unwrap();
+        let labels = vetter_labels(&config);
+
+        let mine = show_binding(&state, VETTER, &labels).await.unwrap();
+        assert_eq!(mine.id.as_deref(), Some(vetter.wire.id.as_str()));
+        assert_eq!(mine.enrolled_labels, vec![format!("vetter/{PERIOD}")]);
+        assert!(mine.reset.is_none());
+
+        let theirs = show_binding(&state, STRANGER, &labels).await.unwrap();
+        assert_eq!(theirs.id, None, "another member's record is not this one");
+        assert!(theirs.enrolled_labels.is_empty());
+        assert!(theirs.reset.is_none());
+    }
+
+    /// A row written before resets existed reads as never reset, and is stored as it was.
+    #[test]
+    fn an_enrolment_row_without_a_reset_reads_and_writes_as_before() {
+        let old = json!({
+            "id": "zId",
+            "labels": [["vetter/2026-09", "2026-09-01T00:00:00Z"]],
+            "reissues": [{ "label": "vetter/2026-09", "count": 1, "lastAt": "2026-09-02T00:00:00Z" }],
+        });
+        let record: EnrolmentRecord = serde_json::from_value(old.clone()).unwrap();
+        assert!(record.reset.is_none());
+        assert!(record.retired_labels.is_empty());
+        assert_eq!(serde_json::to_value(&record).unwrap(), old);
     }
 
     /// A row written before re-issue existed reads as none, and one without re-issues is

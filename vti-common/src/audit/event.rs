@@ -572,6 +572,24 @@ pub enum AuditEvent {
     /// the community signed.
     HiddenVetterTokensIssued(HiddenVetterTokensIssuedData),
 
+    /// An administrator reset a vetter's hidden-vetting identifier binding,
+    /// because the key behind it was lost
+    /// (`vtc/vetting/vetters/pcs-binding/reset/0.1`). The actor is the
+    /// administrator, the target the member. Carries the reason and the labels
+    /// the reset waits on — never the identifier.
+    HiddenVetterBindingReset(HiddenVetterBindingResetData),
+
+    /// A reset binding was cancelled because the member enrolled again with the
+    /// identifier they were bound to: the key was found, and nothing changes
+    /// about who the member is. The actor is the community.
+    HiddenVetterResetCancelled(HiddenVetterResetCancelledData),
+
+    /// A member whose binding was reset enrolled under a new PCS identifier,
+    /// once no label the old one enrolled under was live. The old labels are
+    /// retired for good. The actor is the community; never carries either
+    /// identifier.
+    HiddenVetterRebound(HiddenVetterReboundData),
+
     /// An administrator turned hidden vetting on for a criterion, changed what
     /// it publishes (labels, drip rate, events, an event's approval), or turned
     /// it off (`vtc/vetting/hidden/{publish,withdraw}/0.1`).
@@ -1262,6 +1280,9 @@ impl AuditEvent {
             Self::HiddenVetterEnrolled(..) => "HiddenVetterEnrolled",
             Self::HiddenVetterReissued(..) => "HiddenVetterReissued",
             Self::HiddenVetterTokensIssued(..) => "HiddenVetterTokensIssued",
+            Self::HiddenVetterBindingReset(..) => "HiddenVetterBindingReset",
+            Self::HiddenVetterResetCancelled(..) => "HiddenVetterResetCancelled",
+            Self::HiddenVetterRebound(..) => "HiddenVetterRebound",
             Self::HiddenVettingChanged(..) => "HiddenVettingChanged",
             Self::ElectionChanged(..) => "ElectionChanged",
             Self::ElectionTicketIssued(..) => "ElectionTicketIssued",
@@ -2766,6 +2787,42 @@ pub struct HiddenVetterTokensIssuedData {
     pub issued: usize,
 }
 
+/// Payload for [`AuditEvent::HiddenVetterBindingReset`].
+///
+/// Carries no PCS identifier, for the same reason [`HiddenVetterEnrolledData`]
+/// does not.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVetterBindingResetData {
+    /// Why, in the administrator's words.
+    pub reason: String,
+    /// The labels the old identifier enrolled under that were still live when
+    /// the binding was reset. A new identifier is accepted once none is.
+    #[serde(default)]
+    pub waiting_on: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::HiddenVetterResetCancelled`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVetterResetCancelledData {
+    /// The class label the enrolment that cancelled the reset was issued under.
+    pub label: String,
+}
+
+/// Payload for [`AuditEvent::HiddenVetterRebound`].
+///
+/// Carries no PCS identifier, old or new.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVetterReboundData {
+    /// The class label the new identifier was first issued under.
+    pub label: String,
+    /// The labels the old identifier held, now retired: the community will not
+    /// make any of them live again.
+    pub retired_labels: Vec<String>,
+}
+
 /// Payload for [`AuditEvent::ElectionChanged`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -4059,6 +4116,37 @@ mod tests {
         assert_eq!(e.variant_name(), "HiddenVetterReissued");
         assert_eq!(v["data"]["label"], "vetter/2026-10");
         assert_eq!(v["data"]["reissue"], 2);
+        assert_eq!(v["data"].as_object().unwrap().len(), 2, "{v}");
+        round_trip(&e);
+    }
+
+    /// A binding reset, a cancelled reset and a re-binding carry labels and a
+    /// reason — never a PCS identifier.
+    #[test]
+    fn hidden_vetter_binding_events_round_trip() {
+        let e = AuditEvent::HiddenVetterBindingReset(HiddenVetterBindingResetData {
+            reason: "lost the key".into(),
+            waiting_on: vec!["vetter/2026-10".into()],
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "HiddenVetterBindingReset");
+        assert_eq!(e.variant_name(), "HiddenVetterBindingReset");
+        assert_eq!(v["data"]["waitingOn"][0], "vetter/2026-10");
+        round_trip(&e);
+
+        let e = AuditEvent::HiddenVetterResetCancelled(HiddenVetterResetCancelledData {
+            label: "vetter/2026-11".into(),
+        });
+        assert_eq!(e.variant_name(), "HiddenVetterResetCancelled");
+        round_trip(&e);
+
+        let e = AuditEvent::HiddenVetterRebound(HiddenVetterReboundData {
+            label: "vetter/2026-12".into(),
+            retired_labels: vec!["vetter/2026-10".into()],
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "HiddenVetterRebound");
+        assert_eq!(v["data"]["retiredLabels"][0], "vetter/2026-10");
         assert_eq!(v["data"].as_object().unwrap().len(), 2, "{v}");
         round_trip(&e);
     }

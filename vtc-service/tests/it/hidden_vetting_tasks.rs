@@ -1962,3 +1962,156 @@ async fn vti_apv_022_a_sole_admin_publishes_hidden_vetting_on_the_gesture() {
     assert_eq!(waived.len(), 1, "{waived:?}");
     assert_eq!(waived[0].requirement.as_deref(), Some("VTI-APV-023"));
 }
+
+/// pcs-binding/show/0.1 and pcs-binding/reset/0.1 over the wire, and what they change about
+/// enrolment: a member reads their own binding (a stranger is `notAMember`), an administrator's
+/// reset needs a binding (`notBound`) and repeats as itself, a new identifier is bound once the
+/// old one's labels have left the live set, and those labels are never published live again.
+#[tokio::test]
+async fn a_lost_key_is_shown_reset_and_rebound_over_the_wire() {
+    const SEP: &str = "2026-09";
+    const OCT: &str = "2026-10";
+    let h = Harness::start().await;
+    let (_admin_did, admin) = vetted_criterion(&h, 0x81).await;
+    let publish = |periods: &[&str]| {
+        json!({
+            "criterionId": "vetted-member",
+            "livePeriods": periods,
+            "liveTokenLabels": [TOKEN_LABEL],
+        })
+    };
+    let (status, body) = h
+        .post(&admin, pcs_tasks::HIDDEN_PUBLISH_TYPE, publish(&[SEP]))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let issuer = vtc_service::vetting::pcs_issue::derive_issuer(&h.tv.state, &h.community)
+        .expect("the service's own issuer");
+    let mut rng = StdRng::seed_from_u64(0x2026_1103);
+    let (vetter_did, vetter) = identity(0x82);
+    h.grant_vetter(&vetter_did).await;
+    let enrol = |period: &str, rng: &mut StdRng| {
+        let (id, usk) = issuer.open().user_keygen(rng).unwrap();
+        let (request, _) = issuer
+            .open()
+            .root_request(issuer.hvk(), &vetter_predicate(period), &id, &usk, rng)
+            .unwrap();
+        json!({
+            "label": format!("vetter/{period}"),
+            "id": point_text(&id).unwrap(),
+            "request": serde_json::to_value(&request).unwrap(),
+        })
+    };
+
+    // Not a member: refused, whoever they are.
+    let (_, stranger) = identity(0x83);
+    let (status, body) = h
+        .post(&stranger, pcs_tasks::BINDING_SHOW_TYPE, json!({}))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::BINDING_SHOW_ERR_NOT_A_MEMBER,
+        "{body}"
+    );
+
+    // A member who never enrolled: nothing bound, and nothing to reset.
+    let (status, body) = h
+        .post(&vetter, pcs_tasks::BINDING_SHOW_TYPE, json!({}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["payload"],
+        json!({ "bound": false, "enrolledLabels": [] })
+    );
+    let reset = json!({ "memberDid": vetter_did, "reason": "Rebuilt their VTA." });
+    let (status, body) = h
+        .post(&admin, pcs_tasks::BINDING_RESET_TYPE, reset.clone())
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::BINDING_RESET_ERR_NOT_BOUND,
+        "{body}"
+    );
+
+    // Enrolled: the member reads the identifier back.
+    let first = enrol(SEP, &mut rng);
+    let (status, body) = h
+        .post(&vetter, pcs_tasks::PCS_ROOT_TYPE, first.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = h
+        .post(&vetter, pcs_tasks::BINDING_SHOW_TYPE, json!({}))
+        .await;
+    assert_eq!(body["payload"]["bound"], json!(true), "{body}");
+    assert_eq!(body["payload"]["id"], first["id"], "{body}");
+    assert_eq!(
+        body["payload"]["enrolledLabels"],
+        json!([format!("vetter/{SEP}")])
+    );
+
+    // A vetter cannot reset themselves; an administrator can, and a repeat is the first.
+    let (status, body) = h
+        .post(&vetter, pcs_tasks::BINDING_RESET_TYPE, reset.clone())
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .post(&admin, pcs_tasks::BINDING_RESET_TYPE, reset.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["payload"]["waitingOn"],
+        json!([format!("vetter/{SEP}")])
+    );
+    assert_eq!(body["payload"]["open"], json!(false));
+    let reset_at = body["payload"]["resetAt"].clone();
+    let (status, body) = h
+        .post(&admin, pcs_tasks::BINDING_RESET_TYPE, reset.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["payload"]["resetAt"], reset_at, "{body}");
+
+    // A new key while September is live: refused.
+    let (status, body) = h
+        .post(&vetter, pcs_tasks::PCS_ROOT_TYPE, enrol(SEP, &mut rng))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::ROOT_ERR_IDENTIFIER_REBOUND,
+        "{body}"
+    );
+
+    // October alone: the reset is open, and the new key is bound.
+    let (status, body) = h
+        .post(&admin, pcs_tasks::HIDDEN_PUBLISH_TYPE, publish(&[OCT]))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = h
+        .post(&vetter, pcs_tasks::BINDING_SHOW_TYPE, json!({}))
+        .await;
+    assert_eq!(body["payload"]["reset"]["open"], json!(true), "{body}");
+    assert_eq!(body["payload"]["reset"]["waitingOn"], json!([]), "{body}");
+    let second = enrol(OCT, &mut rng);
+    let (status, body) = h
+        .post(&vetter, pcs_tasks::PCS_ROOT_TYPE, second.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = h
+        .post(&vetter, pcs_tasks::BINDING_SHOW_TYPE, json!({}))
+        .await;
+    assert_eq!(body["payload"]["id"], second["id"], "{body}");
+    assert_eq!(
+        body["payload"]["enrolledLabels"],
+        json!([format!("vetter/{OCT}")])
+    );
+    assert!(body["payload"].get("reset").is_none(), "{body}");
+
+    // September never comes back.
+    let (status, body) = h
+        .post(&admin, pcs_tasks::HIDDEN_PUBLISH_TYPE, publish(&[OCT, SEP]))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert!(body.to_string().contains("cannot be live again"), "{body}");
+}
