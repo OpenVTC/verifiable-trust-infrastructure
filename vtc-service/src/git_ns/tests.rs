@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use trust_tasks_rs::TrustTask;
 use vti_rooms_dtg::test_support::Party;
-use vti_specs::git_ns::bridge::job::v0_6 as job_wire;
+use vti_specs::git_ns::bridge::job::v0_7 as job_wire;
 use vti_specs::git_ns::namespace::reseat::v0_4 as reseat3;
 
 use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
@@ -47,9 +47,9 @@ fn uri(task: &str) -> String {
         | "activity/list" => "0.3",
         "right/grant" | "right/revoke" | "repo/create" | "drift/resolve" | "namespace/reseat"
         | "bridge/job/list" => "0.4",
-        "bridge/event" => "0.5",
+        "bridge/event" => "0.6",
         "view" => "0.6",
-        "bridge/job" => "0.6",
+        "bridge/job" => "0.7",
         _ => "0.1",
     };
     format!("{URI}/{task}/{version}")
@@ -86,9 +86,9 @@ struct FakeBridge {
     types: Mutex<Vec<String>>,
     /// Discovery requests answered.
     discoveries: Mutex<u32>,
-    /// When set, the bridge predates `git-ns/bridge/job` 0.6 (`vgi-bridge`
-    /// before v0.26.0): it lists 0.4 and 0.5 only, and refuses 0.6.
-    pre_v0_6: Mutex<bool>,
+    /// When set, the bridge predates `git-ns/bridge/job` 0.7 (`vgi-bridge`
+    /// before v0.31.0): it lists 0.6 only, and refuses 0.7.
+    pre_v0_7: Mutex<bool>,
 }
 
 #[async_trait]
@@ -105,10 +105,8 @@ impl BridgeClient for FakeBridge {
                 message: "this bridge handles git-ns/bridge/job only".into(),
             });
         }
-        if *self.pre_v0_6.lock().unwrap() {
-            return Ok(["0.4", "0.5"]
-                .map(|v| format!("{URI}/bridge/job/{v}"))
-                .to_vec());
+        if *self.pre_v0_7.lock().unwrap() {
+            return Ok(vec![format!("{URI}/bridge/job/0.6")]);
         }
         Ok(vec![super::bridge::JOB_TYPE.to_string()])
     }
@@ -126,10 +124,10 @@ impl BridgeClient for FakeBridge {
                 message: "this bridge handles git-ns/bridge/job 0.1 and 0.2".into(),
             });
         }
-        if *self.pre_v0_6.lock().unwrap() {
+        if *self.pre_v0_7.lock().unwrap() {
             return Err(BridgeSendError::Rejected {
                 code: "unsupportedVersion".into(),
-                message: "this bridge handles git-ns/bridge/job 0.4 and 0.5".into(),
+                message: "this bridge handles git-ns/bridge/job 0.6".into(),
             });
         }
         self.jobs
@@ -442,6 +440,156 @@ async fn an_event_for_an_unknown_namespace_is_refused() {
     )
     .await;
     assert_eq!(code(&out), "git-ns:unknownNamespace");
+}
+
+/// `git-ns/bridge/event/0.6`, *Orphaned namespaces*, VTC step 1: a bridge
+/// stops acting in a namespace on `git-ns:unknownNamespace`, so a namespace
+/// whose record the VTC cannot read is answered `unavailable`, never as
+/// unknown.
+#[tokio::test]
+async fn an_event_for_a_namespace_whose_record_is_unreadable_is_unavailable() {
+    let f = fixture().await;
+    f.vtc
+        .state
+        .git_ns
+        .ks
+        .insert_raw("ns:ns_garbled".as_bytes().to_vec(), b"not json".to_vec())
+        .await
+        .unwrap();
+    let out = send(
+        &f.vtc.state,
+        &f.bridge_party,
+        "bridge/event",
+        json!({ "namespace": "ns_garbled", "event": { "type": "installationRemoved" } }),
+    )
+    .await;
+    assert_eq!(code(&out), "unavailable");
+
+    // A namespace the VTC positively does not have is still unknown.
+    let out = send(
+        &f.vtc.state,
+        &f.bridge_party,
+        "bridge/event",
+        json!({ "namespace": "ns_nope", "event": { "type": "installationRemoved" } }),
+    )
+    .await;
+    assert_eq!(code(&out), "git-ns:unknownNamespace");
+}
+
+/// `git-ns/bridge/event/0.6`: `bindCompleted` may carry `supersedes`. The VTC
+/// records it in the namespace's audit history and restores nothing from it.
+#[tokio::test]
+async fn bind_completed_records_supersedes_in_the_audit_history_and_restores_nothing() {
+    let f = fixture().await;
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/bind",
+        json!({ "forge": "github.com", "owner": "acme", "mode": "bridge" }),
+    )
+    .await;
+    let ns_id = ok(&out)["namespace"]["id"].as_str().unwrap().to_string();
+    let job_id = f.bridge.jobs.lock().unwrap()[0].1["jobId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let event = json!({
+        "namespace": ns_id,
+        "event": {
+            "type": "bindCompleted", "jobId": job_id, "ownerId": "91827364",
+            "kind": "organization", "supersedes": ["ns_old_1", "ns_old_2"],
+        },
+    });
+    ok(&send(&f.vtc.state, &f.bridge_party, "bridge/event", event).await);
+
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
+    assert_eq!(
+        snap.namespace(&ns_id).unwrap().state,
+        super::model::NamespaceState::Bound
+    );
+    // Nothing is restored: no namespace by a superseded id exists.
+    assert!(snap.namespace("ns_old_1").is_none());
+    assert!(snap.namespace("ns_old_2").is_none());
+    assert_eq!(snap.namespaces.len(), 1);
+
+    let mut rows = Vec::new();
+    for (_, v) in f
+        .vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+    {
+        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
+            continue;
+        };
+        if let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event
+            && d.action == "gitNs.namespace.superseded"
+        {
+            rows.push(d);
+        }
+    }
+    assert_eq!(rows.len(), 1, "one supersedes record");
+    let d = &rows[0];
+    assert_eq!(d.namespace.as_deref(), Some(ns_id.as_str()));
+    let detail: Value = serde_json::from_str(d.detail.as_deref().unwrap()).unwrap();
+    assert_eq!(detail, json!({ "supersedes": ["ns_old_1", "ns_old_2"] }));
+}
+
+/// A `bindCompleted` without `supersedes` records no supersedes entry.
+#[tokio::test]
+async fn bind_completed_without_supersedes_records_none() {
+    let f = fixture().await;
+    let out = send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/bind",
+        json!({ "forge": "github.com", "owner": "acme", "mode": "bridge" }),
+    )
+    .await;
+    let ns_id = ok(&out)["namespace"]["id"].as_str().unwrap().to_string();
+    let job_id = f.bridge.jobs.lock().unwrap()[0].1["jobId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let event = json!({
+        "namespace": ns_id,
+        "event": { "type": "bindCompleted", "jobId": job_id, "ownerId": "1", "kind": "user" },
+    });
+    ok(&send(&f.vtc.state, &f.bridge_party, "bridge/event", event).await);
+    for (_, v) in f
+        .vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+    {
+        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
+            continue;
+        };
+        if let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event {
+            assert_ne!(d.action, "gitNs.namespace.superseded");
+        }
+    }
+}
+
+/// The bind job goes out as `git-ns/bridge/job/0.7`.
+#[tokio::test]
+async fn the_bind_job_goes_out_as_job_0_7() {
+    let f = fixture().await;
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/bind",
+        json!({ "forge": "github.com", "owner": "acme", "mode": "bridge" }),
+    )
+    .await);
+    assert_eq!(
+        f.bridge.types.lock().unwrap().as_slice(),
+        ["https://trusttasks.org/spec/git-ns/bridge/job/0.7"]
+    );
 }
 
 #[tokio::test]
@@ -1824,8 +1972,8 @@ fn every_git_ns_task_is_served() {
         );
     }
     // The bridge's own tasks too: `vgi-bridge` sends nothing older than
-    // event 0.5 and result 0.2 since v0.26.0.
-    for v in ["0.1", "0.2", "0.3", "0.4"] {
+    // event 0.6 and result 0.2 since v0.31.0.
+    for v in ["0.1", "0.2", "0.3", "0.4", "0.5"] {
         assert!(
             !served.contains(&format!("{URI}/bridge/event/{v}").as_str()),
             "bridge/event {v} is still served"
@@ -5092,13 +5240,13 @@ async fn a_queued_job_waits_for_a_bridge_before_0_4_to_be_upgraded() {
     );
 }
 
-/// A bridge before `vgi-bridge` v0.26.0 lists job 0.4 and 0.5 only. The VTC
-/// sends 0.6 alone, so it is sent nothing — never a downgraded job — and the
-/// job waits for the upgrade.
+/// A bridge before `vgi-bridge` v0.31.0 lists job 0.6 only. The VTC sends
+/// 0.7 alone, so it is sent nothing — never a downgraded job — and the job
+/// waits for the upgrade.
 #[tokio::test]
-async fn a_bridge_that_lists_only_job_0_4_and_0_5_is_sent_nothing() {
+async fn a_bridge_that_lists_only_job_0_6_is_sent_nothing() {
     let (f, _ns) = drift_fixture(json!([])).await;
-    *f.bridge.pre_v0_6.lock().unwrap() = true;
+    *f.bridge.pre_v0_7.lock().unwrap() = true;
     f.vtc
         .state
         .git_ns
@@ -5125,7 +5273,7 @@ async fn a_bridge_that_lists_only_job_0_4_and_0_5_is_sent_nothing() {
         .find(|j| j.kind == super::bridge::JobKind::ProjectRoles)
         .unwrap();
     assert_eq!(job.state, super::bridge::JobState::Pending);
-    assert!(job.last_error.as_deref().unwrap().contains("0.6"));
+    assert!(job.last_error.as_deref().unwrap().contains("0.7"));
 }
 
 #[tokio::test]

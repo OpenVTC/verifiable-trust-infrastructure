@@ -1,5 +1,5 @@
-//! The pull-request gate end to end: a `git-ns/bridge/event/0.5`
-//! `pullRequestOpened` in, a `git-ns/bridge/job/0.6` `closePullRequest` out
+//! The pull-request gate end to end: a `git-ns/bridge/event/0.6`
+//! `pullRequestOpened` in, a `git-ns/bridge/job/0.7` `closePullRequest` out
 //! (request step 6 of the event, step 7 of the job).
 
 use super::super::bridge::{JOB_TYPE, JobKind, JobState};
@@ -32,10 +32,10 @@ async fn gate_fixture(settings: &str) -> (Fixture, String) {
     (f, ns)
 }
 
-/// Make the fake list job 0.6 (`true`) or only 0.4 and 0.5 (`false`), and the
+/// Make the fake list job 0.7 (`true`) or only 0.6 (`false`), and the
 /// VTC forget what it answered before.
-async fn take_v0_6(f: &Fixture, takes: bool) {
-    *f.bridge.pre_v0_6.lock().unwrap() = !takes;
+async fn take_v0_7(f: &Fixture, takes: bool) {
+    *f.bridge.pre_v0_7.lock().unwrap() = !takes;
     forget_versions(f).await;
 }
 
@@ -69,7 +69,7 @@ async fn pr_event(
         &f.vtc.state,
         &f.bridge_party,
         "bridge/event",
-        "0.5",
+        "0.6",
         json!({
             "namespace": ns,
             "event": {
@@ -122,13 +122,13 @@ async fn audited(f: &Fixture, action: &str) -> Vec<Option<String>> {
 }
 
 /// `bridge/event` and `bridge/result` are served at their current versions
-/// only (`vgi-bridge` sends nothing older since v0.26.0); the administrator's
+/// only (`vgi-bridge` sends nothing older since v0.31.0); the administrator's
 /// `bridge/job/list` at 0.4 only.
 #[test]
 fn bridge_events_and_results_are_served_at_their_current_version_only() {
     let served = super::super::tasks::served_uris();
-    assert!(served.contains(&format!("{URI}/bridge/event/0.5").as_str()));
-    for v in ["0.1", "0.2", "0.3", "0.4"] {
+    assert!(served.contains(&format!("{URI}/bridge/event/0.6").as_str()));
+    for v in ["0.1", "0.2", "0.3", "0.4", "0.5"] {
         assert!(
             !served.contains(&format!("{URI}/bridge/event/{v}").as_str()),
             "bridge/event {v} is still served"
@@ -148,7 +148,7 @@ fn bridge_events_and_results_are_served_at_their_current_version_only() {
 #[tokio::test]
 async fn an_outsiders_pull_request_is_closed_by_a_0_6_job_with_the_rendered_message() {
     let (f, ns) = gate_fixture(r#"{"pr_open": "committers"}"#).await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     ok(&pr_event(&f, &ns, 42, "opened", EVE, EVE).await);
 
     let jobs = close_jobs(&f).await;
@@ -167,7 +167,7 @@ async fn an_outsiders_pull_request_is_closed_by_a_0_6_job_with_the_rendered_mess
     assert_eq!(pr.author_login, "eve-dev");
     assert_eq!(pr.level, "committers");
     // The generated job 0.6 type accepts it.
-    serde_json::from_value::<vti_specs::git_ns::bridge::job::v0_6::Payload>(job.payload.clone())
+    serde_json::from_value::<vti_specs::git_ns::bridge::job::v0_7::Payload>(job.payload.clone())
         .unwrap();
 
     // A repeated event while the job is open queues nothing more.
@@ -258,7 +258,7 @@ async fn an_outsiders_pull_request_is_closed_by_a_0_6_job_with_the_rendered_mess
 #[tokio::test]
 async fn owners_are_always_allowed_and_committers_pass_the_committers_level() {
     let (f, ns) = gate_fixture(r#"{"pr_open": "committers"}"#).await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     // Bob owns widgets.
     ok(&pr_event(&f, &ns, 1, "opened", BOB, BOB).await);
     // Carol is a member with no right there: closed.
@@ -274,7 +274,7 @@ async fn owners_are_always_allowed_and_committers_pass_the_committers_level() {
 #[tokio::test]
 async fn members_level_allows_a_linked_member_and_closes_the_unlinked() {
     let (f, ns) = gate_fixture(r#"{"pr_open": "members"}"#).await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     ok(&pr_event(&f, &ns, 1, "opened", CAROL, CAROL).await);
     assert!(close_jobs(&f).await.is_empty());
     ok(&pr_event(&f, &ns, 2, "opened", EVE, EVE).await);
@@ -295,7 +295,7 @@ async fn members_level_allows_a_linked_member_and_closes_the_unlinked() {
 #[tokio::test]
 async fn a_maintainers_reopen_is_an_override_and_anyone_elses_is_rechecked() {
     let (f, ns) = gate_fixture(r#"{"pr_open": "maintainers"}"#).await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     // Bob (an owner) reopens Eve's: left open.
     ok(&pr_event(&f, &ns, 7, "reopened", EVE, BOB).await);
     assert!(close_jobs(&f).await.is_empty());
@@ -310,7 +310,7 @@ async fn nothing_happens_under_anyone_or_on_a_repository_not_active_here() {
     let f = fixture().await;
     let ns = bind_bridge(&f).await;
     adopt_with_forge_id(&f, RES, "100").await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     ok(&pr_event(&f, &ns, 1, "opened", EVE, EVE).await);
     assert!(close_jobs(&f).await.is_empty());
 
@@ -320,7 +320,7 @@ async fn nothing_happens_under_anyone_or_on_a_repository_not_active_here() {
         &f.vtc.state,
         &f.bridge_party,
         "bridge/event",
-        "0.5",
+        "0.6",
         json!({
             "namespace": ns,
             "event": {
@@ -341,17 +341,17 @@ async fn a_per_repository_override_wins_over_the_community_level() {
         r#"{"pr_open": "members", "pr_open_overrides": {"github.com/acme/widgets": "anyone"}}"#,
     )
     .await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     ok(&pr_event(&f, &ns, 1, "opened", EVE, EVE).await);
     assert!(close_jobs(&f).await.is_empty());
 }
 
 #[tokio::test]
-async fn a_bridge_without_job_0_6_is_sent_no_close_and_its_admins_are_told_once() {
+async fn a_bridge_without_job_0_7_is_sent_no_close_and_its_admins_are_told_once() {
     let (f, ns) = gate_fixture(r#"{"pr_open": "members"}"#).await;
-    // A bridge before `vgi-bridge` v0.26.0 (job 0.4 and 0.5 only), not asked
+    // A bridge before `vgi-bridge` v0.31.0 (job 0.6 only), not asked
     // since it bound: the job is queued, and the dispatcher, asking, drops it.
-    take_v0_6(&f, false).await;
+    take_v0_7(&f, false).await;
     let sent_before = f.bridge.jobs.lock().unwrap().len();
     ok(&pr_event(&f, &ns, 1, "opened", EVE, EVE).await);
     assert_eq!(close_jobs(&f).await.len(), 1);
@@ -361,7 +361,7 @@ async fn a_bridge_without_job_0_6_is_sent_no_close_and_its_admins_are_told_once(
     let job = &close_jobs(&f).await[0];
     assert_eq!(job.state, JobState::Cancelled);
     assert!(
-        job.last_error.as_deref().unwrap().contains("0.6"),
+        job.last_error.as_deref().unwrap().contains("0.7"),
         "{:?}",
         job.last_error
     );
@@ -372,7 +372,7 @@ async fn a_bridge_without_job_0_6_is_sent_no_close_and_its_admins_are_told_once(
             .unwrap()
             .iter()
             .all(|(_, p)| p["kind"] != "closePullRequest"),
-        "a closePullRequest reached a bridge without job 0.6"
+        "a closePullRequest reached a bridge without job 0.7"
     );
     assert_eq!(
         audited(&f, "gitNs.pullRequest.gateUnenforced").await.len(),
@@ -389,7 +389,7 @@ async fn a_bridge_without_job_0_6_is_sent_no_close_and_its_admins_are_told_once(
         1
     );
 
-    // No other job goes to it either: the VTC sends job 0.6 only.
+    // No other job goes to it either: the VTC sends job 0.7 only.
     super::super::bridge::project_roles(&f.vtc.state, true)
         .await
         .unwrap();
@@ -399,7 +399,7 @@ async fn a_bridge_without_job_0_6_is_sent_no_close_and_its_admins_are_told_once(
     assert_eq!(f.bridge.jobs.lock().unwrap().len(), sent_before);
 
     // Upgraded, the gate works again — and a later loss is told again.
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     ok(&pr_event(&f, &ns, 3, "opened", EVE, EVE).await);
     super::super::bridge::dispatch_due(&f.vtc.state)
         .await
@@ -416,9 +416,9 @@ async fn a_bridge_without_job_0_6_is_sent_no_close_and_its_admins_are_told_once(
 }
 
 #[tokio::test]
-async fn every_job_goes_as_0_6_to_a_bridge_that_lists_it() {
+async fn every_job_goes_as_0_7_to_a_bridge_that_lists_it() {
     let (f, _ns) = gate_fixture("{}").await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     let before = f.bridge.types.lock().unwrap().len();
     super::super::bridge::project_roles(&f.vtc.state, true)
         .await
@@ -431,16 +431,16 @@ async fn every_job_goes_as_0_6_to_a_bridge_that_lists_it() {
     assert!(types[before..].iter().all(|t| t == JOB_TYPE), "{types:?}");
 }
 
-/// An event at a version before 0.5 is refused: `vgi-bridge` has sent 0.5
-/// since v0.26.0, and the VTC serves the current version only.
+/// An event at a version before 0.6 is refused: `vgi-bridge` has sent 0.6
+/// since v0.31.0, and the VTC serves the current version only.
 #[tokio::test]
-async fn an_event_before_0_5_is_refused() {
+async fn an_event_before_0_6_is_refused() {
     let (f, ns) = gate_fixture(r#"{"pr_open": "members"}"#).await;
     let event = json!({
         "namespace": ns,
         "event": { "type": "protectionChanged", "forgeId": "100", "resource": RES, "requiredCheck": true },
     });
-    for old in ["0.3", "0.4"] {
+    for old in ["0.4", "0.5"] {
         let out = send_ver(
             &f.vtc.state,
             &f.bridge_party,
@@ -451,7 +451,7 @@ async fn an_event_before_0_5_is_refused() {
         .await;
         assert_eq!(code(&out), "unsupportedVersion", "bridge/event {old}");
     }
-    ok(&send_ver(&f.vtc.state, &f.bridge_party, "bridge/event", "0.5", event).await);
+    ok(&send_ver(&f.vtc.state, &f.bridge_party, "bridge/event", "0.6", event).await);
 }
 
 // ── a suspended holder (vtc-action-list.md §8.2) ────────────────────────────
@@ -482,7 +482,7 @@ async fn lift(f: &Fixture, who: &Party) {
 #[tokio::test]
 async fn pr_gate_ignores_a_suspended_holders_rights() {
     let (f, ns) = gate_fixture(r#"{"pr_open": "committers"}"#).await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     ok(&pr_event(&f, &ns, 1, "opened", BOB, BOB).await);
     assert!(close_jobs(&f).await.is_empty(), "an owner, before");
 
@@ -511,7 +511,7 @@ async fn pr_gate_ignores_a_suspended_holders_rights() {
 #[tokio::test]
 async fn pr_gate_ignores_a_suspended_holders_role() {
     let (f, ns) = gate_fixture(r#"{"pr_open": {"roles": ["member"]}}"#).await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     ok(&pr_event(&f, &ns, 1, "opened", CAROL, CAROL).await);
     assert!(close_jobs(&f).await.is_empty());
     suspend(&f, &f.carol).await;
@@ -524,7 +524,7 @@ async fn pr_gate_ignores_a_suspended_holders_role() {
 #[tokio::test]
 async fn pr_gate_counts_the_rights_again_after_cancel() {
     let (f, ns) = gate_fixture(r#"{"pr_open": "committers"}"#).await;
-    take_v0_6(&f, true).await;
+    take_v0_7(&f, true).await;
     suspend(&f, &f.bob).await;
     ok(&pr_event(&f, &ns, 1, "opened", BOB, BOB).await);
     assert_eq!(close_jobs(&f).await.len(), 1);

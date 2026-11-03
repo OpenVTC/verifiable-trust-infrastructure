@@ -41,7 +41,7 @@ use trust_tasks_rs::TrustTask;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_specs::git_ns::bridge::{
-    event::v0_5 as event_wire, job::v0_6 as job_wire, result::v0_2 as result_wire,
+    event::v0_6 as event_wire, job::v0_7 as job_wire, result::v0_2 as result_wire,
 };
 
 use crate::credentials::LocalSigner;
@@ -60,9 +60,11 @@ use super::rules;
 use super::store::{self, Snapshot};
 use super::wire;
 
-/// `git-ns/bridge/job/0.6` — the only job version the VTC sends. A bridge is
-/// sent a job only once it has listed 0.6 in its `trust-task-discovery`
-/// answer ([`bridge_job_support`]); `vgi-bridge` has taken 0.6 since v0.26.0.
+/// `git-ns/bridge/job/0.7` — the only job version the VTC sends. A bridge is
+/// sent a job only once it has listed 0.7 in its `trust-task-discovery`
+/// answer ([`bridge_job_support`]); `vgi-bridge` has taken 0.7 since v0.31.0.
+/// The schema is 0.6's: what 0.7 adds is the bridge's — binding an owner
+/// again, and a job naming an orphaned namespace returning it to bound.
 pub const JOB_TYPE: &str = <job_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `trust-task-discovery/0.3`: the VTC asks a bridge whether it takes
 /// [`JOB_TYPE`] before sending it a job.
@@ -432,33 +434,34 @@ pub trait BridgeClient: Send + Sync {
 
 /// What a bridge answered when asked which job versions it takes.
 ///
-/// A record written by an earlier VTC also carries `takesV04` / `takesV05`;
-/// they are ignored, since no job goes out at either version any more.
+/// A record written by an earlier VTC also carries `takesV06` (or the older
+/// `takesV04` / `takesV05`); they are ignored, since no job goes out at those
+/// versions any more.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeJobSupport {
-    /// Lists `git-ns/bridge/job/0.6`. Absent in a record written before 0.6
+    /// Lists `git-ns/bridge/job/0.7`. Absent in a record written before 0.7
     /// existed, which reads as "no" until the record is next refreshed.
     #[serde(default)]
-    pub takes_v0_6: bool,
+    pub takes_v0_7: bool,
     pub checked_at: DateTime<Utc>,
 }
 
 impl BridgeJobSupport {
     /// The version a job goes out as, or `None` when this bridge may be sent
-    /// no job: 0.6, to a bridge that lists it.
+    /// no job: 0.7, to a bridge that lists it.
     pub fn job_type(&self) -> Option<&'static str> {
-        self.takes_v0_6.then_some(JOB_TYPE)
+        self.takes_v0_7.then_some(JOB_TYPE)
     }
 
     /// Whether the bridge lists a job version with `closePullRequest`.
     pub fn closes_pull_requests(&self) -> bool {
-        self.takes_v0_6
+        self.takes_v0_7
     }
 
     /// Whether the bridge lists any job version the VTC sends.
     pub fn takes_any(&self) -> bool {
-        self.takes_v0_6
+        self.takes_v0_7
     }
 }
 
@@ -468,8 +471,8 @@ fn support_key(bridge_did: &str) -> String {
 
 fn outdated(bridge_did: &str) -> BridgeSendError {
     BridgeSendError::Outdated(format!(
-        "the git-ns bridge {bridge_did} does not take git-ns/bridge/job 0.6, the only version \
-         this VTC sends; upgrade the bridge (vgi-bridge v0.26.0 or later)"
+        "the git-ns bridge {bridge_did} does not take git-ns/bridge/job 0.7, the only version \
+         this VTC sends; upgrade the bridge (vgi-bridge v0.31.0 or later)"
     ))
 }
 
@@ -493,7 +496,7 @@ pub async fn cached_job_support(state: &AppState, bridge_did: &str) -> Option<Br
 /// `git-ns/bridge/job` forbids sending a version to a bridge that has not
 /// shown it takes it: a bridge before 0.4 — including one that reads later
 /// minor versions forward-compatibly — would take a `git.ns.admin` entry as
-/// ownership. So a bridge that refuses discovery, or does not list 0.6, is
+/// ownership. So a bridge that refuses discovery, or does not list 0.7, is
 /// sent nothing. Only a transient failure is passed on as one.
 pub async fn bridge_job_support(
     state: &AppState,
@@ -506,7 +509,7 @@ pub async fn bridge_job_support(
     {
         return Ok(c.clone());
     }
-    let takes_v0_6 = match state
+    let takes_v0_7 = match state
         .git_ns
         .bridge
         .discover_jobs(bridge_did, DISCOVERY_TIMEOUT)
@@ -520,7 +523,7 @@ pub async fn bridge_job_support(
         Err(e) => return Err(e),
     };
     let record = BridgeJobSupport {
-        takes_v0_6,
+        takes_v0_7,
         checked_at: now(),
     };
     let takes = record.takes_any();
@@ -528,7 +531,7 @@ pub async fn bridge_job_support(
     if !takes && took.is_none_or(|t| t) {
         warn!(
             bridge = %bridge_did,
-            "the git-ns bridge does not take git-ns/bridge/job 0.6, the only version this VTC \
+            "the git-ns bridge does not take git-ns/bridge/job 0.7, the only version this VTC \
              sends; no job is sent to it until it is upgraded"
         );
     } else if takes && took == Some(false) {
@@ -540,8 +543,8 @@ pub async fn bridge_job_support(
     Ok(record)
 }
 
-/// Send one job as `git-ns/bridge/job/0.6` — once the bridge has shown it
-/// takes 0.6 ([`bridge_job_support`]).
+/// Send one job as `git-ns/bridge/job/0.7` — once the bridge has shown it
+/// takes 0.7 ([`bridge_job_support`]).
 pub async fn send_versioned(
     state: &AppState,
     bridge_did: &str,
@@ -1285,8 +1288,16 @@ pub async fn handle_result(
         message: format!("this VTC sent no job `{job_id}` to this bridge"),
     };
     let _guard = store::write_lock().await;
+    // A job record the VTC cannot read is not an unknown job: the bridge is
+    // told to try again, never that the job does not exist.
     let mut job = get_job(&state.git_ns.jobs_ks, &job_id)
-        .await?
+        .await
+        .map_err(|e| {
+            warn!(job = %job_id, error = %e, "could not read a bridge job for its result");
+            OpError::Unavailable(format!(
+                "this VTC cannot read job `{job_id}` now; send the result again later"
+            ))
+        })?
         .ok_or_else(unknown)?;
     // Only the bridge the job went to may report on it.
     if job.bridge_did != issuer {
@@ -1661,10 +1672,44 @@ async fn detach(state: &AppState, actor: &str, repo: &mut Repo, why: &str) -> Re
     Ok(())
 }
 
-// ── git-ns/bridge/event (0.1 to 0.5, read as 0.5) ───────────────────────────
+// ── git-ns/bridge/event/0.6 ─────────────────────────────────────────────────
 
 fn s(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+/// The framework's `unavailable`, for a bridge document the VTC cannot answer
+/// because it cannot read its own records.
+fn cannot_tell(ns_id: &str, e: &AppError) -> OpError {
+    warn!(namespace = %ns_id, error = %e, "could not read the git-ns records for a bridge event");
+    OpError::Unavailable(format!(
+        "this VTC cannot read its records for namespace `{ns_id}` now; send the event again later"
+    ))
+}
+
+/// The refusal for an event naming a namespace the snapshot does not hold.
+///
+/// `git-ns/bridge/event/0.6`, *Orphaned namespaces*, VTC step 1: a bridge
+/// that implements 0.6 stops acting in a namespace on
+/// `git-ns:unknownNamespace`, so the VTC sends that code only when it knows it
+/// does not have the namespace. A snapshot skips a row it cannot read, so the
+/// namespace's own record is read directly: absent, the namespace is unknown;
+/// present but unreadable, or unreadable at all, the VTC cannot tell and
+/// answers `unavailable`.
+async fn unknown_namespace(state: &AppState, ns_id: &str) -> OpError {
+    match store::get_namespace(&state.git_ns.ks, ns_id).await {
+        Ok(None) => OpError::Declared {
+            code: event_wire::error_codes::UNKNOWN_NAMESPACE.code,
+            message: format!("no namespace `{ns_id}` is bound to this VTC"),
+        },
+        Ok(Some(_)) => cannot_tell(
+            ns_id,
+            &AppError::Internal(
+                "the namespace's record reads, but the snapshot left it out".into(),
+            ),
+        ),
+        Err(e) => cannot_tell(ns_id, &e),
+    }
 }
 
 /// `issued_at` is the event document's `issuedAt`, which orders role-map
@@ -1686,14 +1731,13 @@ pub async fn handle_event(
         .unwrap_or_default();
 
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns).await?;
-    let ns = snap
-        .namespace(&ns_id)
-        .cloned()
-        .ok_or_else(|| OpError::Declared {
-            code: event_wire::error_codes::UNKNOWN_NAMESPACE.code,
-            message: format!("no namespace `{ns_id}` is bound to this VTC"),
-        })?;
+    let snap = Snapshot::load(&state.git_ns)
+        .await
+        .map_err(|e| cannot_tell(&ns_id, &e))?;
+    let ns = match snap.namespace(&ns_id) {
+        Some(ns) => ns.clone(),
+        None => return Err(unknown_namespace(state, &ns_id).await),
+    };
     // Only the bridge that serves the namespace may report on it.
     if ns.bridge_did.as_deref() != Some(issuer) {
         return Err(OpError::PermissionDenied(
@@ -2266,6 +2310,17 @@ pub async fn handle_event(
     Ok(ack)
 }
 
+/// A `bindCompleted` event's `supersedes`, when present and non-empty.
+fn supersedes(event: &Value) -> Option<Vec<String>> {
+    let ids: Vec<String> = event
+        .get("supersedes")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
 /// `bindCompleted`: accepted only for the `beginBind` job this VTC sent this
 /// bridge and has not yet seen completed.
 async fn complete_binding(
@@ -2312,6 +2367,27 @@ async fn complete_binding(
         },
     )
     .await;
+    // `git-ns/bridge/event/0.6`: the earlier namespace ids under which the
+    // bridge held this owner, whose forge-side state the binding took over.
+    // Recorded for the audit history, as the bridge's statement; nothing is
+    // restored from them — no record, right or job of any namespace by those
+    // ids is read or changed.
+    if let Some(ids) = supersedes(event) {
+        audit(
+            state,
+            issuer,
+            None,
+            Audit {
+                action: "gitNs.namespace.superseded",
+                namespace: Some(&ns.id),
+                resource: Some(ns.resource().to_string()),
+                right: None,
+                policy_version: None,
+                detail: Some(json!({ "supersedes": ids }).to_string()),
+            },
+        )
+        .await;
+    }
     // The administrator who asked receives the first `git.ns.admin` — if they
     // are still a member; the floor holds for this grant as for any other.
     let binder = ops::standing(state, &ns.bound_by).await?;
@@ -2591,21 +2667,19 @@ async fn complete_account_link(
 mod tests {
     use super::*;
 
-    /// Only 0.6 goes out, and only to a bridge that lists it; a record
-    /// written by an earlier VTC — `takesV04` / `takesV05` beside it —
-    /// still reads, and a bridge it says took only 0.4 and 0.5 is sent
-    /// nothing (`git-ns/bridge/job/0.6`).
+    /// Only 0.7 goes out, and only to a bridge that lists it; a record
+    /// written by an earlier VTC — `takesV06` beside it — still reads, and a
+    /// bridge it says took only 0.6 is sent nothing (`git-ns/bridge/job/0.7`).
     #[test]
-    fn a_job_goes_out_as_0_6_only_to_a_bridge_that_lists_it() {
+    fn a_job_goes_out_as_0_7_only_to_a_bridge_that_lists_it() {
         let takes = BridgeJobSupport {
-            takes_v0_6: true,
+            takes_v0_7: true,
             checked_at: now(),
         };
         assert_eq!(takes.job_type(), Some(JOB_TYPE));
         assert!(takes.closes_pull_requests());
         let old: BridgeJobSupport = serde_json::from_value(json!({
-            "takesV04": true,
-            "takesV05": true,
+            "takesV06": true,
             "checkedAt": "2026-09-25T12:00:00Z",
         }))
         .unwrap();
@@ -2614,7 +2688,7 @@ mod tests {
         assert!(!old.takes_any());
         assert_eq!(
             JOB_TYPE,
-            "https://trusttasks.org/spec/git-ns/bridge/job/0.6"
+            "https://trusttasks.org/spec/git-ns/bridge/job/0.7"
         );
     }
 

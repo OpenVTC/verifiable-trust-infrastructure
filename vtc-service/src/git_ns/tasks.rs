@@ -28,9 +28,9 @@ use vti_specs::git_ns::account::{
 };
 // The bridge's own tasks are served at their current versions only, like
 // every other task: `vgi-bridge` has sent nothing older than
-// `git-ns/bridge/event` 0.5 and `git-ns/bridge/result` 0.2 since v0.26.0.
+// `git-ns/bridge/event` 0.6 and `git-ns/bridge/result` 0.2 since v0.31.0.
 use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_specs::git_ns::bridge::{event::v0_5 as event, result::v0_2 as result};
+use vti_specs::git_ns::bridge::{event::v0_6 as event, result::v0_2 as result};
 use vti_specs::git_ns::drift::resolve::v0_4 as drift_resolve;
 use vti_specs::git_ns::namespace::{
     bind::v0_2 as bind, reseat::v0_4 as reseat, unbind::v0_1 as unbind,
@@ -135,9 +135,10 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_link_status)
         .on_async(handle_unlink)
         .on_async(handle_result)
-        // `git-ns/bridge/event/0.5`: serving it — and so listing it in
+        // `git-ns/bridge/event/0.6`: serving it — and so listing it in
         // `trust-task-discovery` — is what tells a bridge it may report pull
-        // requests (`pullRequestOpened`) here.
+        // requests (`pullRequestOpened`) here, and that this VTC answers
+        // `git-ns:unknownNamespace` only for a namespace it does not have.
         .on_async(handle_event)
         .on_async(handle_right_list)
         .on_async(handle_right_issued_by_departed)

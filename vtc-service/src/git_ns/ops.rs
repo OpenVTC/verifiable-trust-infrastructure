@@ -20,7 +20,7 @@ use vti_common::error::AppError;
 use vti_specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
-use vti_specs::git_ns::bridge::job::v0_6 as job_wire;
+use vti_specs::git_ns::bridge::job::v0_7 as job_wire;
 use vti_specs::git_ns::namespace::{
     bind::v0_2 as bind, reseat::v0_4 as reseat, unbind::v0_1 as unbind,
 };
