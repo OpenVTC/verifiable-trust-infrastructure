@@ -1025,6 +1025,11 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1",
+    // The Notifications page: a community's received notifications and the relay decision
+    // (VTI-NTF-070 – 074).
+    "https://trusttasks.org/spec/vtc/notifications/list/0.1",
+    "https://trusttasks.org/spec/vtc/notifications/show/0.1",
+    "https://trusttasks.org/spec/vtc/notifications/relay/0.1",
     // The hosting servers the community's VTA reports, for choosing
     // `dids.webvh_server` on the Groups page.
     "https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1",

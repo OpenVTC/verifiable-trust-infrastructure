@@ -385,7 +385,7 @@ fn sample_received_notification() -> serde_json::Value {
             "subject": {
                 "heldBy": "did:web:community.example",
                 "id": "board-2027",
-                "openWith": "https://trusttasks.org/spec/vtc/elections/show/0.6",
+                "openWith": vta_sdk::notifications::ELECTION_OPEN_WITH,
             },
             "audience": "did:web:partner.example",
             "status": "available",
