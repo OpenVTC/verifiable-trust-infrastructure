@@ -25,7 +25,8 @@ pub fn new_credential_id() -> String {
     format!("urn:uuid:{}", uuid::Uuid::new_v4())
 }
 
-/// The listing VSC: the network attests that it lists `subject` as `kind`, under
+/// The listing VSC: the network attests that it lists `subject` as `kind` (carried as
+/// the DTG `nodeType`, `VTC` or `VTN`), under
 /// `framework`. One-sided by design (VTI-VTN-010): it needs nothing from the subject and
 /// establishes nothing about it (assumption A1).
 pub fn listing_vsc(
@@ -37,7 +38,7 @@ pub fn listing_vsc(
     credential_status: Value,
 ) -> Result<DTGCredential> {
     let object = StatementObject::Value(json!({
-        "kind": kind,
+        "nodeType": kind.node_type(),
         "framework": { "iri": framework.iri, "version": framework.version },
     }));
     Ok(DTGCredential::new_vsc(

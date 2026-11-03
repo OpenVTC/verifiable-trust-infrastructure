@@ -37,6 +37,7 @@ use vti_common::auth::{ProofPurpose, PurposeVmResolver, TrustTaskVmResolver};
 use vti_common::error::AppError;
 use vti_vtn::credentials::member;
 use vti_vtn::identity::{Party, SignFuture};
+use vti_vtn::model::EntryKind;
 use vti_vtn::relay::{self, Envelope};
 use vti_vtn::verify::{KeyFuture, KeyResolver, verify_signed_by};
 use vti_vtn::vocab::{GROUP_REGISTERED_V1, LISTS_V1};
@@ -369,6 +370,13 @@ async fn own_listing(
     if vsc.subject() != community.did || vsc.predicate() != Some(LISTS_V1) {
         return Err(NetError::NotListed(
             "the network's listing does not list this community".into(),
+        ));
+    }
+    if listing["credentialSubject"]["object"]["value"]["nodeType"].as_str()
+        != Some(EntryKind::Community.node_type())
+    {
+        return Err(NetError::NotListed(
+            "the network's listing does not list this party as a community".into(),
         ));
     }
     Ok(listing)

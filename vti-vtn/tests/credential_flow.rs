@@ -169,3 +169,36 @@ async fn repudiating_a_listing() {
     .unwrap();
     assert_eq!(target, Repudiated::Listing);
 }
+
+/// A listing carries the registry's `lists/1` predicate and an `object.value` that
+/// `listing.schema.json` accepts: exactly `nodeType` (`VTC` | `VTN`) and `framework`.
+#[test]
+fn listing_matches_the_registered_lists_profile() {
+    let network = Identity::generate();
+    let party = Identity::generate();
+    for (kind, node_type) in [(EntryKind::Community, "VTC"), (EntryKind::Network, "VTN")] {
+        let listing = listing_vsc(
+            network.did(),
+            party.did(),
+            kind,
+            &framework(),
+            Utc::now(),
+            credential_status("http://vtn.example", 0),
+        )
+        .unwrap();
+        let json = serde_json::to_value(&listing).unwrap();
+        let subject = &json["credentialSubject"];
+        assert_eq!(
+            subject["predicate"],
+            "https://registry.trustoverip.org/dtg/vsc/lists/1"
+        );
+        assert_eq!(
+            subject["object"]["value"],
+            serde_json::json!({
+                "nodeType": node_type,
+                "framework": { "iri": "https://example.org/whn/gf", "version": "1.0" },
+            })
+        );
+        assert_eq!(EntryKind::from_node_type(node_type), Some(kind));
+    }
+}
