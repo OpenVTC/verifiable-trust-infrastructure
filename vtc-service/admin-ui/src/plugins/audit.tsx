@@ -93,6 +93,8 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   AclKeyRotated: "ACL entry rolled to a new key",
   CapabilityModuleChanged:
     "Capability module enabled, disabled, or projected to the trust registry",
+  NetworkMembershipChanged:
+    "Verifiable Trust Network joined, repudiated or left, a group registered for a network role, or a network broadcast relayed to a group",
 };
 
 // Events that fire on a schedule or at daemon-internal lifecycle

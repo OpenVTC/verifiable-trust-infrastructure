@@ -171,6 +171,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/networks/relay/{group_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["networkRelayDeliver"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/oid4vp/request/{session}": {
         parameters: {
             query?: never;
@@ -2901,6 +2917,21 @@ export interface components {
         RelationshipsGraph: {
             edges: components["schemas"]["GraphEdge"][];
             nodes: components["schemas"]["GraphNode"][];
+        };
+        RelayDelivery: {
+            /**
+             * @description The network's envelope: the originating network's signed message and the signed
+             *     relay hops.
+             */
+            envelope: Record<string, never>;
+        };
+        /** @description What the community answers a network: the receipt the VTN relay protocol reads. */
+        RelayReceipt: {
+            /**
+             * @description `delivered` — accepted, and pushed to the group's active members — or `duplicate`, a
+             *     message this community has already relayed.
+             */
+            status: string;
         };
         /**
          * @description `POST /v1/admin/config/reload` response. Lists the keys whose
@@ -9546,6 +9577,47 @@ export interface operations {
             };
             /** @description No live offer for this code */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    networkRelayDeliver: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The community group the broadcast is for */
+                group_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RelayDelivery"];
+            };
+        };
+        responses: {
+            /** @description Accepted, and pushed to the group's active members; or already seen */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RelayReceipt"];
+                };
+            };
+            /** @description The envelope does not verify, or is not from a network this community registered the group with */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The community cannot relay right now */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

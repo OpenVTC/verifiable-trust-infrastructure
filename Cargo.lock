@@ -12447,6 +12447,7 @@ dependencies = [
  "vti-vetting-pcs",
  "vti-voting",
  "vti-voting-service",
+ "vti-vtn",
  "webauthn-rs",
  "webauthn-rs-proto",
  "wiremock",
