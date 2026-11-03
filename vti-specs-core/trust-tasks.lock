@@ -1041,6 +1041,18 @@ type_uri = "https://trusttasks.org/spec/messaging/ping/0.2"
 digest = "sha256:9414c5c59bdf9f8c143fd90a1c7ac4e54fd30903596cf70628a084a47f2ce9db"
 
 [[task]]
+slug = "notifications/notify"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/notifications/notify/0.1"
+digest = "sha256:1cf46e8a09267d5e18cb88c0bf03a7eacd602caede7142a25629fdb79dbf316f"
+
+[[task]]
+slug = "notifications/relay"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/notifications/relay/0.1"
+digest = "sha256:2ed8495eda8c4e3f7d1916b1a66ecd3a4ae1ccd1cbf30abbca48ec1a0116d8d7"
+
+[[task]]
 slug = "persona/attribute/delete"
 version = "1.0"
 type_uri = "https://trusttasks.org/spec/persona/attribute/delete/1.0"

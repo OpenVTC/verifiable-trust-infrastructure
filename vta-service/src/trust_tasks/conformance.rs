@@ -786,6 +786,38 @@ fn trustee_payload(extra: Value) -> Value {
 
 const WITNESS_DID: &str = "did:webvh:QmWitness:witness.example.org:a";
 
+/// A notification's members as the `notifications/notify/0.1` example carries them.
+fn ntf_notification() -> Value {
+    json!({
+        "notificationId": "ntf-7Qk2p9Xv3mR8",
+        "revision": 1,
+        "kind": "election",
+        "subject": {
+            "heldBy": "did:web:community.example",
+            "id": "board-2027",
+            "openWith": "https://trusttasks.org/spec/vtc/elections/show/0.6",
+        },
+        "audience": "did:web:partner.example",
+        "status": "available",
+        "relayable": true,
+        "validUntil": TS,
+    })
+}
+
+/// One `HeldNotification`, relayed once.
+fn ntf_held() -> Value {
+    json!({
+        "recordId": "hn-4Tq8Zr2Lw9Ks6Pm1",
+        "contextId": "personal",
+        "addressee": "did:key:z6MkMemberExample",
+        "originator": "did:web:community.example",
+        "relayedBy": ["did:web:partner.example"],
+        "notification": ntf_notification(),
+        "state": "active",
+        "receivedAt": TS,
+    })
+}
+
 /// A carried document: opaque to the schema, checked by the VTA against its session record.
 fn witness_session_doc() -> Value {
     json!({
@@ -2958,6 +2990,59 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     }],
                     "nextCursor": "w1.opaque",
                 })
+            ),
+        ),
+        // ─── notifications/* + vta/notifications/* ──────────────
+        (
+            uris::TASK_NOTIFICATIONS_NOTIFY_0_1,
+            checked!(
+                specs::notifications::notify::v0_1::Payload,
+                specs::notifications::notify::v0_1::Response,
+                json!({ "notification": ntf_notification() }),
+                json!({ "notificationId": "ntf-7Qk2p9Xv3mR8", "revision": 1 })
+            ),
+        ),
+        (
+            uris::TASK_NOTIFICATIONS_RELAY_0_1,
+            checked!(
+                specs::notifications::relay::v0_1::Payload,
+                specs::notifications::relay::v0_1::Response,
+                json!({ "forwarded": {
+                    "id": "urn:uuid:2f8c1a40-7d1e-4b8e-9a51-0c6f3e2d7a11",
+                    "type": uris::TASK_NOTIFICATIONS_NOTIFY_0_1,
+                    "issuer": "did:web:community.example",
+                    "recipient": "did:web:partner.example",
+                    "issuedAt": TS,
+                    "payload": { "notification": ntf_notification() },
+                }}),
+                json!({ "notificationId": "ntf-7Qk2p9Xv3mR8", "revision": 1 })
+            ),
+        ),
+        (
+            uris::TASK_VTA_NOTIFICATIONS_LIST_0_1,
+            checked!(
+                specs::vta::notifications::list::v0_1::Payload,
+                specs::vta::notifications::list::v0_1::Response,
+                json!({ "contextId": "personal", "kind": "election", "limit": 20 }),
+                json!({ "items": [ntf_held()], "nextCursor": "c1" })
+            ),
+        ),
+        (
+            uris::TASK_VTA_NOTIFICATIONS_SHOW_0_1,
+            checked!(
+                specs::vta::notifications::show::v0_1::Payload,
+                specs::vta::notifications::show::v0_1::Response,
+                json!({ "contextId": "personal", "recordId": "hn-4Tq8Zr2Lw9Ks6Pm1" }),
+                json!({ "item": ntf_held(), "document": { "type": uris::TASK_NOTIFICATIONS_NOTIFY_0_1 } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_NOTIFICATIONS_DISMISS_0_1,
+            checked!(
+                specs::vta::notifications::dismiss::v0_1::Payload,
+                specs::vta::notifications::dismiss::v0_1::Response,
+                json!({ "contextId": "personal", "recordId": "hn-4Tq8Zr2Lw9Ks6Pm1" }),
+                json!({ "recordId": "hn-4Tq8Zr2Lw9Ks6Pm1", "changed": true })
             ),
         ),
         // ─── vta/memory ──────────────────────────────────────────

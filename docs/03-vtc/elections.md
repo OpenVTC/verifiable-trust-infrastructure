@@ -218,6 +218,14 @@ and its groups' the subject is the member's membership DID, and a rotation carri
 The presentation is never kept; the issuance record holds the party, and the audit row the
 credential's issuer, never the presentation or the credential (VTI-CRD-042).
 
+**The member party is notified** (VTI-NTF-060, VTI-NTF-061). Once the ballot box has registered
+an election under a roll naming a member party, the community sends that party — and nobody else —
+a `notifications/notify/0.1` of the kind `election`: the community, the election's identifier,
+`vtc/elections/show/0.6` to open it, the party as audience and the voting period, nothing else of
+the election. If the election is cancelled or closed before voting closes, a higher revision
+withdraws it. The election sweeper sends both, through the durable member push; whether the party
+passes it on to its members is the party's decision ([Notifications](../02-vta/notifications.md)).
+
 **Who sees such an election** (VTI-VOT-015, VTI-VOT-016, VTI-VOT-017). Under a roll naming the
 community or a group, those its records show the roll could admit — every active member, or the
 group's active members — as for any other roll. Under a roll naming a **member party**, the

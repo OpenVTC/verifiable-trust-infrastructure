@@ -925,3 +925,29 @@ When adding a flow, add it here and a line to the root index.
   `vtc_client::rooms` (`prune_records`, `set_record_retention`, `prune_epoch_v2`, …),
   `pnm rooms records {prune,retention}`, `pnm rooms prune`.
 - **Docs**: `docs/02-vta/data-rooms.md` (§9, §10.4, §10.5).
+
+### Held notifications (`notifications/*`, `vta/notifications/*/0.1`)
+- **What**: The VTA as **recipient** of `notifications/notify/0.1` and `notifications/relay/0.1`
+  (VTI-NTF-001 – 053): every layer verified, held by the stated acceptance policy in the
+  trust context of the DID it was addressed to, and served to the principal's clients as
+  `vta/notifications/{list,show,dismiss}/0.1` (`pnm notifications …`).
+- **Invariants to preserve**: notify/relay are counterparty tasks (zero-authority claim for a
+  sender the ACL does not know, `notifications::is_counterparty_task`); nothing is kept on the
+  claim. `vta_sdk::notifications::verify_delivery` is the only way to a notification's members —
+  each proof over the JSON as received (the spine's `received::document_as_received`), each
+  forwarded layer addressed to its relayer, ≤ 4 relays, `relayable`; never re-apply a forwarded
+  layer's acceptance window. The policy (`[notifications]`, `operations::notifications::
+  standing_of`) counts the **delivering relayer, never the originator** (VTI-NTF-031). The
+  receipt is the same whatever `receive` did — never branch the answer on `Disposition`
+  (VTI-NTF-023). One record per (addressee, originator identity, `notificationId`); a higher
+  revision replaces it and keeps `recordId` and a dismissal; equal or lower changes nothing.
+  `show` returns the delivering document exactly as received. Reads take the caller's named
+  context only; another context's record is `notificationUnknown`. Nothing here sends a
+  message (VTI-NTF-053). Keyspace `notifications` is backed up; lapsed/withdrawn records are
+  swept after `retain_lapsed_days`. Only documents addressed to the VTA's own DID arrive (the
+  spine checks `recipient`).
+- **Code**: `vta-sdk/src/notifications.rs`, `vta-sdk/src/client/notifications.rs`,
+  `vta-service/src/operations/notifications.rs`,
+  `vta-service/src/trust_tasks/{notifications,notifications_tests}.rs`,
+  `vta-cli-common/src/commands/notifications.rs`.
+- **Docs**: `docs/02-vta/notifications.md`.

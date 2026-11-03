@@ -123,6 +123,7 @@ pub(crate) mod transport;
 // approve-response that elevates a session. What decides a ceremony is needed
 // is [`policy_gate`] and nothing else — the `RequireStepUp` extractor and its
 // per-route op markers are gone with the config floors they read.
+pub(crate) mod notifications;
 pub(crate) mod step_up;
 mod vault;
 #[cfg(feature = "webvh")]
@@ -2829,6 +2830,20 @@ dispatch_table! {
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_WITNESS_LIST_0_2 => witness::handle_list
         [ None Metadata false ],
+    // ─── Notifications (`notifications/*`, `vta/notifications/*`) ─
+    // notify / relay are counterparty tasks (`notifications::is_counterparty_task`):
+    // the acceptance policy, not the ACL, decides what is kept (VTI-NTF-030). The
+    // reads disclose who originated and relayed each notification — metadata.
+    vta_sdk::trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1 => notifications::handle_notify
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_NOTIFICATIONS_RELAY_0_1 => notifications::handle_relay
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_LIST_0_1 => notifications::handle_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_SHOW_0_1 => notifications::handle_show
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_DISMISS_0_1 => notifications::handle_dismiss
+        [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list

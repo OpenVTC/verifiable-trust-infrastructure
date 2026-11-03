@@ -880,3 +880,26 @@ When adding a flow, add it here and a line to the root index.
 - **Code**: `vtc-service/src/elections/`, `vtc-service/src/trust_tasks/election_tasks.rs`,
   `vtc-service/tests/it/election_tasks.rs`.
 - **Docs**: `docs/03-vtc/elections.md`.
+
+### VTC notifications (`notifications/*`, VTI-NTF-040 – 063)
+- **What**: The community as **originator** of the `election` kind — an election under a
+  credential roll naming a member party is notified to that party once the ballot box has
+  registered it, and withdrawn (higher revision, `withdrawn`) if cancelled or closed before
+  voting closes — and as **recipient and relayer** of notifications addressed to it.
+- **Invariants to preserve**: the notice (`party-notice:<electionId>` in `elections`) is written
+  **before** anything is sent; `notifications::election::settle`, run by the election sweeper,
+  is its only writer and sender, through the durable member push — never send it from a task
+  handler. It carries only the reference (community, `electionId`, `vtc/elections/show/0.6`,
+  `memberOf`, voting period); nothing is sent after voting closes. Received notifications are
+  verified (`verify_delivery`) and kept **exactly as received** (`admin_actions::
+  received_document`) in `notifications` (backed up) by the stated policy (ACL entry, or a
+  relationship in force with the community DID); the receipt never says what was done. A relay
+  is never automatic: `inbox::relay_to_members` refuses a decision that has not acknowledged
+  `inbox::disclosure` (VTI-NTF-046), and records the members before it queues anything; every
+  later revision goes to the same members (`inbox::settle`, the one retry owner); the record
+  is kept until the period ends (30 days without one) and used for nothing else; nothing is
+  ever reported to the originator (VTI-NTF-043). There is no remote surface for the relay
+  decision yet — it needs a task in the specification first.
+- **Code**: `vtc-service/src/notifications/{mod,election,inbox}.rs`,
+  `vtc-service/src/trust_tasks/notification_tasks.rs`, `vtc-service/src/elections/sweeper.rs`.
+- **Docs**: `docs/02-vta/notifications.md`, `docs/03-vtc/elections.md`.

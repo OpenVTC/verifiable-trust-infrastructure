@@ -102,6 +102,13 @@ pub(crate) async fn resolve_trust_task_sender(
             ceremony::ceremony_claims(sender_did),
             Standing::ZeroAuthority,
         )),
+        // An originator or relayer of a notification: a community, group or network,
+        // which holds no ACL entry by design. The handler keeps nothing on the claim;
+        // the acceptance policy decides (VTI-NTF-030).
+        Some(uri) if crate::trust_tasks::notifications::is_counterparty_task(uri) => Ok((
+            ceremony::ceremony_claims(sender_did),
+            Standing::ZeroAuthority,
+        )),
         Some(uri) if crate::trust_tasks::credential_exchange::is_counterparty_task(uri) => {
             tracing::debug!(
                 sender = %sender_did,

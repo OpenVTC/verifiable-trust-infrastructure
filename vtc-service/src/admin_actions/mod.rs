@@ -1195,6 +1195,14 @@ tokio::task_local! {
     static EXECUTING: Executing;
 }
 
+/// The document this dispatch is handling, exactly as received — `None` outside the spine's
+/// dispatch (a direct handler call in a test). A handler that keeps or forwards a document
+/// whole (a notification it may relay, VTI-NTF-041) reads it from here, never from its typed
+/// re-serialisation, which rewrites the timestamps its producer signed (VTI-45).
+pub(crate) fn received_document() -> Option<std::sync::Arc<serde_json::Value>> {
+    SUBMISSION.try_with(|s| s.received.clone()).ok()
+}
+
 /// Run `fut` — the spine's dispatch of one document — with that document
 /// available to [`park`].
 pub(crate) async fn with_submission<F: std::future::Future>(

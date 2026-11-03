@@ -328,6 +328,19 @@ pub const PCS_ENGINE: &str = "pcs_engine";
 /// session produced is in the credential vault, which is backed up.
 pub const WITNESS_SESSIONS: &str = "witness_sessions";
 
+/// The **notifications** this VTA holds for its principal (`notifications/notify`,
+/// `notifications/relay`, `vta/notifications/*`, VTI-NTF-050): one record per
+/// (originator, `notificationId`) a DID it holds keys of was sent, keyed
+/// `held:<contextId>:<recordId>` with the dedup index `key:<digest of originator and
+/// notificationId>` beside it. Each record keeps the delivering document exactly
+/// as received, so a client can verify every proof itself.
+///
+/// In [`BACKED_UP`]: a held notification cannot be fetched again — an originator
+/// delivers each revision once, and a relayer re-sends only later revisions — so a
+/// restore without it would lose what the principal was told they may take part
+/// in, a member-party election among it (VTI-NTF-063).
+pub const NOTIFICATIONS: &str = "notifications";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -369,6 +382,7 @@ pub const ALL: &[&str] = &[
     EXTERNAL_SECRETS,
     PCS_ENGINE,
     WITNESS_SESSIONS,
+    NOTIFICATIONS,
 ];
 
 /// Keyspaces a backup carries, **every row of each**, as a raw dump.
@@ -440,6 +454,9 @@ pub const BACKED_UP: &[&str] = &[
     // Hidden-vetting engine state, wrapped. An applicant's attestations are not
     // replaceable without its vetters sitting again.
     PCS_ENGINE,
+    // What the principal was told they may take part in. An originator sends each
+    // revision once, so a lost record is not fetched again (VTI-NTF-050).
+    NOTIFICATIONS,
 ];
 
 /// Keyspaces deliberately **not** in a backup, each for a stated reason.
@@ -673,6 +690,9 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // A witnessed session in flight is the relationship DID's: it can be
         // neither presented nor accepted once that DID's key is gone.
         b"witness_sessions" => Cascade,
+        // A held notification was addressed to the DID: with it gone nobody can be the
+        // notification's addressee, and the record says what its holder belonged to.
+        b"notifications" => Cascade,
 
         // Persona is two scopes in one keyspace and only one half is DID-keyed,
         // which the per-keyspace enum cannot say — so it is said here. The

@@ -183,6 +183,7 @@ pub(crate) mod capability_module_tasks;
 // with the PCS key they issue tickets under.
 #[cfg(feature = "voting")]
 pub(crate) mod election_tasks;
+mod notification_tasks;
 
 // The integration tests' soft WebAuthn authenticator, for the spine tests that
 // drive a real passkey ceremony.
@@ -1146,6 +1147,12 @@ fn dispatch_typed<'a>(
         mem::MEMBER_VMC_TYPE => Box::pin(async move { handle_member_vmc(state, ctx, doc).await }),
         vta_sdk::protocols::credential_exchange::REQUEST => {
             Box::pin(async move { credential_exchange::handle_request(state, ctx, doc).await })
+        }
+        vta_sdk::trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1 => {
+            Box::pin(async move { notification_tasks::handle_notify(state, ctx, doc).await })
+        }
+        vta_sdk::trust_tasks::TASK_NOTIFICATIONS_RELAY_0_1 => {
+            Box::pin(async move { notification_tasks::handle_relay(state, ctx, doc).await })
         }
         vta_sdk::protocols::credential_exchange::PRESENT => {
             Box::pin(
@@ -2907,6 +2914,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // `credential_exchange`.
     vta_sdk::protocols::credential_exchange::REQUEST,
     vta_sdk::protocols::credential_exchange::PRESENT,
+    // A notification addressed to this community, or a relay of one: from a party that
+    // usually holds no ACL entry here; the acceptance policy decides what is kept
+    // (`crate::notifications::inbox`, VTI-NTF-030).
+    vta_sdk::trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1,
+    vta_sdk::trust_tasks::TASK_NOTIFICATIONS_RELAY_0_1,
     // A vetter withdrawing a statement (OpenVTC vetting design §9.6).
     vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
     // An admin naming a vetter. It has no REST route.

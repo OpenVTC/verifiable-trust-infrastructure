@@ -689,6 +689,13 @@ mod tests {
     /// this — `classify` defaults to `Mutating` without consulting it, so a
     /// runtime miss is safe and a compile-time miss is loud.
     const MUTATING_VERBS: &[&str] = &[
+        // `notifications/notify`, `notifications/relay`: a counterparty's delivery, which may
+        // be held — replacing a lower revision of the same notification, never anything else.
+        "notify",
+        "relay",
+        // `vta/notifications/dismiss`: hides a held notification from the default list; it
+        // stays readable and listable when asked for (VTI-NTF-052). Removes nothing.
+        "dismiss",
         // `rooms/keys/act`: signs a host-bound room request as the member — a write or a
         // curation as readily as a read. It changes nothing here itself, but what it signs
         // can change a room, so it is never a read.
