@@ -783,6 +783,7 @@ pub async fn delete_context(
     }
 
     let (mut keys, mut acl_removed, mut acl_updated, mut templates) = (0, 0, 0, 0);
+    let (mut app_state_records, mut memory_entries) = (0usize, 0usize);
     #[allow(unused_mut)]
     let mut dids = 0usize;
 
@@ -825,6 +826,17 @@ pub async fn delete_context(
         acl_removed += purged.acl_entries_removed.len();
         acl_updated += purged.acl_entries_updated.len();
         templates += purged.did_templates.len();
+        // The context's application state and agent memory. Both are keyed by
+        // context id and nothing else, so left behind they would reappear in
+        // any context later created under the same id — a client syncing from
+        // an empty watermark pulls the deleted context's records straight back.
+        //
+        // Not part of the not-empty gate above: the gate must agree with
+        // `preview-delete`, whose wire shape has no member for either, and a
+        // refusal the preview cannot explain is the failure that function's
+        // comment describes. Counted in the log line instead.
+        app_state_records += super::app_state::purge_context(ks.app_state, ctx_id).await?;
+        memory_entries += super::memory::purge_context(ks.memory, ctx_id).await?;
         delete_context_store(contexts_ks, ctx_id).await?;
     }
 
@@ -853,6 +865,8 @@ pub async fn delete_context(
         acl_removed,
         acl_updated,
         templates_removed = templates,
+        app_state_records_removed = app_state_records,
+        memory_entries_removed = memory_entries,
         "context (and subtree) deleted"
     );
     Ok(DeleteContextResultBody {
@@ -1379,6 +1393,8 @@ mod tests {
         did_templates: KeyspaceHandle,
         audit: KeyspaceHandle,
         imported: KeyspaceHandle,
+        memory: KeyspaceHandle,
+        app_state: KeyspaceHandle,
         #[cfg(feature = "webvh")]
         webvh: KeyspaceHandle,
     }
@@ -1392,6 +1408,8 @@ mod tests {
                 did_templates: &self.did_templates,
                 audit: &self.audit,
                 imported: &self.imported,
+                memory: &self.memory,
+                app_state: &self.app_state,
                 #[cfg(feature = "webvh")]
                 webvh: &self.webvh,
             }
@@ -1413,6 +1431,8 @@ mod tests {
             did_templates: k(ks::DID_TEMPLATES),
             audit: k(ks::AUDIT),
             imported: k(ks::IMPORTED_SECRETS),
+            memory: k(ks::MEMORY),
+            app_state: k(ks::APP_STATE),
             #[cfg(feature = "webvh")]
             webvh: k(ks::WEBVH),
             _dir: dir,
@@ -1705,6 +1725,87 @@ mod tests {
                 "{id} should be gone"
             );
         }
+    }
+
+    /// Application state and agent memory go with the context.
+    ///
+    /// Both are keyed by context id alone. Left behind, a context recreated
+    /// under the same id inherited them: an OpenVTC profile wiped locally and
+    /// re-provisioned into a fresh `openvtc-bob` synced the deleted profile's
+    /// personas and communities straight back from `vta/app-state`.
+    #[tokio::test]
+    async fn delete_purges_app_state_and_memory_across_the_subtree() {
+        use crate::operations::{app_state, memory};
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+        // A sibling sharing the prefix, which must survive.
+        seed(&ks.contexts, "acme2", None).await;
+
+        let locks = app_state::NamespaceLocks::default();
+        let v = serde_json::json!({"n": 1});
+        for ctx in ["acme", "acme/eng", "acme2"] {
+            app_state::put(
+                &ks.app_state,
+                &locks,
+                ctx,
+                "openvtc",
+                "persona",
+                Some(&v),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            memory::put(&ks.memory, ctx, "note", "x").await.unwrap();
+        }
+        // A tombstone and its version index, so every record family is present.
+        app_state::put(
+            &ks.app_state,
+            &locks,
+            "acme",
+            "openvtc",
+            "gone",
+            Some(&v),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        app_state::delete(&ks.app_state, &locks, "acme", "openvtc", "gone", None)
+            .await
+            .unwrap();
+
+        delete_context(&ks.as_ks(), &super_admin(), "acme", true, "t", None)
+            .await
+            .expect("cascade delete");
+
+        for ctx in ["acme", "acme/eng"] {
+            for family in ["app", "appv", "appc", "appt"] {
+                let left = ks
+                    .app_state
+                    .prefix_keys(format!("{family}:{ctx}:"))
+                    .await
+                    .unwrap();
+                assert!(left.is_empty(), "{family} records left for {ctx}: {left:?}");
+            }
+            assert!(memory::list(&ks.memory, ctx).await.unwrap().is_empty());
+        }
+
+        // Recreated under the same id, the context starts empty.
+        seed(&ks.contexts, "acme", None).await;
+        assert!(matches!(
+            app_state::get(&ks.app_state, "acme", "openvtc", "persona", true).await,
+            Err(app_state::AppStateError::NotFound)
+        ));
+
+        // The prefix-sharing sibling is untouched.
+        assert!(
+            app_state::get(&ks.app_state, "acme2", "openvtc", "persona", false)
+                .await
+                .is_ok()
+        );
+        assert_eq!(memory::list(&ks.memory, "acme2").await.unwrap().len(), 1);
     }
 
     #[tokio::test]

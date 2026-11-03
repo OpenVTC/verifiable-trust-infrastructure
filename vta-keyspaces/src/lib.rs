@@ -32,6 +32,13 @@ pub struct Keyspaces<'a> {
     pub did_templates: &'a KeyspaceHandle,
     pub audit: &'a KeyspaceHandle,
     pub imported: &'a KeyspaceHandle,
+    /// Per-context agent memory ([`MEMORY`]). Here so a context deletion can
+    /// take the context's entries with it.
+    pub memory: &'a KeyspaceHandle,
+    /// Per-context application state ([`APP_STATE`]). Here so a context
+    /// deletion can take the context's records with it — left behind, they
+    /// reappear in any new context created under the same id.
+    pub app_state: &'a KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh: &'a KeyspaceHandle,
 }

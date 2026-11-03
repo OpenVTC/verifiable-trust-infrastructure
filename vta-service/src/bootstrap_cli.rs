@@ -1066,6 +1066,8 @@ pub async fn run_context_delete(
     // carries the audit keyspace so backup export can dump it.
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
     let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let memory_ks = cs.keyspace(crate::keyspaces::MEMORY)?;
+    let app_state_ks = cs.keyspace(crate::keyspaces::APP_STATE)?;
     #[cfg(feature = "webvh")]
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
@@ -1108,6 +1110,8 @@ pub async fn run_context_delete(
         did_templates: &did_templates_ks,
         audit: &audit_ks,
         imported: &imported_ks,
+        memory: &memory_ks,
+        app_state: &app_state_ks,
         #[cfg(feature = "webvh")]
         webvh: &webvh_ks,
     };
