@@ -266,77 +266,20 @@ pub(crate) use helpers::TrustTaskOutcome;
 // value the reject path emits, rather than a second literal.
 pub(crate) use helpers::framework_error_type_uri;
 use helpers::{
-    app_error_to_reject, body_parse_error_response, extended_code, parse_payload, reject_with,
-    reject_with_code, reject_with_code_because, success_response, task_error_to_reject,
-    verdict_response, verify_received_approval_proof, verify_received_trust_task_proof,
+    app_error_to_reject, extended_code, parse_payload, reject_with, reject_with_code,
+    reject_with_code_because, success_response, task_error_to_reject, verdict_response,
     verify_trust_task_proof,
 };
 
-/// The transport-resolved caller identity threaded into the dispatcher.
+/// The transport-resolved caller identity threaded into the dispatcher: the
+/// spine's own [`vti_trust_task_server::ArrivalCtx`].
 ///
 /// `sender_did` is the transport-reported sender (DIDComm, TSP): a claim the
-/// spine accepts only once the document's own proof binds it (step 3a of
-/// [`dispatch_trust_task_core`]). It is `None` over REST,
-/// where the holder is recovered from the document proof instead.
-pub(crate) struct JoinAuthCtx {
-    pub transport: JoinTransport,
-    pub sender_did: Option<String>,
-    /// The DID that signed this document's Data-Integrity proof, verified by
-    /// the spine against the document **as received**.
-    ///
-    /// `None` when the task's specification does not require a proof, or when
-    /// the context was built by a transport rather than by the spine.
-    ///
-    /// # Why the spine and not the handler
-    ///
-    /// A proof covers the document as it was sent. A handler that has been
-    /// handed a typed payload can only re-derive those bytes if its payload type
-    /// round-trips losslessly — and none promises to: parse a document into a
-    /// type that does not know one of its fields and the field is gone, so the
-    /// canonicalisation differs and a valid proof fails. Verifying here, once,
-    /// against the bytes that arrived, is what makes typed handlers possible at
-    /// all. Pinned by `vta-sdk/tests/typed_proof_verify.rs`.
-    pub verified_signer: Option<String>,
-}
-
-impl JoinAuthCtx {
-    /// The DIDComm context. The sender is only a claim until the spine binds
-    /// it to the document proof.
-    ///
-    /// The envelope arm builds its context field by field, because an
-    /// unauthenticated sender there is `None` rather than a refusal; this
-    /// shorthand is for a caller that already holds a proven DID.
-    #[allow(dead_code)]
-    pub fn didcomm(sender_did: String) -> Self {
-        Self {
-            transport: JoinTransport::DIDComm,
-            sender_did: Some(sender_did),
-            verified_signer: None,
-        }
-    }
-
-    /// The REST context: the holder is proven by the document proof.
-    // Consumed by the REST transport adapter (the per-verb routes' rewire to
-    // the document endpoint); kept here as the symmetric counterpart to
-    // [`Self::didcomm`].
-    #[allow(dead_code)]
-    pub fn rest() -> Self {
-        Self {
-            transport: JoinTransport::Rest,
-            sender_did: None,
-            verified_signer: None,
-        }
-    }
-
-    /// The same context with `verified_signer` filled in by the spine.
-    fn with_verified_signer(&self, signer: Option<String>) -> Self {
-        Self {
-            transport: self.transport,
-            sender_did: self.sender_did.clone(),
-            verified_signer: signer,
-        }
-    }
-}
+/// spine accepts only once the document's own proof binds it. `verified_signer`
+/// is the DID that signed the document's proof, verified by the spine against
+/// the document **as received** — see the crate's docs for why there and not
+/// in a handler.
+pub(crate) use vti_trust_task_server::ArrivalCtx as JoinAuthCtx;
 
 /// The transport-neutral dispatch spine. Parses the document, holds it to the
 /// specification it names, then routes by `type` to the matching verb handler.
@@ -358,12 +301,11 @@ pub(crate) async fn dispatch_trust_task_core(
     ctx: &JoinAuthCtx,
     body: &[u8],
 ) -> TrustTaskOutcome {
-    // Every answer is signed, refusals included — the early returns below as
-    // well as the dispatched result (which `dispatch_trust_task_validated`
-    // signs before recording it for redelivery).
+    // Every answer is signed, refusals included — the early refusals as well
+    // as the dispatched result (which the spine signs before recording it for
+    // redelivery).
     let address = large_document_budget_address(ctx);
-    let outcome = dispatch_trust_task_validated(state, ctx, body, None, &address).await;
-    sign_response(state, outcome).await
+    receive(state, ctx, body, None, &address).await
 }
 
 /// The address [`size::check_for_known_issuer`] charges a raised-limit
@@ -387,15 +329,11 @@ fn large_document_budget_address(ctx: &JoinAuthCtx) -> String {
 /// to execute: the HTTPS door's per-signer rate limit
 /// ([`crate::routing::trust_task_admission`]).
 ///
-/// It is asked once, after the proof has verified against the document's
-/// `issuer` and before the duplicate-execution record is claimed, so a refusal
-/// spends neither the document's `id` nor any work past verification.
-pub(crate) trait VerifiedAdmission: Sync {
-    /// `false` refuses the document. The spine then stops and answers an empty
-    /// `429` outcome, which the transport replaces with its own refusal; the
-    /// admission is expected to have recorded why.
-    fn admit_verified(&self, signer: &str) -> bool;
-
+/// The spine's [`vti_trust_task_server::VerifiedAdmission`] (asked once, after
+/// the proof has verified against the document's `issuer` and before the
+/// duplicate-execution record is claimed), plus what this community's size gate
+/// needs to know about the transport.
+pub(crate) trait VerifiedAdmission: vti_trust_task_server::VerifiedAdmission {
     /// The transport has charged this document to a room budget sized for file
     /// transfer before anything in it was verified, and settles that charge
     /// itself — so the size check need not also charge an upload chunk to the
@@ -419,474 +357,201 @@ pub(crate) async fn dispatch_trust_task_core_admitted(
     client_ip: std::net::IpAddr,
 ) -> TrustTaskOutcome {
     let address = format!("ip:{client_ip}");
-    let outcome = dispatch_trust_task_validated(state, ctx, body, Some(admit), &address).await;
-    sign_response(state, outcome).await
+    receive(state, ctx, body, Some(admit), &address).await
 }
 
-async fn dispatch_trust_task_validated(
+/// Run `body` through the spine (`vti_trust_task_server::Spine`) with this
+/// community's pieces, and sign the answer.
+///
+/// The order and the rules are the crate's (size, parse, freshness, expiry and
+/// recipient, the specification's own policy, the proof bound to `issuer`, the
+/// messaging sender binding, admission, the duplicate-execution record,
+/// dispatch, signing). What is this community's:
+///
+/// - **size**: the per-type limits, raised only for a claimed issuer with
+///   standing here and charged to `budget_address`'s large-document budget
+///   until the proof settles it ([`size::KnownIssuerSizeGate`]);
+/// - **policy**: [`spec_policy_for`], read off the versions `vti-specs` pins;
+/// - **recipient**: this VTC's DID, while one is configured;
+/// - **before the proof** ([`VtcSpine`]): the `auth/oob` family's `did:key`
+///   rule (T21), and a fresh resolution of an install claim's founder DID;
+/// - **after the proof**: no delegated signing key is an approver, and a
+///   `did:scid` signer's source is remembered (VTI-KEY-162);
+/// - **the record**: the store-backed [`accepted_ids`], shared with every
+///   other binding (VTI-OPS-027);
+/// - **dispatch**: [`dispatch_typed`], inside the submission scope that lets an
+///   operation be parked as exactly what its requester signed
+///   (`crate::admin_actions`).
+///
+/// Every one of these checks is unconditional; nothing relaxes any of them
+/// (`docs/05-design-notes/vtc-trust-task-proof-enforcement.md`).
+async fn receive(
     state: &AppState,
     ctx: &JoinAuthCtx,
     body: &[u8],
     admit: Option<&dyn VerifiedAdmission>,
     budget_address: &str,
 ) -> TrustTaskOutcome {
-    // 0. The size the document's type accepts — decided before anything in it
-    //    is parsed, on every transport (`size`). A document large enough to
-    //    need its claimed (not yet verified) issuer's ACL entry for the
-    //    raised limit is charged against `budget_address`'s large-document
-    //    budget first — see `size`'s module docs for why an unverified claim
-    //    alone would otherwise be a DoS amplifier. Settled below, once this
-    //    document's own proof verification concludes (or does not run at
-    //    all). An upload chunk a transport has already charged to its room
-    //    budget is not charged again here (`size::check_for_known_issuer_with`).
-    let large_doc_charge = match size::check_for_known_issuer_with(
+    let size = size::KnownIssuerSizeGate {
         state,
-        body,
-        budget_address,
-        crate::auth::session::now_epoch(),
-        admit.is_some_and(|a| a.room_precharged()),
-    )
-    .await
-    {
-        Ok(charge) => charge,
-        Err(refused) => return refused,
+        address: budget_address,
+        room_precharged: admit.is_some_and(|a| a.room_precharged()),
     };
+    let policy: fn(&str) -> Option<trust_tasks_rs::SpecPolicy> = spec_policy_for;
+    let verifier = vti_trust_task_server::ResolverProofVerifier::new(
+        state.trust_task_vm_resolver(),
+        helpers::is_approval_type,
+    );
+    let vtc = VtcSpine { state };
+    let accepted = state.accepted_ids();
+    vti_trust_task_server::Spine::new(&policy, &verifier, &vtc, &accepted, &vtc)
+        .with_size_gate(&size)
+        .with_freshness(freshness_policy())
+        .with_admission(admit.map(|a| a as &dyn vti_trust_task_server::VerifiedAdmission))
+        .with_signer(response_signer(state))
+        .receive(ctx, body)
+        .await
+}
 
-    // 1. Parse the envelope.
-    let doc: TrustTask<Value> = match serde_json::from_slice(body) {
-        Ok(d) => d,
-        Err(e) => return body_parse_error_response(&e.to_string()),
-    };
-    // The same bytes as JSON, kept verbatim: the proof at step 3 is verified
-    // over what was received, never over a re-serialisation of `doc`, which
-    // rewrites the timestamps a producer signed (VTI-45). It parsed as a Trust
-    // Task, so it parses as JSON.
-    let received: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(e) => return body_parse_error_response(&e.to_string()),
-    };
+/// This community's hooks and routing table for the spine.
+struct VtcSpine<'a> {
+    state: &'a AppState,
+}
 
-    // One instant for every temporal decision in this dispatch. The acceptance
-    // window and the replay record's retention are the *same* bound (SPEC
-    // §7.2, *Bounding the record*), so reading the clock twice could place
-    // them on opposite sides of it.
-    let now = chrono::Utc::now();
-
-    // 2. Framework §7.2 item 13 — the timestamp bounds, and VTI-OPS-024's
-    //    acceptance window. Checked first because it is decided from the
-    //    document alone, before any resolution, verification or execution
-    //    work, and because one of its rules changes how the other reads.
-    if let Err(reason) = doc.validate_freshness(now, &freshness_policy()) {
-        return reject_with(&doc, reason);
+#[async_trait::async_trait]
+impl vti_trust_task_server::SpineHooks for VtcSpine<'_> {
+    /// The recipient binding (document `recipient` must equal this VTC's DID)
+    /// is the replay defence that the bespoke `audience` field used to
+    /// provide. Skipped while the VTC has no DID configured (setup).
+    async fn recipient(&self) -> Option<String> {
+        self.state.config.read().await.vtc_did.clone()
     }
 
-    // 2b. Framework §7.2 items 4 + 5 — expiry + recipient enforcement. The
-    //    recipient binding (document `recipient` must equal this VTC's DID) is
-    //    the replay defence that the bespoke `audience` field used to provide.
-    //    Skipped while the VTC has no DID configured (setup).
-    let vtc_did = state.config.read().await.vtc_did.clone();
-    if let Some(vtc_did) = vtc_did
-        && let Err(reason) = doc.validate_basic(now, &vtc_did)
-    {
-        return reject_with(&doc, reason);
+    async fn before_proof(
+        &self,
+        doc: &TrustTask<Value>,
+        type_uri: &str,
+    ) -> Option<TrustTaskOutcome> {
+        // The `auth/oob` family's signer must be an Ed25519 `did:key`, decided
+        // from the identifier before any proof is read (T21) — a rule its
+        // specifications state in prose, which `spec_policy_for` cannot carry.
+        if let Some(refused) = oob_tasks::precheck(doc, type_uri) {
+            return Some(refused);
+        }
+        // An install claim under an existing DID is verified against that
+        // DID's *live* document (`vtc/install/claim/finish/0.3` item 3), so its
+        // cached copy is dropped and the DID resolved afresh first.
+        if type_uri == install_tasks::CLAIM_FINISH_V0_3_TYPE
+            && let Some(refused) = install_tasks::refresh_founder_did(self.state, doc).await
+        {
+            return Some(refused);
+        }
+        None
     }
 
-    let type_uri = doc.type_uri.for_routing().to_string();
-
-    // 2c. SPEC §7.2's *flag-driven* checks — the ones the published
-    //    specification declares rather than this consumer chooses:
-    //
-    //    * item 5b — `recipient` REQUIRED
-    //    * item 7a — `proof` REQUIRED  → `proofRequired`
-    //    * item 8  — audience binding (proof present, no in-band recipient, on
-    //                a non-bearer specification)
-    //    * §7.3 17 — `issuedAt` REQUIRED
-    //
-    // ## Why this is here now, and what it replaces
-    //
-    // Until #1641 this spine verified a proof whenever one was present and
-    // otherwise took attribution from the transport — including for the nine
-    // dispatched tasks whose own definitions declare `proof` REQUIRED. The
-    // comment that stood here argued the transport had already proved the
-    // sender, so demanding a proof would refuse every join over DIDComm and
-    // TSP.
-    //
-    // That argument is refused by three documents at once, and none of them is
-    // ambiguous:
-    //
-    // - **VTI-OPS-021 / VTI-OPS-093.** "A node MUST apply the same document
-    //   requirements on every transport. A transport that authenticates its
-    //   sender MUST NOT be treated as relieving a producer of addressing or
-    //   signing the document it sends." A binding may not weaken the
-    //   requirement on the strength of a transport property.
-    // - **The DIDComm binding's own §5.** "A *Trust Task specification* that
-    //   declares `proof` as REQUIRED overrides this binding-level allowance:
-    //   the in-band `proof` is mandatory regardless of transport, because such
-    //   specifications produce documents intended to be replayable past the
-    //   original transport hop." The allowance the old rule leaned on is
-    //   disclaimed by the very binding that grants it.
-    // - **That binding's §6**, on where the guarantee stops: "At the message.
-    //   The envelope is discarded on unwrap, and the guarantee does not travel
-    //   with the document." Authcrypt tells this service who handed it the
-    //   bytes. It leaves nothing behind that a third party — an auditor, a
-    //   registry, the member themselves — could check afterwards.
-    //
-    // Read off `spec_policy_for`, never a list kept here: a list of URIs whose
-    // requirement is published elsewhere is a list that drifts, and the
-    // requirement moves when the specification does.
-    //
-    // The policy is enforced **as the registry states it**. #1641 shipped with
-    // one transitional narrowing — `require_declared_proof = false` cleared
-    // `is_proof_required` where the transport had authenticated the sender,
-    // because `openvtc-core` sent five of these documents unsigned. openvtc#371
-    // signs them, which was that switch's stated removal condition, so the
-    // narrowing and the config key are gone. Nothing may reintroduce a
-    // per-deployment relaxation here: VTI-OPS-093 forbids a binding weakening a
-    // document requirement on a transport property, and a switch that lets an
-    // operator do it is the same weakening with a longer path.
-    //
-    // `None` means this build knows no specification for the URI. The
-    // dispatcher refuses an unrouted URI a few lines below
-    // (`unsupported_type_or_version`), so there is no silently-unchecked task
-    // here — only tasks whose definitions this build cannot read, which is the
-    // `rooms/*`-shaped case the arms guard for themselves.
-    if let Some(policy) = spec_policy_for(&type_uri)
-        && let Err(reason) = policy.enforce(&doc)
-    {
-        tracing::info!(
-            type_uri,
-            ?reason,
-            "document refused by its specification's own policy"
-        );
-        return reject_with(&doc, reason);
-    }
-
-    // 2d. The `auth/oob` family's signer must be an Ed25519 `did:key`, decided
-    //     from the identifier before any proof is read (T21) — a rule its
-    //     specifications state in prose, which `spec_policy_for` cannot carry.
-    if let Some(refused) = oob_tasks::precheck(&doc, &type_uri) {
-        return refused;
-    }
-
-    // 3. Framework §7.2 item 7, *first* clause — the proof, verified here
-    //    against the document **as received**, because this is the last point
-    //    at which those bytes exist: past dispatch a handler holds a payload
-    //    that may have dropped a member it does not know, and canonicalising
-    //    that yields different bytes and refuses a valid proof.
-    //
-    //    §4.7 binds the proof to the in-band `issuer`: the `verificationMethod`
-    //    "MUST resolve to verification material controlled by the *party*
-    //    identified by the document's `issuer` member". A valid proof by some
-    //    *other* DID is not a proof by the issuer, and without this check the
-    //    signature would establish only that somebody signed something —
-    //    which is not what `verified_signer` is read as downstream.
-    //
-    //    A human approver's own decision (a step-up `approve-response`, a
-    //    `task-consent/decision`) is an attestation, not an operational
-    //    message: its proof must be made for `assertionMethod` by a key the
-    //    approver lists under `assertionMethod`
-    //    ([`verify_received_approval_proof`]).
-    //
-    //    "As received" literally: over `received`, the JSON the bytes parsed
-    //    to, not over `doc` re-serialised (VTI-45).
-    // An install claim under an existing DID is verified against that DID's
-    // *live* document (`vtc/install/claim/finish/0.3` item 3), so its cached
-    // copy is dropped and the DID resolved afresh first.
-    if type_uri == install_tasks::CLAIM_FINISH_V0_3_TYPE
-        && let Some(refused) = install_tasks::refresh_founder_did(state, &doc).await
-    {
-        return refused;
-    }
-    let ctx = if doc.proof.is_some() {
-        let verified = if helpers::is_approval_type(&type_uri) {
-            verify_received_approval_proof(state, &received, &type_uri).await
-        } else {
-            verify_received_trust_task_proof(state, &received).await
-        };
-        match verified {
-            Ok(signer) => {
-                if doc.issuer.as_deref() != Some(signer.as_str()) {
-                    tracing::warn!(
-                        type_uri,
-                        issuer = ?doc.issuer,
-                        %signer,
-                        "proof verifies under a key the document's issuer does not control"
-                    );
-                    // Settle before returning: a proof that verifies under a
-                    // different DID than the one this document claimed as
-                    // `issuer` is exactly the "verified issuer turns out to be
-                    // someone else" case `size`'s module docs describe, and
-                    // penalises the budget address the same as an outright
-                    // verification failure would.
-                    size::settle_large_document_charge(
-                        &state.large_document_budget,
-                        large_doc_charge.as_ref(),
-                        Some(signer.as_str()),
-                    );
-                    return reject_with(
-                        &doc,
-                        RejectReason::ProofInvalid {
-                            reason: "the proof's verificationMethod does not belong to the \
-                                     document's issuer (SPEC §4.7)"
+    async fn after_proof(
+        &self,
+        doc: &TrustTask<Value>,
+        type_uri: &str,
+        signer: &str,
+    ) -> Option<TrustTaskOutcome> {
+        let state = self.state;
+        // A delegated signing key is an operational credential, never an
+        // approver's attestation (auth/signing-key/enroll item 7): no approval
+        // is accepted under its proof, whatever its state.
+        if helpers::is_approval_type(type_uri) {
+            match crate::acl::console_key::get_delegation(&state.console_keys_ks, signer).await {
+                Ok(None) => {}
+                // approve-response 0.7 names this case (consumer item 1a): a
+                // delegated key's proof never establishes an approver —
+                // `subjectMismatch`, whatever the evidence, before the pending
+                // step-up is looked up. Same refusal, at the same point; only
+                // the code is the task's own.
+                Ok(Some(_)) if type_uri == STEP_UP_APPROVE_RESPONSE_TYPE => {
+                    return Some(reject_with_code(
+                        doc,
+                        helpers::extended_code(
+                            step_up_approve_response::error_codes::SUBJECT_MISMATCH.code,
+                        ),
+                        "a delegated signing key is never the approver's evidence; \
+                         answer with the passkey assertion alone, or sign with the \
+                         approver's own DID",
+                        None,
+                    ));
+                }
+                Ok(Some(_)) => {
+                    return Some(reject_with(
+                        doc,
+                        RejectReason::PermissionDenied {
+                            reason: "a delegated signing key is never accepted as an \
+                                     approver's attestation; sign with the approver's \
+                                     own key, or answer a passkey step-up unsigned"
                                 .to_string(),
                         },
-                    );
+                    ));
                 }
-                size::settle_large_document_charge(
-                    &state.large_document_budget,
-                    large_doc_charge.as_ref(),
-                    Some(signer.as_str()),
-                );
-                // A delegated signing key is an operational credential, never
-                // an approver's attestation (auth/signing-key/enroll item 7):
-                // no approval is accepted under its proof, whatever its state.
-                if helpers::is_approval_type(&type_uri) {
-                    match crate::acl::console_key::get_delegation(&state.console_keys_ks, &signer)
-                        .await
-                    {
-                        Ok(None) => {}
-                        // approve-response 0.7 names this case (consumer item
-                        // 1a): a delegated key's proof never establishes an
-                        // approver — `subjectMismatch`, whatever the evidence,
-                        // before the pending step-up is looked up. Same
-                        // refusal, at the same point; only the code is the
-                        // task's own.
-                        Ok(Some(_)) if type_uri == STEP_UP_APPROVE_RESPONSE_TYPE => {
-                            return reject_with_code(
-                                &doc,
-                                helpers::extended_code(
-                                    step_up_approve_response::error_codes::SUBJECT_MISMATCH.code,
-                                ),
-                                "a delegated signing key is never the approver's evidence; \
-                                 answer with the passkey assertion alone, or sign with the \
-                                 approver's own DID",
-                                None,
-                            );
-                        }
-                        Ok(Some(_)) => {
-                            return reject_with(
-                                &doc,
-                                RejectReason::PermissionDenied {
-                                    reason: "a delegated signing key is never accepted as an \
-                                             approver's attestation; sign with the approver's \
-                                             own key, or answer a passkey step-up unsigned"
-                                        .to_string(),
-                                },
-                            );
-                        }
-                        Err(e) => return app_error_to_reject(&doc, &e),
-                    }
-                }
-                // A did:scid signer verified through its `src`: remember where,
-                // so the bare DID it is recorded by resolves after a restart
-                // (VTI-KEY-162).
-                crate::scid_sources::record_best_effort(&state.members_ks, &signer).await;
-                &ctx.with_verified_signer(Some(signer))
-            }
-            // A proof that is present and does not verify is always fatal,
-            // whatever the transport proved separately. Settled as an
-            // unverified claim (`None`) before returning.
-            Err(e) => {
-                size::settle_large_document_charge(
-                    &state.large_document_budget,
-                    large_doc_charge.as_ref(),
-                    None,
-                );
-                return app_error_to_reject(&doc, &e);
+                Err(e) => return Some(app_error_to_reject(doc, &e)),
             }
         }
-    } else {
-        // No proof at all: whatever this document claimed as `issuer` was
-        // never checked, so the charge settles exactly as an outright
-        // verification failure would.
-        size::settle_large_document_charge(
-            &state.large_document_budget,
-            large_doc_charge.as_ref(),
-            None,
-        );
-        ctx
-    };
-
-    // 3a. Over DIDComm and TSP the transport-reported sender is a claim, not
-    //     proof of who composed the document (VTI-OPS-021/093). Every document
-    //     arriving that way must carry a proof (verified above against its
-    //     `issuer`), and that issuer must be the sender: the proof VM's
-    //     controller, the issuer and the sender are one DID. Handlers that read
-    //     `sender_did` then read a DID the document proves, whatever the task's
-    //     own proof requirement.
-    if matches!(ctx.transport, JoinTransport::DIDComm | JoinTransport::Tsp) {
-        // By identity: a did:scid's `src` locator is not part of it (VTI-KEY-160).
-        let base = vta_sdk::did_scid::identity;
-        match (ctx.verified_signer.as_deref(), ctx.sender_did.as_deref()) {
-            (Some(signer), Some(sender)) if base(signer) == base(sender) => {}
-            (None, _) => {
-                tracing::warn!(type_uri, "messaging document carries no proof — refused");
-                return reject_with(&doc, RejectReason::ProofRequired);
-            }
-            (Some(signer), sender) => {
-                tracing::warn!(
-                    type_uri,
-                    %signer,
-                    sender = ?sender,
-                    "messaging document is signed by a DID other than its sender — refused"
-                );
-                return reject_with(
-                    &doc,
-                    RejectReason::IdentityMismatch(
-                        trust_tasks_rs::ConsistencyError::IssuerMismatch {
-                            in_band: signer.to_string(),
-                            transport: sender.unwrap_or_default().to_string(),
-                        },
-                    ),
-                );
-            }
-        }
+        // A did:scid signer verified through its `src`: remember where, so the
+        // bare DID it is recorded by resolves after a restart (VTI-KEY-162).
+        crate::scid_sources::record_best_effort(&state.members_ks, signer).await;
+        None
     }
+}
 
-    // 3a'. The transport's admission of the verified signer — the HTTPS
-    //      door's per-signer rate limit. After verification, so the bucket it
-    //      charges is the one the proof establishes; before the claim below,
-    //      so a refused document keeps its `id` for the retry.
-    if let (Some(admit), Some(signer)) = (admit, ctx.verified_signer.as_deref())
-        && !admit.admit_verified(signer)
-    {
-        return TrustTaskOutcome {
-            status: axum::http::StatusCode::TOO_MANY_REQUESTS,
-            body: Vec::new(),
+impl vti_trust_task_server::Dispatcher for VtcSpine<'_> {
+    /// Dispatch by type URI. The document as received travels with the
+    /// dispatch, so an operation that has to wait for other administrators'
+    /// approval is parked as exactly what its requester signed
+    /// (`crate::admin_actions`).
+    fn dispatch<'b>(
+        &'b self,
+        ctx: &'b JoinAuthCtx,
+        doc: TrustTask<Value>,
+        type_uri: &'b str,
+        received: std::sync::Arc<Value>,
+    ) -> vti_trust_task_server::BoxFuture<'b, TrustTaskOutcome> {
+        let submission = crate::admin_actions::Submission {
+            received,
+            signer: ctx.verified_signer.clone(),
+            transport: ctx.transport,
+            waiver: Default::default(),
+            immediate: Default::default(),
         };
+        Box::pin(crate::admin_actions::with_submission(
+            submission,
+            // Already boxed: `dispatch_typed` returns the chosen handler's
+            // future.
+            dispatch_typed(self.state, ctx, doc, type_uri),
+        ))
     }
 
-    // 3b. SPEC §7.2 item 11 — the duplicate-execution record.
-    //
-    // Every transport that reaches this spine is at-least-once. The mediator
-    // re-pushes a recipient's whole undelivered inbox when a socket enables
-    // live delivery and when a duplicate socket displaces an existing session,
-    // so a frame this VTC has already handled arrives again as a matter of
-    // routine — not as an attack. Without a record, the second copy is executed
-    // a second time.
-    //
-    // Expiry and the recipient binding (step 2) do not close this. Both are
-    // properties of the document, and a redelivered copy satisfies them exactly
-    // as the first did — which is the point: it *is* the first document.
-    //
-    // The record is digest-keyed, so a *different* document arriving under an
-    // already-spent `id` is `idConflict` rather than being silently absorbed as
-    // a retry, and it claims before dispatch, so two simultaneous deliveries
-    // cannot both pass a check-then-act test.
-    //
-    // It lives in the store, not in this process, because **VTI-OPS-027**
-    // requires the record to be shared across every binding this node exposes
-    // — see [`accepted_ids`]. The dispatcher is its first caller; the bearer
-    // REST routes #1641 phase 2 migrates are its second, and they must be able
-    // to consult the same rows, or replay protection is defeated by presenting
-    // the document at the other door.
-    //
-    // Placed after the proof check so an unauthenticated flood cannot spend
-    // another sender's ids, matching where the webvh control plane puts its own
-    // gate and for the same reason.
-    let claim = match state
-        .accepted_ids()
-        .claim(&doc, retain_until(&doc, now), now)
-        .await
-    {
-        Ok(accepted_ids::Acceptance::Fresh(claim)) => claim,
-        Ok(accepted_ids::Acceptance::Duplicate {
-            prior_response,
-            in_flight,
-        }) => {
-            // §7.2 (*Disposition of a duplicate*): "In no case is a duplicate
-            // reported as `taskFailed`; the task did not fail, it already
-            // happened." A redelivery is the common case here, so answering it
-            // with the original result is not a courtesy — it is what keeps a
-            // caller whose reply was lost from retrying forever.
-            return match prior_response {
-                Some(v) => match serde_json::to_vec(&v) {
-                    Ok(body) => TrustTaskOutcome {
-                        status: axum::http::StatusCode::OK,
-                        body,
-                    },
-                    Err(e) => reject_with(
-                        &doc,
-                        RejectReason::InternalError {
-                            reason: format!("prior response is unserialisable: {e}"),
-                        },
-                    ),
-                },
-                // Still running: `202` is the only honest code. `200` claims a
-                // result that does not exist yet and `409` a conflict that does
-                // not exist — it is the same document.
-                None if in_flight => TrustTaskOutcome {
-                    status: axum::http::StatusCode::ACCEPTED,
-                    body: Vec::new(),
-                },
-                None => TrustTaskOutcome {
-                    status: axum::http::StatusCode::NO_CONTENT,
-                    body: Vec::new(),
-                },
-            };
-        }
-        Ok(accepted_ids::Acceptance::Conflict) => {
-            return reject_with(&doc, RejectReason::IdConflict);
-        }
-        // Fail closed. A consumer that cannot establish whether a document is a
-        // duplicate has not satisfied item 11, so it must not execute — and
-        // `unavailable` is retryable, which is the truthful signal.
-        //
-        // `Acceptance` is this crate's own enum rather than the library's
-        // `#[non_exhaustive] ReplayVerdict`, so the arm that used to catch a
-        // verdict this build did not know is gone: a new variant here is a
-        // compile error at this match, which is the stronger form of the same
-        // guard.
-        Err(e) => return reject_with(&doc, e.reject_reason()),
-    };
-
-    // 4. Dispatch by type URI, then sign what comes back. The document as
-    //    received travels with the dispatch, so an operation that has to wait
-    //    for other administrators' approval is parked as exactly what its
-    //    requester signed (`crate::admin_actions`).
-    let submission = crate::admin_actions::Submission {
-        received: std::sync::Arc::new(received),
-        signer: ctx.verified_signer.clone(),
-        transport: ctx.transport,
-        waiver: Default::default(),
-        immediate: Default::default(),
-    };
-    let outcome = crate::admin_actions::with_submission(
-        submission,
-        // Already boxed: `dispatch_typed` returns the chosen handler's future.
-        dispatch_typed(state, ctx, doc, &type_uri),
-    )
-    .await;
-    let outcome = sign_response(state, outcome).await;
-
-    // Close out the claim taken at 3b.
-    //
-    // - **Succeeded** → record the response, so the redelivery this guard
-    //   exists to absorb is answered with the result rather than with silence.
-    // - **Failed** → release. A document refused downstream of the claim would
-    //   otherwise burn its `id`, and a corrected resend under the same `id`
-    //   would come back `idConflict` for as long as the record is retained.
-    //
-    // A response that carries a bearer secret (an invite's claim code) is
-    // recorded as completed **without** its body, so the secret is not kept
-    // for the acceptance window; a redelivery is then answered `204`.
-    if outcome.status.is_success() {
-        let recorded = if step_up_passkey_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
-            || step_up_approver_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
-            || admin_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
-            || community_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
-            || event_tasks::UNRECORDED_RESPONSES.contains(&type_uri.as_str())
-        {
-            None
-        } else {
-            serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
-        };
-        claim.completed(recorded.as_ref()).await;
-    } else {
-        claim.release().await;
+    /// A response that carries a bearer secret (an invite's claim code) is
+    /// recorded as completed **without** its body, so the secret is not kept
+    /// for the acceptance window; a redelivery is then answered `204`.
+    fn records_response(&self, type_uri: &str) -> bool {
+        !(step_up_passkey_tasks::SECRET_RESPONSES.contains(&type_uri)
+            || step_up_approver_tasks::SECRET_RESPONSES.contains(&type_uri)
+            || admin_tasks::SECRET_RESPONSES.contains(&type_uri)
+            || community_tasks::SECRET_RESPONSES.contains(&type_uri)
+            || event_tasks::UNRECORDED_RESPONSES.contains(&type_uri))
     }
+}
 
-    outcome
+/// This community's response signer, while it has one.
+fn response_signer(state: &AppState) -> Option<&dyn vti_trust_task_server::ResponseSigner> {
+    state
+        .credential_signer
+        .as_deref()
+        .map(|s| s as &dyn vti_trust_task_server::ResponseSigner)
+}
+
+#[async_trait::async_trait]
+impl vti_trust_task_server::ResponseSigner for crate::credentials::LocalSigner {
+    async fn sign_response_document(&self, doc: &mut Value) -> Result<(), AppError> {
+        self.sign_operational_response(doc).await
+    }
 }
 
 /// The document requirements (SPEC §7.2 items 5b, 7a, 8; §7.3 item 17) of
@@ -950,10 +615,9 @@ pub(crate) fn spec_policy_for(type_uri: &str) -> Option<trust_tasks_rs::SpecPoli
 /// specifications this service binds declare the member REQUIRED in any case.
 pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
     // The window this node also advertises in its `trust-task-discovery/0.3`
-    // answer (VTI-TRN-047): one value, so the two cannot drift.
-    vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
-        .freshness_policy()
-        .requiring_issued_at()
+    // answer (VTI-TRN-047): one value, so the two cannot drift. It is the
+    // spine's default, `VTI_ACCEPTANCE_WINDOW` requiring `issuedAt`.
+    vti_trust_task_server::default_freshness_policy()
 }
 
 /// How long the duplicate-execution record for `doc` must be kept — the end of
@@ -976,14 +640,7 @@ fn retain_until(
     doc: &TrustTask<Value>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let policy = freshness_policy();
-    let expiry = policy.record_expiry(doc, now)?;
-    match (doc.issued_at, policy.max_age) {
-        (Some(issued_at), Some(max_age)) => Some(expiry.min(issued_at + max_age + policy.skew)),
-        // Unreachable while `require_issued_at` holds; if that ever changes,
-        // over-retaining is the safe direction to fail in.
-        _ => Some(expiry),
-    }
+    vti_trust_task_server::retain_until(&freshness_policy(), doc, now)
 }
 
 /// Attach this community's Data-Integrity proof to a success response.
@@ -1022,40 +679,7 @@ fn retain_until(
 /// refusing to answer would make an unprovisioned VTC unusable rather than
 /// merely unattributable.
 pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
-    if outcome.body.is_empty() {
-        return outcome;
-    }
-    let Some(signer) = state.credential_signer.clone() else {
-        return outcome;
-    };
-
-    let mut doc: Value = match serde_json::from_slice(&outcome.body) {
-        Ok(d) => d,
-        Err(e) => {
-            // The spine built this document a moment ago, so this cannot happen
-            // without a bug above. Answer unsigned rather than turning a
-            // successful operation into a failure over its envelope.
-            tracing::error!(error = %e, "success response is not JSON; returning it unsigned");
-            return outcome;
-        }
-    };
-    if doc.get("proof").is_some() {
-        return outcome;
-    }
-    if let Err(e) = signer.sign_operational_response(&mut doc).await {
-        tracing::error!(error = %e, "could not sign the response; returning it unsigned");
-        return outcome;
-    }
-    match serde_json::to_vec(&doc) {
-        Ok(body) => TrustTaskOutcome {
-            status: outcome.status,
-            body,
-        },
-        Err(e) => {
-            tracing::error!(error = %e, "could not serialise the signed response");
-            outcome
-        }
-    }
+    vti_trust_task_server::sign_response(response_signer(state), outcome).await
 }
 
 /// Dispatch an approved action's stored document — the requester's own, parked
@@ -2811,16 +2435,8 @@ mod spine_proof_tests {
     }
 }
 
-/// The family of a Trust Task Type URI: everything before its trailing version
-/// segment.
-///
-/// `…/spec/vtc/join-requests/submit/0.2` → `…/spec/vtc/join-requests/submit`.
-/// The version is always the last path segment (SPEC §3.1), so a plain
-/// `rsplit_once('/')` is the whole rule — no version grammar to parse, and a
-/// URI with no `/` simply has no family rather than panicking.
-fn task_family(type_uri: &str) -> Option<&str> {
-    type_uri.rsplit_once('/').map(|(family, _version)| family)
-}
+#[cfg(test)]
+use vti_trust_task_server::reject::task_family;
 
 /// Reject a type URI this dispatcher has no arm for, distinguishing the two
 /// failures that used to wear one code.
@@ -2849,50 +2465,16 @@ fn task_family(type_uri: &str) -> Option<&str> {
 /// through `reject_with_code`'s `bound_details`, because "bounded by
 /// construction" is a property of today's callers rather than of the funnel.
 fn unsupported_type_or_version(doc: &TrustTask<Value>, type_uri: &str) -> TrustTaskOutcome {
-    use trust_tasks_rs::{StandardCode, TrustTaskCode};
-    use vta_sdk::protocols::trust_task_reject_details as details;
-
-    let family = task_family(type_uri);
     // Both halves of what this service serves: the URIs still routed by the
-    // match below, and the ones the rooms dispatcher derives from its
-    // registrations. The second used to be a `const` array copied by hand from
-    // the arms — this reads the routing table itself, so a version hint cannot
+    // match below, and the ones the rooms and git-ns dispatchers derive from
+    // their registrations — the routing table itself, so a version hint cannot
     // name a task nobody serves, nor omit one that is served.
-    let mut served: Vec<&str> = DISPATCHED_URIS
+    let served = DISPATCHED_URIS
         .iter()
         .copied()
         .chain(crate::rooms::handlers::served_uris())
-        .chain(crate::git_ns::tasks::served_uris())
-        .filter(|uri| family.is_some() && task_family(uri) == family)
-        .collect();
-    served.sort_unstable();
-    served.dedup();
-
-    if served.is_empty() {
-        // Message kept byte-identical to the framework's own
-        // `RejectReason::UnsupportedType` rendering so a consumer matching on
-        // it does not break; `details.requestedType` is the same fact
-        // machine-readably, which is the half the framework's shape leaves out.
-        return reject_with_code(
-            doc,
-            TrustTaskCode::Standard(StandardCode::UnsupportedType),
-            format!("unsupported type: {type_uri}"),
-            Some(serde_json::json!({ details::REQUESTED_TYPE: type_uri })),
-        );
-    }
-
-    reject_with_code(
-        doc,
-        TrustTaskCode::Standard(StandardCode::UnsupportedVersion),
-        format!(
-            "unsupported version: {type_uri} — this VTC serves {}",
-            served.join(", ")
-        ),
-        Some(serde_json::json!({
-            details::REQUESTED_TYPE: type_uri,
-            details::SERVED_VERSIONS: served,
-        })),
-    )
+        .chain(crate::git_ns::tasks::served_uris());
+    vti_trust_task_server::reject::unsupported_type_or_version(doc, type_uri, served, "VTC")
 }
 
 /// The Trust Task URIs this dispatcher routes. Kept in lockstep with the
@@ -4803,28 +4385,12 @@ async fn resolve_admin_claims(
     })
 }
 
-/// Validate a payload against its published schema and hand back the
-/// generated type.
-///
-/// The generated `Payload` carries `deny_unknown_fields` and the required set,
-/// and `validate_value` adds what serde cannot see — `const`, `enum`,
-/// `pattern`, `minLength`. The bearer routes get the first half from their
-/// hand-written bodies and the second from nothing at all, so this door is the
-/// stricter of the two.
-fn parse_spec_payload<P>(doc: &TrustTask<Value>) -> Result<P, TrustTaskOutcome>
-where
-    P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
-{
-    if let Err(e) = P::validate_value(&doc.payload) {
-        return Err(reject_with(
-            doc,
-            RejectReason::MalformedRequest {
-                reason: format!("payload: {e}"),
-            },
-        ));
-    }
-    parse_payload::<P>(doc)
-}
+// Validate a payload against its published schema and hand back the generated
+// type (`deny_unknown_fields` and the required set from serde, `const`, `enum`,
+// `pattern`, `minLength` from `validate_value`). The bearer routes got the
+// first half from their hand-written bodies and the second from nothing at all,
+// so this door is the stricter of the two.
+use vti_trust_task_server::typed::parse_spec_payload;
 
 /// `vtc/members/credentials/0.1` — the membership pair's bodies for one member.
 ///

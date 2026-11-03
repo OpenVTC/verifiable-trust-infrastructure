@@ -325,7 +325,7 @@ async fn handle_revoke_finish(
 
 /// `auth/passkey/admin-list/0.1`: an administrator lists one member's step-up
 /// passkeys. The specification declares its proof REQUIRED, and the spine's
-/// policy check (`dispatch_trust_task_validated`, off the published registry)
+/// policy check (`vti_trust_task_server::Spine`, off the published registry)
 /// refuses an unsigned document before this handler runs.
 ///
 /// A signer that does not resolve to an administrator — no ACL row, an

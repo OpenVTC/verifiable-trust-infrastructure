@@ -81,7 +81,7 @@ use std::sync::LazyLock;
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use trust_tasks_rs::{RejectReason, TrustTask};
+use trust_tasks_rs::TrustTask;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -232,38 +232,10 @@ pub(crate) enum Acceptance {
     Conflict,
 }
 
-/// Why a claim could not be decided. Both are refusals; they differ in what
-/// the producer should do about it, which is why they are not one variant.
-#[derive(Debug)]
-pub(crate) enum AcceptedIdsError {
-    /// The document cannot be canonicalised, so it has no content identity to
-    /// key a record by. Not retryable — the document is the problem.
-    NotDigestible(String),
-    /// The record could not be consulted or written. **Fail closed**: a
-    /// consumer that cannot establish whether a document is a duplicate has
-    /// not satisfied item 11, so it must not execute. `unavailable` is
-    /// retryable, which is the truthful signal — the producer's bit-for-bit
-    /// resend is absorbed correctly once the store is back.
-    ///
-    /// Carries no detail on purpose: the store's failure mode is logged at
-    /// `error!` where it arises, and naming it on the wire is the SPEC §10.4
-    /// leak in another costume.
-    Unavailable,
-}
-
-impl AcceptedIdsError {
-    /// The wire refusal for this failure.
-    pub(crate) fn reject_reason(&self) -> RejectReason {
-        match self {
-            Self::NotDigestible(reason) => RejectReason::InternalError {
-                reason: format!(
-                    "cannot canonicalise the document to key its replay record: {reason}"
-                ),
-            },
-            Self::Unavailable => RejectReason::Unavailable { retry_after: None },
-        }
-    }
-}
+/// Why a claim could not be decided — the spine's own vocabulary
+/// (`vti_trust_task_server::accepted`), so the store and the spine refuse the
+/// same way.
+pub(crate) use vti_trust_task_server::AcceptedIdsError;
 
 impl AcceptedIds {
     /// Wrap the accepted-id keyspace.
@@ -432,6 +404,45 @@ impl AcceptedClaim {
         if let Err(e) = self.ids.release(&self.id, &self.digest).await {
             tracing::warn!(error = %e, id = %self.id, "accepted-id record: claim not released");
         }
+    }
+}
+
+/// The spine's view of this record (`vti_trust_task_server::Spine`): the same
+/// claim, mapped onto the spine's vocabulary.
+#[async_trait::async_trait]
+impl vti_trust_task_server::AcceptedIdStore for AcceptedIds {
+    async fn claim(
+        &self,
+        doc: &TrustTask<Value>,
+        retain_until: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> Result<vti_trust_task_server::Acceptance, AcceptedIdsError> {
+        Ok(
+            match AcceptedIds::claim(self, doc, retain_until, now).await? {
+                Acceptance::Fresh(claim) => vti_trust_task_server::Acceptance::Fresh(
+                    vti_trust_task_server::Claim::new(claim),
+                ),
+                Acceptance::Duplicate {
+                    prior_response,
+                    in_flight,
+                } => vti_trust_task_server::Acceptance::Duplicate {
+                    prior_response,
+                    in_flight,
+                },
+                Acceptance::Conflict => vti_trust_task_server::Acceptance::Conflict,
+            },
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl vti_trust_task_server::ClaimSettle for AcceptedClaim {
+    async fn completed(self: Box<Self>, response: Option<&Value>) {
+        AcceptedClaim::completed(*self, response).await;
+    }
+
+    async fn release(self: Box<Self>) {
+        AcceptedClaim::release(*self).await;
     }
 }
 

@@ -12444,6 +12444,7 @@ dependencies = [
  "vti-rooms-dtg",
  "vti-secrets",
  "vti-specs",
+ "vti-trust-task-server",
  "vti-vetting-pcs",
  "vti-voting",
  "vti-voting-service",
@@ -12707,6 +12708,29 @@ version = "0.2.0"
 dependencies = [
  "trust-tasks-build",
  "trust-tasks-rs",
+]
+
+[[package]]
+name = "vti-trust-task-server"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "ed25519-dalek 3.0.0",
+ "http-body-util",
+ "multibase",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer 0.4.1",
+ "tokio",
+ "tower",
+ "tracing",
+ "trust-tasks-https",
+ "trust-tasks-rs",
+ "uuid",
+ "vta-sdk",
+ "vti-common",
 ]
 
 [[package]]

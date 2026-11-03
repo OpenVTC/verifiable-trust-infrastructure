@@ -44,7 +44,6 @@
 //! `parse_capability_reply` reads.
 
 use serde_json::{Value, json};
-use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_specs::governance::capability::{
     disable::v0_1 as disable, enable::v0_1 as enable, list::v0_1 as list,
@@ -52,7 +51,7 @@ use vti_specs::governance::capability::{
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
-    success_response, task_error_to_reject,
+    task_error_to_reject,
 };
 use super::member_tasks::acting_party;
 use super::{JoinAuthCtx, capable_signer, parse_spec_payload};
@@ -84,29 +83,9 @@ pub(super) async fn dispatch(
     })
 }
 
-/// Answer with `body` held to the generated `#response` type and its schema.
-/// A mismatch is this service's fault, so it is an `internalError`, never a
-/// reply that claims a schema it does not satisfy.
-fn respond<R>(doc: &TrustTask<Value>, body: Value) -> TrustTaskOutcome
-where
-    R: serde::de::DeserializeOwned + serde::Serialize + ValidatedPayload,
-{
-    let checked = R::validate_value(&body)
-        .map_err(|e| e.to_string())
-        .and_then(|()| serde_json::from_value::<R>(body).map_err(|e| e.to_string()));
-    match checked {
-        Ok(response) => success_response(doc, response),
-        Err(e) => {
-            tracing::error!(task = %doc.type_uri, error = %e, "response does not match its published schema");
-            reject_with(
-                doc,
-                RejectReason::InternalError {
-                    reason: format!("response does not match its published schema: {e}"),
-                },
-            )
-        }
-    }
-}
+// Answer with `body` held to the generated `#response` type and its schema
+// (an `internalError` when it is not: the mismatch is this service's fault).
+use vti_trust_task_server::typed::respond;
 
 fn refuse(doc: &TrustTask<Value>, e: ModuleError) -> TrustTaskOutcome {
     let declared =
