@@ -358,8 +358,8 @@ pub(super) async fn handle_deposit(
         Err(e) => return invalid(e.to_string()),
     };
     let now = chrono::Utc::now();
-    let first_seen = match super::admit_carried_document(&inner, now).await {
-        Ok(first) => first,
+    let first_seen = match super::admit_carried_document(state, &inner, now).await {
+        Ok(claim) => claim,
         Err(RejectReason::Unavailable { retry_after }) => {
             return reject_with(&doc, RejectReason::Unavailable { retry_after });
         }
@@ -370,12 +370,15 @@ pub(super) async fn handle_deposit(
     let revision = delivery.notification().revision.get();
     // A repeat of a document already accepted is answered as the original was: nothing to do
     // (retry class 2), and the receipt says nothing either way (VTI-NTF-023).
-    if first_seen {
+    if let Some(claim) = first_seen {
         // Consumer items 4 and 5: the same policy and the same one record a direct delivery
         // meets. `receive` reads the delivery alone, so the depositing client is never the
         // relationship counted.
         match engine::receive(state, &delivery, now).await {
             Ok(disposition) => {
+                // The receipt is the same for every disposition (VTI-NTF-023), so the record
+                // keeps no response: a repeat is answered by this handler, not from it.
+                claim.completed(None).await;
                 audit(
                     state,
                     "notifications.deposit",
@@ -394,7 +397,7 @@ pub(super) async fn handle_deposit(
             Err(e) => {
                 // Nothing was held: a corrected resend of the same document must not meet a
                 // spent identifier.
-                super::release_carried_document(&inner).await;
+                claim.release().await;
                 return app_error_to_reject(&doc, e);
             }
         }

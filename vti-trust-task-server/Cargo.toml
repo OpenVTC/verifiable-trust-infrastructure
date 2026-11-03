@@ -20,6 +20,8 @@ serde_json_canonicalizer = { workspace = true }
 tracing = { workspace = true }
 trust-tasks-https = { workspace = true }
 trust-tasks-rs = { workspace = true }
+# The durable accepted-id record's per-id stripe locks (`accepted_store`).
+tokio = { workspace = true, features = ["sync"] }
 uuid = { workspace = true }
 # The proof verifier (`trust_task_proof`) and the shared reject vocabulary
 # (`protocols::trust_task_reject_reasons` / `_details`).
@@ -30,6 +32,7 @@ vta-sdk = { path = "../vta-sdk", version = "0.79", default-features = false, fea
 vti-common = { path = "../vti-common", version = "0.55" }
 
 [dev-dependencies]
+tempfile = "3"
 ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

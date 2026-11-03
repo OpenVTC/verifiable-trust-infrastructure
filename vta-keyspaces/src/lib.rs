@@ -272,6 +272,19 @@ pub const TRUST_TASK_PUSHES: &str = "trust_task_pushes";
 /// `vta_sweepers::idempotency_sweeper`. Runtime state, not backed up.
 pub const IDEMPOTENCY: &str = "idempotency";
 
+/// The record of accepted Trust Task document identifiers (VTI-OPS-025 … 027,
+/// SPEC §7.2 item 11): one row per document `id` accepted for execution,
+/// `accepted:<id>`, holding the digest of the document accepted under it, the
+/// instant the row may be dropped (the end of that document's acceptance
+/// window) and, for a task whose response may be replayed, that response.
+///
+/// Persistent rather than in-memory because the acceptance window outlives a
+/// restart: a document accepted a minute before one is still acceptable after
+/// it, and must still be refused. Shared by every binding (VTI-OPS-027).
+/// Swept on its deadline (`vti_trust_task_server::accepted_store::sweep_expired`).
+/// Runtime state, not backed up.
+pub const ACCEPTED_IDS: &str = "accepted_ids";
+
 /// Durable TSP relationship state, backing the SDK's `RelationshipStore` for the
 /// TSP transport. One record per facet per `(our_vid, their_vid)` pair — the
 /// relationship FSM state, thread digests, reply path and learned capability.
@@ -384,6 +397,7 @@ pub const ALL: &[&str] = &[
     OUTBOX,
     TRUST_TASK_PUSHES,
     IDEMPOTENCY,
+    ACCEPTED_IDS,
     RELATIONSHIPS,
     EXTERNAL_ACCOUNTS,
     EXTERNAL_SECRETS,
@@ -494,6 +508,12 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // request — restoring one elsewhere would claim to have already performed
     // operations that instance never did.
     IDEMPOTENCY,
+    // The accepted-document-id record. Its horizon is the acceptance window —
+    // minutes — so a restored row is all but certainly expired, and an expired
+    // row refuses nothing. It is execution bookkeeping of the VTA that did the
+    // executing, and it holds recorded task responses, which a backup's scope
+    // (the agent's durable state) does not take.
+    ACCEPTED_IDS,
     // TSP relationship state: durable across a restart, but re-establishable by
     // a re-handshake (design note D2/D3) and scoped to this VTA's DIDs — so a
     // restore re-drives it, like [`SESSIONS`], rather than carrying it.
@@ -736,6 +756,11 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         b"audit" | b"audit_key" => Unrelated,
         b"did_templates" | b"sealed_nonces" | b"backup_bundles" => Unrelated,
         b"drains" | b"bootstrap" | b"idempotency" => Unrelated,
+        // Keyed by Trust Task document `id`, and gone within the document's
+        // acceptance window. Cascading would hand a deleted DID's accepted ids
+        // back while their documents can still arrive — the replay the record
+        // exists to refuse.
+        b"accepted_ids" => Unrelated,
         // Keyed by account, never by DID; the account row carries the bindings.
         b"external_secrets" => Unrelated,
 

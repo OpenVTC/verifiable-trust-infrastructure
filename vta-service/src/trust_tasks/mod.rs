@@ -151,6 +151,7 @@ use helpers::{body_parse_error_response, method_not_found, reject_with};
 // the didcomm path — keep the import ungated (previously `#[cfg(feature =
 // "didcomm")]`, which broke `--features rest` without `didcomm`).
 use trust_tasks_rs::RejectReason;
+use vti_trust_task_server::Acceptance;
 
 /// URIs that the VTA exposes through dedicated unauth REST routes
 /// rather than the authenticated `/api/trust-tasks` dispatcher.
@@ -1562,7 +1563,7 @@ async fn dispatch_trust_task_inner(
 /// |---|---|---|
 /// | `received` | the transport hands bytes to the spine | nothing |
 /// | `validated` | `validate_freshness` → `validate_basic` → payload schema | nothing, or a `trust-task-error` |
-/// | `accepted` | the `ReplayGuard` claim succeeds (`Fresh`) | nothing |
+/// | `accepted` | the accepted-id claim succeeds (`Fresh`) | nothing |
 /// | `executing` | the handler runs | nothing |
 /// | `responded` | `success_response` | `<type>#response` |
 /// | `errored` | `reject_with` | `trust-task-error` |
@@ -1610,7 +1611,7 @@ mod lifecycle_mapping {}
 /// # Why a window at all
 ///
 /// #1126 shipped this without one, leaving the record bounded by
-/// [`InMemoryReplayGuard`]'s capacity. That is not "no expiry so entries live
+/// `trust_tasks_rs::InMemoryReplayGuard`'s capacity. That is not "no expiry so entries live
 /// forever" — it is LRU, which makes the window **load-dependent**: quiet
 /// service, effectively unbounded protection; busy service, an eviction horizon
 /// that can fall *below* any sensible acceptance window, so a replay arriving
@@ -1694,10 +1695,9 @@ pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
 ///
 /// `FreshnessPolicy::record_expiry` takes a producer-supplied `expiresAt`
 /// **verbatim**, so a document stamped `expiresAt = now + 10 years` would pin
-/// its `id` in [`REPLAY_GUARD`] for ten years — an entry held long past the
-/// last moment it could be needed, crowding out the records that are, and
-/// re-introducing the load-dependent eviction horizon [`freshness_policy`]
-/// exists to close.
+/// its `id` in the accepted-id record for ten years — a stored row held long
+/// past the last moment it could be needed, and the producer, not this node,
+/// deciding how long this node must keep it.
 ///
 /// `require_issued_at` above makes the cap provable: `validate_freshness` has
 /// already refused any document without an `issuedAt`, and will refuse this
@@ -1722,15 +1722,6 @@ fn retain_until(
     }
 }
 
-/// The duplicate-execution record of SPEC §7.2 item 11.
-///
-/// In-memory and process-local, which is what the retired module was too.
-/// Cross-restart replay is not the threat model: a document old enough to
-/// outlive a restart is refused by the freshness bound above, and the two
-/// bounds are the same bound.
-static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
-    std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
-
 /// Apply this node's own §7.2 receipt checks to a document **carried** to it rather than sent
 /// to it — a notification a client deposits (`vta/notifications/deposit/0.1`, VTI-NTF-055):
 /// the acceptance window, `expiresAt`, and the record of accepted document identifiers
@@ -1738,52 +1729,35 @@ static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
 /// hand-over. The caller has already established that the document is addressed to a DID this
 /// VTA holds keys of; its `recipient` is not compared with the VTA's own DID.
 ///
-/// `Ok(true)`: first seen, and its identifier is now recorded in the same guard direct
-/// deliveries are. `Ok(false)`: a repeat of a document already accepted — answered as the
-/// original was, never refused (§7.2 *Disposition of a duplicate*). A *different* document
-/// under an accepted identifier is `IdConflict`.
+/// `Ok(Some(claim))`: first seen, and its identifier is now claimed in the same record direct
+/// deliveries are; the caller completes the claim once the document is held, or releases it
+/// when the hand-over failed for a reason the producer may correct and resend. `Ok(None)`: a
+/// repeat of a document already accepted — answered as the original was, never refused (§7.2
+/// *Disposition of a duplicate*). A *different* document under an accepted identifier is
+/// `IdConflict`.
 pub(crate) async fn admit_carried_document(
+    state: &AppState,
     doc: &TrustTask<Value>,
     now: chrono::DateTime<chrono::Utc>,
-) -> Result<bool, RejectReason> {
+) -> Result<Option<vti_trust_task_server::Claim>, RejectReason> {
     doc.validate_freshness(now, &freshness_policy())?;
     if let Some(recipient) = doc.recipient.as_deref() {
         doc.validate_basic(now, recipient)?;
     }
-    let digest =
-        trust_tasks_rs::document_digest(doc).map_err(|e| RejectReason::MalformedRequest {
-            reason: format!("cannot canonicalise the carried document: {e}"),
-        })?;
-    match trust_tasks_rs::ReplayGuard::claim(
-        &*REPLAY_GUARD,
-        &doc.id,
-        &digest,
-        retain_until(doc, now),
-        now,
-    )
-    .await
+    match state
+        .accepted_ids()
+        .claim(doc, retain_until(doc, now), now)
+        .await
     {
-        Ok(trust_tasks_rs::ReplayVerdict::Fresh) => Ok(true),
-        Ok(trust_tasks_rs::ReplayVerdict::Duplicate { .. }) => Ok(false),
-        Ok(trust_tasks_rs::ReplayVerdict::Conflict) => Err(RejectReason::IdConflict),
-        Err(e) => {
-            tracing::error!(error = %e, id = %doc.id, "replay guard unavailable");
-            Err(RejectReason::Unavailable { retry_after: None })
+        Ok(Acceptance::Fresh(claim)) => Ok(Some(claim)),
+        Ok(Acceptance::Duplicate { .. }) => Ok(None),
+        Ok(Acceptance::Conflict) => Err(RejectReason::IdConflict),
+        Err(vti_trust_task_server::AcceptedIdsError::NotDigestible(e)) => {
+            Err(RejectReason::MalformedRequest {
+                reason: format!("cannot canonicalise the carried document: {e}"),
+            })
         }
-        Ok(other) => {
-            tracing::error!(verdict = ?other, id = %doc.id, "replay guard verdict unknown");
-            Err(RejectReason::Unavailable { retry_after: None })
-        }
-    }
-}
-
-/// Release a claim [`admit_carried_document`] took, when the hand-over failed after it for a
-/// reason the producer may correct and resend.
-pub(crate) async fn release_carried_document(doc: &TrustTask<Value>) {
-    if let Ok(digest) = trust_tasks_rs::document_digest(doc)
-        && let Err(e) = trust_tasks_rs::ReplayGuard::release(&*REPLAY_GUARD, &doc.id, &digest).await
-    {
-        tracing::warn!(error = %e, id = %doc.id, "replay guard: carried claim not released");
+        Err(e) => Err(e.reject_reason()),
     }
 }
 
@@ -1851,28 +1825,26 @@ async fn dispatch_trust_task_validated(
     // runs, so a crash between claiming and the effect landing leaves a retry
     // refused rather than double-applied — the safe direction for a mutating
     // task.
-    // Kept because `doc` is moved into dispatch below, and closing out the
-    // claim afterwards needs the key it was taken under.
-    let doc_id = doc.id.clone();
-    let digest = match trust_tasks_rs::document_digest(&doc) {
-        Ok(d) => d,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::InternalError {
-                    reason: format!(
-                        "cannot canonicalise the document to key its replay record: {e}"
-                    ),
-                },
-            );
-        }
-    };
-    let retain_until = retain_until(&doc, now);
-    match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc.id, &digest, retain_until, now)
+    // Record-before-dispatch is preserved: the claim happens before the handler
+    // runs, so a crash between claiming and the effect landing leaves a retry
+    // answered as a duplicate rather than double-applied — the safe direction
+    // for a mutating task.
+    //
+    // The record is in the store (`AppState::accepted_ids`), not a process-local
+    // map. VTI-OPS-026 bounds it by the acceptance window, and a restart falls
+    // inside that window as readily as anything else does: a document accepted
+    // a minute before a restart was still acceptable after it, and with the
+    // in-memory guard this replaced its replay executed a second time. A map is
+    // also capacity-evicted, so a burst of distinct documents could push a live
+    // record out before its deadline. VTI-OPS-027 requires one record across
+    // every binding; all three transports reach it through here.
+    let claim = match state
+        .accepted_ids()
+        .claim(&doc, retain_until(&doc, now), now)
         .await
     {
-        Ok(trust_tasks_rs::ReplayVerdict::Fresh) => {}
-        Ok(trust_tasks_rs::ReplayVerdict::Duplicate {
+        Ok(Acceptance::Fresh(claim)) => claim,
+        Ok(Acceptance::Duplicate {
             prior_response,
             in_flight,
         }) => {
@@ -1907,9 +1879,9 @@ async fn dispatch_trust_task_validated(
                     body: Vec::new(),
                     restart: false,
                 },
-                // Fire-and-forget: the specification defines no success
-                // response, so silence is the correct disposition. Never
-                // `taskFailed` — the task did not fail, it already happened.
+                // Fire-and-forget, or a response this service does not keep:
+                // silence is the correct disposition. Never `taskFailed` — the
+                // task did not fail, it already happened.
                 None => TrustTaskOutcome {
                     status: axum::http::StatusCode::NO_CONTENT,
                     body: Vec::new(),
@@ -1917,51 +1889,62 @@ async fn dispatch_trust_task_validated(
                 },
             };
         }
-        Ok(trust_tasks_rs::ReplayVerdict::Conflict) => {
+        Ok(Acceptance::Conflict) => {
             return reject_with(&doc, RejectReason::IdConflict);
         }
         // Fail closed. A consumer that cannot establish whether a document is
-        // a duplicate has not satisfied item 11, so it must not execute — and
-        // `unavailable` is retryable, which is the truthful signal: the
-        // producer should resend the identical document rather than treat this
-        // as a permanent refusal.
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::Unavailable {
-                    // No `retryAfter`: the guard is in-process, so there is no
-                    // outage window to quote. The code alone already says
-                    // "retryable", and inventing a deadline would be a guess
-                    // the producer would act on.
-                    retry_after: {
-                        tracing::error!(error = %e, id = %doc.id, "replay guard unavailable");
-                        None
-                    },
-                },
-            );
-        }
-        // `ReplayVerdict` is `#[non_exhaustive]`. A verdict this build does not
-        // know is refused rather than executed: every variant the enum has
-        // gained so far is a reason *not* to run the task, and guessing the
-        // permissive way on an unknown one is how a duplicate-execution defence
-        // stops defending.
-        Ok(other) => {
-            return reject_with(
-                &doc,
-                RejectReason::Unavailable {
-                    retry_after: {
-                        tracing::error!(
-                            verdict = ?other,
-                            id = %doc.id,
-                            "replay guard returned a verdict this build does not know",
-                        );
-                        None
-                    },
-                },
-            );
-        }
+        // a duplicate has not satisfied item 11, so it must not execute.
+        // `unavailable` (retryable, no `retryAfter` — there is no outage window
+        // to quote) when the record could not be read or written; the document
+        // itself is the problem when it cannot be canonicalised.
+        Err(e) => return reject_with(&doc, e.reject_reason()),
+    };
+
+    let type_uri = doc.type_uri.for_routing().to_string();
+    let outcome = dispatch_claimed(state, auth, doc).await;
+
+    // Close out the claim, on **every** path out of `dispatch_claimed` — the
+    // reason it is a function of its own. Before it was, a document refused
+    // after the claim (schema, spec policy, proof, idempotency) returned early
+    // and left its `id` spent as "in flight" for the rest of the window, so a
+    // corrected resend under the same `id` was answered `202` and never ran.
+    //
+    // - **Succeeded** → record the response, so a §8.4 retry is *answered with
+    //   the result* rather than absorbed in silence.
+    // - **Failed** → release the claim: the effect never happened, and a
+    //   corrected resend under the same `id` must be allowed to run.
+    if outcome.status.is_success() {
+        // A response that discloses a secret (a key's private half, the sealed
+        // root mnemonic) is never kept: the record would hold it in the store
+        // for the whole retention window and hand it to whoever presents the
+        // same document again. A duplicate of such a task is absorbed with no
+        // body instead. The effect still happened once and the claim still
+        // stands, so §7.2 item 11 holds. A member's personal label is not kept
+        // either ([`carries_personal_text`]).
+        let discloses_secret = class_for(&type_uri)
+            .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
+        let recorded = if discloses_secret || carries_personal_text(&type_uri) {
+            None
+        } else {
+            serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
+        };
+        claim.completed(recorded.as_ref()).await;
+    } else {
+        claim.release().await;
     }
 
+    outcome
+}
+
+/// Everything after the §7.2 item 11 claim: the session binding, payload and
+/// spec-policy checks, proof verification, idempotency, the policy gate and
+/// typed dispatch. Its caller settles the claim on whatever this returns, so an
+/// early return here is never a spent `id`.
+async fn dispatch_claimed(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
     // 3. Session-pubkey binding pre-check.
     //
     // Once `AuthClaims` carries `session_pubkey_b58btc` (Phase 3 work,
@@ -2144,8 +2127,8 @@ async fn dispatch_trust_task_validated(
     // concurrent attempts safe: `insert_if_absent` is atomic, so one proceeds
     // and the other is told to wait rather than both passing a check.
     //
-    // This is the layer `replay` (2b above) cannot be. That one keys on the
-    // envelope id and so only catches a byte-identical resubmission; every SDK
+    // This is the layer the accepted-id record (2b, in the caller) cannot be.
+    // That one keys on the document id and so only catches the same document; every SDK
     // path mints a fresh `urn:uuid:` per attempt, so a genuine retry sails past
     // it. The key here is stable across attempts of the same logical operation.
     let idem_claim = match idempotency::claim(&state.idempotency_ks, &auth.did, &doc).await {
@@ -2191,46 +2174,6 @@ async fn dispatch_trust_task_validated(
     // allowed to actually run.
     if let Some((key, safety)) = idem_claim {
         idempotency::record_outcome(&state.idempotency_ks, &auth.did, &key, safety, &outcome).await;
-    }
-
-    // Close out the §7.2 item 11 claim taken at 2b. The same two dispositions
-    // as the idempotency layer above, for the same reason:
-    //
-    // - **Succeeded** → record the response, so a §8.4 retry is *answered with
-    //   the result* rather than absorbed in silence. Without this the guard
-    //   still prevents the second execution, but every legitimate retry gets
-    //   nothing back, which is the outcome §7.2 (*Disposition of a duplicate*)
-    //   asks a consumer to avoid where it defines a success response.
-    // - **Failed** → release the claim. A document refused downstream of the
-    //   claim would otherwise burn its `id`, and a corrected resend under the
-    //   same `id` would come back `idConflict` forever.
-    {
-        let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
-        if outcome.status.is_success() {
-            // A response that discloses a secret (a key's private half, the
-            // sealed root mnemonic) is never kept: the record would hold it in
-            // memory for the whole retention window and hand it to whoever
-            // presents the same document again. A duplicate of such a task is
-            // absorbed with no body instead. The effect still happened once
-            // and the claim still stands, so §7.2 item 11 holds. A member's
-            // personal label is not kept either ([`carries_personal_text`]).
-            let discloses_secret = class_for(&type_uri)
-                .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
-            let recorded = if discloses_secret || carries_personal_text(&type_uri) {
-                None
-            } else {
-                serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
-            };
-            if let Err(e) = guard.record_response(&doc_id, recorded.as_ref()).await {
-                // Not fatal: the effect happened and the claim stands, so item
-                // 11 still holds. Only the *courtesy* of answering a retry with
-                // the result is lost, and saying so beats failing a completed
-                // task.
-                tracing::warn!(error = %e, id = %doc_id, "replay guard: response not recorded");
-            }
-        } else if let Err(e) = guard.release(&doc_id, &digest).await {
-            tracing::warn!(error = %e, id = %doc_id, "replay guard: claim not released");
-        }
     }
 
     outcome
@@ -4641,6 +4584,20 @@ mod record_retention {
         serde_json::from_value(v).expect("a document")
     }
 
+    /// The retention the accepted-id record applies when a caller bounds
+    /// nothing must not be shorter than the window this VTA accepts a document
+    /// in — a record dropped while its document is still executable is a replay
+    /// that executes twice.
+    #[test]
+    fn the_records_fallback_retention_covers_the_acceptance_window() {
+        let policy = freshness_policy();
+        let window = policy.max_age.expect("the window is set") + policy.skew;
+        assert!(
+            chrono::TimeDelta::seconds(vti_trust_task_server::FALLBACK_RETENTION_SECS) >= window,
+            "FALLBACK_RETENTION_SECS must cover freshness_policy()'s window"
+        );
+    }
+
     /// A far-future `expiresAt` is the producer's to choose, and
     /// `record_expiry` returns it verbatim. The guard must not hold the record
     /// past the last instant the document could come back.
@@ -4761,10 +4718,10 @@ mod replay_guard {
              already happened"
         );
         // Answered with the first execution's result, not merely absorbed:
-        // that is what `record_response` buys, and what a §8.4 retry needs.
+        // that is what completing the claim with the response buys, and what a §8.4 retry needs.
         //
-        // Compared as documents, not as bytes. `ReplayGuard::record_response`
-        // takes an `Option<&Value>`, so a recorded response makes a round trip
+        // Compared as documents, not as bytes. `Claim::completed` takes an
+        // `Option<&Value>`, so a recorded response makes a round trip
         // through `serde_json::Value` and comes back with its object keys in
         // alphabetical order rather than the handler's insertion order. The
         // spine keeps `TrustTaskOutcome.body` as raw bytes precisely to avoid
@@ -4774,7 +4731,7 @@ mod replay_guard {
         // re-ordered document verifies identically.
         //
         // And compared **without the proof**, which is the part that made this
-        // test flaky: `record_response` is called inside
+        // test flaky: the claim is completed inside
         // `dispatch_trust_task_inner`, while `sign_response` runs in the
         // outer `dispatch_trust_task` — so the guard caches the *unsigned*
         // response and every delivery, first or duplicate, is signed afresh on

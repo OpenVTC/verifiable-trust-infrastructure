@@ -312,14 +312,18 @@ window from `AcceptanceWindow` rather than from two constants.
 | Wire `retryAfter` → typed error | `VtaError::Unavailable` |
 | Store (shared with the VTC's HTTP path) | `vti-common/src/idempotency/` |
 | Dispatch policy | `vta-service/src/trust_tasks/idempotency.rs` |
-| Envelope-id replay dedup (the *other* layer) | `vta-service/src/trust_tasks/replay.rs` |
+| Accepted-document-id record (the *other* layer) | `vti-trust-task-server/src/accepted_store.rs` (`StoreAcceptedIds`, keyspace `accepted_ids`), claimed in `vta-service/src/trust_tasks/mod.rs` |
 | TTL sweep | `vta-sweepers/src/idempotency_sweeper.rs` |
 | Acceptance tests | `vta-service/tests/it/idempotency_trust_task.rs` |
 
 ### The two dedup layers are not the same thing
 
-`replay.rs` keys on `(actor, envelope-id)` and refuses a byte-identical
-resubmission — the cross-transport fallback case. It **cannot** catch a genuine
-retry, because every dispatch mints a fresh envelope id. `idempotency.rs` keys on
+The accepted-document-id record (SPEC §7.2 item 11, VTI-OPS-025 … 027) keys on
+the document `id` alone and compares digests: the same document again is a
+duplicate, answered with the first result; a different document under that `id`
+is `idConflict`. It is in the store, shared with the VTC's implementation, so it
+survives a restart and every binding consults one record; its rows live for the
+document's acceptance window. It **cannot** catch a genuine retry, because every
+dispatch mints a fresh document `id`. `idempotency.rs` keys on
 `(actor, idempotency-key)`, which is stable across attempts of one operation.
 Both stay; they answer different questions.
