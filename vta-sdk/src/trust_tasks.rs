@@ -2979,6 +2979,8 @@ mod tests {
             // them, which any custodian could serve, not a VTA-specific
             // operation.
             "https://trusttasks.org/spec/external/",
+            // An originator's notification and a relayer's relay of it (VTI-NTF-001 – 046).
+            "https://trusttasks.org/spec/notifications/",
         ];
         for uri in ALL_URIS {
             assert!(

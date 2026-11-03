@@ -83,22 +83,29 @@ async fn handle_delivery(state: &AppState, doc: TrustTask<Value>, relay: bool) -
     let revision = delivery.notification().revision.get();
     match engine::receive(state, &delivery, chrono::Utc::now()).await {
         Ok(disposition) => {
-            if let Disposition::Held { record_id } | Disposition::Replaced { record_id } =
-                &disposition
-            {
-                audit(
-                    state,
-                    "notifications.receive",
-                    delivery.delivered_by(),
-                    None,
-                    &format!(
-                        "record {record_id}, kind {}, originator {}",
-                        delivery.notification().kind.as_str(),
-                        delivery.originator()
-                    ),
-                )
-                .await;
-            }
+            // Every verified delivery leaves a trail here, whatever the policy decided: the
+            // audit log is this VTA's own, never part of the answer (VTI-NTF-023).
+            let outcome = match &disposition {
+                Disposition::Held { record_id } => format!("held as {record_id}"),
+                Disposition::Replaced { record_id } => format!("replaced {record_id}"),
+                Disposition::Unchanged => "unchanged (revision already held)".into(),
+                Disposition::Lapsed => "discarded (period ended)".into(),
+                Disposition::NotHeldHere => "discarded (not addressed to a DID held here)".into(),
+                Disposition::Declined => "declined (no relationship with the deliverer)".into(),
+                Disposition::OverBound => "declined (bound reached)".into(),
+            };
+            audit(
+                state,
+                "notifications.receive",
+                delivery.delivered_by(),
+                None,
+                &format!(
+                    "{outcome}; kind {}, originator {}",
+                    delivery.notification().kind.as_str(),
+                    delivery.originator()
+                ),
+            )
+            .await;
             tracing::debug!(?disposition, relay, "notification received");
         }
         Err(e) => return app_error_to_reject(&doc, e),

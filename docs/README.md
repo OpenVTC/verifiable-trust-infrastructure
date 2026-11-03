@@ -71,6 +71,7 @@ VTA via the `vtc-host` DID template.
 | Run a ballot box for community polls and elections | [The voting service](07-voting/README.md) |
 | Run a poll or election in a community | [Community elections](03-vtc/elections.md) |
 | Get a relationship witnessed, as a principal whose keys a VTA holds | [The VTA as a witnessed party](02-vta/witness-party.md) |
+| Receive, list and relay notifications (an election put to a member party) | [Notifications](02-vta/notifications.md) |
 | Look up a BIP-32 path | [BIP-32 paths](04-reference/bip32-paths.md) |
 | Read the threat model | [Security model](01-concepts/security-model.md) |
 

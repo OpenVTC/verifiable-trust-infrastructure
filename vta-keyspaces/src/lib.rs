@@ -690,6 +690,9 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // A witnessed session in flight is the relationship DID's: it can be
         // neither presented nor accepted once that DID's key is gone.
         b"witness_sessions" => Cascade,
+        // A held notification was addressed to the DID: with it gone nobody can be the
+        // notification's addressee, and the record says what its holder belonged to.
+        b"notifications" => Cascade,
 
         // Persona is two scopes in one keyspace and only one half is DID-keyed,
         // which the per-keyspace enum cannot say — so it is said here. The

@@ -402,3 +402,20 @@ async fn vti_ntf_052_dismissal_hides_without_discarding() {
     assert_eq!(all["items"][0]["state"], "dismissed");
     assert!(all["items"][0]["dismissedAt"].is_string());
 }
+
+/// `vta/notifications/dismiss:notificationUnknown`: a record this VTA holds nowhere, or in
+/// another context, is the declared refusal.
+#[tokio::test]
+async fn vti_ntf_052_dismissing_an_unknown_record_is_notification_unknown() {
+    let (state, _dir, _member) = state().await;
+    let out = handle_dismiss(
+        &state,
+        &admin_claims_for_context(CTX),
+        task(
+            uris::TASK_VTA_NOTIFICATIONS_DISMISS_0_1,
+            json!({ "contextId": CTX, "recordId": "hn-0000000000000000" }),
+        ),
+    )
+    .await;
+    assert_eq!(code(&out), "vta/notifications/dismiss:notificationUnknown");
+}

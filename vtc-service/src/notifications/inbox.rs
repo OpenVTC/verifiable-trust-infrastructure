@@ -114,7 +114,7 @@ pub async fn list(state: &AppState) -> Result<Vec<ReceivedNotification>, AppErro
         .into_iter()
         .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
         .collect();
-    out.sort_by(|a, b| b.received_at.cmp(&a.received_at));
+    out.sort_by_key(|r| std::cmp::Reverse(r.received_at));
     Ok(out)
 }
 
@@ -437,4 +437,214 @@ pub fn spawn(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acl::{AdminAuthority, VtcAclEntry, VtcRole};
+    use trust_tasks_rs::TrustTask;
+    use vta_sdk::provision_client::EphemeralSetupKey;
+    use vta_sdk::trust_task_sign::{HolderKey, sign_in_place_with};
+    use vta_sdk::trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1;
+
+    struct Party {
+        did: String,
+        key: HolderKey,
+    }
+
+    fn party() -> Party {
+        let k = EphemeralSetupKey::generate().unwrap();
+        Party {
+            key: HolderKey::from_did_key(&k.did, k.private_key_multibase()).unwrap(),
+            did: k.did,
+        }
+    }
+
+    async fn signed(from: &Party, to: &str, type_uri: &str, payload: Value) -> Value {
+        let mut doc: TrustTask<Value> = serde_json::from_value(json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": type_uri,
+            "issuer": from.did,
+            "recipient": to,
+            "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": payload,
+        }))
+        .unwrap();
+        sign_in_place_with(&mut doc, &from.key).await.unwrap();
+        serde_json::to_value(&doc).unwrap()
+    }
+
+    fn notification(
+        id: &str,
+        revision: u64,
+        status: &str,
+        relayable: bool,
+        held_by: &str,
+    ) -> Value {
+        json!({ "notification": {
+            "notificationId": id,
+            "revision": revision,
+            "kind": "election",
+            "subject": {
+                "heldBy": held_by,
+                "id": "board-2027",
+                "openWith": vta_sdk::notifications::ELECTION_OPEN_WITH,
+            },
+            "audience": held_by,
+            "status": status,
+            "relayable": relayable,
+            "validUntil": (Utc::now() + chrono::Duration::days(7))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        }})
+    }
+
+    async fn vtc(own: &Party) -> crate::test_support::TestVtc {
+        crate::test_support::TestVtc::builder()
+            .vtc_did(own.did.clone())
+            .build()
+            .await
+    }
+
+    async fn admit_acl(state: &AppState, did: &str) {
+        let entry = VtcAclEntry::new(did, VtcRole::Member, AdminAuthority::none(), "test");
+        crate::acl::storage::store_acl_entry(&state.acl_ks, &entry)
+            .await
+            .unwrap();
+    }
+
+    async fn deliver(state: &AppState, doc: &Value) -> Disposition {
+        let delivery = vta_sdk::notifications::verify_delivery(
+            doc,
+            &vti_common::auth::TrustTaskVmResolver::did_key_only(),
+        )
+        .await
+        .expect("verifies");
+        receive(state, &delivery, Utc::now()).await.unwrap()
+    }
+
+    /// VTI-NTF-030: the community holds a notification only from a party with standing here,
+    /// and VTI-NTF-022: one record per originator and notificationId, a higher revision
+    /// replacing it.
+    #[tokio::test]
+    async fn vti_ntf_030_the_community_holds_only_from_a_party_with_standing() {
+        let own = party();
+        let tv = vtc(&own).await;
+        let originator = party();
+        let stranger = party();
+        let n = |rev, status| notification("n1", rev, status, true, &originator.did);
+
+        let from_stranger = signed(
+            &stranger,
+            &own.did,
+            TASK_NOTIFICATIONS_NOTIFY_0_1,
+            n(1, "available"),
+        )
+        .await;
+        assert_eq!(
+            deliver(&tv.state, &from_stranger).await,
+            Disposition::Declined
+        );
+
+        admit_acl(&tv.state, &originator.did).await;
+        let first = signed(
+            &originator,
+            &own.did,
+            TASK_NOTIFICATIONS_NOTIFY_0_1,
+            n(1, "available"),
+        )
+        .await;
+        assert!(matches!(
+            deliver(&tv.state, &first).await,
+            Disposition::Held { .. }
+        ));
+        assert_eq!(deliver(&tv.state, &first).await, Disposition::Unchanged);
+        let second = signed(
+            &originator,
+            &own.did,
+            TASK_NOTIFICATIONS_NOTIFY_0_1,
+            n(2, "withdrawn"),
+        )
+        .await;
+        assert!(matches!(
+            deliver(&tv.state, &second).await,
+            Disposition::Replaced { .. }
+        ));
+
+        let held = list(&tv.state).await.unwrap();
+        assert_eq!(held.len(), 1);
+        assert!(held[0].withdrawn);
+        assert_eq!(held[0].document, second, "kept exactly as received");
+    }
+
+    /// VTI-NTF-046 / VTI-NTF-041 / VTI-NTF-044: a relay is refused until whoever decides it has
+    /// been shown what it discloses, never made of a notification that may not be relayed, and
+    /// once decided records whom it goes to — every member but the party that delivered it.
+    #[tokio::test]
+    async fn vti_ntf_046_a_relay_is_decided_only_after_the_disclosure_is_shown() {
+        let own = party();
+        let tv = vtc(&own).await;
+        let originator = party();
+        admit_acl(&tv.state, &originator.did).await;
+        let member = party();
+        let m: crate::members::Member = serde_json::from_value(json!({
+            "did": member.did, "joinedAt": Utc::now().to_rfc3339(),
+        }))
+        .unwrap();
+        crate::members::storage::store_member(&tv.state.members_ks, &m)
+            .await
+            .unwrap();
+
+        let relayable = signed(
+            &originator,
+            &own.did,
+            TASK_NOTIFICATIONS_NOTIFY_0_1,
+            notification("r1", 1, "available", true, &originator.did),
+        )
+        .await;
+        let Disposition::Held { record_id } = deliver(&tv.state, &relayable).await else {
+            panic!("held");
+        };
+        match relay_to_members(&tv.state, &record_id, "did:key:admin", false, Utc::now()).await {
+            Err(RelayError::DisclosureNotShown(statement)) => {
+                assert!(statement.contains("member of the community"));
+            }
+            other => panic!("expected the disclosure first, got {other:?}"),
+        }
+        assert!(
+            get(&tv.state, &record_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .relayed_to
+                .is_empty()
+        );
+
+        // Decided: the members are recorded before anything is queued.
+        let _ = relay_to_members(&tv.state, &record_id, "did:key:admin", true, Utc::now()).await;
+        let rec = get(&tv.state, &record_id).await.unwrap().unwrap();
+        assert_eq!(rec.relay_decided_by.as_deref(), Some("did:key:admin"));
+        assert_eq!(
+            rec.relayed_to
+                .iter()
+                .map(|t| t.did.as_str())
+                .collect::<Vec<_>>(),
+            vec![member.did.as_str()]
+        );
+
+        let fixed = signed(
+            &originator,
+            &own.did,
+            TASK_NOTIFICATIONS_NOTIFY_0_1,
+            notification("r2", 1, "available", false, &originator.did),
+        )
+        .await;
+        let Disposition::Held { record_id } = deliver(&tv.state, &fixed).await else {
+            panic!("held");
+        };
+        assert!(matches!(
+            relay_to_members(&tv.state, &record_id, "did:key:admin", true, Utc::now()).await,
+            Err(RelayError::NotRelayable)
+        ));
+    }
 }

@@ -518,7 +518,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 44 top-level `*_ks` fields (the member portal's two among them) plus
+        // 45 top-level `*_ks` fields (the member portal's two and `notifications_ks` among them) plus
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch, plus the two room-file keyspaces
@@ -527,7 +527,7 @@ mod tests {
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
         // `AppState::directory` holds (`DIRECTORY`), plus the one
         // `AppState::elections` holds (`ELECTIONS`).
-        assert_eq!(ALL.len(), 56, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 57, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

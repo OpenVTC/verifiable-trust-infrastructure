@@ -282,6 +282,7 @@ pub async fn standing_of(
 /// What [`receive`] did — for logs and tests only. The handler answers the same receipt
 /// whatever this says (VTI-NTF-023), and must never branch on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Disposition {
     /// A new record.
     Held { record_id: String },
@@ -469,6 +470,7 @@ impl ListFilter {
 
 /// A refusal of a list, show or dismiss.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ReadError {
     /// The caller has no standing in the context (VTI-NTF-051).
     PermissionDenied,
