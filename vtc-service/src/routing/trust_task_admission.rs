@@ -111,16 +111,14 @@
 //! (`oob_tasks::PollGuard`).
 
 use std::net::IpAddr;
-use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use affinidi_rate_limit::{KeyedRateLimiterState, TooManyRequests};
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
-use governor::clock::{Clock, DefaultClock};
-use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use tower_governor::key_extractor::KeyExtractor;
 use vti_common::rate_limit::TrustedProxyKeyExtractor;
 
@@ -151,8 +149,7 @@ pub const SIGN_IN_PERIOD: Duration = Duration::from_secs(1);
 /// sign-in ceiling on top of the one it paid on arrival.
 pub const SIGN_IN_FAILURE_COST: u32 = 10;
 
-/// Past this many tracked addresses, the sign-in limiter forgets the ones that
-/// have refilled completely.
+/// Most addresses the sign-in limiter tracks at once.
 const SIGN_IN_TRACKED_KEYS: usize = 10_000;
 
 /// The door's limiters, shared by every request.
@@ -160,11 +157,11 @@ const SIGN_IN_TRACKED_KEYS: usize = 10_000;
 pub struct TrustTaskLimits {
     /// The unauthenticated governor's own state — the one the tower layer on
     /// the other unauthenticated routes charges.
-    address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
-    signed_address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
-    signer: Arc<DefaultKeyedRateLimiter<String>>,
+    address: KeyedRateLimiterState<IpAddr>,
+    signed_address: KeyedRateLimiterState<IpAddr>,
+    signer: KeyedRateLimiterState<String>,
     /// The sign-in (`auth/oob/*`) ceiling, per address.
-    sign_in: Arc<DefaultKeyedRateLimiter<IpAddr>>,
+    sign_in: KeyedRateLimiterState<IpAddr>,
     /// The room budgets, built from `[rooms.rate_limits]` when the first room
     /// document arrives (the router is built before the configuration is read).
     rooms: Arc<OnceLock<Arc<RoomLimiters>>>,
@@ -175,7 +172,7 @@ impl TrustTaskLimits {
     /// `address` is the unauthenticated governor's limiter, so both charge one
     /// budget per address.
     pub fn new(
-        address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
+        address: KeyedRateLimiterState<IpAddr>,
         key_extractor: TrustedProxyKeyExtractor,
     ) -> Self {
         Self::with_quotas(
@@ -188,7 +185,7 @@ impl TrustTaskLimits {
     }
 
     fn with_quotas(
-        address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
+        address: KeyedRateLimiterState<IpAddr>,
         key_extractor: TrustedProxyKeyExtractor,
         signed_address: Quota,
         signer: Quota,
@@ -196,18 +193,17 @@ impl TrustTaskLimits {
     ) -> Self {
         Self {
             address,
-            signed_address: Arc::new(RateLimiter::keyed(signed_address)),
-            signer: Arc::new(RateLimiter::keyed(signer)),
-            sign_in: Arc::new(RateLimiter::keyed(sign_in)),
+            signed_address: signed_address.limiter(),
+            signer: signer.limiter(),
+            sign_in: sign_in
+                .limiter()
+                .with_max_tracked_keys(SIGN_IN_TRACKED_KEYS),
             rooms: Arc::new(OnceLock::new()),
             key_extractor,
         }
     }
 
     fn charge_sign_in(&self, address: &IpAddr) -> Result<(), RateLimited> {
-        if self.sign_in.len() > SIGN_IN_TRACKED_KEYS {
-            self.sign_in.retain_recent();
-        }
         charge(&self.sign_in, address).map_err(|wait| {
             RateLimited::new(
                 SIGN_IN_ADDRESS_LIMITER,
@@ -221,7 +217,7 @@ impl TrustTaskLimits {
     /// Spend up to [`SIGN_IN_FAILURE_COST`] of the address's sign-in ceiling.
     fn penalize_sign_in(&self, address: &IpAddr) {
         for _ in 0..SIGN_IN_FAILURE_COST {
-            if self.sign_in.check_key(address).is_err() {
+            if self.sign_in.check(*address).is_err() {
                 break;
             }
         }
@@ -245,16 +241,15 @@ impl TrustTaskLimits {
 /// four a second once the burst is spent — the known-signer ceiling's rate.
 pub const ROOM_FAILURE_COST: u32 = 25;
 
-/// Past this many tracked keys, a room limiter forgets the ones that have
-/// refilled completely, so its map does not grow with every address that ever
-/// sent a room document.
+/// Most keys each room limiter tracks at once, so its map does not grow with
+/// every address that ever sent a room document.
 const ROOM_TRACKED_KEYS: usize = 10_000;
 
 /// The room budgets (see the module docs).
 pub(crate) struct RoomLimiters {
-    address: DefaultKeyedRateLimiter<IpAddr>,
-    presenter: DefaultKeyedRateLimiter<[u8; 16]>,
-    transfer: DefaultKeyedRateLimiter<[u8; 16]>,
+    address: KeyedRateLimiterState<IpAddr>,
+    presenter: KeyedRateLimiterState<[u8; 16]>,
+    transfer: KeyedRateLimiterState<[u8; 16]>,
     /// Keys the (room, presenter) hash, so the maps name nobody.
     secret: [u8; 32],
 }
@@ -269,9 +264,15 @@ impl RoomLimiters {
         let mut secret = [0u8; 32];
         rand::fill(&mut secret);
         Self {
-            address: RateLimiter::keyed(q(address)),
-            presenter: RateLimiter::keyed(q(presenter)),
-            transfer: RateLimiter::keyed(q(transfer)),
+            address: q(address)
+                .limiter()
+                .with_max_tracked_keys(ROOM_TRACKED_KEYS),
+            presenter: q(presenter)
+                .limiter()
+                .with_max_tracked_keys(ROOM_TRACKED_KEYS),
+            transfer: q(transfer)
+                .limiter()
+                .with_max_tracked_keys(ROOM_TRACKED_KEYS),
             secret,
         }
     }
@@ -290,9 +291,6 @@ impl RoomLimiters {
     }
 
     fn charge_address(&self, address: &IpAddr) -> Result<(), RateLimited> {
-        if self.address.len() > ROOM_TRACKED_KEYS {
-            self.address.retain_recent();
-        }
         charge(&self.address, address).map_err(|wait| {
             RateLimited::new(
                 ROOM_ADDRESS_LIMITER,
@@ -306,7 +304,7 @@ impl RoomLimiters {
     /// Spend up to [`ROOM_FAILURE_COST`] of the address's room ceiling.
     fn penalize(&self, address: &IpAddr) {
         for _ in 0..ROOM_FAILURE_COST {
-            if self.address.check_key(address).is_err() {
+            if self.address.check(*address).is_err() {
                 break;
             }
         }
@@ -322,9 +320,6 @@ impl RoomLimiters {
             RoomTraffic::Operation => (&self.presenter, ROOM_PRESENTER_LIMITER, "room operations"),
             RoomTraffic::Transfer => (&self.transfer, ROOM_TRANSFER_LIMITER, "file chunks"),
         };
-        if limiter.len() > ROOM_TRACKED_KEYS {
-            limiter.retain_recent();
-        }
         charge(limiter, &self.member_key(room_id, presenter)).map_err(|wait| {
             RateLimited::new(
                 name,
@@ -386,23 +381,31 @@ pub(crate) fn admit_room(room_id: &str, presenter: &str, traffic: RoomTraffic) -
         .unwrap_or(true)
 }
 
+/// A per-key budget: a burst, then one request per period.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Quota {
+    period: Duration,
+    burst: u32,
+}
+
+impl Quota {
+    fn limiter<K: std::hash::Hash + Eq + Clone>(self) -> KeyedRateLimiterState<K> {
+        KeyedRateLimiterState::per_period(self.period, self.burst)
+    }
+}
+
 fn quota(period: Duration, burst: u32) -> Quota {
-    Quota::with_period(period)
-        .expect("the period is a non-zero constant")
-        .allow_burst(NonZeroU32::new(burst).expect("the burst is a non-zero constant"))
+    Quota { period, burst }
 }
 
 /// Charge `key` one request, or say how long to wait.
-fn charge<K>(limiter: &DefaultKeyedRateLimiter<K>, key: &K) -> Result<(), u64>
+fn charge<K>(limiter: &KeyedRateLimiterState<K>, key: &K) -> Result<(), u64>
 where
     K: std::hash::Hash + Eq + Clone,
 {
-    limiter.check_key(key).map_err(|not_until| {
-        not_until
-            .wait_time_from(DefaultClock::default().now())
-            .as_secs_f64()
-            .ceil() as u64
-    })
+    limiter
+        .charge(key.clone())
+        .map_err(|TooManyRequests { retry_after_secs }| retry_after_secs)
 }
 
 fn unauth_refusal(wait: u64) -> RateLimited {
@@ -743,8 +746,8 @@ mod tests {
     ) -> TrustTaskLimits {
         let slow = Duration::from_secs(3600);
         TrustTaskLimits::with_quotas(
-            Arc::new(RateLimiter::keyed(quota(slow, 2))),
-            TrustedProxyKeyExtractor::new(Vec::new()),
+            quota(slow, 2).limiter(),
+            TrustedProxyKeyExtractor::new(Vec::new()).unwrap(),
             quota(slow, signed_address_burst),
             quota(slow, signer_burst),
             quota(slow, sign_in_burst),

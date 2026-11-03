@@ -1,4 +1,7 @@
-//! Client-IP attribution for the per-IP rate limiters.
+//! Client-IP attribution for the per-IP rate limiters: the rule in
+//! `affinidi-rate-limit`'s `ClientIpExtractor`, which the mediator, the DID
+//! resolver cache and the DID hosting service apply too, as a
+//! `tower_governor` key extractor.
 //!
 //! A rate limiter is only as good as the identity it charges. Keying on the
 //! socket peer is spoof-proof but collapses every client behind a reverse
@@ -38,20 +41,23 @@
 //! `X-Forwarded-For`) or `parent-proxy.sh` (which bridges bytes, so must not be
 //! trusted, and refuses to start while `trust_xff_cidrs` is set).
 //!
-//! Every uncertainty resolves to the peer, which is the un-spoofable value:
-//! no `ConnectInfo`, an untrusted peer, a malformed entry, an absurdly long
-//! chain, or a chain that is trusted end to end. Falling back costs a shared
-//! bucket; guessing costs the limiter.
+//! An untrusted peer, no header, or a chain trusted end to end resolves to the
+//! peer, the un-spoofable value; no `ConnectInfo` at all is refused. A chain a
+//! trusted proxy sent that cannot be read — a malformed entry from the client
+//! entry rightwards, more than 64 entries — is refused with `400`. Charging it
+//! to the proxy instead would hand its sender the proxy's bucket on top of its
+//! own, and hide a misbehaving proxy behind unexplained `429`s. A range
+//! covering every address (`0.0.0.0/0`, `::/0`) is refused when the extractor
+//! is built.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use affinidi_rate_limit::{ClientIpExtractor, InvalidTrustedProxy, IpNet};
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, HeaderName, Request};
+use axum::http::{Request, StatusCode};
 use ipnetwork::IpNetwork;
 use tower_governor::errors::GovernorError;
 use tower_governor::key_extractor::KeyExtractor;
-
-const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 
 /// The peer address a Nitro-enclave VTA's REST vsock listener reports for its
 /// parent instance — the only vsock peer it accepts.
@@ -64,72 +70,35 @@ const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 /// parent's vsock CID, as a reminder.
 pub const VSOCK_PARENT_PEER: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 3)), 0);
 
-/// Upper bound on entries considered across all `X-Forwarded-For` headers.
-///
-/// A real chain is two or three hops. A header long enough to exceed this is
-/// either a misconfiguration or someone probing the parser, and in both cases
-/// falling back to the peer is the answer — so this is a fail-closed cap, not
-/// a truncation.
-const MAX_FORWARDED_ENTRIES: usize = 64;
-
-/// Charges a request to the client IP, reading `X-Forwarded-For` only when the
-/// socket peer is one of `trusted_cidrs`.
-///
-/// An empty list is the safe default and is exactly equivalent to
-/// `PeerIpKeyExtractor`: nothing is trusted, so the header is never read.
-///
-/// **The CIDRs are a promise about the deployment.** Naming a proxy here
-/// asserts that it overwrites `X-Forwarded-For` with the address it actually
-/// accepted the connection from, or appends to it — *and* that nothing which
-/// does neither can reach the socket. A layer-4 (TCP) forwarder does not
-/// qualify: it passes the client's own header through untouched while making
-/// every request look like it came from the forwarder, which turns this list
-/// into a rate-limit bypass. See `docs/02-vta/rate-limiting.md`.
+/// The client-address rule every per-IP limiter here charges by:
+/// `affinidi-rate-limit`'s `ClientIpExtractor` over `trusted_cidrs`, as a
+/// `tower_governor` key extractor.
 #[derive(Debug, Clone)]
 pub struct TrustedProxyKeyExtractor {
-    trusted_cidrs: Vec<IpNetwork>,
+    clients: ClientIpExtractor,
 }
 
 impl TrustedProxyKeyExtractor {
-    pub fn new(trusted_cidrs: Vec<IpNetwork>) -> Self {
-        Self { trusted_cidrs }
+    /// # Errors
+    ///
+    /// [`InvalidTrustedProxy`] for a range covering every address
+    /// (`0.0.0.0/0`, `::/0`), which would let any client pick its bucket.
+    pub fn new(trusted_cidrs: Vec<IpNetwork>) -> Result<Self, InvalidTrustedProxy> {
+        let ranges = trusted_cidrs
+            .iter()
+            .map(|cidr| {
+                IpNet::new(cidr.network(), cidr.prefix())
+                    .expect("an IpNetwork's prefix is valid for its address family")
+            })
+            .collect();
+        Ok(Self {
+            clients: ClientIpExtractor::trusted_proxies(ranges)?,
+        })
     }
 
-    fn is_trusted(&self, ip: IpAddr) -> bool {
-        self.trusted_cidrs.iter().any(|cidr| cidr.contains(ip))
-    }
-
-    /// The rightmost entry that isn't a declared proxy, or `None` to fall back
-    /// to the peer. `None` covers every uncertainty: a malformed entry, a
-    /// non-ASCII header, an over-long chain, or a chain that is trusted the
-    /// whole way down.
-    fn client_from_chain(&self, headers: &HeaderMap) -> Option<IpAddr> {
-        // Multiple header lines concatenate in order, so collect before
-        // walking — the rightmost entry of the *last* line is the newest hop.
-        let mut entries: Vec<&str> = Vec::new();
-        for value in headers.get_all(X_FORWARDED_FOR) {
-            let value = value.to_str().ok()?;
-            // Empty entries are dropped rather than treated as malformed. A
-            // proxy that emits a trailing comma, or a client that sent one
-            // before the proxy appended, would otherwise end the walk at an
-            // unparseable entry and put every client back in one bucket. It
-            // gives an attacker nothing: whatever they wrote is left of the
-            // entry the proxy appended, so the walk stops before reaching it.
-            for entry in value.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-                if entries.len() == MAX_FORWARDED_ENTRIES {
-                    return None;
-                }
-                entries.push(entry);
-            }
-        }
-
-        for entry in entries.iter().rev() {
-            let ip = parse_forwarded_ip(entry)?;
-            if !self.is_trusted(ip) {
-                return Some(ip);
-            }
-        }
-        None
+    /// The crate's extractor, for code that resolves a client itself.
+    pub fn clients(&self) -> &ClientIpExtractor {
+        &self.clients
     }
 }
 
@@ -137,41 +106,19 @@ impl KeyExtractor for TrustedProxyKeyExtractor {
     type Key = IpAddr;
 
     fn extract<T>(&self, req: &Request<T>) -> Result<IpAddr, GovernorError> {
-        // No peer means no un-spoofable anchor, so there is nothing to
-        // attribute the request to. Refusing is the only safe answer —
-        // passing it through would be an unmetered request.
-        let peer = peer_ip(req).ok_or(GovernorError::UnableToExtractKey)?;
-        if !self.is_trusted(peer) {
-            return Ok(peer);
-        }
-        Ok(self.client_from_chain(req.headers()).unwrap_or(peer))
+        let peer = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip())
+            .ok_or(GovernorError::UnableToExtractKey)?;
+        self.clients
+            .client_ip(peer, req.headers())
+            .map_err(|e| GovernorError::Other {
+                code: StatusCode::BAD_REQUEST,
+                msg: Some(e.to_string()),
+                headers: None,
+            })
     }
-}
-
-fn peer_ip<T>(req: &Request<T>) -> Option<IpAddr> {
-    req.extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| canonical(ci.0.ip()))
-}
-
-/// One `X-Forwarded-For` entry. The specification says a bare address, but
-/// proxies in the wild also emit `addr:port` and `[v6]`/`[v6]:port`, and a
-/// dual-stack listener reports an IPv4 peer as `::ffff:a.b.c.d` — which would
-/// otherwise never match an IPv4 CIDR. Accept all of them, canonically.
-fn parse_forwarded_ip(entry: &str) -> Option<IpAddr> {
-    if let Ok(ip) = entry.parse::<IpAddr>() {
-        return Some(canonical(ip));
-    }
-    if let Ok(addr) = entry.parse::<SocketAddr>() {
-        return Some(canonical(addr.ip()));
-    }
-    let bracketed = entry.strip_prefix('[')?.strip_suffix(']')?;
-    bracketed.parse::<IpAddr>().ok().map(canonical)
-}
-
-/// Unwrap an IPv4-mapped IPv6 address so it matches an IPv4 CIDR.
-fn canonical(ip: IpAddr) -> IpAddr {
-    ip.to_canonical()
 }
 
 /// Insert a loopback `ConnectInfo` when the request carries none.
@@ -233,7 +180,7 @@ mod tests {
     }
 
     fn loopback() -> TrustedProxyKeyExtractor {
-        TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32"]))
+        TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32"])).unwrap()
     }
 
     const PARENT: &str = "0.0.0.3:0";
@@ -244,7 +191,7 @@ mod tests {
     }
 
     fn parent_trusted() -> TrustedProxyKeyExtractor {
-        TrustedProxyKeyExtractor::new(cidrs(&["0.0.0.3/32"]))
+        TrustedProxyKeyExtractor::new(cidrs(&["0.0.0.3/32"])).unwrap()
     }
 
     #[test]
@@ -263,7 +210,7 @@ mod tests {
     fn the_vsock_parent_is_not_trusted_undeclared() {
         // A byte-bridging parent (parent-proxy.sh) forwards the client's own
         // header; with nothing declared it must not be read.
-        let none = TrustedProxyKeyExtractor::new(vec![]);
+        let none = TrustedProxyKeyExtractor::new(vec![]).unwrap();
         let req = req_with(Some(PARENT), Some("203.0.113.9"));
         assert_eq!(none.extract(&req).unwrap(), ip("0.0.0.3"));
     }
@@ -316,7 +263,7 @@ mod tests {
 
     #[test]
     fn empty_cidr_list_never_trusts_xff() {
-        let extractor = TrustedProxyKeyExtractor::new(Vec::new());
+        let extractor = TrustedProxyKeyExtractor::new(Vec::new()).unwrap();
         let req = req_with(Some("127.0.0.1:1234"), Some("9.9.9.9"));
         assert_eq!(extractor.extract(&req).unwrap(), ip("127.0.0.1"));
     }
@@ -341,7 +288,8 @@ mod tests {
     /// hops is what keeps each client in its own bucket.
     #[test]
     fn chained_trusted_proxies_are_skipped_to_reach_the_client() {
-        let extractor = TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32", "10.0.0.0/8"]));
+        let extractor =
+            TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32", "10.0.0.0/8"])).unwrap();
         let req = req_with(
             Some("127.0.0.1:1234"),
             Some("198.51.100.7, 10.0.0.5, 10.0.0.6"),
@@ -353,7 +301,8 @@ mod tests {
     /// hops still cannot reach past the entry the real proxy appended.
     #[test]
     fn forged_trusted_looking_prefix_cannot_reach_past_the_real_hop() {
-        let extractor = TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32", "10.0.0.0/8"]));
+        let extractor =
+            TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32", "10.0.0.0/8"])).unwrap();
         let req = req_with(
             Some("127.0.0.1:1234"),
             Some("10.0.0.1, 10.0.0.2, 203.0.113.9"),
@@ -363,15 +312,25 @@ mod tests {
 
     #[test]
     fn multiple_header_lines_concatenate_in_order() {
-        let extractor = TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32", "10.0.0.0/8"]));
+        let extractor =
+            TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32", "10.0.0.0/8"])).unwrap();
         let req = req_with_all(Some("127.0.0.1:1"), vec!["198.51.100.7", "10.0.0.5"]);
         assert_eq!(extractor.extract(&req).unwrap(), ip("198.51.100.7"));
     }
 
+    fn assert_bad_request(result: Result<IpAddr, GovernorError>) {
+        match result {
+            Err(GovernorError::Other { code, .. }) => assert_eq!(code, StatusCode::BAD_REQUEST),
+            other => panic!("expected a 400, got {other:?}"),
+        }
+    }
+
+    /// An unattributable chain from a trusted proxy is refused, not charged
+    /// to the proxy's bucket.
     #[test]
-    fn malformed_entry_falls_back_to_peer() {
+    fn malformed_entry_is_refused() {
         let req = req_with(Some("127.0.0.1:1234"), Some("not-an-ip"));
-        assert_eq!(loopback().extract(&req).unwrap(), ip("127.0.0.1"));
+        assert_bad_request(loopback().extract(&req));
     }
 
     /// A trailing comma from a sloppy proxy, or one the client sent before the
@@ -391,24 +350,25 @@ mod tests {
 
     #[test]
     fn chain_trusted_end_to_end_falls_back_to_peer() {
-        let extractor = TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32", "10.0.0.0/8"]));
+        let extractor =
+            TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32", "10.0.0.0/8"])).unwrap();
         let req = req_with(Some("127.0.0.1:1"), Some("10.0.0.5, 10.0.0.6"));
         assert_eq!(extractor.extract(&req).unwrap(), ip("127.0.0.1"));
     }
 
     #[test]
-    fn absurdly_long_chain_falls_back_to_peer() {
-        let chain = (0..MAX_FORWARDED_ENTRIES + 1)
+    fn absurdly_long_chain_is_refused() {
+        let chain = (0..affinidi_rate_limit::MAX_FORWARDED_ENTRIES + 1)
             .map(|_| "203.0.113.9")
             .collect::<Vec<_>>()
             .join(", ");
         let req = req_with(Some("127.0.0.1:1"), Some(&chain));
-        assert_eq!(loopback().extract(&req).unwrap(), ip("127.0.0.1"));
+        assert_bad_request(loopback().extract(&req));
     }
 
     #[test]
     fn port_and_bracket_forms_are_accepted() {
-        let extractor = TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32"]));
+        let extractor = TrustedProxyKeyExtractor::new(cidrs(&["127.0.0.1/32"])).unwrap();
         for (entry, expected) in [
             ("203.0.113.9:443", "203.0.113.9"),
             ("[2001:db8::1]:443", "2001:db8::1"),

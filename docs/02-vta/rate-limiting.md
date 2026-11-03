@@ -186,9 +186,13 @@ proxy's address and every client shares its bucket again.
 > clients share **one** bucket per limiter. Ten logins from anywhere in the
 > world then exhaust the `auth` burst for everyone.
 
-Everything uncertain falls back to the peer rather than guessing: a request
-with no peer address at all is refused outright, and a malformed or absurdly
-long chain is charged to the peer.
+A request with no peer address at all is refused outright. A chain from a
+trusted proxy that cannot be read — a malformed entry where the proxies wrote,
+or more than 64 entries — is refused with `400` rather than charged to the
+proxy, which would give its sender the proxy's bucket as well as its own. A
+range covering every address (`0.0.0.0/0`, `::/0`) fails to load. The rule is
+`affinidi-rate-limit`'s, shared with the mediator and the DID hosting
+service.
 
 `trust_xff_cidrs` is read when the REST router is built: changing it needs a
 restart (`POST /vta/restart` or a process restart). The quotas below do not.

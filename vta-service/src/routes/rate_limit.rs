@@ -75,19 +75,18 @@
 //!   primary signal and the body names the limiter for a human too.
 
 use std::net::IpAddr;
-use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 
+use affinidi_rate_limit::{RateLimiterState, TooManyRequests};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Response, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
-use governor::clock::{Clock, DefaultClock};
-use governor::{DefaultKeyedRateLimiter, RateLimiter};
 use ipnetwork::IpNetwork;
 use tokio::sync::RwLock;
+use tower_governor::GovernorError;
 use tower_governor::key_extractor::KeyExtractor;
 use utoipa_axum::router::OpenApiRouter;
 use vta_config::{AppConfig, ServerConfig};
@@ -195,10 +194,8 @@ impl Quota {
         self.burst
     }
 
-    fn to_governor(self) -> governor::Quota {
-        governor::Quota::with_period(Duration::from_secs(self.interval_secs))
-            .expect("interval is clamped to >= 1 s, so the period is non-zero")
-            .allow_burst(NonZeroU32::new(self.burst).expect("burst is clamped to >= 1"))
+    fn to_limiter(self) -> RateLimiterState {
+        RateLimiterState::per_period(Duration::from_secs(self.interval_secs), self.burst)
     }
 }
 
@@ -274,14 +271,14 @@ impl QuotaSource {
 /// A keyed limiter at one quota.
 struct Buckets {
     quota: Quota,
-    limiter: DefaultKeyedRateLimiter<IpAddr>,
+    limiter: RateLimiterState,
 }
 
 impl Buckets {
     fn new(quota: Quota) -> Arc<Self> {
         Arc::new(Self {
             quota,
-            limiter: RateLimiter::keyed(quota.to_governor()),
+            limiter: quota.to_limiter(),
         })
     }
 }
@@ -307,7 +304,8 @@ impl LimiterState {
         };
         Self {
             limiter,
-            extractor: TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
+            extractor: TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec())
+                .expect("trust_xff_cidrs holds no catch-all range"),
             source: source.clone(),
             buckets: StdRwLock::new(Buckets::new(initial)),
         }
@@ -337,8 +335,8 @@ impl LimiterState {
         Arc::clone(&current)
     }
 
-    fn client_ip(&self, req: &Request) -> Option<IpAddr> {
-        self.extractor.extract(req).ok()
+    fn client_ip(&self, req: &Request) -> Result<IpAddr, GovernorError> {
+        self.extractor.extract(req)
     }
 }
 
@@ -515,22 +513,36 @@ where
 /// `state`'s bucket: `None` if it was charged, or the response that refuses
 /// it. Takes the address rather than the request, which is not `Sync` and so
 /// cannot be borrowed across the quota lookup's await.
-async fn refusal(state: &LimiterState, ip: Option<IpAddr>) -> Option<Response<Body>> {
-    let Some(ip) = ip else {
+async fn refusal(
+    state: &LimiterState,
+    ip: Result<IpAddr, GovernorError>,
+) -> Option<Response<Body>> {
+    let ip = match ip {
+        Ok(ip) => ip,
+        // A chain from a trusted proxy that cannot be attributed.
+        Err(GovernorError::Other { code, msg, .. }) => {
+            return Some(
+                Response::builder()
+                    .status(code)
+                    .body(Body::from(msg.unwrap_or_default()))
+                    .expect("static response always builds"),
+            );
+        }
         // Same outcome as the tower_governor layer this replaced: no
         // attributable client means no request, not an unlimited one.
-        return Some(
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("Unable To Extract Key!"))
-                .expect("static response always builds"),
-        );
+        Err(_) => {
+            return Some(
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("Unable To Extract Key!"))
+                    .expect("static response always builds"),
+            );
+        }
     };
     let quota = state.source.current(state.limiter).await;
     let buckets = state.buckets_for(quota);
-    let not_until = buckets.limiter.check_key(&ip).err()?;
-    let wait = not_until.wait_time_from(DefaultClock::default().now());
-    Some(too_many_requests(state.limiter.name(), ceil_secs(wait)))
+    let TooManyRequests { retry_after_secs } = buckets.limiter.charge(ip).err()?;
+    Some(too_many_requests(state.limiter.name(), retry_after_secs))
 }
 
 /// Whole seconds, rounded up: a client honouring `retry-after` must never be

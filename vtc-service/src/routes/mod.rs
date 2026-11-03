@@ -35,16 +35,12 @@ pub mod vetting_hidden;
 #[cfg(feature = "website")]
 pub(crate) mod website;
 
-use std::sync::Arc;
-
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{any, delete, get, post};
 use ipnetwork::IpNetwork;
-use tower_governor::GovernorLayer;
-use tower_governor::governor::GovernorConfigBuilder;
 
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
@@ -585,7 +581,7 @@ fn build_api_chain(
     // super-admin role.
     // Phase 3 M3.10 — cross-community session mint. The Trust
     // Task declaration moved to `build_unauth_routes` so the
-    // handler sits behind the tower-governor + the 64 KB body
+    // handler sits behind the per-IP limiter + the 64 KB body
     // cap — it's an unauthenticated endpoint that does DID
     // resolution + outbound HTTP fetch + Rego policy eval +
     // session-JWT mint, all driven by attacker-controlled VAC/VMC
@@ -617,7 +613,7 @@ fn build_api_chain(
         .routes(routes!(status_lists::show))
         // Auth routes. `POST /v1/auth/{challenge,authenticate,refresh}`
         // are unauthenticated and live in `build_unauth_routes` so the
-        // tower-governor + tighter body cap apply. The two
+        // per-IP limiter + tighter body cap apply. The two
         // session-management endpoints below are authenticated and
         // stay on the main chain.
         //
@@ -879,11 +875,10 @@ fn build_api_chain(
 /// - [`UNAUTH_BODY_SIZE`] body cap (tighter than the 1 MiB main
 ///   API cap — generous enough for a JWE / sealed-transfer
 ///   envelope, small enough to reject blob floods).
-/// - Per-IP `tower-governor` via [`TrustedProxyKeyExtractor`] (or the peer
-///   address when `trust_xff_cidrs` is empty): a burst of 10, then one
-///   request every 5 s. `per_second(5)` is a replenishment *interval*, not a
-///   rate — a bigger number is a tighter limit. A refusal is a `429` in the
-///   shape [`crate::routing::rate_limit`] defines, reporting limiter `unauth`.
+/// - Per-IP `affinidi-rate-limit` layer via [`TrustedProxyKeyExtractor`]'s
+///   rule (or the peer address when `trust_xff_cidrs` is empty): a burst of
+///   10, then one request every 5 s. A refusal is a `429` in the shape
+///   [`crate::routing::rate_limit`] defines, reporting limiter `unauth`.
 fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
     //
@@ -898,7 +893,7 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
     // unauthenticated; step-up authenticates the caller inside the
     // handler, which is why both live on this chain.
     // Phase 3 M3.10 — cross-community session mint. Sits in the
-    // unauth chain (not the main API chain) so the tower-governor
+    // unauth chain (not the main API chain) so the per-IP limiter
     // + 64 KB body cap apply: the handler runs DID resolution,
     // outbound HTTP fetch of the foreign `statusListCredential`
     // URL, Rego policy eval, and a session JWT mint, all driven by
@@ -1090,27 +1085,26 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
     // peer, which is exactly `PeerIpKeyExtractor`. Branching on the list only
     // to pick between two behaviours that already coincide is a chance to get
     // the arms the wrong way round for no gain.
-    let cfg = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(5)
-            .burst_size(10)
-            .key_extractor(TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()))
-            .finish()
-            .expect("governor config values are static and non-zero"),
-    );
+    let extractor = TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec())
+        .expect("trust_xff_cidrs holds no catch-all range");
+    // A burst of 10, then one request every 5 s, per address.
+    let unauth =
+        affinidi_rate_limit::RateLimiterState::per_period(std::time::Duration::from_secs(5), 10)
+            .with_source(crate::routing::rate_limit::RATE_LIMIT_SOURCE)
+            .with_limiter_name(crate::routing::rate_limit::UNAUTH_LIMITER);
     // `/trust-tasks` is not behind the tower layer: it charges a document to
     // one of several budgets depending on who signed it
     // (`routing::trust_task_admission`). Anonymous documents still pay this
-    // governor's own limiter state, so an address has one anonymous budget
-    // across the whole chain, not one here and another on `/trust-tasks`.
+    // limiter's own state, so an address has one anonymous budget across the
+    // whole chain, not one here and another on `/trust-tasks`.
     let limits = crate::routing::trust_task_admission::TrustTaskLimits::new(
-        cfg.limiter().clone(),
-        TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
+        unauth.clone(),
+        extractor.clone(),
     );
     let unauth_router = unauth_router
         .layer(
-            GovernorLayer::new(cfg)
-                .error_handler(crate::routing::rate_limit::governor_error_response),
+            affinidi_rate_limit::RateLimitLayer::new(unauth)
+                .client_ip_extractor(extractor.clients().clone()),
         )
         .merge(
             OpenApiRouter::<AppState>::new()
@@ -1519,7 +1513,7 @@ mod openapi_tests {
     // allowlist — making the P0.5 regression class impossible to land silently.
 
     /// Unauthenticated operations that ride the governed chain
-    /// (`build_unauth_routes`): tower-governor rate limit + [`UNAUTH_BODY_SIZE`]
+    /// (`build_unauth_routes`): per-IP rate limit + [`UNAUTH_BODY_SIZE`]
     /// body cap. Attacker-driven crypto / IO belongs here.
     const GOVERNED_UNAUTH: &[(&str, &str)] = &[
         // A network delivering a broadcast for a registered group: unauthenticated by session,

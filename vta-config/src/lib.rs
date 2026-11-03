@@ -557,7 +557,7 @@ pub struct ServerConfig {
     /// not flow to arbitrary origins.
     #[serde(default)]
     pub cors_origins: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "trusted_proxy_cidrs")]
     pub trust_xff_cidrs: Vec<IpNetwork>,
     /// Token replenishment interval for the **auth** rate limiter, in
     /// **seconds per token** — not requests per second. One new token every
@@ -664,6 +664,22 @@ pub struct ServerConfig {
         skip_serializing
     )]
     pub trust_xff: (),
+}
+
+/// Deserialize `trust_xff_cidrs`, refusing a range that covers every address
+/// (`0.0.0.0/0`, `::/0`): trusting every peer lets any client name its own
+/// rate-limit bucket through `X-Forwarded-For`.
+fn trusted_proxy_cidrs<'de, D>(deserializer: D) -> Result<Vec<IpNetwork>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let cidrs = <Vec<IpNetwork> as serde::Deserialize>::deserialize(deserializer)?;
+    if let Some(cidr) = cidrs.iter().find(|cidr| cidr.prefix() == 0) {
+        return Err(serde::de::Error::custom(format!(
+            "trust_xff_cidrs: {cidr} covers every address; list the proxies' own ranges"
+        )));
+    }
+    Ok(cidrs)
 }
 
 /// Reject `trust_xff` with the migration the operator needs.
@@ -1824,6 +1840,18 @@ mod validate_tests {
     fn trust_xff_cidrs_still_parses() {
         let config = cfg("[server]\ntrust_xff_cidrs = [\"127.0.0.1/32\"]\n");
         assert_eq!(config.server.trust_xff_cidrs.len(), 1);
+    }
+
+    /// A range trusting every peer would let any client name its own
+    /// rate-limit bucket.
+    #[test]
+    fn a_catch_all_trust_xff_range_is_refused() {
+        for cidr in ["0.0.0.0/0", "::/0"] {
+            let err =
+                toml::from_str::<AppConfig>(&format!("[server]\ntrust_xff_cidrs = [\"{cidr}\"]\n"))
+                    .expect_err("a catch-all range must be refused");
+            assert!(err.to_string().contains("covers every address"), "{err}");
+        }
     }
 
     /// A zero budget would starve the VTA or, read as "no budget", fail open

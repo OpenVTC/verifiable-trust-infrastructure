@@ -21,7 +21,7 @@
 //!
 //! | limiter                | name              | keyed on            |
 //! |------------------------|-------------------|---------------------|
-//! | `tower-governor` on the unauthenticated chain ([`crate::routes`]) | [`UNAUTH_LIMITER`] | source IP |
+//! | the per-IP layer on the unauthenticated chain ([`crate::routes`]) | [`UNAUTH_LIMITER`] | source IP |
 //! | per-member publish window ([`crate::relationships::rate_limit`]) | [`RELATIONSHIPS_LIMITER`] | HMAC of the signer DID |
 //! | known-signer documents on `POST /v1/trust-tasks` ([`crate::routing::trust_task_admission`]) | [`SIGNED_ADDRESS_LIMITER`] | source IP |
 //! | a verified known signer on `POST /v1/trust-tasks` ([`crate::routing::trust_task_admission`]) | [`SIGNER_LIMITER`] | the signer's principal (a console key's admin) |
@@ -51,7 +51,7 @@ pub const RATE_LIMIT_SOURCE: &str = "vtc";
 /// The `error` member of every rate-limit body.
 pub const RATE_LIMITED_ERROR: &str = "rate_limited";
 
-/// The per-IP `tower-governor` in front of the unauthenticated routes.
+/// The per-IP limiter in front of the unauthenticated routes.
 pub const UNAUTH_LIMITER: &str = "unauth";
 
 /// The per-member relationship publish window.

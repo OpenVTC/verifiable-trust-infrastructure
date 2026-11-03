@@ -3858,7 +3858,7 @@ mod rest_ingress_tests {
             .unwrap();
         req.extensions_mut()
             .insert(ConnectInfo(vti_common::rate_limit::VSOCK_PARENT_PEER));
-        let extractor = vti_common::rate_limit::TrustedProxyKeyExtractor::new(trust.cidrs);
+        let extractor = vti_common::rate_limit::TrustedProxyKeyExtractor::new(trust.cidrs).unwrap();
         assert_eq!(
             extractor.extract(&req).unwrap(),
             "203.0.113.9".parse::<std::net::IpAddr>().unwrap()
