@@ -95,6 +95,12 @@ pub enum ManifestCommands {
         id: Option<String>,
         #[arg(long)]
         title: Option<String>,
+        /// Put the election to the holders of a membership credential for this DID (a
+        /// `credential` roll, VTI-VOT-025): this community's own DID, one of its groups' DIDs,
+        /// or the DID of a party that is itself an active member of this community. Each voter
+        /// proves it when they claim their ticket. Default: the community's active members.
+        #[arg(long)]
+        member_of: Option<String>,
         /// Where to write it. Default: standard output.
         #[arg(long, short)]
         out: Option<PathBuf>,
@@ -114,6 +120,7 @@ pub fn starter_manifest(
     ballot_box: &str,
     id: Option<&str>,
     title: Option<&str>,
+    member_of: Option<&str>,
     now: DateTime<Utc>,
 ) -> Value {
     let rfc3339 = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -147,7 +154,32 @@ pub fn starter_manifest(
     if let Some(t) = title {
         m["title"] = json!(t);
     }
+    if let Some(did) = member_of {
+        m["roll"] = json!({ "rule": "credential", "memberOf": did });
+    }
     m
+}
+
+/// What an administrator is told of a `credential` roll before creating it (VTI-VOT-026): the
+/// community decides only whether it trusts the DID, and that party decides who holds its
+/// credential. `None` under every other rule.
+#[must_use]
+pub fn credential_roll_note(manifest: &Value, community: &str) -> Option<String> {
+    let did = manifest["roll"]["memberOf"].as_str()?;
+    let whose = if did == community {
+        "this community's own membership credential".to_string()
+    } else {
+        format!(
+            "a membership credential issued by {did}, which must be one of this community's \
+             groups or a party that is itself an active member of this community — the \
+             community refuses any other DID (rollUntrusted)"
+        )
+    };
+    Some(format!(
+        "credential roll: a ticket goes to whoever presents {whose}, checked when they claim it; \
+         the community never learns the roll's size, and a voter's claim shows the community \
+         their membership of that party"
+    ))
 }
 
 /// The warning an administrator is given for a manifest that releases written answers after
@@ -174,7 +206,7 @@ pub fn check_manifest_offline(
     now: DateTime<Utc>,
 ) -> Result<String, String> {
     create::Payload::validate_value(&json!({ "manifest": manifest }))
-        .map_err(|e| format!("out of schema (vtc/elections/create/0.4): {e}"))?;
+        .map_err(|e| format!("out of schema (vtc/elections/create/0.5): {e}"))?;
     let m = vti_voting::rules::check_new_manifest(manifest, now).map_err(|e| e.to_string())?;
     if m.community.as_str() != community {
         return Err(format!(
@@ -196,6 +228,7 @@ pub fn run_manifest(command: ManifestCommands, community: &str) -> CliResult {
             ballot_box,
             id,
             title,
+            member_of,
             out,
             force,
         } => {
@@ -204,6 +237,7 @@ pub fn run_manifest(command: ManifestCommands, community: &str) -> CliResult {
                 &ballot_box,
                 id.as_deref(),
                 title.as_deref(),
+                member_of.as_deref(),
                 Utc::now(),
             );
             let text = format!("{}\n", serde_json::to_string_pretty(&m)?);
@@ -252,6 +286,9 @@ pub fn run_manifest(command: ManifestCommands, community: &str) -> CliResult {
                     if let Some(warning) = low_text_release(&m) {
                         println!("  {YELLOW}{warning}{RESET}");
                     }
+                    if let Some(note) = credential_roll_note(&m, community) {
+                        println!("  {YELLOW}{note}{RESET}");
+                    }
                     println!(
                         "  {DIM}on create the community also checks that the ballot box is one it \
                          trusts and that the identifier is unused{RESET}"
@@ -298,11 +335,17 @@ async fn run_command(command: ElectionsCommands, vtc: &Connected, keyring_key: &
         }
         ElectionsCommands::Create { manifest } => {
             let manifest = read_json(&manifest)?;
-            // vtc/elections/create/0.4: a composing client SHOULD warn below 10 (VTI-VOT-065).
+            // vtc/elections/create/0.5: a composing client SHOULD warn below 10 (VTI-VOT-065).
             if !is_json_output()
                 && let Some(warning) = low_text_release(&manifest)
             {
                 eprintln!("{YELLOW}{warning}{RESET}");
+            }
+            if !is_json_output()
+                && let Some(note) =
+                    credential_roll_note(&manifest, manifest["community"].as_str().unwrap_or(""))
+            {
+                eprintln!("{YELLOW}{note}{RESET}");
             }
             let id = manifest["electionId"]
                 .as_str()
@@ -427,7 +470,19 @@ async fn run_command(command: ElectionsCommands, vtc: &Connected, keyring_key: &
                 v["manifest"]["votingOpensAt"].as_str().unwrap_or_default(),
                 v["manifest"]["votingClosesAt"].as_str().unwrap_or_default()
             );
+            if let Some(r) = v["disclosure"].get("rollCredential") {
+                println!(
+                    "  roll         holders of a membership credential for {} ({}{})",
+                    r["memberOf"].as_str().unwrap_or_default(),
+                    r["memberOfKind"].as_str().unwrap_or_default(),
+                    r["memberOfName"]
+                        .as_str()
+                        .map(|n| format!(", {n}"))
+                        .unwrap_or_default()
+                );
+            }
             if let Some(n) = v["ticketsIssued"].as_u64() {
+                // VTI-VOT-028: under a credential roll there is no roll size to state.
                 println!("  tickets      {n} issued");
             }
             println!(
@@ -536,6 +591,12 @@ fn suggested_fix(code: &str, election_id: &str, ballot_box: Option<&str>) -> Opt
             "this community already holds an election called {election_id}. Pick another \
              electionId, or see it with:\n  {bin} elections show {election_id}"
         ),
+        c if c == create::error_codes::ROLL_UNTRUSTED.code => format!(
+            "the roll's memberOf is not this community, one of its groups, or a party that is \
+             itself an active member of this community (VTI-VOT-026). Name one of those — admit \
+             the party as a member first if it should be trusted for this — and check again:\n  \
+             {bin} elections manifest check <manifest.json>"
+        ),
         c if c == create::error_codes::INVALID_MANIFEST.code => format!(
             "the manifest breaks the rule named below. Check it offline until it passes, then \
              create it again:\n  {bin} elections manifest check <manifest.json>"
@@ -607,7 +668,7 @@ mod tests {
 
     #[test]
     fn the_starter_manifest_passes_as_written() {
-        let m = starter_manifest(COMMUNITY, BOX, Some("agm-2027"), Some("AGM"), now());
+        let m = starter_manifest(COMMUNITY, BOX, Some("agm-2027"), Some("AGM"), None, now());
         assert_eq!(m["electionId"], "agm-2027");
         assert_eq!(m["title"], "AGM");
         assert_eq!(m["registrationOpensAt"], "2027-03-04T10:20:30Z");
@@ -615,7 +676,7 @@ mod tests {
         assert_eq!(m["votingClosesAt"], "2027-03-12T11:00:00Z");
         let digest = check_manifest_offline(&m, COMMUNITY, now()).unwrap();
         assert!(digest.starts_with('z'), "{digest}");
-        let defaulted = starter_manifest(COMMUNITY, BOX, None, None, now());
+        let defaulted = starter_manifest(COMMUNITY, BOX, None, None, None, now());
         assert_eq!(defaulted["electionId"], "poll-2027-03-04");
         assert!(defaulted.get("title").is_none());
     }
@@ -623,7 +684,7 @@ mod tests {
     /// VTI-VOT-065: 1 – 9 passes the check, with a warning; 10 does not warn.
     #[test]
     fn vti_vot_065_a_threshold_below_ten_passes_with_a_warning() {
-        let mut m = starter_manifest(COMMUNITY, BOX, None, None, now());
+        let mut m = starter_manifest(COMMUNITY, BOX, None, None, None, now());
         assert_eq!(low_text_release(&m), None);
         m["textReleaseThreshold"] = json!(1);
         check_manifest_offline(&m, COMMUNITY, now()).expect("1 is a valid threshold");
@@ -633,9 +694,35 @@ mod tests {
         assert!(check_manifest_offline(&m, COMMUNITY, now()).is_err());
     }
 
+    /// VTI-VOT-025, VTI-VOT-026: `manifest init --member-of` writes a credential roll that
+    /// passes the offline check, and the administrator is told what it trusts.
+    #[test]
+    fn vti_vot_026_a_credential_roll_passes_and_says_whom_it_trusts() {
+        let group = format!("{COMMUNITY}:groups:g7");
+        let m = starter_manifest(COMMUNITY, BOX, None, None, Some(&group), now());
+        assert_eq!(
+            m["roll"],
+            json!({ "rule": "credential", "memberOf": group })
+        );
+        assert!(check_manifest_offline(&m, COMMUNITY, now()).is_ok());
+        let note = credential_roll_note(&m, COMMUNITY).expect("a credential roll is noted");
+        assert!(
+            note.contains(&group) && note.contains("rollUntrusted"),
+            "{note}"
+        );
+        let own = starter_manifest(COMMUNITY, BOX, None, None, Some(COMMUNITY), now());
+        assert!(
+            credential_roll_note(&own, COMMUNITY)
+                .unwrap()
+                .contains("own membership credential")
+        );
+        let members = starter_manifest(COMMUNITY, BOX, None, None, None, now());
+        assert_eq!(credential_roll_note(&members, COMMUNITY), None);
+    }
+
     #[test]
     fn check_names_what_the_community_would_refuse() {
-        let m = starter_manifest(COMMUNITY, BOX, None, None, now());
+        let m = starter_manifest(COMMUNITY, BOX, None, None, None, now());
 
         let mut out_of_schema = m.clone();
         out_of_schema["secrecy"] = json!("secret");
@@ -660,7 +747,7 @@ mod tests {
 
     #[test]
     fn check_and_the_community_agree_on_the_digest() {
-        let m = starter_manifest(COMMUNITY, BOX, None, None, now());
+        let m = starter_manifest(COMMUNITY, BOX, None, None, None, now());
         let expected =
             vti_voting::rules::digest_multibase(&vti_voting::rules::manifest_digest(&m).unwrap());
         assert_eq!(

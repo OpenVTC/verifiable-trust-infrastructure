@@ -127,7 +127,7 @@ fn ballot(manifest: &Value, choice: &str) -> Value {
 
 fn register_doc(params: &Value, m: &Value) -> TrustTask<Value> {
     doc(
-        uris::TASK_VTA_PCS_VOTER_REGISTER_0_3,
+        uris::TASK_VTA_PCS_VOTER_REGISTER_0_5,
         json!({ "contextId": "member", "community": COMMUNITY, "parameters": params, "manifest": m }),
     )
 }
@@ -143,7 +143,7 @@ fn accept_doc(election: &str, params: &Value, pre: &str) -> TrustTask<Value> {
 
 fn vote_doc(params: &Value, m: &Value, b: Value) -> TrustTask<Value> {
     doc(
-        uris::TASK_VTA_PCS_VOTE_0_3,
+        uris::TASK_VTA_PCS_VOTE_0_4,
         json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
                 "manifest": m, "ballot": b }),
     )
@@ -383,7 +383,7 @@ async fn the_voter_tasks_need_the_voter_capability() {
         &state,
         &auth,
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_3,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_5,
             json!({ "contextId": "member", "community": COMMUNITY }),
         ),
     )
@@ -419,7 +419,7 @@ async fn the_ticket_request_is_signed_as_the_member_and_kept() {
     let m = manifest("agm-2028", &box_did, true, "open");
     let with_member = |did: &str| {
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_3,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_5,
             json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
                     "manifest": m, "member": did }),
         )
@@ -433,8 +433,10 @@ async fn the_ticket_request_is_signed_as_the_member_and_kept() {
     let ticket = &first["ticketDocument"];
     assert_eq!(
         ticket["type"],
-        "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.1"
+        "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.3"
     );
+    // Under a members roll it carries no presentation.
+    assert!(ticket["payload"].get("presentation").is_none());
     assert_eq!(ticket["issuer"], persona.did.as_str());
     assert_eq!(ticket["recipient"], COMMUNITY);
     assert_eq!(ticket["payload"]["request"], first["request"]);
@@ -452,6 +454,24 @@ async fn the_ticket_request_is_signed_as_the_member_and_kept() {
     // A repeat returns the same document, byte for byte.
     let again = ok(&handle_voter_register(&state, &auth, with_member(&persona.did)).await);
     assert_eq!(again["ticketDocument"], first["ticketDocument"]);
+
+    // register 0.3, still served, builds a tickets/issue/0.1 request of its own, and keeps it
+    // apart from 0.5's: each version's resend answers with its own document.
+    let old = || {
+        doc(
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_3,
+            json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
+                    "manifest": m, "member": persona.did }),
+        )
+    };
+    let old_first = ok(&handle_voter_register(&state, &auth, old()).await);
+    assert_eq!(
+        old_first["ticketDocument"]["type"],
+        "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.1"
+    );
+    assert_eq!(old_first["request"], first["request"]);
+    let old_again = ok(&handle_voter_register(&state, &auth, old()).await);
+    assert_eq!(old_again["ticketDocument"], old_first["ticketDocument"]);
 }
 
 /// Every row of the engine's keyspace the seed does not wrap, as text.
@@ -504,7 +524,7 @@ async fn the_vta_keeps_no_clear_pairing_and_discards_after_the_election() {
         &state,
         &auth,
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_3,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_5,
             json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
                     "manifest": m, "member": persona.did }),
         ),
@@ -630,7 +650,7 @@ async fn an_election_read_is_signed_as_the_member() {
     .await;
     let read = |member: &str, which: &str, payload: Value| {
         doc(
-            uris::TASK_VTA_PCS_VOTER_READ_0_3,
+            uris::TASK_VTA_PCS_VOTER_READ_0_6,
             json!({ "contextId": "member", "community": COMMUNITY, "member": member,
                     "read": which, "payload": payload }),
         )
@@ -645,8 +665,29 @@ async fn an_election_read_is_signed_as_the_member() {
     let d = &shown["document"];
     assert_eq!(
         d["type"],
-        "https://trusttasks.org/spec/vtc/elections/show/0.3"
+        "https://trusttasks.org/spec/vtc/elections/show/0.6"
     );
+    // voter/read 0.3, still served, signs show/0.3 and list/0.3.
+    for (which, payload, signed) in [
+        (
+            "show",
+            json!({ "electionId": "agm-2028" }),
+            "https://trusttasks.org/spec/vtc/elections/show/0.3",
+        ),
+        (
+            "list",
+            json!({}),
+            "https://trusttasks.org/spec/vtc/elections/list/0.3",
+        ),
+    ] {
+        let mid = doc(
+            uris::TASK_VTA_PCS_VOTER_READ_0_3,
+            json!({ "contextId": "member", "community": COMMUNITY, "member": persona.did,
+                    "read": which, "payload": payload }),
+        );
+        let mid = ok(&handle_voter_read(&state, &auth, mid).await);
+        assert_eq!(mid["document"]["type"], signed);
+    }
     // voter/read 0.2, still served, signs the show its version names: 0.2.
     let old = doc(
         uris::TASK_VTA_PCS_VOTER_READ_0_2,
@@ -672,8 +713,20 @@ async fn an_election_read_is_signed_as_the_member() {
     let listed = ok(&handle_voter_read(&state, &auth, read(&persona.did, "list", json!({}))).await);
     assert_eq!(
         listed["document"]["type"],
-        "https://trusttasks.org/spec/vtc/elections/list/0.3"
+        "https://trusttasks.org/spec/vtc/elections/list/0.5"
     );
+    // Item 3: only the engine builds a presentation.
+    let out = handle_voter_read(
+        &state,
+        &auth,
+        read(
+            &persona.did,
+            "show",
+            json!({ "electionId": "agm-2028", "presentation": "x~y~z" }),
+        ),
+    )
+    .await;
+    assert_eq!(code(&out), "malformedRequest");
 
     // A payload the read's own schema refuses is not signed.
     let out = handle_voter_read(&state, &auth, read(&persona.did, "show", json!({}))).await;
@@ -685,4 +738,224 @@ async fn an_election_read_is_signed_as_the_member() {
     )
     .await;
     assert_eq!(code(&out), "vta/pcs/voter/read:memberNotHeld");
+}
+
+// ─── Credential rolls (VTI-VOT-015, VTI-VOT-016, VTI-VOT-025) ───────────────
+
+const GROUP: &str = "did:webvh:QmGroup:vtc.example.org:groups:g7";
+
+/// A Data Integrity membership credential `issuer` issued `subject`, held in the vault.
+async fn held_membership(state: &AppState, id: &str, issuer: &str, subject: &str) {
+    use crate::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
+    let vc = json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiableCredential", "MembershipCredential"],
+        "issuer": issuer,
+        "credentialSubject": { "id": subject },
+        "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+                   "proofValue": "z5vExampleCredentialProof" },
+    });
+    let cred = StoredCredential {
+        id: id.into(),
+        format: CredentialFormat::EddsaJcs2022,
+        types: vec!["MembershipCredential".into()],
+        schema_id: None,
+        community_did: None,
+        context_id: None,
+        subject_did: Some(subject.to_string()),
+        issuer_did: Some(issuer.to_string()),
+        purpose: None,
+        status: CredentialStatus::Valid,
+        valid_from: None,
+        valid_until: None,
+        received_at: "2026-01-01T00:00:00Z".into(),
+        source: None,
+        tags: Default::default(),
+        body: serde_json::to_vec(&vc).unwrap(),
+        lifecycle: vti_common::vault::VaultStatus::Active,
+        archived_at: None,
+        deleted_at: None,
+        grace_until: None,
+    };
+    crate::vault::storage::put(&state.vault_ks, &cred)
+        .await
+        .unwrap();
+}
+
+/// The member's DID: a holder key this VTA derives in the `member` context, which it both signs
+/// the ticket request with and presents the membership credential as.
+async fn member_persona(state: &AppState) -> MemberDid {
+    let ctx = crate::contexts::create_context(&state.contexts_ks, "member", "member")
+        .await
+        .unwrap();
+    let path = format!("{}/7'", ctx.base_path);
+    MemberDid {
+        did: crate::test_support::seed_holder_key(state, &path, Some("member")).await,
+    }
+}
+
+struct MemberDid {
+    did: String,
+}
+
+/// VTI-VOT-025, register item 9: under a credential roll the ticket request carries a
+/// presentation of the member's one membership credential for `roll.memberOf`, made as the
+/// member, bound to that document's `id` and to the community.
+#[tokio::test]
+async fn vti_vot_025_the_ticket_request_presents_the_membership_bound_to_it() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    let auth = claims("did:key:z6MkVoter", Role::Admin, "member");
+    let persona = member_persona(&state).await;
+    held_membership(&state, "vmc-eng", GROUP, &persona.did).await;
+    let mut rng = StdRng::seed_from_u64(0xC1);
+    let reg = Registrar::generate(COMMUNITY, &mut rng).unwrap();
+    let params = json!({ "suite": "ps-ddh-bls12381", "votingKey": reg.public_text().unwrap() });
+    let (box_did, _) = box_key(21);
+    let mut m = manifest("eng-2027", &box_did, true, "open");
+    m["roll"] = json!({ "rule": "credential", "memberOf": GROUP });
+
+    let answer = ok(&handle_voter_register(
+        &state,
+        &auth,
+        doc(
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_5,
+            json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
+                    "manifest": m, "member": persona.did, "membershipCredential": "vmc-eng" }),
+        ),
+    )
+    .await);
+    let ticket = &answer["ticketDocument"];
+    assert_eq!(
+        ticket["type"],
+        "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.3"
+    );
+    let vp = &ticket["payload"]["presentation"];
+    assert_eq!(vp["nonce"], ticket["id"], "bound to this document");
+    assert_eq!(vp["domain"], COMMUNITY, "and to the community");
+    assert_eq!(vp["holder"], persona.did.as_str());
+    assert_eq!(vp["verifiableCredential"][0]["issuer"], GROUP);
+    assert_eq!(vp["proof"]["proofPurpose"], "authentication");
+    // The whole document, presentation included, is signed as the member.
+    let signer = vta_sdk::trust_task_proof::verify_trust_task_proof_value(
+        ticket,
+        &vta_sdk::trust_task_proof::TrustTaskVmResolver::did_key_only(),
+    )
+    .await
+    .expect("the member's proof verifies");
+    assert_eq!(signer, persona.did);
+}
+
+/// VTI-VOT-025, register item 9: no credential under a credential roll, a credential under any
+/// other rule, one issued by another party, or one the vault does not hold are refused before
+/// anything is allocated.
+#[tokio::test]
+async fn vti_vot_025_a_credential_roll_refuses_a_missing_or_unusable_credential() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    let auth = claims("did:key:z6MkVoter", Role::Admin, "member");
+    let persona = member_persona(&state).await;
+    held_membership(
+        &state,
+        "vmc-other",
+        "did:webvh:QmOther:other.example",
+        &persona.did,
+    )
+    .await;
+    let mut rng = StdRng::seed_from_u64(0xC2);
+    let reg = Registrar::generate(COMMUNITY, &mut rng).unwrap();
+    let params = json!({ "suite": "ps-ddh-bls12381", "votingKey": reg.public_text().unwrap() });
+    let (box_did, _) = box_key(22);
+    let mut credential_roll = manifest("eng-2028", &box_did, true, "open");
+    credential_roll["roll"] = json!({ "rule": "credential", "memberOf": GROUP });
+    let members = manifest("all-2028", &box_did, true, "open");
+    let ask = |m: &Value, extra: Value| {
+        let mut p = json!({ "contextId": "member", "community": COMMUNITY,
+                            "parameters": params, "manifest": m, "member": persona.did });
+        for (k, v) in extra.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        doc(uris::TASK_VTA_PCS_VOTER_REGISTER_0_5, p)
+    };
+    // Under a credential roll, no credential.
+    let out = handle_voter_register(&state, &auth, ask(&credential_roll, json!({}))).await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/voter/register:membershipCredentialRequired"
+    );
+    // A credential under any other rule.
+    let other = json!({ "membershipCredential": "vmc-other" });
+    let out = handle_voter_register(&state, &auth, ask(&members, other.clone())).await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/voter/register:membershipCredentialRequired"
+    );
+    // One issued by a party other than `roll.memberOf`.
+    let out = handle_voter_register(&state, &auth, ask(&credential_roll, other)).await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/voter/register:membershipCredentialUnusable"
+    );
+    // One the vault does not hold.
+    let absent = json!({ "membershipCredential": "vmc-absent" });
+    let out = handle_voter_register(&state, &auth, ask(&credential_roll, absent)).await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/voter/register:membershipCredentialUnusable"
+    );
+    // Nothing was allocated for the refused requests.
+    assert!(
+        !unwrapped_rows(&state)
+            .await
+            .iter()
+            .any(|r| r.starts_with("voter:")),
+        "a refused membershipCredential allocates nothing"
+    );
+}
+
+/// VTI-VOT-016, read items 5 – 6: a `show` naming `memberOf` presents the credential only where
+/// that exact DID issued it; any other issuer — even a group of `memberOf` — is a mismatch.
+#[tokio::test]
+async fn vti_vot_016_a_read_presents_only_a_credential_memberof_issued() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    let auth = claims("did:key:z6MkVoter", Role::Admin, "member");
+    let persona = member_persona(&state).await;
+    let party = "did:webvh:QmParty:b.example";
+    held_membership(&state, "vmc-party", party, &persona.did).await;
+    held_membership(
+        &state,
+        "vmc-party-group",
+        &format!("{party}:groups:g1"),
+        &persona.did,
+    )
+    .await;
+    let read = |credential: &str, member_of: &str| {
+        doc(
+            uris::TASK_VTA_PCS_VOTER_READ_0_6,
+            json!({ "contextId": "member", "community": COMMUNITY, "member": persona.did,
+                    "read": "show", "payload": { "electionId": "party-2027" },
+                    "membershipCredential": credential, "memberOf": member_of }),
+        )
+    };
+
+    let out = handle_voter_read(&state, &auth, read("vmc-party-group", party)).await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/voter/read:membershipCredentialMismatch"
+    );
+    let out = handle_voter_read(&state, &auth, read("vmc-absent", party)).await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/voter/read:membershipCredentialUnusable"
+    );
+
+    let shown = ok(&handle_voter_read(&state, &auth, read("vmc-party", party)).await);
+    let d = &shown["document"];
+    assert_eq!(
+        d["type"],
+        "https://trusttasks.org/spec/vtc/elections/show/0.6"
+    );
+    let vp = &d["payload"]["presentation"];
+    assert_eq!(vp["nonce"], d["id"]);
+    assert_eq!(vp["domain"], COMMUNITY);
+    assert_eq!(vp["verifiableCredential"][0]["issuer"], party);
+    assert_eq!(d["payload"]["electionId"], "party-2027");
 }

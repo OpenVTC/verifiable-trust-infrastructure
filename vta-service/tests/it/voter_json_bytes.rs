@@ -44,7 +44,7 @@ async fn the_json_register_sends_the_manifest_as_given() {
     let _ = client.pcs_voter_register_json(sent.clone()).await;
 
     let (uri, payload) = sink.recorded().pop().expect("one task was dispatched");
-    assert_eq!(uri, trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_3);
+    assert_eq!(uri, trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_5);
     assert_eq!(
         serde_json::to_string(&payload).unwrap(),
         serde_json::to_string(&sent).unwrap(),
@@ -59,7 +59,7 @@ async fn the_json_register_sends_the_manifest_as_given() {
 async fn the_typed_register_rewrites_the_manifest() {
     let sink = Arc::new(RecordingSink::new());
     let client = VtaClient::loopback(sink.clone());
-    let typed: vta_sdk::specs::vta::pcs::voter::register::v0_3::Payload =
+    let typed: vta_sdk::specs::vta::pcs::voter::register::v0_5::Payload =
         serde_json::from_value(register_payload()).expect("the payload is the schema's");
 
     let _ = client.pcs_voter_register(&typed).await;

@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::TrustTask;
-use vti_specs::voting::{ballot::cast::v0_1 as cast, election::register::v0_3 as register};
+use vti_specs::voting::{ballot::cast::v0_1 as cast, election::register::v0_4 as register};
 use vti_voting::{
     board,
     election::{Election, ElectionId},
@@ -316,23 +316,125 @@ impl TicketSigner for PersonaTicketSigner<'_> {
     }
 }
 
-/// The tickets/issue Type URI, bare: every community dispatches it in this form.
-const TICKETS_ISSUE: &str = "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.1";
+/// The `vtc/elections/tickets/issue` version a `vta/pcs/voter/register` request builds its
+/// `ticketDocument` as: 0.1 for register 0.2 and 0.3, 0.3 for register 0.5, which adds the
+/// membership presentation a credential roll needs (VTI-VOT-025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TicketVersion {
+    /// `vtc/elections/tickets/issue/0.1`.
+    V0_1,
+    /// `vtc/elections/tickets/issue/0.3`.
+    V0_3,
+}
+
+impl TicketVersion {
+    /// The Type URI, bare: every community dispatches it in this form.
+    fn type_uri(self) -> &'static str {
+        match self {
+            Self::V0_1 => "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.1",
+            Self::V0_3 => "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.3",
+        }
+    }
+
+    /// The key a kept document is held under for `member`: the bare DID for 0.1, as records
+    /// from before 0.3 hold it, so each version's resend answers with its own document.
+    fn kept_key(self, member: &str) -> String {
+        match self {
+            Self::V0_1 => member.to_string(),
+            Self::V0_3 => format!("tickets/issue/0.3 {member}"),
+        }
+    }
+}
+
+/// The membership credential a member chose to present (`membershipCredential`), checked
+/// before anything is allocated or signed: held in the vault, presentable by this caller as the
+/// member now, and — where the roll or the read names one — issued by exactly that DID
+/// (`vta/pcs/voter/register` item 9, `vta/pcs/voter/read` items 5 – 6, VTI-VOT-016).
+pub struct MembershipPresenter<'a> {
+    state: &'a AppState,
+    auth: &'a crate::auth::AuthClaims,
+    credential_id: String,
+}
+
+impl<'a> MembershipPresenter<'a> {
+    /// The presenter of `credential_id` as `member`. `issuer`, where given, is the DID the
+    /// credential must have been issued by, compared character for character; a credential of
+    /// another issuer is `mismatch`.
+    ///
+    /// # Errors
+    /// [`PcsError::MembershipCredentialUnusable`] for a credential the caller may not present
+    /// as `member` now; `mismatch` for one issued by another party than `issuer`.
+    pub async fn check(
+        state: &'a AppState,
+        auth: &'a crate::auth::AuthClaims,
+        credential_id: &str,
+        member: &str,
+        issuer: Option<&str>,
+        mismatch: PcsError,
+    ) -> Result<Self> {
+        let stored = crate::operations::credential_exchange::presentable_as(
+            state,
+            auth,
+            credential_id,
+            member,
+            Utc::now(),
+        )
+        .await
+        .map_err(|e| match e {
+            crate::operations::credential_exchange::PresentToError::App(a) => PcsError::App(a),
+            _ => PcsError::MembershipCredentialUnusable,
+        })?;
+        if let Some(want) = issuer
+            && stored.issuer_did.as_deref() != Some(want)
+        {
+            return Err(mismatch);
+        }
+        Ok(Self {
+            state,
+            auth,
+            credential_id: credential_id.to_string(),
+        })
+    }
+
+    /// A presentation of the credential alone, made as its subject, with `nonce` the document's
+    /// `id` and `domain` (or `aud`) the community, disclosing the least the credential can.
+    async fn present(&self, nonce: &str, community: &str, purpose: &str) -> Result<Value> {
+        crate::operations::credential_exchange::present_least(
+            self.state,
+            self.auth,
+            &self.credential_id,
+            community,
+            nonce,
+            purpose,
+            Utc::now(),
+        )
+        .await
+        .map(|p| p.presentation)
+        .map_err(|e| match e {
+            crate::operations::credential_exchange::PresentToError::App(a) => PcsError::App(a),
+            _ => PcsError::MembershipCredentialUnusable,
+        })
+    }
+}
 
 /// The request to the community, signed as `signer` (item 9): a fresh id, the community as
-/// recipient, expiring no later than voting closes, and exactly this answer's payload.
+/// recipient, expiring no later than voting closes, and exactly this answer's payload — with,
+/// under a credential roll, the member's presentation bound to this document.
 async fn ticket_document(
     signer: &dyn TicketSigner,
     community: &str,
     voting_closes: DateTime<Utc>,
     answer: &Value,
+    version: TicketVersion,
+    presenter: Option<&MembershipPresenter<'_>>,
 ) -> Result<Value> {
     let now = Utc::now();
     let expires = (now + chrono::Duration::hours(1)).min(voting_closes);
     let stamp = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let mut doc = json!({
-        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": TICKETS_ISSUE,
+        "id": id,
+        "type": version.type_uri(),
         "issuer": signer.did(),
         "recipient": community,
         "issuedAt": stamp(now),
@@ -343,13 +445,19 @@ async fn ticket_document(
             "request": answer["request"],
         },
     });
+    if let Some(p) = presenter {
+        doc["payload"]["presentation"] = p
+            .present(&id, community, "vtc/elections/tickets/issue")
+            .await?;
+    }
     signer.sign(&mut doc).await?;
     Ok(doc)
 }
 
-/// `vta/pcs/voter/read` items 4 – 6: one of the two election reads, signed as `member`, and
+/// `vta/pcs/voter/read` items 4 – 8: one of the two election reads, signed as `member`, and
 /// nothing else. The caller has already held `type_uri` to `list` or `show` and the payload to
-/// that read's schema.
+/// that read's schema; `presenter`, under `vta/pcs/voter/read/0.6`, adds to a `show` the
+/// member's presentation, bound to this document and the community.
 ///
 /// # Errors
 /// [`PcsError::MemberNotHeld`] for a DID this VTA holds no authentication key of the caller may
@@ -361,12 +469,14 @@ pub async fn sign_read(
     community: &str,
     type_uri: &str,
     payload: Value,
+    presenter: Option<&MembershipPresenter<'_>>,
 ) -> Result<Value> {
     let signer = PersonaTicketSigner::for_member(state, auth, member).await?;
     let now = Utc::now();
     let stamp = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     let mut doc = json!({
-        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "id": id,
         "type": type_uri,
         "issuer": member,
         "recipient": community,
@@ -374,6 +484,9 @@ pub async fn sign_read(
         "expiresAt": stamp(now + chrono::Duration::hours(1)),
         "payload": payload,
     });
+    if let Some(p) = presenter {
+        doc["payload"]["presentation"] = p.present(&id, community, "vtc/elections/show").await?;
+    }
     signer.sign(&mut doc).await?;
     Ok(doc)
 }
@@ -389,6 +502,8 @@ pub async fn register(
     published: &Value,
     manifest_value: &Value,
     member: Option<&dyn TicketSigner>,
+    version: TicketVersion,
+    presenter: Option<&MembershipPresenter<'_>>,
 ) -> Result<Value> {
     let (params, voting_key) = voting_params(community, published)?;
     let manifest: register::Manifest = serde_json::from_value(manifest_value.clone())
@@ -416,14 +531,20 @@ pub async fn register(
         });
         if let Some(signer) = member {
             let mut existing = existing;
-            let doc = match existing.ticket_documents.get(signer.did()) {
+            let kept_key = version.kept_key(signer.did());
+            let doc = match existing.ticket_documents.get(&kept_key) {
                 Some(kept) => kept.clone(),
                 None => {
-                    let doc =
-                        ticket_document(signer, community, existing.voting_closes, &answer).await?;
-                    existing
-                        .ticket_documents
-                        .insert(signer.did().to_string(), doc.clone());
+                    let doc = ticket_document(
+                        signer,
+                        community,
+                        existing.voting_closes,
+                        &answer,
+                        version,
+                        presenter,
+                    )
+                    .await?;
+                    existing.ticket_documents.insert(kept_key, doc.clone());
                     state.pcs_engine_ks.insert(key, &existing).await?;
                     doc
                 }
@@ -487,9 +608,17 @@ pub async fn register(
         json!({ "electionId": election_id, "manifestDigest": digest_text, "request": request });
     let mut rec = rec;
     if let Some(signer) = member {
-        let doc = ticket_document(signer, community, rec.voting_closes, &answer).await?;
+        let doc = ticket_document(
+            signer,
+            community,
+            rec.voting_closes,
+            &answer,
+            version,
+            presenter,
+        )
+        .await?;
         rec.ticket_documents
-            .insert(signer.did().to_string(), doc.clone());
+            .insert(version.kept_key(signer.did()), doc.clone());
         answer["ticketDocument"] = doc;
     }
     state.pcs_engine_ks.insert(key, &rec).await?;

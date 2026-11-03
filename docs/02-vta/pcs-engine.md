@@ -101,14 +101,55 @@ The same engine votes in a community's elections (community voting, VTI-VOT-020 
 | 5 | client → ballot box | the cast document, from the client's own connection, after a pause; resent unchanged if the answer is lost |
 | 6 | client → VTA | `vta/pcs/voter/receipt` — the ballot box's signed receipt kept, and checked for inclusion in a head the community kept |
 
-**Versions.** The voter and trustee tasks that carry the manifest take voting/_shared/0.3's,
-whose `textReleaseThreshold` may be as low as 1 (VTI-VOT-065): `voter/register/0.3`,
-`vote/0.3`, `vote-encrypted/0.4`, `trustee/enrol/0.3` and `trustee/{deal,keys,justify}/0.4`;
-`voter/read/0.3` signs `vtc/elections/show/0.3` and `trustee/read/0.3` signs
-`voting/election/show/0.3`. The previous versions are still served, held to their own schema (a
-threshold of 10 or more), and their reads sign the previous shows. A client showing a member an
-election before the ticket says so when the threshold is below 10, and that a written answer
-may identify its author (VTI-VOT-090); it reads that from the manifest.
+**Versions.** The voter and trustee tasks that carry the manifest take voting/_shared/0.4's,
+whose roll may be a **credential roll** (`roll.rule: credential`, `roll.memberOf` a DID;
+VTI-VOT-025) and whose `textReleaseThreshold` may be as low as 1 (VTI-VOT-065):
+`voter/register/0.5`, `vote/0.4`, `vote-encrypted/0.5`, `trustee/enrol/0.4` and
+`trustee/{deal,keys,justify}/0.5`. `voter/register/0.5`'s `ticketDocument` is a
+`vtc/elections/tickets/issue/0.3` request; `voter/read/0.6` signs `vtc/elections/list/0.5` or
+`vtc/elections/show/0.6`, and `trustee/read/0.4` signs `voting/election/show/0.4`. The previous
+versions are still served, each held to its own schema and answering in its own shape:
+`voter/register/0.3` and `0.2` build a `tickets/issue/0.1` request (kept apart from 0.5's, so
+each version's repeat answers with its own document), `voter/read/0.3` signs `list/0.3` or
+`show/0.3`, `0.2` `list/0.3` or `show/0.2`, and `trustee/read/0.3` and `0.2` the show they name.
+A client showing a member an election before the ticket says so when the threshold is below 10,
+and that a written answer may identify its author (VTI-VOT-090); it reads that from the manifest.
+
+**Credential rolls.** Under a credential roll the community admits a voter on a presentation of
+their membership credential for `roll.memberOf` — the community, one of its groups, or a party
+that is itself its member — checked when the ticket is claimed (VTI-VOT-025). The client names
+the credential the member chose, by its vault handle:
+
+- `voter/register/0.5` with `member` and `membershipCredential`: the engine refuses
+  `membershipCredentialRequired` for a credential roll without one (or one given without
+  `member`, or under any other rule) and `membershipCredentialUnusable` for a credential it
+  holds no usable one under — not in the vault, not presentable by the caller as `member`, not
+  about `member`, not issued by `roll.memberOf`, revoked or outside its validity period —
+  before anything is allocated. Then `ticketDocument` carries `presentation`: a Data Integrity
+  presentation of that one credential, made as `member`, with `nonce` the document's `id` and
+  `domain` the community, disclosing no more than the credential's whole subject requires (a
+  Data Integrity credential cannot withhold a claim; an SD-JWT discloses none of its selective
+  ones). The presentation is recorded as a disclosure in the vault, as `vault/credentials/present`
+  records one.
+- `voter/read/0.6` with `read: show`, `membershipCredential` and `memberOf`: to read an election
+  put to the members of a party that is itself a member of the community, which the community
+  shows nobody else (VTI-VOT-015). The engine presents only a credential whose issuer is
+  `memberOf`, compared character for character, and refuses any other
+  `membershipCredentialMismatch` — a credential from a group of `memberOf` included — so a
+  client that names the wrong credential cannot make the engine show the community a membership
+  unrelated to the election (VTI-VOT-016). A payload carrying its own `presentation` is
+  `malformedRequest`: only the engine builds one, bound to the document it signs. Reading this
+  way shows the community the membership before the member has seen the election; the client
+  says so first (VTI-VOT-090).
+
+**`indeterminate`.** A community verifies a presentation before it looks the election up, and
+answers a check it could not complete — the issuer's DID document, a status list or a trust
+registry it could not obtain — with the framework's retryable `indeterminate`, whatever the
+election (VTI-VOT-018). Nothing was recorded: the client sends the **same** document again, after
+any `retryAfter` and with backoff, while it is unexpired — for a ticket, `voter/register` returns
+the kept `ticketDocument` unchanged. It never reads `indeterminate`, or `electionUnknown`, as a
+statement that no election exists. After a *lost* answer to a read it asks for a new read, as the
+community accepts a presentation in one document once.
 
 A voter key is per election, so a key recovered later links one election, never a
 member's voting history. The cast never carries the member's DID (VTI-VOT-003), and
@@ -118,7 +159,9 @@ host confirms every `vote` (`vta-mcp`'s guard counts it destructive).
 Steps 0 – 3 and 4 – 6 belong in separate runs, apart in time (CONVENTIONS §6 item 3): the
 community knows when it issued the ticket and the ballot box when the cast arrived. `pnm
 elections ticket` takes the ticket alone; `pnm elections vote` with no ticket held takes one
-and stops unless given `--now`.
+and stops unless given `--now`. Under a credential roll, `pnm elections ticket <id>
+--membership-credential <handle>` presents that credential, and with `--member-of <did>` its
+read presents it too; `pnm elections show` takes the same two flags.
 
 What the VTA keeps never pairs the member with a cast without the seed: the documents signed
 as the member go once the ticket is held, and the casts' leaf hashes and receipts are wrapped
@@ -127,7 +170,7 @@ casts and receipts 30 days later (`pcs_voter::RECEIPT_RETENTION`), with the vote
 CONVENTIONS §5 item 3.
 
 In a **sealed** or **tallied-encrypted** election (VTI-VOT-060 – 064, conventions §9) step 4
-is `vta/pcs/vote-encrypted/0.4` (0.3 still served), given the ceremony `vtc/elections/show` carries — the
+is `vta/pcs/vote-encrypted/0.5` (0.4 and 0.3 still served), given the ceremony `vtc/elections/show` carries — the
 trustees' signed steps, from which the VTA forms the election key itself (at least `threshold`
 qualified dealers and confirmations), never a key the ballot box or the community merely
 reports: the ballot is sealed to that key whole, or encrypted option
