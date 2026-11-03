@@ -122,7 +122,7 @@ const SITES: Site[] = [
   { file: "plugins/repos/api.ts", site: "limit: MEMBERS_PAGE", uri: MEMBERS, from: ["MEMBERS_PAGE"] },
   { file: "lib/names.ts", site: "(MEMBERS_TASK, { limit: 200 })", uri: MEMBERS, from: ["200"] },
   // A credential roll's choices: this community's members, any of which may be a member party.
-  { file: "plugins/ElectionBuilder.tsx", site: "(MEMBERS_LIST_TASK, { limit: 200 })", uri: MEMBERS, from: ["200"] },
+  { file: "plugins/ElectionBuilder.tsx", site: "MEMBERS_LIST_TASK,\n        { limit: 200 },", uri: MEMBERS, from: ["200"] },
   // Endorsements and their types.
   { file: "plugins/members.tsx", site: "{ limit: 200, ...(cursor ? { cursor } : {}) }", uri: ENDORSEMENTS, from: ["200"] },
   { file: "plugins/vetting/api.ts", site: "{ limit: 200, ...(cursor ? { cursor } : {}) }", uri: ENDORSEMENT_TYPES, from: ["200"] },
