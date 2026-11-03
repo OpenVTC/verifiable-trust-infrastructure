@@ -46,6 +46,9 @@ pub mod keys;
 /// `list` is a `mem:<contextId>:` prefix scan.
 pub mod memory;
 /// Runtime Policy Decision Point management (`policy/*`).
+/// The notifications this VTA holds for its principal (`notifications/*`,
+/// `vta/notifications/*`, VTI-NTF-022 – 053).
+pub mod notifications;
 pub mod outbound;
 /// Passkey login — DID-VM-resolved WebAuthn assertion verification.
 /// Drives `vta/auth/passkey-login-{start,finish}/1.0` trust-tasks.

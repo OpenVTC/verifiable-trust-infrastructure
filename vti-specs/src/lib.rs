@@ -31,8 +31,8 @@
 
 pub use vti_specs_core::{
     acl, audit, auth, backup, config, consent, credential_exchange, device, did_management,
-    external, git_ns, git_trust, governance, keys, messaging, persona, policy, provision, push,
-    registry, task_consent, vault, vetting, voting, witness,
+    external, git_ns, git_trust, governance, keys, messaging, notifications, persona, policy,
+    provision, push, registry, task_consent, vault, vetting, voting, witness,
 };
 pub use vti_specs_rooms::rooms;
 pub use vti_specs_vta::vta;

@@ -327,6 +327,19 @@ pub(crate) enum Commands {
         command: MemoryCommands,
     },
 
+    /// The notifications this VTA holds for you — an election you were told of, and who
+    /// passed it on.
+    ///
+    /// Backed by the `vta/notifications/{list,show,dismiss}/0.1` Trust Tasks
+    /// (VTI-NTF-050). A notification is no evidence that you may take part: open the thing
+    /// it points at from its holder, when you choose to. Listing, reading and dismissing tell
+    /// nobody anything.
+    #[command(name = "notifications")]
+    Notifications {
+        #[command(subcommand)]
+        command: NotificationsCommands,
+    },
+
     /// Manage the external accounts this VTA holds at clouds and third-party
     /// services, and the integrations bound to them.
     ///
@@ -1677,6 +1690,50 @@ pub(crate) enum RoomFileCommands {
         /// Where to write the file. Must not exist.
         #[arg(long)]
         out: std::path::PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum NotificationsCommands {
+    /// List the notifications held in a context, most recently received first.
+    List {
+        /// TARGET SCOPE: the context whose notifications to list.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// Only notifications of this kind (e.g. `election`).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only notifications whose thing is held by this DID (e.g. one community).
+        #[arg(long = "held-by", value_name = "DID")]
+        held_by: Option<String>,
+        /// Also list dismissed ones.
+        #[arg(long)]
+        include_dismissed: bool,
+        /// Also list withdrawn and lapsed ones still held.
+        #[arg(long)]
+        include_lapsed: bool,
+        /// The most items to return (1–200).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Continue from a previous page's cursor (same filters).
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Show one held notification with the document that delivered it, as received.
+    Show {
+        /// The record identifier `list` printed.
+        record_id: String,
+        /// TARGET SCOPE: the context it is held in.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Dismiss one held notification: it leaves the default list, and nobody is told.
+    Dismiss {
+        /// The record identifier `list` printed.
+        record_id: String,
+        /// TARGET SCOPE: the context it is held in.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
     },
 }
 

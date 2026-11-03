@@ -20,6 +20,49 @@ pub use tenant_overlay::{
     TenantConfigOverlay, TenantKmsOverlay, TenantMessagingOverlay, TenantOverlayError,
 };
 
+/// The notifications this VTA holds for its principal (`notifications/*`,
+/// VTI-NTF-030 – 033, VTI-NTF-052): the acceptance policy this VTA states, and how
+/// long a lapsed or withdrawn notification is kept.
+///
+/// The stated policy (VTI-NTF-030): a notification is held only when the party
+/// that delivered it — the originator, or for a relay the last relayer
+/// (VTI-NTF-031) — is a party the principal holds a relationship with: an issuer
+/// of a membership credential held in the context, a party of a relationship
+/// credential held there, a party holding an ACL entry at this VTA, or a DID in
+/// [`accept_from`](Self::accept_from). Every other verified notification is
+/// declined, and answered with the same receipt (VTI-NTF-023).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct NotificationsConfig {
+    /// DIDs the principal has chosen to accept notifications from, beside the
+    /// relationships the policy counts on its own.
+    #[serde(default)]
+    pub accept_from: Vec<String>,
+    /// Accept a verified notification from any party. The principal's choice
+    /// "otherwise" of VTI-NTF-030; off by default.
+    #[serde(default)]
+    pub accept_any: bool,
+    /// Days a notification is kept after it lapsed (its `validUntil` passed) or
+    /// was withdrawn, before it is discarded (VTI-NTF-052; default 30). A
+    /// notification with no `validUntil` lapses only by withdrawal.
+    #[serde(default = "default_notifications_retain_lapsed_days")]
+    pub retain_lapsed_days: u32,
+}
+
+fn default_notifications_retain_lapsed_days() -> u32 {
+    30
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            accept_from: Vec::new(),
+            accept_any: false,
+            retain_lapsed_days: default_notifications_retain_lapsed_days(),
+        }
+    }
+}
+
 /// Being the principal's **witnessed party** (`vta/witness/{open,present,accept}`):
 /// the VTA's side of a `witness/session` whose documents the client carries.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -235,6 +278,10 @@ pub struct AppConfig {
     /// witnesses read a member presentation.
     #[serde(default)]
     pub witness: WitnessPartyConfig,
+    /// The notifications this VTA holds for its principal: its stated acceptance
+    /// policy and retention (VTI-NTF-030, VTI-NTF-052).
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
     /// Verifier DIDs the holder **auto-consents** to when answering a

@@ -15,6 +15,7 @@ pub mod elections_trustee;
 pub mod external;
 pub mod keys;
 pub mod memory;
+pub mod notifications;
 /// Raw Rego policy management over the canonical `policy/*` family.
 pub mod persona;
 pub mod policy;

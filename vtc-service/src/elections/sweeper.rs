@@ -9,6 +9,8 @@
 //!   final board to each.
 //! - **Pre-credentials** (tickets/issue item 10): discarded once voting has closed, when no
 //!   resend can be useful.
+//! - **Member-party notifications** (VTI-NTF-061): `crate::notifications::election`, whose
+//!   one sender this pass is.
 //! - **Accepted presentations** (show/0.6 item 8.6): the `id` of a read whose presentation was
 //!   accepted is forgotten once its acceptance window has passed.
 
@@ -57,6 +59,12 @@ pub async fn pass(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> 
     }
     for rec in store::all(state.elections.ks()).await? {
         let id = rec.election_id.clone();
+        // The member party a credential roll names is told once the election is
+        // registered, and told again if it is withdrawn (VTI-NTF-061). Before `settle`,
+        // which may move the record on: the notice reads the standing it was given.
+        if let Err(e) = crate::notifications::election::settle(state, &rec, now).await {
+            warn!(election = %id, error = %e, "could not settle a member-party notification this pass");
+        }
         if let Err(e) = settle(state, rec, now).await {
             warn!(election = %id, error = %e, "could not settle an election this pass");
         }

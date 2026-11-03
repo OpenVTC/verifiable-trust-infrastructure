@@ -151,6 +151,9 @@ pub struct AppState {
     pub admin_actions_ks: KeyspaceHandle,
     /// Member pushes in flight (`crate::member_push`). Encrypted at rest.
     pub member_pushes_ks: KeyspaceHandle,
+    /// Notifications addressed to this community, and whom it relayed them to
+    /// (`crate::notifications`). Encrypted at rest.
+    pub notifications_ks: KeyspaceHandle,
     /// OpenID4VP verifier identities and their keys (`crate::oid4vp`).
     /// Encrypted at rest.
     pub oid4vp_keys_ks: KeyspaceHandle,
@@ -540,6 +543,7 @@ pub async fn run(
     let admin_actions_ks = store.keyspace(keyspaces::ADMIN_ACTIONS)?;
     let step_up_approvers_ks = store.keyspace(keyspaces::STEP_UP_APPROVERS)?;
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
+    let notifications_ks = store.keyspace(keyspaces::NOTIFICATIONS)?;
     let oid4vp_keys_ks = store.keyspace(keyspaces::OID4VP_KEYS)?;
     let oid4vp_sessions_ks = store.keyspace(keyspaces::OID4VP_SESSIONS)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
@@ -710,6 +714,12 @@ pub async fn run(
     let member_pushes_ks = match storage_key {
         Some(key) => member_pushes_ks.with_encryption(key),
         None => member_pushes_ks,
+    };
+    // Held notifications name who told this community what, and whom it relayed
+    // them to: encrypted like the push records. New, so nothing to migrate.
+    let notifications_ks = match storage_key {
+        Some(key) => notifications_ks.with_encryption(key),
+        None => notifications_ks,
     };
     // Verifier identities hold private keys; written only through
     // `vtc oid4vp install`, which encrypts under the same key, so there is
@@ -1071,6 +1081,7 @@ pub async fn run(
         admin_actions_ks,
         step_up_approvers_ks,
         member_pushes_ks,
+        notifications_ks,
         oid4vp_keys_ks,
         oid4vp_signers,
         oid4vp_sessions_ks,
@@ -1655,6 +1666,9 @@ pub async fn run(
     // not answered, the board checkpoints, and discarding pre-credentials after close.
     #[cfg(feature = "voting")]
     crate::elections::sweeper::spawn(state.clone(), shutdown_rx.clone());
+    // Notifications addressed to this community: later revisions relayed to whoever an
+    // earlier one was (VTI-NTF-044), and lapsed relay records discarded.
+    crate::notifications::inbox::spawn(state.clone(), shutdown_rx.clone());
     // Room files deleted, orphaned past their grace, or abandoned mid-transfer.
     crate::rooms::files::spawn_sweeper(
         state.room_files.clone(),

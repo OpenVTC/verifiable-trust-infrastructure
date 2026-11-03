@@ -2403,6 +2403,33 @@ pub const TASK_VTA_WITNESS_ACCEPT_0_2: &str =
 pub const TASK_VTA_WITNESS_LIST_0_2: &str =
     <vti_specs::vta::witness::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+// ─── Notifications (`notifications/*`, `vta/notifications/*`, VTI-NTF-001 – 063) ──
+// An originator tells a DID that a thing exists which it, or the parties it
+// stands for, may take part in (`notify`); a party that stands for others passes
+// the originator's signed document on unchanged (`relay`). A VTA holds what it
+// accepts per trust context and serves its principal's clients `list` / `show` /
+// `dismiss`. trust-tasks-tf #1012. Docs: docs/02-vta/notifications.md.
+
+/// `notifications/notify/0.1` — an originator's signed notification, addressed to one DID: where a thing is held, how to open it, whom it concerns.
+pub const TASK_NOTIFICATIONS_NOTIFY_0_1: &str =
+    <vti_specs::notifications::notify::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `notifications/relay/0.1` — a relayer passes a notification it was addressed to on to one party it stands for, carrying the received document whole.
+pub const TASK_NOTIFICATIONS_RELAY_0_1: &str =
+    <vti_specs::notifications::relay::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/notifications/list/0.1` — the notifications the VTA holds for the principal in one trust context, filtered by kind or holder; paged by `limit` and `nextCursor`.
+pub const TASK_VTA_NOTIFICATIONS_LIST_0_1: &str =
+    <vti_specs::vta::notifications::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/notifications/show/0.1` — one held notification, with the document that delivered it exactly as received.
+pub const TASK_VTA_NOTIFICATIONS_SHOW_0_1: &str =
+    <vti_specs::vta::notifications::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/notifications/dismiss/0.1` — take one held notification out of the principal's default list, telling nobody.
+pub const TASK_VTA_NOTIFICATIONS_DISMISS_0_1: &str =
+    <vti_specs::vta::notifications::dismiss::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// Every URI registered in this module — handy for the dispatcher's
 /// parity harness and for operator tooling that wants to enumerate
 /// the VTA's wire surface programmatically.
@@ -2698,6 +2725,12 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_WITNESS_PRESENT_0_2,
     TASK_VTA_WITNESS_ACCEPT_0_2,
     TASK_VTA_WITNESS_LIST_0_2,
+    // Notifications slice
+    TASK_NOTIFICATIONS_NOTIFY_0_1,
+    TASK_NOTIFICATIONS_RELAY_0_1,
+    TASK_VTA_NOTIFICATIONS_LIST_0_1,
+    TASK_VTA_NOTIFICATIONS_SHOW_0_1,
+    TASK_VTA_NOTIFICATIONS_DISMISS_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
     TASK_VTA_APP_STATE_PUT_1_1,

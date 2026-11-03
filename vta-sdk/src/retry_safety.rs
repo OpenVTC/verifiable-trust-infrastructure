@@ -549,6 +549,18 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2, RetrySafe),
     // A read of what accept stored.
     (trust_tasks::TASK_VTA_WITNESS_LIST_0_2, ReadOnly),
+    // ── Notifications (`notifications/*`, `vta/notifications/*`) ────────
+    // The second retry class (VTI-OPS-060, VTI-NTF-021): the recipient holds one
+    // record per originator and `notificationId`, replaced only by a higher
+    // `revision`, so a repeat of the same revision changes nothing and is
+    // answered with the same receipt. Dismissing a dismissed notification
+    // answers `changed: false`.
+    (trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1, RetrySafe),
+    (trust_tasks::TASK_NOTIFICATIONS_RELAY_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_NOTIFICATIONS_DISMISS_0_1, RetrySafe),
+    // Reads of what the VTA holds; nothing is marked or sent.
+    (trust_tasks::TASK_VTA_NOTIFICATIONS_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_NOTIFICATIONS_SHOW_0_1, ReadOnly),
     // ── External accounts (`external/*`) ────────────────────────────────
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_2, ReadOnly),
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_2, ReadOnly),

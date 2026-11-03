@@ -122,6 +122,16 @@ pub const DIRECTORY: &str = "directory";
 /// board to the number issued (VTI-VOT-072).
 pub const ELECTIONS: &str = "elections";
 
+/// Notifications addressed to this community (`notifications/notify`, `notifications/relay`,
+/// VTI-NTF-040 – 046): one record per (originator, `notificationId`) it accepted, the
+/// delivering document kept exactly as received so it can be relayed whole, and whom each
+/// revision was relayed to — kept until the notification's period ends, and used for nothing
+/// but relaying its later revisions (VTI-NTF-044). See `crate::notifications`.
+///
+/// **Backed up**: the relay record is the only account of whom the community told, and a
+/// restore without it could never tell them of a withdrawal (VTI-NTF-044).
+pub const NOTIFICATIONS: &str = "notifications";
+
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
 /// host starts with none, and a client resumes from `begin`.
 pub use vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE as ROOM_BLOB_TRANSFERS;
@@ -296,6 +306,7 @@ pub const ALL: &[&str] = &[
     COMMUNITY_ROOMS,
     DIRECTORY,
     ELECTIONS,
+    NOTIFICATIONS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -363,6 +374,7 @@ pub const BACKED_UP: &[&str] = &[
     DIRECTORY,
     // Who took a ticket, the manifests, the checkpoints and certifications.
     ELECTIONS,
+    NOTIFICATIONS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its

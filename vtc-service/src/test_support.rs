@@ -559,6 +559,9 @@ impl TestVtcBuilder {
         let member_pushes_ks = store
             .keyspace(crate::store::keyspaces::MEMBER_PUSHES)
             .expect("member_pushes ks");
+        let notifications_ks = store
+            .keyspace(crate::store::keyspaces::NOTIFICATIONS)
+            .expect("notifications ks");
         let oid4vp_keys_ks = store
             .keyspace(crate::store::keyspaces::OID4VP_KEYS)
             .expect("oid4vp_keys ks");
@@ -803,6 +806,7 @@ impl TestVtcBuilder {
             admin_actions_ks,
             step_up_approvers_ks,
             member_pushes_ks,
+            notifications_ks,
             oid4vp_signers: {
                 for record in &self.oid4vp_identities {
                     crate::oid4vp::put_identity(&oid4vp_keys_ks, record)

@@ -274,6 +274,9 @@ pub struct AppState {
     /// Witnessed sessions in flight (`vta/witness/*`), one record per session —
     /// see [`crate::keyspaces::WITNESS_SESSIONS`].
     pub witness_sessions_ks: KeyspaceHandle,
+    /// The notifications held for the principal (`vta/notifications/*`) — see
+    /// [`crate::keyspaces::NOTIFICATIONS`].
+    pub notifications_ks: KeyspaceHandle,
     /// A member's MLS group for each room they belong to. Group secrets — see
     /// [`crate::keyspaces::ROOM_GROUPS`].
     pub room_groups_ks: KeyspaceHandle,
@@ -613,6 +616,9 @@ pub async fn build_app_state(
     // Witnessed sessions: a session record holds the session document, which names
     // both relationship DIDs — encrypted at rest like the rest of the vault's state.
     let witness_sessions_ks = apply_encryption(store.keyspace(crate::keyspaces::WITNESS_SESSIONS)?);
+    // Held notifications: each names who the principal belongs to, so it is
+    // encrypted at rest like the vault.
+    let notifications_ks = apply_encryption(store.keyspace(crate::keyspaces::NOTIFICATIONS)?);
     // Encrypted alongside the key store where a TEE deployment provides a storage key: a
     // group snapshot decrypts every record its room holds, which is the same class of
     // material as a derived key and deserves the same treatment.
@@ -735,6 +741,7 @@ pub async fn build_app_state(
         ),
         pcs_engine_ks,
         witness_sessions_ks,
+        notifications_ks,
         room_groups_ks,
         room_invitations_ks,
         app_state_ks,
@@ -1222,6 +1229,9 @@ pub async fn run(
         let storage_vault_ks = vault_ks.clone();
         let storage_witness_sessions_ks =
             apply_encryption(store.keyspace(crate::keyspaces::WITNESS_SESSIONS)?);
+        let storage_notifications_ks =
+            apply_encryption(store.keyspace(crate::keyspaces::NOTIFICATIONS)?);
+        let storage_notifications_retain_days = config.notifications.retain_lapsed_days;
         let storage_room_groups_ks =
             apply_encryption(store.keyspace(crate::keyspaces::ROOM_GROUPS)?);
         let storage_pcs_engine_ks = apply_encryption(store.keyspace(crate::keyspaces::PCS_ENGINE)?);
@@ -1734,6 +1744,8 @@ pub async fn run(
                     storage_task_consent_ks,
                     storage_vault_ks,
                     storage_witness_sessions_ks,
+                    storage_notifications_ks,
+                    storage_notifications_retain_days,
                     storage_room_groups_ks,
                     storage_pcs_engine_ks,
                     storage_app_state_ks,
@@ -1921,6 +1933,8 @@ fn run_storage_thread(
     task_consent_ks: KeyspaceHandle,
     vault_ks: KeyspaceHandle,
     witness_sessions_ks: KeyspaceHandle,
+    notifications_ks: KeyspaceHandle,
+    notifications_retain_days: u32,
     room_groups_ks: KeyspaceHandle,
     pcs_engine_ks: KeyspaceHandle,
     app_state_ks: KeyspaceHandle,
@@ -2082,6 +2096,20 @@ fn run_storage_thread(
                             Ok(n) if n > 0 => debug!(removed = n, "witness session sweeper"),
                             Ok(_) => {}
                             Err(e) => warn!("witness session sweeper error: {e}"),
+                        }
+                        // Discard held notifications that lapsed or were withdrawn
+                        // longer ago than `[notifications] retain_lapsed_days`
+                        // (VTI-NTF-052).
+                        match crate::operations::notifications::sweep_lapsed(
+                            &notifications_ks,
+                            notifications_retain_days,
+                            chrono::Utc::now(),
+                        )
+                        .await
+                        {
+                            Ok(n) if n > 0 => debug!(removed = n, "notification sweeper"),
+                            Ok(_) => {}
+                            Err(e) => warn!("notification sweeper error: {e}"),
                         }
                         // Discard every retained admission past its 24 hours
                         // (`rooms/owner/group/add/0.3` item 8). Reads already refuse
