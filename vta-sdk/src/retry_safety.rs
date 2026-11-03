@@ -492,6 +492,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // token gone.
     (trust_tasks::TASK_VTA_PCS_ATTEST_0_1, Keyed),
     (trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1, ReadOnly),
+    // Converges: a repeat finds the engine already holding the bound key and answers
+    // `recovered: false`, changing nothing.
+    (trust_tasks::TASK_VTA_PCS_VETTER_RECOVER_0_1, RetrySafe),
     // ── Voter role (`vta/pcs/voter/*`, `vta/pcs/vote`) ──────────────────
     // A repeat before the ticket is held answers with the request already kept,
     // under the same key and blinding state, so a replayed answer still unblinds.

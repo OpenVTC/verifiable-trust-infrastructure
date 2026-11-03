@@ -133,3 +133,53 @@ pub fn member_key_from_seed(
     let open = Open::setup(SetupParams::new(deployment_label(community)))?;
     Ok(open.user_keygen(&mut seeded_rng(seed))?)
 }
+
+/// The PCS identifiers a community's scheme gives member keys, for many seeds in a row: what a
+/// VTA uses to search the keys it can derive for a context for the one a community has bound
+/// (`vta/pcs/vetter/recover`). The scheme instance is set up once, not once per seed as
+/// [`member_key_from_seed`] does.
+///
+/// Holds no key: [`MemberIds::id_from_seed`] returns the public identifier and drops the
+/// secret key it computed on the way.
+pub struct MemberIds {
+    open: Open,
+}
+
+impl MemberIds {
+    /// The scheme instance for `community`.
+    ///
+    /// # Errors
+    /// [`ProtoError::Pcs`] if the scheme instance cannot be set up.
+    pub fn for_community(community: &str) -> Result<Self, ProtoError> {
+        use predicate_credential_system::pcs::{PredicateCredentialSystem, SetupParams};
+        Ok(Self {
+            open: Open::setup(SetupParams::new(deployment_label(community)))?,
+        })
+    }
+
+    /// The identifier [`member_key_from_seed`] gives `seed` under this community.
+    ///
+    /// # Errors
+    /// [`ProtoError::Pcs`] if the key cannot be generated.
+    pub fn id_from_seed(&self, seed: &[u8; 32]) -> Result<G1, ProtoError> {
+        use predicate_credential_system::pcs::PredicateCredentialSystem;
+        let (id, _usk) = self.open.user_keygen(&mut seeded_rng(seed))?;
+        Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The search helper gives exactly the identifier the engines' own derivation does.
+    #[test]
+    fn member_ids_agree_with_member_key_from_seed() {
+        let ids = MemberIds::for_community("did:example:community").unwrap();
+        for i in 0u8..4 {
+            let seed = [i; 32];
+            let (expected, _) = member_key_from_seed("did:example:community", &seed).unwrap();
+            assert_eq!(ids.id_from_seed(&seed).unwrap(), expected);
+        }
+    }
+}

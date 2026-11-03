@@ -253,6 +253,78 @@ pub async fn derive_pcs_member_seed(
     authorized.seed(keys_ks, seed_store).await
 }
 
+/// Audit action for a search over a context's PCS member keys.
+pub const PCS_KEY_SEARCH_ACTION: &str = "key.pcs_search";
+
+/// Search the PCS member keys `context_id` can derive — every path its counter
+/// has handed out, under every seed generation still held, less `skip` — for
+/// the one whose seed `matches` accepts (`vta/pcs/vetter/recover`). Bounded by
+/// [`vta_keys::custody::PCS_SEARCH_MAX_DERIVATIONS`].
+///
+/// The bulk counterpart of [`derive_pcs_member_seed`]: the context's base is
+/// read here, the search is held to it by [`custody::authorize_pcs_search`],
+/// and a refusal is audited and logged as a custody violation. A search that
+/// runs is audited once, with how many keys it derived and whether one
+/// matched — never a path, a seed or an identifier.
+#[allow(clippy::too_many_arguments)]
+pub async fn search_pcs_member_keys<F>(
+    contexts_ks: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    audit_sink: &vta_audit::SharedAuditSink,
+    actor: &str,
+    context_id: &str,
+    skip: &std::collections::HashSet<String>,
+    matches: F,
+    channel: &str,
+) -> Result<custody::PcsSearchOutcome, AppError>
+where
+    F: Fn(&[u8; 32]) -> bool + Send + 'static,
+{
+    let base = get_context(contexts_ks, context_id)
+        .await?
+        .map(|c| c.base_path)
+        .unwrap_or_default();
+    let count = if base.is_empty() {
+        0
+    } else {
+        crate::keys::paths::peek_path_counter(keys_ks, &base).await?
+    };
+    let authorized = match custody::authorize_pcs_search(context_id, &base, count) {
+        Ok(a) => a,
+        Err(v) => {
+            report(audit_sink, actor, &v, None, Some(context_id), channel).await;
+            return Err(v.into());
+        }
+    };
+    let outcome = authorized.find(keys_ks, seed_store, skip, matches).await?;
+    let (result, detail) = match &outcome {
+        custody::PcsSearchOutcome::Found { .. } => ("success", "a key matched".to_string()),
+        custody::PcsSearchOutcome::NotFound { derived } => {
+            ("failure", format!("{derived} keys derived, none matched"))
+        }
+        custody::PcsSearchOutcome::TooMany { candidates } => (
+            "failure",
+            format!(
+                "{candidates} candidate keys exceed the bound of {}; none derived",
+                custody::PCS_SEARCH_MAX_DERIVATIONS
+            ),
+        ),
+    };
+    audit::record_with_detail_best_effort(
+        audit_sink,
+        PCS_KEY_SEARCH_ACTION,
+        actor,
+        None,
+        result,
+        Some(channel),
+        Some(context_id),
+        Some(&detail),
+    )
+    .await;
+    Ok(outcome)
+}
+
 /// Rule 7: require that `key_id`, referenced from a resource in
 /// `scope_context`, is a key in that context's subtree. Audits a refusal.
 ///

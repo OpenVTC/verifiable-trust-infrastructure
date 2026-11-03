@@ -14,7 +14,9 @@
 //! A vetter's: [`VtaClient::pcs_root_request`] / [`VtaClient::pcs_root_accept`] around
 //! `vtc/vetting/vetters/pcs-root`, [`VtaClient::pcs_tokens_request`] /
 //! [`VtaClient::pcs_tokens_accept`] (or [`VtaClient::pcs_tokens_abandon`]) around each tick of
-//! `vtc/vetting/vetters/pcs-tokens`, and [`VtaClient::pcs_attest`] after a session.
+//! `vtc/vetting/vetters/pcs-tokens`, and [`VtaClient::pcs_attest`] after a session. When the
+//! community refuses a root request with `identifierRebound`, [`VtaClient::pcs_vetter_recover`]
+//! restores the key it bound.
 //!
 //! Every method takes the task's generated payload type and returns its generated response
 //! type (`vti_specs::vta::pcs`), so a caller cannot build a request the schema would
@@ -191,6 +193,22 @@ impl VtaClient {
             trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1,
             req,
             PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/pcs/vetter/recover/0.1` — restore the vetter key the community bound the member to
+    /// (`boundId`, from `vtc/vetting/vetters/pcs-binding/show`), when the community refuses a
+    /// root request with `pcs-root:identifierRebound`. The VTA searches the keys it can derive for
+    /// the context, so this gets the longer timeout.
+    pub async fn pcs_vetter_recover(
+        &self,
+        req: &pcs::vetter::recover::v0_1::Payload,
+    ) -> Result<pcs::vetter::recover::v0_1::Response, VtaError> {
+        self.pcs_call(
+            trust_tasks::TASK_VTA_PCS_VETTER_RECOVER_0_1,
+            req,
+            PCS_PROOF_TIMEOUT,
         )
         .await
     }

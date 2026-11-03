@@ -2543,6 +2543,15 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "vetter": pcs_vetter() })
             ),
         ),
+        (
+            uris::TASK_VTA_PCS_VETTER_RECOVER_0_1,
+            checked!(
+                specs::vta::pcs::vetter::recover::v0_1::Payload,
+                specs::vta::pcs::vetter::recover::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "memberDid": "did:key:z6MkAlice", "boundId": PCS_B58 }),
+                json!({ "recovered": true, "vetter": pcs_vetter() })
+            ),
+        ),
         // ─── vta/pcs voter role ──────────────────────────────────
         (
             uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,

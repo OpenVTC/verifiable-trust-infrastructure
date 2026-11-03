@@ -723,6 +723,56 @@ pub(super) async fn handle_vetter_show(
     }
 }
 
+/// `vta/pcs/vetter/recover/0.1`: restore the key the community bound the member to.
+///
+/// Audited as `pcs.vetter.recover` with the community and whether the key changed — never the
+/// identifier, the key, the seed or the path (rule 8). The search itself is audited once by key
+/// custody (`key.pcs_search`).
+pub(super) async fn handle_vetter_recover(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::vetter::recover::v0_1 as t;
+    let (context, community) = match vetter_preamble::<t::Payload>(state, auth, &doc).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    match engine::vetter_recover(
+        state,
+        &caller(auth),
+        &context,
+        &community,
+        str_of(&doc, "memberDid"),
+        str_of(&doc, "boundId"),
+        |ctx| auth.has_context_access(ctx),
+    )
+    .await
+    {
+        Ok((recovered, vetter)) => {
+            if recovered {
+                audit(
+                    state,
+                    "pcs.vetter.recover",
+                    auth,
+                    &community,
+                    &context,
+                    Some("key restored"),
+                )
+                .await;
+            }
+            respond::<t::Response>(&doc, json!({ "recovered": recovered, "vetter": vetter }))
+        }
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::BoundKeyNotFound(_) => Some(t::error_codes::NOT_FOUND),
+            PcsError::HeldInAnotherContext(_) => Some(t::error_codes::HELD_IN_ANOTHER_CONTEXT),
+            PcsError::MemberMismatch => Some(t::error_codes::MEMBER_MISMATCH),
+            PcsError::EngineEnrolled => Some(t::error_codes::ENGINE_ENROLLED),
+            _ => None,
+        }),
+    }
+}
+
 // ─── Voter ───────────────────────────────────────────────────────────────────
 //
 // `vta/pcs/voter/*` and `vta/pcs/vote` (trust-tasks-tf #834, VTI-VOT-020 – 053). Audit names the
