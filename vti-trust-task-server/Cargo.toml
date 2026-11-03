@@ -23,11 +23,11 @@ trust-tasks-rs = { workspace = true }
 uuid = { workspace = true }
 # The proof verifier (`trust_task_proof`) and the shared reject vocabulary
 # (`protocols::trust_task_reject_reasons` / `_details`).
-vta-sdk = { path = "../vta-sdk", version = "0.78", default-features = false, features = [
+vta-sdk = { path = "../vta-sdk", version = "0.79", default-features = false, features = [
   "proof-verify",
 ] }
 # `AppError`, the acceptance window every VTI node applies.
-vti-common = { path = "../vti-common", version = "0.54" }
+vti-common = { path = "../vti-common", version = "0.55" }
 
 [dev-dependencies]
 ed25519-dalek = { workspace = true }
@@ -35,7 +35,7 @@ multibase = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-vta-sdk = { path = "../vta-sdk", version = "0.78", default-features = false, features = [
+vta-sdk = { path = "../vta-sdk", version = "0.79", default-features = false, features = [
   "proof-verify",
   "client",
 ] }

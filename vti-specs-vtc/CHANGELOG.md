@@ -2,6 +2,79 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.2.0...vti-specs-vtc-v0.3.0) — 2026-11-03
+
+
+### Added
+
+- **vetting**: Recover or reset a lost hidden-vetting key (pcs-binding/show, pcs-binding/reset, vta/pcs/vetter/recover) ([#2406](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2406))
+
+* feat(vtc): recover or reset a lost hidden-vetting key (pcs-binding/show, pcs-binding/reset)
+
+  A vetter is bound to the PCS identifier of their first enrolment, and a
+  second identifier is refused with pcs-root:identifierRebound. The binding
+  was never cleared, so a vetter whose key was lost was locked out of hidden
+  vetting for as long as they stayed a member; revoking and re-granting the
+  role did not help.
+
+  - vtc/vetting/vetters/pcs-binding/show/0.1: a member reads their own
+    binding (identifier, enrolled labels, any pending reset), so their client
+    can recover the matching key. Membership is the entitlement;
+    notAMember otherwise.
+  - vtc/vetting/vetters/pcs-binding/reset/0.1: an administrator holding
+    vtc.vetting.manage (as vetters/grant) resets a member's binding with a
+    reason. Idempotent; notBound for a member who never enrolled. Audited as
+    HiddenVetterBindingReset, never with the identifier.
+  - Enrolment after a reset: the recorded identifier cancels it
+    (HiddenVetterResetCancelled); a new one is refused (identifierRebound)
+    while any label the old one enrolled under is live, judged at each
+    request against the caller's configuration and the stored one under the
+    enrolment lock, and bound once none is (HiddenVetterRebound) with its
+    labels afresh. The old labels are retired on the record.
+  - vtc/vetting/hidden/publish refuses to make a retired label live again,
+    checked before the consent gate and again under the enrolment lock
+    before the write. publish/0.1 declares no code for it, so it is a
+    validation refusal.
+  - Admin console: a "Reset a hidden-vetting key" card under Vetting ->
+    Vetters, shown when discovery lists the task.
+  - EnrolmentRecord gains optional reset and retiredLabels members; rows
+    without them read and write as before.
+
+  The two specifications are pinned from a locally built registry ahead of
+  their publication; trust-tasks.lock records that registry until they are
+  re-pinned against trusttasks.org.
+
+- **notifications**: Deposit to the VTA, a community's received notifications and relay decision, and four fixes (VTI-NTF-005, 034, 041, 047, 054 – 056, 070 – 074) ([#2405](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2405))
+
+* feat(vti-specs): pin vta/notifications/deposit 0.1 and vtc/notifications/{list,show,relay} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1017: the client's hand-over of a
+  notification received for a persona DID (vti-specs-vta), and a
+  community's administrators' view and relay decision (vti-specs-vtc).
+  notifications/notify and relay 0.1 changed in prose only; their pinned
+  digests are unchanged.
+
+- **vtc**: A community's side of Verifiable Trust Network membership ([#2399](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2399))
+
+* feat(vti-specs-vtc): pin vtc/networks/* 0.1
+
+  list, show, join, repudiate, leave, groups/register, notice and evidence
+  (trustoverip/dtgwg-trust-tasks-tf#1014): a community's side of
+  Verifiable Trust Network membership.
+
+- **voting**: Credential rolls proven at the ticket claim, and elections shown only to whom they concern (VTI-VOT-015 – 018, VTI-VOT-025 – 029) ([#2395](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2395))
+
+* build(specs): pin the credential-roll and election-privacy task versions
+
+  voting/_shared/0.4 and every task carrying it (dtgwg-trust-tasks-tf #1008,
+  #1010, #1011): voting/election/register/0.4, show/0.4;
+  vtc/elections/create/0.5, show/0.6, list/0.5, tickets/issue/0.3;
+  vta/pcs/voter/register/0.5, voter/read/0.6, vote/0.4, vote-encrypted/0.5,
+  trustee/{deal,justify,keys}/0.5, enrol/0.4, read/0.4. Older versions stay
+  pinned.
+
+
+
 ## [0.2.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.1.1...vti-specs-vtc-v0.2.0) — 2026-11-02
 
 

@@ -2,6 +2,114 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vta-v0.3.0...vti-specs-vta-v0.4.0) — 2026-11-03
+
+
+### Added
+
+- **vetting**: Recover or reset a lost hidden-vetting key (pcs-binding/show, pcs-binding/reset, vta/pcs/vetter/recover) ([#2406](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2406))
+
+* feat(vtc): recover or reset a lost hidden-vetting key (pcs-binding/show, pcs-binding/reset)
+
+  A vetter is bound to the PCS identifier of their first enrolment, and a
+  second identifier is refused with pcs-root:identifierRebound. The binding
+  was never cleared, so a vetter whose key was lost was locked out of hidden
+  vetting for as long as they stayed a member; revoking and re-granting the
+  role did not help.
+
+  - vtc/vetting/vetters/pcs-binding/show/0.1: a member reads their own
+    binding (identifier, enrolled labels, any pending reset), so their client
+    can recover the matching key. Membership is the entitlement;
+    notAMember otherwise.
+  - vtc/vetting/vetters/pcs-binding/reset/0.1: an administrator holding
+    vtc.vetting.manage (as vetters/grant) resets a member's binding with a
+    reason. Idempotent; notBound for a member who never enrolled. Audited as
+    HiddenVetterBindingReset, never with the identifier.
+  - Enrolment after a reset: the recorded identifier cancels it
+    (HiddenVetterResetCancelled); a new one is refused (identifierRebound)
+    while any label the old one enrolled under is live, judged at each
+    request against the caller's configuration and the stored one under the
+    enrolment lock, and bound once none is (HiddenVetterRebound) with its
+    labels afresh. The old labels are retired on the record.
+  - vtc/vetting/hidden/publish refuses to make a retired label live again,
+    checked before the consent gate and again under the enrolment lock
+    before the write. publish/0.1 declares no code for it, so it is a
+    validation refusal.
+  - Admin console: a "Reset a hidden-vetting key" card under Vetting ->
+    Vetters, shown when discovery lists the task.
+  - EnrolmentRecord gains optional reset and retiredLabels members; rows
+    without them read and write as before.
+
+  The two specifications are pinned from a locally built registry ahead of
+  their publication; trust-tasks.lock records that registry until they are
+  re-pinned against trusttasks.org.
+
+- **notifications**: Deposit to the VTA, a community's received notifications and relay decision, and four fixes (VTI-NTF-005, 034, 041, 047, 054 – 056, 070 – 074) ([#2405](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2405))
+
+* feat(vti-specs): pin vta/notifications/deposit 0.1 and vtc/notifications/{list,show,relay} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1017: the client's hand-over of a
+  notification received for a persona DID (vti-specs-vta), and a
+  community's administrators' view and relay decision (vti-specs-vtc).
+  notifications/notify and relay 0.1 changed in prose only; their pinned
+  digests are unchanged.
+
+- **notifications**: Notify/relay, the VTA's held notifications and the election notice (VTI-NTF-001 – 063) ([#2397](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2397))
+
+* feat(notifications)!: notifications/notify + relay, the VTA's held notifications, and the election notice to a member party (VTI-NTF-001 – 063)
+
+  Implements the Notifications chapter of the VTI specification
+  (dtgwg-vti-spec #91, VTI-NTF-001 – 063, Appendix G `election`) over the
+  tasks pinned from dtgwg-trust-tasks-tf #1012: notifications/notify/0.1 and
+  notifications/relay/0.1 (vti-specs-core), vta/notifications/{list,show,
+  dismiss}/0.1 (vti-specs-vta).
+
+  - vta-sdk: `notifications::verify_delivery` -> `VerifiedDelivery`, the one
+    way to a notification's members: every layer's type and pinned schema,
+    each proof over the JSON as received as its own issuer, each forwarded
+    document addressed to the relay carrying it, at most four relays,
+    `relayable` honoured (VTI-NTF-042). TASK_* constants, retry_safety
+    (notify/relay/dismiss RetrySafe, list/show ReadOnly), typed and `_json`
+    client methods for list/show/dismiss.
+  - VTA: notify/relay are counterparty tasks (zero-authority claim for a
+    sender the ACL does not know); the stated acceptance policy
+    (`[notifications]`: an ACL entry, an issuer of a membership credential or
+    a party of a relationship credential held in the context, `accept_from`,
+    `accept_any`) counts the delivering relayer, never the originator
+    (VTI-NTF-030/031); one record per (addressee, originator, notificationId),
+    higher revision replaces, dismissal kept (VTI-NTF-022); the same receipt
+    whatever was done (VTI-NTF-023); bounds per originator and deliverer
+    (VTI-NTF-033); held per context in the new `notifications` keyspace
+    (backed up), listed/read/dismissed only with standing there
+    (VTI-NTF-050 – 052); lapsed records swept after `retain_lapsed_days`.
+  - VTC as originator: an election under a credential roll naming a member
+    party is notified to that party once registered and withdrawn (higher
+    revision) if cancelled or closed before voting closes (VTI-NTF-060/061);
+    the notice is recorded before it is sent and queued on the durable member
+    push by the election sweeper, its one sender.
+  - VTC as recipient and relayer: notify/relay on the open door, verified and
+    held by its stated policy in its own `notifications` keyspace (backed up);
+    a relay engine that refuses a decision which has not acknowledged what
+    the relay discloses (VTI-NTF-046), relays the document exactly as
+    received to every member, keeps whom it relayed to until the period ends
+    (30 days without one) and relays every later revision, withdrawals
+    included, to them (VTI-NTF-044). No remote surface for the relay decision
+    yet: the specification defines no administrator task for it.
+  - pnm: `pnm notifications list|show|dismiss`.
+
+- **voting**: Credential rolls proven at the ticket claim, and elections shown only to whom they concern (VTI-VOT-015 – 018, VTI-VOT-025 – 029) ([#2395](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2395))
+
+* build(specs): pin the credential-roll and election-privacy task versions
+
+  voting/_shared/0.4 and every task carrying it (dtgwg-trust-tasks-tf #1008,
+  #1010, #1011): voting/election/register/0.4, show/0.4;
+  vtc/elections/create/0.5, show/0.6, list/0.5, tickets/issue/0.3;
+  vta/pcs/voter/register/0.5, voter/read/0.6, vote/0.4, vote-encrypted/0.5,
+  trustee/{deal,justify,keys}/0.5, enrol/0.4, read/0.4. Older versions stay
+  pinned.
+
+
+
 ## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vta-v0.2.0...vti-specs-vta-v0.3.0) — 2026-11-02
 
 
