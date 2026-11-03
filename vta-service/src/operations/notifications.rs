@@ -632,18 +632,42 @@ pub async fn sweep_lapsed(
         if !lapsed.is_some_and(|at| at <= horizon) {
             continue;
         }
-        let location = format!("{}\0{}", rec.context_id, rec.record_id);
-        let notification_id = rec.notification["notificationId"]
-            .as_str()
-            .unwrap_or_default();
-        let mut batch = Batch::new();
-        batch
-            .remove(held_key(&rec.context_id, &rec.record_id))
-            .remove(dedup_key(&rec.addressee, &rec.originator, notification_id))
-            .remove(format!("{}{location}", originator_prefix(&rec.originator)))
-            .remove(format!("{}{location}", deliverer_prefix(&rec.delivered_by)));
-        ks.apply_batch(batch).await?;
+        discard(ks, &rec).await?;
         removed += 1;
     }
     Ok(removed)
+}
+
+/// Discard every notification held in `context`, with its index rows,
+/// returning how many went.
+///
+/// For a context deletion. The records are keyed by context, so left behind
+/// they would be listed by a context created again under the same id — and
+/// their dedup and bound rows would keep counting against originators and
+/// deliverers for records nobody can reach.
+pub async fn purge_context(ks: &KeyspaceHandle, context: &str) -> Result<usize, AppError> {
+    let _guard = WRITE_LOCK.lock().await;
+    let mut removed = 0;
+    for rec in records_in(ks.prefix_iter_raw(format!("held:{context}\0")).await?) {
+        discard(ks, &rec).await?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+/// Remove one record and its dedup and bound rows, as one batch. Call under
+/// [`WRITE_LOCK`].
+async fn discard(ks: &KeyspaceHandle, rec: &HeldRecord) -> Result<(), AppError> {
+    let location = format!("{}\0{}", rec.context_id, rec.record_id);
+    let notification_id = rec.notification["notificationId"]
+        .as_str()
+        .unwrap_or_default();
+    let mut batch = Batch::new();
+    batch
+        .remove(held_key(&rec.context_id, &rec.record_id))
+        .remove(dedup_key(&rec.addressee, &rec.originator, notification_id))
+        .remove(format!("{}{location}", originator_prefix(&rec.originator)))
+        .remove(format!("{}{location}", deliverer_prefix(&rec.delivered_by)));
+    ks.apply_batch(batch).await?;
+    Ok(())
 }

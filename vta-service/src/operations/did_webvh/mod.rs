@@ -2702,6 +2702,61 @@ async fn revoke_sessions_for_did(
 // operation reused by TEE first-boot DID autogen); imported below.
 pub(crate) use crate::keys::derivation::derive_pre_rotation_keys;
 
+/// The keyspaces `delete_did_webvh_with` reaches, and what it does in each — the cascade's own
+/// statement, beside the code that does it.
+///
+/// `did_delete_labels_match_the_cascade` holds [`vta_keyspaces::did_delete_effect`] to exactly
+/// this list: a keyspace labelled `Cascade`, `Blocks` or `Revoke` must be here with that effect,
+/// and one here must be labelled so. Making a keyspace's cascade real means adding it here and
+/// moving its label off `Orphaned` in the same change.
+#[cfg(test)]
+const DID_DELETE_REACHES: &[(&str, vta_keyspaces::DidDeleteEffect)] = {
+    use vta_keyspaces::DidDeleteEffect::{Blocks, Cascade, Revoke};
+    &[
+        // The DID's key records and its own log.
+        (crate::keyspaces::KEYS, Cascade),
+        (crate::keyspaces::WEBVH, Cascade),
+        // The authorization that named it, and the sessions already issued on it.
+        (crate::keyspaces::ACL, Cascade),
+        (crate::keyspaces::SESSIONS, Cascade),
+        // What the VTA issued to it.
+        (crate::keyspaces::ISSUED_CREDENTIALS, Revoke),
+        // A context acting as it (`delete_blockers`).
+        (crate::keyspaces::CONTEXTS, Blocks),
+    ]
+};
+
+#[cfg(test)]
+mod did_delete_census {
+    use vta_keyspaces::{DidDeleteEffect, did_delete_effect};
+
+    /// A `Cascade`, `Blocks` or `Revoke` label is a claim that the DID deletion does that; hold
+    /// every label to the cascade's own list so none of them can claim work it does not do.
+    #[test]
+    fn did_delete_labels_match_the_cascade() {
+        for ks in crate::keyspaces::ALL {
+            let label = did_delete_effect(ks).expect("every keyspace is classified");
+            let reached = super::DID_DELETE_REACHES
+                .iter()
+                .find(|(name, _)| name == ks)
+                .map(|(_, effect)| *effect);
+            match label {
+                DidDeleteEffect::Cascade | DidDeleteEffect::Blocks | DidDeleteEffect::Revoke => {
+                    assert_eq!(
+                        reached,
+                        Some(label),
+                        "{ks} is labelled {label:?} but the DID deletion does not do that"
+                    );
+                }
+                _ => assert_eq!(
+                    reached, None,
+                    "{ks} is labelled {label:?} but the DID deletion reaches it"
+                ),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
