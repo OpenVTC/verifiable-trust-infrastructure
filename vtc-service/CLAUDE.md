@@ -855,10 +855,23 @@ When adding a flow, add it here and a line to the root index.
   its proof verified by the reader (`vti_voting::steps::ProvenRequests`, CONVENTIONS §9.6); the
   election key `show` carries is formed by the community from those steps alone, never taken
   from `voting/trustees/status`, which carries no proof.
+- **Credential rolls** (`elections::{roll,presentation}`, VTI-VOT-015 – 018, 025 – 029):
+  `roll.memberOf` is classified at create (community, group, or an active member party holding an
+  unrevoked VMC of ours; else `rollUntrusted`) and **recorded** (`ElectionRecord::roll_party`) —
+  never re-derived, so a deleted group's DID is never read as a member party. A claim's (and a
+  `show/0.6` read's) presentation is checked **before** the election is looked up and without
+  reference to it; an unobtainable DID document or status list is the standard `indeterminate`,
+  identical whatever the election, recording nothing. Never move that check after the lookup,
+  and never read anything but the community's own records after it (own status lists, the
+  member party's membership and slot, the group's authority and membership). A member-party
+  election is seen by anyone but a manager or the party only on a passing presentation; every
+  other outcome is `electionUnknown`, never a specific code. Lists never carry a presentation
+  and never show such an election to anyone else, not as a stub. Never keep a presentation;
+  a read's `id` is kept for the window only (`store::accept_presentation`).
 - **Console manifest builder** (`admin-ui/src/plugins/ElectionBuilder.tsx`,
   `admin-ui/src/lib/election-manifest.ts`): a guided form whose checks mirror
   `vti_voting::rules::check_manifest` and whose bounds are pinned to the vendored
-  `vtc/elections/create/0.4` bundle by `election-manifest.test.ts` — re-pin a new create
+  `vtc/elections/create/0.5` bundle by `election-manifest.test.ts` — re-pin a new create
   version there too. A convenience, never the authority: the community re-checks on create.
   Its ballot-box field is a choice from `vtc/elections/ballot-boxes/list/0.1` (answered from the
   same live `[voting]` config `create` checks, so the two can never disagree), falling back to a

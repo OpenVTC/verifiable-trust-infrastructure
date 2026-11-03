@@ -290,6 +290,14 @@ function ElectionDetail({
               a written answer may identify who wrote it.
             </p>
           )}
+          {e.disclosure.rollCredential && (
+            <p className="alert" role="note">
+              <CircleAlert size={14} aria-hidden="true" /> Only holders of a membership credential issued by{" "}
+              {e.disclosure.rollCredential.memberOfName ?? <code>{e.disclosure.rollCredential.memberOf}</code>} take a
+              ticket. Taking one shows this community that you are a member of{" "}
+              {e.disclosure.rollCredential.memberOfKind === "thisCommunity" ? "it" : "that party"}.
+            </p>
+          )}
           {e.disclosure.sameOperator && (
             <p className="alert" role="note">
               <CircleAlert size={14} aria-hidden="true" /> The same operator runs this community and its ballot box:

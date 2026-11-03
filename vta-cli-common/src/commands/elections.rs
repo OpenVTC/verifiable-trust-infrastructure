@@ -39,6 +39,17 @@ pub struct VoteTarget<'a> {
     pub context: &'a str,
 }
 
+/// A membership credential the member chose to present (VTI-VOT-016, VTI-VOT-090): its handle
+/// in their VTA's vault, and the DID they were told the election's credential roll names.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Presenting<'a> {
+    /// `membershipCredential`: the vault handle (`vault/credentials/query`).
+    pub credential: Option<&'a str>,
+    /// `memberOf`: the party whose membership the read proves; the VTA presents the credential
+    /// only where that party issued it.
+    pub member_of: Option<&'a str>,
+}
+
 /// The longest pause before a cast is sent, so its arrival is not timed to the ticket's.
 const MAX_CAST_DELAY: Duration = Duration::from_secs(20);
 
@@ -57,21 +68,71 @@ async fn read(
     which: &str,
     payload: Value,
 ) -> CliResult<Value> {
-    let req = json!({
+    read_presenting(client, t, which, payload, Presenting::default()).await
+}
+
+/// [`read`], presenting the member's membership credential in a `show` (`vta/pcs/voter/read/0.6`,
+/// VTI-VOT-015): to read an election put to the members of a party that is itself a member of
+/// the community, which the community shows nobody else.
+async fn read_presenting(
+    client: &VtaClient,
+    t: &VoteTarget<'_>,
+    which: &str,
+    payload: Value,
+    presenting: Presenting<'_>,
+) -> CliResult<Value> {
+    let mut req = json!({
         "contextId": t.context, "community": t.vtc_did, "member": t.member,
         "read": which, "payload": payload,
     });
+    if let Some(c) = presenting.credential {
+        req["membershipCredential"] = json!(c);
+        if let Some(m) = presenting.member_of {
+            req["memberOf"] = json!(m);
+        }
+    }
     let signed = client
         .pcs_voter_read_json(req)
         .await
         .map_err(|e| hint_member(e.to_string(), t.member))?;
-    Ok(community(t)
+    community(t)
         .send_signed_document(&signed["document"])
         .await
-        .map_err(|e| format!("{}: {e}", t.vtc_did))?)
+        .map_err(|e| community_refusal(t.vtc_did, &e.to_string()))
+}
+
+/// A community's refusal, with what to do about an `indeterminate` answer: a check the
+/// community makes on a presentation could not be completed (a status list or a DID document
+/// it could not fetch), nothing was recorded, and the same request may be made again later
+/// (VTI-VOT-018).
+fn community_refusal(vtc_did: &str, text: &str) -> Box<dyn std::error::Error> {
+    if text.contains("\"indeterminate\"") {
+        return format!(
+            "{vtc_did}: {text}\n\nThe community could not complete a check of your membership \
+             credential just now (its issuer's status list or DID document could not be read). \
+             Nothing was recorded: run the same command again in a little while."
+        )
+        .into();
+    }
+    format!("{vtc_did}: {text}").into()
 }
 
 fn hint_member(text: String, member: &str) -> Box<dyn std::error::Error> {
+    if text.contains("membershipCredentialRequired") {
+        return format!(
+            "{text}\n\nThis election's roll is the holders of a membership credential: claim \
+             your ticket with `pnm elections ticket <id> --membership-credential <handle>`, \
+             naming the credential in your VTA's vault the roll names."
+        )
+        .into();
+    }
+    if text.contains("membershipCredentialMismatch") {
+        return format!(
+            "{text}\n\nThat credential was not issued by the --member-of DID. Your VTA presents \
+             nothing unrelated to the election: name the credential that party issued you."
+        )
+        .into();
+    }
     if text.contains("memberNotHeld") {
         return format!(
             "{text}\n\nYour VTA holds no authentication key of {member} that you may act as. Pass \
@@ -150,6 +211,13 @@ fn print_disclosure(shown: &Value) {
     println!(
         "  {DIM}you can prove how you voted, so this election cannot protect you against being made to vote a certain way{RESET}"
     );
+    if let Some(roll) = roll_credential(d) {
+        println!("  roll        {roll}");
+        println!(
+            "  {YELLOW}{}{RESET}",
+            roll_credential_warning(d).unwrap_or_default()
+        );
+    }
     if let Some(release) = written_answers(m) {
         println!("  written     {release}");
     }
@@ -208,13 +276,73 @@ fn written_answers_warning(m: &Value) -> Option<String> {
     })
 }
 
+/// Whose membership credential admits a voter, under a credential roll: the disclosure's
+/// `rollCredential` (VTI-VOT-090). `None` under every other rule.
+fn roll_credential(d: &Value) -> Option<String> {
+    let r = d.get("rollCredential")?;
+    let did = r["memberOf"].as_str()?;
+    let what = match r["memberOfKind"].as_str() {
+        Some("thisCommunity") => "this community",
+        Some("communityGroup") => "a group of this community",
+        Some("memberParty") => "a party that is itself a member of this community",
+        _ => "a party",
+    };
+    let name = r["memberOfName"]
+        .as_str()
+        .map(|n| format!(" \"{n}\""))
+        .unwrap_or_default();
+    Some(format!(
+        "holders of a membership credential issued by {what}{name} ({did})"
+    ))
+}
+
+/// What claiming a ticket under a credential roll shows the community (VTI-VOT-025,
+/// VTI-VOT-090). `None` under every other rule.
+fn roll_credential_warning(d: &Value) -> Option<String> {
+    d.get("rollCredential")?;
+    Some(
+        "claiming a ticket presents that credential: the community learns that you are a \
+         member of that party"
+            .to_string(),
+    )
+}
+
 /// `pnm elections show <id>`.
 pub async fn cmd_show(client: &VtaClient, t: VoteTarget<'_>, election_id: &str) -> CliResult {
-    let shown = read(client, &t, "show", json!({ "electionId": election_id })).await?;
+    cmd_show_presenting(client, t, election_id, Presenting::default()).await
+}
+
+/// `pnm elections show <id> --membership-credential <handle> [--member-of <did>]`: the read
+/// presents the member's membership credential, which the community needs to show an election
+/// put to the members of a party that is itself its member (VTI-VOT-015). Reading it this way
+/// shows the community that membership before the member has seen the election.
+pub async fn cmd_show_presenting(
+    client: &VtaClient,
+    t: VoteTarget<'_>,
+    election_id: &str,
+    presenting: Presenting<'_>,
+) -> CliResult {
+    let shown = read_presenting(
+        client,
+        &t,
+        "show",
+        json!({ "electionId": election_id }),
+        presenting,
+    )
+    .await?;
     if is_json_output() {
         return Ok(print_json(&shown)?);
     }
     print_disclosure(&shown);
+    if let Some(told) = presenting.member_of
+        && let Some(names) = shown["manifest"]["roll"]["memberOf"].as_str()
+        && names != told
+    {
+        println!(
+            "  {YELLOW}you were told this election is put to the members of {told}, but its roll \
+             names {names}{RESET}"
+        );
+    }
     Ok(())
 }
 
@@ -285,9 +413,17 @@ pub(crate) async fn ballot_box_url(did: &str) -> CliResult<String> {
 
 /// Take the member's ticket for the election `shown` describes, unless the VTA already holds
 /// one. True when this call took it.
-async fn take_ticket(client: &VtaClient, t: &VoteTarget<'_>, shown: &Value) -> CliResult<bool> {
+async fn take_ticket(
+    client: &VtaClient,
+    t: &VoteTarget<'_>,
+    shown: &Value,
+    credential: Option<&str>,
+) -> CliResult<bool> {
     let election_id = &shown["manifest"]["electionId"];
-    let reg = register_payload(t, shown);
+    let mut reg = register_payload(t, shown);
+    if let Some(c) = credential {
+        reg["membershipCredential"] = json!(c);
+    }
     let registered = match client.pcs_voter_register_json(reg).await {
         Ok(registered) => registered,
         Err(e) if e.to_string().contains("ticketHeld") => return Ok(false),
@@ -303,7 +439,7 @@ async fn take_ticket(client: &VtaClient, t: &VoteTarget<'_>, shown: &Value) -> C
     let issued = community(t)
         .send_signed_document(&registered["ticketDocument"])
         .await
-        .map_err(|e| format!("{}: {e}", t.vtc_did))?;
+        .map_err(|e| community_refusal(t.vtc_did, &e.to_string()))?;
     // The payload of the community's answer, without its ext (voter/accept item 1).
     let mut response = issued;
     if let Some(obj) = response.as_object_mut() {
@@ -338,11 +474,38 @@ fn print_ticket_taken(election_id: &str) {
 /// `pnm elections ticket <id>`: take the ticket, and nothing else — ahead of voting, so the cast
 /// that follows is not timed to it.
 pub async fn cmd_ticket(client: &VtaClient, t: VoteTarget<'_>, election_id: &str) -> CliResult {
-    let shown = read(client, &t, "show", json!({ "electionId": election_id })).await?;
+    cmd_ticket_presenting(client, t, election_id, Presenting::default()).await
+}
+
+/// `pnm elections ticket <id> --membership-credential <handle> [--member-of <did>]`: under a
+/// credential roll, the VTA presents that credential in the ticket request (VTI-VOT-025). With
+/// `member_of`, the read of the election presents it too, as an election put to a member
+/// party's members is shown to nobody else (VTI-VOT-015).
+pub async fn cmd_ticket_presenting(
+    client: &VtaClient,
+    t: VoteTarget<'_>,
+    election_id: &str,
+    presenting: Presenting<'_>,
+) -> CliResult {
+    // The read presents only where the member said whose roll it is: an election they can
+    // already see is read without showing the community anything (VTI-VOT-016).
+    let read_with = if presenting.member_of.is_some() {
+        presenting
+    } else {
+        Presenting::default()
+    };
+    let shown = read_presenting(
+        client,
+        &t,
+        "show",
+        json!({ "electionId": election_id }),
+        read_with,
+    )
+    .await?;
     if !is_json_output() {
         print_disclosure(&shown);
     }
-    let taken = take_ticket(client, &t, &shown).await?;
+    let taken = take_ticket(client, &t, &shown, presenting.credential).await?;
     if is_json_output() {
         return Ok(print_json(
             &json!({ "electionId": election_id, "ticketHeld": true, "taken": taken }),
@@ -384,7 +547,7 @@ pub async fn cmd_vote(
     };
 
     // 2. The ticket, unless the VTA already holds it — and then no cast in this run.
-    if take_ticket(client, &t, &shown).await? {
+    if take_ticket(client, &t, &shown, None).await? {
         if !now {
             if is_json_output() {
                 return Ok(print_json(
@@ -555,5 +718,50 @@ mod tests {
         let warning = written_answers_warning(&m).unwrap();
         assert!(warning.contains("only 1 ballot,"), "{warning}");
         assert!(warning.contains("may identify who wrote it"), "{warning}");
+    }
+
+    /// VTI-VOT-090: under a credential roll the member is told whose membership credential
+    /// admits them, what that party is to the community, and that claiming shows the community
+    /// their membership of it; under any other rule nothing is said.
+    #[test]
+    fn vti_vot_090_a_credential_roll_is_disclosed_with_what_claiming_shows() {
+        let d = json!({
+            "rollCredential": {
+                "memberOf": "did:webvh:QmG:vtc.example:groups:g7",
+                "memberOfKind": "communityGroup",
+                "memberOfName": "Engineering",
+                "presenterDisclosed": true,
+            }
+        });
+        let roll = roll_credential(&d).unwrap();
+        assert!(roll.contains("a group of this community"), "{roll}");
+        assert!(roll.contains("\"Engineering\""), "{roll}");
+        assert!(
+            roll.contains("did:webvh:QmG:vtc.example:groups:g7"),
+            "{roll}"
+        );
+        let warning = roll_credential_warning(&d).unwrap();
+        assert!(warning.contains("member of that party"), "{warning}");
+
+        let party = json!({ "rollCredential": {
+            "memberOf": "did:webvh:QmB:b.example", "memberOfKind": "memberParty",
+            "presenterDisclosed": true } });
+        assert!(
+            roll_credential(&party)
+                .unwrap()
+                .contains("itself a member of this community")
+        );
+        assert_eq!(roll_credential(&json!({})), None);
+        assert_eq!(roll_credential_warning(&json!({})), None);
+    }
+
+    /// VTI-VOT-018: an `indeterminate` answer is explained as retryable, never as a refusal.
+    #[test]
+    fn vti_vot_018_an_indeterminate_answer_says_to_try_again() {
+        let text =
+            community_refusal("did:c", r#"{"code":"indeterminate","retryable":true}"#).to_string();
+        assert!(text.contains("run the same command again"), "{text}");
+        let other = community_refusal("did:c", "electionUnknown").to_string();
+        assert!(!other.contains("run the same command again"));
     }
 }

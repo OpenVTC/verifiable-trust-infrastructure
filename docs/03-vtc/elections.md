@@ -45,9 +45,9 @@ election stays `pendingRegistration` and is delivered as soon as they are.
 | Step | Task | Who |
 |---|---|---|
 | Read the trusted ballot boxes | `vtc/elections/ballot-boxes/list/0.1` | `vtc.elections.manage` |
-| Create from a manifest | `vtc/elections/create/0.4` (0.3 still served) | `vtc.elections.manage` |
-| Read | `vtc/elections/list/0.3`, `vtc/elections/show/0.3` (0.2 still served) | managers see all; anyone else an election whose roll admits them now |
-| Take a ticket | `vtc/elections/tickets/issue/0.1` | a party the roll admits, once per election — normally through their VTA (`vta/pcs/voter/register`) |
+| Create from a manifest | `vtc/elections/create/0.5` (0.4 and 0.3 still served) | `vtc.elections.manage` |
+| Read | `vtc/elections/list/0.5` (0.3 still served), `vtc/elections/show/0.6` (0.3 and 0.2 still served) | managers see all; anyone else an election whose roll admits them now — see [Credential rolls](#credential-rolls) for an election put to a member party |
+| Take a ticket | `vtc/elections/tickets/issue/0.3` (0.1 still served) | a party the roll admits, once per election — normally through their VTA (`vta/pcs/voter/register`) |
 | Close early | `vtc/elections/close/0.1` | `vtc.elections.manage`, only where the manifest allows it |
 | Cancel | `vtc/elections/cancel/0.1` | `vtc.elections.manage` |
 | Certify the result | `vtc/elections/certify/0.1` | `vtc.elections.manage`, once the ballot box has tallied |
@@ -163,10 +163,101 @@ threshold to 10: `create/0.3` refuses a lower one as a malformed request, and `s
 answers an election below 10 with `unsupportedVersion`, naming 0.3. An election of 10 or more
 reads the same at either version — the manifest's members, and so its digest, do not change.
 
-The community registers an election with its ballot box at `voting/election/register/0.3`. A
+The community registers an election with its ballot box at `voting/election/register/0.4`. A
 ballot box from before that version refuses it `unsupportedVersion`; the community then
-registers an election of 10 or more at 0.2 instead, and one below 10 is refused
-(`ballotBoxRefused`) until the ballot box is upgraded.
+registers at 0.3 an election without a credential roll, and at 0.2 one of 10 or more, and an
+election neither can carry is refused (`ballotBoxRefused`) until the ballot box is upgraded.
+
+### Credential rolls
+
+A fourth roll rule, `credential` (voting/_shared/0.4, VTI-VOT-021, VTI-VOT-025), puts a question
+to the holders of a membership credential for **one DID**, named in `roll.memberOf`: this
+community, one of its groups, or a party that is itself a member of this community — another
+community, a group of one, or a network. `memberOf` is always a DID, never a group's local
+identifier; it is present exactly when the rule is `credential`, and `listed` never is.
+
+**Who it can name** (create/0.5 Conformance item 6, VTI-VOT-026). The community, one of its groups
+(by the group's own DID), or a party that is an active member of this community — its entry
+live, not suspended, not an `application`, its member record not removed — holding a
+membership credential this community issued it whose slot in the community's own revocation
+list is clear. Anything else is refused `rollUntrusted` and nothing is recorded; recognition
+through a trust registry is not membership. Which of the three it was is recorded with the
+election, so a group deleted afterwards is never mistaken for a party outside the community
+(VTI-VOT-029).
+
+**Eligibility is proven at the claim, never fixed at creation.** A member claiming a ticket
+presents, in the `tickets/issue/0.3` request itself, a Verifiable Presentation of their
+membership credential for `memberOf`, bound to that request (`nonce` = the request's `id`,
+`domain` = the community's DID) and made by the credential's subject, who signs the request.
+So a member who joins after the election is called is admitted, and one removed since is not.
+The community cannot state a roll size, and reports turnout against the tickets it issued
+(VTI-VOT-028). One ticket per credential subject (VTI-VOT-027); for the community's own roll
+and its groups' the subject is the member's membership DID, and a rotation carries the ticket
+(VTI-VOT-022).
+
+**What is checked, in order** (tickets/issue/0.3 items 2 – 7):
+
+1. *Before the election is looked up, and without reference to it* (VTI-VOT-018): the
+   presentation's binding, its holder (the signer, one credential, about the signer), the
+   issuer's proof, the validity period, and its status. A credential this community issued is
+   checked against its own status list; any other's list is fetched. Where a DID document or a
+   status list cannot be obtained and no check failed, the answer is the framework's
+   **`indeterminate`** (retryable), identically whatever `electionId` names, and nothing is
+   recorded: the client resends the same document later, with backoff.
+2. The election is known and the signer may see it (below).
+3. Issuance is open, the manifest is the one read.
+4. Under `credential`, reading only the community's own records: a presentation is carried
+   (`presentationRequired`); `memberOf` is still trusted — the group still held, the member
+   party's membership still active (`rollUntrusted`); the credential proves the membership —
+   item 1's checks, an issuer that is exactly `memberOf`, and for a group the community's
+   authority credential to it still live (`membershipNotProven`, with `details.reason`);
+   nothing revoked (`membershipRevoked`); and, for the community or a group, the records still
+   hold the signer as an active member, of the group too (`notEligible`).
+5. No ticket held for that subject (`alreadyIssued`).
+
+The presentation is never kept; the issuance record holds the party, and the audit row the
+credential's issuer, never the presentation or the credential (VTI-CRD-042).
+
+**Who sees such an election** (VTI-VOT-015, VTI-VOT-016, VTI-VOT-017). Under a roll naming the
+community or a group, those its records show the roll could admit — every active member, or the
+group's active members — as for any other roll. Under a roll naming a **member party**, the
+community holds no record of that party's members, so:
+
+- `list` shows it only to managers and to the party itself, never to anyone else, not even
+  as a stub of its identifier;
+- `show/0.6` shows it to anyone else only on a presentation in that read that passes the same
+  checks a claim makes — accepted once per document, the read's `id` kept only for the
+  acceptance window;
+- `tickets/issue/0.3` answers every other outcome for such a signer — no presentation, a
+  failed one, one another party issued, a party whose own membership has lapsed —
+  `electionUnknown`, decided before the election's state or manifest is compared.
+
+A party's member therefore learns of such an election from outside the community's list: from
+the party, which the list does show it to (a notification, VTI-NTF-060 – 063, is the coming
+mechanism), or from a link. Reading it already shows the community their membership of that
+party, before they have seen what it asks, and the wallet tells them so.
+
+**A deleted group** (VTI-VOT-029): the election is shown only to managers, who must cancel
+it; a manager's claim is refused `rollUntrusted`, anyone else's `electionUnknown`.
+
+**What members are told** (VTI-VOT-090): `show/0.6`'s `disclosure.rollCredential` names
+`memberOf`, what it is to the community (`thisCommunity`, `communityGroup`, `memberParty`), its
+name where the reader may know it (a group's, to a manager or for a group every member can see),
+and that claiming a ticket shows the community the claimant's membership of it
+(`presenterDisclosed`). The console's election page, `pnm elections show` and the portal show
+it.
+
+**Versions.** A credential roll travels only in voting/_shared/0.4: `create/0.5`, `show/0.6`,
+`voting/election/register/0.4` and `show/0.4`, and the `vta/pcs/*` versions that carry it.
+`show/0.3` and `0.2`, and `tickets/issue/0.1`, which carry no presentation, refuse a
+credential-roll election `unsupportedVersion`, once the caller may see it. The community
+registers at `voting/election/register/0.4`; a ballot box from before it refuses by version,
+and the community falls back to 0.3 for a manifest without a credential roll (then to 0.2 as
+below).
+
+**Not yet:** a trust registry as a status source (only status lists are read), a predicate
+proof of membership under an election-scoped pseudonym (the specification's open issue), and
+the `notifications/*` family.
 
 ### Binding elections take two
 
@@ -185,7 +276,8 @@ deanonymisation would join a ticket to its holder by. The stored pre-credential 
 once voting closes.
 
 An election a caller may not see answers `electionUnknown` — the same as one that does not
-exist — so a member learns nothing about an election that is not theirs.
+exist — so a member learns nothing about an election that is not theirs. Under a credential roll
+a claim carries a presentation, checked first (see [Credential rolls](#credential-rolls)).
 
 ### Checkpoints
 

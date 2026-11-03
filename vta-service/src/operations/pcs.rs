@@ -94,6 +94,15 @@ pub enum PcsError {
     EvidenceInvalid(String),
     /// `member` names a DID this engine holds no `authentication` key of that the caller may act as.
     MemberNotHeld(String),
+    /// Under a `credential` roll, `member` without `membershipCredential`; or
+    /// `membershipCredential` without `member`, or under any other rule (voter/register item 9).
+    MembershipCredentialRequired,
+    /// `membershipCredential` names no credential the caller may present as `member` now, or
+    /// one whose issuer is not the roll's `memberOf` (voter/register item 9, voter/read item 5).
+    MembershipCredentialUnusable,
+    /// `membershipCredential` was not issued by the `memberOf` the read names (VTI-VOT-016,
+    /// voter/read item 6).
+    MembershipCredentialMismatch,
     // The encrypted levels (`vta/pcs/vote-encrypted`, `vta/pcs/trustee/*`;
     // operations::pcs_trustee).
     WrongLevel,
@@ -163,6 +172,19 @@ impl std::fmt::Display for PcsError {
                 f,
                 "this agent holds no authentication key of {did} that you may act as, so it \
                  cannot sign the ticket request as it"
+            ),
+            Self::MembershipCredentialRequired => f.write_str(
+                "a credential roll is claimed with the member's membership credential for the \
+                 party it names (name it as membershipCredential, with member), and no other \
+                 roll takes one",
+            ),
+            Self::MembershipCredentialUnusable => f.write_str(
+                "membershipCredential names no credential this agent may present as member now \
+                 whose issuer is the party the roll names",
+            ),
+            Self::MembershipCredentialMismatch => f.write_str(
+                "membershipCredential was not issued by memberOf; this agent presents no \
+                 membership unrelated to the election (VTI-VOT-016)",
             ),
             Self::TicketHeld => f.write_str("a ticket for this election is already held"),
             Self::ManifestMismatch => f.write_str(

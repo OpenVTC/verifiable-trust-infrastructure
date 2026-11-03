@@ -2309,6 +2309,36 @@ fn witnesses() -> Vec<Witness> {
             "a_creation_is_refused_for_each_rule_it_breaks"
         ),
         witness!(
+            s::elections::create::v0_5::error_codes::ROLL_UNTRUSTED,
+            crate::trust_tasks::election_tasks::CREATE_ERR_ROLL_UNTRUSTED,
+            "election_tasks.rs",
+            "vti_vot_026_a_foreign_untrusted_did_is_refused_at_create"
+        ),
+        witness!(
+            s::elections::tickets::issue::v0_3::error_codes::PRESENTATION_REQUIRED,
+            crate::trust_tasks::election_tasks::ISSUE_ERR_PRESENTATION_REQUIRED,
+            "election_tasks.rs",
+            "vti_vot_025_a_late_joiner_claims_with_the_communitys_credential"
+        ),
+        witness!(
+            s::elections::tickets::issue::v0_3::error_codes::MEMBERSHIP_NOT_PROVEN,
+            crate::trust_tasks::election_tasks::ISSUE_ERR_MEMBERSHIP_NOT_PROVEN,
+            "election_tasks.rs",
+            "vti_vot_025_a_late_joiner_claims_with_the_communitys_credential"
+        ),
+        witness!(
+            s::elections::tickets::issue::v0_3::error_codes::MEMBERSHIP_REVOKED,
+            crate::trust_tasks::election_tasks::ISSUE_ERR_MEMBERSHIP_REVOKED,
+            "election_tasks.rs",
+            "vti_vot_025_a_revoked_credential_is_refused"
+        ),
+        witness!(
+            s::elections::tickets::issue::v0_3::error_codes::ROLL_UNTRUSTED,
+            crate::trust_tasks::election_tasks::ISSUE_ERR_ROLL_UNTRUSTED,
+            "election_tasks.rs",
+            "vti_vot_029_a_deleted_groups_election_is_shown_to_managers_only"
+        ),
+        witness!(
             s::elections::close::v0_1::error_codes::ELECTION_UNKNOWN,
             crate::trust_tasks::election_tasks::CLOSE_ERR_ELECTION_UNKNOWN,
             "election_tasks.rs",

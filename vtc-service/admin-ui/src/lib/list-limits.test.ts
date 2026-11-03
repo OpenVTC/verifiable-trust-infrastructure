@@ -59,7 +59,7 @@ const DIRECTORY_EXPORT = `${T}/vtc/directory/export/0.2`;
 const GROUPS_LIST = `${T}/vtc/groups/list/0.2`;
 const GROUPS_MEMBERS = `${T}/vtc/groups/members/list/0.2`;
 const GROUPS_REQUESTS = `${T}/vtc/groups/requests/list/0.2`;
-const ELECTIONS = `${T}/vtc/elections/list/0.3`;
+const ELECTIONS = `${T}/vtc/elections/list/0.5`;
 const AUDIT = `${T}/audit/list/0.2`;
 const POLICIES = `${T}/policy/list/0.3`;
 const ACL_LIST = `${T}/acl/list/0.3`;
@@ -121,6 +121,8 @@ const SITES: Site[] = [
   { file: "plugins/vetting/api.ts", site: "TASK_MEMBERS_LIST, {\n      limit: 200,", uri: MEMBERS, from: ["200"] },
   { file: "plugins/repos/api.ts", site: "limit: MEMBERS_PAGE", uri: MEMBERS, from: ["MEMBERS_PAGE"] },
   { file: "lib/names.ts", site: "(MEMBERS_TASK, { limit: 200 })", uri: MEMBERS, from: ["200"] },
+  // A credential roll's choices: this community's members, any of which may be a member party.
+  { file: "plugins/ElectionBuilder.tsx", site: "(MEMBERS_LIST_TASK, { limit: 200 })", uri: MEMBERS, from: ["200"] },
   // Endorsements and their types.
   { file: "plugins/members.tsx", site: "{ limit: 200, ...(cursor ? { cursor } : {}) }", uri: ENDORSEMENTS, from: ["200"] },
   { file: "plugins/vetting/api.ts", site: "{ limit: 200, ...(cursor ? { cursor } : {}) }", uri: ENDORSEMENT_TYPES, from: ["200"] },

@@ -248,6 +248,73 @@ async fn vti_vot_065_a_threshold_below_ten_is_registered_and_shown_at_0_3_only()
     }
 }
 
+/// VTI-VOT-025: the box registers and shows an election under a credential roll at
+/// `voting/election/{register,show}/0.4` only. Under 0.3 and 0.2, whose manifest has no
+/// `credential` rule, such a registration is malformed and such an election is not shown —
+/// those versions are refused `unsupportedVersion` for it — while a members roll registered at
+/// 0.4 is still shown at every version.
+#[tokio::test]
+async fn vti_vot_025_a_credential_roll_is_registered_and_shown_at_0_4_only() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let community = Identity::from_seed(&[0x35; 32]).unwrap();
+    let svc = state(&dir);
+    let box_did = svc.identity.did.clone();
+
+    let credential = |id: &str| {
+        let mut r = registration(&community, &box_did, id);
+        r["manifest"]["roll"] = json!({
+            "rule": "credential",
+            "memberOf": format!("{}:groups:g7", community.did),
+        });
+        let digest = manifest_digest(&r["manifest"]).unwrap();
+        r["manifestDigest"] = json!(digest_multibase(&digest));
+        r
+    };
+    let register_at = |version: &'static str, payload: Value| {
+        let box_did = box_did.clone();
+        let community = &community;
+        async move {
+            doc_at(
+                "election/register",
+                version,
+                &box_did,
+                Some(community),
+                payload,
+            )
+            .await
+        }
+    };
+    for version in ["0.2", "0.3"] {
+        let (status, answer) = send(&svc, register_at(version, credential("roll")).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{version}: {answer}");
+        assert_eq!(answer["payload"]["code"], "malformedRequest");
+    }
+    let (status, answer) = send(&svc, register_at("0.4", credential("roll")).await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    let show = |version: &'static str, id: &str| {
+        let payload = json!({ "community": community.did, "electionId": id });
+        let box_did = box_did.clone();
+        async move { doc_at("election/show", version, &box_did, None, payload).await }
+    };
+    let (status, answer) = send(&svc, show("0.4", "roll").await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["payload"]["manifest"]["roll"]["rule"], "credential");
+    for version in ["0.2", "0.3"] {
+        let (status, answer) = send(&svc, show(version, "roll").await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{version}: {answer}");
+        assert_eq!(answer["payload"]["code"], "unsupportedVersion");
+    }
+
+    let usual = registration(&community, &box_did, "usual");
+    let (status, answer) = send(&svc, register_at("0.4", usual).await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    for version in ["0.2", "0.3", "0.4"] {
+        let (status, answer) = send(&svc, show(version, "usual").await).await;
+        assert_eq!(status, StatusCode::OK, "{version}: {answer}");
+    }
+}
+
 async fn send(state: &Arc<AppState>, doc: Value) -> (StatusCode, Value) {
     let res = router(state.clone())
         .oneshot(

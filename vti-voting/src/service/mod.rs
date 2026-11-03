@@ -36,7 +36,7 @@ use vti_specs::voting::{
     ballot::cast::v0_1 as cast, board::consistency::v0_1 as consistency, board::head::v0_1 as head,
     board::inclusion::v0_1 as inclusion, board::read::v0_2 as read,
     election::cancel::v0_1 as cancel, election::close::v0_1 as close,
-    election::register::v0_3 as register, election::show::v0_3 as show,
+    election::register::v0_4 as register, election::show::v0_4 as show,
     result::show::v0_1 as result,
 };
 
@@ -59,10 +59,11 @@ use crate::{
 
 /// The version of `voting/election/register` or `voting/election/show` a request named.
 ///
-/// Both carry the same manifest shape; they differ only in the least `textReleaseThreshold`
-/// their schema admits: 10 under 0.2 (voting/_shared/0.2), 1 under 0.3 (voting/_shared/0.3,
-/// VTI-VOT-065). A request is held to its own version's schema, then read as 0.3, so the
-/// ballot box keeps one election whichever version registered it.
+/// All three carry the same manifest shape and differ only in what their schema admits: under
+/// 0.2 (voting/_shared/0.2) a `textReleaseThreshold` of at least 10, under 0.3
+/// (voting/_shared/0.3) of at least 1 (VTI-VOT-065), and under 0.4 (voting/_shared/0.4) also the
+/// `credential` roll rule (VTI-VOT-025). A request is held to its own version's schema, then
+/// read as 0.4, so the ballot box keeps one election whichever version registered it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ElectionVersion {
@@ -70,6 +71,8 @@ pub enum ElectionVersion {
     V0_2,
     /// `voting/election/{register,show}/0.3`: a threshold of at least 1.
     V0_3,
+    /// `voting/election/{register,show}/0.4`: a threshold of at least 1, and the credential roll.
+    V0_4,
 }
 
 impl ElectionVersion {
@@ -78,7 +81,23 @@ impl ElectionVersion {
     pub fn least_text_release_threshold(self) -> u64 {
         match self {
             Self::V0_2 => 10,
-            Self::V0_3 => 1,
+            Self::V0_3 | Self::V0_4 => 1,
+        }
+    }
+
+    /// Whether this version's manifest can carry a `credential` roll (voting/_shared/0.4).
+    #[must_use]
+    pub fn carries_credential_roll(self) -> bool {
+        matches!(self, Self::V0_4)
+    }
+
+    /// The version's number, as its Type URI ends.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::V0_2 => "0.2",
+            Self::V0_3 => "0.3",
+            Self::V0_4 => "0.4",
         }
     }
 }
@@ -887,12 +906,13 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        self.register_at(ElectionVersion::V0_3, signer, payload, now)
+        self.register_at(ElectionVersion::V0_4, signer, payload, now)
     }
 
     /// [`BallotBox::register`] at `version`: the payload is held to that version's schema —
-    /// under 0.2, a threshold below 10 is refused there — and then read as 0.3. A threshold of
-    /// 1 – 9 is never refused under 0.3 (VTI-VOT-065).
+    /// under 0.2, a threshold below 10 is refused there, and under 0.2 and 0.3 a `credential`
+    /// roll — and then read as 0.4. A threshold of 1 – 9 is never refused under 0.3 or 0.4
+    /// (VTI-VOT-065).
     ///
     /// # Errors
     /// As [`BallotBox::register`].
@@ -904,10 +924,22 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        if version == ElectionVersion::V0_2 {
-            use vti_specs::voting::election::register::v0_2 as old;
-            <old::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(payload)
+        match version {
+            ElectionVersion::V0_2 => {
+                use vti_specs::voting::election::register::v0_2 as old;
+                <old::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(
+                    payload,
+                )
                 .map_err(|e| Failure::malformed(e.to_string()))?;
+            }
+            ElectionVersion::V0_3 => {
+                use vti_specs::voting::election::register::v0_3 as old;
+                <old::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(
+                    payload,
+                )
+                .map_err(|e| Failure::malformed(e.to_string()))?;
+            }
+            ElectionVersion::V0_4 => {}
         }
         let p: register::Payload = parse_payload(payload)?;
         let community = p.community.as_str().to_string();
@@ -962,12 +994,13 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        self.show_at(ElectionVersion::V0_3, caller, payload, now)
+        self.show_at(ElectionVersion::V0_4, caller, payload, now)
     }
 
-    /// [`BallotBox::show`] at `version`. An election whose `textReleaseThreshold` is below
-    /// what `version`'s answer admits — below 10 under 0.2 — is refused `unsupportedVersion`
-    /// naming 0.3, never answered in a shape that version forbids.
+    /// [`BallotBox::show`] at `version`. An election whose manifest `version`'s answer cannot
+    /// carry — a `textReleaseThreshold` below 10 under 0.2, a `credential` roll under 0.2 or 0.3
+    /// — is refused `unsupportedVersion` naming the version that can, never answered in a shape
+    /// that version forbids.
     ///
     /// # Errors
     /// As [`BallotBox::show`]; `unsupportedVersion` as above.
@@ -984,6 +1017,18 @@ impl BallotBox {
         // manifest, and its decryption the time voting closed (CONVENTIONS §4, §9.6).
         if !(e.readable_by(caller) || e.is_trustee(caller)) {
             return Err(Failure::unknown());
+        }
+        if e.manifest.roll.rule == register::RollRuleRule::Credential
+            && !version.carries_credential_roll()
+        {
+            return Err(Failure::standard(
+                "unsupportedVersion",
+                format!(
+                    "this election's roll is the holders of a membership credential, which \
+                     voting/election/show/{} cannot carry; read it with voting/election/show/0.4",
+                    version.as_str()
+                ),
+            ));
         }
         if e.manifest.text_release_threshold.get() < version.least_text_release_threshold() {
             return Err(Failure::standard(

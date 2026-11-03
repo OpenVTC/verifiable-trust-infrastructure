@@ -2729,6 +2729,10 @@ pub struct ElectionChangedData {
     /// The ballot box's answer: `success`, `pending`, or the code it refused with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ballot_box_answer: Option<String>,
+    /// Under a credential roll, the DID it names (`roll.memberOf`, create/0.5 Conformance item
+    /// 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll_member_of: Option<String>,
     /// The requester's stated reason (close, cancel).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -2751,6 +2755,10 @@ pub struct ElectionChangedData {
 pub struct ElectionTicketIssuedData {
     /// The election the ticket is for.
     pub election_id: String,
+    /// Under a credential roll, the issuer of the membership credential the claim presented
+    /// (tickets/issue/0.3 Conformance item 12) — never the presentation or the credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_issuer: Option<String>,
 }
 
 /// Payload for [`AuditEvent::HiddenVettingChanged`].

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use serde_json::{Value, json};
 use sha2::Sha256;
-use vti_specs::voting::election::register::v0_3::Manifest;
+use vti_specs::voting::election::register::v0_4::Manifest;
 use vti_voting::{
     election::{Election, ElectionId},
     registrar::Registrar,
@@ -17,7 +17,9 @@ use vti_voting::{
 };
 
 use super::link::{BoxAnswer, LinkError};
-use super::store::{self, Delivery, ElectionRecord, Standing, TicketIssued};
+use super::presentation::{Check, Outcome};
+use super::roll;
+use super::store::{self, Delivery, ElectionRecord, RollParty, Standing, TicketIssued};
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -88,8 +90,12 @@ pub async fn parameters(state: &AppState) -> Result<Value, AppError> {
 }
 
 /// `Disclosure` (VTI-VOT-090): generated from the manifest and the trusted ballot box's entry,
-/// never written by hand.
-pub async fn disclosure(state: &AppState, rec: &ElectionRecord) -> Value {
+/// never written by hand. Under a credential roll it carries `rollCredential`: whose
+/// membership credential counts, what that party is to the community, and that claiming a
+/// ticket shows the community the claimant's membership of it. `memberOfName` is a group's name
+/// only where the reader may know the group exists (VTI-DIR-070): to a manager, or for a group
+/// every member may see.
+pub async fn disclosure(state: &AppState, rec: &ElectionRecord, manager: bool) -> Value {
     let config = state.config.read().await;
     let (operator, same) = config.voting.trusted(&rec.ballot_box).map_or_else(
         // No longer trusted: still described, as its operator unknown and possibly this one.
@@ -108,6 +114,22 @@ pub async fn disclosure(state: &AppState, rec: &ElectionRecord) -> Value {
     });
     if let Some(t) = m.get("trustees") {
         d["trustees"] = t.clone();
+    }
+    drop(config);
+    if let (Some(member_of), Some(party)) = (rec.roll_member_of(), &rec.roll_party) {
+        let mut rc = json!({
+            "memberOf": member_of,
+            "memberOfKind": party.kind(),
+            "presenterDisclosed": true,
+        });
+        if let RollParty::CommunityGroup { group_id } = party
+            && let Ok(Some(g)) = roll::group(state, group_id).await
+            && (manager || g.visibility == crate::groups::Audience::Members)
+            && !g.name.is_empty()
+        {
+            rc["memberOfName"] = json!(g.name);
+        }
+        d["rollCredential"] = rc;
     }
     d
 }
@@ -158,7 +180,37 @@ pub async fn may_see(
     if !rec.is_registered() && rec.standing != Standing::Cancelled {
         return Ok(false);
     }
+    // Under a credential roll the records say only who the roll could admit (VTI-VOT-015
+    // items 2 – 3): never anyone, for a member party, but the party itself, and nobody for a
+    // group the community no longer holds (VTI-VOT-029).
+    if rec.roll_member_of().is_some() {
+        return roll::records_could_admit(state, rec, did).await;
+    }
     roll_admits(state, rec, did).await
+}
+
+/// Whether a reader who is not otherwise shown `rec` is shown it on `outcome` (show/0.6
+/// Conformance item 8.3 – 8.4, VTI-VOT-015 item 3): only for a registered member-party election,
+/// only on a presentation that passed, of a credential `roll.memberOf` itself issued, while that
+/// party's own membership is active — decided from the community's own records.
+///
+/// # Errors
+/// A store failure.
+pub async fn presentation_admits(
+    state: &AppState,
+    rec: &ElectionRecord,
+    outcome: Option<&Outcome>,
+) -> Result<bool, AppError> {
+    let Some(Outcome::Passed(p)) = outcome else {
+        return Ok(false);
+    };
+    if !rec.is_member_party_election()
+        || (!rec.is_registered() && rec.standing != Standing::Cancelled)
+        || rec.roll_member_of() != Some(p.issuer.as_str())
+    {
+        return Ok(false);
+    }
+    roll::still_trusted(state, rec).await
 }
 
 // ─── create ──────────────────────────────────────────────────────────────
@@ -170,8 +222,13 @@ pub enum CreateError {
     UnsupportedSecrecy,
     CommunityMismatch,
     BallotBoxNotTrusted,
+    /// A credential roll names a DID this community does not trust for one (VTI-VOT-026).
+    RollUntrusted,
     ElectionExists,
-    BallotBoxRefused { code: String, message: String },
+    BallotBoxRefused {
+        code: String,
+        message: String,
+    },
     App(AppError),
 }
 
@@ -185,6 +242,8 @@ impl From<AppError> for CreateError {
 pub struct CheckedManifest {
     pub manifest: Manifest,
     pub digest: [u8; 32],
+    /// Under a credential roll, what `roll.memberOf` is to the community (item 6).
+    pub roll_party: Option<RollParty>,
 }
 
 /// Items 2 – 6, against the community and the clock as they are now — run on the request, and
@@ -216,6 +275,16 @@ pub async fn check_create(
     {
         return Err(CreateError::BallotBoxNotTrusted);
     }
+    // Item 6 (VTI-VOT-026): the community, one of its groups, or a party that is itself an
+    // active member. Nothing about who may vote is fixed here (VTI-VOT-025).
+    let roll_party = match &m.roll.member_of {
+        Some(did) => Some(
+            roll::classify(state, did.as_str())
+                .await?
+                .ok_or(CreateError::RollUntrusted)?,
+        ),
+        None => None,
+    };
     if store::get(state.elections.ks(), m.election_id.as_str())
         .await?
         .is_some()
@@ -227,6 +296,7 @@ pub async fn check_create(
     Ok(CheckedManifest {
         manifest: m,
         digest,
+        roll_party,
     })
 }
 
@@ -275,6 +345,7 @@ pub async fn create(
         election_key: None,
         ceremony: None,
         decryption_authorized: false,
+        roll_party: checked.roll_party.clone(),
     };
     if !store::put_new(state.elections.ks(), &rec).await? {
         return Err(CreateError::ElectionExists);
@@ -334,31 +405,39 @@ pub async fn deliver_registration(
     });
     let answer = match state.elections.link() {
         Some(link) => {
-            let answer = link
+            // voting/election/register/0.4 first. A ballot box from before it refuses it by
+            // version; 0.3 carries the same manifest wherever the roll is not a credential roll
+            // (voting/_shared/0.4, VTI-VOT-025), and 0.2 wherever the threshold is also 10 or
+            // more (VTI-VOT-065). A manifest neither can carry keeps the refusal. Each is a
+            // different request on a definite refusal, not a retry: the sweeper stays the one
+            // owner of redelivery.
+            let mut answer = link
                 .exchange(
                     &rec.ballot_box,
-                    &format!("{SPEC}voting/election/register/0.3"),
+                    &format!("{SPEC}voting/election/register/0.4"),
                     &payload,
                 )
                 .await;
-            // A ballot box from before voting/election/register/0.3 refuses it by version. Its
-            // 0.2 carries the same manifest wherever the threshold is 10 or more, so that
-            // registration goes there instead; one below 10 cannot (0.2's schema says 10), and
-            // the refusal stands. A different request on a definite refusal, not a retry: the
-            // sweeper stays the one owner of redelivery.
-            match answer {
-                Ok(BoxAnswer::Refused { ref code, .. })
-                    if code == "unsupportedVersion" && fits_register_0_2(&rec.manifest) =>
-                {
-                    link.exchange(
+            for (version, fits) in [
+                ("0.3", fits_register_0_3(&rec.manifest)),
+                ("0.2", fits_register_0_2(&rec.manifest)),
+            ] {
+                let refused_by_version = matches!(
+                    &answer,
+                    Ok(BoxAnswer::Refused { code, .. }) if code == "unsupportedVersion"
+                );
+                if !(refused_by_version && fits) {
+                    break;
+                }
+                answer = link
+                    .exchange(
                         &rec.ballot_box,
-                        &format!("{SPEC}voting/election/register/0.2"),
+                        &format!("{SPEC}voting/election/register/{version}"),
                         &payload,
                     )
-                    .await
-                }
-                other => other,
+                    .await;
             }
+            answer
         }
         None => Err(LinkError::Unavailable(
             "this VTC has no messaging link to ballot boxes yet".into(),
@@ -407,15 +486,29 @@ pub async fn deliver_registration(
 
 // ─── tickets ─────────────────────────────────────────────────────────────
 
-/// Why a ticket was refused (tickets/issue items 2 – 7).
+/// Why a ticket was refused (tickets/issue/0.3 items 3 – 8).
 #[derive(Debug)]
 pub enum IssueError {
     ElectionUnknown,
     NotOpen,
     ManifestMismatch,
     NotEligible,
+    /// Under a credential roll, to a signer who may see the election (item 6.5).
+    NotEligibleSeen,
     AlreadyIssued,
     RequestInvalid(String),
+    /// Item 6: a presentation under a rule that takes none.
+    PresentationUnexpected,
+    /// Item 6.1.
+    PresentationRequired,
+    /// Item 6.2 (VTI-VOT-026, VTI-VOT-029).
+    RollUntrusted,
+    /// Item 6.3, with `details.reason`.
+    MembershipNotProven(&'static str),
+    /// Item 6.4.
+    MembershipRevoked,
+    /// A credential-roll election claimed at `tickets/issue/0.1`, which carries no presentation.
+    UnsupportedVersion,
     App(AppError),
 }
 
@@ -435,10 +528,90 @@ pub struct TicketAsk<'a> {
     pub request: &'a Value,
     pub doc_id: &'a str,
     pub doc_digest: &'a str,
+    /// What the request's presentation came to (item 2), checked before this is called — never
+    /// [`Outcome::Indeterminate`], which the caller has already answered — or `None` without one.
+    pub presentation: Option<&'a Outcome>,
+    /// Whether the request's version carries a presentation (tickets/issue/0.3, not 0.1).
+    pub carries_presentation: bool,
 }
 
-/// Issue a ticket blind, recording it first (tickets/issue items 1 – 10). Returns the
-/// pre-credential, multibase, and whether this was a resend answered from the record.
+/// A ticket issued: the pre-credential, multibase; whether this was a resend answered from the
+/// record; and, under a credential roll, the issuer of the credential presented (item 12).
+pub struct Issued {
+    pub pre_credential: String,
+    pub resend: bool,
+    pub credential_issuer: Option<String>,
+}
+
+/// Item 6 under `credential` (VTI-VOT-025), in its order, reading nothing after item 2 but the
+/// community's own records.
+async fn credential_eligible(
+    state: &AppState,
+    rec: &ElectionRecord,
+    signer: &str,
+    outcome: Option<&Outcome>,
+    now: DateTime<Utc>,
+) -> Result<String, IssueError> {
+    // 6.1.
+    let Some(outcome) = outcome else {
+        return Err(IssueError::PresentationRequired);
+    };
+    // 6.2.
+    if !roll::still_trusted(state, rec).await? {
+        return Err(IssueError::RollUntrusted);
+    }
+    // 6.3.
+    if let Outcome::Failed { check, .. } = outcome
+        && *check != Check::Revoked
+    {
+        return Err(IssueError::MembershipNotProven(check.reason()));
+    }
+    let member_of = rec.roll_member_of().unwrap_or_default();
+    let Some(issuer) = outcome.issuer() else {
+        return Err(IssueError::MembershipNotProven("issuer"));
+    };
+    if issuer != member_of {
+        return Err(IssueError::MembershipNotProven("issuer"));
+    }
+    if let Some(RollParty::CommunityGroup { group_id }) = &rec.roll_party {
+        let live = match roll::group(state, group_id).await? {
+            Some(g) => roll::group_authorized(state, &g, now).await?,
+            None => false,
+        };
+        if !live {
+            return Err(IssueError::MembershipNotProven("authorization"));
+        }
+    }
+    // 6.4.
+    if matches!(
+        outcome,
+        Outcome::Failed {
+            check: Check::Revoked,
+            ..
+        }
+    ) {
+        return Err(IssueError::MembershipRevoked);
+    }
+    // 6.5: a credential not yet expired does not outlast a removal recorded here.
+    let agrees = match &rec.roll_party {
+        Some(RollParty::ThisCommunity) => {
+            crate::member_portal::active::active_member(state, signer)
+                .await?
+                .is_some()
+        }
+        Some(RollParty::CommunityGroup { group_id }) => {
+            roll::active_in_group(state, group_id, signer).await?
+        }
+        _ => true,
+    };
+    if !agrees {
+        return Err(IssueError::NotEligibleSeen);
+    }
+    Ok(issuer.to_string())
+}
+
+/// Issue a ticket blind, recording it first (tickets/issue/0.3 items 1 and 3 – 12; item 2, the
+/// presentation, the caller made).
 ///
 /// # Errors
 /// The first rule broken, in the specification's order.
@@ -446,9 +619,9 @@ pub async fn issue_ticket(
     state: &AppState,
     ask: TicketAsk<'_>,
     now: DateTime<Utc>,
-) -> Result<(String, bool), IssueError> {
+) -> Result<Issued, IssueError> {
     let ks = state.elections.ks();
-    // Item 8: one critical section for items 6 – 10.
+    // Item 9: one critical section for items 7 – 11.
     let _guard = state.elections.issue_lock.lock().await;
 
     // Item 1: a resend of the document already answered.
@@ -457,17 +630,29 @@ pub async fn issue_ticket(
         && t.doc_digest == ask.doc_digest
         && let Some(pre) = t.pre_credential
     {
-        return Ok((pre, true));
+        return Ok(Issued {
+            pre_credential: pre,
+            resend: true,
+            credential_issuer: None,
+        });
     }
 
-    // Item 2: unknown and unseen are the same answer.
+    // Item 3: unknown and unseen are the same answer (VTI-VOT-015, VTI-VOT-017). A member-party
+    // election is seen by anyone else only on this request's own presentation, decided before
+    // its state or manifest is compared.
     let Some(mut rec) = store::get(ks, ask.election_id).await? else {
         return Err(IssueError::ElectionUnknown);
     };
-    if !may_see(state, &rec, ask.signer, ask.manager).await? {
+    let seen = may_see(state, &rec, ask.signer, ask.manager).await?
+        || presentation_admits(state, &rec, ask.presentation).await?;
+    if !seen {
         return Err(IssueError::ElectionUnknown);
     }
-    // Item 3 (VTI-VOT-024); and never after a restore (VTI-VOT-022).
+    let credential_roll = rec.roll_member_of().is_some();
+    if credential_roll && !ask.carries_presentation {
+        return Err(IssueError::UnsupportedVersion);
+    }
+    // Item 4 (VTI-VOT-024); and never after a restore (VTI-VOT-022).
     let open = rec.standing == Standing::Registered
         && !rec.issuance_stopped
         && !rec.close_in_flight
@@ -477,22 +662,34 @@ pub async fn issue_ticket(
     if !open {
         return Err(IssueError::NotOpen);
     }
-    // Item 4.
+    // Item 5.
     if ask.manifest_digest != rec.manifest_digest {
         return Err(IssueError::ManifestMismatch);
     }
-    // Item 5: the roll as the records stand now.
-    if !roll_admits(state, &rec, ask.signer).await? {
-        return Err(IssueError::NotEligible);
-    }
-    // Item 6 (VTI-VOT-022).
+    // Item 6: the roll as the records — or, under a credential roll, the presentation — stand
+    // now.
+    let credential_issuer = if credential_roll {
+        Some(credential_eligible(state, &rec, ask.signer, ask.presentation, now).await?)
+    } else {
+        if ask.presentation.is_some() {
+            return Err(IssueError::PresentationUnexpected);
+        }
+        if !roll_admits(state, &rec, ask.signer).await? {
+            return Err(IssueError::NotEligible);
+        }
+        None
+    };
+    // Item 7 (VTI-VOT-022, VTI-VOT-027): one ticket per party. Under a credential roll the
+    // party is the credential's subject, which item 2 held to be the signer — for the community
+    // and its groups the member by their membership DID, whose tickets follow a rotation
+    // (`Elections::carry_tickets`); for a member party the subject's own DID.
     if store::ticket(ks, ask.election_id, ask.signer)
         .await?
         .is_some()
     {
         return Err(IssueError::AlreadyIssued);
     }
-    // Item 7.
+    // Item 8.
     let label = format!("voter/{}", rec.election_id);
     if ask.request["label"].as_str() != Some(label.as_str()) {
         return Err(IssueError::RequestInvalid(format!(
@@ -516,7 +713,7 @@ pub async fn issue_ticket(
     )
     .map_err(|e| AppError::Internal(format!("election: {e}")))?;
 
-    // Item 9: blind.
+    // Item 10: blind.
     let reg = registrar(state).await?;
     let pre = reg
         .issue_ticket(&election, &id, &request, &mut vti_voting::rand::rngs::OsRng)
@@ -524,7 +721,7 @@ pub async fn issue_ticket(
     let pre = vti_vetting_pcs::scheme::enc(&pre)
         .map_err(|e| AppError::Internal(format!("encode the pre-credential: {e}")))?;
 
-    // Item 10: record before answering.
+    // Item 11: record before answering — the party, never the presentation (VTI-CRD-042).
     let ticket = TicketIssued {
         election_id: rec.election_id.clone(),
         signer: ask.signer.to_string(),
@@ -538,7 +735,11 @@ pub async fn issue_ticket(
     }
     rec.tickets_issued = rec.tickets_issued.saturating_add(1);
     store::put(ks, &rec).await?;
-    Ok((pre, false))
+    Ok(Issued {
+        pre_credential: pre,
+        resend: false,
+        credential_issuer,
+    })
 }
 
 // ─── close and cancel ────────────────────────────────────────────────────
@@ -1121,17 +1322,24 @@ async fn exchange(
     }
 }
 
+/// Whether `manifest` can be registered under `voting/election/register/0.3`, whose manifest
+/// (voting/_shared/0.3) has no `credential` roll.
+fn fits_register_0_3(manifest: &Value) -> bool {
+    manifest["roll"]["rule"] != "credential"
+}
+
 /// Whether `manifest` can be registered under `voting/election/register/0.2`, whose schema
-/// (voting/_shared/0.2) holds `textReleaseThreshold` to 10 or more (VTI-VOT-065).
+/// (voting/_shared/0.2) also holds `textReleaseThreshold` to 10 or more (VTI-VOT-065).
 fn fits_register_0_2(manifest: &Value) -> bool {
-    manifest["textReleaseThreshold"]
-        .as_u64()
-        .is_some_and(|t| t >= 10)
+    fits_register_0_3(manifest)
+        && manifest["textReleaseThreshold"]
+            .as_u64()
+            .is_some_and(|t| t >= 10)
 }
 
 /// The version of a ballot-box task the community sends: `voting/board/read` at 0.2, whose
 /// lifecycle entries name their instant `occurredAt` (voting/_shared/0.2), every other task this
-/// path sends at 0.1, its current version. `voting/election/register` is sent at 0.3 directly
+/// path sends at 0.1, its current version. `voting/election/register` is sent at 0.4 directly
 /// ([`deliver_registration`]).
 fn box_version(task: &str) -> &'static str {
     match task {

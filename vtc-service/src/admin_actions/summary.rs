@@ -165,9 +165,14 @@ pub(crate) const HIDDEN_PUBLISH: &str =
 pub(crate) const HIDDEN_WITHDRAW: &str =
     <vti_specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const DIRECTORY_FIELDS_UPDATE: &str = crate::trust_tasks::directory_tasks::FIELDS_UPDATE_TYPE;
-/// `vtc/elections/create/0.4`, off the generated type: a build without `voting`
+/// `vtc/elections/create/0.5`, off the generated type: a build without `voting`
 /// still pins the template the console holds.
 pub(crate) const ELECTIONS_CREATE: &str =
+    <vti_specs::vtc::elections::create::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/elections/create/0.4`, still served (its manifest carries no credential roll): a
+/// binding election a client parks under it renders as one under 0.5 does.
+#[allow(deprecated)]
+pub(crate) const ELECTIONS_CREATE_V0_4: &str =
     <vti_specs::vtc::elections::create::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `vtc/elections/create/0.3`, still served (its manifest's `textReleaseThreshold` is 10 or
 /// more): a binding election a client parks under it renders as one under 0.4 does.
@@ -628,6 +633,21 @@ pub const TEMPLATES: &[Template] = &[
     Template {
         kind: KIND_ELECTION_BINDING_CREATE,
         type_uri: ELECTIONS_CREATE,
+        title: "Create the binding election {electionId}",
+        effect: ELECTION_CREATE_EFFECT,
+        fields: &[
+            f("electionId", "/manifest/electionId", "text"),
+            f("title", "/manifest/title", "text"),
+            f("ballotBox", "/manifest/ballotBox", "did"),
+            f("roll", "/manifest/roll/rule", "text"),
+            f("votingOpens", "/manifest/votingOpensAt", "datetime"),
+            f("votingCloses", "/manifest/votingClosesAt", "datetime"),
+            f("memberOf", "/manifest/roll/memberOf", "did"),
+        ],
+    },
+    Template {
+        kind: KIND_ELECTION_BINDING_CREATE,
+        type_uri: ELECTIONS_CREATE_V0_4,
         title: "Create the binding election {electionId}",
         effect: ELECTION_CREATE_EFFECT,
         fields: &[
@@ -1197,8 +1217,13 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     ),
     (
         KIND_ELECTION_BINDING_CREATE,
-        ELECTIONS_CREATE,
+        ELECTIONS_CREATE_V0_4,
         "zQmR79wDEhh2mEJLRAbTgWiYWgtEby8xcwzEQFQQJ63mqZs",
+    ),
+    (
+        KIND_ELECTION_BINDING_CREATE,
+        ELECTIONS_CREATE,
+        "zQmVDaP58EusQDuDEKJ9TU289EvDHpbQwdYbzZhZoF5BSEE",
     ),
     (
         KIND_DIRECTORY_FIELD_WIDEN,

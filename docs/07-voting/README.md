@@ -192,9 +192,14 @@ From there, [Community elections](../03-vtc/elections.md) is the community's gui
 An election a caller may not read is answered `electionUnknown`, exactly as one that does not
 exist.
 
-**Versions.** `voting/election/register` and `show` are served at 0.3 and 0.2, `voting/board/read`
-at 0.2, every other task at 0.1; any other version is refused `unsupportedVersion`, naming the
-ones served. Register and show differ between 0.2 and 0.3 only in the manifest's least
+**Versions.** `voting/election/register` and `show` are served at 0.4, 0.3 and 0.2,
+`voting/board/read` at 0.2, every other task at 0.1; any other version is refused
+`unsupportedVersion`, naming the ones served. 0.4 (voting/_shared/0.4) adds the `credential`
+roll rule — the holders of a membership credential for the one DID `roll.memberOf` names
+(VTI-VOT-025). The ballot box only stores and serves that roll: who may vote is the
+community's to decide, at each ticket claim. A 0.3 or 0.2 registration carrying one fails its
+schema (`malformedRequest`), and a 0.3 or 0.2 `show` of such an election is refused
+`unsupportedVersion`, naming 0.4. Register and show differ between 0.2 and 0.3 only in the manifest's least
 `textReleaseThreshold` — the counted ballots before any written answer is disclosed: 10 under
 0.2, 1 under 0.3 (VTI-VOT-065). The ballot box never refuses 1 – 9 at 0.3. A 0.2 registration
 below 10 fails its schema (`malformedRequest`), and a 0.2 `show` of an election below 10 is

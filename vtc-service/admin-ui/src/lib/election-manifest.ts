@@ -1,6 +1,6 @@
 // The election manifest builder's model (`plugins/ElectionBuilder.tsx`).
 //
-// A manifest (`vtc/elections/create/0.4`, voting/_shared/0.3 `Manifest`) says
+// A manifest (`vtc/elections/create/0.5`, voting/_shared/0.4 `Manifest`) says
 // what an election asks and how it is decided, and every ticket and cast is
 // bound to its digest — so nothing about it can be corrected after the ballot
 // box registers it. The builder edits a **draft** (strings where the inputs
@@ -19,7 +19,7 @@
 import { base58btcEncode, jcsCanonicalize, sha256 } from "./jcs";
 
 export type QuestionType = "choice" | "ranking" | "score" | "text";
-export type RollRule = "members" | "membersAndListed" | "listed";
+export type RollRule = "members" | "membersAndListed" | "listed" | "credential";
 export type Secrecy = "open" | "sealed" | "talliedEncrypted";
 export type BoardVisibility = "public" | "private";
 export type Revote = "replace" | "refuse";
@@ -35,13 +35,16 @@ export const STEPS = [
 ] as const;
 export type StepId = (typeof STEPS)[number]["id"];
 
-/** The schema's bounds the builder enforces (vtc/elections/create/0.4). */
+/** The schema's bounds the builder enforces (vtc/elections/create/0.5). */
 export const MANIFEST_LIMITS = {
   electionIdPattern: "^[A-Za-z0-9._-]{1,128}$",
   keyPattern: "^[A-Za-z0-9._-]{1,64}$",
   titleMax: 512,
   descriptionMax: 8192,
   didMax: 2048,
+  /** `roll.memberOf` (voting/_shared/0.4): a DID, 8 – 2048 characters. */
+  memberOfPattern: "^did:[a-z0-9]+:\\S+$",
+  memberOfMin: 8,
   questionsMin: 1,
   questionsMax: 128,
   questionTextMax: 2048,
@@ -82,6 +85,7 @@ export const MAX_TRUSTEES = 64;
 
 const ELECTION_ID = new RegExp(MANIFEST_LIMITS.electionIdPattern);
 const KEY = new RegExp(MANIFEST_LIMITS.keyPattern);
+const MEMBER_OF = new RegExp(MANIFEST_LIMITS.memberOfPattern);
 
 export interface OptionDraft {
   key: string;
@@ -117,6 +121,9 @@ export interface ManifestDraft {
   roll: RollRule;
   /** DIDs, one per line. */
   listed: string;
+  /** Under the `credential` roll, the one DID whose membership credentials admit their
+   *  holders (VTI-VOT-025): this community, one of its groups, or a member party. */
+  memberOf: string;
   /** RFC 3339, UTC, as the manifest carries them. */
   registrationOpensAt: string;
   votingOpensAt: string;
@@ -212,6 +219,7 @@ export function emptyDraft(now = new Date()): ManifestDraft {
     questions: [newQuestion(0)],
     roll: "members",
     listed: "",
+    memberOf: "",
     registrationOpensAt: isoUtc(now),
     votingOpensAt: isoUtc(opens),
     votingClosesAt: isoUtc(opens + 7 * 24 * hour),
@@ -289,7 +297,12 @@ export function draftToManifest(d: ManifestDraft, community: string): Record<str
   if (d.secrecy !== "open") {
     m.trustees = { dids: didList(d.trustees), threshold: int(d.threshold) ?? d.threshold };
   }
-  m.roll = d.roll === "members" ? { rule: "members" } : { rule: d.roll, listed: didList(d.listed) };
+  m.roll =
+    d.roll === "members"
+      ? { rule: "members" }
+      : d.roll === "credential"
+        ? { rule: "credential", memberOf: d.memberOf.trim() }
+        : { rule: d.roll, listed: didList(d.listed) };
   m.registrationOpensAt = d.registrationOpensAt;
   m.votingOpensAt = d.votingOpensAt;
   m.votingClosesAt = d.votingClosesAt;
@@ -388,7 +401,21 @@ export function manifestToDraft(
     });
   }
   const roll = isObj(value.roll) ? value.roll : {};
-  const rule = roll.rule === "membersAndListed" || roll.rule === "listed" ? roll.rule : "members";
+  const extraRoll = Object.keys(roll).filter((k) => k !== "rule" && k !== "listed" && k !== "memberOf");
+  if (extraRoll.length) {
+    return { error: `The form does not edit roll ${extraRoll.map((k) => `"${k}"`).join(", ")}.` };
+  }
+  if (roll.rule !== undefined && !["members", "membersAndListed", "listed", "credential"].includes(roll.rule as string)) {
+    return { error: `The roll has a rule the form does not know: ${JSON.stringify(roll.rule)}.` };
+  }
+  const rule = (roll.rule as RollRule | undefined) ?? "members";
+  // vti_voting::rules: memberOf exactly with `credential`, and no `listed` with it.
+  if (rule === "credential" && roll.listed !== undefined) {
+    return { error: "A credential roll lists nobody: the form cannot carry its \"listed\"." };
+  }
+  if (rule !== "credential" && roll.memberOf !== undefined) {
+    return { error: "Only a credential roll names \"memberOf\"." };
+  }
   const board = isObj(value.board) ? value.board : {};
   const trustees = isObj(value.trustees) ? value.trustees : {};
   const secrecy =
@@ -403,6 +430,7 @@ export function manifestToDraft(
       questions,
       roll: rule,
       listed: lines(roll.listed),
+      memberOf: str(roll.memberOf),
       registrationOpensAt: str(value.registrationOpensAt, base.registrationOpensAt),
       votingOpensAt: str(value.votingOpensAt, base.votingOpensAt),
       votingClosesAt: str(value.votingClosesAt, base.votingClosesAt),
@@ -533,7 +561,13 @@ export function checkDraft(d: ManifestDraft, community: string, now = Date.now()
 
   // Who votes
   const listed = didList(d.listed);
-  if (d.roll !== "members") {
+  if (d.roll === "credential") {
+    const did = d.memberOf.trim();
+    if (!did) add("voters", "memberOf", "Name the DID whose membership credentials admit their holders.");
+    else if (!MEMBER_OF.test(did) || did.length < L.memberOfMin || did.length > L.didMax) {
+      add("voters", "memberOf", `A DID (did:method:…), ${L.memberOfMin} – ${L.didMax} characters.`);
+    }
+  } else if (d.roll !== "members") {
     if (listed.length === 0) add("voters", "listed", "Name at least one party.");
     for (const x of dupes(listed)) add("voters", "listed", `${x} is listed twice.`);
     if (listed.some((x) => x.length > L.didMax)) add("voters", "listed", `A DID is at most ${L.didMax} characters.`);
@@ -632,7 +666,30 @@ export const ROLL_TEXT: Record<RollRule, string> = {
   members: "The community's active members",
   membersAndListed: "Active members, and the parties listed",
   listed: "Only the parties listed",
+  credential: "Holders of a membership credential for one DID",
 };
+
+/** What the party a credential roll names is to this community (`RollCredentialDisclosure.memberOfKind`). */
+export type MemberOfKind = "thisCommunity" | "communityGroup" | "memberParty";
+
+export const MEMBER_OF_KIND_TEXT: Record<MemberOfKind, string> = {
+  thisCommunity: "this community",
+  communityGroup: "one of this community's groups",
+  memberParty: "a party that is itself a member of this community",
+};
+
+/** Why the community trusts a credential roll's DID, and what the roll means (VTI-VOT-025 –
+ *  028, VTI-VOT-015). Shown beside the choice in the builder. */
+export const CREDENTIAL_ROLL_TRUST: readonly string[] = [
+  "The community accepts the membership credentials a DID issues only because that DID is the community itself, one of its groups, or a party that is itself an active member of this community, holding a membership credential the community issued it. Any other DID is refused when the election is created.",
+  "Who may vote is proven when each member claims their ticket, never fixed now: someone who joins later can vote, and someone removed or whose credential is revoked cannot.",
+  "The community cannot know how many people this roll admits, so it states no roll size; turnout is counted ballots against tickets issued.",
+  "Claiming a ticket shows the community the member's membership of that party.",
+];
+
+/** The extra rule for a member party (VTI-VOT-015). */
+export const MEMBER_PARTY_VISIBILITY =
+  "An election put to a member party's members is shown only to this community's election managers, to the party itself, and to a reader who presents that party's membership credential in reading it. It never appears in members' election lists, so its voters learn of it from the party, and reading it already shows the community their membership of that party.";
 
 export const QUESTION_TYPE_TEXT: Record<QuestionType, { label: string; detail: string }> = {
   choice: { label: "Choice", detail: "Pick between a fewest and most of the options. A motion is a choice of exactly one." },

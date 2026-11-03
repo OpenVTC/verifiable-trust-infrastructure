@@ -1,5 +1,12 @@
-//! Community elections: `vtc/elections/{create,list,show,close,cancel,certify}/0.1`,
-//! `vtc/elections/tickets/issue/0.1` and `vtc/elections/ballot-boxes/list/0.1` (VTI-VOT-001 – 100).
+//! Community elections: `vtc/elections/create/0.5`, `list/0.5`, `show/0.6`,
+//! `{close,cancel,certify}/0.1`, `vtc/elections/tickets/issue/0.3` and
+//! `vtc/elections/ballot-boxes/list/0.1` (VTI-VOT-001 – 100).
+//!
+//! A presentation — what a `show` of an election put to a member party's members, or a ticket
+//! under a credential roll, carries (VTI-VOT-015, VTI-VOT-025) — is bound to the request
+//! document's `id` and made by the member's agent, so a request carrying one is built and
+//! signed by the member's VTA (`vta/pcs/voter/{read,register}`) and sent with
+//! [`VtcClient::send_signed_document`], never by these methods.
 //!
 //! Signed Trust Tasks sent the way every `acl/*` call goes ([`crate::acl`]): over the client's
 //! DIDComm or TSP session when it holds one, otherwise signed with a [`HolderKey`] and posted to
@@ -18,8 +25,8 @@ use crate::{HolderKey, VtcClient, VtcError};
 /// on `trust-tasks-rs` itself.
 pub use vti_specs::vtc::elections::{
     ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
-    certify::v0_1 as certify, close::v0_1 as close, create::v0_4 as create, list::v0_3 as list,
-    show::v0_3 as show, tickets::issue::v0_1 as tickets_issue,
+    certify::v0_1 as certify, close::v0_1 as close, create::v0_5 as create, list::v0_5 as list,
+    show::v0_6 as show, tickets::issue::v0_3 as tickets_issue,
 };
 
 /// The Type URI of each task, read off the generated payloads.
@@ -37,7 +44,7 @@ pub mod task {
 }
 
 impl VtcClient {
-    /// `vtc/elections/create/0.4` — create an election from `manifest`, sent as given (its
+    /// `vtc/elections/create/0.5` — create an election from `manifest`, sent as given (its
     /// digest is taken over these bytes).
     ///
     /// # Errors
@@ -54,7 +61,7 @@ impl VtcClient {
             .await
     }
 
-    /// `vtc/elections/list/0.3` — the elections the caller may see, optionally only those in
+    /// `vtc/elections/list/0.5` — the elections the caller may see, optionally only those in
     /// `state`.
     ///
     /// # Errors
@@ -80,10 +87,12 @@ impl VtcClient {
         self.acl_task(task::LIST, payload, key, &[]).await
     }
 
-    /// `vtc/elections/show/0.3` — one election, with its parameters and disclosure.
+    /// `vtc/elections/show/0.6` — one election, with its parameters and disclosure, read without
+    /// a presentation.
     ///
     /// # Errors
-    /// `electionUnknown` for an election the caller may not see; the VTC's refusal otherwise.
+    /// `electionUnknown` for an election the caller may not see; `indeterminate` (retryable)
+    /// when a check the community makes could not be completed; the VTC's refusal otherwise.
     pub async fn elections_show(
         &self,
         election_id: &str,
@@ -162,8 +171,9 @@ impl VtcClient {
             .await
     }
 
-    /// `vtc/elections/tickets/issue/0.1` — ask for a ticket: `request` is the blinded request a
-    /// member's VTA built (`vta/pcs/voter/register`), carried as it came.
+    /// `vtc/elections/tickets/issue/0.3` — ask for a ticket: `request` is the blinded request a
+    /// member's VTA built (`vta/pcs/voter/register`), carried as it came. Carries no
+    /// presentation, so under a credential roll the VTA's `ticketDocument` is sent instead.
     ///
     /// # Errors
     /// The VTC's refusal.

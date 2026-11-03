@@ -117,6 +117,40 @@ describe("Elections", () => {
     expect(screen.getByText(/a written answer may identify who wrote it/)).toBeTruthy();
   });
 
+  it("tells administrators whose credential counts, and counts turnout against tickets (VTI-VOT-090, VTI-VOT-028)", async () => {
+    mockFetch(
+      routes([
+        taskRoute(
+          ELECTIONS_SHOW_TASK,
+          shown("voting", {
+            disclosure: {
+              ...shown("voting").disclosure,
+              rollCredential: {
+                memberOf: "did:webvh:QmPartner:partner.example",
+                memberOfKind: "memberParty",
+                memberOfName: "Partner community",
+                presenterDisclosed: true,
+              },
+            },
+          }),
+        ),
+      ]),
+    );
+    renderWithProviders(<Elections />, { route: "/elections/agm-2027", path: "/elections/*" });
+    expect(await screen.findByText("Whose credential counts")).toBeTruthy();
+    expect(screen.getByText("Partner community")).toBeTruthy();
+    expect(screen.getByText(/Claiming a ticket shows this community/)).toBeTruthy();
+    expect(screen.getByText(/never appears in members/)).toBeTruthy();
+    expect(screen.getByText(/there is no roll size/)).toBeTruthy();
+  });
+
+  it("shows no credential row under any other roll", async () => {
+    mockFetch(routes([taskRoute(ELECTIONS_SHOW_TASK, shown("voting"))]));
+    renderWithProviders(<Elections />, { route: "/elections/agm-2027", path: "/elections/*" });
+    await screen.findByText("What members are told");
+    expect(screen.queryByText("Whose credential counts")).toBeNull();
+  });
+
   it("says when written answers are released, without a warning at 10", async () => {
     mockFetch(
       routes([taskRoute(ELECTIONS_SHOW_TASK, shown("voting", { manifest: { ...manifest, textReleaseThreshold: 10 } }))]),
@@ -296,6 +330,83 @@ describe("Elections", () => {
       });
       // Created: the draft is gone.
       expect(sessionStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
+    it("builds a credential roll naming a group, from this community's parties (VTI-VOT-026)", async () => {
+      const GROUP_DID = "did:webvh:QmGroup:community.example:groups:g7";
+      const requests = mockFetch(
+        routes([
+          taskRoute("https://trusttasks.org/spec/vtc/groups/list/0.2", {
+            items: [{ group: { groupId: "grp_eng", groupDid: GROUP_DID, name: "Engineering" }, myMembership: "none" }],
+          }),
+          taskRoute("https://trusttasks.org/spec/vtc/members/list/0.2", {
+            items: [
+              { did: "did:webvh:QmPartner:partner.example", label: "Partner community", currentVmcId: "urn:uuid:vmc-1" },
+              { did: "did:key:z6MkNoCredential", label: "Without a credential" },
+            ],
+          }),
+          taskRoute(ELECTIONS_CREATE_TASK, { electionId: "eng-poll", manifestDigest: "zQmDigest", state: "registered" }),
+          taskRoute(ELECTIONS_SHOW_TASK, shown("registered")),
+        ]),
+      );
+      renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+      fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Eng poll" } });
+      next();
+      fireEvent.change(screen.getByLabelText("What is asked"), { target: { value: "Offsite?" } });
+      fireEvent.click(screen.getByRole("button", { name: "Use Yes / No / Abstain" }));
+      next();
+      fireEvent.click(screen.getByLabelText(/Holders of a membership credential for one DID/));
+      const pick = (await screen.findByLabelText(/^Whose membership credential counts/)) as HTMLSelectElement;
+      await screen.findByRole("option", { name: "Group: Engineering" });
+      expect(screen.getByRole("option", { name: "This community" })).toBeTruthy();
+      expect(screen.getByRole("option", { name: "Member: Partner community" })).toBeTruthy();
+      // A member holding no membership credential of this community's is not offered.
+      expect(screen.queryByRole("option", { name: "Member: Without a credential" })).toBeNull();
+      expect(screen.getByText(/refused when the election is created/)).toBeTruthy();
+      expect(screen.getByText(/someone who joins later can vote/)).toBeTruthy();
+      expect(screen.getByText(/states no roll size/)).toBeTruthy();
+      fireEvent.change(pick, { target: { value: GROUP_DID } });
+      expect(screen.getByText(/is one of this community's groups/)).toBeTruthy();
+      // A group is not a member party: the member-party visibility note is not shown.
+      expect(screen.queryByText(/never appears in members' election lists/)).toBeNull();
+      next();
+      next();
+      fireEvent.change(screen.getByLabelText(/^Ballot box DID/), { target: { value: BOX } });
+      next();
+      expect(screen.getByText(/turnout is counted against/)).toBeTruthy();
+      const create = screen.getByRole("button", { name: "Create" });
+      await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(create);
+      await waitFor(() => expect(sentPayloads(requests, ELECTIONS_CREATE_TASK)).toHaveLength(1));
+      const sent = (sentPayloads(requests, ELECTIONS_CREATE_TASK)[0] as { manifest: Record<string, unknown> }).manifest;
+      expect(sent.roll).toEqual({ rule: "credential", memberOf: GROUP_DID });
+    });
+
+    it("explains a member party's visibility, and takes a typed DID (VTI-VOT-015)", async () => {
+      mockFetch(
+        routes([
+          taskRoute("https://trusttasks.org/spec/vtc/groups/list/0.2", { items: [] }),
+          taskRoute("https://trusttasks.org/spec/vtc/members/list/0.2", {
+            items: [
+              { did: "did:webvh:QmPartner:partner.example", label: "Partner community", currentVmcId: "urn:uuid:vmc-1" },
+              { did: "did:key:z6MkNoCredential", label: "Without a credential" },
+            ],
+          }),
+        ]),
+      );
+      renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+      fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Partner poll" } });
+      next();
+      next();
+      fireEvent.click(screen.getByLabelText(/Holders of a membership credential for one DID/));
+      await screen.findByRole("option", { name: "Member: Partner community" });
+      fireEvent.change(screen.getByLabelText(/^Whose membership credential counts/), {
+        target: { value: "did:webvh:QmPartner:partner.example" },
+      });
+      expect(screen.getByText(/never appears in members' election lists/)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Type a DID instead" }));
+      fireEvent.change(screen.getByLabelText(/^Membership credential issuer DID/), { target: { value: "not-a-did" } });
+      expect(screen.getByText(/A DID \(did:method:…\)/)).toBeTruthy();
     });
 
     it("takes a text release threshold below 10, and warns in Counting and in Review", async () => {

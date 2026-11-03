@@ -1,6 +1,6 @@
-//! Community elections on the signed-document spine — `vtc/elections/create/0.4` (and 0.3),
-//! `list/0.3`, `show/0.3` (and 0.2), `{close,cancel,certify}/0.1`,
-//! `vtc/elections/tickets/issue/0.1` and
+//! Community elections on the signed-document spine — `vtc/elections/create/0.5` (and 0.4,
+//! 0.3), `list/0.5` (and 0.3), `show/0.6` (and 0.3, 0.2), `{close,cancel,certify}/0.1`,
+//! `vtc/elections/tickets/issue/0.3` (and 0.1) and
 //! `vtc/elections/ballot-boxes/list/0.1` ([`crate::elections`], VTI-VOT-001 – 100).
 //!
 //! | task | signed by | authority (read now) |
@@ -16,6 +16,18 @@
 //! in code and message, so a member learns nothing of an election that is not theirs — not even
 //! that it exists. For the same reason `tickets/issue` answers an ineligible caller who holds no
 //! `vtc.elections.manage` with `electionUnknown`, never `notEligible`.
+//!
+//! # A credential roll's presentation is checked first
+//!
+//! Under a credential roll (VTI-VOT-025) a claim — and the read of an election put to a member
+//! party's members (VTI-VOT-015 item 3) — carries a presentation of a membership credential.
+//! It is checked before the election is looked up and without reference to it
+//! ([`crate::elections::presentation`], VTI-VOT-018), so an outage of a status list or a DID
+//! document is the framework's `indeterminate` whatever `electionId` names. Every check after
+//! the lookup reads the community's own records alone. An election whose roll names a member
+//! party is shown, and its ticket claimed, by anyone but a manager or the party itself only on
+//! a presentation that passes; every other outcome is `electionUnknown` (VTI-VOT-017). A list
+//! never carries one, and never shows such an election to anyone else.
 //!
 //! # The community never sees a ballot
 //!
@@ -36,13 +48,17 @@ use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
 use vti_specs::vtc::elections::{
     ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
-    certify::v0_1 as certify, close::v0_1 as close, create::v0_4 as create, list::v0_3 as list,
-    show::v0_3 as show, tickets::issue::v0_1 as issue,
+    certify::v0_1 as certify, close::v0_1 as close, create::v0_5 as create, list::v0_5 as list,
+    show::v0_6 as show, tickets::issue::v0_3 as issue,
 };
-// Still served: a client composing a manifest under voting/_shared/0.2 sends these, and their
-// schema holds `textReleaseThreshold` to 10 or more (VTI-VOT-065).
+// Still served: a client composing a manifest under voting/_shared/0.2 or 0.3 sends these. The
+// 0.2 schema holds `textReleaseThreshold` to 10 or more (VTI-VOT-065), and neither carries a
+// credential roll (VTI-VOT-025).
 #[allow(deprecated)]
-use vti_specs::vtc::elections::{create::v0_3 as create_0_3, show::v0_2 as show_0_2};
+use vti_specs::vtc::elections::{
+    create::v0_3 as create_0_3, create::v0_4 as create_0_4, list::v0_3 as list_0_3,
+    show::v0_2 as show_0_2, show::v0_3 as show_0_3, tickets::issue::v0_1 as issue_0_1,
+};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
@@ -51,20 +67,29 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, capable_signer, parse_spec_payload};
 use crate::acl::{Capability, get_acl_entry};
 use crate::elections::ops::{self, CertifyError, CreateError, EndError, IssueError, TicketAsk};
+use crate::elections::presentation::{self, Outcome};
 use crate::elections::store::{self, ElectionRecord};
 use crate::error::AppError;
 use crate::server::AppState;
 
 pub(crate) const CREATE_TYPE: &str = <create::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by create/0.4, and still served
+#[allow(deprecated)] // superseded by create/0.5, and still served
+pub(crate) const CREATE_0_4_TYPE: &str = <create_0_4::Payload as Payload>::TYPE_URI;
+#[allow(deprecated)] // superseded by create/0.5, and still served
 pub(crate) const CREATE_0_3_TYPE: &str = <create_0_3::Payload as Payload>::TYPE_URI;
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
+#[allow(deprecated)] // superseded by list/0.5, and still served
+pub(crate) const LIST_0_3_TYPE: &str = <list_0_3::Payload as Payload>::TYPE_URI;
 pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by show/0.3, and still served
+#[allow(deprecated)] // superseded by show/0.6, and still served
+pub(crate) const SHOW_0_3_TYPE: &str = <show_0_3::Payload as Payload>::TYPE_URI;
+#[allow(deprecated)] // superseded by show/0.6, and still served
 pub(crate) const SHOW_0_2_TYPE: &str = <show_0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const CLOSE_TYPE: &str = <close::Payload as Payload>::TYPE_URI;
 pub(crate) const CANCEL_TYPE: &str = <cancel::Payload as Payload>::TYPE_URI;
 pub(crate) const ISSUE_TYPE: &str = <issue::Payload as Payload>::TYPE_URI;
+#[allow(deprecated)] // superseded by tickets/issue/0.3, and still served
+pub(crate) const ISSUE_0_1_TYPE: &str = <issue_0_1::Payload as Payload>::TYPE_URI;
 pub(crate) const CERTIFY_TYPE: &str = <certify::Payload as Payload>::TYPE_URI;
 pub(crate) const BALLOT_BOXES_LIST_TYPE: &str = <ballot_boxes_list::Payload as Payload>::TYPE_URI;
 
@@ -78,6 +103,7 @@ pub(crate) const CREATE_ERR_COMMUNITY_MISMATCH: &str = create::error_codes::COMM
 pub(crate) const CREATE_ERR_BALLOT_BOX_NOT_TRUSTED: &str =
     create::error_codes::BALLOT_BOX_NOT_TRUSTED.code;
 pub(crate) const CREATE_ERR_BALLOT_BOX_REFUSED: &str = create::error_codes::BALLOT_BOX_REFUSED.code;
+pub(crate) const CREATE_ERR_ROLL_UNTRUSTED: &str = create::error_codes::ROLL_UNTRUSTED.code;
 pub(crate) const CLOSE_ERR_ELECTION_UNKNOWN: &str = close::error_codes::ELECTION_UNKNOWN.code;
 pub(crate) const CLOSE_ERR_NOT_OPEN: &str = close::error_codes::NOT_OPEN.code;
 pub(crate) const CLOSE_ERR_EARLY_CLOSE_NOT_ALLOWED: &str =
@@ -97,6 +123,12 @@ pub(crate) const ISSUE_ERR_MANIFEST_MISMATCH: &str = issue::error_codes::MANIFES
 pub(crate) const ISSUE_ERR_NOT_ELIGIBLE: &str = issue::error_codes::NOT_ELIGIBLE.code;
 pub(crate) const ISSUE_ERR_ALREADY_ISSUED: &str = issue::error_codes::ALREADY_ISSUED.code;
 pub(crate) const ISSUE_ERR_REQUEST_INVALID: &str = issue::error_codes::REQUEST_INVALID.code;
+pub(crate) const ISSUE_ERR_PRESENTATION_REQUIRED: &str =
+    issue::error_codes::PRESENTATION_REQUIRED.code;
+pub(crate) const ISSUE_ERR_MEMBERSHIP_NOT_PROVEN: &str =
+    issue::error_codes::MEMBERSHIP_NOT_PROVEN.code;
+pub(crate) const ISSUE_ERR_MEMBERSHIP_REVOKED: &str = issue::error_codes::MEMBERSHIP_REVOKED.code;
+pub(crate) const ISSUE_ERR_ROLL_UNTRUSTED: &str = issue::error_codes::ROLL_UNTRUSTED.code;
 pub(crate) const CERTIFY_ERR_ALREADY_CERTIFIED: &str = certify::error_codes::ALREADY_CERTIFIED.code;
 pub(crate) const CERTIFY_ERR_AUDIT_ATTESTATION_INVALID: &str =
     certify::error_codes::AUDIT_ATTESTATION_INVALID.code;
@@ -114,13 +146,17 @@ pub(crate) const CERTIFY_ERR_RESULT_MISMATCH: &str = certify::error_codes::RESUL
 /// Every URI [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
     CREATE_TYPE,
+    CREATE_0_4_TYPE,
     CREATE_0_3_TYPE,
     LIST_TYPE,
+    LIST_0_3_TYPE,
     SHOW_TYPE,
+    SHOW_0_3_TYPE,
     SHOW_0_2_TYPE,
     CLOSE_TYPE,
     CANCEL_TYPE,
     ISSUE_TYPE,
+    ISSUE_0_1_TYPE,
     CERTIFY_TYPE,
     BALLOT_BOXES_LIST_TYPE,
 ];
@@ -133,14 +169,18 @@ pub(super) async fn dispatch(
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc, Shared::V0_3).await,
+        CREATE_TYPE => handle_create(state, ctx, doc, Shared::V0_4).await,
+        CREATE_0_4_TYPE => handle_create(state, ctx, doc, Shared::V0_3).await,
         CREATE_0_3_TYPE => handle_create(state, ctx, doc, Shared::V0_2).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc, Shared::V0_3).await,
+        LIST_TYPE => handle_list(state, ctx, doc, false).await,
+        LIST_0_3_TYPE => handle_list(state, ctx, doc, true).await,
+        SHOW_TYPE => handle_show(state, ctx, doc, Shared::V0_4).await,
+        SHOW_0_3_TYPE => handle_show(state, ctx, doc, Shared::V0_3).await,
         SHOW_0_2_TYPE => handle_show(state, ctx, doc, Shared::V0_2).await,
         CLOSE_TYPE => handle_close(state, ctx, doc).await,
         CANCEL_TYPE => handle_cancel(state, ctx, doc).await,
-        ISSUE_TYPE => handle_issue(state, ctx, doc).await,
+        ISSUE_TYPE => handle_issue(state, ctx, doc, true).await,
+        ISSUE_0_1_TYPE => handle_issue(state, ctx, doc, false).await,
         CERTIFY_TYPE => handle_certify(state, ctx, doc).await,
         BALLOT_BOXES_LIST_TYPE => handle_ballot_boxes_list(state, ctx, doc).await,
         _ => return None,
@@ -148,13 +188,15 @@ pub(super) async fn dispatch(
 }
 
 /// Which voting/_shared manifest a `create` or `show` request's version carries: 0.2 (create
-/// 0.3, show 0.2), whose `textReleaseThreshold` is 10 or more, or 0.3 (create 0.4, show 0.3),
-/// whose threshold may be as low as 1 (VTI-VOT-065). The manifest is otherwise the same, so
-/// one election serves both; only the bound differs.
+/// 0.3, show 0.2), whose `textReleaseThreshold` is 10 or more; 0.3 (create 0.4, show 0.3),
+/// whose threshold may be as low as 1 (VTI-VOT-065); or 0.4 (create 0.5, show 0.6), which adds
+/// the credential roll (VTI-VOT-025). The manifest is otherwise the same, so one election
+/// serves every version that can carry it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shared {
     V0_2,
     V0_3,
+    V0_4,
 }
 
 // ─── who is asking ───────────────────────────────────────────────────────
@@ -241,6 +283,7 @@ fn changed(election_id: &str, change: &str) -> ElectionChangedData {
         binding: None,
         action_id: None,
         ballot_box_answer: None,
+        roll_member_of: None,
         reason: None,
         head_tree_size: None,
         head_root_hash: None,
@@ -303,7 +346,9 @@ async fn handle_create(
         Err(reject) => return reject,
     };
     let parsed = match shared {
-        Shared::V0_3 => parse_spec_payload::<create::Payload>(&doc).map(drop),
+        Shared::V0_4 => parse_spec_payload::<create::Payload>(&doc).map(drop),
+        #[allow(deprecated)]
+        Shared::V0_3 => parse_spec_payload::<create_0_4::Payload>(&doc).map(drop),
         #[allow(deprecated)]
         Shared::V0_2 => parse_spec_payload::<create_0_3::Payload>(&doc).map(drop),
     };
@@ -340,6 +385,14 @@ async fn handle_create(
                  (VTI-VOT-082); an operator adds one under [voting] trusted_ballot_boxes",
                 None,
             ),
+            CreateError::RollUntrusted => reject_with_code(
+                &doc,
+                extended_code(CREATE_ERR_ROLL_UNTRUSTED),
+                "the roll's memberOf is not this community, one of its groups, or a party that \
+                 is itself an active member of this community holding its membership credential \
+                 (VTI-VOT-026); recognition through a trust registry is not membership",
+                None,
+            ),
             CreateError::ElectionExists => reject_with_code(
                 &doc,
                 extended_code(CREATE_ERR_ELECTION_EXISTS),
@@ -363,6 +416,12 @@ async fn handle_create(
     };
     let election_id = checked.manifest.election_id.as_str().to_string();
     let binding = checked.manifest.binding;
+    let roll_member_of = checked
+        .manifest
+        .roll
+        .member_of
+        .as_ref()
+        .map(|d| d.as_str().to_string());
 
     // Item 7: a binding election takes another holder's consent; on execution the checks
     // above ran again against the community as it is then. The action list records the
@@ -408,6 +467,7 @@ async fn handle_create(
                         binding: Some(binding),
                         action_id: action_id.clone(),
                         ballot_box_answer: Some(code.clone()),
+                        roll_member_of: roll_member_of.clone(),
                         ..changed(&election_id, "registrationRefused")
                     }),
                 )
@@ -438,6 +498,7 @@ async fn handle_create(
                 }
                 .into(),
             ),
+            roll_member_of,
             ..changed(&election_id, "created")
         }),
     )
@@ -479,17 +540,27 @@ fn offset_of(cursor: &str, caller: &str, filter: Option<&str>) -> Option<usize> 
     (cursor_mac(caller, filter, offset) == mac).then_some(offset)
 }
 
-/// `vtc/elections/list/0.3` (items 1 – 5).
+/// `vtc/elections/list/0.5` (items 1 – 6), and 0.3, whose payload is the same. Both list an
+/// election only to a caller who may see it without a presentation: an election put to a member
+/// party's members is listed to managers and the party itself alone, never as a stub
+/// (VTI-VOT-015). A list carries no presentation; its schema has no member for one (item 5).
 async fn handle_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v0_3: bool,
 ) -> TrustTaskOutcome {
     let (who, manager) = match caller(state, ctx, &doc).await {
         Ok(c) => c,
         Err(reject) => return reject,
     };
-    if let Err(reject) = parse_spec_payload::<list::Payload>(&doc) {
+    let parsed = if v0_3 {
+        #[allow(deprecated)]
+        parse_spec_payload::<list_0_3::Payload>(&doc).map(drop)
+    } else {
+        parse_spec_payload::<list::Payload>(&doc).map(drop)
+    };
+    if let Err(reject) = parsed {
         return reject;
     }
     let filter = doc.payload["state"].as_str();
@@ -565,9 +636,30 @@ fn rfc3339(t: DateTime<Utc>) -> String {
 
 // ─── show ────────────────────────────────────────────────────────────────
 
-/// `vtc/elections/show/0.3` (items 1 – 6), and 0.2, whose answer's manifest holds
-/// `textReleaseThreshold` to 10 or more: an election released below that is refused
-/// `unsupportedVersion` under 0.2, naming 0.3, never answered in a shape 0.2 forbids.
+/// How long a read's presentation is accepted after the read's `issuedAt`, and how far ahead of
+/// this clock an `issuedAt` may be (show/0.6 Conformance item 8.1).
+const PRESENTATION_WINDOW: chrono::Duration = chrono::Duration::minutes(10);
+const PRESENTATION_SKEW: chrono::Duration = chrono::Duration::minutes(1);
+
+/// The framework's `indeterminate` (SPEC §8.3, retryable): a presentation's check needed a
+/// reference that could not be obtained. Its `details` name only that reference's kind, never
+/// anything of an election (VTI-VOT-018).
+fn indeterminate(doc: &TrustTask<Value>, reference: &str) -> TrustTaskOutcome {
+    reject_with_code(
+        doc,
+        "indeterminate"
+            .parse()
+            .expect("indeterminate is a standard code"),
+        "the presented credential could not be checked now; send the same document again later",
+        Some(json!({ "reference": reference })),
+    )
+}
+
+/// `vtc/elections/show/0.6` (items 1 – 8), and 0.3 and 0.2, which carry no presentation and
+/// whose manifests cannot carry what later ones can: an election under a credential roll is
+/// refused `unsupportedVersion` under 0.3 and 0.2, naming 0.6, and one releasing text below 10
+/// under 0.2, naming 0.3 — never answered in a shape the version forbids, and only to a caller
+/// who may see it.
 async fn handle_show(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -579,7 +671,9 @@ async fn handle_show(
         Err(reject) => return reject,
     };
     let parsed = match shared {
-        Shared::V0_3 => parse_spec_payload::<show::Payload>(&doc).map(drop),
+        Shared::V0_4 => parse_spec_payload::<show::Payload>(&doc).map(drop),
+        #[allow(deprecated)]
+        Shared::V0_3 => parse_spec_payload::<show_0_3::Payload>(&doc).map(drop),
         #[allow(deprecated)]
         Shared::V0_2 => parse_spec_payload::<show_0_2::Payload>(&doc).map(drop),
     };
@@ -587,11 +681,66 @@ async fn handle_show(
         return reject;
     }
     let election_id = doc.payload["electionId"].as_str().unwrap_or_default();
-    let rec = match visible(state, &who, manager, election_id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return unknown(&doc, SHOW_ERR_ELECTION_UNKNOWN),
+    let now = Utc::now();
+    let community = ops::community_did(state).await;
+
+    // Item 8.1 – 8.2: a presentation in a signed, fresh document not already accepted is
+    // checked before the election is looked up, on nothing but what it carries.
+    let outcome = match doc.payload.get("presentation") {
+        Some(p) if shared == Shared::V0_4 => {
+            let fresh = doc
+                .issued_at
+                .is_some_and(|t| t <= now + PRESENTATION_SKEW && now - t <= PRESENTATION_WINDOW);
+            let reused =
+                match store::presentation_accepted(state.elections.ks(), &doc.id, now).await {
+                    Ok(r) => r,
+                    Err(e) => return app_error_to_reject(&doc, &e),
+                };
+            if fresh && !reused {
+                let o = presentation::check(state, p, &doc.id, &community, &who, now).await;
+                if let Outcome::Indeterminate { reference } = o {
+                    return indeterminate(&doc, reference);
+                }
+                Some(o)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    let Some(rec) = (match store::get(state.elections.ks(), election_id).await {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }) else {
+        return unknown(&doc, SHOW_ERR_ELECTION_UNKNOWN);
+    };
+    // Item 1, and 8.3 – 8.5: one answer for every failure.
+    let seen = match ops::may_see(state, &rec, &who, manager).await {
+        Ok(true) => true,
+        Ok(false) => match ops::presentation_admits(state, &rec, outcome.as_ref()).await {
+            Ok(true) => {
+                // Item 8.6: only the document's `id`, for the window.
+                match store::accept_presentation(
+                    state.elections.ks(),
+                    &doc.id,
+                    now + PRESENTATION_WINDOW,
+                    now,
+                )
+                .await
+                {
+                    Ok(accepted) => accepted,
+                    Err(e) => return app_error_to_reject(&doc, &e),
+                }
+            }
+            Ok(false) => false,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        },
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if !seen {
+        return unknown(&doc, SHOW_ERR_ELECTION_UNKNOWN);
+    }
     // An election registered under voting/election/register/0.1 holds a manifest 0.2
     // cannot carry, and its digest binds the old member names: refused by name.
     if let Err(e) = vti_voting::rules::require_current_manifest(&rec.manifest) {
@@ -599,19 +748,30 @@ async fn handle_show(
     }
     // Only after the election is found and visible, so the refusal says nothing of one the
     // caller may not see.
+    let unsupported = |message: &str| {
+        reject_with_code(
+            &doc,
+            "unsupportedVersion"
+                .parse()
+                .expect("unsupportedVersion is a standard code"),
+            message.to_string(),
+            None,
+        )
+    };
+    if shared != Shared::V0_4 && rec.roll_member_of().is_some() {
+        return unsupported(
+            "this election's roll is the holders of a membership credential, which this version \
+             of vtc/elections/show cannot carry; read it with vtc/elections/show/0.6",
+        );
+    }
     if shared == Shared::V0_2
         && rec.manifest["textReleaseThreshold"]
             .as_u64()
             .is_some_and(|t| t < 10)
     {
-        return reject_with_code(
-            &doc,
-            "unsupportedVersion"
-                .parse()
-                .expect("unsupportedVersion is a standard code"),
+        return unsupported(
             "this election releases written answers after fewer than 10 ballots, which \
              vtc/elections/show/0.2 cannot carry; read it with vtc/elections/show/0.3",
-            None,
         );
     }
     let parameters = match ops::parameters(state).await {
@@ -621,9 +781,9 @@ async fn handle_show(
     let mut body = json!({
         "manifest": rec.manifest,
         "manifestDigest": rec.manifest_digest,
-        "state": rec.state(Utc::now()),
+        "state": rec.state(now),
         "parameters": parameters,
-        "disclosure": ops::disclosure(state, &rec).await,
+        "disclosure": ops::disclosure(state, &rec, manager).await,
         "checkpoints": rec.checkpoints,
     });
     // Item 4.
@@ -642,21 +802,6 @@ async fn handle_show(
         body["certified"] = c.clone();
     }
     success_response(&doc, body)
-}
-
-/// The election, when `who` may see it.
-async fn visible(
-    state: &AppState,
-    who: &str,
-    manager: bool,
-    election_id: &str,
-) -> Result<Option<ElectionRecord>, AppError> {
-    let Some(rec) = store::get(state.elections.ks(), election_id).await? else {
-        return Ok(None);
-    };
-    Ok(ops::may_see(state, &rec, who, manager)
-        .await?
-        .then_some(rec))
 }
 
 // ─── close and cancel ────────────────────────────────────────────────────
@@ -800,23 +945,69 @@ async fn handle_cancel(
 
 // ─── tickets ─────────────────────────────────────────────────────────────
 
-/// `vtc/elections/tickets/issue/0.1` (items 1 – 11).
+/// `vtc/elections/tickets/issue/0.3` (items 1 – 12), and 0.1, which carries no presentation:
+/// an election under a credential roll claimed at 0.1 is refused `unsupportedVersion` naming
+/// 0.3, once the claimant may see it.
 async fn handle_issue(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v0_3: bool,
 ) -> TrustTaskOutcome {
     let (who, manager) = match own_signer(state, ctx, &doc).await {
         Ok(c) => c,
         Err(reject) => return reject,
     };
-    if let Err(reject) = parse_spec_payload::<issue::Payload>(&doc) {
+    let parsed = if v0_3 {
+        parse_spec_payload::<issue::Payload>(&doc).map(drop)
+    } else {
+        #[allow(deprecated)]
+        parse_spec_payload::<issue_0_1::Payload>(&doc).map(drop)
+    };
+    if let Err(reject) = parsed {
         return reject;
     }
     let election_id = doc.payload["electionId"].as_str().unwrap_or_default();
     let doc_digest = match serde_json::to_vec(&doc) {
         Ok(bytes) => hex::encode(Sha256::digest(bytes)),
         Err(e) => return app_error_to_reject(&doc, &AppError::Internal(e.to_string())),
+    };
+    let now = Utc::now();
+    let answered = |pre: String| {
+        success_response(
+            &doc,
+            json!({
+                "electionId": election_id,
+                "label": format!("voter/{election_id}"),
+                "preCredential": pre,
+            }),
+        )
+    };
+    // Item 1, before anything is fetched: a resend is answered with its first answer, whatever
+    // a status list says now. It finds a record only for a signer who took this election's
+    // ticket, so it tells nobody else anything.
+    match store::ticket(state.elections.ks(), election_id, &who).await {
+        Ok(Some(t)) if t.doc_id == doc.id && t.doc_digest == doc_digest => {
+            if let Some(pre) = t.pre_credential {
+                return answered(pre);
+            }
+        }
+        Ok(_) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    // Item 2 (VTI-VOT-018): the presentation, before the election is looked up and without
+    // reference to it. An outage is `indeterminate`, identically whatever `electionId` names,
+    // and nothing is recorded.
+    let outcome = match doc.payload.get("presentation") {
+        Some(p) => {
+            let community = ops::community_did(state).await;
+            let o = presentation::check(state, p, &doc.id, &community, &who, now).await;
+            if let Outcome::Indeterminate { reference } = o {
+                return indeterminate(&doc, reference);
+            }
+            Some(o)
+        }
+        None => None,
     };
     let ask = TicketAsk {
         signer: &who,
@@ -826,55 +1017,95 @@ async fn handle_issue(
         request: &doc.payload["request"],
         doc_id: &doc.id,
         doc_digest: &doc_digest,
+        presentation: outcome.as_ref(),
+        carries_presentation: v0_3,
     };
-    let declared = |code: &str, message: &str| {
-        reject_with_code(&doc, extended_code(code), message.to_string(), None)
+    let declared = |code: &str, message: &str, details: Option<Value>| {
+        reject_with_code(&doc, extended_code(code), message.to_string(), details)
     };
-    match ops::issue_ticket(state, ask, Utc::now()).await {
-        Ok((pre, resend)) => {
-            // Item 11: the signer, the election, the time — nothing derived from the request.
-            if !resend {
+    // `presentation` is discarded with `outcome` when this returns (item 11, VTI-CRD-042).
+    match ops::issue_ticket(state, ask, now).await {
+        Ok(issued) => {
+            // Item 12: the signer, the election, the time and, under a credential roll, the
+            // credential's issuer — nothing derived from the request or the presentation.
+            if !issued.resend {
                 audit(
                     state,
                     &ops::community_did(state).await,
                     Some(&who),
                     AuditEvent::ElectionTicketIssued(ElectionTicketIssuedData {
                         election_id: election_id.to_string(),
+                        credential_issuer: issued.credential_issuer,
                     }),
                 )
                 .await;
             }
-            success_response(
-                &doc,
-                json!({
-                    "electionId": election_id,
-                    "label": format!("voter/{election_id}"),
-                    "preCredential": pre,
-                }),
-            )
+            answered(issued.pre_credential)
         }
         Err(IssueError::ElectionUnknown) => unknown(&doc, ISSUE_ERR_ELECTION_UNKNOWN),
-        // Item 2: a caller without the capability learns nothing of an election not theirs.
+        // Item 3: a caller without the capability learns nothing of an election not theirs.
         Err(IssueError::NotEligible) if !manager => unknown(&doc, ISSUE_ERR_ELECTION_UNKNOWN),
-        Err(IssueError::NotEligible) => declared(
+        Err(IssueError::NotEligible | IssueError::NotEligibleSeen) => declared(
             ISSUE_ERR_NOT_ELIGIBLE,
             "the election's roll does not admit this signer",
+            None,
         ),
         Err(IssueError::NotOpen) => declared(
             ISSUE_ERR_NOT_OPEN,
             "tickets for this election are not being issued now",
+            None,
         ),
         Err(IssueError::ManifestMismatch) => declared(
             ISSUE_ERR_MANIFEST_MISMATCH,
             "the manifest digest is not the registered manifest's; read the election again",
+            None,
         ),
         Err(IssueError::AlreadyIssued) => declared(
             ISSUE_ERR_ALREADY_ISSUED,
             "this signer has already taken its ticket for this election",
+            None,
         ),
         Err(IssueError::RequestInvalid(why)) => declared(
             ISSUE_ERR_REQUEST_INVALID,
             &format!("the ticket request is not valid for this election: {why}"),
+            None,
+        ),
+        Err(IssueError::PresentationUnexpected) => reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: "this election's roll takes no presentation".into(),
+            },
+        ),
+        Err(IssueError::PresentationRequired) => declared(
+            ISSUE_ERR_PRESENTATION_REQUIRED,
+            "this election's roll is the holders of a membership credential; present it with \
+             the request",
+            None,
+        ),
+        Err(IssueError::RollUntrusted) => declared(
+            ISSUE_ERR_ROLL_UNTRUSTED,
+            "the party this election's roll names is no longer one this community trusts for it",
+            None,
+        ),
+        Err(IssueError::MembershipNotProven(reason)) => declared(
+            ISSUE_ERR_MEMBERSHIP_NOT_PROVEN,
+            "the presentation does not prove a membership credential for the party the roll \
+             names, held by the signer, valid now",
+            Some(json!({ "reason": reason })),
+        ),
+        Err(IssueError::MembershipRevoked) => declared(
+            ISSUE_ERR_MEMBERSHIP_REVOKED,
+            "the presented membership credential is revoked or suspended",
+            None,
+        ),
+        Err(IssueError::UnsupportedVersion) => reject_with_code(
+            &doc,
+            "unsupportedVersion"
+                .parse()
+                .expect("unsupportedVersion is a standard code"),
+            "this election's roll is the holders of a membership credential, presented with the \
+             claim; claim with vtc/elections/tickets/issue/0.3",
+            None,
         ),
         Err(IssueError::App(e)) => app_error_to_reject(&doc, &e),
     }

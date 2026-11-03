@@ -8,7 +8,7 @@
 // trimmed to fit.
 //
 // What is checked here is a convenience, never the authority: the community
-// checks the manifest on create (`vtc/elections/create/0.4`) and the ballot box
+// checks the manifest on create (`vtc/elections/create/0.5`) and the ballot box
 // at registration. The draft is kept in this tab (sessionStorage) until it is created or
 // discarded, because a manifest is long to write and a reload should not lose
 // it.
@@ -21,7 +21,8 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { Field } from "@/components/Field";
 import { Switch } from "@/components/Switch";
 import { Tabs } from "@/components/Tabs";
-import { vtcDid } from "@/lib/api";
+import { postSignedRead, vtcDid } from "@/lib/api";
+import { listGroups } from "@/lib/groups";
 import {
   ELECTIONS_KEY,
   createElection,
@@ -35,6 +36,10 @@ import {
   OPTION_PRESETS,
   QUESTION_TYPE_TEXT,
   ROLL_TEXT,
+  CREDENTIAL_ROLL_TRUST,
+  MEMBER_OF_KIND_TEXT,
+  MEMBER_PARTY_VISIBILITY,
+  type MemberOfKind,
   SECRECY_TEXT,
   STEPS,
   checkDraft,
@@ -60,7 +65,7 @@ import {
   type Secrecy,
   type StepId,
 } from "@/lib/election-manifest";
-import { formatDuration, formatIso } from "@/lib/format";
+import { formatDuration, formatIso, shortenDid } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { Refusal } from "@/plugins/ElectionRefusal";
@@ -263,7 +268,9 @@ export function NewElection() {
           <section className="card form-stack">
             {step === "about" && <AboutStep draft={draft} patch={patch} setDraft={setDraft} issues={issues} />}
             {step === "questions" && <QuestionsStep draft={draft} patch={patch} issues={issues} />}
-            {step === "voters" && <VotersStep draft={draft} patch={patch} issues={issues} />}
+            {step === "voters" && (
+              <VotersStep draft={draft} patch={patch} issues={issues} communityDid={communityDid} />
+            )}
             {step === "schedule" && <ScheduleStep draft={draft} patch={patch} issues={issues} />}
             {step === "counting" && (
               <CountingStep draft={draft} patch={patch} issues={issues} trusted={trusted} />
@@ -691,7 +698,53 @@ function Radios<T extends string>({
   );
 }
 
-function VotersStep({ draft, patch, issues }: StepProps) {
+/** A DID a credential roll may name, as the builder offers it (VTI-VOT-026). */
+interface MemberOfChoice {
+  did: string;
+  label: string;
+  kind: MemberOfKind;
+}
+
+const MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/members/list/0.2";
+
+/** The parties a credential roll may name: this community, its groups (by their own DIDs),
+ *  and the members holding a membership credential this community issued (`currentVmcId`),
+ *  any of which may be a party — another community, a group of one, a network — that is
+ *  itself a member (VTI-VOT-026). The list cannot tell a party from a person, nor whether that
+ *  credential has since been revoked: a convenience, and the community checks the DID at
+ *  create. */
+function useMemberOfChoices(enabled: boolean, communityDid: string) {
+  const groups = useQuery({ queryKey: ["groups", "list"], queryFn: listGroups, enabled, staleTime: 60_000 });
+  const members = useQuery({
+    queryKey: ["election-builder", "member-parties"],
+    queryFn: () =>
+      postSignedRead<{ items: { did: string; label?: string | null; currentVmcId?: string | null }[] }>(
+        MEMBERS_LIST_TASK,
+        { limit: 200 },
+      ),
+    enabled,
+    staleTime: 60_000,
+  });
+  const choices: MemberOfChoice[] = [];
+  if (communityDid) choices.push({ did: communityDid, label: "This community", kind: "thisCommunity" });
+  for (const { group: g } of groups.data ?? []) {
+    if (g.groupDid) choices.push({ did: g.groupDid, label: `Group: ${g.name}`, kind: "communityGroup" });
+  }
+  for (const m of members.data?.items ?? []) {
+    if (m.did && m.did !== communityDid && m.currentVmcId) {
+      choices.push({ did: m.did, label: `Member: ${m.label || shortenDid(m.did)}`, kind: "memberParty" });
+    }
+  }
+  return choices;
+}
+
+function VotersStep({ draft, patch, issues, communityDid }: StepProps & { communityDid: string }) {
+  const credential = draft.roll === "credential";
+  const choices = useMemberOfChoices(credential, communityDid);
+  const did = draft.memberOf.trim();
+  const picked = choices.find((c) => c.did === did);
+  const [typing, setTyping] = useState(() => !!did && !picked);
+  const choosing = choices.length > 0 && !typing && (!did || !!picked);
   return (
     <>
       <StepIntro title="Who votes">
@@ -705,10 +758,57 @@ function VotersStep({ draft, patch, issues }: StepProps) {
         onChange={(roll) => patch({ roll })}
         options={(Object.keys(ROLL_TEXT) as RollRule[]).map((r) => ({ value: r, label: ROLL_TEXT[r] }))}
       />
-      {draft.roll !== "members" && (
+      {(draft.roll === "listed" || draft.roll === "membersAndListed") && (
         <Field label="Listed parties" hint="DIDs, one per line." error={errorFor(issues, "listed")}>
           <textarea rows={5} className="mono" spellCheck={false} value={draft.listed} onChange={(e) => patch({ listed: e.target.value })} />
         </Field>
+      )}
+      {credential && (
+        <>
+          {choosing ? (
+            <Field
+              label="Whose membership credential counts"
+              hint="This community, one of its groups, or a party that is itself a member."
+              error={errorFor(issues, "memberOf")}
+            >
+              <select value={did} onChange={(e) => patch({ memberOf: e.target.value })}>
+                <option value="">Choose…</option>
+                {choices.map((c) => (
+                  <option key={`${c.kind}:${c.did}`} value={c.did}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <Field
+              label="Membership credential issuer DID"
+              hint="The DID whose membership credentials admit their holders."
+              error={errorFor(issues, "memberOf")}
+            >
+              <input className="mono" spellCheck={false} value={draft.memberOf} onChange={(e) => patch({ memberOf: e.target.value })} />
+            </Field>
+          )}
+          {choices.length > 0 && (
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                if (!typing && !picked) patch({ memberOf: "" });
+                setTyping(!typing);
+              }}
+            >
+              {typing ? "Choose from this community's parties" : "Type a DID instead"}
+            </button>
+          )}
+          {picked && <p className="muted">{did} is {MEMBER_OF_KIND_TEXT[picked.kind]}.</p>}
+          <div className="muted" role="note">
+            {CREDENTIAL_ROLL_TRUST.map((t) => (
+              <p key={t}>{t}</p>
+            ))}
+            {(!picked || picked.kind === "memberParty") && <p>{MEMBER_PARTY_VISIBILITY}</p>}
+          </div>
+        </>
       )}
     </>
   );
@@ -990,7 +1090,17 @@ function ReviewStep({
         <dt>Who votes</dt>
         <dd>
           {ROLL_TEXT[draft.roll]}
-          {draft.roll !== "members" && ` (${didList(draft.listed).length} listed)`}
+          {(draft.roll === "listed" || draft.roll === "membersAndListed") &&
+            ` (${didList(draft.listed).length} listed)`}
+          {draft.roll === "credential" && (
+            <>
+              : <code>{draft.memberOf.trim() || "—"}</code>
+              <div className="muted">
+                Eligibility is proven when each member claims a ticket; turnout is counted against
+                tickets issued, never a roll size.
+              </div>
+            </>
+          )}
         </dd>
         <dt>Tickets from</dt>
         <dd>{formatIso(draft.registrationOpensAt)}</dd>

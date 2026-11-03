@@ -394,6 +394,22 @@ pub(crate) struct ElectionTarget {
     pub(crate) context: String,
 }
 
+/// A membership credential you choose to present, for an election whose roll is the holders of
+/// a membership credential (VTI-VOT-025). Presenting it shows the community that you are a
+/// member of the party that issued it.
+#[derive(clap::Args, Default)]
+pub(crate) struct MembershipPresenting {
+    /// The membership credential's handle in your VTA's vault. `ticket` presents it when it
+    /// claims the ticket; `show` presents it in the read, to see an election put to the members
+    /// of a party that is itself a member of the community, which it shows nobody else.
+    #[arg(long)]
+    pub(crate) membership_credential: Option<String>,
+    /// The DID you were told the election's roll names. Your VTA presents the credential only
+    /// where that DID issued it (VTI-VOT-016); `ticket` with it also presents in its read.
+    #[arg(long, requires = "membership_credential")]
+    pub(crate) member_of: Option<String>,
+}
+
 /// The election a trustee serves, and who the trustee is.
 #[derive(clap::Args)]
 pub(crate) struct TrusteeTarget {
@@ -448,6 +464,8 @@ pub(crate) enum ElectionCommands {
         election_id: String,
         #[command(flatten)]
         target: ElectionTarget,
+        #[command(flatten)]
+        presenting: MembershipPresenting,
     },
     /// Take your ticket for an election, and nothing else.
     ///
@@ -457,6 +475,8 @@ pub(crate) enum ElectionCommands {
         election_id: String,
         #[command(flatten)]
         target: ElectionTarget,
+        #[command(flatten)]
+        presenting: MembershipPresenting,
     },
     /// Vote with the ticket your VTA holds.
     ///

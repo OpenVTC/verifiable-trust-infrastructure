@@ -27,6 +27,10 @@ pub mod store;
 #[cfg(feature = "voting")]
 pub mod ops;
 #[cfg(feature = "voting")]
+pub mod presentation;
+#[cfg(feature = "voting")]
+pub mod roll;
+#[cfg(feature = "voting")]
 pub mod sweeper;
 
 use std::sync::Arc;

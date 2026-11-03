@@ -978,7 +978,7 @@ digest = "sha256:b9ca31404b9588f9b3483299ee8ec59bfdedfc8242d5b82bca464523fb45224
 slug = "keys/revoke"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/keys/revoke/0.1"
-digest = "sha256:c2a90cb5dfe814ab0f4b35c514f405a6602904ef4fc796d5cb5393c41d9e3f37"
+digest = "sha256:a10152f642c81e572dc5e5665ece9310daa7fd7e221a2dfbc8e8fbfc2bb32d33"
 
 [[task]]
 slug = "keys/set-exportability"
@@ -1614,25 +1614,37 @@ digest = "sha256:225f2f149ddfa60555584d6aafc77a31ba97f2dfc2bfc604dd7db331051db80
 slug = "voting/election/register"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/voting/election/register/0.2"
-digest = "sha256:8cd85c2bd274673d6003ba8ed1b7fb96f456ffe52ef085ca8cb00fd2800e28f0"
+digest = "sha256:10f8a8c8244d00880ea319d8d393dad9285eb612ba0374134a0b0f4771b27bfa"
 
 [[task]]
 slug = "voting/election/register"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/voting/election/register/0.3"
-digest = "sha256:fd33687d9e53c733c41430df00d5dead048e40c0dfeaaccb6dafaba8a9addbbe"
+digest = "sha256:e44a9efc0ae3134294c07a359c31a9127458fa3654c76056e232c6fd7a21889d"
+
+[[task]]
+slug = "voting/election/register"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/voting/election/register/0.4"
+digest = "sha256:18a941417cd47fa6a9e687208343f2365851854883df4997c18e3eb463090061"
 
 [[task]]
 slug = "voting/election/show"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/voting/election/show/0.2"
-digest = "sha256:b8c08a851c66b85eb6e9111b55736068e3ac14183b7f71ef0ce570644492496c"
+digest = "sha256:d7f7bc2746e2d7c9363779114d7166e45220c957c22c61b1cf2c94737c61769c"
 
 [[task]]
 slug = "voting/election/show"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/voting/election/show/0.3"
-digest = "sha256:7b168d1c801bb217a30118558fe070505228e2d2cb7fe31828284fd8ef6bf6d1"
+digest = "sha256:a7de1f5a10af0e039684a31a3ecb9b3334cf028b9ad48a9d7b5fd5e9144be27d"
+
+[[task]]
+slug = "voting/election/show"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/voting/election/show/0.4"
+digest = "sha256:441a542816ac75fc4acc142e5cdd967a42aef6ecd1cf8783e032a8d8d4baec1f"
 
 [[task]]
 slug = "voting/result/show"
