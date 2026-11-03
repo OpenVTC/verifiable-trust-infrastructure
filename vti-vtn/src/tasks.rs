@@ -14,17 +14,15 @@
 //! let answer: register::Response = client.task(&me, &network_did, &payload).await?;
 //! ```
 
-use chrono::Utc;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use trust_tasks_rs::{Payload, RequestPayload, TrustTask};
+use trust_tasks_rs::{Payload, RequestPayload};
 
 use crate::client::{ClientError, Result, VtnClient};
 use crate::identity::Party;
-use crate::verify::AUTHENTICATION;
 
 /// The generated `vtn/*` payload and response types, one module per pinned version.
-pub use vti_specs_vtn::vtn as specs;
+pub use crate::specs;
 
 /// Where a network takes Trust Tasks.
 pub const TRUST_TASKS_PATH: &str = "/v1/trust-tasks";
@@ -32,28 +30,14 @@ pub const TRUST_TASKS_PATH: &str = "/v1/trust-tasks";
 /// The prefix of the framework's error document Type URI, whatever its version.
 const ERROR_TYPE_PREFIX: &str = "https://trusttasks.org/spec/trust-task-error/";
 
-/// An unsigned request from `issuer` to `network_did` carrying `payload`: a fresh
-/// `urn:uuid:` id, `issuedAt` now (a network accepts it for ten minutes, A20).
+/// An unsigned request from `issuer` to `network_did` carrying `payload`.
 pub fn request_document<P: Payload>(
     issuer: Option<&str>,
     network_did: &str,
     payload: &P,
 ) -> Result<Value> {
-    let type_uri = P::TYPE_URI
-        .parse()
-        .map_err(|e| ClientError::Unexpected(format!("{}: {e}", P::TYPE_URI)))?;
-    let payload = serde_json::to_value(payload)
-        .map_err(|e| ClientError::Unexpected(format!("serialise {}: {e}", P::TYPE_URI)))?;
-    let mut doc: TrustTask<Value> = TrustTask::new(
-        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        type_uri,
-        payload,
-    );
-    doc.issuer = issuer.map(str::to_string);
-    doc.recipient = Some(network_did.to_string());
-    doc.issued_at = Some(Utc::now());
-    serde_json::to_value(&doc)
-        .map_err(|e| ClientError::Unexpected(format!("serialise {}: {e}", P::TYPE_URI)))
+    crate::request::request_document(issuer, network_did, payload)
+        .map_err(|e| ClientError::Unexpected(format!("build {}: {e}", P::TYPE_URI)))
 }
 
 /// `payload` as a request signed by `who` for `network_did`. Keep the result when the
@@ -64,8 +48,7 @@ pub async fn sign_request<P: Payload>(
     network_did: &str,
     payload: &P,
 ) -> Result<Value> {
-    let doc = request_document(Some(who.did()), network_did, payload)?;
-    who.sign_for(doc, AUTHENTICATION)
+    crate::request::sign_request(who, network_did, payload)
         .await
         .map_err(|e| ClientError::Unexpected(format!("sign {}: {e}", P::TYPE_URI)))
 }
@@ -202,7 +185,7 @@ impl VtnClient {
 mod tests {
     use super::*;
     use crate::identity::Identity;
-    use crate::verify::{LocalDidKeyResolver, verify_document};
+    use crate::verify::{AUTHENTICATION, LocalDidKeyResolver, verify_document};
     use serde_json::json;
     use specs::groups::register::v0_1 as register;
 

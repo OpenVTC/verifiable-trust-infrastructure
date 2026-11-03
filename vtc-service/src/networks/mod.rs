@@ -393,15 +393,8 @@ async fn register_with(
     resolver: &Resolver,
 ) -> Result<RegisteredGroup, NetError> {
     let endpoint = relay_endpoint(state, &group.group_id).await?;
-    let registration = vti_vtn::groups::register_as(
-        community,
-        network,
-        role,
-        &group.group_did,
-        &endpoint,
-        signing_time(),
-    )
-    .await?;
+    let registration =
+        vti_vtn::groups::register_as(community, network, role, &group.group_did, &endpoint).await?;
     let accepted = client
         .post(
             &format!("/v1/entries/{}/groups", encode_did(&community.did)),

@@ -29,12 +29,17 @@ pub mod index;
 pub mod lifecycle;
 pub mod model;
 pub mod relay;
+pub mod request;
 pub mod rooms;
 pub mod status;
 pub mod verify;
 pub mod vocab;
 
 pub use error::VtnError;
+
+/// The generated `vtn/*` Trust Task payload and response types, one module per pinned
+/// version (`specs::groups::register::v0_1`).
+pub use vti_specs_vtn::vtn as specs;
 
 /// Talking to a network over HTTPS: `vtn/*` Trust Tasks, sign-in links, and status-list
 /// checking.
