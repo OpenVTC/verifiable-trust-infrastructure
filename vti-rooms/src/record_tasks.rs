@@ -14,6 +14,7 @@ use vti_common::store::KeyspaceHandle;
 use vti_specs_rooms::rooms::create::v0_2 as create_v2;
 use vti_specs_rooms::rooms::info::v0_3 as info_v3;
 use vti_specs_rooms::rooms::records::list::v0_5 as list_v5;
+use vti_specs_rooms::rooms::records::list::v0_6 as list_v6;
 use vti_specs_rooms::rooms::records::prune::v0_2 as prune_spec;
 use vti_specs_rooms::rooms::records::retention::set::v0_1 as set_spec;
 
@@ -26,7 +27,8 @@ use crate::storage;
 
 pub use crate::wire::{
     ROOMS_CREATE_V2_TYPE as CREATE_V2_TYPE, ROOMS_INFO_V3_TYPE as INFO_V3_TYPE,
-    ROOMS_RECORDS_LIST_V5_TYPE as LIST_V5_TYPE, ROOMS_RECORDS_PRUNE_V2_TYPE as PRUNE_TYPE,
+    ROOMS_RECORDS_LIST_V5_TYPE as LIST_V5_TYPE, ROOMS_RECORDS_LIST_V6_TYPE as LIST_V6_TYPE,
+    ROOMS_RECORDS_PRUNE_V2_TYPE as PRUNE_TYPE,
     ROOMS_RECORDS_RETENTION_SET_TYPE as RETENTION_SET_TYPE,
 };
 
@@ -357,12 +359,34 @@ pub async fn info_v3(
 /// A listing as `rooms/records/list/0.5` answers: each record's `blobs`, the room's
 /// `lastPrune` on every page once the room has been pruned (omitted otherwise), and the
 /// continuation token named `nextCursor` (0.4), absent on the last page.
-#[allow(deprecated)] // still served: hosts move to list/0.6 in a later PR (trust-tasks-tf #1027)
+#[allow(deprecated)] // still served beside list/0.6, to readers that ask for it (trust-tasks-tf #1027)
 pub async fn list_v5_response(
     snapshot: &ReadSnapshot<'_>,
     room: &Room,
     response: impl serde::Serialize,
 ) -> TaskResult {
+    let body = list_v5_body(snapshot, room, response).await?;
+    checked::<list_v5::Response>(body)
+}
+
+/// A listing as `rooms/records/list/0.6` answers: 0.5's, with rows that are
+/// `RecordMetadataV3` — which the host builds with [`crate::Record::metadata_v3`] for the
+/// room's tier — and `blobs` on each, as before.
+pub async fn list_v6_response(
+    snapshot: &ReadSnapshot<'_>,
+    room: &Room,
+    response: impl serde::Serialize,
+) -> TaskResult {
+    let body = list_v5_body(snapshot, room, response).await?;
+    checked::<list_v6::Response>(body)
+}
+
+/// 0.5's page before its schema check, which 0.6 shares.
+async fn list_v5_body(
+    snapshot: &ReadSnapshot<'_>,
+    room: &Room,
+    response: impl serde::Serialize,
+) -> Result<Value, Refusal> {
     let mut body = crate::blob_tasks::list_v2_body(snapshot, &room.room_id, response).await?;
     if let Some(obj) = body.as_object_mut()
         && let Some(cursor) = obj.remove("cursor")
@@ -373,7 +397,7 @@ pub async fn list_v5_response(
     if let Some(mark) = &room.last_prune {
         body["lastPrune"] = mark.to_wire();
     }
-    checked::<list_v5::Response>(body)
+    Ok(body)
 }
 
 /// A `rooms/epoch/chain/0.1` response answered as 0.2: the same rungs (a host serves none at

@@ -127,9 +127,32 @@ pub struct HostState {
     /// DID ([`HostState::set_host_did`]); an HTTP-only host with no identity has nothing to
     /// compare against, exactly as a VTC with no DID configured skips the check.
     host_did: Arc<std::sync::OnceLock<String>>,
+    /// Whether an `open` room's `message` or `reaction` takes a new version only from its
+    /// original author (`rooms/records/put/0.5` Host item 15, a MAY). On unless the operator
+    /// turns it off ([`HostState::set_refuse_rewrites_by_others`]).
+    refuse_rewrites_by_others: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl HostState {
+    /// Whether this host refuses, on an `open` room, a new version of a `message` or a
+    /// `reaction` by anyone but its original author (`rooms/records/put/0.5` Host item 15).
+    ///
+    /// **On by default.** The specification makes it a MAY, and its readers defend against
+    /// such a rewrite whatever the host does (`SealedRecordBody`, *What a new version
+    /// keeps*); refusing it at the host is cheap on the one tier where the host reads `kind`
+    /// anyway, and stops a member rewriting someone else's words for every reader that
+    /// predates those rules. An operator whose room's readers want otherwise turns it off.
+    pub fn set_refuse_rewrites_by_others(&self, on: bool) {
+        self.refuse_rewrites_by_others
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// See [`Self::set_refuse_rewrites_by_others`].
+    pub fn refuses_rewrites_by_others(&self) -> bool {
+        self.refuse_rewrites_by_others
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Bind this host to its DID, so a document addressed to anyone else is refused as
     /// `wrongRecipient`. First call wins: a host has one identity for its lifetime, and a
     /// second, different one is refused rather than silently swapped in.
@@ -583,6 +606,7 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         vti_rooms::record_tasks::CREATE_V2_TYPE => create(state, &doc, payload).await,
         vti_rooms::record_tasks::INFO_V3_TYPE => files::info_v3(state, &doc, payload).await,
         vti_rooms::record_tasks::LIST_V5_TYPE => files::list_v5(state, &doc, payload).await,
+        vti_rooms::record_tasks::LIST_V6_TYPE => files::list_v6(state, &doc, payload).await,
         vti_rooms::record_tasks::PRUNE_TYPE => files::records_prune(state, &doc, payload).await,
         vti_rooms::record_tasks::RETENTION_SET_TYPE => {
             files::retention_set(state, &doc, payload).await
@@ -612,7 +636,9 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         vti_rooms::revocation_tasks::GET_TYPE => files::revocations_get(state, &doc, payload).await,
         files::PUT_V3_TYPE => files::put_v3(state, &doc, payload).await,
         files::PUT_V4_TYPE => files::put_v4(state, &doc, payload).await,
+        files::PUT_V5_TYPE => files::put_v5(state, &doc, payload).await,
         files::GET_V2_TYPE => files::get_v2(state, &doc, payload).await,
+        files::GET_V3_TYPE => files::get_v3(state, &doc, payload).await,
         files::DOWNLOAD_CHUNK_TYPE => files::download_chunk(state, &doc, payload).await,
         files::USAGE_TYPE => files::usage(state, &doc, payload).await,
         files::UPLOAD_BEGIN_V2_TYPE => files::begin_v2(state, &doc, payload).await,
@@ -648,7 +674,9 @@ fn is_consequential(type_uri: &str) -> bool {
             | files::DOWNLOAD_CHUNK_TYPE
             | files::USAGE_TYPE
             | files::GET_V2_TYPE
+            | files::GET_V3_TYPE
             | vti_rooms::record_tasks::LIST_V5_TYPE
+            | vti_rooms::record_tasks::LIST_V6_TYPE
             | vti_rooms::record_tasks::INFO_V3_TYPE
             | vti_rooms::revocation_tasks::GET_TYPE
     )
@@ -833,6 +861,24 @@ async fn put_with_blobs(
         Ok(r) => r,
         Err(e) => return files::record_blobs_refused(doc, e),
     };
+    // Put/0.5 Host item 15, under the lock `references` holds, so the record it judges is
+    // the one this write replaces — and before anything changes. Applied whichever put
+    // version carries the write: a 0.4 rewrite of another member's message is the same
+    // rewrite, and would otherwise be the way round the refusal.
+    if state.refuses_rewrites_by_others() && room.visibility.stores_cleartext() {
+        let current = match storage::get_record(&state.records, &req.room_id, &req.key).await {
+            Ok(r) => Some(r),
+            Err(AppError::NotFound(_)) => None,
+            Err(e) => return from_app_error(doc, &e),
+        };
+        if let Some(refusal) = vti_rooms::blob_tasks::rewrite_by_other_refused(
+            &room,
+            current.as_ref(),
+            authorized.subject(),
+        ) {
+            return files::record_refused(doc, refusal);
+        }
+    }
 
     let record = Record {
         key: req.key.clone(),
@@ -856,6 +902,9 @@ async fn put_with_blobs(
             .discloses_actor()
             .then(|| authorized.subject().to_string()),
         updated_at: 0,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
 
     match storage::put_record(
@@ -895,8 +944,13 @@ async fn put_with_blobs(
 }
 
 /// `rooms/records/get/0.2`, read as its 0.1 members: the answer also names the record's
-/// blobs.
-async fn get_versioned(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+/// blobs — and at 0.3 (`v3`) the host's `createdAt`, `createdBy` and `bodyStoredAt`.
+async fn get_versioned(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+    v3: bool,
+) -> Answer {
     let req: GetRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -941,15 +995,25 @@ async fn get_versioned(state: &HostState, doc: &TrustTask<Value>, payload: Value
             // `respond(doc, record)` put the *storage* record on the wire.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
             let response = GetRecordResponse::of(&record, commitment.as_ref(), trace);
-            files::get_v2_response(&snapshot, doc, &req.room_id, &req.key, response).await
+            if v3 {
+                files::get_v3_response(&snapshot, doc, &room, &record, response).await
+            } else {
+                files::get_v2_response(&snapshot, doc, &req.room_id, &req.key, response).await
+            }
         }
         Err(e) => from_app_error(doc, &e),
     }
 }
 
 /// `rooms/records/list/0.5`, read as [`ListRecordsBody`]: rows name their blobs, every page
-/// carries the room's `lastPrune`, and the continuation token is `nextCursor`.
-async fn list_records(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+/// carries the room's `lastPrune`, and the continuation token is `nextCursor`. At 0.6
+/// (`v6`) the rows are `RecordMetadataV3`.
+async fn list_records(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+    v6: bool,
+) -> Answer {
     let req: ListRecordsBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -1006,7 +1070,17 @@ async fn list_records(state: &HostState, doc: &TrustTask<Value>, payload: Value)
             audit_room(&room, &authorized, RoomOperation::ListRecords, None);
             let head = room_head(state, &req.room_id).await;
             let response = ListRecordsResponse {
-                records: page.records.iter().map(|r| r.metadata()).collect(),
+                records: page
+                    .records
+                    .iter()
+                    .map(|r| {
+                        if v6 {
+                            r.metadata_v3(room.visibility)
+                        } else {
+                            r.metadata()
+                        }
+                    })
+                    .collect(),
                 cursor: page.cursor,
                 // The reference host commits too. A host that served
                 // listings without one would be a working example of the
@@ -1022,6 +1096,9 @@ async fn list_records(state: &HostState, doc: &TrustTask<Value>, payload: Value)
             // The room as it stands under the lock: its `lastPrune` is the one the page and
             // head were taken with.
             match storage::get_room(&state.rooms, &req.room_id).await {
+                Ok(now_room) if v6 => {
+                    files::list_v6_response(&snapshot, doc, &now_room, response).await
+                }
                 Ok(now_room) => files::list_v5_response(&snapshot, doc, &now_room, response).await,
                 Err(e) => from_app_error(doc, &e),
             }
@@ -1766,6 +1843,7 @@ pub fn open_state_with_files(
         accepted_ids: store.keyspace(ACCEPTED_IDS_KEYSPACE)?,
         resolver,
         host_did: Arc::new(std::sync::OnceLock::new()),
+        refuse_rewrites_by_others: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     }))
 }
 

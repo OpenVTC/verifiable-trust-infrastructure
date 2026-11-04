@@ -125,6 +125,16 @@ struct Args {
     #[arg(long, default_value_t = 300)]
     mirror_interval_secs: u64,
 
+    /// Accept, on an `open` room, a new version of a `message` or a `reaction` from a
+    /// member other than its original author.
+    ///
+    /// Off by default: this host refuses such a write with `permissionDenied`, as
+    /// `rooms/records/put/0.5` Host item 15 permits. Readers defend against it whatever the
+    /// host does; pass this when a room's own rules let members edit each other's messages.
+    /// Sealed rooms are unaffected — their host never sees a record's kind.
+    #[arg(long)]
+    allow_rewrites_by_others: bool,
+
     #[command(flatten)]
     files: FileArgs,
 }
@@ -265,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
     let state = open_state_with_files(&args.data_dir, resolver, args.files.config())?;
     // Before a room is served: rows in the earlier, ambiguous key layout (#2382).
     state.migrate_room_keys().await?;
+    state.set_refuse_rewrites_by_others(!args.allow_rewrites_by_others);
 
     // Room files: deleted files past their grace window and abandoned uploads
     // are collected on a timer. A pass that fails is logged and retried at the

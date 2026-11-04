@@ -94,6 +94,7 @@ knowing which half you are standing on saves an afternoon.
 | **Cryptographic deletion** | **At the host, and at members' key holders as far as they conform.** `rooms/epoch/prune` (`admin`, 0.1 and 0.2) erases the epoch key chain below an epoch at a host, and the host keeps the room's **epoch floor** (`beforeEpoch − 1`), which `rooms/epoch/chain/0.2` serves. A member's VTA that learns it — `rooms/keys/backfill/0.2`, `rooms/keys/chain/0.2`, a read's catch-up — discards every rung at or below it, refuses to derive below it (`beyondChain`), and never stores such a rung again from any source (trust-tasks-tf #869). Both hosts serve it (audited `room.epoch.prune`, `notAhead` for a floor at the current epoch); `pnm rooms prune` sends 0.2, warns, and asks first (§10.4). Nothing already read is recalled |
 | **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.3`), and an administrator removes what that makes eligible (`rooms/records/prune/0.2`), leaving a `lastPrune` mark that `rooms/records/list/0.5` and `rooms/keys/browse/0.3` carry. `pnm rooms records {prune,retention}` (§10.5) |
 | **Record provenance and expiry** | **Work.** `basis`, `confidence`, `evidence`, `validFor`, `validUntil` inside a sealed body, or in an open room's cleartext at `rooms/records/put/0.3`; readers hide an expired record by default (§9) |
+| **Record kinds, replies and the host's record times** | **On both hosts.** An open room's cleartext may carry `kind`, `inReplyTo`, `writtenAt` and `editedAt` at `rooms/records/put/0.5`, held to their schema and stored as received; a sealed room carries them inside the body. Every put records `bodyStoredAt`, and a record's first version `createdAt` and (on `open` and `attributed`) `createdBy`, kept across edits and curation; `rooms/records/list/0.6` serves them with an open record's `kind`, `rooms/records/get/0.3` serves them uncommitted. A record stored before this carries none and serves none. On an `open` room the host refuses a new version of a `message` or `reaction` from anyone but its original author (`permissionDenied`, put/0.5 Host item 15) — on by default; `room-host --allow-rewrites-by-others` or the VTC's `[rooms] refuse_rewrites_by_others = false` turns it off |
 | **Witnessed renewal anchoring** | **Blocked on a decision**, not on effort: §9 says a renewal anchors the epoch authenticator and version watermark in the room's witnessed log, but not *where in the log entry*. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) |
 
 ---
@@ -1660,9 +1661,9 @@ use to whoever hosts it. Depth is capped at `MAX_CHAIN_DEPTH` (8).
 
 | Verb | Task URI | Needs |
 |---|---|---|
-| Write | `rooms/records/put/0.3` | `write` |
-| Read | `rooms/records/get/0.2` | `read` |
-| List | `rooms/records/list/0.5` | `read` |
+| Write | `rooms/records/put/0.5` (0.3 and 0.4 still served) | `write` |
+| Read | `rooms/records/get/0.3` (0.2 still served) | `read` |
+| List | `rooms/records/list/0.6` (0.5 still served) | `read` |
 | Curate | `rooms/records/curate/0.1` | `curate` |
 | Mint an epoch | `rooms/epoch/mint/0.1` | `admin` |
 | Transfer ownership | `rooms/owner/transfer/0.1` | `admin` |

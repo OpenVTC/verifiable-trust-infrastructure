@@ -23,8 +23,10 @@ use vti_specs_rooms::rooms::blobs::upload::begin::v0_2 as upload_begin_v2;
 use vti_specs_rooms::rooms::blobs::upload::chunk::v0_2 as upload_chunk_v2;
 use vti_specs_rooms::rooms::blobs::upload::commit::v0_2 as upload_commit_v2;
 use vti_specs_rooms::rooms::records::get::v0_2 as get_v2;
+use vti_specs_rooms::rooms::records::get::v0_3 as get_v3;
 use vti_specs_rooms::rooms::records::put::v0_3 as put_v3;
 use vti_specs_rooms::rooms::records::put::v0_4 as put_v4;
+use vti_specs_rooms::rooms::records::put::v0_5 as put_v5;
 use vti_specs_rooms::rooms::usage::v0_1 as rooms_usage;
 
 use crate::authz::{Action, AuthorizedAction};
@@ -46,6 +48,9 @@ pub use crate::wire::{
     ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE as UPLOAD_BEGIN_V2_TYPE,
     ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE as UPLOAD_CHUNK_V2_TYPE,
     ROOMS_BLOBS_UPLOAD_COMMIT_V2_TYPE as UPLOAD_COMMIT_V2_TYPE,
+};
+pub use crate::wire::{
+    ROOMS_RECORDS_GET_V3_TYPE as GET_V3_TYPE, ROOMS_RECORDS_PUT_V5_TYPE as PUT_V5_TYPE,
 };
 
 /// A `rooms/usage` page when the caller names no `limit`, and the most one holds.
@@ -520,10 +525,89 @@ pub fn put_v3_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Ref
 /// [`put_v3_parts`] for `rooms/records/put/0.4`, whose open-room `cleartext` may also carry
 /// a `file`. The host checks that file against the record's `blobs` once it knows the room
 /// ([`open_file_refused`]).
-#[allow(deprecated)] // still served: hosts move to put/0.5 in a later PR (trust-tasks-tf #1027)
+#[allow(deprecated)] // still served beside put/0.5, to writers that send it (trust-tasks-tf #1027)
 pub fn put_v4_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Refusal> {
     parse::<put_v4::Payload>(payload)?;
     put_parts(payload)
+}
+
+/// [`put_v4_parts`] for `rooms/records/put/0.5`, whose open-room `cleartext` may also carry
+/// `kind`, `inReplyTo`, `writtenAt` and `editedAt`, and whose `file` may carry `width`,
+/// `height` and `preview`. Each is held to its schema ([`crate::record_members::check`]) —
+/// its shape only: the host stores them as received and does not act on them (Host item
+/// 14), so it checks no rewrite against them and no write against the room's
+/// `recordMembers`. A sealed write is unchanged: the host sees ciphertext.
+pub fn put_v5_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Refusal> {
+    // The generated type checks the payload's structure; the schema also bounds what serde
+    // does not (a kind's pattern and length, a reference's members, a UTC instant).
+    <put_v5::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(payload)
+        .map_err(|e| Refusal::Malformed(e.messages().join("; ")))?;
+    parse::<put_v5::Payload>(payload)?;
+    if let Some(cleartext) = payload.get("cleartext").and_then(Value::as_object) {
+        crate::record_members::check(cleartext).map_err(Refusal::Malformed)?;
+    }
+    put_parts(payload)
+}
+
+/// A 0.5 put read as the 0.1 body: [`put_v4_as_v0_1`], and the members 0.5 adds to
+/// `cleartext` taken out too. The host stores the cleartext [`put_v5_parts`] returned.
+pub fn put_v5_as_v0_1(payload: Value) -> Value {
+    let mut payload = put_v4_as_v0_1(payload);
+    if let Some(cleartext) = payload.get_mut("cleartext").and_then(Value::as_object_mut) {
+        for member in crate::record_members::BODY_MEMBERS {
+            cleartext.remove(member);
+        }
+    }
+    payload
+}
+
+/// The kinds `rooms/records/put/0.5` Host item 15 lets an `open` room's host keep to their
+/// original author.
+pub const AUTHOR_KEPT_KINDS: [&str; 2] = ["message", "reaction"];
+
+/// `rooms/records/put/0.5` Host item 15, the one place a host reads `kind`: on an `open`
+/// room, a new version of a record whose current version's `cleartext.kind` is `message` or
+/// `reaction`, written by anyone but the record's **original author** (the `createdBy` the
+/// host recorded for its first version), is refused with the standard `permissionDenied`.
+///
+/// A MAY, so the host decides whether to apply it; this is the rule once it does. `None` —
+/// accept — on an `attributed` or `private` room (whose `kind` is sealed and which **MUST
+/// NOT** attempt it), for a first version, on a tombstone (whose `kind` is gone), for the
+/// original author's own rewrites (the empty version that withdraws included), and for a
+/// record stored before the host kept its first author: there is no recorded original
+/// author to hold the write to, and one is never guessed.
+///
+/// `current` is the record as stored, read under the record-write lock the write holds, so
+/// the decision and the write see one record; `author` is the party the host authenticated
+/// for this write. The caller refuses before changing anything.
+pub fn rewrite_by_other_refused(
+    room: &Room,
+    current: Option<&crate::Record>,
+    author: &str,
+) -> Option<Refusal> {
+    if !room.visibility.stores_cleartext() {
+        return None;
+    }
+    let current = current?;
+    if current.status == crate::RecordStatus::Retracted {
+        return None;
+    }
+    let kind = current
+        .cleartext
+        .as_ref()
+        .and_then(|c| c.get("kind"))
+        .and_then(Value::as_str)?;
+    if !AUTHOR_KEPT_KINDS.contains(&kind) {
+        return None;
+    }
+    let original = current.created_by.as_deref()?;
+    (original != author).then(|| {
+        Refusal::App(AppError::Forbidden(format!(
+            "record `{}` is a {kind}; on this room only its original author writes a new \
+             version of it",
+            current.key
+        )))
+    })
 }
 
 /// The `blobs` and the `cleartext` as received, of a payload already checked against its
@@ -692,7 +776,7 @@ pub fn prune_floor_refused(room: &Room, before_epoch: u32) -> Option<Refusal> {
 ///
 /// `blobs` is exactly what the stored version names: absent when it names none, which
 /// includes a retraction (which released them) and a 0.1 write.
-#[allow(deprecated)] // still served: hosts move to get/0.3 in a later PR (trust-tasks-tf #1027)
+#[allow(deprecated)] // still served beside get/0.3, to readers that ask for it (trust-tasks-tf #1027)
 pub async fn get_v2_response(
     snapshot: &ReadSnapshot<'_>,
     room_id: &str,
@@ -709,6 +793,33 @@ pub async fn get_v2_response(
         body["blobs"] = json!(blobs);
     }
     checked::<get_v2::Response>(body)
+}
+
+/// A get/0.2 response with what `rooms/records/get/0.3` adds: the host's `createdAt`,
+/// `createdBy` (never on a `private` room) and `bodyStoredAt` for `record`, as
+/// `rooms/records/list/0.6` serves them on its rows ([`crate::Record::host_times`]).
+///
+/// None is committed: the response's leaf is the record with these removed, as `blobs` is,
+/// so the leaf and the trace are get/0.2's unchanged.
+pub async fn get_v3_response(
+    snapshot: &ReadSnapshot<'_>,
+    room: &Room,
+    record: &crate::Record,
+    response: impl serde::Serialize,
+) -> TaskResult {
+    let mut body =
+        serde_json::to_value(response).map_err(|e| Refusal::App(AppError::Serialization(e)))?;
+    let blobs = snapshot
+        .record_blobs(&room.room_id, &record.key)
+        .await
+        .map_err(Refusal::App)?;
+    if !blobs.is_empty() {
+        body["blobs"] = json!(blobs);
+    }
+    for (name, value) in record.host_times(room.visibility) {
+        body[name] = value;
+    }
+    checked::<get_v3::Response>(body)
 }
 
 /// A listing with each row's `blobs`, before its schema check: 0.5 adds to it
@@ -820,6 +931,139 @@ mod tests {
                     open_file_refused(&open, &blobs, Some(&cleartext)),
                     Some(Refusal::Malformed(_))
                 ),
+                "{why}"
+            );
+        }
+    }
+
+    fn stored(kind: Option<&str>, created_by: Option<&str>) -> crate::Record {
+        let mut cleartext = json!({ "body": "hi" });
+        if let Some(k) = kind {
+            cleartext["kind"] = json!(k);
+        }
+        crate::Record {
+            key: "m1".into(),
+            version: 3,
+            epoch: None,
+            status: crate::RecordStatus::Active,
+            pinned: false,
+            sealed: None,
+            nonce: None,
+            sealed_version: None,
+            cleartext: Some(cleartext),
+            author: created_by.map(str::to_string),
+            updated_at: 0,
+            created_at: Some(1),
+            created_by: created_by.map(str::to_string),
+            body_stored_at: Some(1),
+        }
+    }
+
+    /// `rooms/records/put/0.5` Host item 15: on an `open` room a `message` or `reaction`
+    /// takes a new version only from its original author; everything else is accepted.
+    #[test]
+    fn only_the_original_author_rewrites_an_open_message_or_reaction() {
+        let open = room(Visibility::Open);
+        let refused = |current: Option<&crate::Record>, author: &str| -> bool {
+            matches!(
+                rewrite_by_other_refused(&open, current, author),
+                Some(Refusal::App(AppError::Forbidden(_)))
+            )
+        };
+        for kind in ["message", "reaction"] {
+            let r = stored(Some(kind), Some("did:key:zAlice"));
+            assert!(refused(Some(&r), "did:key:zBob"), "{kind} by another");
+            assert!(!refused(Some(&r), "did:key:zAlice"), "{kind} by its author");
+            // The empty version that withdraws it, by its author, is a rewrite like any other.
+        }
+        // A first version, a note, a kind nobody keeps, no kind at all.
+        assert!(!refused(None, "did:key:zBob"));
+        for kind in [Some("note"), Some("poll"), None] {
+            assert!(!refused(
+                Some(&stored(kind, Some("did:key:zAlice"))),
+                "did:key:zBob"
+            ));
+        }
+        // A tombstone: its kind is gone.
+        let mut tomb = stored(Some("message"), Some("did:key:zAlice"));
+        tomb.status = crate::RecordStatus::Retracted;
+        tomb.cleartext = None;
+        assert!(!refused(Some(&tomb), "did:key:zBob"));
+        // A record stored before the host kept its first author: none to hold it to.
+        assert!(!refused(
+            Some(&stored(Some("message"), None)),
+            "did:key:zBob"
+        ));
+        // The sealed tiers MUST NOT attempt it, whatever a row holds.
+        let r = stored(Some("message"), Some("did:key:zAlice"));
+        for v in [Visibility::Attributed, Visibility::Private] {
+            assert!(rewrite_by_other_refused(&room(v), Some(&r), "did:key:zBob").is_none());
+        }
+    }
+
+    fn put_v5(cleartext: Value) -> Value {
+        json!({
+            "roomId": "did:key:zRoom",
+            "key": "m1",
+            "presentation": { "membership": "m", "authority": ["a"] },
+            "cleartext": cleartext,
+        })
+    }
+
+    /// put/0.5 accepts each new open-room member in a shape the schema allows, stores the
+    /// cleartext as received, and reads as the 0.1 body without them.
+    #[test]
+    fn put_0_5_accepts_the_new_cleartext_members() {
+        let cleartext = json!({
+            "body": "hello",
+            "kind": "message",
+            "inReplyTo": { "key": "m0", "version": 2 },
+            "writtenAt": "2026-11-05T10:00:00Z",
+            "editedAt": "2026-11-05T10:05:00Z",
+        });
+        let (blobs, kept) = put_v5_parts(&put_v5(cleartext.clone())).expect("accepted");
+        assert!(blobs.is_empty());
+        assert_eq!(kept, Some(cleartext), "stored exactly as received");
+        let v0_1 = put_v5_as_v0_1(put_v5(json!({ "body": "x", "kind": "reaction" })));
+        assert_eq!(v0_1["cleartext"], json!({ "body": "x" }));
+        // An open kind: one nobody defined is still a kind.
+        assert!(put_v5_parts(&put_v5(json!({ "body": "", "kind": "pollVote" }))).is_ok());
+    }
+
+    /// And refuses each member in a shape it does not allow, as `malformedRequest`.
+    #[test]
+    fn put_0_5_refuses_bad_shapes() {
+        for (why, cleartext) in [
+            (
+                "kind not lowerCamelCase",
+                json!({ "body": "", "kind": "Message" }),
+            ),
+            ("kind empty", json!({ "body": "", "kind": "" })),
+            (
+                "kind too long",
+                json!({ "body": "", "kind": "a".repeat(65) }),
+            ),
+            ("kind not a string", json!({ "body": "", "kind": 3 })),
+            (
+                "inReplyTo without key",
+                json!({ "body": "", "inReplyTo": { "version": 1 } }),
+            ),
+            (
+                "inReplyTo with an unknown member",
+                json!({ "body": "", "inReplyTo": { "key": "a", "room": "b" } }),
+            ),
+            (
+                "writtenAt not an instant",
+                json!({ "body": "", "writtenAt": "yesterday" }),
+            ),
+            (
+                "editedAt not UTC",
+                json!({ "body": "", "editedAt": "2026-11-05T10:00:00+02:00" }),
+            ),
+            ("an unknown member", json!({ "body": "", "mood": "happy" })),
+        ] {
+            assert!(
+                matches!(put_v5_parts(&put_v5(cleartext)), Err(Refusal::Malformed(_))),
                 "{why}"
             );
         }

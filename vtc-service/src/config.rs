@@ -368,6 +368,13 @@ pub struct RoomsConfig {
     /// `noKeyHolder` naming this section. Writing it is what turns them on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub community: Option<CommunityRoomsConfig>,
+    /// Whether this host refuses, on an `open` room, a new version of a `message` or a
+    /// `reaction` by a member other than its original author (`rooms/records/put/0.5` Host
+    /// item 15, a MAY). **Absent means on** ([`RoomsConfig::refuses_rewrites_by_others`]);
+    /// `false` accepts such a rewrite. Sealed rooms are unaffected: their host never sees a
+    /// record's kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refuse_rewrites_by_others: Option<bool>,
 }
 
 /// Where the community's own rooms get their identities (`[rooms.community]`).
@@ -549,6 +556,14 @@ impl RoomsConfig {
     /// switched off inside it.
     pub fn files_enabled(&self) -> bool {
         self.files.as_ref().is_some_and(|f| f.enabled)
+    }
+
+    /// `[rooms] refuse_rewrites_by_others`, on unless set `false`. The specification makes
+    /// the refusal a MAY; it is on by default because it costs nothing on the one tier where
+    /// the host reads `kind` anyway, and keeps a member from rewriting another's words for
+    /// every reader that predates the readers' own rule.
+    pub fn refuses_rewrites_by_others(&self) -> bool {
+        self.refuse_rewrites_by_others.unwrap_or(true)
     }
 }
 

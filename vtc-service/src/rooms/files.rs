@@ -29,6 +29,8 @@ use vti_specs::rooms::blobs::upload::{
     commit::v0_2 as upload_commit_v2,
 };
 use vti_specs::rooms::records::get::v0_2 as get_v2;
+use vti_specs::rooms::records::get::v0_3 as get_v3;
+use vti_specs::rooms::records::list::v0_6 as list_v6;
 use vti_specs::rooms::usage::v0_1 as rooms_usage;
 use vti_specs::rooms::{
     epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
@@ -458,8 +460,62 @@ pub(crate) async fn handle_put_record_v4(doc: TrustTask<Value>, ctx: RoomCtx) ->
     super::handlers::put_record(&doc, &ctx, req, blobs, cleartext, true).await
 }
 
+/// `rooms/records/put/0.5`: 0.4, and an `open` room's `cleartext` may say what kind of
+/// record it is, what it answers and when it was written and edited, and its `file` an
+/// image's size and preview — each held to its schema, then stored and served as received
+/// and never acted on (Host item 14).
+pub(crate) async fn handle_put_record_v5(doc: TrustTask<Value>, ctx: RoomCtx) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (blobs, cleartext) = match blob_tasks::put_v5_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: PutRecordBody = match serde_json::from_value(blob_tasks::put_v5_as_v0_1(payload))
+        .map_err(|e| {
+            reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            )
+        }) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::put_record(&doc, &ctx, req, blobs, cleartext, true).await
+}
+
+/// `rooms/records/get/0.3`: 0.2, and the host's `createdAt`, `createdBy` and
+/// `bodyStoredAt` for the record.
+pub(crate) async fn handle_get_record_v3(
+    doc: TrustTask<get_v3::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let req: GetRecordBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::get_record(&doc, &ctx, req, true).await
+}
+
+/// `rooms/records/list/0.6`: 0.5, with each row's `kind` on an `open` room and the host's
+/// `createdAt`, `createdBy` and `bodyStoredAt`.
+pub(crate) async fn handle_list_records_v6(
+    doc: TrustTask<list_v6::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let req: ListRecordsBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::list_records(&doc, &ctx, req, true).await
+}
+
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the record's blobs.
-#[allow(deprecated)] // get/0.2 and list/0.5 are served until hosts move to get/0.3 and list/0.6
+#[allow(deprecated)] // get/0.2 and list/0.5 are served beside get/0.3 and list/0.6, to readers that ask for them
 pub(crate) async fn handle_get_record_v2(
     doc: TrustTask<get_v2::Payload>,
     ctx: RoomCtx,
@@ -468,12 +524,12 @@ pub(crate) async fn handle_get_record_v2(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::get_record(&doc, &ctx, req).await
+    super::handlers::get_record(&doc, &ctx, req, false).await
 }
 
 /// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's
 /// `lastPrune` on every page and the continuation token named `nextCursor`.
-#[allow(deprecated)] // get/0.2 and list/0.5 are served until hosts move to get/0.3 and list/0.6
+#[allow(deprecated)] // get/0.2 and list/0.5 are served beside get/0.3 and list/0.6, to readers that ask for them
 pub(crate) async fn handle_list_records_v5(
     doc: TrustTask<list_v5::Payload>,
     ctx: RoomCtx,
@@ -482,7 +538,7 @@ pub(crate) async fn handle_list_records_v5(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::list_records(&doc, &ctx, req).await
+    super::handlers::list_records(&doc, &ctx, req, false).await
 }
 
 /// `rooms/create/0.2`: 0.1, and the room's record retention, recorded as given.

@@ -75,6 +75,7 @@ pub(crate) fn serves(type_uri: &str) -> bool {
 const AS_RECEIVED_URIS: &[&str] = &[
     vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
     vti_rooms::wire::ROOMS_RECORDS_PUT_V4_TYPE,
+    vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
     vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
     vti_rooms::wire::ROOMS_RECORDS_RETENTION_SET_TYPE,
 ];
@@ -119,6 +120,9 @@ pub(crate) async fn dispatch(
             }
             vti_rooms::wire::ROOMS_RECORDS_PUT_V4_TYPE => {
                 super::files::handle_put_record_v4(doc, ctx).await
+            }
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE => {
+                super::files::handle_put_record_v5(doc, ctx).await
             }
             vti_rooms::wire::ROOMS_CREATE_V2_TYPE => super::files::handle_create_v2(doc, ctx).await,
             _ => super::files::handle_retention_set(doc, ctx).await,
@@ -175,10 +179,12 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(handle_claim_owner)
         .on_async(super::files::handle_info_v3)
         .on_async(super::files::handle_list_records_v5)
+        .on_async(super::files::handle_list_records_v6)
         .on_async(super::files::handle_records_prune)
         .on_async(super::files::handle_epoch_chain_v2)
         .on_async(super::files::handle_epoch_prune_v2)
         .on_async(super::files::handle_get_record_v2)
+        .on_async(super::files::handle_get_record_v3)
         .on_async(super::files::handle_download_chunk)
         .on_async(super::files::handle_usage)
         .on_async(super::files::handle_upload_begin_v2)
@@ -553,6 +559,26 @@ pub(super) async fn put_record<P>(
             return super::files::refused(doc, vti_rooms::blob_tasks::record_blobs_refused(e));
         }
     };
+    // Put/0.5 Host item 15, under the lock `references` holds, so the record it judges is
+    // the one this write replaces — and before anything changes. Applied whichever put
+    // version carries the write: a 0.4 rewrite of another member's message is the same
+    // rewrite, and would otherwise be the way round the refusal.
+    let refuse_others = state.config.read().await.rooms.refuses_rewrites_by_others();
+    if refuse_others && room.visibility.stores_cleartext() {
+        let current =
+            match storage::get_record(&state.room_records_ks, &req.room_id, &req.key).await {
+                Ok(r) => Some(r),
+                Err(vti_common::error::AppError::NotFound(_)) => None,
+                Err(e) => return app_error_to_reject(doc, &e),
+            };
+        if let Some(refusal) = vti_rooms::blob_tasks::rewrite_by_other_refused(
+            &room,
+            current.as_ref(),
+            authorized.subject(),
+        ) {
+            return super::files::refused(doc, refusal);
+        }
+    }
 
     // The author is recorded only where the tier discloses one. On a private room
     // authorship lives inside the sealed body, and the storage layer refuses it here.
@@ -581,6 +607,9 @@ pub(super) async fn put_record<P>(
         }),
         author,
         updated_at: 0,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
 
     match storage::put_record(
@@ -630,6 +659,7 @@ pub(super) async fn get_record<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: GetRecordBody,
+    v3: bool,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
 
@@ -675,11 +705,15 @@ pub(super) async fn get_record<P>(
             // six undeclared members on the wire — see `GetRecordResponse`.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
             let response = GetRecordResponse::of(&record, commitment.as_ref(), trace);
-            super::files::render(
-                doc,
+            // get/0.3 adds the host's record times; none is committed, so the leaf and
+            // trace above are get/0.2's.
+            let result = if v3 {
+                vti_rooms::blob_tasks::get_v3_response(&snapshot, &room, &record, response).await
+            } else {
                 vti_rooms::blob_tasks::get_v2_response(&snapshot, &req.room_id, &req.key, response)
-                    .await,
-            )
+                    .await
+            };
+            super::files::render(doc, result)
         }
         Err(e) => app_error_to_reject(doc, &e),
     }
@@ -694,6 +728,7 @@ pub(super) async fn list_records<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: ListRecordsBody,
+    v6: bool,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
 
@@ -745,7 +780,19 @@ pub(super) async fn list_records<P>(
     audit_room(state, &room, &authorized, RoomOperation::ListRecords, None).await;
     let head = room_head(state, &req.room_id).await;
     let response = ListRecordsResponse {
-        records: page.records.iter().map(|r| r.metadata()).collect(),
+        // 0.6's rows are `RecordMetadataV3`: what the room's tier may disclose of the kind
+        // and the host's record times.
+        records: page
+            .records
+            .iter()
+            .map(|r| {
+                if v6 {
+                    r.metadata_v3(room.visibility)
+                } else {
+                    r.metadata()
+                }
+            })
+            .collect(),
         cursor: page.cursor,
         // One head, so the three values a reader compares cannot come
         // from three moments.
@@ -758,6 +805,10 @@ pub(super) async fn list_records<P>(
     match storage::get_room(&state.rooms_ks, &req.room_id).await {
         // The room as it stands under the lock: its `lastPrune` is the one the page and head
         // were taken with.
+        Ok(now_room) if v6 => super::files::render(
+            doc,
+            vti_rooms::record_tasks::list_v6_response(&snapshot, &now_room, response).await,
+        ),
         Ok(now_room) => super::files::render(
             doc,
             vti_rooms::record_tasks::list_v5_response(&snapshot, &now_room, response).await,
@@ -3218,6 +3269,122 @@ mod tests {
         assert_eq!(served, cleartext, "{got}");
     }
 
+    /// `rooms/records/put/0.5`, `list/0.6` and `get/0.3` on the VTC's host, as room-host
+    /// serves them (trust-tasks-tf #1027): an open record's kind and reply stored as
+    /// received, and the host's record times served on the new reads only.
+    #[tokio::test]
+    async fn put_0_5_list_0_6_and_get_0_3_serve_kind_and_record_times() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+
+        let cleartext = json!({
+            "body": "agreed",
+            "kind": "message",
+            "inReplyTo": { "key": "m0" },
+            "writtenAt": "2026-11-05T10:00:00Z"
+        });
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "m1", "presentation": f.as_owner(),
+                    "cleartext": cleartext }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "put 0.5: {}", payload_of(&out));
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f,
+        )
+        .await;
+        let listing = payload_of(&out);
+        let row = &listing["records"][0];
+        assert_eq!(row["kind"], "message", "{listing}");
+        assert_eq!(row["createdBy"], f.owner.did.as_str(), "{listing}");
+        assert!(row["createdAt"].is_string() && row["createdAt"] == row["bodyStoredAt"]);
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "m1", "presentation": f.as_owner() }),
+            &f,
+        )
+        .await;
+        let got = payload_of(&out);
+        assert_eq!(got["cleartext"], cleartext, "{got}");
+        assert_eq!(got["createdAt"], row["createdAt"], "{got}");
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "m1", "presentation": f.as_owner() }),
+            &f,
+        )
+        .await;
+        assert!(payload_of(&out).get("createdAt").is_none());
+
+        // A shape the schema refuses is malformed.
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "m2", "presentation": f.as_owner(),
+                    "cleartext": { "body": "", "kind": "Not-A-Kind" } }),
+            &f,
+        )
+        .await;
+        assert!(!out.status.is_success());
+        assert_eq!(payload_of(&out)["code"], "malformedRequest");
+    }
+
+    /// Put/0.5 Host item 15, `[rooms] refuse_rewrites_by_others`: on by default, a message's
+    /// new version from anyone but its original author is `permissionDenied`; `false`
+    /// accepts it.
+    #[tokio::test]
+    async fn a_message_is_rewritten_only_by_its_original_author_unless_configured_off() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+        assert!(state.config.read().await.rooms.refuses_rewrites_by_others());
+
+        let put = |body: &'static str| {
+            json!({ "roomId": f.room.room_id, "key": "m1", "presentation": f.as_owner(),
+                    "cleartext": { "body": body, "kind": "message" } })
+        };
+        let uri = vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE;
+        assert!(send(state, uri, put("hi"), &f).await.status.is_success());
+        assert!(send(state, uri, put("hi!"), &f).await.status.is_success());
+
+        // The fixture has one writer, so the original author is changed where it is kept.
+        let mut stored = storage::get_record(&state.room_records_ks, &f.room.room_id, "m1")
+            .await
+            .unwrap();
+        stored.created_by = Some("did:key:z6MkSomeoneElse".into());
+        state
+            .room_records_ks
+            .insert(storage::record_storage_key(&f.room.room_id, "m1"), &stored)
+            .await
+            .unwrap();
+
+        let out = send(state, uri, put(""), &f).await;
+        assert!(!out.status.is_success());
+        assert_eq!(
+            payload_of(&out)["code"],
+            "permissionDenied",
+            "{}",
+            payload_of(&out)
+        );
+
+        state.config.write().await.rooms.refuse_rewrites_by_others = Some(false);
+        let out = send(state, uri, put(""), &f).await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+    }
+
     /// `rooms/records/put/0.4` Host item 12 on the VTC's host, as room-host holds it: on an
     /// open room a `blobs` the cleartext does not describe is `malformedRequest`, checked
     /// before `blobNotFound` — and a record whose keyed file names its blob passes that check
@@ -3302,6 +3469,9 @@ mod tests {
                     cleartext: Some(json!({ "body": key })),
                     author: None,
                     updated_at: 0,
+                    created_at: None,
+                    created_by: None,
+                    body_stored_at: None,
                 };
                 storage::put_record(
                     &state.rooms_ks,

@@ -307,6 +307,9 @@ fn responses_conform() {
             })),
             author: Some("did:key:z6MkAlice".into()),
             updated_at: 1_756_000_000,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         },
         // A tombstone: no body, no author, and it still has to conform.
         Record {
@@ -321,6 +324,9 @@ fn responses_conform() {
             cleartext: None,
             author: None,
             updated_at: 1_756_000_100,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         },
     ]
     .iter()
@@ -402,6 +408,9 @@ fn get_record_response_conforms() {
         cleartext: None,
         author: None,
         updated_at: 1_756_000_000,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     let mut records = vec![
         sealed.clone(),
@@ -467,6 +476,9 @@ fn get_record_response_conforms() {
         cleartext: Some(json!({ "body": "Agreed not to reprice before the renewal closes." })),
         author: Some("did:key:z6MkAlice".into()),
         updated_at: 1_756_000_100,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     let value = serde_json::to_value(GetRecordResponse::of(&open, None, None)).expect("serialise");
     assert!(
@@ -493,6 +505,9 @@ fn get_record_response_conforms() {
         cleartext: None,
         author: None,
         updated_at: 1_756_000_200,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     let value =
         serde_json::to_value(GetRecordResponse::of(&tombstone, None, None)).expect("serialise");
@@ -522,6 +537,9 @@ fn a_reader_verifies_a_trace_from_the_response_alone() {
             cleartext: None,
             author: None,
             updated_at: 1_756_000_000,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         })
         .collect();
 
@@ -578,6 +596,9 @@ fn a_record_round_trips_through_its_committed_form() {
         cleartext: None,
         author: Some("did:key:z6MkAlice".into()),
         updated_at: 1_756_000_000,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     let back = Record::from_wire(&sealed.committed()).expect("reads back");
     assert_eq!(
@@ -757,6 +778,9 @@ fn a_half_sealed_record_loses_its_body() {
         cleartext: None,
         author: None,
         updated_at: 1_756_000_000,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     assert!(
         half.committed().sealed.is_none(),
@@ -914,6 +938,18 @@ fn every_dispatched_uri_is_the_published_one() {
         (
             ROOMS_RECORDS_LIST_V5_TYPE,
             <rooms::records::list::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_PUT_V5_TYPE,
+            <rooms::records::put::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_LIST_V6_TYPE,
+            <rooms::records::list::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_GET_V3_TYPE,
+            <rooms::records::get::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_RECORDS_CURATE_TYPE,
