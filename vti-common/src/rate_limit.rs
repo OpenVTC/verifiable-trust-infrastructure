@@ -73,6 +73,14 @@ pub const VSOCK_PARENT_PEER: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::n
 /// The client-address rule every per-IP limiter here charges by:
 /// `affinidi-rate-limit`'s `ClientIpExtractor` over `trusted_cidrs`, as a
 /// `tower_governor` key extractor.
+///
+/// **The CIDRs are a promise about the deployment.** Naming a proxy here
+/// asserts that it overwrites `X-Forwarded-For` with the address it actually
+/// accepted the connection from, or appends to it — *and* that nothing which
+/// does neither can reach the socket. A layer-4 (TCP) forwarder does not
+/// qualify: it passes the client's own header through untouched while making
+/// every request look like it came from the forwarder, which turns this list
+/// into a rate-limit bypass. See `docs/02-vta/rate-limiting.md`.
 #[derive(Debug, Clone)]
 pub struct TrustedProxyKeyExtractor {
     clients: ClientIpExtractor,

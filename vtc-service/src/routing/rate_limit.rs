@@ -29,11 +29,11 @@
 //! | room operations the room has authorized ([`crate::routing::trust_task_admission`]) | [`ROOM_PRESENTER_LIMITER`] | (room, presenter) |
 //! | room file chunks, once the presenter holds the transfer ([`crate::routing::trust_task_admission`]) | [`ROOM_TRANSFER_LIMITER`] | (room, presenter) |
 //!
-//! The per-IP limiters refuse a request they cannot attribute as well: `403`
-//! with no peer address and `400` for an unreadable `X-Forwarded-For` chain
-//! from a trusted proxy, each with `x-rate-limit-source: vtc` and a JSON body
-//! naming the limiter, as `affinidi-rate-limit` answers them. They are not
-//! `429`s, so clients do not read them as a rate limit.
+//! The per-IP limiters refuse a request they cannot attribute as well, as
+//! `affinidi-rate-limit` answers them, each with `x-rate-limit-source: vtc`:
+//! `400` for an unreadable `X-Forwarded-For` chain from a trusted proxy, with
+//! a JSON body naming the limiter, and a plain-text `403` with no peer
+//! address. They are not `429`s, so clients do not read them as a rate limit.
 //!
 //! All are HTTP-only: the Trust Task framework (`trust_tasks_rs::StandardCode`)
 //! defines no rate-limit error code, and neither limiter sits on the DIDComm or

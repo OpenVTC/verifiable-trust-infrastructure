@@ -1,7 +1,7 @@
 //! Rate limits on the HTTPS Trust Task door, `POST /v1/trust-tasks`.
 //!
 //! The door serves anonymous and signed traffic alike, so one per-address
-//! budget cannot fit both. The unauthenticated governor (a burst of 10, then
+//! budget cannot fit both. The unauthenticated limiter (a burst of 10, then
 //! one request every 5 s) is right for a stranger making this service resolve
 //! DIDs and verify signatures; an administrator whose console now signs every
 //! read exhausts it while navigating. So a document is charged one of two
@@ -9,9 +9,9 @@
 //!
 //! | the document | charged, and when |
 //! |---|---|
-//! | unsigned, or signed by a DID the community holds no entry for | the per-address governor ([`UNAUTH_LIMITER`]), **before** anything is verified |
+//! | unsigned, or signed by a DID the community holds no entry for | the per-address limiter ([`UNAUTH_LIMITER`]), **before** anything is verified |
 //! | signed by a DID that holds a live ACL entry (or a console key delegated by one, or a member-portal sign-in key whose live delegation covers the type) | the signer's own bucket ([`SIGNER_LIMITER`]), **after** its proof verifies |
-//! | claiming such a signer but not verifying as it | the per-address governor as well, as soon as the claim fails |
+//! | claiming such a signer but not verifying as it | the per-address limiter as well, as soon as the claim fails |
 //!
 //! # Why a fresh DID buys nothing
 //!
@@ -32,12 +32,12 @@
 //!   [`SIGNED_ADDRESS_LIMITER`] ceiling, generous enough for a console and
 //!   small enough to bound the verification work one address can cause;
 //! - one that then fails to verify as that signer is charged the strict
-//!   per-address governor too, so an address sending forgeries loses its
+//!   per-address limiter too, so an address sending forgeries loses its
 //!   anonymous budget exactly as an anonymous flood would;
 //! - and the signer's own bucket is charged only once the proof verifies, so
 //!   nobody can drain a member's budget by naming them.
 //!
-//! The same per-address governor state backs the other unauthenticated routes
+//! The same per-address limiter state backs the other unauthenticated routes
 //! ([`crate::routes`]), so moving this door off the tower layer does not give
 //! an address a second anonymous budget.
 //!
@@ -151,8 +151,8 @@ pub const SIGN_IN_FAILURE_COST: u32 = 10;
 /// The door's limiters, shared by every request.
 #[derive(Clone)]
 pub struct TrustTaskLimits {
-    /// The unauthenticated governor's own state — the one the tower layer on
-    /// the other unauthenticated routes charges.
+    /// The unauthenticated limiter's own state — the one the layer on the
+    /// other unauthenticated routes charges.
     address: KeyedRateLimiterState<IpAddr>,
     signed_address: KeyedRateLimiterState<IpAddr>,
     signer: KeyedRateLimiterState<String>,
@@ -165,7 +165,7 @@ pub struct TrustTaskLimits {
 }
 
 impl TrustTaskLimits {
-    /// `address` is the unauthenticated governor's limiter, so both charge one
+    /// `address` is the unauthenticated layer's limiter, so both charge one
     /// budget per address.
     pub fn new(
         address: KeyedRateLimiterState<IpAddr>,
@@ -1044,5 +1044,10 @@ mod tests {
         let res = app.oneshot(no_peer).await.unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         assert_eq!(res.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vtc");
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&body).is_err(),
+            "the 403 is plain text, not a JSON refusal"
+        );
     }
 }

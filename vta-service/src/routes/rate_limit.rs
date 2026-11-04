@@ -302,8 +302,7 @@ impl LimiterState {
         };
         Self {
             limiter,
-            extractor: TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec())
-                .expect("trust_xff_cidrs holds no catch-all range"),
+            extractor: shared_extractor(trust_xff_cidrs),
             source: source.clone(),
             buckets: StdRwLock::new(Buckets::new(initial)),
         }
@@ -346,6 +345,25 @@ impl LimiterState {
             .client_ip(peer, req.headers())
             .map_err(|_| Refusal::InvalidForwardedFor)
     }
+}
+
+/// The extractor for `trust_xff_cidrs`, one per distinct list for the
+/// process, so every limiter shares its once-a-minute log of a proxy's
+/// unreadable chain (clones share it) rather than each warning on its own.
+fn shared_extractor(trust_xff_cidrs: &[IpNetwork]) -> TrustedProxyKeyExtractor {
+    static EXTRACTORS: std::sync::Mutex<Vec<(Vec<IpNetwork>, TrustedProxyKeyExtractor)>> =
+        std::sync::Mutex::new(Vec::new());
+    let mut extractors = EXTRACTORS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, extractor)) = extractors
+        .iter()
+        .find(|(cidrs, _)| cidrs.as_slice() == trust_xff_cidrs)
+    {
+        return extractor.clone();
+    }
+    let extractor = TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec())
+        .expect("trust_xff_cidrs holds no catch-all range");
+    extractors.push((trust_xff_cidrs.to_vec(), extractor.clone()));
+    extractor
 }
 
 /// Wrap `router` in the per-IP limiter `limiter`, reading its quota from
@@ -773,11 +791,6 @@ mod tests {
         assert_eq!(admitted(&app, "/auth", "198.51.100.8", 20).await, 1);
     }
 
-    /// A request with no `ConnectInfo` has no un-spoofable anchor, so it must
-    /// be refused rather than charged to a placeholder. Asserted on **both**
-    /// attribution modes: the trusted-CIDR mode is the one that matters, since
-    /// a placeholder peer inside a trusted CIDR would let the request name its
-    /// own bucket through `x-forwarded-for`.
     /// An unreadable chain from a trusted proxy is refused with `400`, saying
     /// which VTA limiter refused it, rather than charged to the proxy.
     #[tokio::test]
@@ -792,13 +805,24 @@ mod tests {
             assert_eq!(body["error"], "invalid_forwarded_for");
             assert_eq!(body["limiter"], "auth");
         }
-        // The proxy's own bucket was not charged for them.
-        assert_eq!(
-            get_from(&app, "/auth", "198.51.100.9").await.status(),
-            StatusCode::OK
-        );
+        // The proxy's own bucket (the test peer, 127.0.0.1) was not charged for
+        // them: its whole burst of 2 is still there. Charging the proxy, as the
+        // old fallback did, would leave nothing.
+        for _ in 0..2 {
+            let from_the_proxy = HttpRequest::builder()
+                .uri("/auth")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(from_the_proxy).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
     }
 
+    /// A request with no `ConnectInfo` has no un-spoofable anchor, so it must
+    /// be refused rather than charged to a placeholder. Asserted on **both**
+    /// attribution modes: the trusted-CIDR mode is the one that matters, since
+    /// a placeholder peer inside a trusted CIDR would let the request name its
+    /// own bucket through `x-forwarded-for`.
     #[tokio::test]
     async fn no_attributable_client_is_refused_not_unlimited() {
         for cidrs in [vec![], trusted_loopback()] {
@@ -812,6 +836,11 @@ mod tests {
             let resp = get_from(&app, "/auth", "198.51.100.9").await;
             assert_eq!(resp.status(), StatusCode::FORBIDDEN, "cidrs={cidrs:?}");
             assert_eq!(resp.headers()[RATE_LIMIT_SOURCE_HEADER], "vta");
+            let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            assert!(
+                serde_json::from_slice::<serde_json::Value>(&body).is_err(),
+                "the 403 is plain text, not a JSON refusal"
+            );
         }
     }
 

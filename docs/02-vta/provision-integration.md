@@ -1304,7 +1304,7 @@ serve it later.
 | 7 | VC claim shape | `adminOf` always, `operatorOf` when template mints an integration DID |
 | 8 | Command name | `provision-integration` |
 | 9 | HTTP endpoint ACL | `require_admin` scoped to target context |
-| 10 | `GET /did/{did}/log` auth | Public, unauthenticated, `tower_governor` rate-limited |
+| 10 | `GET /did/{did}/log` auth | Public, unauthenticated, per-IP rate-limited |
 | 11 | Sealed-transfer producer assertion | `DidSigned` by `vta_did`; `--expect-digest` mandatory; `--assertion pinned-only` escape hatch |
 | 12 | JSON-LD context hosting | Bake locally; publishing at canonical URL is operational follow-up |
 | 13 | VP `proofPurpose` | `authentication` (VC `proofPurpose` stays `assertionMethod`) |

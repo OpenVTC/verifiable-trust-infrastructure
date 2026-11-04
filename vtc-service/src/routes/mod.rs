@@ -1098,7 +1098,7 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
 
     // One extractor covers both cases: with an empty CIDR list
     // `TrustedProxyKeyExtractor` trusts nothing and so keys on the socket
-    // peer, which is exactly `PeerIpKeyExtractor`. Branching on the list only
+    // peer, which is exactly peer-address keying. Branching on the list only
     // to pick between two behaviours that already coincide is a chance to get
     // the arms the wrong way round for no gain.
     let extractor = TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec())

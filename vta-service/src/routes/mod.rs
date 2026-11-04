@@ -204,8 +204,9 @@ pub fn router() -> Router<AppState> {
 /// the limiter read `X-Forwarded-For`. Naming a proxy asserts that it
 /// appends to (or rewrites) `X-Forwarded-For` and that nothing else can reach
 /// the VTA's socket; never name a layer-4 (TCP) forwarder, which passes the
-/// client's own header through. See the `vti_common::rate_limit` module docs
-/// for the rule, and `docs/02-vta/rate-limiting.md` for the operator view.
+/// client's own header through. See
+/// [`vti_common::rate_limit::TrustedProxyKeyExtractor`] for the rule, and
+/// `docs/02-vta/rate-limiting.md` for the operator view.
 ///
 /// The router assembled here deliberately carries **no** synthetic-`ConnectInfo`
 /// middleware. A request with no peer has no un-spoofable anchor and must be

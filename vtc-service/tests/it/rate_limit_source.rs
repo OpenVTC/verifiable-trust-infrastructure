@@ -4,7 +4,7 @@
 //! 429, `x-rate-limit-source: vtc`, `Retry-After: <seconds>`, and a JSON body
 //! `{"error":"rate_limited","limiter":"<name>","message":…,"retryAfterSecs":N}`.
 //!
-//! This file drives the per-IP `tower-governor` on the unauthenticated chain
+//! This file drives the per-IP limiter on the unauthenticated chain
 //! through the real router, and the per-signer budget on `POST /v1/trust-tasks`
 //! that a signer the community knows is charged instead. The per-member
 //! relationship publish limiter is covered in `relationships.rs`, where a
