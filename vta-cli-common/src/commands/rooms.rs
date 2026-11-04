@@ -165,6 +165,7 @@ async fn act_and_send(
 /// [`act_and_send`], naming the member to act as — required for a document that names
 /// no room (a download chunk, a direct upload's commit or abort), whose authority is
 /// the transfer the member's own request opened.
+#[allow(deprecated)] // act/0.10, seal/0.2 and get/0.2 are what this CLI sends until it moves (trust-tasks-tf #1027)
 async fn act_and_send_as(
     client: &VtaClient,
     target: &RoomTarget<'_>,
@@ -1522,6 +1523,7 @@ async fn write_sealed(
 }
 
 /// [`write_sealed`], naming `blobs` committed in the room (`rooms/records/put/0.2`).
+#[allow(deprecated)] // act/0.10, seal/0.2 and get/0.2 are what this CLI sends until it moves (trust-tasks-tf #1027)
 async fn write_sealed_naming(
     client: &VtaClient,
     target: &RoomTarget<'_>,
@@ -2097,6 +2099,7 @@ fn local_name(untrusted: &str) -> String {
 /// Nothing is written unless every check holds: the record body's signature and location,
 /// the blob being the one the author named, every chunk against the manifest, and the
 /// plaintext against the author's digest.
+#[allow(deprecated)] // act/0.10, seal/0.2 and get/0.2 are what this CLI sends until it moves (trust-tasks-tf #1027)
 pub async fn cmd_rooms_file_get(
     client: &VtaClient,
     target: RoomTarget<'_>,
@@ -2699,6 +2702,7 @@ impl OfferStepError {
 /// (`rooms/keys/act/0.10`) and send
 /// it to the community. Returns the community's response
 /// payload, or the party that failed.
+#[allow(deprecated)] // act/0.10, seal/0.2 and get/0.2 are what this CLI sends until it moves (trust-tasks-tf #1027)
 async fn act_and_send_offer(
     client: &VtaClient,
     target: &OfferTarget<'_>,

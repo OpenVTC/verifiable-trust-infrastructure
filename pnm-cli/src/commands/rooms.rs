@@ -311,6 +311,8 @@ pub(crate) async fn run(
                     no_tags,
                     emoji,
                     no_emoji,
+                    record_members,
+                    no_record_members,
                     member,
                 } => {
                     custody::cmd_rooms_profile_set(
@@ -333,6 +335,17 @@ pub(crate) async fn run(
                                 (_, true) => custody::Change::Drop,
                                 (Some(e), false) => custody::Change::Set(e),
                                 (None, false) => custody::Change::Keep,
+                            },
+                            record_members: match (record_members.is_empty(), no_record_members) {
+                                (_, true) => custody::Change::Drop,
+                                (false, false) => custody::Change::Set(
+                                    record_members
+                                        .into_iter()
+                                        .map(|m| m.trim().to_string())
+                                        .filter(|m| !m.is_empty())
+                                        .collect(),
+                                ),
+                                (true, false) => custody::Change::Keep,
                             },
                         },
                         member.as_deref(),

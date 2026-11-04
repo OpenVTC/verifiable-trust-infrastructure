@@ -3668,6 +3668,27 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_SEAL_0_3,
+            checked!(
+                specs::rooms::keys::seal::v0_3::Payload,
+                specs::rooms::keys::seal::v0_3::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "key": "Hc7pY2wQe9tLmB4sVn1KxA",
+                    "version": 1,
+                    "plaintext": "eyJyb29tSWQiOiJkaWQ6d2Vidmg6ZXhhbXBsZS5jb206cm9vbXM6bm9ydGh3aW5kIn0",
+                    "signAsPrincipal": true
+                }),
+                json!({
+                    "sealed": {
+                        "ciphertext": "3QhV1sVvR0m5xAqZ7Aw2mQnR4vBk8QLp3wXc9TgYw",
+                        "nonce": "b0Zt8Qm2Yq1sVvR0",
+                        "epoch": 4
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_ACT_0_8,
             checked!(
                 specs::rooms::keys::act::v0_8::Payload,
@@ -3749,6 +3770,35 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         "recipient": "did:webvh:example.com:northwind-community",
                         "issuedAt": "2026-01-01T00:12:00Z",
                         "payload": {},
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_11,
+            checked!(
+                specs::rooms::keys::act::v0_11::Payload,
+                specs::rooms::keys::act::v0_11::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a8",
+                        "type": "https://trusttasks.org/spec/rooms/records/list/0.6#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:13:00Z",
+                        "payload": { "roomId": "did:webvh:example.com:rooms:northwind" }
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a8",
+                        "type": "https://trusttasks.org/spec/rooms/records/list/0.6#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:13:00Z",
+                        "payload": { "roomId": "did:webvh:example.com:rooms:northwind" },
                         "proof": { "type": "DataIntegrityProof" }
                     }
                 })

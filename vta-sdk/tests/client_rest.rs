@@ -2432,6 +2432,7 @@ async fn mount_unsupported(
 
 /// `rooms/keys/act/0.10` only: answered there, and never asked at an older version.
 #[tokio::test]
+#[allow(deprecated)] // the SDK sends act 0.10 until it moves to 0.11
 async fn room_act_goes_at_0_10_only() {
     let server = MockServer::start().await;
     let member = "did:webvh:example.com:people:alice";

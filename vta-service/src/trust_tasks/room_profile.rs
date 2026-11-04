@@ -32,7 +32,9 @@ use crate::operations::room_profile::{self as profile, ReadAt, Rejected, Rejecti
 use crate::server::AppState;
 
 use super::TrustTaskOutcome;
-use super::helpers::{app_error_to_reject, parse_payload, reject_with_code, success_response};
+use super::helpers::{
+    app_error_to_reject, parse_payload, reject_with, reject_with_code, success_response,
+};
 use super::room_group::{declared, record};
 
 /// How many epochs a read walks down before it stops of its own accord and says so in
@@ -303,6 +305,7 @@ impl<'a> Speaker<'a> {
 
     /// The host's head version, from a listing narrowed to `key` — what the next write's
     /// version is predicted from.
+    #[allow(deprecated)] // list/0.5 is what hosts serve until they move to list/0.6
     async fn head_version(&self, key: &str) -> Result<u64, ProfileError> {
         let reply = self
             .send(
@@ -883,6 +886,18 @@ pub(super) async fn handle_write(
     // its one-of `profile` / `clear`.
     if let Err(resp) = parse_payload::<spec_write::v0_1::Payload>(&doc) {
         return resp;
+    }
+    // The bounds the generated type does not carry (`recordMembers` a non-empty set): a
+    // profile every reader would refuse is not written.
+    if let Some(p) = doc.payload.get("profile")
+        && !profile::profile_meets_its_schema(p)
+    {
+        return reject_with(
+            &doc,
+            trust_tasks_rs::RejectReason::MalformedRequest {
+                reason: "`profile` is not a RoomProfile its readers accept".into(),
+            },
+        );
     }
     let (Some(room_id), Some(host)) = (
         doc.payload.get("roomId").and_then(Value::as_str),

@@ -692,6 +692,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // body and the key too: a retry signs and seals again and leaves this VTA's state as
     // it was.
     (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2, RetrySafe),
+    (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_3, RetrySafe),
     // `sideEffects: none` — the VTA completes, signs and returns one document and keeps
     // neither it nor the presentation. A retry mints a second short-lived leaf and a second
     // signature over the SAME document `id`, so whichever copy reaches the host is the one
@@ -703,6 +704,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_8, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_9, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_10, RetrySafe),
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_11, RetrySafe),
     // A read: names each entry's member and can carry the member's own labels.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),
     // Idempotent by specification (`rooms/keys/label/0.1` *Retry safety*): each detail is

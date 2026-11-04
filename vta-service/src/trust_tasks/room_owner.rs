@@ -276,6 +276,7 @@ pub(super) async fn handle_anchor(
 }
 
 #[cfg(feature = "webvh")]
+#[allow(deprecated)] // list/0.5 is what hosts serve until they move to list/0.6
 async fn anchor_inner(
     state: &AppState,
     auth: &AuthClaims,

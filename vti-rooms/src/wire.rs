@@ -57,6 +57,7 @@ pub const ROOMS_RECORDS_PUT_V3_TYPE: &str =
     <vti_specs_rooms::rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/put/0.4`: an `open` room's record may carry a file — its manifest, and
 /// the random key its blob is sealed under, in `cleartext.file` (trust-tasks-tf #987).
+#[allow(deprecated)] // still served: hosts move to put/0.5 in a later PR (trust-tasks-tf #1027)
 pub const ROOMS_RECORDS_PUT_V4_TYPE: &str =
     <vti_specs_rooms::rooms::records::put::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/epoch/chain/0.2`: every response carries the room's epoch floor once it has been
@@ -75,6 +76,7 @@ pub const ROOMS_INFO_V3_TYPE: &str =
     <vti_specs_rooms::rooms::info::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/list/0.5`: rows name their blobs, every page carries the room's
 /// `lastPrune`, and the continuation token is `nextCursor`.
+#[allow(deprecated)] // still served: hosts move to list/0.6 in a later PR (trust-tasks-tf #1027)
 pub const ROOMS_RECORDS_LIST_V5_TYPE: &str =
     <vti_specs_rooms::rooms::records::list::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/prune/0.2`: an administrator removes what the record retention makes
@@ -85,6 +87,7 @@ pub const ROOMS_RECORDS_PRUNE_V2_TYPE: &str =
 pub const ROOMS_RECORDS_RETENTION_SET_TYPE: &str =
     <vti_specs_rooms::rooms::records::retention::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/get/0.2`: a read that names the record's blobs.
+#[allow(deprecated)] // still served: hosts move to get/0.3 in a later PR (trust-tasks-tf #1027)
 pub const ROOMS_RECORDS_GET_V2_TYPE: &str =
     <vti_specs_rooms::rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/blobs/chunk/0.1`.

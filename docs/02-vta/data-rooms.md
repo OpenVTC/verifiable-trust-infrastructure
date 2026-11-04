@@ -1569,6 +1569,26 @@ again under the new epoch, as you, once the host accepts the advance. A
 re-write that fails never fails, delays or undoes the advance; it is retried a
 few times and logged. A room with no profile, or a cleared one, gets none.
 
+**Which record members the room's writers may use.** A record can say what it
+is to a reader — a note, a message or a reaction (`kind`) — what it answers
+(`inReplyTo`), when it was written and edited (`writtenAt`, `editedAt`), and a
+file can carry an image's size and a small preview (`width`, `height`,
+`preview`) (trust-tasks-tf #1027). A reader that predates one of them refuses a
+record carrying it, so a writer **must not** write one unless the room's current
+profile lists it in `recordMembers`; no profile, or one without the list, means
+none. Turn them on once every reader the room expects accepts them:
+
+```bash
+pnm rooms profile set --room <room-did> --host-did <host-did> \
+                      --record-members kind,inReplyTo,writtenAt,editedAt
+pnm rooms profile set --room <room-did> --host-did <host-did> --no-record-members
+```
+
+The list is checked by the writer, not by your VTA: `rooms/keys/seal/0.3` and
+`rooms/keys/act/0.11` sign what they are given without reading it against the
+profile, as their specifications say. Every re-write after an advance carries
+`recordMembers` through unchanged.
+
 `rooms/keys/read` of the profile's key does not open it (its answer says
 `ext["org.openvtc.rooms"].roomProfile`), and `rooms/keys/browse` leaves it out of
 the records. Show `name`, `description` and `tags` as **text**: they are free
@@ -1969,8 +1989,8 @@ and `vtc-service`:
 | `rooms/keys/commit/0.1` | the MLS group itself |
 | `rooms/keys/open/0.2` | `roomOpen` capability |
 | `rooms/keys/file-key/0.2` | `roomOpen` capability |
-| `rooms/keys/seal/0.2` | `roomOpen` capability; `signAsPrincipal` refused to a delegate |
-| `rooms/keys/act/0.8`, `0.9`, `0.10` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types |
+| `rooms/keys/seal/0.2`, `0.3` | `roomOpen` capability; `signAsPrincipal` refused to a delegate. 0.3 accepts `kind`, `inReplyTo`, `writtenAt`, `editedAt` and a file's `width`, `height` and `preview`, which 0.2 refuses `bodyInvalid` |
+| `rooms/keys/act/0.8`, `0.9`, `0.10`, `0.11` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.11 adds `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3` |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
 | `rooms/keys/browse/0.3` | `roomOpen` capability; passes the host's `lastPrune` through |

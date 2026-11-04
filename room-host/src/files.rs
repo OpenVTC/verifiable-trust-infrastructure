@@ -390,6 +390,7 @@ pub(crate) async fn put_v4(
 
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the
 /// record's blobs.
+#[allow(deprecated)] // get/0.2 and list/0.5 are served until hosts move to get/0.3 and list/0.6
 pub(crate) async fn get_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     if let Err(r) = blob_tasks::parse::<get_v2_spec::Payload>(&payload) {
         return refused(doc, r);
@@ -399,6 +400,7 @@ pub(crate) async fn get_v2(state: &HostState, doc: &TrustTask<Value>, payload: V
 
 /// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's
 /// `lastPrune` on every page and the continuation token named `nextCursor`.
+#[allow(deprecated)] // get/0.2 and list/0.5 are served until hosts move to get/0.3 and list/0.6
 pub(crate) async fn list_v5(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::list::v0_5::Payload>(&payload) {
         return refused(doc, r);

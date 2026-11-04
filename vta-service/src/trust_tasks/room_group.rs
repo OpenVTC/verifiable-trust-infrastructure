@@ -953,6 +953,7 @@ pub(super) fn verify_trace(reply: &vti_rooms::wire::GetRecordResponse) -> &'stat
 /// fourth act is why the other three are here: the epoch key never leaves this
 /// agent, so a surface that fetched the record itself would come back to open
 /// it anyway, holding a half-verified record in between.
+#[allow(deprecated)] // read/0.1 and browse/0.3 are what this VTA serves until the read/0.2 and browse/0.4 batch (trust-tasks-tf #1027)
 pub(super) async fn handle_read(
     state: &AppState,
     auth: &AuthClaims,
@@ -1235,6 +1236,7 @@ struct BrowseRequest {
 
 /// `rooms/keys/browse/0.3`, listing with `rooms/records/list/0.5` (*The room's prunes*): a
 /// host that predates it is not read from. 0.1 and 0.2 are not served.
+#[allow(deprecated)] // read/0.1 and browse/0.3 are what this VTA serves until the read/0.2 and browse/0.4 batch (trust-tasks-tf #1027)
 async fn browse_at(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,

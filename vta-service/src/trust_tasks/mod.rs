@@ -2904,10 +2904,14 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3 => room_group::handle_browse_v0_3
         [ None Metadata true ],
     // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
+    // 0.3 accepts the members a room's `recordMembers` governs, which 0.2 refuses.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2
         [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_3 => room_act::handle_seal_v0_3
+        [ None Metadata true ],
     // Signs a host-bound document as the member and presents their authority; stores
-    // nothing and sends nothing — the caller sends what comes back. 0.10, whose community
+    // nothing and sends nothing — the caller sends what comes back. 0.11, whose table adds
+    // `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3`; 0.10, whose community
     // types add `vtc/rooms/memberships/list/0.2`; 0.9, whose table adds
     // `rooms/records/put/0.4`; and 0.8, which `pnm-browser-plugin` sends — each with its own
     // closed table; 0.1–0.7 are not served.
@@ -2916,6 +2920,8 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_9 => room_act::handle_act_v0_9
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_10 => room_act::handle_act_v0_10
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_11 => room_act::handle_act_v0_11
         [ None Metadata true ],
     // 0.2: each entry names its member; `includePersonal` adds the member's own label.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2 => room_label::handle_list_v0_2

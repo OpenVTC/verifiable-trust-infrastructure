@@ -459,6 +459,7 @@ pub(crate) async fn handle_put_record_v4(doc: TrustTask<Value>, ctx: RoomCtx) ->
 }
 
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the record's blobs.
+#[allow(deprecated)] // get/0.2 and list/0.5 are served until hosts move to get/0.3 and list/0.6
 pub(crate) async fn handle_get_record_v2(
     doc: TrustTask<get_v2::Payload>,
     ctx: RoomCtx,
@@ -472,6 +473,7 @@ pub(crate) async fn handle_get_record_v2(
 
 /// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's
 /// `lastPrune` on every page and the continuation token named `nextCursor`.
+#[allow(deprecated)] // get/0.2 and list/0.5 are served until hosts move to get/0.3 and list/0.6
 pub(crate) async fn handle_list_records_v5(
     doc: TrustTask<list_v5::Payload>,
     ctx: RoomCtx,
