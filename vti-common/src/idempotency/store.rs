@@ -222,11 +222,14 @@ impl IdempotencyStore {
     /// and died before recording it, and nothing here can tell that apart from
     /// one that died first, so running it again could be the second effect the
     /// key exists to prevent (VTI-OPS-061, #2402). Only an *expired* record —
-    /// past the class TTL, the window inside which a key means anything — is
+    /// past its retention, the window inside which a key means anything — is
     /// claimed afresh.
     ///
     /// The caller must finish with [`Self::complete`] or [`Self::release`];
     /// a claim left dangling holds its key until the record expires.
+    ///
+    /// The record lasts the class TTL. A caller whose requests are documents
+    /// with an acceptance window uses [`Self::claim_retained`] instead.
     pub async fn claim(
         &self,
         principal_hash: &[u8; 32],
@@ -235,7 +238,45 @@ impl IdempotencyStore {
         class: IdempotencyClass,
         in_flight_grace: chrono::Duration,
     ) -> Result<ClaimOutcome, AppError> {
+        self.claim_retained(
+            principal_hash,
+            key,
+            request_hash,
+            class,
+            in_flight_grace,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::claim`], keeping the record until at least `retain_until`.
+    ///
+    /// **VTI-OPS-066**: a keyed operation's record must last until the latest
+    /// acceptance end (plus the skew) of any document carrying the key that the
+    /// node has accepted. The attempts at one operation are separate documents —
+    /// each retry, and each new document a producer issues under VTI-TRN-046,
+    /// has its own `id` and `issuedAt` — and one stating an `expiresAt` is
+    /// acceptable for up to thirty days (VTI-OPS-028). A record kept only for
+    /// the class TTL would let the attempt arriving after it perform the
+    /// operation again.
+    ///
+    /// So `retain_until` is the acceptance end of the document being claimed
+    /// for, and the record's expiry is the later of it and the class TTL — on
+    /// a new claim, and on a repeat of the same request (completed, in flight
+    /// or abandoned), which extends the record it finds. A different request
+    /// under the key is refused as [`ClaimOutcome::Conflict`] and extends
+    /// nothing: it was not accepted under the key.
+    pub async fn claim_retained(
+        &self,
+        principal_hash: &[u8; 32],
+        key: &str,
+        request_hash: [u8; 32],
+        class: IdempotencyClass,
+        in_flight_grace: chrono::Duration,
+        retain_until: Option<DateTime<Utc>>,
+    ) -> Result<ClaimOutcome, AppError> {
         let now = Utc::now();
+        let ttl_end = now + chrono::Duration::seconds(class.ttl_seconds() as i64);
         let pending = CacheEntry {
             state: EntryState::InFlight,
             idempotency_key: key.to_string(),
@@ -245,7 +286,7 @@ impl IdempotencyStore {
             response_body: Vec::new(),
             class,
             created_at: now,
-            expires_at: now + chrono::Duration::seconds(class.ttl_seconds() as i64),
+            expires_at: retain_until.map_or(ttl_end, |until| until.max(ttl_end)),
         };
         let sk = storage_key(principal_hash, key);
 
@@ -264,7 +305,7 @@ impl IdempotencyStore {
                 // claim it through `insert_if_absent` like anyone else.
                 continue;
             };
-            let existing: CacheEntry = serde_json::from_slice(&raw)?;
+            let mut existing: CacheEntry = serde_json::from_slice(&raw)?;
 
             // Checked before the in-flight branch: a mismatched body is a
             // caller error whichever stage the first attempt is in, and
@@ -273,6 +314,22 @@ impl IdempotencyStore {
             if !existing.is_expired(now) {
                 if existing.request_hash != request_hash {
                     return Ok(ClaimOutcome::Conflict);
+                }
+                // A repeat of the same request: the record must outlast this
+                // document's acceptance end too (VTI-OPS-066). Written only
+                // over the row as read, so a completion landing meanwhile is
+                // not undone; on a lost race, decide again on what it wrote.
+                if let Some(until) = retain_until
+                    && until > existing.expires_at
+                {
+                    existing.expires_at = until;
+                    let mut batch = Batch::new();
+                    batch
+                        .require_unchanged(sk.clone(), raw)
+                        .insert(sk.clone(), &existing)?;
+                    if !self.ks.apply_batch(batch).await?.is_applied() {
+                        continue;
+                    }
                 }
                 if existing.is_in_flight() {
                     // Past the grace the claiming attempt cannot still be
@@ -637,6 +694,134 @@ mod tests {
             }
             other => panic!("expected a completed replay, got {other:?}"),
         }
+    }
+
+    /// **VTI-OPS-066.** A claim for a document acceptable for longer than the
+    /// class TTL keeps its record until that document's acceptance end, so the
+    /// same request arriving on day two is still answered from the record, not
+    /// performed again. A shorter acceptance end never cuts the TTL.
+    #[tokio::test]
+    async fn a_record_lasts_until_the_documents_acceptance_end() {
+        let (store, _d) = temp_store();
+        let p = Principal::Did("did:web:alice".into()).hash();
+        let ttl = Duration::seconds(IdempotencyClass::NonDestructive.ttl_seconds() as i64);
+        let ten_days = Utc::now() + Duration::days(10);
+        store
+            .claim_retained(
+                &p,
+                "long",
+                [1u8; 32],
+                IdempotencyClass::NonDestructive,
+                GRACE,
+                Some(ten_days),
+            )
+            .await
+            .expect("claim");
+        let entry = store.get(&p, "long").await.unwrap().expect("record");
+        assert_eq!(entry.expires_at, ten_days);
+
+        store
+            .claim_retained(
+                &p,
+                "short",
+                [1u8; 32],
+                IdempotencyClass::NonDestructive,
+                GRACE,
+                Some(Utc::now() + Duration::minutes(10)),
+            )
+            .await
+            .expect("claim");
+        let entry = store.get(&p, "short").await.unwrap().expect("record");
+        assert!(
+            entry.expires_at >= entry.created_at + ttl,
+            "the class TTL is the floor"
+        );
+    }
+
+    /// **VTI-OPS-066.** Each attempt is a document of its own, and the record
+    /// must outlast the latest one accepted: a repeat of the same request with a
+    /// later acceptance end extends the record it finds — completed or still
+    /// claimed — and a different request under the key extends nothing.
+    #[tokio::test]
+    async fn a_repeat_with_a_later_acceptance_end_extends_the_record() {
+        let (store, _d) = temp_store();
+        let p = Principal::Did("did:web:alice".into()).hash();
+        let class = IdempotencyClass::NonDestructive;
+        store
+            .claim(&p, "k", [1u8; 32], class, GRACE)
+            .await
+            .expect("claim");
+        let first = store.get(&p, "k").await.unwrap().expect("record");
+
+        let later = Utc::now() + Duration::days(20);
+        assert!(matches!(
+            store
+                .claim_retained(&p, "k", [1u8; 32], class, GRACE, Some(later))
+                .await
+                .expect("claim"),
+            ClaimOutcome::InFlight
+        ));
+        assert_eq!(
+            store
+                .get(&p, "k")
+                .await
+                .unwrap()
+                .expect("record")
+                .expires_at,
+            later,
+            "an in-flight claim is extended"
+        );
+
+        store
+            .complete(
+                &p,
+                "k",
+                Some(CompletedResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: b"done".to_vec(),
+                }),
+            )
+            .await
+            .expect("complete");
+        let latest = Utc::now() + Duration::days(25);
+        match store
+            .claim_retained(&p, "k", [1u8; 32], class, GRACE, Some(latest))
+            .await
+            .expect("claim")
+        {
+            ClaimOutcome::Completed(e) => assert_eq!(e.expires_at, latest),
+            other => panic!("expected a completed replay, got {other:?}"),
+        }
+        assert_eq!(
+            store
+                .get(&p, "k")
+                .await
+                .unwrap()
+                .expect("record")
+                .expires_at,
+            latest,
+            "a completed record is extended, and keeps its response"
+        );
+
+        assert!(matches!(
+            store
+                .claim_retained(
+                    &p,
+                    "k",
+                    [2u8; 32],
+                    class,
+                    GRACE,
+                    Some(Utc::now() + Duration::days(29))
+                )
+                .await
+                .expect("claim"),
+            ClaimOutcome::Conflict
+        ));
+        let after = store.get(&p, "k").await.unwrap().expect("record");
+        assert_eq!(after.expires_at, latest, "a conflict extends nothing");
+        assert!(after.has_replayable_response());
+        assert!(first.expires_at < latest);
     }
 
     /// The secret-bearing case: the effect is still deduplicated, but the
