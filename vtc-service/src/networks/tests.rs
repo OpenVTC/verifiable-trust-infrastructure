@@ -29,6 +29,8 @@ const SEED: [u8; 32] = [0x42; 32];
 /// What the fake network knows.
 struct Net {
     identity: Identity,
+    /// Signs answers in the network's name instead of its own key: a forger.
+    answer_key: Option<Identity>,
     required: bool,
     listing: Value,
     offer: dtg_credentials::DTGCredential,
@@ -66,6 +68,7 @@ async fn fake_network(community: &str, required: bool) -> (String, Identity, Sha
     );
     let shared: Shared = Arc::new(Mutex::new(Net {
         identity: identity.clone(),
+        answer_key: None,
         required,
         listing: serde_json::to_value(listing).unwrap(),
         offer,
@@ -84,7 +87,24 @@ async fn fake_network(community: &str, required: bool) -> (String, Identity, Sha
     }
     /// `vtn/*` Trust Tasks, as a network answers them: the request's proof must be its
     /// issuer's, for `authentication`, and the request addressed to this network.
+    /// Every answer signed by the network for `authentication`, as the spine signs it.
     async fn tasks(
+        AxState(s): AxState<Shared>,
+        doc: Json<Value>,
+    ) -> (axum::http::StatusCode, Json<Value>) {
+        let identity = {
+            let n = s.lock().await;
+            n.answer_key.clone().unwrap_or_else(|| n.identity.clone())
+        };
+        let (status, Json(answer)) = answer(AxState(s), doc).await;
+        let signed = identity
+            .sign_document_for(answer, AUTHENTICATION)
+            .await
+            .unwrap();
+        (status, Json(signed))
+    }
+
+    async fn answer(
         AxState(s): AxState<Shared>,
         Json(doc): Json<Value>,
     ) -> (axum::http::StatusCode, Json<Value>) {
@@ -603,4 +623,21 @@ async fn repudiating_a_listing() {
         repudiate(state, "a", &url, network.did(), None).await,
         Err(NetError::IsMember)
     ));
+}
+
+#[tokio::test]
+async fn an_answer_not_signed_by_the_network_is_a_mismatch() {
+    let (vtc, did) = community().await;
+    let state = &vtc.state;
+    let member = Identity::generate();
+    admins_group(state, &[member.did()]).await;
+    let (url, network, net) = fake_network(&did, true).await;
+    // The URL answers in the network's name, signed by another key.
+    net.lock().await.answer_key = Some(Identity::generate());
+
+    let err = join(state, "did:example:admin", &url, network.did(), &admins())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, NetError::Mismatch(_)), "{err}");
+    assert!(load(state, network.did()).await.unwrap().is_none());
 }

@@ -851,7 +851,8 @@ fn external_account() -> Value {
 ///
 /// `#[allow(deprecated)]`: the table witnesses every version this VTA still
 /// serves, and some are superseded — `vta/webvh/dids/update/1.0` and
-/// `rotate-keys/1.0` (whether to move is a pending decision).
+/// `rotate-keys/1.0` (whether to move is a pending decision), and
+/// `trust-task-discovery/0.3`.
 #[allow(deprecated)]
 fn table() -> Vec<(&'static str, Conformance)> {
     let mut t: Vec<(&'static str, Conformance)> = vec![
@@ -863,7 +864,23 @@ fn table() -> Vec<(&'static str, Conformance)> {
         // implements; the response pins the shorthand (bare Type URI) form.
         // The response is the one the handler builds, not a literal, so the
         // witness pins the advertised acceptance window (VTI-TRN-047) as
-        // it is actually written — whole seconds, at response level.
+        // it is actually written — whole seconds, at response level, with the
+        // expiry horizon in 0.4.
+        (
+            uris::TASK_TRUST_TASK_DISCOVERY_0_4,
+            checked!(
+                specs::trust_task_discovery::v0_4::Payload,
+                specs::trust_task_discovery::v0_4::Response,
+                json!({ "patterns": ["acl/*"] }),
+                to_v(vti_common::trust_task::discovery::respond_v0_4(
+                    [
+                        "https://trusttasks.org/spec/acl/grant/0.2",
+                        "https://trusttasks.org/spec/acl/revoke/0.2",
+                    ],
+                    &specs::trust_task_discovery::v0_4::Payload::default(),
+                ))
+            ),
+        ),
         (
             uris::TASK_TRUST_TASK_DISCOVERY_0_3,
             checked!(

@@ -247,6 +247,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_AUDIT_GET_RETENTION_1_0, ReadOnly),
     (trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0, RetrySafe),
     // ── Discovery ───────────────────────────────────────────────────────
+    (trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_4, ReadOnly),
     (trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3, ReadOnly),
     // ── Metrics ─────────────────────────────────────────────────────────
     // A snapshot read: no durable effect, nothing to dedup.

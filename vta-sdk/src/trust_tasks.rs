@@ -611,7 +611,22 @@ pub const TASK_AUDIT_GET_RETENTION_1_0: &str =
 pub const TASK_AUDIT_UPDATE_RETENTION_1_0: &str =
     "https://trusttasks.org/spec/vta/audit/update-retention/1.0";
 
-/// `spec/trust-task-discovery/0.3` — **the canonical capability negotiation.**
+/// `spec/trust-task-discovery/0.4` — **the canonical capability negotiation.**
+///
+/// 0.4 adds the responder's **expiry horizon** to the acceptance window: how
+/// far after `issuedAt` a stated `expiresAt` is honoured in place of the
+/// maximum age. A VTI node advertises its thirty-day horizon (VTI-OPS-028,
+/// VTI-TRN-047). Without one, the maximum age applies to every document.
+///
+/// Everything else is as [`TASK_TRUST_TASK_DISCOVERY_0_3`] describes.
+///
+/// Auth: any authenticated user.
+pub const TASK_TRUST_TASK_DISCOVERY_0_4: &str =
+    <trust_tasks_rs::specs::trust_task_discovery::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/trust-task-discovery/0.3` — superseded by
+/// [`TASK_TRUST_TASK_DISCOVERY_0_4`], and still served for the clients that
+/// ask it. Its window has no horizon.
 ///
 /// A client asks which Trust Task types this agent serves, optionally narrowed
 /// by slug-glob patterns (`*`, `acl/*`, or an exact slug), and receives the
@@ -639,6 +654,7 @@ pub const TASK_AUDIT_UPDATE_RETENTION_1_0: &str =
 /// VTA no longer serves.
 ///
 /// Auth: any authenticated user.
+#[allow(deprecated)] // superseded by 0.4, still served
 pub const TASK_TRUST_TASK_DISCOVERY_0_3: &str =
     <trust_tasks_rs::specs::trust_task_discovery::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -2537,7 +2553,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUDIT_VERIFY_0_1,
     TASK_AUDIT_GET_RETENTION_1_0,
     TASK_AUDIT_UPDATE_RETENTION_1_0,
-    // Discovery
+    // Discovery (0.4 current, 0.3 superseded and still served)
+    TASK_TRUST_TASK_DISCOVERY_0_4,
     TASK_TRUST_TASK_DISCOVERY_0_3,
     // Vault slice (0.1 + 0.2 + 0.3 dual-accept; delete is 0.1-only upstream)
     TASK_VAULT_LIST_0_4,

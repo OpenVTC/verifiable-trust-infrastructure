@@ -22,6 +22,7 @@ import { DataTable } from "@/components/DataTable";
 import { DidText } from "@/components/DidText";
 import { Field } from "@/components/Field";
 import { ErrorOrParked } from "@/components/ParkedNotice";
+import { Protected } from "@/components/Protected";
 import { fetchAllAcl, type AclEntry } from "@/lib/acl";
 import {
   ADMIT_ROLES,
@@ -192,7 +193,10 @@ export function EntriesWithoutMembership() {
   });
   const entries = (query.data ?? []).filter(canMakeMembership);
   if (query.isError || entries.length === 0) return null;
+  // Admits without a join request: out of the community theme's reach
+  // (vtc/community/theme/show/0.1, client item 2).
   return (
+    <Protected ground="card">
     <section className="card" aria-labelledby="no-membership-title">
       <h3 id="no-membership-title">Access without a membership</h3>
       <p className="muted">
@@ -223,5 +227,6 @@ export function EntriesWithoutMembership() {
         ))}
       </DataTable>
     </section>
+    </Protected>
   );
 }

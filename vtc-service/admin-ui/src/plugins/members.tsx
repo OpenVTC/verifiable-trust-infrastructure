@@ -61,6 +61,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorOrParked } from "@/components/ParkedNotice";
+import { Protected } from "@/components/Protected";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
 import { setCommunityRole } from "@/lib/acl";
@@ -299,7 +300,10 @@ function RemovedMembers() {
     return null;
   }
 
+  // Deleting a record for good: out of the community theme's reach
+  // (vtc/community/theme/show/0.1, client item 2).
   return (
+    <Protected ground="card">
     <section className="card">
       <h3>Removed members</h3>
       <p className="muted">
@@ -341,6 +345,7 @@ function RemovedMembers() {
         </p>
       )}
     </section>
+    </Protected>
   );
 }
 
@@ -593,7 +598,11 @@ function MembersList() {
         }
       />
 
-      {adding && <AddMemberForm onClose={() => setAdding(false)} />}
+      {adding && (
+        <Protected ground="card">
+          <AddMemberForm onClose={() => setAdding(false)} />
+        </Protected>
+      )}
 
       <div className="toolbar list-toolbar members-toolbar" role="search" aria-label="Members">
         <Field label="Search" inline className="members-search">
@@ -781,6 +790,7 @@ function MembersList() {
         )}
       </section>
 
+      {/* Each draws itself out of the theme's reach when it has rows. */}
       <EntriesWithoutMembership />
 
       <RemovedMembers />
@@ -1191,11 +1201,21 @@ function MemberDetail() {
           </section>
 
           <MemberGitCard did={decoded} />
+
+          {/* Every card from here that changes what this member holds, what
+              they can prove with, or releases their notes, is drawn out of
+              the community theme's reach (vtc/community/theme/show/0.1,
+              client item 2). The read-only cards above take the theme. */}
+          {/* Protects itself when shown: it can render nothing. */}
           <MemberNotesCard did={decoded} />
 
-          <StepUpPasskeysCard did={decoded} />
+          <Protected ground="card">
+            <StepUpPasskeysCard did={decoded} />
+          </Protected>
 
-          <ApproverDevicesCard did={decoded} />
+          <Protected ground="card">
+            <ApproverDevicesCard did={decoded} />
+          </Protected>
 
           <section className="card">
             <h3>Disposition + consent</h3>
@@ -1209,6 +1229,7 @@ function MemberDetail() {
             </dl>
           </section>
 
+          <Protected ground="card">
           <section className="card">
             <h3>Vetter role</h3>
             <p className="muted">
@@ -1302,7 +1323,9 @@ function MemberDetail() {
               )}
             </div>
           </section>
+          </Protected>
 
+          <Protected ground="card">
           <section className="card">
             <h3>Admin actions</h3>
             <p className="lead">
@@ -1384,6 +1407,7 @@ function MemberDetail() {
               </button>
             </div>
           </section>
+          </Protected>
         </>
       )}
     </section>

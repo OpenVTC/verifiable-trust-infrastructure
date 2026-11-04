@@ -265,16 +265,20 @@ refuses one stale copy and then receives a fresh one.
 ### Whose window (VTI-TRN-044–047)
 
 The window is the *recipient's*, and VTI-TRN-045 says where a sender learns it:
-the recipient's authenticated `trust-task-discovery/0.3` answer where it
+the recipient's authenticated `trust-task-discovery` answer where it
 advertises one (a per-type entry over the response-level value), otherwise the
 task specification's window, otherwise a documented constant.
 
 Both VTI nodes now **advertise** theirs (VTI-TRN-047): each answers discovery
-0.3 with `VTI_ACCEPTANCE_WINDOW` at response level, built by
-`vti_common::trust_task::discovery::respond_v0_3` from the same value its
+0.4 with `VTI_ACCEPTANCE_WINDOW` at response level, built by
+`vti_common::trust_task::discovery::respond_v0_4` from the same value its
 spine's `freshness_policy()` applies — so the advertisement cannot be wider
 than the enforcement, and a test on each node reads the window back out of its
-own answer and checks it against the policy. The VTA also still answers 0.1.
+own answer and checks it against the policy. The 0.4 window includes the
+thirty-day expiry horizon (VTI-OPS-028): a sender may state an `expiresAt`
+within it and have the document accepted until then, instead of issuing new
+attempts every `max_age`. The superseded 0.3 is still answered, with the same
+maximum age and skew and no horizon, which 0.3 has no member for.
 
 The push engine does **not yet read** an advertised window. It applies the
 constant — VTI-TRN-045's last tier — to every recipient, deliberately:
@@ -287,7 +291,7 @@ constant — VTI-TRN-045's last tier — to every recipient, deliberately:
 - the window only matters for a document the engine *holds* — a recipient
   offline, a mediator refusing hops — which is exactly when a lookup cannot be
   answered;
-- the engine never observes an `expired` refusal, so discovery 0.3's "ask again
+- the engine never observes an `expired` refusal, so discovery's "ask again
   after an unexpected refusal" would have no trigger.
 
 That gap is the specification's divergence F.3 against VTI-TRN-045, narrowed by

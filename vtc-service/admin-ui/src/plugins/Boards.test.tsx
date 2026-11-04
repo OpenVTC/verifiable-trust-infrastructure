@@ -5,7 +5,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { Boards } from "@/plugins/boards";
+import { Boards, boardChanges } from "@/plugins/boards";
 import { mockFetch, renderWithProviders, sentPayloads, taskRoute, whoamiWith } from "@/test/render";
 
 vi.mock("@/lib/api", async (original) => ({
@@ -20,6 +20,7 @@ const SHOW = `${S}/show/0.1`;
 const DECIDE = `${S}/ideas/decide/0.1`;
 const SELECT = `${S}/ideas/select/0.1`;
 const NOTES = `${S}/notes/list/0.1`;
+const UPDATE = `${S}/update/0.1`;
 const BOARD_ID = "brd_Uc7N2qLm4Rt8Vx1ZAAAAAA";
 const DAY = 86_400_000;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -138,5 +139,63 @@ describe("the Boards page", () => {
         { ideaId: tallied.ideaId, decision: "selected", slotId: "s1", departsFromRule: true, reason: "Pairs with the keynote." },
       ]),
     );
+  });
+});
+
+describe("editing a board", () => {
+  const facilitator = whoamiWith([`vtc.boards.manage:board:${BOARD_ID}`]);
+
+  it("sends only what changed, so an open vote's window is never sent (fixedAfterVotingOpens)", async () => {
+    const requests = mockFetch([
+      taskRoute(SHOW, { board: board(), ideas: [] }),
+      taskRoute(NOTES, { notes: [] }),
+      taskRoute(UPDATE, { board: board({ title: "Trust Week 2026" }) }),
+    ]);
+    renderWithProviders(<Boards />, { route: `/boards/${BOARD_ID}`, path: "/boards/*", whoami: facilitator });
+    fireEvent.click(await screen.findByRole("button", { name: /Edit board/ }));
+    const title = screen.getByDisplayValue("Trust Week Unconference");
+    fireEvent.change(title, { target: { value: "Trust Week 2026" } });
+    // Voting opened yesterday in this fixture: its window is shown, fixed.
+    expect((screen.getAllByText("Fixed: voting has opened.")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(sentPayloads(requests, UPDATE)).toEqual([{ boardId: BOARD_ID, title: "Trust Week 2026" }]));
+  });
+
+  it("moves the voting window of a board whose voting has not opened", () => {
+    const now = Date.now();
+    const b = board({ voting: { opensAt: iso(now + 2 * DAY), closesAt: iso(now + 4 * DAY) } }) as never;
+    const voting = { opensAt: iso(now + 60_000), closesAt: iso(now + 4 * DAY) };
+    const out = boardChanges(b, {
+      title: "Trust Week Unconference",
+      description: "",
+      audience: "members",
+      proposals: (b as { proposals: { opensAt: string; closesAt: string } }).proposals,
+      voting,
+      topics: [],
+      formats: [],
+      maxIdeas: "",
+      rule: "The twelve sessions most members would attend.",
+      timetable: (b as { timetable: never[] }).timetable,
+    });
+    expect(out).toEqual({ voting });
+  });
+
+  it("keeps an existing slot's identifier and gives a new one a fresh one", () => {
+    const b = board() as never;
+    const kept = (b as { timetable: { slotId: string; label: string; startsAt: string; endsAt: string }[] }).timetable[0]!;
+    const added = { slotId: "s2", label: "Room B", startsAt: kept.startsAt, endsAt: kept.endsAt };
+    const out = boardChanges(b, {
+      title: "Trust Week Unconference",
+      description: "",
+      audience: "members",
+      proposals: (b as { proposals: { opensAt: string; closesAt: string } }).proposals,
+      voting: (b as { voting: { opensAt: string; closesAt: string } }).voting,
+      topics: [],
+      formats: [],
+      maxIdeas: "",
+      rule: "The twelve sessions most members would attend.",
+      timetable: [kept, added],
+    });
+    expect(out).toEqual({ timetable: [kept, added] });
   });
 });

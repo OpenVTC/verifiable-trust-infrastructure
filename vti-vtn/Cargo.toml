@@ -1,7 +1,7 @@
 [package]
 name = "vti-vtn"
 description = "The Verifiable Trust Network (VTN) protocol: listings, membership, DTG credentials, status lists, network index, group registration, broadcast envelopes, room passes — shared by the VTN service and the VTC"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -15,6 +15,9 @@ default = []
 # Talking to a network over HTTPS: `vtn/*` Trust Tasks addressed to the expected
 # network DID, and resolving a credential's Bitstring Status List.
 client = ["dep:reqwest", "dep:tokio"]
+# Resolving a signer's DID (`did:webvh` over the network) and checking its key is authorised
+# for the proof's purpose: `resolve::VmKeyResolver`, what a client verifies answers with.
+resolve = ["dep:vta-sdk", "dep:affinidi-did-resolver-cache-sdk"]
 
 [dependencies]
 affinidi-data-integrity = { workspace = true }
@@ -29,11 +32,15 @@ serde_json = { workspace = true }
 serde_json_canonicalizer = { workspace = true }
 sha2 = { workspace = true }
 trust-tasks-rs = { workspace = true }
-vti-specs-vtn = { path = "../vti-specs-vtn", version = "0.1" }
+vti-specs-vtn = { path = "../vti-specs-vtn", version = "0.2" }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+vta-sdk = { path = "../vta-sdk", version = "0.80", default-features = false, features = [
+  "proof-verify",
+], optional = true }
+affinidi-did-resolver-cache-sdk = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

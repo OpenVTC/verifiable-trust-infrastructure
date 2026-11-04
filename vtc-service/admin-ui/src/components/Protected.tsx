@@ -80,6 +80,37 @@ function isolatedCss(): string {
       -webkit-font-smoothing: antialiased;
     }
     .${ROOT_CLASS}[data-ground="surface"] { background-color: var(--bg-elev); }
+    .${ROOT_CLASS}[data-ground="card"] {
+      display: grid;
+      position: relative;
+      background-color: var(--bg-elev);
+      border-radius: var(--radius-lg);
+    }
+    /* On a themed page a protected card is the one thing not in the theme's
+       colours. Say so, rather than leave it looking like a mistake: drawn
+       here, inside the isolation, so no theme can hide or restyle it. */
+    .${ROOT_CLASS}[data-ground="card"][data-community-theme] {
+      outline: 2px dashed color-mix(in srgb, var(--warning) 65%, transparent);
+      outline-offset: 3px;
+    }
+    .${ROOT_CLASS}[data-ground="card"][data-community-theme]::before {
+      content: "Protected area \\2014  standard look, not the community theme";
+      position: absolute;
+      top: -0.8em;
+      right: 16px;
+      z-index: 1;
+      padding: 1px 8px;
+      border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
+      border-radius: var(--radius-pill);
+      background: var(--warning-soft);
+      color: var(--warning);
+      font-size: var(--text-xs);
+      line-height: var(--text-xs-leading);
+      font-weight: var(--weight-semibold);
+      letter-spacing: var(--tracking-wide);
+      white-space: nowrap;
+      pointer-events: none;
+    }
     .${ROOT_CLASS}[data-ground="page"] { background-color: var(--bg); }
     .${ROOT_CLASS}[data-ground="none"] { display: contents; }
   `);
@@ -108,11 +139,31 @@ export function rescopeRoot(cssText: string): string {
  * The ground behind a surface belongs to its ancestors, which the theme
  * styles: text isolated in its default colour is still hidden on a ground the
  * theme painted that colour. So a protected surface paints its own —
- * `surface` (a card's `--bg-elev`, the default) or `page` (`--bg`). `none` is
- * only for a surface that paints an opaque ground of its own over everything
- * (the modal dialogs).
+ * `surface` (a card's `--bg-elev`, the default), `card` (the same, rounded
+ * to the console's `.card` so a protected card on a themed page shows no
+ * square corners of another colour, and a grid so the card fills the ground
+ * when a row stretches it) or `page` (`--bg`). `none` is only for a
+ * surface that paints an opaque ground of its own over everything (the modal
+ * dialogs).
  */
-export type ProtectedGround = "surface" | "page" | "none";
+export type ProtectedGround = "surface" | "card" | "page" | "none";
+
+/**
+ * The `<html>` attributes an isolation's root follows: the pinned light / dark
+ * (`lib/theme.ts`), and whether a community theme is drawn
+ * (`lib/community-theme.ts`), which turns on the "protected area" marker.
+ * Both are set by the page's own code; a theme stylesheet cannot set one.
+ */
+const MIRRORED = ["data-theme", "data-community-theme"] as const;
+
+/** Copy the mirrored `<html>` attributes onto an isolation's root, clearing any unset. */
+export function mirrorThemeAttribute(inner: HTMLElement): void {
+  for (const name of MIRRORED) {
+    const value = document.documentElement.getAttribute(name);
+    if (value === null) inner.removeAttribute(name);
+    else inner.setAttribute(name, value);
+  }
+}
 
 /**
  * Render `children` out of the community theme's reach. The host is
@@ -141,9 +192,19 @@ export function Protected({
     // tree's content matches a selector inside it.
     inner.className = `${ROOT_CLASS} ${document.body.className}`.trim();
     inner.dataset.ground = ground;
+    // The light / dark the operator pinned (`<html data-theme>`) and whether
+    // a community theme is drawn, followed live. Inheriting `color-scheme` is
+    // not enough: the production build lowers `light-dark()` into
+    // custom-property toggles that the re-scoped `:root` rule resets to light
+    // inside the isolation, and only `[data-theme]` flips them back.
+    const follow = () => mirrorThemeAttribute(inner);
+    follow();
+    const observer = new MutationObserver(follow);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: [...MIRRORED] });
     shadow.replaceChildren(style, inner);
     setRoot(inner);
     return () => {
+      observer.disconnect();
       shadow.replaceChildren();
       setRoot(null);
     };

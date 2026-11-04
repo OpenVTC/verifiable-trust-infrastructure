@@ -192,7 +192,8 @@ key. Nothing is signed as, or names, the operator's VTA.
 
 | Type | Answer |
 |---|---|
-| `trust-task-discovery/0.3` | This identity's task list: the three types in this table. |
+| `trust-task-discovery/0.4` | This identity's task list: the types in this table, and the acceptance window it applies, with its thirty-day expiry horizon. |
+| `trust-task-discovery/0.3` | The same, superseded, without the horizon. |
 | `witness/session/0.2` | A session and its challenge — [The protocol](#the-protocol). |
 | `witness/session/submit/0.2` | The VWC and its digest — [The protocol](#the-protocol). |
 | Any other type | `unsupportedType` (`unsupportedVersion` for another version of a served family — the 0.1 witness tasks included). |

@@ -2,6 +2,34 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.45.0...cnm-cli-v0.46.0) — 2026-11-04
+
+
+### Added
+
+- **cli**: `pnm boards` and `cnm boards` for community boards ([#2431](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2431))
+
+Members and facilitators can now work a community board from the
+  command line (VTI-BRD-001 – 080), as the portal and console already do.
+
+  - vtc-client: `boards` — every `vtc/boards/*` task, each request read
+    against its pinned schema before it is sent (`checked`), and each
+    task's declared error codes (`declared`).
+  - vta-cli-common: `commands::boards` — a member's acts signed by their
+    own VTA (`vault/sign-trust-task`), never a key the CLI holds, and
+    checked to be the same document, proof aside, before sending.
+    `take-tickets` takes each open idea's ticket in its own request, a
+    random pause apart, so tickets do not arrive together (VTI-BRD-034).
+  - pnm: `boards list|show|propose|update|withdraw|notes|note|
+    withdraw-note|take-tickets`.
+  - cnm: `boards init` (offline starter board, valid against
+    `vtc/boards/create` as written), `create|list|show|update|close|
+    archive|decide|select|notes|hide|unhide`. Refusals print the command
+    that fixes them.
+  - docs/03-vtc/boards.md: *From the command line*.
+
+
+
 ## [0.45.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.44.0...cnm-cli-v0.45.0) — 2026-11-03
 
 

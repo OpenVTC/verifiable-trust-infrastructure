@@ -1,6 +1,9 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
+
+use crate::verify::KeyResolver;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -14,6 +17,11 @@ pub enum ClientError {
     /// The network answered, but not as the network the caller expected.
     #[error("{0}")]
     Unexpected(String),
+    /// The answer is not provably the expected network's: unsigned, signed by another
+    /// party, or a proof that does not verify. Also: a task sent by a client with no
+    /// resolver to check the answer with ([`VtnClient::verifying`]).
+    #[error("unverified answer: {0}")]
+    Unverified(String),
     /// The network refused a Trust Task: its `trust-task-error` code (`notFound`,
     /// `vtn/membership/acknowledge:rolesUnregistered`, ...), message and details.
     #[error("{code}: {message}")]
@@ -50,6 +58,7 @@ pub type Result<T> = std::result::Result<T, ClientError>;
 pub struct VtnClient {
     http: reqwest::Client,
     base: String,
+    resolver: Option<Arc<dyn KeyResolver>>,
 }
 
 impl VtnClient {
@@ -65,7 +74,25 @@ impl VtnClient {
         Self {
             http,
             base: base.trim_end_matches('/').to_string(),
+            resolver: None,
         }
+    }
+
+    /// Verify every Trust Task answer with `resolver`: the network's `authentication` proof
+    /// (`crate::tasks`). A client without one fetches artifacts and the profile, but sends
+    /// no task.
+    pub fn verifying(mut self, resolver: Arc<dyn KeyResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
+
+    /// What Trust Task answers are verified with.
+    pub(crate) fn answer_resolver(&self) -> Result<&dyn KeyResolver> {
+        self.resolver.as_deref().ok_or_else(|| {
+            ClientError::Unverified(
+                "this client has no resolver to verify the network's answer with".into(),
+            )
+        })
     }
 
     pub fn base(&self) -> &str {
