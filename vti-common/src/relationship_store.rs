@@ -174,3 +174,39 @@ mod accept_refusal_tests {
         assert!(!accept_refusal_is_benign(RelationshipState::Pending));
     }
 }
+
+#[cfg(test)]
+mod durability_tests {
+    use super::*;
+    use affinidi_messaging_sdk::protocols::tsp::RelationshipStore;
+
+    const KS: &str = "tsp_relationships";
+    const OURS: &str = "did:example:ballot-box";
+    const THEIRS: &str = "did:example:community";
+
+    /// What a host service relies on: a relationship formed before a restart is
+    /// still ours after it. Otherwise the peer, which kept its half, sends
+    /// without re-inviting and TSP §7.2.2 drops every frame unanswered.
+    #[tokio::test]
+    async fn a_relationship_outlives_a_reopened_store() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = crate::store::test_fixture::open_with_keyspaces(dir.path(), &[KS]).unwrap();
+            let relationships = build_relationship_store(store.keyspace(KS).unwrap());
+            relationships
+                .set(OURS, THEIRS, RelationshipState::Bidirectional)
+                .await
+                .unwrap();
+            store.persist().await.unwrap();
+        }
+        let store = crate::store::Store::open(&crate::config::StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let relationships = build_relationship_store(store.keyspace(KS).unwrap());
+        assert_eq!(
+            relationships.get(OURS, THEIRS).await.unwrap(),
+            RelationshipState::Bidirectional
+        );
+    }
+}

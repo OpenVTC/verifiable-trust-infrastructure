@@ -267,6 +267,31 @@ impl PeerTasks {
             }
             Err(_) => {
                 self.replies.abandon(&doc.id);
+                // D4 (`tsp-relationship-recovery.md`): a peer that holds no
+                // relationship with us — a fresh or reset store after a
+                // restart — drops our frame silently (TSP §7.2.2), which looks
+                // exactly like a lost round-trip. Our durable "related" half
+                // would then never re-invite and every exchange would time out
+                // for good (a ballot box restarted under a live VTC did exactly
+                // this). Reset our half so the caller's next attempt goes
+                // through `send_reestablishing` and re-forms the relationship
+                // first. Safe on a false positive: if the peer kept its half,
+                // the fresh invite reconciles. Repair only — never resend here;
+                // the caller's backoff stays the one retry owner.
+                #[cfg(feature = "tsp")]
+                if matched.protocol == Protocol::Tsp
+                    && let Err(e) = messaging
+                        .atm
+                        .tsp()
+                        .reset_relationship(&messaging.profile, peer_did)
+                        .await
+                {
+                    tracing::warn!(
+                        peer = %peer_did,
+                        error = %e,
+                        "could not reset the TSP relationship after a reply timeout",
+                    );
+                }
                 Err(PeerError::Transient(format!(
                     "no reply from {peer_did} within {}s",
                     timeout.as_secs()
