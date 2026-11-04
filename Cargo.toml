@@ -42,6 +42,7 @@ members = [
   "vti-rooms-wasm",
   "vti-vtn",
   "vti-trust-task-server",
+  "vti-oob-server",
   "vti-secrets",
   "vti-webauthn",
   # The witness host service (docs/05-design-notes/witness-host-service.md):
@@ -98,6 +99,7 @@ default-members = [
   "vti-webauthn",
   "vti-vtn",
   "vti-trust-task-server",
+  "vti-oob-server",
 ]
 exclude = [
   "deploy/nitro/enclave-proxy",
