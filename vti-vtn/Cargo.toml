@@ -29,7 +29,7 @@ serde_json = { workspace = true }
 serde_json_canonicalizer = { workspace = true }
 sha2 = { workspace = true }
 trust-tasks-rs = { workspace = true }
-vti-specs-vtn = { path = "../vti-specs-vtn", version = "0.1" }
+vti-specs-vtn = { path = "../vti-specs-vtn", version = "0.2" }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true, optional = true }

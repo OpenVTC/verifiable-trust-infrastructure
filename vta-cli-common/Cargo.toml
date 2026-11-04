@@ -21,7 +21,7 @@ agent-names = ["vta-sdk/agent-names"]
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.4" }
+vti-specs = { path = "../vti-specs", version = "0.5" }
 # `time` for the consent loop's bounded wait between polls.
 tokio = { workspace = true, features = ["time"] }
 vta-sdk = { path = "../vta-sdk", version = "0.80", features = [
@@ -40,10 +40,10 @@ vti-common = { path = "../vti-common", version = "0.56" }
 # and `room-host`'s own example drives itself with this crate. Taking a second
 # copy of the `rooms/*` wire types into this crate is what the type duplication
 # in `vtc-client` was deleted to avoid.
-vtc-client = { path = "../vtc-client", version = "0.34" }
+vtc-client = { path = "../vtc-client", version = "0.35" }
 # `pnm rooms file …`: a file's STREAM sealing, without the group layer. The key
 # comes from the operator's VTA (`rooms/keys/file-key/0.2`), so OpenMLS is not needed.
-vti-rooms = { path = "../vti-rooms", version = "0.26", default-features = false, features = [
+vti-rooms = { path = "../vti-rooms", version = "0.27", default-features = false, features = [
   "files",
 ] }
 affinidi-crypto = { workspace = true }
