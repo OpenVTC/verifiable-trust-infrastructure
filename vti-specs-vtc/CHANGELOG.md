@@ -2,6 +2,21 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.5.0...vti-specs-vtc-v0.6.0) — 2026-11-04
+
+
+### Added
+
+- **vtc**: Vtc/networks 0.2, and broadcasts as vtc/networks/deliver ([#2450](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2450))
+
+A community pins vtc/networks/* 0.2 (a registration is the signed
+  vtn/groups/register request; a group's endpoint is the community's Trust
+  Task endpoint) and takes a network's broadcasts as
+  vtc/networks/deliver/0.1 at /v1/trust-tasks, signed by the delivering
+  network, instead of the REST route /v1/networks/relay/{group_id}.
+
+
+
 ## [0.5.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.4.0...vti-specs-vtc-v0.5.0) — 2026-11-04
 
 

@@ -2,6 +2,90 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.22.0...vtc-service-v0.23.0) — 2026-11-04
+
+
+### Added
+
+- **rooms**: Hosts serve put/0.5, list/0.6 and get/0.3 and record createdAt, createdBy, bodyStoredAt ([#2451](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2451))
+
+Stage 2 of trustoverip/dtgwg-trust-tasks-tf#1027, the room host side, on room-host and
+  the VTC's community room host.
+
+  - Serve rooms/records/put/0.5 beside 0.3 and 0.4. An open room's cleartext may carry
+    kind, inReplyTo, writtenAt and editedAt, and its file width, height and preview; each
+    is held to its schema (vti_rooms::record_members::check) and stored as received
+    (Host item 14).
+  - Record the host's createdAt and createdBy (first version only, never moved; createdBy
+    on open and attributed only) and bodyStoredAt (every put, never a curation) on every
+    put version (Host items 16-17). Rows stored earlier read with all three absent.
+  - Serve rooms/records/list/0.6 (RecordMetadataV3: kind on open only, absent on a
+    tombstone) and rooms/records/get/0.3 beside list/0.5 and get/0.2. None of the new
+    get/0.3 members is committed; the leaf is unchanged.
+  - Host item 15 (a MAY): on an open room, refuse with permissionDenied a new version of
+    a message or reaction by anyone but its original author. On by default; off with
+    room-host --allow-rewrites-by-others or the VTC's [rooms] refuse_rewrites_by_others.
+  - vtc-client asks get/0.3 and list/0.6 and falls back on unsupportedType; a mirror
+    keeps its primary's record times.
+
+- **vtc**: Vtc/networks 0.2, and broadcasts as vtc/networks/deliver ([#2450](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2450))
+
+A community pins vtc/networks/* 0.2 (a registration is the signed
+  vtn/groups/register request; a group's endpoint is the community's Trust
+  Task endpoint) and takes a network's broadcasts as
+  vtc/networks/deliver/0.1 at /v1/trust-tasks, signed by the delivering
+  network, instead of the REST route /v1/networks/relay/{group_id}.
+
+- **rooms**: Record kinds, replies and image previews at the VTA — serve rooms/keys/seal/0.3 and act/0.11, carry recordMembers ([#2449](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2449))
+
+The first stage of trust-tasks-tf #1027: a record says what it is to a
+  reader (kind), what it answers (inReplyTo), when it was written and edited
+  (writtenAt, editedAt), and a file can carry an image's width, height and
+  preview. A room's profile lists which of these its writers may use
+  (RoomProfile.recordMembers).
+
+  Pinned in vti-specs-rooms beside the versions already pinned:
+  rooms/keys/seal/0.3, rooms/keys/act/0.11, rooms/records/put/0.5,
+  rooms/records/list/0.6, rooms/records/get/0.3, rooms/keys/browse/0.4 and
+  rooms/keys/read/0.2. Every bundle referencing rooms/_shared was re-vendored:
+  #1027 changed SealedRecordBody, RoomProfile and FileManifest in place.
+
+
+
+### Fixed
+
+- **rooms**: A member removed from a room can be admitted again ([#2441](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2441))
+
+* fix(rooms): a member removed from a room can be admitted again
+
+  Group state with a removal recorded is a prior membership, not a join
+  (rooms/keys/welcome/0.1, rooms/keys/open/0.2; trust-tasks-tf #1031).
+  `join` refused every Welcome once group state existed, and a removal
+  keeps the group state, so a re-admitted member's VTA refused the new
+  Welcome and nothing sealed after the removal ever opened for it.
+
+  `join` now accepts a Welcome when a removal is recorded: the ended group,
+  its join epoch and its removal epoch move into a `room-prior` list, the new
+  group becomes current, its join epoch is kept in `room-joined`, and the
+  removal row is cleared, in one conditional batch. `alreadyJoined` stays
+  for current state with no removal.
+
+  Opening goes by the record's epoch: at or above the current join epoch,
+  the current group; within a prior membership's [join, removal), that
+  membership's group and links; between a removal and the next join,
+  `removed` with that removal's epoch; below the first join, `beyondChain`.
+  This holds for open_record (and so keys/open, read, browse and act's
+  opens), file-key, and the profile location and walk. A member removed and
+  not yet re-admitted has no current epoch: sealing, file-key-to-seal and a
+  profile write answer noGroup, and act answers notAMember.
+
+  `forget` discards prior memberships and the join epoch; the epoch floor
+  drops a prior membership wholly below it and the rest's rungs at or below
+  it (rooms/epoch/prune/0.2). The welcome handler's spent-invitation check
+  answers alreadyJoined only for a current membership.
+
+
+
 ## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.21.0...vtc-service-v0.22.0) — 2026-11-04
 
 
