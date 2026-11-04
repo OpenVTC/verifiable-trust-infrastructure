@@ -443,6 +443,98 @@ fn recover(ctx: &str, member: &str, bound_id: &str) -> TrustTask<Value> {
     )
 }
 
+/// Deleting a context takes its vetter engine with it, so a context created again under the
+/// same id starts a fresh engine for a different member.
+///
+/// Before, the old engine record outlived the context: keyed by a digest of the context id and
+/// the community, it was found again by the new context, still pinned to the old member DID and
+/// to a path under the old context's base — and the new member's root request was refused with
+/// `memberMismatch`.
+#[tokio::test]
+async fn a_context_recreated_under_a_deleted_ones_id_enrols_a_new_member() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    let mut rng = StdRng::seed_from_u64(0xCA);
+    let mut vtc = Vtc::new(COMMUNITY, "2026-10", requirements(), &mut rng).unwrap();
+    let params = published(&vtc);
+    enrolled_vetter(&state, &mut vtc, &mut rng, "vetter-a", "did:key:z6MkAlice").await;
+    let old_base = crate::contexts::get_context(&state.contexts_ks, "vetter-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .base_path;
+
+    let super_admin = AuthClaims {
+        allowed_contexts: Vec::new(),
+        ..claims("did:key:z6MkOperator", Role::Admin, "")
+    };
+    crate::operations::contexts::delete_context(
+        &crate::operations::keyspaces_from_app_state(&state),
+        &super_admin,
+        "vetter-a",
+        true,
+        "test",
+        #[cfg(feature = "webvh")]
+        None,
+    )
+    .await
+    .expect("delete the vetter's context");
+    assert!(
+        state
+            .pcs_engine_ks
+            .prefix_keys("vetter:")
+            .await
+            .unwrap()
+            .is_empty(),
+        "the vetter engine record outlived its context"
+    );
+    assert!(
+        state
+            .pcs_engine_ks
+            .prefix_keys("secret:vetter:")
+            .await
+            .unwrap()
+            .is_empty(),
+        "the vetter engine's wrapped state outlived its context"
+    );
+
+    crate::contexts::create_context(&state.contexts_ks, "vetter-a", "vetter-a")
+        .await
+        .expect("recreate the context under the same id");
+    let bob = "did:key:z6MkBob";
+    vtc.grant(bob);
+    let out = handle_root_request(
+        &state,
+        &claims(bob, Role::Admin, "vetter-a"),
+        doc(
+            uris::TASK_VTA_PCS_ROOT_REQUEST_0_1,
+            json!({ "contextId": "vetter-a", "community": COMMUNITY, "memberDid": bob,
+                    "parameters": params, "label": format!("vetter/{}", vtc.current_period()) }),
+        ),
+    )
+    .await;
+    ok(&out);
+
+    // The new engine's key is under the new context's base, not the deleted one's.
+    let record: crate::operations::pcs::VetterRecord = state
+        .pcs_engine_ks
+        .get(crate::operations::pcs::vetter_key("vetter-a", COMMUNITY))
+        .await
+        .unwrap()
+        .expect("a fresh engine record");
+    let new_base = crate::contexts::get_context(&state.contexts_ks, "vetter-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .base_path;
+    assert_eq!(record.member_did, bob);
+    assert_ne!(new_base, old_base);
+    assert!(
+        record.path.starts_with(&format!("{new_base}/")),
+        "{} is not under {new_base}",
+        record.path
+    );
+}
+
 /// Lose the engine record and its state, as a re-created engine or a restore without them
 /// would: the seed, and the path counter, survive.
 async fn lose_vetter_record(state: &AppState, ctx: &str) {

@@ -316,6 +316,15 @@ async fn write_state(
         let imported = target.keyspace(vta_keyspaces::IMPORTED_SECRETS)?;
         let memory = target.keyspace(vta_keyspaces::MEMORY)?;
         let app_state = target.keyspace(vta_keyspaces::APP_STATE)?;
+        let internal = target.keyspace(vta_keyspaces::INTERNAL_KEYS)?;
+        let vault = target.keyspace(vta_keyspaces::VAULT)?;
+        let consent = target.keyspace(vta_keyspaces::CONSENT)?;
+        let consent_approvers = target.keyspace(vta_keyspaces::CONSENT_APPROVERS)?;
+        let persona = target.keyspace(vta_keyspaces::PERSONA)?;
+        let pcs_engine = target.keyspace(vta_keyspaces::PCS_ENGINE)?;
+        let notifications = target.keyspace(vta_keyspaces::NOTIFICATIONS)?;
+        let external_accounts = target.keyspace(vta_keyspaces::EXTERNAL_ACCOUNTS)?;
+        let external_secrets = target.keyspace(vta_keyspaces::EXTERNAL_SECRETS)?;
         #[cfg(feature = "webvh")]
         let webvh = target.keyspace(vta_keyspaces::WEBVH)?;
         let ks = vta_keyspaces::Keyspaces {
@@ -327,6 +336,15 @@ async fn write_state(
             imported: &imported,
             memory: &memory,
             app_state: &app_state,
+            internal: &internal,
+            vault: &vault,
+            consent: &consent,
+            consent_approvers: &consent_approvers,
+            persona: &persona,
+            pcs_engine: &pcs_engine,
+            notifications: &notifications,
+            external_accounts: &external_accounts,
+            external_secrets: &external_secrets,
             #[cfg(feature = "webvh")]
             webvh: &webvh,
         };
