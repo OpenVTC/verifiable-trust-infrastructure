@@ -12856,6 +12856,7 @@ name = "vti-vtn"
 version = "0.3.0"
 dependencies = [
  "affinidi-data-integrity",
+ "affinidi-did-resolver-cache-sdk",
  "affinidi-secrets-resolver",
  "base64 0.23.1",
  "chrono",
@@ -12871,6 +12872,7 @@ dependencies = [
  "tokio",
  "trust-tasks-rs",
  "uuid",
+ "vta-sdk",
  "vti-specs-vtn",
 ]
 

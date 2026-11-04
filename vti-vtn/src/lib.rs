@@ -52,3 +52,7 @@ pub mod tasks;
 pub use client::{ClientError, VtnClient, encode_did, encode_query};
 #[cfg(feature = "client")]
 pub use status_client::{CredentialState, StatusChecker};
+
+/// Resolving any party's DID for [`verify::KeyResolver`], `did:webvh` over the network.
+#[cfg(feature = "resolve")]
+pub mod resolve;

@@ -286,7 +286,7 @@ affinidi-secrets-resolver = { workspace = true }
 # credential's shape from this catalog rather than hand-rolling each VC.
 dtg-credentials = { workspace = true }
 # The Verifiable Trust Network protocol: the community as a network member (`crate::networks`).
-vti-vtn = { path = "../vti-vtn", version = "0.3", features = ["client"] }
+vti-vtn = { path = "../vti-vtn", version = "0.3", features = ["client", "resolve"] }
 # The Trust Task receive pipeline (`crate::trust_tasks`'s spine): size,
 # freshness, recipient, spec policy, proof, sender binding, duplicate-id record,
 # dispatch and signed replies. Shared with the VTN service.
