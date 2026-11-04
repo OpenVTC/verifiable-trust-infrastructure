@@ -2,6 +2,22 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vtn-v0.3.0...vti-vtn-v0.4.0) — 2026-11-04
+
+
+### Added
+
+- **vti-vtn**: Verify the network's proof on every Trust Task answer ([#2439](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2439))
+
+A client accepts a #response only with the network DID's valid
+  authentication proof (ClientError::Unverified otherwise), and sends no
+  task without a resolver (VtnClient::verifying). New `resolve` feature:
+  VmKeyResolver, the purpose-checking DID resolver the VTC, the VTN and
+  the NNM share. The VTC verifies every network answer; an unverified one
+  is a mismatch.
+
+
+
 ## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vtn-v0.2.0...vti-vtn-v0.3.0) — 2026-11-04
 
 

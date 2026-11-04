@@ -2,6 +2,38 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.33.0...vta-config-v0.34.0) — 2026-11-04
+
+
+### Added
+
+- **rate-limit**: VTA and VTC limits run on affinidi-rate-limit ([#2414](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2414))
+
+* feat(rate-limit)!: VTA and VTC limits run on affinidi-rate-limit
+
+  The per-IP limits and the trusted-proxy client-address rule now come from
+  affinidi-rate-limit, the crate the mediator, the DID resolver cache and the
+  DID hosting service use, rather than three separate copies of the rule.
+
+  - vti-common's TrustedProxyKeyExtractor delegates to the crate's
+    ClientIpExtractor. Its constructor now returns a Result: a range covering
+    every address (0.0.0.0/0, ::/0) is refused.
+  - The VTA's limiters run on the crate with the same quotas, runtime quota
+    swaps and 429 contract.
+  - The VTC's unauthenticated limiter is the crate's layer, sharing one
+    budget with the Trust Task admission limits, which also run on the crate.
+
+  Behaviour changes. An X-Forwarded-For chain from a trusted proxy that
+  cannot be read (a malformed entry, more than 64 entries) is refused with
+  400 instead of being charged to the proxy, which gave its sender a second
+  bucket and hid a misbehaving proxy. trust_xff_cidrs refuses 0.0.0.0/0 and
+  ::/0 at load, on the VTA and the VTC. The VTC's sign-in and room limiters
+  refuse a new address once 10,000 are live, where they used to sweep and
+  grow. The VTC's unauthenticated 429 no longer carries tower_governor's
+  informational x-ratelimit-after header; Retry-After is unchanged.
+
+
+
 ## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.32.0...vta-config-v0.33.0) — 2026-11-04
 
 

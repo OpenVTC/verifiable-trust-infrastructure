@@ -2,6 +2,67 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.74.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.73.0...vta-service-v0.74.0) — 2026-11-04
+
+
+### Added
+
+- **rate-limit**: VTA and VTC limits run on affinidi-rate-limit ([#2414](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2414))
+
+* feat(rate-limit)!: VTA and VTC limits run on affinidi-rate-limit
+
+  The per-IP limits and the trusted-proxy client-address rule now come from
+  affinidi-rate-limit, the crate the mediator, the DID resolver cache and the
+  DID hosting service use, rather than three separate copies of the rule.
+
+  - vti-common's TrustedProxyKeyExtractor delegates to the crate's
+    ClientIpExtractor. Its constructor now returns a Result: a range covering
+    every address (0.0.0.0/0, ::/0) is refused.
+  - The VTA's limiters run on the crate with the same quotas, runtime quota
+    swaps and 429 contract.
+  - The VTC's unauthenticated limiter is the crate's layer, sharing one
+    budget with the Trust Task admission limits, which also run on the crate.
+
+  Behaviour changes. An X-Forwarded-For chain from a trusted proxy that
+  cannot be read (a malformed entry, more than 64 entries) is refused with
+  400 instead of being charged to the proxy, which gave its sender a second
+  bucket and hid a misbehaving proxy. trust_xff_cidrs refuses 0.0.0.0/0 and
+  ::/0 at load, on the VTA and the VTC. The VTC's sign-in and room limiters
+  refuse a new address once 10,000 are live, where they used to sweep and
+  grow. The VTC's unauthenticated 429 no longer carries tower_governor's
+  informational x-ratelimit-after header; Retry-After is unchanged.
+
+- **discovery**: Answer trust-task-discovery 0.4 and advertise the expiry horizon ([#2437](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2437))
+
+The VTA, the VTC and the witness answer trust-task-discovery/0.4
+  (trust-tasks-tf #1030, trust-tasks-rs 0.37.2). Its acceptance window carries
+  the thirty-day expiry horizon up to which a stated expiresAt is honoured
+  (VTI-OPS-028), so a sender can state an expiry within it instead of issuing a
+  new attempt every max_age (VTI-TRN-047).
+
+  AcceptanceWindow gains expiry_horizon. VTI_ACCEPTANCE_WINDOW sets it to
+  EXPIRY_HORIZON, and freshness_policy applies it, so the advertised horizon is
+  the applied one by construction. Each node's test reads the horizon back out
+  of its own answer and checks it against the spine's policy.
+
+  The superseded 0.3 is still answered, with the same list and a window without
+  the horizon, for the clients that still ask it (the SDK, the console and the
+  git-ns bridge probe).
+
+
+
+### Fixed
+
+- **vta**: Provision from a context-scoped DID template ([#2443](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2443))
+
+provision-integration checked the template in the context but rendered it
+  with template_context: None, which searches global and built-in only, so a
+  context template passed the checks and then was not found. Also correct
+  the 'not registered' hints: pnm did-templates create takes --file, not a
+  name.
+
+
+
 ## [0.73.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.72.0...vta-service-v0.73.0) — 2026-11-04
 
 
