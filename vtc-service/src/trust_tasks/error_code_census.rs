@@ -137,88 +137,106 @@ fn witnesses() -> Vec<Witness> {
         ),
         // `vtc/networks/*` (`crate::networks`), against a fake network.
         witness!(
-            s::networks::join::v0_1::error_codes::NOT_LISTED,
+            s::networks::join::v0_2::error_codes::NOT_LISTED,
             crate::trust_tasks::network_tasks::JOIN_ERR_NOT_LISTED,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::join::v0_1::error_codes::NETWORK_MISMATCH,
+            s::networks::join::v0_2::error_codes::NETWORK_MISMATCH,
             crate::trust_tasks::network_tasks::JOIN_ERR_NETWORK_MISMATCH,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::join::v0_1::error_codes::ROLE_UNASSIGNED,
+            s::networks::join::v0_2::error_codes::ROLE_UNASSIGNED,
             crate::trust_tasks::network_tasks::JOIN_ERR_ROLE_UNASSIGNED,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::join::v0_1::error_codes::UNKNOWN_GROUP,
+            s::networks::join::v0_2::error_codes::UNKNOWN_GROUP,
             crate::trust_tasks::network_tasks::JOIN_ERR_UNKNOWN_GROUP,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::join::v0_1::error_codes::NETWORK_REFUSED,
+            s::networks::join::v0_2::error_codes::NETWORK_REFUSED,
             crate::trust_tasks::network_tasks::JOIN_ERR_NETWORK_REFUSED,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::repudiate::v0_1::error_codes::NOT_LISTED,
+            s::networks::repudiate::v0_2::error_codes::NOT_LISTED,
             crate::trust_tasks::network_tasks::REPUDIATE_ERR_NOT_LISTED,
             "networks.rs",
             "repudiate_refusals_say_why"
         ),
         witness!(
-            s::networks::repudiate::v0_1::error_codes::NETWORK_MISMATCH,
+            s::networks::repudiate::v0_2::error_codes::NETWORK_MISMATCH,
             crate::trust_tasks::network_tasks::REPUDIATE_ERR_NETWORK_MISMATCH,
             "networks.rs",
             "repudiate_refusals_say_why"
         ),
         witness!(
-            s::networks::repudiate::v0_1::error_codes::IS_MEMBER,
+            s::networks::repudiate::v0_2::error_codes::IS_MEMBER,
             crate::trust_tasks::network_tasks::REPUDIATE_ERR_IS_MEMBER,
             "networks.rs",
             "repudiate_refusals_say_why"
         ),
         witness!(
-            s::networks::repudiate::v0_1::error_codes::NETWORK_REFUSED,
+            s::networks::repudiate::v0_2::error_codes::NETWORK_REFUSED,
             crate::trust_tasks::network_tasks::REPUDIATE_ERR_NETWORK_REFUSED,
             "networks.rs",
             "repudiate_refusals_say_why"
         ),
         witness!(
-            s::networks::leave::v0_1::error_codes::NOT_MEMBER,
+            s::networks::leave::v0_2::error_codes::NOT_MEMBER,
             crate::trust_tasks::network_tasks::LEAVE_ERR_NOT_MEMBER,
             "networks.rs",
             "leave_and_register_refusals_say_why"
         ),
         witness!(
-            s::networks::leave::v0_1::error_codes::NETWORK_REFUSED,
+            s::networks::leave::v0_2::error_codes::NETWORK_REFUSED,
             crate::trust_tasks::network_tasks::LEAVE_ERR_NETWORK_REFUSED,
             "networks.rs",
             "leave_and_register_refusals_say_why"
         ),
         witness!(
-            s::networks::groups::register::v0_1::error_codes::NOT_MEMBER,
+            s::networks::groups::register::v0_2::error_codes::NOT_MEMBER,
             crate::trust_tasks::network_tasks::REGISTER_ERR_NOT_MEMBER,
             "networks.rs",
             "leave_and_register_refusals_say_why"
         ),
         witness!(
-            s::networks::groups::register::v0_1::error_codes::UNKNOWN_GROUP,
+            s::networks::groups::register::v0_2::error_codes::UNKNOWN_GROUP,
             crate::trust_tasks::network_tasks::REGISTER_ERR_UNKNOWN_GROUP,
             "networks.rs",
             "leave_and_register_refusals_say_why"
         ),
         witness!(
-            s::networks::groups::register::v0_1::error_codes::NETWORK_REFUSED,
+            s::networks::groups::register::v0_2::error_codes::NETWORK_REFUSED,
             crate::trust_tasks::network_tasks::REGISTER_ERR_NETWORK_REFUSED,
             "networks.rs",
             "leave_and_register_refusals_say_why"
+        ),
+        witness!(
+            s::networks::deliver::v0_1::error_codes::NOT_MEMBER,
+            crate::trust_tasks::network_tasks::DELIVER_ERR_NOT_MEMBER,
+            "networks.rs",
+            "deliveries_are_taken_only_from_a_joined_network_for_a_registered_role"
+        ),
+        witness!(
+            s::networks::deliver::v0_1::error_codes::ROLE_UNREGISTERED,
+            crate::trust_tasks::network_tasks::DELIVER_ERR_ROLE_UNREGISTERED,
+            "networks.rs",
+            "deliveries_are_taken_only_from_a_joined_network_for_a_registered_role"
+        ),
+        witness!(
+            s::networks::deliver::v0_1::error_codes::ENVELOPE_INVALID,
+            crate::trust_tasks::network_tasks::DELIVER_ERR_ENVELOPE_INVALID,
+            "networks.rs",
+            "deliveries_are_taken_only_from_a_joined_network_for_a_registered_role"
         ),
         // Declared since trust-tasks-tf #789; minted here before that.
         witness!(

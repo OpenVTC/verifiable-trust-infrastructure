@@ -17,7 +17,6 @@ pub(crate) mod invitations;
 pub mod join_requests;
 pub(crate) mod member_portal;
 pub(crate) mod members;
-pub(crate) mod networks;
 pub(crate) mod oid4vp;
 pub(crate) mod policies;
 pub mod recognise;
@@ -976,10 +975,6 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
     });
 
     let unauth_router = OpenApiRouter::<AppState>::new()
-        // A Verifiable Trust Network delivering a broadcast for a group this community
-        // registered with it. The envelope's signatures are the authority; the governor and
-        // body cap bound what an unauthenticated caller can make it verify.
-        .routes(routes!(networks::relay))
         // Redeem a credential offer over HTTPS — for a holder with no messaging
         // service, such as an invitee who scanned a delivered offer. The
         // key-binding proof inside is the authority; the governor and body cap
@@ -1417,11 +1412,6 @@ mod openapi_tests {
     const REST_EXCEPTIONS: &[(&str, &str, &str)] = &[
         (
             "POST",
-            "/v1/networks/relay/{group_id}",
-            "a Verifiable Trust Network's broadcast delivery: the VTN relay protocol posts a bare `{ envelope }` whose own signatures (originating network, then one per relay hop) are the authority, not a Trust Task document",
-        ),
-        (
-            "POST",
             "/v1/auth/refresh",
             "the admin console's cookie-bound session renewal; it has no signed-document equivalent",
         ),
@@ -1557,9 +1547,6 @@ mod openapi_tests {
     /// (`build_unauth_routes`): per-IP rate limit + [`UNAUTH_BODY_SIZE`]
     /// body cap. Attacker-driven crypto / IO belongs here.
     const GOVERNED_UNAUTH: &[(&str, &str)] = &[
-        // A network delivering a broadcast for a registered group: unauthenticated by session,
-        // authenticated by the envelope's signatures, so it is governed and body-capped.
-        ("POST", "/v1/networks/relay/{group_id}"),
         // `auth/refresh/0.2` keeps its dedicated mount: it is also the admin
         // console's cookie-bound session renewal, which has no
         // signed-document equivalent. `auth/challenge/0.1` and

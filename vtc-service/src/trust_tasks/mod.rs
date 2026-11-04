@@ -2766,8 +2766,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     capability_module_tasks::ENABLE_TYPE,
     capability_module_tasks::DISABLE_TYPE,
     // Verifiable Trust Network membership (`crate::networks`): an administrator's reads and
-    // writes, and a member's evidence for a network room pass. No REST route; the relay
-    // endpoint a network delivers broadcasts to is `routes::networks`.
+    // writes, a member's evidence for a network room pass, and a network's broadcast
+    // delivery (`vtc/networks/deliver`). No REST route.
     // A community's received notifications (VTI-NTF-070 – 074): its administrators' reads and
     // relay decision.
     notification_tasks::LIST_TYPE,
@@ -2780,6 +2780,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     network_tasks::LEAVE_TYPE,
     network_tasks::REGISTER_TYPE,
     network_tasks::EVIDENCE_TYPE,
+    network_tasks::DELIVER_TYPE,
     // backup/* — the chunked transfer `vtc/backup/import` could never be,
     // because its envelope does not fit one document.
     backup_tasks::INITIATE_EXPORT_TYPE,

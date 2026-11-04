@@ -414,7 +414,7 @@ fn sample_received_notification() -> serde_json::Value {
 }
 
 /// A network membership as `crate::networks` stores and answers it — the shared
-/// `vtc/_shared/0.6` `NetworkMembership` — with its admins group registered.
+/// `vtc/_shared/0.7` `NetworkMembership` — with its admins group registered.
 fn sample_network_membership() -> serde_json::Value {
     use crate::networks::{Membership, RegisteredGroup, State};
     let at = DateTime::parse_from_rfc3339("2026-11-03T10:00:00Z")
@@ -443,7 +443,7 @@ fn sample_network_membership() -> serde_json::Value {
             role: "admins".into(),
             group_id: "admins".into(),
             group_did: group.into(),
-            endpoint: "https://community.example.org/v1/networks/relay/admins".into(),
+            endpoint: "https://community.example.org/v1/trust-tasks".into(),
             registration: cred(vtc, group),
             acceptance: cred(net, group),
             registered_at: at,
@@ -1217,45 +1217,92 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── network membership (`crate::networks`) ──────────────────
         checked!(
-            s::networks::list::v0_1::Payload,
-            s::networks::list::v0_1::Response,
+            s::networks::list::v0_2::Payload,
+            s::networks::list::v0_2::Response,
             json!({ "state": "acknowledged", "limit": 50 }),
             json!({ "items": [sample_network_membership()] })
         ),
         checked!(
-            s::networks::show::v0_1::Payload,
-            s::networks::show::v0_1::Response,
+            s::networks::show::v0_2::Payload,
+            s::networks::show::v0_2::Response,
             json!({ "network": "did:example:whn" }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::join::v0_1::Payload,
-            s::networks::join::v0_1::Response,
+            s::networks::join::v0_2::Payload,
+            s::networks::join::v0_2::Response,
             json!({ "url": "https://whn.example.org", "network": "did:example:whn",
                     "groups": [{ "role": "admins", "groupId": "admins" }] }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::repudiate::v0_1::Payload,
-            s::networks::repudiate::v0_1::Response,
+            s::networks::repudiate::v0_2::Payload,
+            s::networks::repudiate::v0_2::Response,
             json!({ "url": "https://whn.example.org", "network": "did:example:whn", "reason": "not ours" }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::leave::v0_1::Payload,
-            s::networks::leave::v0_1::Response,
+            s::networks::leave::v0_2::Payload,
+            s::networks::leave::v0_2::Response,
             json!({ "network": "did:example:whn", "reason": "merged" }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::groups::register::v0_1::Payload,
-            s::networks::groups::register::v0_1::Response,
+            s::networks::groups::register::v0_2::Payload,
+            s::networks::groups::register::v0_2::Response,
             json!({ "network": "did:example:whn", "role": "admins", "groupId": "admins" }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::evidence::v0_1::Payload,
-            s::networks::evidence::v0_1::Response,
+            s::networks::deliver::v0_1::Payload,
+            s::networks::deliver::v0_1::Response,
+            // The spec's own example.
+            json!({
+                "role": "admins",
+                "envelope": {
+                    "message": {
+                        "type": "VtnBroadcast",
+                        "id": "urn:uuid:00000000-0000-4000-8000-00000000b001",
+                        "origin": "did:example:whn",
+                        "role": "admins",
+                        "class": "notice",
+                        "subject": "Regional exercise",
+                        "body": "A coordination exercise runs on 12 November at 09:00 UTC.",
+                        "sentAt": "2026-11-03T09:59:00Z",
+                        "expiresAt": "2026-11-06T09:59:00Z",
+                        "proof": {
+                            "type": "DataIntegrityProof",
+                            "cryptosuite": "eddsa-jcs-2022",
+                            "proofPurpose": "assertionMethod",
+                            "verificationMethod": "did:example:whn#key-0",
+                            "proofValue": "z3abc"
+                        }
+                    },
+                    "hops": [
+                        {
+                            "type": "VtnRelayHop",
+                            "message": "urn:uuid:00000000-0000-4000-8000-00000000b001",
+                            "index": 0,
+                            "from": "did:example:whn",
+                            "to": "did:example:community-admins-group",
+                            "role": "admins",
+                            "at": "2026-11-03T09:59:01Z",
+                            "proof": {
+                                "type": "DataIntegrityProof",
+                                "cryptosuite": "eddsa-jcs-2022",
+                                "proofPurpose": "assertionMethod",
+                                "verificationMethod": "did:example:whn#key-0",
+                                "proofValue": "z3def"
+                            }
+                        }
+                    ]
+                }
+            }),
+            json!({ "status": "delivered" })
+        ),
+        checked!(
+            s::networks::evidence::v0_2::Payload,
+            s::networks::evidence::v0_2::Response,
             json!({ "network": "did:example:whn" }),
             json!({ "links": [{
                 "groupId": "admins", "groupDid": "did:example:community-admins",

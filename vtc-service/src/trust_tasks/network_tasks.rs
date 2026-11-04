@@ -1,4 +1,5 @@
-//! A community's side of Verifiable Trust Network membership — `vtc/networks/*/0.1`
+//! A community's side of Verifiable Trust Network membership — `vtc/networks/*/0.2`, and
+//! `vtc/networks/deliver/0.1`
 //! ([`crate::networks`]).
 //!
 //! | task | signed by | authority (read now) |
@@ -6,10 +7,10 @@
 //! | `list`, `show` | an administrator | `vtc.config.admin` |
 //! | `join`, `repudiate`, `leave`, `groups/register` | an administrator | `vtc.config.admin`, plus the requester's step-up bound to the document |
 //! | `evidence` | anyone verified | answers only for groups the signer is an active member of |
+//! | `deliver` | a network | the signer is a network this community acknowledged, delivering for a role it registered a group for |
 //!
 //! `vtc/networks/notice/0.1` is sent, never served: the community pushes it to a group's
-//! members when a network's broadcast arrives at the relay endpoint
-//! ([`crate::routes::networks`]).
+//! members when a network's `deliver` arrives ([`crate::networks::deliver`]).
 //!
 //! # Why the writes take a bound step-up
 //!
@@ -24,8 +25,9 @@ use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::error::AppError;
 use vti_specs::vtc::networks::{
-    evidence::v0_1 as evidence, groups::register::v0_1 as register, join::v0_1 as join,
-    leave::v0_1 as leave, list::v0_1 as list, repudiate::v0_1 as repudiate, show::v0_1 as show,
+    deliver::v0_1 as deliver, evidence::v0_2 as evidence, groups::register::v0_2 as register,
+    join::v0_2 as join, leave::v0_2 as leave, list::v0_2 as list, repudiate::v0_2 as repudiate,
+    show::v0_2 as show,
 };
 
 use super::helpers::{
@@ -44,6 +46,7 @@ pub(crate) const REPUDIATE_TYPE: &str = <repudiate::Payload as Payload>::TYPE_UR
 pub(crate) const LEAVE_TYPE: &str = <leave::Payload as Payload>::TYPE_URI;
 pub(crate) const REGISTER_TYPE: &str = <register::Payload as Payload>::TYPE_URI;
 pub(crate) const EVIDENCE_TYPE: &str = <evidence::Payload as Payload>::TYPE_URI;
+pub(crate) const DELIVER_TYPE: &str = <deliver::Payload as Payload>::TYPE_URI;
 
 /// Every URI [`dispatch`] routes. `super::DISPATCHED_URIS` names each of these and
 /// `dispatcher_routes_every_dispatched_uri` holds the two in step.
@@ -55,6 +58,7 @@ pub(crate) const URIS: &[&str] = &[
     LEAVE_TYPE,
     REGISTER_TYPE,
     EVIDENCE_TYPE,
+    DELIVER_TYPE,
 ];
 
 /// The extended codes these tasks declare, each the value the generated
@@ -73,6 +77,9 @@ pub(crate) const LEAVE_ERR_NETWORK_REFUSED: &str = "vtc/networks/leave:networkRe
 pub(crate) const REGISTER_ERR_NOT_MEMBER: &str = "vtc/networks/groups/register:notMember";
 pub(crate) const REGISTER_ERR_UNKNOWN_GROUP: &str = "vtc/networks/groups/register:unknownGroup";
 pub(crate) const REGISTER_ERR_NETWORK_REFUSED: &str = "vtc/networks/groups/register:networkRefused";
+pub(crate) const DELIVER_ERR_NOT_MEMBER: &str = "vtc/networks/deliver:notMember";
+pub(crate) const DELIVER_ERR_ROLE_UNREGISTERED: &str = "vtc/networks/deliver:roleUnregistered";
+pub(crate) const DELIVER_ERR_ENVELOPE_INVALID: &str = "vtc/networks/deliver:envelopeInvalid";
 
 const DECLARED: &[&str] = &[
     JOIN_ERR_NOT_LISTED,
@@ -89,6 +96,9 @@ const DECLARED: &[&str] = &[
     REGISTER_ERR_NOT_MEMBER,
     REGISTER_ERR_UNKNOWN_GROUP,
     REGISTER_ERR_NETWORK_REFUSED,
+    DELIVER_ERR_NOT_MEMBER,
+    DELIVER_ERR_ROLE_UNREGISTERED,
+    DELIVER_ERR_ENVELOPE_INVALID,
 ];
 
 const DEFAULT_LIMIT: usize = 50;
@@ -109,6 +119,7 @@ pub(super) async fn dispatch(
         LEAVE_TYPE => handle_leave(state, ctx, doc).await,
         REGISTER_TYPE => handle_register(state, ctx, doc).await,
         EVIDENCE_TYPE => handle_evidence(state, ctx, doc).await,
+        DELIVER_TYPE => handle_deliver(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -141,6 +152,10 @@ fn refuse(doc: &TrustTask<Value>, slug: &str, e: NetError) -> TrustTaskOutcome {
         }
         NetError::NotMember => extended("notMember", None),
         NetError::IsMember => extended("isMember", None),
+        NetError::RoleUnregistered(_) => extended("roleUnregistered", None),
+        NetError::Rejected(message) => {
+            extended("envelopeInvalid", Some(json!({ "message": message })))
+        }
         _ => None,
     };
     if let Some(answer) = declared_answer {
@@ -453,5 +468,42 @@ async fn handle_evidence(
     match networks::evidence(state, &caller, group.as_deref(), network.as_deref()).await {
         Ok(links) => respond::<evidence::Response>(&doc, json!({ "links": links })),
         Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+// ─── a network: deliver ───────────────────────────────────────────────────
+
+async fn handle_deliver(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    const SLUG: &str = "vtc/networks/deliver";
+    let Some(deliverer) = ctx.verified_signer.clone() else {
+        return reject_with_code(
+            &doc,
+            TrustTaskCode::Standard(StandardCode::ProofRequired),
+            "a delivery is signed by the network that delivers it",
+            None,
+        );
+    };
+    let checked: deliver::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let envelope: vti_vtn::relay::Envelope =
+        match serde_json::to_value(&checked.envelope).and_then(serde_json::from_value) {
+            Ok(e) => e,
+            Err(e) => {
+                return refuse(
+                    &doc,
+                    SLUG,
+                    NetError::Rejected(format!("unreadable envelope: {e}")),
+                );
+            }
+        };
+    match networks::deliver(state, &deliverer, checked.role.as_ref(), envelope).await {
+        Ok(status) => respond::<deliver::Response>(&doc, status),
+        Err(e) => refuse(&doc, SLUG, e),
     }
 }

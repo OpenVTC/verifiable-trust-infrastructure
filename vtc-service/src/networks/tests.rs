@@ -375,10 +375,7 @@ async fn join_registers_groups_and_acknowledges() {
     assert_eq!(m.groups.len(), 1);
     let g = &m.groups[0];
     assert_eq!(g.group_did, group_did);
-    assert_eq!(
-        g.endpoint,
-        "https://community.example/v1/networks/relay/admins"
-    );
+    assert_eq!(g.endpoint, "https://community.example/v1/trust-tasks");
     assert_eq!(
         g.registration["issuer"], did,
         "the community registers, not the group"
@@ -395,7 +392,7 @@ async fn join_registers_groups_and_acknowledges() {
 
     // The membership record is the shared schema's NetworkMembership.
     let body = json!({ "membership": serde_json::to_value(&m).unwrap() });
-    <vti_specs::vtc::networks::show::v0_1::Response as trust_tasks_rs::validate::ValidatedPayload>::validate_value(&body)
+    <vti_specs::vtc::networks::show::v0_2::Response as trust_tasks_rs::validate::ValidatedPayload>::validate_value(&body)
         .unwrap();
 
     let events = audit_events(state).await;
@@ -407,7 +404,7 @@ async fn join_registers_groups_and_acknowledges() {
 }
 
 #[tokio::test]
-async fn a_broadcast_is_relayed_once_and_only_from_the_network() {
+async fn a_broadcast_is_delivered_once_and_only_by_the_network() {
     let (vtc, did) = community().await;
     let state = &vtc.state;
     let member = Identity::generate();
@@ -440,9 +437,13 @@ async fn a_broadcast_is_relayed_once_and_only_from_the_network() {
         hops: vec![hop],
     };
 
-    let receipt = relay(state, "admins", envelope.clone()).await.unwrap();
+    let receipt = deliver(state, network.did(), "admins", envelope.clone())
+        .await
+        .unwrap();
     assert_eq!(receipt["status"], "delivered");
-    let again = relay(state, "admins", envelope.clone()).await.unwrap();
+    let again = deliver(state, network.did(), "admins", envelope.clone())
+        .await
+        .unwrap();
     assert_eq!(again["status"], "duplicate");
     let relayed = audit_events(state).await;
     let e = relayed
@@ -450,6 +451,12 @@ async fn a_broadcast_is_relayed_once_and_only_from_the_network() {
         .find(|e| e.event == "broadcastRelayed")
         .unwrap();
     assert_eq!(e.message_id.as_deref(), Some(id.as_str()));
+
+    // A role this community registered no group for with the network.
+    assert!(matches!(
+        deliver(state, network.did(), "clinical", envelope.clone()).await,
+        Err(NetError::RoleUnregistered(_))
+    ));
 
     // A network the community is not a member of.
     let rogue = Identity::generate();
@@ -477,7 +484,12 @@ async fn a_broadcast_is_relayed_once_and_only_from_the_network() {
         message: m2,
     };
     assert!(matches!(
-        relay(state, "admins", env2).await,
+        deliver(state, rogue.did(), "admins", env2.clone()).await,
+        Err(NetError::NotMember)
+    ));
+    // The network delivering an envelope whose last hop is not its own.
+    assert!(matches!(
+        deliver(state, network.did(), "admins", env2).await,
         Err(NetError::Rejected(_))
     ));
 
@@ -506,7 +518,7 @@ async fn a_broadcast_is_relayed_once_and_only_from_the_network() {
         message: m3,
     };
     assert!(matches!(
-        relay(state, "admins", env3).await,
+        deliver(state, network.did(), "admins", env3).await,
         Err(NetError::Rejected(_))
     ));
 }
@@ -593,9 +605,10 @@ async fn leaving_repudiates_the_grant_and_stops_relaying() {
         ],
         message,
     };
+    // Left: the network is no longer one this community delivers for.
     assert!(matches!(
-        relay(state, "admins", env).await,
-        Err(NetError::Rejected(_))
+        deliver(state, network.did(), "admins", env).await,
+        Err(NetError::NotMember)
     ));
     assert!(
         audit_events(state)
