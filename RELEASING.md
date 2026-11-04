@@ -102,6 +102,7 @@ own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
 | `vta-service` | **openvtc-core**, as a dev-dependency — `test_support::MockVta` |
 | `vti-vtn` | `vtc-service`, and the VTN service and `nnm` in OpenVTC/verifiable-trust-network |
 | `vti-trust-task-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
+| `vti-oob-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
 | the subsystem crates (`vta-*`, `vti-webauthn`, `vti-rooms*`, `vti-vetting-pcs`) | nothing directly; they are `vta-service`'s and `vtc-service`'s closure |
 | `vti-specs`, `vti-specs-{rooms,vta,vtc,core}` | `vta-sdk`'s closure: the generated Trust Task types it re-exports as `vta_sdk::specs`. Each package carries its `trust-tasks.lock` and vendored bundles, which its `build.rs` generates from |
 

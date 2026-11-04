@@ -291,6 +291,9 @@ vti-vtn = { path = "../vti-vtn", version = "0.2", features = ["client"] }
 # freshness, recipient, spec policy, proof, sender binding, duplicate-id record,
 # dispatch and signed replies. Shared with the VTN service.
 vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.1" }
+# Wallet sign-in (`auth/oob/*`, `crate::trust_tasks::oob_tasks`): the request
+# store, clocks, long poll and check order. Shared with the VTN service.
+vti-oob-server = { path = "../vti-oob-server", version = "0.1" }
 # JSON Schema validation of issued credentials against their credentialSchema.
 jsonschema = { workspace = true }
 # DCQL (via OpenID4VP) — the schema store's Accepts criterion is a DCQL query.

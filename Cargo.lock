@@ -12446,6 +12446,7 @@ dependencies = [
  "vtc-client",
  "vtc-service",
  "vti-common",
+ "vti-oob-server",
  "vti-rooms",
  "vti-rooms-dtg",
  "vti-secrets",
@@ -12559,6 +12560,32 @@ dependencies = [
  "vti-specs",
  "vti-voting",
  "vti-voting-service",
+]
+
+[[package]]
+name = "vti-oob-server"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "multibase",
+ "rand 0.10.2",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer 0.4.1",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "trust-tasks-rs",
+ "url",
+ "vti-common",
+ "vti-specs-core",
+ "vti-trust-task-server",
 ]
 
 [[package]]

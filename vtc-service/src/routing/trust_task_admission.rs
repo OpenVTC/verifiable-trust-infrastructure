@@ -108,7 +108,7 @@
 //! documents never touch the anonymous governor, so a join or recognise flood
 //! does not cost an address its sign-ins, nor the reverse. The redeem
 //! long-poll keeps its own cap on polls held open per address
-//! (`oob_tasks::PollGuard`).
+//! (`vti_oob_server::PollGuard`).
 
 use std::net::IpAddr;
 use std::num::NonZeroU32;
