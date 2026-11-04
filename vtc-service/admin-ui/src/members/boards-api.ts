@@ -118,6 +118,15 @@ export function takesProposals(b: Pick<Board, "status" | "proposals">, now = Dat
   return b.status === "open" && now >= Date.parse(b.proposals.opensAt) && now < Date.parse(b.proposals.closesAt);
 }
 
+/**
+ * When ballots are accepted, or `null` once they are. An idea's election opens voting at the
+ * board's `voting.opensAt` (or when the idea was accepted, if later), and tickets can be taken
+ * before then — so an open idea is not yet one a member can cast on (VTI-BRD-030, VTI-VOT-033).
+ */
+export function votingOpensLater(b: Pick<Board, "voting">, now = Date.now()): string | null {
+  return now < Date.parse(b.voting.opensAt) ? b.voting.opensAt : null;
+}
+
 export function takesNotes(b: Pick<Board, "status">): boolean {
   return b.status === "open";
 }

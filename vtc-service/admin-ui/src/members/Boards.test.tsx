@@ -268,6 +268,29 @@ describe("BoardPage", () => {
     expect(screen.queryByText(/vote (was )?(cast|recorded|counted)|you have voted|thanks for voting/i)).toBeNull();
   });
 
+  it("offers no vote before voting opens, only the ticket (the VTA refuses a cast as notOpen)", async () => {
+    const now = Date.now();
+    const i = openIdea(0, { title: "Too early" });
+    serve(board({ voting: { opensAt: iso(now + 2 * DAY), closesAt: iso(now + 4 * DAY) } }), [i]);
+    const wallet = withWallet([i.election!.electionId]);
+    renderWith(<BoardPage boardId={BOARD_ID} hostDid={HOST} member={ME} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Too early/ }));
+    expect((await screen.findAllByText(/Voting opens/)).length).toBeGreaterThan(0);
+    expect(screen.getByText("Voting soon")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Vote in your wallet/ })).toBeNull();
+    expect(wallet.vote).not.toHaveBeenCalled();
+  });
+
+  it("still offers the ticket before voting opens", async () => {
+    const now = Date.now();
+    const i = openIdea(0, { title: "Ticket first" });
+    serve(board({ voting: { opensAt: iso(now + 2 * DAY), closesAt: iso(now + 4 * DAY) } }), [i]);
+    withWallet([]);
+    renderWith(<BoardPage boardId={BOARD_ID} hostDid={HOST} member={ME} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Ticket first/ }));
+    expect((await screen.findAllByRole("button", { name: /Take your ticket/ })).length).toBeGreaterThan(0);
+  });
+
   it("proposes an idea, telling the member first what proposing means", async () => {
     serve(board(), []);
     renderWith(<BoardPage boardId={BOARD_ID} hostDid={HOST} member={ME} />);
