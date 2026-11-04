@@ -1,8 +1,8 @@
 // Community boards, for facilitators (`vtc/boards`, docs/03-vtc/boards.md).
 //
 //   /boards        Every board this administrator facilitates; create one.
-//   /boards/:id    One board: decide its proposed ideas, select among tallied ones, hide notes,
-//                  close or archive it.
+//   /boards/:id    One board: edit it, decide its proposed ideas, select among tallied ones, hide
+//                  notes, close or archive it.
 //
 // Members propose and leave notes from the member portal; this page never writes as a member.
 // Accepting an idea opens its election from the board's template — the result is shown here once
@@ -12,7 +12,7 @@
 import { useMemo, useState } from "react";
 import { Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, EyeOff, GitMerge, Plus, RotateCcw, SquareKanban, Trash2, X } from "lucide-react";
+import { Check, EyeOff, GitMerge, Pencil, Plus, RotateCcw, SquareKanban, Trash2, X } from "lucide-react";
 
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
@@ -370,6 +370,253 @@ function CreateBoardForm({ onDone }: { onDone: () => void }) {
   );
 }
 
+// ── Editing a board ─────────────────────────────────────────────────────────
+
+/**
+ * What `vtc/boards/update` changes, as only the fields that differ from the board as read — so
+ * an unchanged voting window or audience is never sent once voting has opened, when the board
+ * refuses any change to them (`fixedAfterVotingOpens`). The election template is not edited
+ * here: it takes `vtc.elections.manage` as well, and applies only to ideas accepted after.
+ */
+export function boardChanges(
+  b: Board,
+  d: {
+    title: string;
+    description: string;
+    audience: string;
+    proposals: { opensAt: string; closesAt: string };
+    voting: { opensAt: string; closesAt: string };
+    topics: string[];
+    formats: string[];
+    maxIdeas: string;
+    rule: string;
+    timetable: Slot[];
+  },
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  // A datetime input holds whole minutes, so a time read back from one is compared to the minute:
+  // an untouched window must not come back as a change.
+  const minute = (t: string) => Math.floor(Date.parse(t) / 60_000);
+  const instant = (w: { opensAt: string; closesAt: string }) => [minute(w.opensAt), minute(w.closesAt)];
+  if (d.title.trim() && d.title.trim() !== b.title) out.title = d.title.trim();
+  if (d.description.trim() && d.description.trim() !== (b.description ?? "")) out.description = d.description.trim();
+  const aud = b.audience.kind === "group" ? (b.audience as { groupId: string }).groupId : "members";
+  if (d.audience !== aud) out.audience = d.audience === "members" ? { kind: "members" } : { kind: "group", groupId: d.audience };
+  if (!same(instant(d.proposals), instant(b.proposals))) out.proposals = d.proposals;
+  if (!same(instant(d.voting), instant(b.voting))) out.voting = d.voting;
+  if (!same(d.topics, b.topics ?? [])) out.topics = d.topics;
+  if (!same(d.formats, b.formats ?? [])) out.formats = d.formats;
+  const max = Number(d.maxIdeas);
+  if (Number.isInteger(max) && max > 0 && max !== b.maxIdeasPerMember) out.maxIdeasPerMember = max;
+  if (d.rule.trim() && d.rule.trim() !== (b.selectionRule ?? "")) out.selectionRule = d.rule.trim();
+  const slotKey = (t: Slot[]) => t.map((x) => [x.slotId, x.label, minute(x.startsAt), minute(x.endsAt)]);
+  if (!same(slotKey(d.timetable), slotKey(b.timetable ?? []))) out.timetable = d.timetable;
+  return out;
+}
+
+interface EditSlot extends SlotDraft {
+  slotId?: string;
+}
+
+function EditBoardForm({ board, onDone }: { board: Board; onDone: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const votingOpened = Date.now() >= Date.parse(board.voting.opensAt);
+  const [title, setTitle] = useState(board.title);
+  const [description, setDescription] = useState(board.description ?? "");
+  const [audience, setAudience] = useState(
+    board.audience.kind === "group" ? (board.audience as { groupId: string }).groupId : "members",
+  );
+  const [pOpen, setPOpen] = useState(toLocalInput(board.proposals.opensAt));
+  const [pClose, setPClose] = useState(toLocalInput(board.proposals.closesAt));
+  const [vOpen, setVOpen] = useState(toLocalInput(board.voting.opensAt));
+  const [vClose, setVClose] = useState(toLocalInput(board.voting.closesAt));
+  const [topics, setTopics] = useState((board.topics ?? []).join(", "));
+  const [formats, setFormats] = useState((board.formats ?? []).join(", "));
+  const [maxIdeas, setMaxIdeas] = useState(board.maxIdeasPerMember ? String(board.maxIdeasPerMember) : "");
+  const [rule, setRule] = useState(board.selectionRule ?? "");
+  const [slots, setSlots] = useState<EditSlot[]>(
+    (board.timetable ?? []).map((t) => ({
+      slotId: t.slotId,
+      label: t.label,
+      startsAt: toLocalInput(t.startsAt),
+      endsAt: toLocalInput(t.endsAt),
+    })),
+  );
+  const groups = useQuery({ queryKey: ["groups"], queryFn: listGroups });
+
+  const proposals = { opensAt: fromLocalInput(pOpen), closesAt: fromLocalInput(pClose) };
+  const voting = { opensAt: fromLocalInput(vOpen), closesAt: fromLocalInput(vClose) };
+  const schedule = scheduleProblem(proposals, voting);
+
+  // A slot keeps its identifier, so a selected idea placed in it stays placed; a new slot takes
+  // one no other slot has used.
+  const timetable = (): Slot[] => {
+    const used = new Set(slots.map((s) => s.slotId).filter(Boolean));
+    let n = 0;
+    const fresh = () => {
+      do n += 1;
+      while (used.has(`s${n}`));
+      used.add(`s${n}`);
+      return `s${n}`;
+    };
+    return slots
+      .filter((s) => s.label.trim() && s.startsAt && s.endsAt)
+      .map((s) => ({
+        slotId: s.slotId ?? fresh(),
+        label: s.label.trim(),
+        startsAt: fromLocalInput(s.startsAt),
+        endsAt: fromLocalInput(s.endsAt),
+      }));
+  };
+  const changes = () =>
+    boardChanges(board, {
+      title,
+      description,
+      audience,
+      proposals,
+      voting,
+      topics: list(topics),
+      formats: list(formats),
+      maxIdeas,
+      rule,
+      timetable: timetable(),
+    });
+
+  const save = useMutation({
+    mutationFn: () => updateBoard({ boardId: board.boardId, ...changes() } as never),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["board", board.boardId] });
+      void qc.invalidateQueries({ queryKey: BOARDS_KEY });
+      toast.push("success", "Board saved.");
+      onDone();
+    },
+    onError: (err) => toast.pushFromError(err, "The board was not changed"),
+  });
+  const dirty = Object.keys(changes()).length > 0;
+  const ok = title.trim() && !schedule && dirty;
+
+  return (
+    <section className="card" aria-labelledby="edit-board-title">
+      <h3 id="edit-board-title">Edit board</h3>
+      <p className="muted">
+        Changes apply to the board and to ideas accepted from now on. An idea already open for votes keeps the
+        voting window it opened with.
+      </p>
+      <form
+        className="form-stack"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ok) save.mutate();
+        }}
+      >
+        <div className="form-grid">
+          <Field label="Title">
+            <input value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} />
+          </Field>
+          <Field
+            label="Who can see and use it"
+            hint={votingOpened ? "Fixed: voting has opened." : "Every member, or one group's members. Fixed once voting opens."}
+          >
+            <select
+              value={audience}
+              disabled={votingOpened}
+              onChange={(e) => setAudience(e.target.value)}
+              aria-label="Who can see and use it"
+            >
+              <option value="members">Every member</option>
+              {(groups.data ?? []).map(({ group }) => (
+                <option key={group.groupId} value={group.groupId}>
+                  {group.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Description" className="span-2">
+            <textarea className="prose" rows={2} maxLength={4000} value={description} onChange={(e) => setDescription(e.target.value)} />
+          </Field>
+          <Field label="Proposals open">
+            <input type="datetime-local" value={pOpen} onChange={(e) => setPOpen(e.target.value)} />
+          </Field>
+          <Field label="Proposals close">
+            <input type="datetime-local" value={pClose} onChange={(e) => setPClose(e.target.value)} />
+          </Field>
+          <Field label="Voting opens" hint={votingOpened ? "Fixed: voting has opened." : "Ideas accepted before this take tickets early."}>
+            <input type="datetime-local" value={vOpen} disabled={votingOpened} onChange={(e) => setVOpen(e.target.value)} />
+          </Field>
+          <Field label="Voting closes" error={schedule} errorRole="alert" hint={votingOpened ? "Fixed: voting has opened." : undefined}>
+            <input type="datetime-local" value={vClose} disabled={votingOpened} onChange={(e) => setVClose(e.target.value)} />
+          </Field>
+          <Field label="Topics" hint="Comma-separated.">
+            <input value={topics} onChange={(e) => setTopics(e.target.value)} />
+          </Field>
+          <Field label="Formats" hint="Comma-separated.">
+            <input value={formats} onChange={(e) => setFormats(e.target.value)} />
+          </Field>
+          <Field label="Ideas per member">
+            <input type="number" min={1} max={100} value={maxIdeas} onChange={(e) => setMaxIdeas(e.target.value)} />
+          </Field>
+          <Field label="How you'll choose">
+            <input value={rule} maxLength={500} onChange={(e) => setRule(e.target.value)} />
+          </Field>
+        </div>
+
+        <fieldset className="form-stack">
+          <legend>Timetable</legend>
+          <p className="muted">A slot a selected idea is placed in cannot be removed.</p>
+          {slots.map((s, i) => (
+            <div key={s.slotId ?? `new-${i}`} className="toolbar">
+              <input
+                aria-label={`Slot ${i + 1} place`}
+                placeholder="Room A"
+                value={s.label}
+                onChange={(e) => setSlots(slots.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))}
+              />
+              <input
+                type="datetime-local"
+                aria-label={`Slot ${i + 1} starts`}
+                value={s.startsAt}
+                onChange={(e) => setSlots(slots.map((x, j) => (j === i ? { ...x, startsAt: e.target.value } : x)))}
+              />
+              <input
+                type="datetime-local"
+                aria-label={`Slot ${i + 1} ends`}
+                value={s.endsAt}
+                onChange={(e) => setSlots(slots.map((x, j) => (j === i ? { ...x, endsAt: e.target.value } : x)))}
+              />
+              <button type="button" className="secondary" aria-label={`Remove slot ${i + 1}`} onClick={() => setSlots(slots.filter((_, j) => j !== i))}>
+                <Trash2 size={14} aria-hidden="true" />
+              </button>
+            </div>
+          ))}
+          <div>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                const last = slots[slots.length - 1];
+                setSlots([...slots, { label: last?.label ?? "", startsAt: last?.endsAt ?? "", endsAt: "" }]);
+              }}
+            >
+              <Plus size={14} aria-hidden="true" /> Add a slot
+            </button>
+          </div>
+        </fieldset>
+
+        <div className="form-actions">
+          <button type="button" className="secondary" onClick={onDone}>
+            Cancel
+          </button>
+          <button type="submit" className="primary" disabled={!ok || save.isPending}>
+            Save changes
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 // ── One board ───────────────────────────────────────────────────────────────
 
 const PENDING_ORDER = ["decide", "refused", "select", "opening", "voting", "decided", "none"] as const;
@@ -379,6 +626,7 @@ function BoardDetail() {
   const boardId = decodeURIComponent(id);
   const qc = useQueryClient();
   const toast = useToast();
+  const [editing, setEditing] = useState(false);
   const key = ["board", boardId];
   const shown = useQuery({ queryKey: key, queryFn: () => showBoard(boardId) });
   const notes = useQuery({ queryKey: [...key, "notes"], queryFn: () => listAllNotes(boardId) });
@@ -423,6 +671,11 @@ function BoardDetail() {
         actions={
           board.facilitator && (
             <>
+              {board.status !== "archived" && !editing && (
+                <button type="button" className="secondary" onClick={() => setEditing(true)}>
+                  <Pencil size={14} aria-hidden="true" /> Edit board
+                </button>
+              )}
               {board.status === "open" && (
                 <button type="button" className="secondary" onClick={() => status.mutate("closed")} disabled={status.isPending}>
                   Close to new ideas
@@ -437,6 +690,7 @@ function BoardDetail() {
           )
         }
       />
+      {editing && <EditBoardForm board={board} onDone={() => setEditing(false)} />}
       {board.selectionRule && (
         <p className="muted">
           <strong>How you said you'd choose:</strong> {board.selectionRule}
