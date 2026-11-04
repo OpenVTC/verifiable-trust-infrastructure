@@ -816,10 +816,7 @@ with no removal recorded. The Welcome is the evidence: `keys welcome` processes 
 without keeping anything and looks in its ratchet tree for the held state's own leaf,
 by that leaf's signature key (never the member's DID, which the new leaf shares).
 Still there, the member was never removed: `alreadyJoined`, and the KeyPackage is not
-consumed. A Welcome for another MLS group (a different group id) is no evidence —
-it holds none of the state's leaves by construction — and is refused as
-`welcomeInvalid` with nothing consumed or changed. Gone from one for the same group,
-the held state becomes a prior membership whose removal epoch is **not
+consumed. Gone, the held state becomes a prior membership whose removal epoch is **not
 yet known**, and the join completes without waiting for or fetching anything. Such a
 membership opens its join epoch through `h`; a record above `h` and below the
 re-admission is `notDelivered` (with `heldEpoch` `h`) until a read's repair applies the
@@ -828,6 +825,11 @@ fresh credentials, whatever their `validFrom` — and the removing commit fixes 
 removal epoch. From then on it answers as above: below the removal opens, from it to
 the next join is `removed`. The repair runs under the same per-member lock as the
 current group's, and sealing never uses a prior state.
+
+Either way, the Welcome must be for the **same MLS group** as the held state (equal
+group ids). A Welcome for another group is refused as `welcomeInvalid` with nothing
+consumed or changed: a removal from the room's group is no reason to make another
+group current, and another group's tree lacks the held leaf by construction.
 
 Prior memberships are kept with the group, backed up with it, and discarded with it;
 an epoch prune drops one whose epochs all lie below the room's epoch floor. Only a

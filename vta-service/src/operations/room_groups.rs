@@ -500,9 +500,10 @@ pub enum JoinError {
     /// has been discarded (`rooms/keys/key-package/0.2` *The private half is retained*: it **MUST** be
     /// discarded at expiry), so the Welcome can never process — `welcomeInvalid`.
     KeyPackageExpired,
-    /// The Welcome is for an MLS group other than the one this member's held state is in,
-    /// so its ratchet tree is no evidence that the state ended (`rooms/keys/welcome/0.1`,
-    /// *Rejoining after a removal*) — `welcomeInvalid`. Nothing was consumed or changed.
+    /// The Welcome is for an MLS group other than the one this member's held state is in —
+    /// with a removal recorded or not (`rooms/keys/welcome/0.1`, *Same group, whatever the
+    /// evidence*): a re-admission is into the same group, and another group's tree is no
+    /// evidence that the state ended — `welcomeInvalid`. Nothing was consumed or changed.
     WelcomeForAnotherGroup,
     App(AppError),
 }
@@ -549,6 +550,11 @@ impl From<AppError> for JoinError {
 ///    Welcome's: the prior membership is kept with
 ///    its removal epoch not yet known, and a repair fixes it later
 ///    ([`apply_prior_commit`]). The join never waits for, or fetches, that commit.
+///
+/// **Same group, whatever the evidence.** Under either, a Welcome for an MLS group other than
+/// the held state's (different group ids) is [`JoinError::WelcomeForAnotherGroup`]
+/// (`welcomeInvalid`), refused before anything is written: a removal from one group is no
+/// reason to make another the room's current group.
 ///
 /// Where the state is current by every evidence available — no removal recorded and no
 /// Welcome this VTA can process to look in (no held KeyPackage, an expired one, a Welcome
@@ -628,6 +634,17 @@ pub async fn join(
             let ended_group: RoomGroupRecord = serde_json::from_slice(&group_raw).map_err(|e| {
                 AppError::Internal(format!("decode group state for `{room_id}`: {e}"))
             })?;
+            // Same group, whatever the evidence (`rooms/keys/welcome/0.1`): a re-admission is
+            // into the group the held state is in. A removal from it is no reason to take a
+            // Welcome for another group as the room's current one, and a Welcome for another
+            // group has none of the held state's leaves by construction, so its tree is no
+            // evidence of a removal either. Refused before anything is written.
+            let held_group = ended_group.snapshot.group_id().map_err(|e| {
+                AppError::Internal(format!("read the held group's id for `{room_id}`: {e}"))
+            })?;
+            if group.group_id() != held_group {
+                return Err(JoinError::WelcomeForAnotherGroup);
+            }
             let (removed_epoch, removed_at) = match &removed_raw {
                 Some(raw) => {
                     let removal: RemovalRecord = serde_json::from_slice(raw).map_err(|e| {
@@ -647,15 +664,6 @@ pub async fn join(
                         // the member was never removed, and this would be a second join.
                         // Nothing the Welcome formed is kept, and the KeyPackage stays.
                         return Err(JoinError::AlreadyJoined);
-                    }
-                    // An absent leaf is evidence only in the same group: a Welcome for any
-                    // other has none of the held state's leaves by construction, and would
-                    // retire current state on nothing. Refused before anything is written.
-                    let held_group = ended_group.snapshot.group_id().map_err(|e| {
-                        AppError::Internal(format!("read the held group's id for `{room_id}`: {e}"))
-                    })?;
-                    if group.group_id() != held_group {
-                        return Err(JoinError::WelcomeForAnotherGroup);
                     }
                     let held_epoch = RoomGroup::restore(&ended_group.snapshot)
                         .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?
@@ -4176,6 +4184,54 @@ mod readmission_tests {
         assert_eq!(joined_epoch(&r.ks, &r.bob).await.unwrap(), Some(2));
         assert_eq!(removed_at(&r.ks, &r.bob).await.unwrap(), None);
         assert!(holds_current(&r.ks, &r.bob).await.unwrap());
+    }
+
+    /// *Same group, whatever the evidence*: a member whose removal **was** recorded is not
+    /// thereby admitted to another MLS group. The Welcome is `welcomeInvalid`, and nothing
+    /// moves: the ended group, its removal row, the prior list (none), the join epoch and the
+    /// KeyPackage all stay as they were — and a Welcome for the room's own group still joins.
+    #[tokio::test]
+    async fn a_removed_member_is_not_admitted_to_another_group() {
+        let mut r = Room::new().await;
+        r.admit().await.unwrap(); // 2
+        assert_eq!(r.remove().await, 3);
+        let held_raw = r.ks.get_raw(r.bob.key(GROUP)).await.unwrap().unwrap();
+        let removed_raw = r.ks.get_raw(r.bob.key(REMOVED)).await.unwrap().unwrap();
+
+        let pending = mint_key_package(&r.ks, &r.bob, 3600, 0).await.unwrap();
+        let kp = B64.decode(&pending.key_package).unwrap();
+        let mut other = SealedRoom::new(ROOM, RoomGroup::create("did:key:zMallory").unwrap());
+        for _ in 0..3 {
+            other.renew().unwrap(); // above the removal, so only the group id tells
+        }
+        let (added, _) = other.add_member(&kp).unwrap();
+
+        assert!(matches!(
+            join(&r.ks, &r.bob, &added.welcome.unwrap(), 1).await,
+            Err(JoinError::WelcomeForAnotherGroup)
+        ));
+        assert!(holds_key_package(&r.ks, &r.bob, &kp, 1).await.unwrap());
+        assert_eq!(
+            r.ks.get_raw(r.bob.key(GROUP)).await.unwrap().unwrap(),
+            held_raw,
+            "the ended group is untouched"
+        );
+        assert_eq!(
+            r.ks.get_raw(r.bob.key(REMOVED)).await.unwrap().unwrap(),
+            removed_raw,
+            "the removal row stays"
+        );
+        assert!(prior_memberships(&r.ks, &r.bob).await.unwrap().is_empty());
+        assert_eq!(joined_epoch(&r.ks, &r.bob).await.unwrap(), Some(2));
+        assert!(!holds_current(&r.ks, &r.bob).await.unwrap());
+
+        // The room's own group still re-admits.
+        let (welcome, _) = r.welcome_for_fresh_key_package().await;
+        join(&r.ks, &r.bob, &welcome, 1).await.unwrap();
+        assert_eq!(
+            prior_memberships(&r.ks, &r.bob).await.unwrap()[0].removed_epoch,
+            Some(3)
+        );
     }
 
     /// `rooms/keys/welcome/0.1`: a Welcome whose ratchet tree still holds the leaf of the

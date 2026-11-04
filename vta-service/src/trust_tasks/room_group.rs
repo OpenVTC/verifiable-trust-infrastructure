@@ -246,8 +246,8 @@ pub(super) async fn handle_welcome(
                 vti_specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID,
                 format!(
                     "this welcome is for an MLS group other than the one this VTA holds for \
-                     `{}` in room `{}`, so it is no evidence that membership ended; nothing \
-                     was consumed",
+                     `{}` in room `{}`; a re-admission is into that group, so nothing was \
+                     joined or consumed",
                     member.persona(),
                     req.room_id
                 ),
