@@ -118,13 +118,23 @@ export function takesProposals(b: Pick<Board, "status" | "proposals">, now = Dat
   return b.status === "open" && now >= Date.parse(b.proposals.opensAt) && now < Date.parse(b.proposals.closesAt);
 }
 
+/** An open idea whose election does not take ballots yet: `at` is when it does, where known. */
+export interface NotYetVoting {
+  at?: string;
+}
+
 /**
- * When ballots are accepted, or `null` once they are. An idea's election opens voting at the
- * board's `voting.opensAt` (or when the idea was accepted, if later), and tickets can be taken
- * before then — so an open idea is not yet one a member can cast on (VTI-BRD-030, VTI-VOT-033).
+ * Whether an open idea's election is still short of voting, read from the election itself
+ * (`registered` / `registration`: tickets can be taken, no ballot is accepted yet; VTI-VOT-033).
+ * Never from the board's window: an election keeps the window it was registered with, so an idea
+ * accepted before the board's voting window moved still opens when its own election says.
+ * `at` is the board's `voting.opensAt` only while that is still ahead; an election never opens
+ * earlier than the board's window did when the idea was accepted (VTI-BRD-030).
  */
-export function votingOpensLater(b: Pick<Board, "voting">, now = Date.now()): string | null {
-  return now < Date.parse(b.voting.opensAt) ? b.voting.opensAt : null;
+export function notYetVoting(idea: Pick<Idea, "state" | "election">, b: Pick<Board, "voting">, now = Date.now()): NotYetVoting | null {
+  const st = idea.election?.state;
+  if (idea.state !== "open" || (st !== "registered" && st !== "registration")) return null;
+  return now < Date.parse(b.voting.opensAt) ? { at: b.voting.opensAt } : {};
 }
 
 export function takesNotes(b: Pick<Board, "status">): boolean {

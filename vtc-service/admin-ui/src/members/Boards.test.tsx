@@ -97,9 +97,9 @@ function idea(over: Partial<Idea> = {}): Idea {
   } as Idea;
 }
 
-function openIdea(ballots: number, over: Partial<Idea> = {}): Idea {
+function openIdea(ballots: number, over: Partial<Idea> = {}, electionState = "voting"): Idea {
   const i = idea({ state: "open", ...over });
-  return { ...i, election: { electionId: `board.${BOARD_ID}.${i.ideaId}`, state: "voting", ballotsOnBoard: ballots } } as Idea;
+  return { ...i, election: { electionId: `board.${BOARD_ID}.${i.ideaId}`, state: electionState, ballotsOnBoard: ballots } } as Idea;
 }
 
 function serve(b: Board, ideas: Idea[], notes: unknown[] = []) {
@@ -270,7 +270,7 @@ describe("BoardPage", () => {
 
   it("offers no vote before voting opens, only the ticket (the VTA refuses a cast as notOpen)", async () => {
     const now = Date.now();
-    const i = openIdea(0, { title: "Too early" });
+    const i = openIdea(0, { title: "Too early" }, "registration");
     serve(board({ voting: { opensAt: iso(now + 2 * DAY), closesAt: iso(now + 4 * DAY) } }), [i]);
     const wallet = withWallet([i.election!.electionId]);
     renderWith(<BoardPage boardId={BOARD_ID} hostDid={HOST} member={ME} />);
@@ -281,9 +281,22 @@ describe("BoardPage", () => {
     expect(wallet.vote).not.toHaveBeenCalled();
   });
 
+  it("goes by the idea's own election, not the board, once the board's window has moved", async () => {
+    // Accepted before the board's voting window was brought forward: the board says voting, the
+    // election still says registration, and the voter's VTA would refuse a cast as notOpen.
+    const i = openIdea(0, { title: "Accepted early" }, "registration");
+    serve(board(), [i]);
+    const wallet = withWallet([i.election!.electionId]);
+    renderWith(<BoardPage boardId={BOARD_ID} hostDid={HOST} member={ME} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Accepted early/ }));
+    expect((await screen.findAllByText(/Voting on this idea hasn't opened yet/)).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Vote in your wallet/ })).toBeNull();
+    expect(wallet.vote).not.toHaveBeenCalled();
+  });
+
   it("still offers the ticket before voting opens", async () => {
     const now = Date.now();
-    const i = openIdea(0, { title: "Ticket first" });
+    const i = openIdea(0, { title: "Ticket first" }, "registration");
     serve(board({ voting: { opensAt: iso(now + 2 * DAY), closesAt: iso(now + 4 * DAY) } }), [i]);
     withWallet([]);
     renderWith(<BoardPage boardId={BOARD_ID} hostDid={HOST} member={ME} />);

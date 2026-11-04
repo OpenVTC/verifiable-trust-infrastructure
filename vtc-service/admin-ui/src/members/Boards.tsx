@@ -37,7 +37,8 @@ import {
   listAllBoards,
   listNotes,
   phaseOf,
-  votingOpensLater,
+  notYetVoting,
+  type NotYetVoting,
   proposeIdea,
   showBoard,
   takesNotes,
@@ -366,7 +367,7 @@ function BoardView({
                           ticketHeld={i.election ? tickets.held.has(i.election.electionId) : false}
                           walletKnows={tickets.ready}
                           slot={board.timetable?.find((s) => s.slotId === i.decision?.slotId)}
-                          votingFrom={votingOpensLater(board)}
+                          votingFrom={notYetVoting(i, board)}
                           onOpen={() => setOpenId(i.ideaId)}
                         />
                       ))}
@@ -431,7 +432,12 @@ function settledWords(i: Idea, ideas: Idea[]): string {
 
 // ── Cards ───────────────────────────────────────────────────────────────────
 
-function Meter({ idea, votingFrom }: { idea: Idea; votingFrom: string | null }) {
+/** What a member reads while an idea's election takes tickets but not yet ballots. */
+function opensWords(v: NotYetVoting): string {
+  return v.at ? `Voting opens ${when(v.at)}` : "Voting on this idea hasn't opened yet";
+}
+
+function Meter({ idea, votingFrom }: { idea: Idea; votingFrom: NotYetVoting | null }) {
   if (idea.state === "proposed") {
     return (
       <div className="bd-meter-row">
@@ -461,7 +467,7 @@ function Meter({ idea, votingFrom }: { idea: Idea; votingFrom: string | null }) 
     <div className="bd-meter-row">
       <span>
         {votingFrom
-          ? `Voting opens ${when(votingFrom)}`
+          ? opensWords(votingFrom)
           : n === undefined
             ? "Voting"
             : `${n} ballot${n === 1 ? "" : "s"} on the board`}
@@ -482,7 +488,7 @@ function IdeaCard({
   ticketHeld: boolean;
   walletKnows: boolean;
   slot?: { label: string; startsAt: string };
-  votingFrom: string | null;
+  votingFrom: NotYetVoting | null;
   onOpen: () => void;
 }) {
   return (
@@ -540,7 +546,7 @@ function IdeaPanel({
   onChanged: () => void;
 }) {
   const qc = useQueryClient();
-  const votingFrom = votingOpensLater(board);
+  const votingFrom = notYetVoting(idea, board);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [after, setAfter] = useState<string | null>(null);
   useEffect(() => {
@@ -643,7 +649,7 @@ function IdeaPanel({
                           <span className="pill pill-ok">
                             <TicketCheck size={12} aria-hidden="true" /> Ticket held
                           </span>
-                          <p className="small muted">Voting opens {when(votingFrom)}. Your ticket is ready; come back then to vote.</p>
+                          <p className="small muted">{opensWords(votingFrom)}. Your ticket is ready; come back then to vote.</p>
                         </>
                       ) : ticketHeld ? (
                         <>
@@ -707,7 +713,7 @@ function IdeaPanel({
   );
 }
 
-function StatePill({ idea, votingFrom }: { idea: Idea; votingFrom: string | null }) {
+function StatePill({ idea, votingFrom }: { idea: Idea; votingFrom: NotYetVoting | null }) {
   switch (idea.state) {
     case "open":
       return <span className="pill bd-pill-brand">{votingFrom ? "Voting soon" : "Voting"}</span>;
