@@ -2440,6 +2440,23 @@ pub const TASK_VTA_NOTIFICATIONS_DISMISS_0_1: &str =
 pub const TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1: &str =
     <vti_specs::vta::notifications::deposit::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+// ── Collection for the principal's identifiers (`vta/collection/*`) ────────
+// VTI-NTF-080 – 093: which party — the VTA or one client under a lease — holds
+// the one mediator connection of each persona DID the VTA holds keys of.
+// trust-tasks-tf #1023, #1024. Docs: docs/02-vta/collection.md.
+
+/// `vta/collection/claim/0.1` — a client asks its VTA to make it, until a stated end, the one collector of a persona DID's messages at the mediator, or renews the claim it holds (VTI-NTF-082).
+pub const TASK_VTA_COLLECTION_CLAIM_0_1: &str =
+    <vti_specs::vta::collection::claim::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/collection/release/0.1` — a client releases the collection claim for a persona DID: its own ends at once, another client's becomes unrenewable and ends at its stated end (VTI-NTF-084).
+pub const TASK_VTA_COLLECTION_RELEASE_0_1: &str =
+    <vti_specs::vta::collection::release::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/collection/list/0.1` — who collects for each of a context's persona DIDs: the VTA, a claimant and until when, or nobody and why (VTI-NTF-091).
+pub const TASK_VTA_COLLECTION_LIST_0_1: &str =
+    <vti_specs::vta::collection::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// Every URI registered in this module — handy for the dispatcher's
 /// parity harness and for operator tooling that wants to enumerate
 /// the VTA's wire surface programmatically.
@@ -2743,6 +2760,10 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_NOTIFICATIONS_SHOW_0_1,
     TASK_VTA_NOTIFICATIONS_DISMISS_0_1,
     TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1,
+    // Collection slice
+    TASK_VTA_COLLECTION_CLAIM_0_1,
+    TASK_VTA_COLLECTION_RELEASE_0_1,
+    TASK_VTA_COLLECTION_LIST_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
     TASK_VTA_APP_STATE_PUT_1_1,

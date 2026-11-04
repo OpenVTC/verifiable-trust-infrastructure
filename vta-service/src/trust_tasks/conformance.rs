@@ -3066,6 +3066,64 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "notificationId": "ntf-9Lm4q2Wx8nT5", "revision": 1 })
             ),
         ),
+        // ─── vta/collection/* ────────────────────────────────────
+        (
+            uris::TASK_VTA_COLLECTION_CLAIM_0_1,
+            checked!(
+                specs::vta::collection::claim::v0_1::Payload,
+                specs::vta::collection::claim::v0_1::Response,
+                json!({
+                    "contextId": "personal",
+                    "identifier": "did:webvh:QmPersona:persona.example",
+                    "durationSeconds": 86400
+                }),
+                json!({
+                    "identifier": "did:webvh:QmPersona:persona.example",
+                    "endsAt": TS,
+                    "renewed": true
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_COLLECTION_RELEASE_0_1,
+            checked!(
+                specs::vta::collection::release::v0_1::Payload,
+                specs::vta::collection::release::v0_1::Response,
+                json!({
+                    "contextId": "personal",
+                    "identifier": "did:webvh:QmPersona:persona.example"
+                }),
+                json!({ "identifier": "did:webvh:QmPersona:persona.example", "endsAt": TS })
+            ),
+        ),
+        (
+            uris::TASK_VTA_COLLECTION_LIST_0_1,
+            checked!(
+                specs::vta::collection::list::v0_1::Payload,
+                specs::vta::collection::list::v0_1::Response,
+                json!({ "contextId": "personal", "collector": "none", "limit": 20 }),
+                json!({
+                    "items": [
+                        {
+                            "identifier": "did:webvh:QmPersona:persona.example",
+                            "collector": "client",
+                            "claim": {
+                                "claimant": "did:key:z6MkDesktopClient",
+                                "endsAt": TS,
+                                "renewable": true
+                            }
+                        },
+                        { "identifier": "did:webvh:QmSecond:persona.example", "collector": "vta" },
+                        {
+                            "identifier": "did:webvh:QmThird:persona.example",
+                            "collector": "none",
+                            "notCollectedReason": "disabled"
+                        }
+                    ],
+                    "nextCursor": "c1"
+                })
+            ),
+        ),
         // ─── vta/memory ──────────────────────────────────────────
         (
             uris::TASK_VTA_MEMORY_PUT_0_1,

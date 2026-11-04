@@ -340,6 +340,18 @@ pub(crate) enum Commands {
         command: NotificationsCommands,
     },
 
+    /// Who collects your personas' messages at their mediator — this VTA, one of your
+    /// clients under a claim, or nobody and why.
+    ///
+    /// Backed by the `vta/collection/{claim,release,list}/0.1` Trust Tasks (VTI-NTF-080 –
+    /// 093). A mediator permits one connection per DID, so a client that collects for a
+    /// persona itself claims it first and connects only once the claim is granted.
+    #[command(name = "collection")]
+    Collection {
+        #[command(subcommand)]
+        command: CollectionCommands,
+    },
+
     /// Manage the external accounts this VTA holds at clouds and third-party
     /// services, and the integrations bound to them.
     ///
@@ -1690,6 +1702,52 @@ pub(crate) enum RoomFileCommands {
         /// Where to write the file. Must not exist.
         #[arg(long)]
         out: std::path::PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum CollectionCommands {
+    /// Claim a persona DID — or renew your claim — so that you, not the VTA, collect for it
+    /// until the granted end. Connect only after this succeeds.
+    Claim {
+        /// TARGET SCOPE: the context the persona belongs to.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// The persona DID to collect for.
+        #[arg(long, value_name = "DID")]
+        identifier: String,
+        /// How long the claim should last, in seconds (60–2592000; the VTA may grant less).
+        /// Twenty-four hours (86400) is the recommended lease.
+        #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(60..=2_592_000))]
+        duration: Option<i64>,
+    },
+    /// Release the claim for a persona DID: yours ends at once (stop collecting first);
+    /// another client's ends at its stated end without renewal.
+    Release {
+        /// TARGET SCOPE: the context the persona belongs to.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// The persona DID whose claim to release.
+        #[arg(long, value_name = "DID")]
+        identifier: String,
+    },
+    /// List who collects for each persona DID of a context.
+    List {
+        /// TARGET SCOPE: the context to list.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// Only this identifier.
+        #[arg(long, value_name = "DID")]
+        identifier: Option<String>,
+        /// Only identifiers with this collector.
+        #[arg(long, value_parser = ["vta", "client", "none"])]
+        collector: Option<String>,
+        /// The most items to return (1–200).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Continue from a previous page's cursor (same filters).
+        #[arg(long)]
+        cursor: Option<String>,
     },
 }
 

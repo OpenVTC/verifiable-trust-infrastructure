@@ -568,6 +568,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Reads of what the VTA holds; nothing is marked or sent.
     (trust_tasks::TASK_VTA_NOTIFICATIONS_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_VTA_NOTIFICATIONS_SHOW_0_1, ReadOnly),
+    // ── Collection (`vta/collection/*`, VTI-NTF-082 – 091) ───────────────
+    // Retry class 2 by specification: a claim by the client already holding it
+    // is a renewal that sets the end again, and releasing a claim that is
+    // already released, or none, changes nothing.
+    (trust_tasks::TASK_VTA_COLLECTION_CLAIM_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_COLLECTION_RELEASE_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_COLLECTION_LIST_0_1, ReadOnly),
     // ── External accounts (`external/*`) ────────────────────────────────
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_2, ReadOnly),
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_2, ReadOnly),

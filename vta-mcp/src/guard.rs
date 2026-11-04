@@ -704,6 +704,10 @@ mod tests {
         // `vta/notifications/deposit`: a client hands over a notification it received for a
         // persona DID; the VTA holds it exactly as a direct delivery would (VTI-NTF-055).
         "deposit",
+        // `vta/collection/claim`: records a lease naming the caller as a persona DID's one
+        // collector and closes the VTA's own connection for it (VTI-NTF-082). Removes nothing;
+        // `release` (below) ends it.
+        "claim",
         // `rooms/keys/act`: signs a host-bound room request as the member — a write or a
         // curation as readily as a read. It changes nothing here itself, but what it signs
         // can change a room, so it is never a read.

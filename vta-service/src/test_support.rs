@@ -158,6 +158,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         app_state: Default::default(),
         witness: Default::default(),
         notifications: Default::default(),
+        collection: Default::default(),
         policy: Default::default(),
         secrets: Default::default(),
         tee: Default::default(),
@@ -1520,6 +1521,10 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         pcs_engine_ks: store.keyspace(crate::keyspaces::PCS_ENGINE).unwrap(),
         witness_sessions_ks: store.keyspace(crate::keyspaces::WITNESS_SESSIONS).unwrap(),
         notifications_ks: store.keyspace(crate::keyspaces::NOTIFICATIONS).unwrap(),
+        collection_ks: store.keyspace(crate::keyspaces::COLLECTION).unwrap(),
+        collection: std::sync::Arc::new(crate::operations::collection::CollectionControl::new(
+            config.read().await.collection.collect_by_default,
+        )),
         room_groups_ks: store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap(),
         room_invitations_ks: store.keyspace(crate::keyspaces::ROOM_INVITATIONS).unwrap(),
         app_state_ks: store.keyspace(crate::keyspaces::APP_STATE).unwrap(),

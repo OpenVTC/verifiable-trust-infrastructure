@@ -161,6 +161,14 @@ pub(super) async fn handle_request(
         Ok(o) => o,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    // The integration's holder collects for its DID; the VTA never does
+    // (VTI-NTF-080 item 2). Recorded before the bundle is answered.
+    if let Some(did) = output.summary.integration_did.as_deref()
+        && let Err(e) =
+            crate::operations::collection::mark_provisioned(&state.collection_ks, did).await
+    {
+        return app_error_to_reject(&doc, e);
+    }
 
     let body = ProvisionIntegrationResponse {
         bundle: output.armored,

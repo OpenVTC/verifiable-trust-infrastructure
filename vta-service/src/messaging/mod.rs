@@ -9,6 +9,9 @@
 //! (routing, handlers, drain windows, the mediator registry, protocol
 //! management) stays `didcomm`-only and is simply absent from a TSP-only build.
 pub mod auth;
+/// The connections the VTA holds for the principal's persona DIDs
+/// (VTI-NTF-080 – 093). One session — one socket — per identifier.
+pub mod collector;
 #[cfg(feature = "didcomm")]
 pub mod drain_store;
 #[cfg(feature = "didcomm")]

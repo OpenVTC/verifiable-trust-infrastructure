@@ -129,3 +129,9 @@ members only when an administrator decides to, after being shown what a relay di
 election, that the community is a member of the one holding it (VTI-NTF-046). The
 administrators' view and the relay decision are described in
 [`docs/03-vtc/notifications.md`](../03-vtc/notifications.md).
+
+## Collected by the VTA
+
+When collection by default is on, the VTA itself holds the mediator connection of every persona
+DID no client has claimed, and takes what it collects there exactly as a deposit
+(VTI-NTF-086). See [Collection](collection.md).
