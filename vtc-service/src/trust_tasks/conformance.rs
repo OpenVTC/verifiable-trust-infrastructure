@@ -3183,6 +3183,12 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r#"{"board": {"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "closed", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": true, "ideaCounts": {"proposed": 2, "open": 4, "selected": 0, "notSelected": 0, "declined": 0, "merged": 0, "withdrawn": 0}}}"#).unwrap()
         ),
         checked!(
+            s::boards::delete::v0_1::Payload,
+            s::boards::delete::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "reason": "Trust Week is over."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideasRemoved": 18, "notesRemoved": 42, "electionsRemoved": 14, "tombstones": {"kept": 14, "removeAt": "2027-11-20T09:00:01Z"}}"#).unwrap()
+        ),
+        checked!(
             s::boards::list::v0_1::Payload,
             s::boards::list::v0_1::Response,
             serde_json::from_str::<Value>(r#"{"status": "open"}"#).unwrap(),

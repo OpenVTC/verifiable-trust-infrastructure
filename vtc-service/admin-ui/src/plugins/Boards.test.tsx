@@ -21,6 +21,7 @@ const DECIDE = `${S}/ideas/decide/0.1`;
 const SELECT = `${S}/ideas/select/0.1`;
 const NOTES = `${S}/notes/list/0.1`;
 const UPDATE = `${S}/update/0.1`;
+const DELETE = `${S}/delete/0.1`;
 const BOARD_ID = "brd_Uc7N2qLm4Rt8Vx1ZAAAAAA";
 const DAY = 86_400_000;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -199,3 +200,55 @@ describe("editing a board", () => {
     expect(out).toEqual({ timetable: [kept, added] });
   });
 });
+
+describe("closing and deleting a board", () => {
+  it("offers Delete only on a closed board, and only once its title is typed and a reason given", async () => {
+    const requests = mockFetch([
+      taskRoute(SHOW, { board: board({ status: "closed" }), ideas: [] }),
+      taskRoute(NOTES, { notes: [] }),
+      taskRoute(DELETE, {
+        boardId: BOARD_ID,
+        ideasRemoved: 3,
+        notesRemoved: 5,
+        electionsRemoved: 2,
+        tombstones: { kept: 2, removeAt: iso(Date.now() + 365 * DAY) },
+      }),
+    ]);
+    renderWithProviders(<Boards />, {
+      route: `/boards/${BOARD_ID}`,
+      path: "/boards/*",
+      whoami: whoamiWith(["vtc.boards.manage"]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Delete board/ }));
+    const submit = () => screen.getAllByRole("button", { name: /Delete board/ }).at(-1)!;
+    expect(submit()).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText(/Type the board's title/), { target: { value: "Trust Week Unconference" } });
+    fireEvent.change(screen.getByLabelText("Why"), { target: { value: "The event is over." } });
+    expect(submit()).toHaveProperty("disabled", false);
+    fireEvent.click(submit());
+    await waitFor(() =>
+      expect(sentPayloads(requests, DELETE)).toEqual([{ boardId: BOARD_ID, reason: "The event is over." }]),
+    );
+  });
+
+  it("does not offer Delete to a facilitator of this one board, nor on an open board", async () => {
+    mockFetch([taskRoute(SHOW, { board: board({ status: "closed" }), ideas: [] }), taskRoute(NOTES, { notes: [] })]);
+    const { unmount } = renderWithProviders(<Boards />, {
+      route: `/boards/${BOARD_ID}`,
+      path: "/boards/*",
+      whoami: whoamiWith([`vtc.boards.manage:board:${BOARD_ID}`]),
+    });
+    await screen.findByRole("button", { name: /Archive/ });
+    expect(screen.queryByRole("button", { name: /Delete board/ })).toBeNull();
+    unmount();
+    mockFetch([taskRoute(SHOW, { board: board(), ideas: [] }), taskRoute(NOTES, { notes: [] })]);
+    renderWithProviders(<Boards />, {
+      route: `/boards/${BOARD_ID}`,
+      path: "/boards/*",
+      whoami: whoamiWith(["vtc.boards.manage"]),
+    });
+    await screen.findByRole("button", { name: /Close and end voting/ });
+    expect(screen.queryByRole("button", { name: /Delete board/ })).toBeNull();
+  });
+});
+

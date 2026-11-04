@@ -42,6 +42,75 @@ use crate::elections::store::{ElectionRecord, Standing as ElectionStanding};
 use crate::server::AppState;
 
 /// The prefix every election opened for an idea carries: `board.<boardId>.<ideaId>`.
+/// `[boards]`: host configuration for the community's boards.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoardsConfig {
+    /// How long a deleted board's tombstones are kept (VTI-BRD-008): a number of days — `0`
+    /// keeps none, so deleting a board removes everything — or `"forever"`. Default 365.
+    #[serde(default)]
+    pub tombstone_retention: TombstoneRetention,
+}
+
+impl BoardsConfig {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// How long a deleted board's tombstones are kept (VTI-BRD-008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum TombstoneRetention {
+    /// This many days from the deletion; `0` keeps none.
+    Days(u32),
+    /// Never removed: `"forever"`.
+    Forever(Forever),
+}
+
+/// The word `forever`, and only it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Forever {
+    Forever,
+}
+
+impl Default for TombstoneRetention {
+    /// Twelve months (VTI-BRD-008's SHOULD).
+    fn default() -> Self {
+        Self::Days(365)
+    }
+}
+
+impl TombstoneRetention {
+    /// Whether any tombstone is kept.
+    #[must_use]
+    pub fn keeps(self) -> bool {
+        self != Self::Days(0)
+    }
+
+    /// When a tombstone kept at `deleted_at` is removed; `None` for ever.
+    #[must_use]
+    pub fn remove_at(self, deleted_at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Days(d) => Some(deleted_at + chrono::Duration::days(i64::from(d))),
+            Self::Forever(_) => None,
+        }
+    }
+
+    /// In words, for the person deleting a board.
+    #[must_use]
+    pub fn describe(self) -> String {
+        match self {
+            Self::Days(0) => "not kept".into(),
+            Self::Days(1) => "kept for 1 day".into(),
+            Self::Days(d) => format!("kept for {d} days"),
+            Self::Forever(_) => "kept for ever".into(),
+        }
+    }
+}
+
 pub const ELECTION_PREFIX: &str = "board.";
 
 /// The election an idea is put to.
@@ -401,6 +470,26 @@ pub async fn notes_of(ks: &KeyspaceHandle, board_id: &str) -> Result<Vec<Note>, 
 /// Every note on every board.
 ///
 /// # Errors
+/// Remove `board_id`, every idea and every note on it, with their indexes (VTI-BRD-007).
+/// Returns how many ideas and notes went. The caller deals with the ideas' elections first.
+///
+/// # Errors
+/// A store failure.
+pub async fn remove_board(ks: &KeyspaceHandle, board_id: &str) -> Result<(usize, usize), AppError> {
+    let ideas = ideas_of(ks, board_id).await?;
+    for i in &ideas {
+        ks.remove(idea_key(board_id, &i.idea_id)).await?;
+        ks.remove(idea_index(&i.idea_id)).await?;
+    }
+    let notes = notes_of(ks, board_id).await?;
+    for n in &notes {
+        ks.remove(note_key(board_id, &n.note_id)).await?;
+        ks.remove(note_index(&n.note_id)).await?;
+    }
+    ks.remove(board_key(board_id)).await?;
+    Ok((ideas.len(), notes.len()))
+}
+
 /// A store failure, or a record that does not parse.
 pub async fn all_notes(ks: &KeyspaceHandle) -> Result<Vec<Note>, AppError> {
     ks.prefix_iter_raw(NOTE)

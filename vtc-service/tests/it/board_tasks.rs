@@ -23,6 +23,7 @@ use vtc_service::test_support::TestVtc;
 use vti_rooms_dtg::test_support::Party;
 use vti_voting::service::{BallotBox, Caller, ElectionVersion};
 
+use crate::common::second_party::{GatedAdmin, step_up_request};
 use crate::common::signed::{admin, call, party_with_role, payload};
 
 use vti_specs::vtc::boards as b;
@@ -126,6 +127,8 @@ fn stamp(t: DateTime<Utc>) -> String {
 struct InProcessBox {
     bb: Mutex<BallotBox>,
     refuse: AtomicBool,
+    /// Answers nothing: the community's link reports it unavailable, so the sweeper retries.
+    silent: AtomicBool,
     ahead: AtomicI64,
 }
 
@@ -134,6 +137,7 @@ impl InProcessBox {
         Arc::new(Self {
             bb: Mutex::new(BallotBox::new(BOX)),
             refuse: AtomicBool::new(false),
+            silent: AtomicBool::new(false),
             ahead: AtomicI64::new(0),
         })
     }
@@ -151,6 +155,9 @@ impl BallotBoxChannel for InProcessBox {
             .strip_prefix(SPEC)
             .and_then(|t| t.rsplit_once('/'))
             .expect("a voting task");
+        if self.silent.load(Ordering::SeqCst) {
+            return Err(LinkError::Unavailable("silent for the test".into()));
+        }
         if self.refuse.load(Ordering::SeqCst) {
             return Ok(BoxAnswer::Refused {
                 code: format!("{slug}:refused"),
@@ -192,6 +199,8 @@ async fn community(bx: Arc<InProcessBox>) -> TestVtc {
     TestVtc::builder()
         .with_signers(true)
         .with_audit(true)
+        // The bound step-up a deletion takes is a WebAuthn gesture.
+        .with_public_url("https://vtc.example")
         .with_elections(
             VotingConfig {
                 trusted_ballot_boxes: vec![TrustedBallotBox {
@@ -1385,4 +1394,340 @@ async fn vti_brd_031_concurrent_accepts_open_one_election_and_refuse_neither() {
         .filter(|r| r.election_id.ends_with(idea.as_str()))
         .collect();
     assert_eq!(ours.len(), 1);
+}
+
+// ─── closing and deleting ────────────────────────────────────────────────
+
+const DELETE_ERR_NOT_FOUND: &str = b::delete::v0_1::error_codes::NOT_FOUND.code;
+const DELETE_ERR_NOT_CLOSED: &str = b::delete::v0_1::error_codes::NOT_CLOSED.code;
+const DELETE_ERR_ELECTIONS_RUNNING: &str = b::delete::v0_1::error_codes::ELECTIONS_RUNNING.code;
+
+async fn election_state(tv: &TestVtc, election_id: &str) -> String {
+    vtc_service::elections::store::get(tv.state.elections.ks(), election_id)
+        .await
+        .unwrap()
+        .map_or_else(|| "gone".into(), |r| r.state(Utc::now()).to_string())
+}
+
+/// Wait for the background ask after a close to land, as the sweeper would otherwise.
+async fn settled(tv: &TestVtc, election_id: &str) -> String {
+    for _ in 0..50 {
+        let s = election_state(tv, election_id).await;
+        if matches!(s.as_str(), "closed" | "tallied" | "cancelled") {
+            return s;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    election_state(tv, election_id).await
+}
+
+async fn accepted(tv: &TestVtc, chair: &Party, idea: &str) -> String {
+    let (status, doc) = decide(tv, chair, idea, json!({ "decision": "accept" })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    payload(&doc)["idea"]["election"]["electionId"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// VTI-BRD-006: closing a board ends its voting — an election open for voting is closed early,
+/// one not yet open is cancelled and its idea not selected, one that cannot close early runs on —
+/// and a closed board opens no election (VTI-BRD-005).
+#[tokio::test]
+async fn vti_brd_006_closing_a_board_ends_its_voting() {
+    let bx = InProcessBox::new();
+    let tv = community(bx.clone()).await;
+    let chair = admin(&tv).await;
+    let alice = member(&tv).await;
+
+    // Voting open now: one idea closes early, one is made to look like an older election that
+    // does not allow it.
+    let board = create_board(&tv, &chair, board_body()).await;
+    let early = propose(&tv, &alice, &board, "Closes early").await;
+    let older = propose(&tv, &alice, &board, "Runs on").await;
+    let waiting = propose(&tv, &alice, &board, "Never accepted").await;
+    let early_e = accepted(&tv, &chair, &early).await;
+    let older_e = accepted(&tv, &chair, &older).await;
+    let ks = tv.state.elections.ks();
+    let mut rec = vtc_service::elections::store::get(ks, &older_e)
+        .await
+        .unwrap()
+        .unwrap();
+    rec.manifest["allowEarlyClose"] = json!(false);
+    vtc_service::elections::store::put(ks, &rec).await.unwrap();
+
+    let (status, doc) = call(
+        &tv,
+        &chair,
+        &uri("update"),
+        json!({ "boardId": board, "status": "closed" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let closing = &payload(&doc)["closing"];
+    assert_eq!(closing["closedEarly"], 1, "{doc}");
+    assert_eq!(closing["cancelled"], 0, "{doc}");
+    assert_eq!(closing["runningToClose"], json!([older]), "{doc}");
+    assert_eq!(settled(&tv, &early_e).await, "closed");
+    assert_eq!(election_state(&tv, &older_e).await, "voting");
+
+    // Closed: no idea on it is put to a vote.
+    let (_, doc) = decide(&tv, &chair, &waiting, json!({ "decision": "accept" })).await;
+    assert_eq!(tt_error_code(&doc), DECIDE_ERR_VOTING_CLOSED, "{doc}");
+
+    // Voting not yet open: the election is cancelled, and its idea not selected.
+    let mut body = board_body();
+    let now = Utc::now();
+    body["voting"] = json!({ "opensAt": stamp(now + Duration::minutes(50)), "closesAt": stamp(now + Duration::hours(3)) });
+    let later = create_board(&tv, &chair, body).await;
+    let idea = propose(&tv, &alice, &later, "Not voting yet").await;
+    let e = accepted(&tv, &chair, &idea).await;
+    let (_, doc) = call(
+        &tv,
+        &chair,
+        &uri("update"),
+        json!({ "boardId": later, "status": "archived" }),
+    )
+    .await;
+    assert_eq!(payload(&doc)["closing"]["cancelled"], 1, "{doc}");
+    assert_eq!(settled(&tv, &e).await, "cancelled");
+    let (_, shown) = call(
+        &tv,
+        &chair,
+        &uri("show"),
+        json!({ "boardId": later, "includeArchived": true }),
+    )
+    .await;
+    let ideas = payload(&shown)["ideas"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let i = ideas.iter().find(|i| i["ideaId"] == idea);
+    if let Some(i) = i {
+        assert_eq!(i["state"], "notSelected", "{shown}");
+    }
+}
+
+/// VTI-BRD-006: a close the ballot box does not answer is recorded first and asked again by the
+/// elections sweeper, its one retry owner, until it is.
+#[tokio::test]
+async fn vti_brd_006_an_unanswered_close_is_retried_by_the_sweeper() {
+    let bx = InProcessBox::new();
+    let tv = community(bx.clone()).await;
+    let chair = admin(&tv).await;
+    let alice = member(&tv).await;
+    let board = create_board(&tv, &chair, board_body()).await;
+    let idea = propose(&tv, &alice, &board, "Retried").await;
+    let e = accepted(&tv, &chair, &idea).await;
+
+    bx.silent.store(true, Ordering::SeqCst);
+    let (status, doc) = call(
+        &tv,
+        &chair,
+        &uri("update"),
+        json!({ "boardId": board, "status": "closed" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the close does not wait for the ballot box: {doc}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let rec = vtc_service::elections::store::get(tv.state.elections.ks(), &e)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rec.state(Utc::now()), "voting");
+    let pending = rec
+        .pending_end
+        .expect("recorded before the ballot box was asked");
+    assert!(pending.attempts >= 1, "{pending:?}");
+
+    bx.silent.store(false, Ordering::SeqCst);
+    // Past its backoff.
+    vtc_service::elections::sweeper::pass(&tv.state, Utc::now() + Duration::hours(1))
+        .await
+        .unwrap();
+    assert_eq!(election_state(&tv, &e).await, "closed");
+    let rec = vtc_service::elections::store::get(tv.state.elections.ks(), &e)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(rec.pending_end.is_none());
+}
+
+/// VTI-BRD-030: a board's template must allow closing early.
+#[tokio::test]
+async fn vti_brd_030_a_template_that_cannot_close_early_is_refused() {
+    let tv = community(InProcessBox::new()).await;
+    let chair = admin(&tv).await;
+    let mut body = board_body();
+    body["template"]["allowEarlyClose"] = json!(false);
+    let (_, doc) = call(&tv, &chair, &uri("create"), body).await;
+    assert_eq!(tt_error_code(&doc), CREATE_ERR_TEMPLATE_INVALID, "{doc}");
+}
+
+/// VTI-BRD-007, VTI-BRD-008: deleting takes vtc.boards.manage unqualified and a bound step-up,
+/// only once the board is closed and its voting over; it removes the board, ideas, notes and
+/// each election's content, and keeps a tombstone for the retention.
+#[tokio::test]
+async fn vti_brd_007_deleting_a_closed_board_keeps_only_tombstones() {
+    let bx = InProcessBox::new();
+    let tv = community(bx.clone()).await;
+    let chair = GatedAdmin::new(&tv).await;
+    let alice = member(&tv).await;
+    let board = create_board(&tv, &chair.requester, board_body()).await;
+    let idea = propose(&tv, &alice, &board, "Delete me").await;
+    let e = accepted(&tv, &chair.requester, &idea).await;
+    call(
+        &tv,
+        &alice,
+        &uri("notes/add"),
+        json!({ "boardId": board, "ideaId": idea, "text": "A note." }),
+    )
+    .await;
+    let del = |id: &str| json!({ "boardId": id, "reason": "The event is over." });
+
+    let (_, doc) = chair.call(&tv, &uri("delete"), del(UNKNOWN_BOARD)).await;
+    assert_eq!(tt_error_code(&doc), DELETE_ERR_NOT_FOUND, "{doc}");
+    let (_, doc) = chair.call(&tv, &uri("delete"), del(&board)).await;
+    assert_eq!(tt_error_code(&doc), DELETE_ERR_NOT_CLOSED, "{doc}");
+
+    // Closed, but one election cannot close early and is still running.
+    let ks = tv.state.elections.ks();
+    let mut rec = vtc_service::elections::store::get(ks, &e)
+        .await
+        .unwrap()
+        .unwrap();
+    rec.manifest["allowEarlyClose"] = json!(false);
+    vtc_service::elections::store::put(ks, &rec).await.unwrap();
+    let (status, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("update"),
+        json!({ "boardId": board, "status": "closed" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (_, doc) = chair.call(&tv, &uri("delete"), del(&board)).await;
+    assert_eq!(tt_error_code(&doc), DELETE_ERR_ELECTIONS_RUNNING, "{doc}");
+
+    // Its election ends.
+    vtc_service::elections::ops::cancel(&tv.state, &e, "ended for the test", Utc::now())
+        .await
+        .unwrap();
+
+    // A facilitator of this one board closes it, but never deletes it.
+    let qualified = facilitator_of(&tv, &board).await;
+    let (_, doc) = call(&tv, &qualified, &uri("delete"), del(&board)).await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    // Without a gesture bound to the deletion, nothing goes.
+    let (_, doc) = call(&tv, &chair.requester, &uri("delete"), del(&board)).await;
+    assert!(step_up_request(&doc).is_some(), "{doc}");
+
+    let (status, doc) = chair.call(&tv, &uri("delete"), del(&board)).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let out = payload(&doc);
+    assert_eq!(out["ideasRemoved"], 1, "{doc}");
+    assert_eq!(out["notesRemoved"], 1, "{doc}");
+    assert_eq!(out["electionsRemoved"], 1, "{doc}");
+    assert_eq!(out["tombstones"]["kept"], 1, "{doc}");
+    let remove_at: DateTime<Utc> = out["tombstones"]["removeAt"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        (remove_at - Utc::now() - Duration::days(365))
+            .num_minutes()
+            .abs()
+            < 5
+    );
+
+    let (_, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("show"),
+        json!({ "boardId": board }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), SHOW_ERR_NOT_FOUND, "{doc}");
+    assert!(
+        vtc_service::elections::store::get(ks, &e)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        vtc_service::elections::store::tickets(ks, &e)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let t = vtc_service::elections::store::tombstone(ks, &e)
+        .await
+        .unwrap()
+        .expect("kept");
+    assert_eq!(t.manifest_digest, rec.manifest_digest);
+    let kept = serde_json::to_string(&t).unwrap();
+    assert!(
+        !kept.contains("Delete me"),
+        "a tombstone carries no text: {kept}"
+    );
+
+    // Once its retention has passed, the sweeper removes it.
+    vtc_service::elections::sweeper::pass(&tv.state, Utc::now() + Duration::days(366))
+        .await
+        .unwrap();
+    assert!(
+        vtc_service::elections::store::tombstone(ks, &e)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// VTI-BRD-008: a retention of zero keeps no tombstone at all.
+#[tokio::test]
+async fn vti_brd_008_a_zero_retention_keeps_nothing() {
+    let bx = InProcessBox::new();
+    let tv = community(bx.clone()).await;
+    tv.state.config.write().await.boards.tombstone_retention =
+        vtc_service::boards::TombstoneRetention::Days(0);
+    let chair = GatedAdmin::new(&tv).await;
+    let alice = member(&tv).await;
+    let board = create_board(&tv, &chair.requester, board_body()).await;
+    let idea = propose(&tv, &alice, &board, "Gone entirely").await;
+    let e = accepted(&tv, &chair.requester, &idea).await;
+    call(
+        &tv,
+        &chair.requester,
+        &uri("update"),
+        json!({ "boardId": board, "status": "closed" }),
+    )
+    .await;
+    assert_eq!(settled(&tv, &e).await, "closed");
+    let (status, doc) = chair
+        .call(
+            &tv,
+            &uri("delete"),
+            json!({ "boardId": board, "reason": "Test board." }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["tombstones"], json!({ "kept": 0 }), "{doc}");
+    let ks = tv.state.elections.ks();
+    assert!(
+        vtc_service::elections::store::tombstone(ks, &e)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        vtc_service::elections::store::get(ks, &e)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

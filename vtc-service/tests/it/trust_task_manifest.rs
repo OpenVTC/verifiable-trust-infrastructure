@@ -1035,6 +1035,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // key the member delegated `vtc/boards` to, and the console's facilitator pages.
     "https://trusttasks.org/spec/vtc/boards/create/0.1",
     "https://trusttasks.org/spec/vtc/boards/update/0.1",
+    "https://trusttasks.org/spec/vtc/boards/delete/0.1",
     "https://trusttasks.org/spec/vtc/boards/list/0.1",
     "https://trusttasks.org/spec/vtc/boards/show/0.1",
     "https://trusttasks.org/spec/vtc/boards/ideas/propose/0.1",

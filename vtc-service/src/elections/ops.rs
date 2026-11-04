@@ -347,6 +347,7 @@ pub async fn create(
         decryption_authorized: false,
         roll_party: checked.roll_party.clone(),
         verified: None,
+        pending_end: None,
     };
     if !store::put_new(state.elections.ks(), &rec).await? {
         return Err(CreateError::ElectionExists);
@@ -863,6 +864,118 @@ pub async fn cancel(
         }
         Err(e) => Err(EndError::BallotBoxUnavailable(e.to_string())),
     }
+}
+
+/// How an end asked for by closing a board stands after one attempt (VTI-BRD-006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndAttempt {
+    /// The ballot box answered; nothing is pending.
+    Done,
+    /// The ballot box did not answer; the sweeper asks again.
+    Pending,
+    /// Nothing to do, or nothing more that can be done: the election had already ended, or the
+    /// ballot box refused (recorded on the election, logged, not retried).
+    Settled,
+}
+
+/// Record `kind` on `election_id` as asked for by its board's closing (VTI-BRD-006), without
+/// asking the ballot box yet: the record is what the sweeper retries, so it is durable before
+/// anything is sent. Returns whether it was recorded (false: the election has already ended).
+///
+/// # Errors
+/// A store failure.
+pub async fn record_end(
+    state: &AppState,
+    election_id: &str,
+    kind: store::EndKind,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, AppError> {
+    let ks = state.elections.ks();
+    let Some(mut rec) = store::get(ks, election_id).await? else {
+        return Ok(false);
+    };
+    if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
+        return Ok(false);
+    }
+    if rec.pending_end.is_none() {
+        rec.pending_end = Some(store::PendingEnd {
+            kind,
+            reason: reason.to_string(),
+            attempts: 0,
+            next_at: now,
+            last_error: None,
+        });
+        store::put(ks, &rec).await?;
+    }
+    Ok(true)
+}
+
+/// Ask for `kind` on `election_id` on behalf of its board's closing (VTI-BRD-006), recording it
+/// first so the elections sweeper — the one retry owner — asks again until the ballot box
+/// answers. Also the sweeper's own retry: an existing [`store::PendingEnd`] is attempted again.
+///
+/// # Errors
+/// A store failure.
+pub async fn request_end(
+    state: &AppState,
+    election_id: &str,
+    kind: store::EndKind,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<EndAttempt, AppError> {
+    let ks = state.elections.ks();
+    let Some(mut rec) = store::get(ks, election_id).await? else {
+        return Ok(EndAttempt::Settled);
+    };
+    if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
+        if rec.pending_end.take().is_some() {
+            store::put(ks, &rec).await?;
+        }
+        return Ok(EndAttempt::Settled);
+    }
+    let attempts = rec.pending_end.as_ref().map_or(0, |p| p.attempts);
+    rec.pending_end = Some(store::PendingEnd {
+        kind,
+        reason: reason.to_string(),
+        attempts,
+        next_at: now,
+        last_error: None,
+    });
+    store::put(ks, &rec).await?;
+    let outcome = match kind {
+        store::EndKind::Close => close(state, election_id, Some(reason), now)
+            .await
+            .map(|_| ()),
+        store::EndKind::Cancel => cancel(state, election_id, reason, now).await.map(|_| ()),
+    };
+    let mut rec = store::get(ks, election_id).await?.unwrap_or(rec);
+    let attempt = match outcome {
+        Ok(()) => {
+            rec.pending_end = None;
+            EndAttempt::Done
+        }
+        Err(EndError::BallotBoxUnavailable(e)) => {
+            let attempts = attempts.saturating_add(1);
+            tracing::warn!(election = %election_id, attempts, error = %e, "the ballot box did not answer ending this election; retrying");
+            rec.pending_end = Some(store::PendingEnd {
+                kind,
+                reason: reason.to_string(),
+                attempts,
+                next_at: now + delivery_backoff(attempts),
+                last_error: Some(e),
+            });
+            EndAttempt::Pending
+        }
+        Err(EndError::App(e)) => return Err(e),
+        Err(other) => {
+            tracing::warn!(election = %election_id, outcome = ?other, "ending this election was refused; not retried");
+            rec.pending_end = None;
+            EndAttempt::Settled
+        }
+    };
+    store::put(ks, &rec).await?;
+    Ok(attempt)
 }
 
 /// Read the ballot box's head and keep it, with the signed document that carried it (show item

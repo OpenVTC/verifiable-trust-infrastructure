@@ -87,8 +87,11 @@ pub async fn manifest_for(
         "votingClosesAt".into(),
         json!(stamp(board.voting.closes_at)),
     );
-    // A board's elections are never binding (VTI-BRD-030).
+    // A board's elections are never binding, and always allow closing early, so closing the
+    // board can end them — whatever a template stored before that rule stated (VTI-BRD-030,
+    // VTI-BRD-006).
     obj.insert("binding".into(), json!(false));
+    obj.insert("allowEarlyClose".into(), json!(true));
     Ok(m)
 }
 
@@ -102,6 +105,15 @@ pub async fn check_template(
     board: &Board,
     now: DateTime<Utc>,
 ) -> Result<(), (&'static str, String)> {
+    // Closing the board ends its elections early (VTI-BRD-006), so a template must allow it.
+    if board.template["allowEarlyClose"] == json!(false) {
+        return Err((
+            "templateInvalid",
+            "a board's election template must allow closing early (allowEarlyClose: true), so \
+             closing the board can end its elections (VTI-BRD-030)"
+                .into(),
+        ));
+    }
     let probe = Idea {
         idea_id: "ida_template_check_000000".into(),
         board_id: board.board_id.clone(),
@@ -272,4 +284,88 @@ pub async fn result_for(
         Err(eops::CertifyError::NotTallied | eops::CertifyError::ElectionUnknown) => Ok(None),
         Err(e) => Err(format!("{e:?}")),
     }
+}
+
+/// How closing a board ended its voting (VTI-BRD-006): the update's `closing` answer.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Closing {
+    /// Elections open for voting asked to close early.
+    pub closed_early: u32,
+    /// Elections not yet open for voting asked to be cancelled.
+    pub cancelled: u32,
+    /// Ideas whose election cannot close early and closes when its manifest says.
+    pub running_to_close: Vec<String>,
+}
+
+impl Closing {
+    /// The `closing` member of `vtc/boards/update/0.1`'s response.
+    #[must_use]
+    pub fn wire(&self) -> Value {
+        json!({
+            "closedEarly": self.closed_early,
+            "cancelled": self.cancelled,
+            "runningToClose": self.running_to_close,
+        })
+    }
+}
+
+/// End the voting on a board that has just been recorded closed (VTI-BRD-006): each idea's
+/// election open for voting that allows it is closed early, so its count is final; each not yet
+/// open for voting, or not yet registered, is cancelled; each that cannot close early is left to
+/// close when its manifest says. Every request is recorded on its election before the ballot box
+/// is asked, and the elections sweeper asks again until it answers; this never waits for that.
+/// Call it after the board is stored and without the board lock held (R1.3).
+///
+/// # Errors
+/// A store failure.
+pub async fn end_voting(
+    state: &AppState,
+    board: &Board,
+    now: DateTime<Utc>,
+) -> Result<Closing, AppError> {
+    use crate::elections::store::{self as estore, EndKind};
+    let mut out = Closing::default();
+    let mut asked = Vec::new();
+    let reason = format!("board {} closed", board.board_id);
+    for idea in super::ideas_of(&state.boards_ks, &board.board_id).await? {
+        let Some(id) = idea.election_id.as_deref() else {
+            continue;
+        };
+        let Some(rec) = estore::get(state.elections.ks(), id).await? else {
+            continue;
+        };
+        let kind = match rec.state(now) {
+            "closed" | "tallied" | "cancelled" => continue,
+            "voting" if rec.manifest["allowEarlyClose"].as_bool().unwrap_or(false) => {
+                EndKind::Close
+            }
+            "voting" => {
+                out.running_to_close.push(idea.idea_id.clone());
+                continue;
+            }
+            // Registration open, registered ahead of voting, or not yet registered.
+            _ => EndKind::Cancel,
+        };
+        if eops::record_end(state, id, kind, &reason, now).await? {
+            match kind {
+                EndKind::Close => out.closed_early += 1,
+                EndKind::Cancel => out.cancelled += 1,
+            }
+            asked.push((id.to_string(), kind));
+        }
+    }
+    // Ask now rather than at the sweeper's next pass, but never make the facilitator's request
+    // wait on the ballot box: each end is recorded, and the sweeper asks again if this does not
+    // get an answer.
+    if !asked.is_empty() {
+        let state = state.clone();
+        tokio::spawn(async move {
+            for (id, kind) in asked {
+                if let Err(e) = eops::request_end(&state, &id, kind, &reason, Utc::now()).await {
+                    tracing::warn!(election = %id, error = %e, "could not ask the ballot box to end a closed board's election; the sweeper will");
+                }
+            }
+        });
+    }
+    Ok(out)
 }

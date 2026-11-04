@@ -11,6 +11,9 @@
 //!   resend can be useful.
 //! - **Member-party notifications** (VTI-NTF-061): `crate::notifications::election`, whose
 //!   one sender this pass is.
+//! - **Ends a board's closing asked for** (VTI-BRD-006): the one retry owner for a close or
+//!   cancellation the ballot box has not answered.
+//! - **Deleted boards' tombstones** (VTI-BRD-008): removed once their retention has passed.
 //! - **Accepted presentations** (show/0.6 item 8.6): the `id` of a read whose presentation was
 //!   accepted is forgotten once its acceptance window has passed.
 
@@ -73,6 +76,24 @@ pub async fn pass(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> 
     if let Err(e) = store::prune_presentations(state.elections.ks(), now).await {
         warn!(error = %e, "could not forget expired presentation acceptances this pass");
     }
+    // A deleted board's tombstones go once their retention has passed (VTI-BRD-008).
+    match store::tombstones(state.elections.ks()).await {
+        Ok(ts) => {
+            for t in ts
+                .into_iter()
+                .filter(|t| t.remove_at.is_some_and(|at| at <= now))
+            {
+                if let Err(e) = store::remove_tombstone(state.elections.ks(), &t.election_id).await
+                {
+                    warn!(election = %t.election_id, error = %e, "could not remove a tombstone this pass");
+                } else {
+                    info!(election = %t.election_id, "a deleted board's tombstone reached its retention and was removed");
+                    audit(state, &t.election_id, "tombstoneRemoved", "success".into()).await;
+                }
+            }
+        }
+        Err(e) => warn!(error = %e, "could not read tombstones this pass"),
+    }
     for rec in store::all(state.elections.ks()).await? {
         let id = rec.election_id.clone();
         // The member party a credential roll names is told once the election is
@@ -94,6 +115,23 @@ async fn settle(
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
     let ks = state.elections.ks();
+    // A close or cancellation its board's closing asked for and the ballot box has not yet
+    // answered: this pass is its one retry owner (VTI-BRD-006).
+    if let Some(p) = rec.pending_end.as_ref().filter(|p| p.next_at <= now) {
+        let (id, kind, reason) = (rec.election_id.clone(), p.kind, p.reason.clone());
+        match ops::request_end(state, &id, kind, &reason, now).await? {
+            ops::EndAttempt::Done => {
+                let change = match kind {
+                    store::EndKind::Close => "closedEarly",
+                    store::EndKind::Cancel => "cancelled",
+                };
+                info!(election = %id, change, "an end its board's closing asked for was answered");
+                audit(state, &id, change, "success".into()).await;
+            }
+            ops::EndAttempt::Pending | ops::EndAttempt::Settled => {}
+        }
+        return Ok(());
+    }
     match rec.standing {
         Standing::PendingRegistration
             if !rec.issuance_stopped && rec.delivery.as_ref().is_some_and(|d| d.next_at <= now) =>

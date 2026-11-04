@@ -42,6 +42,65 @@ pub struct Delivery {
     pub last_error: Option<String>,
 }
 
+/// A close or cancellation the community has asked for and not yet had answered: the elections
+/// sweeper is its one retry owner (VTI-BRD-006). Written before the ballot box is asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingEnd {
+    pub kind: EndKind,
+    pub reason: String,
+    pub attempts: u32,
+    pub next_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+/// Which end a [`PendingEnd`] asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EndKind {
+    /// Close voting early (VTI-VOT-013): the count as it stands is final.
+    Close,
+    /// Cancel the election.
+    Cancel,
+}
+
+/// What the community keeps of an election on a deleted board (VTI-BRD-007): its identifier,
+/// its manifest's digest and the board heads it kept (VTI-VOT-051) — never its title,
+/// description, roll or tickets. Removed once `remove_at` passes; kept for ever without one
+/// (VTI-BRD-008).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tombstone {
+    pub election_id: String,
+    pub manifest_digest: String,
+    pub ballot_box: String,
+    #[serde(default)]
+    pub checkpoints: Vec<Value>,
+    pub deleted_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_at: Option<DateTime<Utc>>,
+}
+
+impl Tombstone {
+    /// The tombstone of `rec`, removed at `remove_at` (none: kept for ever).
+    #[must_use]
+    pub fn of(
+        rec: &ElectionRecord,
+        deleted_at: DateTime<Utc>,
+        remove_at: Option<DateTime<Utc>>,
+    ) -> Self {
+        Self {
+            election_id: rec.election_id.clone(),
+            manifest_digest: rec.manifest_digest.clone(),
+            ballot_box: rec.ballot_box.clone(),
+            checkpoints: rec.checkpoints.clone(),
+            deleted_at,
+            remove_at,
+        }
+    }
+}
+
 /// What the ballot box said when it refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +211,10 @@ pub struct ElectionRecord {
     /// nothing and is never shown as a certification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified: Option<Value>,
+    /// A close or cancellation asked for by closing the election's board and not yet answered
+    /// (VTI-BRD-006); the elections sweeper retries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_end: Option<PendingEnd>,
 }
 
 impl ElectionRecord {
@@ -352,6 +415,67 @@ pub async fn replace_ticket(ks: &KeyspaceHandle, t: &TicketIssued) -> Result<(),
     ks.insert(ticket_key(&t.election_id, &t.signer), t).await
 }
 
+/// Remove every ticket record of `election_id` — the community's record of the tickets it
+/// issued, which a deleted board's election does not keep (VTI-BRD-007). Returns how many.
+///
+/// # Errors
+/// A store failure.
+pub async fn remove_tickets(ks: &KeyspaceHandle, election_id: &str) -> Result<usize, AppError> {
+    let rows = ks
+        .prefix_iter_raw(format!("{TICKET_PREFIX}{election_id}:"))
+        .await?;
+    let n = rows.len();
+    for (k, _) in rows {
+        ks.remove(k).await?;
+    }
+    Ok(n)
+}
+
+const TOMBSTONE_PREFIX: &str = "tombstone:";
+
+/// Keep `t` (VTI-BRD-007).
+///
+/// # Errors
+/// A store failure.
+pub async fn put_tombstone(ks: &KeyspaceHandle, t: &Tombstone) -> Result<(), AppError> {
+    ks.insert(format!("{TOMBSTONE_PREFIX}{}", t.election_id), t)
+        .await
+}
+
+/// The tombstone of `election_id`, if one is kept.
+///
+/// # Errors
+/// A store failure.
+pub async fn tombstone(
+    ks: &KeyspaceHandle,
+    election_id: &str,
+) -> Result<Option<Tombstone>, AppError> {
+    ks.get(format!("{TOMBSTONE_PREFIX}{election_id}")).await
+}
+
+/// Every tombstone kept.
+///
+/// # Errors
+/// A store failure, or a record that does not parse.
+pub async fn tombstones(ks: &KeyspaceHandle) -> Result<Vec<Tombstone>, AppError> {
+    ks.prefix_iter_raw(TOMBSTONE_PREFIX)
+        .await?
+        .into_iter()
+        .map(|(_, v)| {
+            serde_json::from_slice(&v)
+                .map_err(|e| AppError::Internal(format!("a tombstone does not parse: {e}")))
+        })
+        .collect()
+}
+
+/// Remove the tombstone of `election_id` (VTI-BRD-008).
+///
+/// # Errors
+/// A store failure.
+pub async fn remove_tombstone(ks: &KeyspaceHandle, election_id: &str) -> Result<(), AppError> {
+    ks.remove(format!("{TOMBSTONE_PREFIX}{election_id}")).await
+}
+
 const PRESENTATION_PREFIX: &str = "presented:";
 
 /// A read document whose presentation was accepted (show/0.6 Conformance item 8.1), kept for
@@ -464,6 +588,7 @@ mod tests {
             decryption_authorized: false,
             roll_party: None,
             verified: None,
+            pending_end: None,
         }
     }
 

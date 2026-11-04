@@ -1689,6 +1689,24 @@ fn witnesses() -> Vec<Witness> {
             "vti_brd_002_create_refuses_what_its_specification_declares"
         ),
         witness!(
+            s::boards::delete::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::board_tasks::DELETE_ERR_NOT_FOUND,
+            "board_tasks.rs",
+            "vti_brd_007_deleting_a_closed_board_keeps_only_tombstones"
+        ),
+        witness!(
+            s::boards::delete::v0_1::error_codes::NOT_CLOSED,
+            crate::trust_tasks::board_tasks::DELETE_ERR_NOT_CLOSED,
+            "board_tasks.rs",
+            "vti_brd_007_deleting_a_closed_board_keeps_only_tombstones"
+        ),
+        witness!(
+            s::boards::delete::v0_1::error_codes::ELECTIONS_RUNNING,
+            crate::trust_tasks::board_tasks::DELETE_ERR_ELECTIONS_RUNNING,
+            "board_tasks.rs",
+            "vti_brd_007_deleting_a_closed_board_keeps_only_tombstones"
+        ),
+        witness!(
             s::boards::update::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::board_tasks::UPDATE_ERR_NOT_FOUND,
             "board_tasks.rs",

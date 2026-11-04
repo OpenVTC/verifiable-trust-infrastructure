@@ -393,6 +393,10 @@ spec_types! {
     BoardsUpdate01Payload(boards::update::v0_1::Payload);
     /// `vtc/boards/update/0.1#response` — the board as changed.
     BoardsUpdate01Response(boards::update::v0_1::Response);
+    /// `vtc/boards/delete/0.1` payload — the closed board to delete, and why.
+    BoardsDelete01Payload(boards::delete::v0_1::Payload);
+    /// `vtc/boards/delete/0.1#response` — what was removed, and when the tombstones go.
+    BoardsDelete01Response(boards::delete::v0_1::Response);
     /// `vtc/boards/list/0.1` payload — the boards the caller may see.
     BoardsList01Payload(boards::list::v0_1::Payload);
     /// `vtc/boards/list/0.1#response` — the boards.
@@ -909,6 +913,8 @@ mod tests {
         check::<BoardsCreate01Response>();
         check::<BoardsUpdate01Payload>();
         check::<BoardsUpdate01Response>();
+        check::<BoardsDelete01Payload>();
+        check::<BoardsDelete01Response>();
         check::<BoardsList01Payload>();
         check::<BoardsList01Response>();
         check::<BoardsShow01Payload>();

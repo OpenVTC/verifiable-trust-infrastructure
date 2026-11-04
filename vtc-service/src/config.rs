@@ -139,6 +139,13 @@ pub struct AppConfig {
         skip_serializing_if = "crate::elections::VotingConfig::is_empty"
     )]
     pub voting: crate::elections::VotingConfig,
+    /// The community's boards (`[boards]`): how long a deleted board's tombstones are kept
+    /// (VTI-BRD-008). Absent: the default, twelve months.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::boards::BoardsConfig::is_default"
+    )]
+    pub boards: crate::boards::BoardsConfig,
     /// The community's groups (`[groups]`, the `vtc/groups/*` tasks): where its VTA
     /// mints each group's identity, and how long the credentials it issues last.
     ///

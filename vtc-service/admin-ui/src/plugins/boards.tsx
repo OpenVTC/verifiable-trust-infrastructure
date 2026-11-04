@@ -2,7 +2,7 @@
 //
 //   /boards        Every board this administrator facilitates; create one.
 //   /boards/:id    One board: edit it, decide its proposed ideas, select among tallied ones, hide
-//                  notes, close or archive it.
+//                  notes, close it (which ends its voting), archive or delete it.
 //
 // Members propose and leave notes from the member portal; this page never writes as a member.
 // Accepting an idea opens its election from the board's template — the result is shown here once
@@ -14,6 +14,7 @@ import { Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, EyeOff, GitMerge, Pencil, Plus, RotateCcw, SquareKanban, Trash2, X } from "lucide-react";
 
+import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
@@ -24,6 +25,7 @@ import {
   ELECTIONS_MANAGE,
   createBoard,
   decideIdea,
+  deleteBoard,
   defaultTemplate,
   fromLocalInput,
   hideNote,
@@ -43,6 +45,7 @@ import {
 } from "@/lib/boards";
 import { fetchTrustedBallotBoxes } from "@/lib/elections-api";
 import { listGroups } from "@/lib/groups";
+import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
 
@@ -617,6 +620,78 @@ function EditBoardForm({ board, onDone }: { board: Board; onDone: () => void }) 
   );
 }
 
+// ── Deleting a board ────────────────────────────────────────────────────────
+
+/**
+ * Delete a closed board (VTI-BRD-007): the operator types its title, gives a reason, and is told
+ * what goes and what a tombstone keeps before the passkey gesture the deletion is bound to.
+ */
+function DeleteBoardPanel({ board, onDone }: { board: Board; onDone: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const navigate = useNavigate();
+  const confirm = useConfirm();
+  const [typed, setTyped] = useState("");
+  const [reason, setReason] = useState("");
+  const del = useMutation({
+    mutationFn: () => deleteBoard(board.boardId, reason.trim(), gestureFromConfirm(confirm)),
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: BOARDS_KEY });
+      void qc.invalidateQueries({ queryKey: ["elections"] });
+      const t = r.tombstones;
+      const kept =
+        t.kept === 0
+          ? "No tombstone kept."
+          : t.removeAt
+            ? `${t.kept} tombstone(s) kept until ${when(t.removeAt)}.`
+            : `${t.kept} tombstone(s) kept for ever.`;
+      toast.push("success", `Deleted ${board.title}: ${r.ideasRemoved} idea(s), ${r.notesRemoved} note(s). ${kept}`);
+      navigate("/boards");
+    },
+    onError: (err) => toast.pushFromError(err, "The board was not deleted"),
+  });
+  const ok = typed.trim() === board.title.trim() && reason.trim().length > 0;
+  return (
+    <section className="card error" aria-labelledby="delete-board-title">
+      <h3 id="delete-board-title">Delete this board</h3>
+      <p>
+        This removes the board, every idea and note on it, and its elections&rsquo; titles, descriptions, rolls and ticket
+        records. It cannot be undone.
+      </p>
+      <p className="muted">
+        Each election keeps a <strong>tombstone</strong> — its identifier, its manifest&rsquo;s digest and the board heads the
+        community kept — for the community&rsquo;s tombstone retention (<code>[boards] tombstone_retention</code>, twelve
+        months unless set). Until it goes, a voter can still check a receipt against it; after, nobody can. Every
+        election must have closed or been cancelled first.
+      </p>
+      <form
+        className="form-stack"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ok) del.mutate();
+        }}
+      >
+        <div className="form-grid">
+          <Field label={`Type the board's title, ${board.title}`}>
+            <input value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
+          </Field>
+          <Field label="Why" hint="Recorded with the deletion in the audit trail.">
+            <input value={reason} maxLength={1024} onChange={(e) => setReason(e.target.value)} />
+          </Field>
+        </div>
+        <div className="form-actions">
+          <button type="button" className="secondary" onClick={onDone}>
+            Cancel
+          </button>
+          <button type="submit" className="destructive" disabled={!ok || del.isPending}>
+            <Trash2 size={14} aria-hidden="true" /> Delete board
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 // ── One board ───────────────────────────────────────────────────────────────
 
 const PENDING_ORDER = ["decide", "refused", "select", "opening", "voting", "decided", "none"] as const;
@@ -627,6 +702,11 @@ function BoardDetail() {
   const qc = useQueryClient();
   const toast = useToast();
   const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const caps = useCapabilities();
+  // Deleting takes vtc.boards.manage unqualified: a facilitator of this one board cannot
+  // (VTI-BRD-007).
+  const mayDelete = holds(caps, BOARDS_MANAGE);
   const key = ["board", boardId];
   const shown = useQuery({ queryKey: key, queryFn: () => showBoard(boardId) });
   const notes = useQuery({ queryKey: [...key, "notes"], queryFn: () => listAllNotes(boardId) });
@@ -636,9 +716,14 @@ function BoardDetail() {
   };
   const status = useMutation({
     mutationFn: (s: "closed" | "archived") => updateBoard({ boardId, status: s } as never),
-    onSuccess: (_r, s) => {
+    onSuccess: (r, s) => {
       refresh();
-      toast.push("success", s === "closed" ? "Closed to new ideas and notes." : "Archived.");
+      const c = (r as { closing?: { closedEarly: number; cancelled: number; runningToClose: string[] } }).closing;
+      const ended = c
+        ? ` Voting ended: ${c.closedEarly} closed early (counts final), ${c.cancelled} cancelled` +
+          (c.runningToClose.length ? `; ${c.runningToClose.length} cannot close early and run to their own close.` : ".")
+        : "";
+      toast.push("success", (s === "closed" ? "Closed to new ideas and notes." : "Archived.") + ended);
     },
     onError: (err) => toast.pushFromError(err, "The board was not changed"),
   });
@@ -677,8 +762,14 @@ function BoardDetail() {
                 </button>
               )}
               {board.status === "open" && (
-                <button type="button" className="secondary" onClick={() => status.mutate("closed")} disabled={status.isPending}>
-                  Close to new ideas
+                <button
+                  type="button"
+                  className="secondary"
+                  title="Stops new ideas and notes, and ends the voting: elections open for voting close early with their counts final; those not yet open are cancelled."
+                  onClick={() => status.mutate("closed")}
+                  disabled={status.isPending}
+                >
+                  Close and end voting
                 </button>
               )}
               {board.status === "closed" && (
@@ -686,11 +777,17 @@ function BoardDetail() {
                   Archive
                 </button>
               )}
+              {board.status !== "open" && mayDelete && !deleting && (
+                <button type="button" className="destructive" onClick={() => setDeleting(true)}>
+                  <Trash2 size={14} aria-hidden="true" /> Delete board
+                </button>
+              )}
             </>
           )
         }
       />
       {editing && <EditBoardForm board={board} onDone={() => setEditing(false)} />}
+      {deleting && <DeleteBoardPanel board={board} onDone={() => setDeleting(false)} />}
       {board.selectionRule && (
         <p className="muted">
           <strong>How you said you'd choose:</strong> {board.selectionRule}
