@@ -72,6 +72,42 @@ member's wallet, as for every election.
 6. **Close and archive.** `closed` takes no new ideas or notes; facilitators still decide.
    `archived` takes no change at all.
 
+## From the command line
+
+Facilitators use `cnm boards`, as the community's administrator. Members use `pnm boards`, signing
+with their own VTA: the member's key never leaves it.
+
+A facilitator starts from a template that `cnm` writes offline, edits it, and creates it:
+
+```sh
+cnm boards init --ballot-box <ballot-box-did> --title "Unconference" -o board.json
+cnm boards create board.json
+cnm boards show <board-id>
+cnm boards decide <idea-id> accept            # opens the idea's election
+cnm boards decide <idea-id> decline --reason "Covered in the keynote"
+cnm boards decide <idea-id> merge --into <other-idea-id>
+cnm boards select <idea-id> selected --slot <slot-id>
+cnm boards close <board-id>
+```
+
+`init --group <group-id>` puts the board to one group. Pick the ballot box from
+`cnm elections ballot-boxes`. The written board already reads against `vtc/boards/create`.
+`cnm boards notes`, `hide` and `unhide` moderate notes.
+
+A member names the community and their membership DID on every command. `--entry` names the
+vault entry to sign with, when more than one holds that membership:
+
+```sh
+pnm boards list --vtc https://vtc.example.com/v1 --vtc-did <community-did> --member <your-did>
+pnm boards propose <board-id> --title "Rust in production" --description "War stories" …
+pnm boards note <board-id> "I'd come to this" --idea <idea-id> …
+pnm boards take-tickets <board-id> --context <context> …
+pnm elections vote …                           # one idea at a time
+```
+
+`take-tickets` takes a ticket for every idea open for votes, each in its own request a few
+seconds apart, so the community does not see one member's tickets arrive together.
+
 ## Departure and erasure
 
 When a member leaves, their ideas still `proposed` are withdrawn, and the board shows the rest

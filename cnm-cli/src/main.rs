@@ -4,6 +4,7 @@ mod actions_watch;
 mod audit;
 mod auth;
 mod backup;
+mod boards;
 mod config;
 mod consent;
 mod did_log;
@@ -286,6 +287,13 @@ enum Commands {
     Git {
         #[command(subcommand)]
         command: git::GitCommands,
+    },
+
+    /// The community's boards: create them, decide and select their ideas, moderate notes
+    /// (`vtc/boards/*`). Members propose and vote with `pnm boards` / `pnm elections`.
+    Boards {
+        #[command(subcommand)]
+        command: boards::BoardsCommands,
     },
 
     /// The community's polls, surveys and elections: create them from a manifest, list,
@@ -1087,6 +1095,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Rooms { .. }
             | Commands::Storage { .. }
             | Commands::Elections { .. }
+            | Commands::Boards { .. }
             | Commands::Consent { .. }
             | Commands::Actions { .. }
             | Commands::Access { .. }
@@ -1762,6 +1771,18 @@ async fn main() {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => {
                     elections::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        // Offline: a starting board needs nothing from the community.
+        Commands::Boards {
+            command: command @ boards::BoardsCommands::Init { .. },
+        } => boards::run_init(command),
+        Commands::Boards { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    boards::run(command, &key, &target, cli.transport.into()).await
                 }
                 Err(e) => Err(e),
             }
