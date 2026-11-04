@@ -477,6 +477,12 @@ type_uri = "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.3"
 digest = "sha256:b44b7472ebb905c8ffd1850f6bedd59d55a93a5637a40dbb0c6e11d056997f01"
 
 [[task]]
+slug = "vtc/elections/tombstones/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/elections/tombstones/show/0.1"
+digest = "sha256:27569cda8379c3cad79c404f597c39f858bbd4fa1a089ad05e78c4126dd648dd"
+
+[[task]]
 slug = "vtc/endorsement-types/delete"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1"

@@ -49,7 +49,7 @@ use vti_common::audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedDat
 use vti_specs::vtc::elections::{
     ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
     certify::v0_1 as certify, close::v0_1 as close, create::v0_5 as create, list::v0_5 as list,
-    show::v0_6 as show, tickets::issue::v0_3 as issue,
+    show::v0_6 as show, tickets::issue::v0_3 as issue, tombstones::show::v0_1 as tombstone_show,
 };
 // Still served: a client composing a manifest under voting/_shared/0.2 or 0.3 sends these. The
 // 0.2 schema holds `textReleaseThreshold` to 10 or more (VTI-VOT-065), and neither carries a
@@ -92,6 +92,9 @@ pub(crate) const ISSUE_TYPE: &str = <issue::Payload as Payload>::TYPE_URI;
 pub(crate) const ISSUE_0_1_TYPE: &str = <issue_0_1::Payload as Payload>::TYPE_URI;
 pub(crate) const CERTIFY_TYPE: &str = <certify::Payload as Payload>::TYPE_URI;
 pub(crate) const BALLOT_BOXES_LIST_TYPE: &str = <ballot_boxes_list::Payload as Payload>::TYPE_URI;
+pub(crate) const TOMBSTONE_SHOW_TYPE: &str = <tombstone_show::Payload as Payload>::TYPE_URI;
+pub(crate) const TOMBSTONE_ERR_ELECTION_UNKNOWN: &str =
+    tombstone_show::error_codes::ELECTION_UNKNOWN.code;
 
 // The declared codes, read from the generated bindings: the handlers emit these, and the
 // error-code census names each as the constant its witness asserts.
@@ -159,6 +162,7 @@ pub(crate) const URIS: &[&str] = &[
     ISSUE_0_1_TYPE,
     CERTIFY_TYPE,
     BALLOT_BOXES_LIST_TYPE,
+    TOMBSTONE_SHOW_TYPE,
 ];
 
 /// Route one of [`URIS`]; `None` for any other URI.
@@ -183,6 +187,7 @@ pub(super) async fn dispatch(
         ISSUE_0_1_TYPE => handle_issue(state, ctx, doc, false).await,
         CERTIFY_TYPE => handle_certify(state, ctx, doc).await,
         BALLOT_BOXES_LIST_TYPE => handle_ballot_boxes_list(state, ctx, doc).await,
+        TOMBSTONE_SHOW_TYPE => handle_tombstone_show(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -660,6 +665,55 @@ fn indeterminate(doc: &TrustTask<Value>, reference: &str) -> TrustTaskOutcome {
 /// refused `unsupportedVersion` under 0.3 and 0.2, naming 0.6, and one releasing text below 10
 /// under 0.2, naming 0.3 — never answered in a shape the version forbids, and only to a caller
 /// who may see it.
+/// `tombstones/show/0.1` (items 1 – 4, VTI-BRD-009): what the community keeps of an election on a
+/// deleted board, to an active member or an elections manager. No tombstone and an unreadable
+/// one are the same `electionUnknown`.
+async fn handle_tombstone_show(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let (who, manager) = match caller(state, ctx, &doc).await {
+        Ok(c) => c,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<tombstone_show::Payload>(&doc) {
+        return reject;
+    }
+    // Item 1: a manager, or an active member.
+    let reader = manager
+        || match crate::member_portal::active::active_member(state, &who).await {
+            Ok(m) => m.is_some(),
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+    let election_id = doc.payload["electionId"].as_str().unwrap_or_default();
+    // Item 2: looked up only for a reader, so no one else learns whether it exists.
+    let kept = if reader {
+        match store::tombstone(state.elections.ks(), election_id).await {
+            Ok(t) => t,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
+    } else {
+        None
+    };
+    let Some(t) = kept else {
+        return unknown(&doc, TOMBSTONE_ERR_ELECTION_UNKNOWN);
+    };
+    // Items 3 – 4: as kept; a tombstone holds nothing else.
+    let stamp = |at: DateTime<Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut body = json!({
+        "electionId": t.election_id,
+        "manifestDigest": t.manifest_digest,
+        "ballotBox": t.ballot_box,
+        "checkpoints": t.checkpoints,
+        "deletedAt": stamp(t.deleted_at),
+    });
+    if let Some(at) = t.remove_at {
+        body["removeAt"] = json!(stamp(at));
+    }
+    success_response(&doc, body)
+}
+
 async fn handle_show(
     state: &AppState,
     ctx: &JoinAuthCtx,

@@ -74,6 +74,7 @@ registry = "https://trusttasks.org"
 "vtc/elections/list" = ["0.3", "0.5"]
 "vtc/elections/show" = ["0.1", "0.2", "0.3", "0.6"]
 "vtc/elections/tickets/issue" = ["0.1", "0.3"]
+"vtc/elections/tombstones/show" = "0.1"
 "vtc/endorsement-types/delete" = "0.1"
 "vtc/endorsement-types/list" = "0.2"
 "vtc/endorsement-types/register" = "0.1"

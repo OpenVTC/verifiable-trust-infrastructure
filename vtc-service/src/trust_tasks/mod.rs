@@ -2038,6 +2038,11 @@ mod spine_proof_tests {
         ),
         #[cfg(feature = "voting")]
         (
+            election_tasks::TOMBSTONE_SHOW_TYPE,
+            "a member read; `election_tasks::caller` takes the caller from the proof and refuses an unsigned one as `proofRequired`",
+        ),
+        #[cfg(feature = "voting")]
+        (
             election_tasks::SHOW_0_2_TYPE,
             "a roll-scoped read; `election_tasks::caller` takes the caller from the proof and refuses an unsigned one as `proofRequired`",
         ),
@@ -2602,6 +2607,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     election_tasks::LIST_0_3_TYPE,
     #[cfg(feature = "voting")]
     election_tasks::SHOW_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::TOMBSTONE_SHOW_TYPE,
     #[cfg(feature = "voting")]
     election_tasks::SHOW_0_3_TYPE,
     #[cfg(feature = "voting")]

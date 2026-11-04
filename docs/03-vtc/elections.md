@@ -341,6 +341,14 @@ decryption, and the openings and totals they give — and the board's order (CON
 nothing cast after the close, the authorization after the close and before any partial, one
 result, last, over the board before it (`orderInvalid` / `ceremonyInvalid` faults).
 
+### After a board is deleted
+
+An election opened on a community board that is later deleted keeps only a tombstone: its
+identifier, manifest digest, ballot box and the board heads the community kept
+([boards.md](boards.md), VTI-BRD-007 – 009). `vtc/elections/show` no longer knows it; read the
+tombstone with `vtc/elections/tombstones/show` (`cnm elections tombstone <election-id>`) for as
+long as `[boards] tombstone_retention` keeps it.
+
 ## Code
 
 `vtc-service/src/elections/` (`store`, `link`, `ops`, `sweeper`), `vti-voting/src/audit.rs`,

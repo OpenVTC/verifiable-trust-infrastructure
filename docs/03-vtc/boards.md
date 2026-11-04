@@ -107,6 +107,13 @@ member's wallet, as for every election.
    elections sweeper removes tombstones once their retention has passed; a retention of `0`
    keeps none. In the console: **Delete board** on a closed board.
 
+   While it is kept, any active member or elections manager reads a tombstone with
+   `vtc/elections/tombstones/show` (VTI-BRD-009) — `cnm elections tombstone <election-id>` — to
+   check a receipt against the heads the community kept. Each head comes in the ballot box's own
+   signed document, so the check does not rest on trusting the community. An unknown election,
+   one the caller may not read and one whose tombstone has gone are answered alike
+   (`electionUnknown`).
+
 ## From the command line
 
 Facilitators use `cnm boards`, as the community's administrator. Members use `pnm boards`, signing

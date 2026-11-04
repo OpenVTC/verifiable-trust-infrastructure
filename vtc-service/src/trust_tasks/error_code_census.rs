@@ -1706,6 +1706,13 @@ fn witnesses() -> Vec<Witness> {
             "board_tasks.rs",
             "vti_brd_002_create_refuses_what_its_specification_declares"
         ),
+        #[cfg(feature = "voting")]
+        witness!(
+            s::elections::tombstones::show::v0_1::error_codes::ELECTION_UNKNOWN,
+            crate::trust_tasks::election_tasks::TOMBSTONE_ERR_ELECTION_UNKNOWN,
+            "board_tasks.rs",
+            "vti_brd_009_a_tombstone_is_read_by_members_until_it_is_removed"
+        ),
         witness!(
             s::boards::delete::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::board_tasks::DELETE_ERR_NOT_FOUND,
