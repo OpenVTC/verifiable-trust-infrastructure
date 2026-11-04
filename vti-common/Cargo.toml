@@ -57,7 +57,7 @@ setup = ["dep:dialoguer"]
 # getting `X-Forwarded-For` wrong is a rate-limit bypass, and one
 # implementation is one place to get it right. Off by default — only the two
 # services turn it on.
-rate-limit = ["dep:tower_governor", "dep:ipnetwork", "dep:affinidi-rate-limit"]
+rate-limit = ["dep:ipnetwork", "dep:affinidi-rate-limit"]
 # OpenAPI schema generation: derives `utoipa::ToSchema` on the shared wire
 # types the VTA + VTC services expose through their `OpenApiRouter` (the ACL
 # `Role`, session `SessionState`). Off by default and zero-cost when off —
@@ -180,7 +180,6 @@ url = { workspace = true, optional = true }
 # `vta setup` interactive wizards.
 dialoguer = { workspace = true, optional = true }
 
-tower_governor = { version = "0.8", features = ["axum"], optional = true }
 ipnetwork = { workspace = true, optional = true }
 affinidi-rate-limit = { version = "0.1.4", optional = true }
 # Object-store backends for `blob_store` (S3, GCS). One crate for both, and it
@@ -204,6 +203,8 @@ tempfile = "3"
 # Drives Router::oneshot in the trust_task router tests. Same pattern
 # vtc-service / vta-service use for integration tests.
 tower = { version = "0.5", features = ["util"] }
+# Paused time for the rate-limit sweep test.
+tokio = { workspace = true, features = ["test-util"] }
 http-body-util = "0.1"
 bytes = "1"
 # `blob_store::presigned` streams a staged file as a request body; its tests

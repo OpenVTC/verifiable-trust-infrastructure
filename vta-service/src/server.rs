@@ -3917,14 +3917,16 @@ mod rest_ingress_tests {
         assert_eq!(trust.warning, None);
 
         // End to end: the parent's X-Forwarded-For names the client.
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
+        let mut req = axum::http::Request::builder()
+            .header("x-forwarded-for", "203.0.113.9")
+            .body(())
+            .unwrap();
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            vti_common::rate_limit::VSOCK_PARENT_PEER,
+        ));
         let extractor = vti_common::rate_limit::TrustedProxyKeyExtractor::new(trust.cidrs).unwrap();
         assert_eq!(
-            extractor
-                .clients()
-                .client_ip(vti_common::rate_limit::VSOCK_PARENT_PEER.ip(), &headers)
-                .unwrap(),
+            extractor.client_of(&req).unwrap().ip,
             "203.0.113.9".parse::<std::net::IpAddr>().unwrap()
         );
     }

@@ -222,7 +222,18 @@ pub fn router() -> Router<AppState> {
 /// runtime `config/patch` of a rate-limit key applies without rebuilding this
 /// router; callers with no config (the OpenAPI spec builder) pass
 /// [`QuotaSource::Fixed`].
+///
+/// # Panics
+///
+/// If `trust_xff_cidrs` holds a range covering every address. Configuration
+/// loading refuses one by the same rule
+/// (`vti_common::rate_limit::deserialize_trusted_proxy_cidrs`), so only a list
+/// built in code can reach this.
 fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenApiRouter<AppState> {
+    // One extractor for every limiter, so all of them key a client alike and
+    // share one log of a proxy's unreadable chains.
+    let extractor = vti_common::rate_limit::TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec())
+        .expect("trust_xff_cidrs holds no catch-all range");
     // Per-IP rate limiters on the unauthenticated endpoints, one bucket set
     // per branch: `auth` (crypto on caller input), `did-log` (public log
     // reads), `backup-blob`. Authenticated routes stay unthrottled — JWT auth
@@ -253,7 +264,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // globally) so authenticated endpoints keep MAX_BODY_SIZE for backup
     // import etc.
     let unauth = unauth.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
-    let unauth = rate_limit::apply(unauth, Limiter::Auth, trust_xff_cidrs, &quotas);
+    let unauth = rate_limit::apply(unauth, Limiter::Auth, &extractor, &quotas);
 
     // Public DID-log retrieval, on its own per-IP limiter. Resolving the
     // VTA's DID precedes every client command and the mediator + readiness
@@ -292,7 +303,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // Same unauth body cap as the auth branch — these are GETs, so any body
     // at all is unexpected.
     let did_log = did_log.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
-    let did_log = rate_limit::apply(did_log, Limiter::DidLog, trust_xff_cidrs, &quotas);
+    let did_log = rate_limit::apply(did_log, Limiter::DidLog, &extractor, &quotas);
 
     // Auth portal — same-origin popup target for cross-origin WebAuthn
     // flows. Sits on its own router branch so:
@@ -330,7 +341,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         "/trust-tasks",
         post(crate::trust_tasks::dispatch_trust_task),
     );
-    let trust_tasks = rate_limit::apply_trust_tasks(trust_tasks, trust_xff_cidrs, &quotas);
+    let trust_tasks = rate_limit::apply_trust_tasks(trust_tasks, &extractor, &quotas);
 
     let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(unauth)
@@ -408,12 +419,8 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     let backup_blob_router = OpenApiRouter::new()
         .routes(routes!(backup_blob::get_blob, backup_blob::post_blob))
         .layer(DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE));
-    let backup_blob_router = rate_limit::apply(
-        backup_blob_router,
-        Limiter::BackupBlob,
-        trust_xff_cidrs,
-        &quotas,
-    );
+    let backup_blob_router =
+        rate_limit::apply(backup_blob_router, Limiter::BackupBlob, &extractor, &quotas);
     let router = router.merge(backup_blob_router);
 
     // `GET /health/details` used to sit here. It is now two Trust Tasks with
@@ -801,10 +808,12 @@ mod rate_limit_tests {
         assert_eq!(limiter.charge(client).unwrap_err().retry_after_secs, 5);
     }
 
-    /// The reason the production path clamps: a zero interval would turn the
-    /// limiter off rather than make it strict.
+    /// A zero interval must make a limiter strict, never turn it off:
+    /// `RateLimiterState::per_period` reads a zero period as "no limit", so
+    /// the production path clamps it (`rate_limit::tests::
+    /// a_zero_quota_still_limits` holds the limiter it builds).
     #[test]
-    fn a_zero_interval_disables_the_limiter() {
+    fn a_zero_period_alone_would_disable_the_limiter() {
         assert!(!RateLimiterState::per_period(Duration::ZERO, 10).is_enabled());
     }
 }

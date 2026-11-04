@@ -917,9 +917,9 @@ fn build_api_chain(
 /// - [`UNAUTH_BODY_SIZE`] body cap (tighter than the 1 MiB main
 ///   API cap — generous enough for a JWE / sealed-transfer
 ///   envelope, small enough to reject blob floods).
-/// - Per-IP `affinidi-rate-limit` layer via [`TrustedProxyKeyExtractor`]'s
-///   rule (or the peer address when `trust_xff_cidrs` is empty): a burst of
-///   10, then one request every 5 s. A refusal is a `429` in the shape
+/// - Per-IP limit keyed by [`TrustedProxyKeyExtractor`] (the peer address
+///   when `trust_xff_cidrs` is empty, an IPv6 client's `/64`): a burst of 10,
+///   then one request every 5 s. A refusal is a `429` in the shape
 ///   [`crate::routing::rate_limit`] defines, reporting limiter `unauth`.
 fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
@@ -1134,20 +1134,17 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         affinidi_rate_limit::RateLimiterState::per_period(std::time::Duration::from_secs(5), 10)
             .with_source(crate::routing::rate_limit::RATE_LIMIT_SOURCE)
             .with_limiter_name(crate::routing::rate_limit::UNAUTH_LIMITER);
-    // `/trust-tasks` is not behind the tower layer: it charges a document to
-    // one of several budgets depending on who signed it
+    // `/trust-tasks` is not behind this layer: it charges a document to one
+    // of several budgets depending on who signed it
     // (`routing::trust_task_admission`). Anonymous documents still pay this
     // limiter's own state, so an address has one anonymous budget across the
     // whole chain, not one here and another on `/trust-tasks`.
-    let limits = crate::routing::trust_task_admission::TrustTaskLimits::new(
-        unauth.clone(),
-        extractor.clone(),
-    );
+    let limits = crate::routing::trust_task_admission::TrustTaskLimits::new(unauth, extractor);
     let unauth_router = unauth_router
-        .layer(
-            affinidi_rate_limit::RateLimitLayer::new(unauth)
-                .client_ip_extractor(extractor.clients().clone()),
-        )
+        .layer(axum::middleware::from_fn_with_state(
+            limits.clone(),
+            crate::routing::trust_task_admission::unauthenticated,
+        ))
         .merge(
             OpenApiRouter::<AppState>::new()
                 .routes(routes!(trust_tasks::dispatch))

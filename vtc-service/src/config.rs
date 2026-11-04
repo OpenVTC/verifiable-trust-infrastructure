@@ -1540,7 +1540,10 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default, deserialize_with = "trusted_proxy_cidrs")]
+    #[serde(
+        default,
+        deserialize_with = "vti_common::rate_limit::deserialize_trusted_proxy_cidrs"
+    )]
     pub trust_xff_cidrs: Vec<IpNetwork>,
     /// Retired: `trust_xff`. Present only to **refuse** a config that still
     /// declares it — replaced by `trust_xff_cidrs`, an explicit trusted-proxy
@@ -1552,22 +1555,6 @@ pub struct ServerConfig {
         skip_serializing
     )]
     pub trust_xff: (),
-}
-
-/// Deserialize `trust_xff_cidrs`, refusing a range that covers every address
-/// (`0.0.0.0/0`, `::/0`): trusting every peer lets any client name its own
-/// rate-limit bucket through `X-Forwarded-For`.
-fn trusted_proxy_cidrs<'de, D>(deserializer: D) -> Result<Vec<IpNetwork>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let cidrs = <Vec<IpNetwork> as serde::Deserialize>::deserialize(deserializer)?;
-    if let Some(cidr) = cidrs.iter().find(|cidr| cidr.prefix() == 0) {
-        return Err(serde::de::Error::custom(format!(
-            "trust_xff_cidrs: {cidr} covers every address; list the proxies' own ranges"
-        )));
-    }
-    Ok(cidrs)
 }
 
 /// Reject `trust_xff` with the migration the operator needs.

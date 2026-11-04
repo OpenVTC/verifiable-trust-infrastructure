@@ -194,6 +194,16 @@ range covering every address (`0.0.0.0/0`, `::/0`) fails to load. The rule is
 `affinidi-rate-limit`'s, shared with the mediator and the DID hosting
 service.
 
+An IPv6 client is charged as its `/64`, the block one host is normally given,
+so a host cannot buy a fresh bucket by rotating addresses inside it. The
+address itself is still what logs and handlers see. IPv4 clients are charged
+as their address.
+
+Each limiter holds at most 250,000 client buckets and drops the ones that
+have fully refilled every minute. If it is ever full of clients that have
+not, a client it has not seen is refused with `429` (`retry-after: 60`)
+until room is made; clients it already tracks are unaffected.
+
 `trust_xff_cidrs` is read when the REST router is built: changing it needs a
 restart (`POST /vta/restart` or a process restart). The quotas below do not.
 
