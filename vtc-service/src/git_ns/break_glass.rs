@@ -251,6 +251,11 @@ async fn send_notice(state: &AppState, recipient: &str, payload: &Value) -> Resu
     let doc = build_document(&vtc_did, recipient, type_uri, payload.clone());
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise break-glass notice: {e}")))?;
+    vti_common::trust_task_push::state_delivery_expiry(
+        &mut doc_value,
+        crate::server::REMOVAL_NOTICE_DELIVER_BY,
+        chrono::Utc::now(),
+    )?;
     signer.sign_operational_doc(&mut doc_value).await?;
     // An administrator who is away still needs to hear of it: the long window.
     crate::member_push::push_trust_task(

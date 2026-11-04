@@ -4099,13 +4099,7 @@ async fn push_requests(state: &AppState, rec: &ActionRecord) {
     }
     match sign_requests(state, rec, None).await {
         Ok(docs) => {
-            // A queue item never lapses; a push is still held no longer than
-            // a week — the action list is the source of truth (§7.1).
-            let ttl = Duration::from_secs(
-                rec.expires_at
-                    .saturating_sub(now_epoch())
-                    .clamp(60, 7 * 24 * 3600),
-            );
+            let ttl = request_delivery_window(rec);
             for (approver, doc) in docs {
                 // Queued is all an `Ok` means (R1.1).
                 if let Err(e) =
@@ -4117,6 +4111,18 @@ async fn push_requests(state: &AppState, rec: &ActionRecord) {
         }
         Err(e) => debug!(error = %e, "consent requests not signed; the action list has them"),
     }
+}
+
+/// How long a consent request is pushed for, and so the `expiresAt` its
+/// document states (VTI-TRN-048): until the action lapses, held no longer than
+/// a week. A queue item never lapses; the action list is the source of truth
+/// (§7.1).
+fn request_delivery_window(rec: &ActionRecord) -> Duration {
+    Duration::from_secs(
+        rec.expires_at
+            .saturating_sub(now_epoch())
+            .clamp(60, 7 * 24 * 3600),
+    )
 }
 
 /// The signed request for each approver slot — or only `only`'s.
@@ -4295,6 +4301,11 @@ pub(crate) async fn sign_requests(
         doc.thread_id = Some(rec.id.clone());
         let mut doc = serde_json::to_value(&doc)
             .map_err(|e| AppError::Internal(format!("serialise task-consent request: {e}")))?;
+        vti_common::trust_task_push::state_delivery_expiry(
+            &mut doc,
+            request_delivery_window(rec),
+            chrono::Utc::now(),
+        )?;
         // The operational key, under `authentication`: a request the VTC sends
         // as itself, not a credential it issues (VTI-KEY-106).
         signer.sign_operational_doc(&mut doc).await?;

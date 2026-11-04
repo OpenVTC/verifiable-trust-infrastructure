@@ -106,7 +106,6 @@ async fn try_send(
     let doc = build_document(&vtc_did, &prior.did, NOTICE_TYPE, payload);
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise authority-reduced notice: {e}")))?;
-    signer.sign_operational_doc(&mut doc_value).await?;
 
     // A revoked subject has no ACL row left, so — like the removal notice — it
     // is given the longer window: this may be the only thing that tells them.
@@ -115,6 +114,12 @@ async fn try_send(
     } else {
         crate::server::EXCHANGE_DELIVER_BY
     };
+    vti_common::trust_task_push::state_delivery_expiry(
+        &mut doc_value,
+        deliver_by,
+        chrono::Utc::now(),
+    )?;
+    signer.sign_operational_doc(&mut doc_value).await?;
     crate::member_push::push_trust_task(state, &prior.did, doc_value, deliver_by).await?;
     info!(
         subject = %prior.did,

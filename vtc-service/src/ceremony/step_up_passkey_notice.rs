@@ -136,6 +136,11 @@ async fn try_send(
     let doc = build_document(&vtc_did, did, type_uri, payload);
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise step-up passkey notice: {e}")))?;
+    vti_common::trust_task_push::state_delivery_expiry(
+        &mut doc_value,
+        crate::server::EXCHANGE_DELIVER_BY,
+        chrono::Utc::now(),
+    )?;
     signer.sign_operational_doc(&mut doc_value).await?;
 
     // Over whichever transport the member speaks — TSP, DIDComm or REST —
