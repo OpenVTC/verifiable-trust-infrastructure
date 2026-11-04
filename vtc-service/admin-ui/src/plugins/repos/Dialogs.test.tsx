@@ -2,6 +2,7 @@ import { useState } from "react";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { setProtectedIsolationForTests } from "@/components/Protected";
 import { postSignedTrustTask, signingAvailable, SigningUnavailableError } from "@/lib/api";
 import {
   MEMBERS_LIST_TASK,
@@ -74,6 +75,54 @@ describe("Repos dialogs — keyboard and focus", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(opener);
+  });
+
+  // The page takes the community theme; the dialog does not
+  // (vtc/community/theme/show/0.1, client item 2). So the opener is in the
+  // light DOM and the dialog in a shadow tree, and the keyboard contract has
+  // to hold across that boundary.
+  it("draws a form dialog out of the theme's reach, with the opener in the themed page", async () => {
+    setProtectedIsolationForTests(true);
+    try {
+      mockFetch(gitNsRoutes());
+      renderWithProviders(
+        <Opener
+          dialog={(close) => (
+            <GrantDialog
+              resource={WIDGETS.resource}
+              rights={["git.commit.sign"]}
+              onClose={close}
+              onBuilt={() => {}}
+            />
+          )}
+        />,
+      );
+      const opener = screen.getByRole("button", { name: "Open" });
+      opener.focus();
+      fireEvent.click(opener);
+      const host = await waitFor(() => {
+        const h = document.querySelector<HTMLElement>("[data-protected]");
+        expect(h?.shadowRoot?.querySelector("[role=dialog]")).toBeTruthy();
+        return h!;
+      });
+      const shadow = host.shadowRoot!;
+      const dialog = shadow.querySelector<HTMLElement>("[role=dialog]")!;
+      // Not in the light DOM, where the theme's selectors reach.
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(dialog.contains(shadow.activeElement)).toBe(true);
+
+      const submit = within(dialog).getByRole("button", { name: "Build the grant" });
+      submit.focus();
+      fireEvent.keyDown(window, { key: "Tab" });
+      expect(dialog.contains(shadow.activeElement)).toBe(true);
+      expect(shadow.activeElement).not.toBe(submit);
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      await waitFor(() => expect(document.querySelector("[data-protected]")).toBeNull());
+      expect(document.activeElement).toBe(opener);
+    } finally {
+      setProtectedIsolationForTests(false);
+    }
   });
 
   it("ties each field's error to it with aria-describedby", async () => {

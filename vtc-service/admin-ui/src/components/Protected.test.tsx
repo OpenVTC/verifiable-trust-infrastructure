@@ -2,7 +2,7 @@
 // client item 2): its children are in a shadow tree, the theme stylesheet is
 // not in it, and the default tokens are declared inside it.
 
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { Protected, rescopeRoot, setProtectedIsolationForTests } from "./Protected";
@@ -68,5 +68,51 @@ describe("Protected", () => {
     const outer = container.querySelector("[data-protected]")!;
     expect(outer.shadowRoot!.querySelector("[data-protected]")).toBeNull();
     expect(outer.shadowRoot!.querySelector("span")!.textContent).toBe("inner");
+  });
+
+  // The production build lowers `light-dark()` into toggles only
+  // `[data-theme]` flips, and the re-scoped `:root` rule resets them inside
+  // the isolation: without the attribute there, a pinned Dark on a light OS
+  // drew every protected surface light.
+  it("carries the pinned light / dark onto its root, and follows a change", async () => {
+    document.documentElement.setAttribute("data-theme", "dark");
+    try {
+      const { container } = render(
+        <Protected>
+          <span>inner</span>
+        </Protected>,
+      );
+      const inner = container.querySelector("[data-protected]")!.shadowRoot!.querySelector(".protected-root")!;
+      expect(inner.getAttribute("data-theme")).toBe("dark");
+
+      document.documentElement.setAttribute("data-theme", "light");
+      await waitFor(() => expect(inner.getAttribute("data-theme")).toBe("light"));
+
+      // "Match system" removes the attribute; so does the isolation.
+      document.documentElement.removeAttribute("data-theme");
+      await waitFor(() => expect(inner.hasAttribute("data-theme")).toBe(false));
+    } finally {
+      document.documentElement.removeAttribute("data-theme");
+    }
+  });
+
+  // A protected card is the one thing on a themed page not in the theme's
+  // colours; it says why, from inside the isolation, only while a theme is drawn.
+  it("marks a protected card as a protected area while a community theme is drawn", async () => {
+    const { container } = render(
+      <Protected ground="card">
+        <section className="card">Decide</section>
+      </Protected>,
+    );
+    const shadow = container.querySelector("[data-protected]")!.shadowRoot!;
+    const inner = shadow.querySelector(".protected-root")!;
+    // beforeEach drew a theme.
+    expect(inner.hasAttribute("data-community-theme")).toBe(true);
+    const css = shadow.querySelector("style")!.textContent!;
+    expect(css).toContain('[data-ground="card"][data-community-theme]::before');
+    expect(css).toContain("Protected area");
+
+    applyCommunityTheme("");
+    await waitFor(() => expect(inner.hasAttribute("data-community-theme")).toBe(false));
   });
 });
