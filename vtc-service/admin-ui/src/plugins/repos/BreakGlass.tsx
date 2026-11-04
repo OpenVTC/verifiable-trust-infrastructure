@@ -29,6 +29,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { type Column, DataTable, useSortedRows } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
+import { Protected } from "@/components/Protected";
 import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
 import { useIsGitCommunityAdmin, useViewerDid } from "@/lib/viewer";
@@ -268,7 +269,11 @@ export function BreakGlassList() {
         </section>
       )}
 
+      {/* Self-granted rights waiting on someone else: a warning, out of the
+          community theme's reach (vtc/community/theme/show/0.1, client
+          item 2). Ratify and revoke open protected dialogs. */}
       {q.data && (
+        <Protected ground="card">
         <section className="card" aria-labelledby="bg-awaiting">
           <h3 id="bg-awaiting">
             <Siren aria-hidden="true" size={16} /> Awaiting another administrator ·{" "}
@@ -280,6 +285,7 @@ export function BreakGlassList() {
             table(awaiting, "Break-glass grants awaiting a decision")
           )}
         </section>
+        </Protected>
       )}
 
       {q.data && settled.length > 0 && (

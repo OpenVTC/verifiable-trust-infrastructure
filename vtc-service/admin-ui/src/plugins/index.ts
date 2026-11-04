@@ -85,8 +85,9 @@ export function registerBuiltinPlugins(): void {
     path: "/actions",
     iconComponent: ListChecks,
     reactComponent: Actions,
-    // A deciding page: out of the community theme's reach.
-    protected: true,
+    // Takes the community theme; its decision surfaces (each card that
+    // decides, the confirmations, the dialogs) are drawn out of the theme's
+    // reach where they render (`components/Protected.tsx`).
   });
 
   registerPlugin({
@@ -107,8 +108,9 @@ export function registerBuiltinPlugins(): void {
     path: "/join-requests",
     iconComponent: Inbox,
     reactComponent: JoinRequests,
-    // A deciding page: out of the community theme's reach.
-    protected: true,
+    // Takes the community theme; its decision surfaces (each card that
+    // decides, the confirmations, the dialogs) are drawn out of the theme's
+    // reach where they render (`components/Protected.tsx`).
     capabilities: ["vtc.join.decide"],
   });
 
@@ -119,8 +121,9 @@ export function registerBuiltinPlugins(): void {
     path: "/members",
     iconComponent: Users,
     reactComponent: Members,
-    // A deciding page: out of the community theme's reach.
-    protected: true,
+    // Takes the community theme; its decision surfaces (each card that
+    // decides, the confirmations, the dialogs) are drawn out of the theme's
+    // reach where they render (`components/Protected.tsx`).
     capabilities: ["vtc.members.manage"],
   });
 
@@ -308,8 +311,9 @@ export function registerBuiltinPlugins(): void {
     path: "/repos",
     iconComponent: FolderGit2,
     reactComponent: Repos,
-    // A deciding page: out of the community theme's reach.
-    protected: true,
+    // Takes the community theme; its decision surfaces (each card that
+    // decides, the confirmations, the dialogs) are drawn out of the theme's
+    // reach where they render (`components/Protected.tsx`).
     // Git-namespace rights are capabilities on the ACL entry (phase C3): the
     // page is for whoever administers a namespace or manages a repository —
     // at any qualifier — and a community administrator, whose `git.ns.admin`

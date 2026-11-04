@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Field } from "@/components/Field";
+import { Protected } from "@/components/Protected";
 import { useToast } from "@/lib/toast";
 import {
   appendNote,
@@ -72,7 +73,10 @@ export function MemberNotesCard({ did }: { did: string }) {
   // Not a notes holder, or no directory entry: nothing to show.
   if (!entryId || notes.isError) return null;
   const items = notes.data?.items ?? [];
+  // Withdrawing a note, and releasing the notes to their member: out of the
+  // community theme's reach (vtc/community/theme/show/0.1, client item 2).
   return (
+    <Protected ground="card">
     <section className="card" aria-labelledby="member-notes-heading">
       <h3 id="member-notes-heading">Administrators&rsquo; notes</h3>
       <p className="muted">
@@ -163,5 +167,6 @@ export function MemberNotesCard({ did }: { did: string }) {
         </form>
       </details>
     </section>
+    </Protected>
   );
 }

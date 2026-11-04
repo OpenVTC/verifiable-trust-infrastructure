@@ -6,6 +6,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
+import { setProtectedIsolationForTests } from "@/components/Protected";
 import { postSignedTrustTask, type WhoamiResponse } from "@/lib/api";
 import { matchCode, payloadDigestOf, wireDigest } from "@/lib/action-summary";
 import {
@@ -166,6 +167,33 @@ describe("the Actions page", () => {
     expect(within(card).getByText(/expires in 2 d 4 h/)).toBeTruthy();
     expect(within(card).getByText(/raised 4 actions in the last 10/)).toBeTruthy();
     expect(within(card).getByText("3")).toBeTruthy();
+  });
+
+  // vtc/community/theme/show/0.1, client item 2: the card an approval is given
+  // on is out of the theme's reach; the list around it takes the theme.
+  it("draws each card out of the theme's reach, and the page around it in the theme's", async () => {
+    setProtectedIsolationForTests(true);
+    try {
+      installWallet();
+      routes([waiting]);
+      render();
+      const shadow = await waitFor(() => {
+        const s = document.querySelector("[data-protected]")?.shadowRoot;
+        expect(s?.querySelector('article[aria-label="Action act-1"]')).toBeTruthy();
+        return s!;
+      });
+      const card = shadow.querySelector<HTMLElement>('article[aria-label="Action act-1"]')!;
+      expect(await within(card).findByRole("button", { name: "Approve" })).toBeTruthy();
+      expect(within(card).getByRole("button", { name: "Decline" })).toBeTruthy();
+      expect(within(card).getByText(`Code: ${matchCode(waiting.payloadDigest)}`)).toBeTruthy();
+      // Nothing of the card is in the light DOM, where the theme's selectors reach…
+      expect(screen.queryByRole("article")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+      // …and the tabs are: they decide nothing.
+      expect(screen.getByRole("tablist", { name: "Action lists" })).toBeTruthy();
+    } finally {
+      setProtectedIsolationForTests(false);
+    }
   });
 
   it("lays a card out as an inbox row: verified chip and requester first, decision on the right", async () => {

@@ -19,6 +19,7 @@ import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from
 import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { Field } from "@/components/Field";
+import { Protected } from "@/components/Protected";
 import { useSingleAdminMode } from "@/lib/action-badge";
 import { useNameBook } from "@/lib/names";
 import { useViewerDid } from "@/lib/viewer";
@@ -64,8 +65,27 @@ import { SingleAdminSelfGrantNotice, useModal } from "./ui";
 
 const OTHER = "__other__";
 
-/** A modal form, with the Repos dialogs' keyboard contract (`useModal`). */
-function FormDialog({
+type FormDialogProps = Parameters<typeof FormDialogSurface>[0];
+
+/**
+ * A modal form, with the Repos dialogs' keyboard contract (`useModal`). Every
+ * Repos form builds a grant, revoke, transfer or break-glass, so it is drawn
+ * out of the community theme's reach (`vtc/community/theme/show/0.1`, client
+ * item 2); the scrim and the dialog paint their own opaque ground.
+ *
+ * `Protected` wraps the surface rather than sitting inside it: it portals its
+ * children a render after it mounts, so a `useModal` above it would run before
+ * the dialog exists and never move focus in.
+ */
+function FormDialog(props: FormDialogProps) {
+  return (
+    <Protected ground="none">
+      <FormDialogSurface {...props} />
+    </Protected>
+  );
+}
+
+function FormDialogSurface({
   title,
   onClose,
   onSubmit,
