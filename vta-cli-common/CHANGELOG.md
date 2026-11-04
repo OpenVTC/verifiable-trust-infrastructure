@@ -2,6 +2,45 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.55.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.54.0...vta-cli-common-v0.55.0) — 2026-11-04
+
+
+### Added
+
+- **rooms**: The VTA serves rooms/keys/browse/0.4 and the rooms/keys/read/0.2 batch; the SDK and pnm write kinds, replies and reactions under the room's recordMembers ([#2452](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2452))
+
+The last stage of trust-tasks-tf #1027.
+
+  The VTA serves rooms/keys/browse/0.4 (list/0.6 rows passed through as served, list/0.5 on
+  unsupportedType) and rooms/keys/read/0.2: one record or up to 32, get/0.3 with the host's
+  createdAt, createdBy and bodyStoredAt (get/0.2 on unsupportedType), each key answered on
+  its own with the code and details it would have been refused with alone, notAttempted past
+  512 KiB of answers or 15 s, whole-request refusals as one trust-task-error, and repairs once
+  per batch under the per-member lock. read/0.1 is answered by the same reader.
+
+  vta-sdk gains room_browse, room_read, room_read_batch, room_seal_as_principal_v0_3,
+  room_act_v0_11 and the writer gate room_check_record_members (typed
+  VtaError::RecordMembersNotPermitted, profile cached per room epoch). pnm rooms put takes
+  --kind, --reply-to and --react/--to, sets writtenAt where the profile permits it, and prints
+  the `pnm rooms profile set --record-members` fix on a refusal; pnm rooms read reads a batch
+  through the VTA; get/list/put default to get/0.3, list/0.6 and put/0.5 with fallback.
+
+- **rooms**: Record kinds, replies and image previews at the VTA — serve rooms/keys/seal/0.3 and act/0.11, carry recordMembers ([#2449](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2449))
+
+The first stage of trust-tasks-tf #1027: a record says what it is to a
+  reader (kind), what it answers (inReplyTo), when it was written and edited
+  (writtenAt, editedAt), and a file can carry an image's width, height and
+  preview. A room's profile lists which of these its writers may use
+  (RoomProfile.recordMembers).
+
+  Pinned in vti-specs-rooms beside the versions already pinned:
+  rooms/keys/seal/0.3, rooms/keys/act/0.11, rooms/records/put/0.5,
+  rooms/records/list/0.6, rooms/records/get/0.3, rooms/keys/browse/0.4 and
+  rooms/keys/read/0.2. Every bundle referencing rooms/_shared was re-vendored:
+  #1027 changed SealedRecordBody, RoomProfile and FileManifest in place.
+
+
+
 ## [0.54.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.53.0...vta-cli-common-v0.54.0) — 2026-11-04
 
 

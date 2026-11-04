@@ -2,6 +2,27 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-rooms-v0.4.1...vti-specs-rooms-v0.5.0) — 2026-11-04
+
+
+### Added
+
+- **rooms**: Record kinds, replies and image previews at the VTA — serve rooms/keys/seal/0.3 and act/0.11, carry recordMembers ([#2449](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2449))
+
+The first stage of trust-tasks-tf #1027: a record says what it is to a
+  reader (kind), what it answers (inReplyTo), when it was written and edited
+  (writtenAt, editedAt), and a file can carry an image's width, height and
+  preview. A room's profile lists which of these its writers may use
+  (RoomProfile.recordMembers).
+
+  Pinned in vti-specs-rooms beside the versions already pinned:
+  rooms/keys/seal/0.3, rooms/keys/act/0.11, rooms/records/put/0.5,
+  rooms/records/list/0.6, rooms/records/get/0.3, rooms/keys/browse/0.4 and
+  rooms/keys/read/0.2. Every bundle referencing rooms/_shared was re-vendored:
+  #1027 changed SealedRecordBody, RoomProfile and FileManifest in place.
+
+
+
 ## [0.4.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-rooms-v0.4.0...vti-specs-rooms-v0.4.1) — 2026-11-04
 
 
