@@ -465,9 +465,17 @@ member's room credentials **by issuer** — `issuer == roomId`, type
 **subject is a persona you may act as**. That second filter is the privilege
 boundary: a credential stored without a context is visible from every context,
 and its subject being someone else's persona is what keeps it theirs. It refuses
-if no persona of yours holds one, if one persona holds two of a kind for one
-room, or if you act in several contexts each holding a persona in the room (act
-from the one you mean).
+if no persona of yours holds one, or if you act in several contexts each holding
+a persona in the room (act from the one you mean).
+
+A persona holding **two of a kind** from one room — a member removed and admitted
+again keeps the first grant beside the second, since accepting stores the new
+credentials and retires nothing — uses the one with the **latest `validFrom`**
+among those in force (any not yet valid never displaces one that is). That is the
+room's own rule: a removal withdraws the member's credentials issued *before* its
+`revokedAt`, so the later grant is the one in force. Only two equally recent ones
+are refused; the refusal names their vault ids, and `pnm cred-vault archive <id>`
+retires the one you do not mean.
 
 The four actions are a ladder with one deliberate break: **`curate` is not
 implied by `write`.** Deciding what a room's shared knowledge is worth is a
