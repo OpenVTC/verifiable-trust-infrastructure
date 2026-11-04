@@ -132,6 +132,15 @@ pub const ELECTIONS: &str = "elections";
 /// restore without it could never tell them of a withdrawal (VTI-NTF-044).
 pub const NOTIFICATIONS: &str = "notifications";
 
+/// Community boards (`crate::boards`, VTI-BRD-*): each board (`board:<boardId>`), its ideas
+/// (`idea:<ideaId>`, indexed `bidea:<boardId>:<ideaId>`) and notes (`note:<noteId>`,
+/// indexed `bnote:<boardId>:<noteId>`). An accepted idea keeps only its election's
+/// identifier; where that election stands is read from `ELECTIONS`, never copied here.
+///
+/// **Backed up**: what members proposed and wrote, and which election each idea is put to,
+/// are the community's own records; a restore without them would orphan every board election.
+pub const BOARDS: &str = "boards";
+
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
 /// host starts with none, and a client resumes from `begin`.
 pub use vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE as ROOM_BLOB_TRANSFERS;
@@ -307,6 +316,7 @@ pub const ALL: &[&str] = &[
     DIRECTORY,
     ELECTIONS,
     NOTIFICATIONS,
+    BOARDS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -375,6 +385,8 @@ pub const BACKED_UP: &[&str] = &[
     // Who took a ticket, the manifests, the checkpoints and certifications.
     ELECTIONS,
     NOTIFICATIONS,
+    // Ideas, notes and which election each idea is put to.
+    BOARDS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -518,7 +530,8 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 45 top-level `*_ks` fields (the member portal's two and `notifications_ks` among them) plus
+        // 46 top-level `*_ks` fields (the member portal's two, `notifications_ks` and `boards_ks`
+        // among them) plus
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch, plus the two room-file keyspaces
@@ -527,7 +540,7 @@ mod tests {
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
         // `AppState::directory` holds (`DIRECTORY`), plus the one
         // `AppState::elections` holds (`ELECTIONS`).
-        assert_eq!(ALL.len(), 57, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 58, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

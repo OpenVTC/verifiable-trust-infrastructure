@@ -7,7 +7,9 @@
 //!
 //! - **Join**: verify the network at the administrator's URL answers as the DID the
 //!   administrator named, verify its listing, register groups for its roles, sign the
-//!   acknowledgement and verify the grant. Every statement is signed **as the community**,
+//!   acknowledgement and verify the grant. Every request to the network is a `vtn/*` Trust
+//!   Task (`vti_vtn::tasks`) signed **as the community**, with no sign-in, and every
+//!   statement in it is too,
 //!   by [`crate::credentials::LocalSigner`], so a community holding a post-quantum key signs
 //!   with a proof set. A network verifies proof sets (`vti_vtn::verify`).
 //! - **Repudiate** a listing, or **leave** by repudiating the grant.
@@ -32,16 +34,21 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use trust_tasks_rs::RequestPayload;
 use vti_common::audit::{AuditEvent, NetworkMembershipChangedData};
 use vti_common::auth::{ProofPurpose, PurposeVmResolver, TrustTaskVmResolver};
 use vti_common::error::AppError;
+use vti_specs::vtn::entries::show::v0_1 as entries_show;
+use vti_specs::vtn::membership::{
+    acknowledge::v0_1 as acknowledge, offer::v0_1 as offer, repudiate::v0_1 as repudiate_task,
+};
 use vti_vtn::credentials::member;
 use vti_vtn::identity::{Party, SignFuture};
 use vti_vtn::model::EntryKind;
 use vti_vtn::relay::{self, Envelope};
 use vti_vtn::verify::{KeyFuture, KeyResolver, verify_signed_by};
 use vti_vtn::vocab::{GROUP_REGISTERED_V1, LISTS_V1};
-use vti_vtn::{ClientError, VtnClient, VtnError, encode_did};
+use vti_vtn::{ClientError, VtnClient, VtnError};
 
 use crate::credentials::LocalSigner;
 use crate::credentials::delivery::{Thread, push_document};
@@ -138,8 +145,33 @@ impl From<VtnError> for NetError {
     }
 }
 
+/// A network's refusal: `notListed` (from any `vtn/*` task that declares it) as such,
+/// anything else as the network's refusal.
 fn refused(e: ClientError) -> NetError {
-    NetError::Refused(e.to_string())
+    match e.code() {
+        Some(code) if code.ends_with(":notListed") => NetError::NotListed(e.to_string()),
+        _ => NetError::Refused(e.to_string()),
+    }
+}
+
+/// Send `json` as task `P` to `network`, signed by the community; the answer as JSON.
+async fn ask<P>(
+    client: &VtnClient,
+    community: &Community,
+    network: &str,
+    json: Value,
+) -> Result<Value, NetError>
+where
+    P: RequestPayload + serde::de::DeserializeOwned,
+    P::Response: Serialize,
+{
+    let payload: P = serde_json::from_value(json)
+        .map_err(|e| NetError::Refused(format!("building {}: {e}", P::TYPE_URI)))?;
+    let answer = client
+        .task(community, network, &payload)
+        .await
+        .map_err(refused)?;
+    serde_json::to_value(answer).map_err(|e| NetError::Refused(e.to_string()))
 }
 
 /// Allow for clock skew between the community and the network on what we sign.
@@ -325,13 +357,10 @@ fn audit_data(network: &str, event: &str) -> NetworkMembershipChangedData {
 
 // --------------------------------------------------------------- the network
 
-/// Read the network's profile at `url` and check it is `network`; sign in as the community.
-async fn session(
-    url: &str,
-    network: &str,
-    community: &Community,
-) -> Result<(VtnClient, Value), NetError> {
-    let mut client = client(url)?;
+/// Read the network's profile at `url` and check it is `network`. There is nothing to sign
+/// in to: each request the community sends is signed (`vtn/*` Trust Tasks).
+async fn session(url: &str, network: &str) -> Result<(VtnClient, Value), NetError> {
+    let client = client(url)?;
     let profile = client.profile().await.map_err(refused)?;
     let answering = profile["did"].as_str().unwrap_or_default();
     if answering != network {
@@ -339,13 +368,6 @@ async fn session(
             "the network at {url} answers as {answering}, not {network}"
         )));
     }
-    client
-        .sign_in_as(community, network, None)
-        .await
-        .map_err(|e| match e.status() {
-            Some(401) => NetError::NotListed(format!("{network} refused the community's sign-in")),
-            _ => refused(e),
-        })?;
     Ok((client, profile))
 }
 
@@ -356,14 +378,14 @@ async fn own_listing(
     community: &Community,
     resolver: &Resolver,
 ) -> Result<Value, NetError> {
-    let entry = client
-        .get(&format!("/v1/entries/{}", encode_did(&community.did)))
-        .await
-        .map_err(|e| match e.status() {
-            Some(404) => NetError::NotListed(format!("{network} has no entry for this community")),
-            _ => refused(e),
-        })?;
-    let listing = entry["listing"].clone();
+    // A party always reads its own entry; any refusal means it has none there.
+    let answer =
+        ask::<entries_show::Payload>(client, community, network, json!({ "did": community.did }))
+            .await
+            .map_err(|e| {
+                NetError::NotListed(format!("{network} has no entry for this community: {e}"))
+            })?;
+    let listing = answer["entry"]["listing"].clone();
     let vsc = verify_signed_by(&listing, network, resolver, Utc::now())
         .await
         .map_err(|e| NetError::NotListed(format!("the listing does not verify: {e}")))?;
@@ -393,23 +415,14 @@ async fn register_with(
     resolver: &Resolver,
 ) -> Result<RegisteredGroup, NetError> {
     let endpoint = relay_endpoint(state, &group.group_id).await?;
-    let registration = vti_vtn::groups::register_as(
-        community,
-        network,
-        role,
-        &group.group_did,
-        &endpoint,
-        signing_time(),
-    )
-    .await?;
-    let accepted = client
-        .post(
-            &format!("/v1/entries/{}/groups", encode_did(&community.did)),
-            &json!({ "registration": registration }),
-        )
+    let registration =
+        vti_vtn::groups::register_as(community, network, role, &group.group_did, &endpoint).await?;
+    // The registration is the signed `vtn/groups/register` request itself.
+    let accepted: Value = client
+        .send_request(&registration, network)
         .await
         .map_err(refused)?;
-    let acceptance = accepted["acceptance"]["credential"].clone();
+    let acceptance = accepted["group"]["acceptance"].clone();
     let vsc = verify_signed_by(&acceptance, network, resolver, Utc::now()).await?;
     if vsc.predicate() != Some(GROUP_REGISTERED_V1) || vsc.subject() != group.group_did {
         return Err(NetError::Refused(
@@ -448,7 +461,7 @@ pub async fn join(
         groups.push((role.clone(), group(state, group_id).await?));
     }
     let url = url.trim_end_matches('/');
-    let (client, profile) = session(url, network, &community).await?;
+    let (client, profile) = session(url, network).await?;
     for required in profile["roles"]
         .as_array()
         .into_iter()
@@ -469,10 +482,8 @@ pub async fn join(
             .push(register_with(state, &client, network, &community, role, g, &resolver).await?);
     }
 
-    let offer = client
-        .get(&format!("/v1/entries/{}/offer", encode_did(&community.did)))
-        .await
-        .map_err(refused)?;
+    let offer =
+        ask::<offer::Payload>(&client, &community, network, json!({})).await?["offer"].clone();
     if offer["issuer"].as_str() != Some(network)
         || offer["credentialSubject"]["id"].as_str() != Some(community.did.as_str())
     {
@@ -481,14 +492,14 @@ pub async fn join(
         ));
     }
     let ack = member::acknowledge_as(&offer, &community, signing_time(), None).await?;
-    let entry = client
-        .post(
-            &format!("/v1/entries/{}/acknowledge", encode_did(&community.did)),
-            &json!({ "acknowledgement": ack }),
-        )
-        .await
-        .map_err(refused)?;
-    let grant = entry["grant"].clone();
+    let answer = ask::<acknowledge::Payload>(
+        &client,
+        &community,
+        network,
+        json!({ "acknowledgement": ack }),
+    )
+    .await?;
+    let grant = answer["entry"]["grant"].clone();
     let grant_vc = verify_signed_by(&grant, network, &resolver, Utc::now()).await?;
     let mut claims = ack.clone();
     if let Some(o) = claims.as_object_mut() {
@@ -541,16 +552,16 @@ pub async fn repudiate(
         return Err(NetError::IsMember);
     }
     let url = url.trim_end_matches('/');
-    let (client, profile) = session(url, network, &community).await?;
+    let (client, profile) = session(url, network).await?;
     let listing = own_listing(&client, network, &community, &resolver(state)).await?;
     let repudiation = member::repudiate_as(&listing, &community, signing_time()).await?;
-    client
-        .post(
-            &format!("/v1/entries/{}/repudiate", encode_did(&community.did)),
-            &json!({ "repudiation": repudiation }),
-        )
-        .await
-        .map_err(refused)?;
+    ask::<repudiate_task::Payload>(
+        &client,
+        &community,
+        network,
+        json!({ "repudiation": repudiation }),
+    )
+    .await?;
     let membership = Membership {
         network: network.to_string(),
         url: url.to_string(),
@@ -585,13 +596,13 @@ pub async fn leave(
         .ok_or(NetError::NotMember)?;
     let grant = membership.grant.clone().ok_or(NetError::NotMember)?;
     let repudiation = member::repudiate_as(&grant, &community, signing_time()).await?;
-    client(&membership.url)?
-        .post(
-            &format!("/v1/entries/{}/repudiate", encode_did(&community.did)),
-            &json!({ "repudiation": repudiation }),
-        )
-        .await
-        .map_err(refused)?;
+    ask::<repudiate_task::Payload>(
+        &client(&membership.url)?,
+        &community,
+        network,
+        json!({ "repudiation": repudiation }),
+    )
+    .await?;
     membership.state = State::Departed;
     membership.repudiation = Some(repudiation);
     membership.updated_at = Utc::now();

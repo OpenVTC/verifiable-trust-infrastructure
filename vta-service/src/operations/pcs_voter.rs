@@ -151,7 +151,7 @@ fn voter_key(context_id: &str, community: &str, election_id: &str) -> String {
 }
 
 /// The key [`VoterCasts`] is wrapped under, beside the record at `voter_key`.
-fn casts_key(voter_key: &str) -> String {
+pub(super) fn casts_key(voter_key: &str) -> String {
     format!("voter-casts:{}", voter_key.trim_start_matches("voter:"))
 }
 

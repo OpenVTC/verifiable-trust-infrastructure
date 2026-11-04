@@ -21,15 +21,18 @@
 
 use chrono::{DateTime, TimeDelta, Utc};
 use trust_tasks_rs::FreshnessPolicy;
-use trust_tasks_rs::freshness::DEFAULT_SKEW;
+use trust_tasks_rs::freshness::{DEFAULT_EXPIRY_HORIZON, DEFAULT_SKEW};
 use trust_tasks_rs::specs::trust_task_discovery::v0_3 as wire;
 
-/// A consumer's acceptance window: how long after its `issuedAt` a document is
-/// still accepted, and the clock-skew tolerance applied in both directions
-/// (`trust-task-discovery/0.3`, *Acceptance window*).
+/// A consumer's acceptance window: how long after its `issuedAt` a document
+/// that states no `expiresAt` is still accepted, and the clock-skew tolerance
+/// applied in both directions (`trust-task-discovery/0.3`, *Acceptance
+/// window*).
 ///
-/// A document received at `now` is refused when
-/// `now > issuedAt + max_age + clock_skew`, and when
+/// A document without an `expiresAt`, received at `now`, is refused when
+/// `now > issuedAt + max_age + clock_skew`. One with an `expiresAt` is accepted
+/// until then, whatever the maximum age, but no later than [`EXPIRY_HORIZON`]
+/// after its `issuedAt` (VTI-OPS-024, VTI-OPS-028). Either is refused when
 /// `issuedAt > now + clock_skew`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcceptanceWindow {
@@ -53,14 +56,53 @@ pub const VTI_ACCEPTANCE_WINDOW: AcceptanceWindow = AcceptanceWindow {
     clock_skew: DEFAULT_SKEW,
 };
 
+/// A document's expiry horizon (**VTI-OPS-028**): thirty days after its
+/// `issuedAt`. A stated `expiresAt` later than that is applied as the horizon,
+/// not refused.
+///
+/// Fixed by the specification rather than per node, because a sender has to
+/// know it without asking; it is also `trust_tasks_rs`'s
+/// [`DEFAULT_EXPIRY_HORIZON`], which a test pins.
+pub const EXPIRY_HORIZON: TimeDelta = DEFAULT_EXPIRY_HORIZON;
+
+/// How long a consumer applying `policy` must keep its record of having
+/// accepted `doc` (**VTI-OPS-029**): the document's acceptance end, plus the
+/// clock-skew tolerance. `None` only when `policy` bounds nothing.
+///
+/// The acceptance end is `FreshnessPolicy::record_expiry`: `issuedAt + max_age`
+/// (the skew already added) without an `expiresAt`; the `expiresAt` with one;
+/// the expiry horizon (the skew already added) when the `expiresAt` lies beyond
+/// it. The skew is added here to the middle case, which `record_expiry` returns
+/// bare.
+///
+/// Never shorter: a record dropped while its document is still acceptable lets
+/// a replay run twice. A stated expiry is honoured up to thirty days
+/// (VTI-OPS-028), so a record capped at `issuedAt + max_age` would be exactly
+/// that. The horizon is what stops a producer choosing how long a consumer
+/// must remember an `id`, which is why both VTI nodes require `issuedAt`: the
+/// horizon is counted from it.
+pub fn retain_until<P>(
+    policy: &FreshnessPolicy,
+    doc: &trust_tasks_rs::TrustTask<P>,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let end = policy.record_expiry(doc, now)?;
+    Some(match doc.expires_at {
+        Some(expires_at) if end == expires_at => expires_at + policy.skew,
+        _ => end,
+    })
+}
+
 impl AcceptanceWindow {
     /// The freshness policy a consumer applying this window uses: its
-    /// `max_age` and its skew, nothing else. A node adds its own posture on
-    /// top (both VTI nodes add `requiring_issued_at`).
+    /// `max_age` and its skew, and the [`EXPIRY_HORIZON`] for a document that
+    /// states an `expiresAt`. A node adds its own posture on top (both VTI
+    /// nodes add `requiring_issued_at`).
     pub fn freshness_policy(&self) -> FreshnessPolicy {
         FreshnessPolicy::default()
             .with_max_age(self.max_age)
             .with_skew(self.clock_skew)
+            .with_expiry_horizon(EXPIRY_HORIZON)
     }
 
     /// The window as `trust-task-discovery/0.3` states it, in whole seconds.
@@ -151,6 +193,94 @@ mod tests {
         assert_eq!(wire.clock_skew_seconds, 1);
         let back = AcceptanceWindow::from_advertised(&wire);
         assert!(back.max_age <= w.max_age && back.clock_skew <= w.clock_skew);
+    }
+
+    /// **VTI-OPS-028** fixes the horizon at thirty days.
+    #[test]
+    fn vti_ops_028_the_expiry_horizon_is_thirty_days() {
+        assert_eq!(EXPIRY_HORIZON, TimeDelta::days(30));
+        assert_eq!(
+            VTI_ACCEPTANCE_WINDOW.freshness_policy().expiry_horizon,
+            Some(EXPIRY_HORIZON)
+        );
+    }
+
+    /// **VTI-OPS-024 / VTI-OPS-028.** A stated expiry replaces the maximum age:
+    /// a document that says it stands for a day is accepted an hour later, and
+    /// one that states a year is accepted until the horizon and refused after
+    /// it, never refused for stating it.
+    #[test]
+    fn vti_ops_028_a_stated_expiry_replaces_the_maximum_age_up_to_the_horizon() {
+        let policy = VTI_ACCEPTANCE_WINDOW.freshness_policy();
+        let issued = chrono::SubsecRound::trunc_subsecs(Utc::now(), 0);
+        let doc = |expires: DateTime<Utc>| {
+            let mut d = trust_tasks_rs::TrustTask::new(
+                "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
+                "https://trusttasks.org/spec/acl/list/0.1".parse().unwrap(),
+                serde_json::json!({}),
+            );
+            d.issued_at = Some(issued);
+            d.expires_at = Some(expires);
+            d
+        };
+        let day = doc(issued + TimeDelta::days(1));
+        assert!(
+            day.validate_freshness(issued + TimeDelta::hours(1), &policy)
+                .is_ok()
+        );
+        let year = doc(issued + TimeDelta::days(365));
+        assert!(year.validate_freshness(issued, &policy).is_ok());
+        assert!(
+            year.validate_freshness(issued + EXPIRY_HORIZON, &policy)
+                .is_ok()
+        );
+        assert!(
+            year.validate_freshness(
+                issued + EXPIRY_HORIZON + DEFAULT_SKEW + TimeDelta::seconds(1),
+                &policy
+            )
+            .is_err()
+        );
+    }
+
+    /// **VTI-OPS-029** at each of the three acceptance ends.
+    #[test]
+    fn vti_ops_029_the_record_outlasts_every_acceptance_end_by_the_skew() {
+        let policy = VTI_ACCEPTANCE_WINDOW.freshness_policy();
+        let issued = chrono::SubsecRound::trunc_subsecs(Utc::now(), 0);
+        let doc = |expires: Option<DateTime<Utc>>| {
+            let mut d = trust_tasks_rs::TrustTask::new(
+                "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
+                "https://trusttasks.org/spec/acl/list/0.1".parse().unwrap(),
+                serde_json::json!({}),
+            );
+            d.issued_at = Some(issued);
+            d.expires_at = expires;
+            d
+        };
+        let skew = DEFAULT_SKEW;
+        assert_eq!(
+            retain_until(&policy, &doc(None), issued),
+            Some(issued + VTI_ACCEPTANCE_WINDOW.max_age + skew),
+            "no expiry: the maximum age"
+        );
+        let day = issued + TimeDelta::days(1);
+        assert_eq!(
+            retain_until(&policy, &doc(Some(day)), issued),
+            Some(day + skew),
+            "a stated expiry inside the horizon, past the maximum age"
+        );
+        let soon = issued + TimeDelta::minutes(2);
+        assert_eq!(
+            retain_until(&policy, &doc(Some(soon)), issued),
+            Some(soon + skew),
+            "a stated expiry inside the maximum age"
+        );
+        assert_eq!(
+            retain_until(&policy, &doc(Some(issued + TimeDelta::days(3650))), issued),
+            Some(issued + EXPIRY_HORIZON + skew),
+            "a stated expiry beyond the horizon"
+        );
     }
 
     /// A window the schema cannot state is not stated.

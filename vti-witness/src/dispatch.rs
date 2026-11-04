@@ -412,7 +412,8 @@ async fn consequential(
         }
     };
     let guard = identity.witnessing.accepted_ids(&identity.did);
-    let retain_until = policy.record_expiry(doc, now);
+    // The acceptance end plus the skew (VTI-OPS-029).
+    let retain_until = vti_common::trust_task::acceptance::retain_until(policy, doc, now);
     match guard.claim(&doc.id, &digest, retain_until, now).await {
         Ok(ReplayVerdict::Fresh) => {}
         Ok(ReplayVerdict::Duplicate {

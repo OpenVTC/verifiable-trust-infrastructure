@@ -293,6 +293,54 @@ pub async fn list_approvers(ks: &KeyspaceHandle) -> Result<Vec<ApproverBinding>,
     Ok(out)
 }
 
+// ── Context deletion ─────────────────────────────────────────────────────────
+
+/// Remove every grant decided in, and every pending request scoped to,
+/// `context` (the `consent` keyspace), returning how many rows went.
+///
+/// For a context deletion. Both carry the context they belong to
+/// (VTI-CTX-001); left behind, a context created again under the same id would
+/// list and act on the deleted one's decisions. Rows with no context (operator
+/// pre-authorizations, rows from before the member existed) belong to no
+/// context and are untouched. A row this build cannot read is left alone.
+pub async fn purge_context_consent(ks: &KeyspaceHandle, context: &str) -> Result<usize, AppError> {
+    let mut removed = 0;
+    for (key, value) in ks.prefix_iter_raw("grant:").await? {
+        if serde_json::from_slice::<ConsentGrant>(&value)
+            .is_ok_and(|g| g.context.as_deref() == Some(context))
+        {
+            ks.remove(key).await?;
+            removed += 1;
+        }
+    }
+    for (key, value) in ks.prefix_iter_raw("consent_pending:").await? {
+        if serde_json::from_slice::<PendingConsent>(&value)
+            .is_ok_and(|p| p.context.as_deref() == Some(context))
+        {
+            ks.remove(key).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Remove every approver binding for `context`, on any platform, returning how
+/// many went. For a context deletion: a binding left behind would route a
+/// recreated context's consent prompts to the deleted one's approver.
+pub async fn purge_context_approvers(
+    ks: &KeyspaceHandle,
+    context: &str,
+) -> Result<usize, AppError> {
+    let mut removed = 0;
+    for binding in list_approvers(ks).await? {
+        if binding.context == context {
+            delete_approver(ks, &binding.platform, &binding.context).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

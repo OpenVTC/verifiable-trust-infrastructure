@@ -836,6 +836,50 @@ pub async fn vetter_show(state: &AppState, context_id: &str, community: &str) ->
 /// Key prefixes of the records in the `pcs_engine` keyspace that name a member key's path.
 const KEYED_RECORD_PREFIXES: &[&str] = &["vetter:", "app:", "voter:", "trustee:"];
 
+/// Remove every engine record of `context_id` — vetter, applicant, voter and
+/// trustee — with the wrapped state beside each, returning how many records
+/// went.
+///
+/// For a context deletion. Each record names the context its key is derived
+/// under, and its key is a digest of that context id (or, for an applicant, an
+/// application id), so a context created again under the same id finds the old
+/// ones: a vetter pinned to the old member DID refuses the new one with
+/// `memberMismatch`, and every record names a path under the *old* context's
+/// base, which the new context does not have. The keys go with their records,
+/// as [`delete_application`] and the voter sweep say: never stored, and
+/// nothing names their paths any more.
+///
+/// The keys are hashed, so this scans each record prefix and matches the
+/// record's own `contextId`. A row this build cannot read is left alone, for an
+/// operator, never guessed at.
+pub async fn purge_context(
+    ks: &vti_common::store::KeyspaceHandle,
+    context_id: &str,
+) -> std::result::Result<usize, AppError> {
+    let _guard = write_lock().await;
+    let mut removed = 0;
+    for prefix in KEYED_RECORD_PREFIXES {
+        for (key, raw) in ks.prefix_iter_raw(*prefix).await? {
+            let Ok(record) = serde_json::from_slice::<Value>(&raw) else {
+                continue;
+            };
+            if record.get("contextId").and_then(Value::as_str) != Some(context_id) {
+                continue;
+            }
+            let key = String::from_utf8_lossy(&key).into_owned();
+            // The wrapped state is stored under the record's own key; a voter
+            // keeps its casts and receipts apart, under a second one.
+            vta_keys::imported::delete_secret(ks, &key).await?;
+            if *prefix == "voter:" {
+                vta_keys::imported::delete_secret(ks, &super::pcs_voter::casts_key(&key)).await?;
+            }
+            ks.remove(key).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// The paths every PCS engine record names: keys that already serve an engine, which a
 /// recovery must not hand to another one. A member's identifier is a function of its seed alone
 /// (not of the community), so a key serving two engines would show one identifier to two

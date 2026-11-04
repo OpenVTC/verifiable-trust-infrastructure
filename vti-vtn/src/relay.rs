@@ -27,6 +27,10 @@ pub const MESSAGE_TYPE: &str = "VtnBroadcast";
 pub const HOP_TYPE: &str = "VtnRelayHop";
 /// Default limit on hops, matching the DTG attenuation depth.
 pub const DEFAULT_MAX_HOPS: usize = 8;
+/// The longest a broadcast may stay deliverable after `sentAt` (A20).
+pub const MAX_TTL: Duration = Duration::days(7);
+/// A broadcast's lifetime when the sender sets none.
+pub const DEFAULT_TTL: Duration = Duration::hours(24);
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Envelope {
@@ -71,6 +75,12 @@ pub async fn new_message(
     ttl: Duration,
     sent_at: DateTime<Utc>,
 ) -> Result<Value> {
+    if ttl <= Duration::zero() || ttl > MAX_TTL {
+        return Err(VtnError::Rejected(format!(
+            "a broadcast lasts more than zero and at most {} days",
+            MAX_TTL.num_days()
+        )));
+    }
     let mut message = json!({
         "type": MESSAGE_TYPE,
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
@@ -135,6 +145,15 @@ pub async fn verify(
         .map_err(|_| VtnError::Rejected("unreadable expiresAt".into()))?;
     if expires <= now {
         return Err(VtnError::Rejected("the message has expired".into()));
+    }
+    let sent: DateTime<Utc> = field(message, "sentAt")?
+        .parse()
+        .map_err(|_| VtnError::Rejected("unreadable sentAt".into()))?;
+    if expires - sent > MAX_TTL {
+        return Err(VtnError::Rejected(format!(
+            "the message claims to last more than {} days",
+            MAX_TTL.num_days()
+        )));
     }
     if envelope.hops.is_empty() {
         return Err(VtnError::Rejected("the envelope has no hops".into()));
@@ -346,5 +365,61 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn a_broadcast_lasts_at_most_seven_days() {
+        let whn = Identity::generate();
+        assert!(
+            new_message(
+                &whn,
+                &outgoing(),
+                MAX_TTL + Duration::seconds(1),
+                Utc::now()
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            new_message(&whn, &outgoing(), Duration::zero(), Utc::now())
+                .await
+                .is_err()
+        );
+        new_message(&whn, &outgoing(), MAX_TTL, Utc::now())
+            .await
+            .unwrap();
+
+        // A message signed claiming longer is refused on receipt.
+        let sent = Utc::now();
+        let long = whn
+            .sign_document(json!({
+                "type": MESSAGE_TYPE,
+                "id": "urn:uuid:long",
+                "origin": whn.did(),
+                "role": "admins",
+                "class": "notice",
+                "subject": "s",
+                "body": "b",
+                "sentAt": sent,
+                "expiresAt": sent + Duration::days(30),
+            }))
+            .await
+            .unwrap();
+        let hop = new_hop(&whn, "urn:uuid:long", "did:key:zGroup", "admins", 0)
+            .await
+            .unwrap();
+        let envelope = Envelope {
+            message: long,
+            hops: vec![hop],
+        };
+        let err = verify(
+            &envelope,
+            &LocalDidKeyResolver,
+            Utc::now(),
+            DEFAULT_MAX_HOPS,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("7 days"), "{err}");
     }
 }

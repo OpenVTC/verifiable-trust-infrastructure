@@ -13,7 +13,7 @@
 //! | Proof | [`ProofVerifier`] | [`ResolverProofVerifier`] over its DID resolver |
 //! | Recipient, extra gates | [`SpineHooks`] | Its DID; any pre- or post-verification rule of its own |
 //! | Admission | [`VerifiedAdmission`] | Optional per-signer rate limit |
-//! | Duplicate ids | [`AcceptedIdStore`] | Its shared store ([`InMemoryAcceptedIds`] for tests) |
+//! | Duplicate ids | [`AcceptedIdStore`] | Its keyspace ([`StoreAcceptedIds`]; [`InMemoryAcceptedIds`] for tests) |
 //! | Routing | [`Dispatcher`] | Its `match type_uri` |
 //! | Signing | [`ResponseSigner`] | Its response key |
 //!
@@ -26,6 +26,7 @@
 //! exist, and what their specifications require, is the service's to say.
 
 pub mod accepted;
+pub mod accepted_store;
 pub mod context;
 pub mod http;
 pub mod outcome;
@@ -37,8 +38,10 @@ pub mod typed;
 pub mod verify;
 
 pub use accepted::{
-    Acceptance, AcceptedIdStore, AcceptedIdsError, Claim, ClaimSettle, InMemoryAcceptedIds,
+    Acceptance, AcceptedIdStore, AcceptedIdsError, Claim, ClaimSettle, FALLBACK_RETENTION_SECS,
+    InMemoryAcceptedIds,
 };
+pub use accepted_store::StoreAcceptedIds;
 pub use context::{ArrivalCtx, Transport};
 pub use outcome::TrustTaskOutcome;
 pub use sign::{ResponseSigner, sign_response};

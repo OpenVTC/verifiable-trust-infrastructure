@@ -124,6 +124,13 @@ pub enum Capability {
     /// selection; qualified `group:<groupId>`, only that group's members. Not
     /// conferring: a relay grants its recipients nothing (VTI-NTF-004).
     NotificationsRelay,
+    /// Running the community's boards (`vtc/boards/*`, VTI-BRD-002): unqualified,
+    /// every board, and — with [`Capability::ElectionsManage`] — creating them and
+    /// changing their election template; qualified `board:<boardId>`, facilitating
+    /// that one board (deciding and selecting its ideas, hiding its notes). Not
+    /// conferring: selecting an idea grants nothing (VTI-BRD-042), and the elections a
+    /// facilitator opens come only from a template an elections manager fixed.
+    BoardsManage,
     /// A git namespace (qualified by namespace).
     GitNsAdmin,
     /// Repository create, adopt, archive, transfer.
@@ -134,7 +141,7 @@ pub enum Capability {
 
 impl Capability {
     /// Every capability, in registry order.
-    pub const ALL: [Capability; 28] = [
+    pub const ALL: [Capability; 29] = [
         Capability::RolesAssign,
         Capability::ApprovalsAdmin,
         Capability::PolicyAdmin,
@@ -160,6 +167,7 @@ impl Capability {
         Capability::GroupsManage,
         Capability::NotificationsRead,
         Capability::NotificationsRelay,
+        Capability::BoardsManage,
         Capability::GitNsAdmin,
         Capability::GitRepoManage,
         Capability::GitCommitSign,
@@ -193,6 +201,7 @@ impl Capability {
             Capability::GroupsManage => "vtc.groups.manage",
             Capability::NotificationsRead => "vtc.notifications.read",
             Capability::NotificationsRelay => "vtc.notifications.relay",
+            Capability::BoardsManage => "vtc.boards.manage",
             Capability::GitNsAdmin => "git.ns.admin",
             Capability::GitRepoManage => "git.repo.manage",
             Capability::GitCommitSign => "git.commit.sign",
@@ -250,6 +259,7 @@ impl Capability {
             Capability::GroupsManage | Capability::NotificationsRelay => {
                 matches!(resource, Q::Group(_))
             }
+            Capability::BoardsManage => matches!(resource, Q::Board(_)),
             Capability::GitRepoManage | Capability::GitCommitSign => {
                 matches!(resource, Q::GitNs(_) | Q::GitRepo(_))
             }
@@ -311,6 +321,8 @@ pub enum ResourceQualifier {
     Criterion(String),
     /// `group:<groupId>` — one community group.
     Group(String),
+    /// `board:<boardId>` — one community board (VTI-BRD-002).
+    Board(String),
 }
 
 impl ResourceQualifier {
@@ -340,6 +352,7 @@ impl fmt::Display for ResourceQualifier {
             ResourceQualifier::Policy(p) => write!(f, "policy:{}", p.as_str()),
             ResourceQualifier::Criterion(v) => write!(f, "criterion:{v}"),
             ResourceQualifier::Group(v) => write!(f, "group:{v}"),
+            ResourceQualifier::Board(v) => write!(f, "board:{v}"),
         }
     }
 }
@@ -350,7 +363,7 @@ impl FromStr for ResourceQualifier {
         let bad = |why: &str| {
             AppError::Validation(format!(
                 "resource qualifier '{s}' {why} — expected git-ns:<namespace>, \
-                 git-repo:<repository-id>, policy:<purpose>, criterion:<id> or group:<id>"
+                 git-repo:<repository-id>, policy:<purpose>, criterion:<id>, group:<id> or board:<id>"
             ))
         };
         let (kind, value) = s.split_once(':').ok_or_else(|| bad("has no kind"))?;
@@ -362,6 +375,7 @@ impl FromStr for ResourceQualifier {
             "git-repo" => Ok(ResourceQualifier::GitRepo(value.to_string())),
             "criterion" => Ok(ResourceQualifier::Criterion(value.to_string())),
             "group" => Ok(ResourceQualifier::Group(value.to_string())),
+            "board" => Ok(ResourceQualifier::Board(value.to_string())),
             "policy" => serde_json::from_value::<PolicyPurpose>(serde_json::Value::String(
                 value.to_string(),
             ))

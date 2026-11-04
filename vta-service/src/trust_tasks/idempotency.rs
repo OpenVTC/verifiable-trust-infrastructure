@@ -71,7 +71,9 @@ const MAX_CACHED_BODY: usize = 64 * 1024;
 /// Suggested wait before retrying a request whose first attempt is running.
 const IN_FLIGHT_RETRY_AFTER_SECS: i64 = 2;
 
-/// The class every keyed Trust Task is recorded under.
+/// The class every keyed Trust Task is recorded under: the floor of its
+/// retention. The record is kept longer when a document under the key is
+/// acceptable for longer (VTI-OPS-066, see [`claim`]).
 ///
 /// Always `NonDestructive`, including for tasks that destroy something. The
 /// `Destructive` class exists for HTTP routes whose idempotency key *is* the
@@ -138,6 +140,14 @@ pub(crate) enum Claim {
 /// arriving after the store recovers from running it a second time. The
 /// refusal is transient, so `VtaClient::idempotent` retries it under the same
 /// key.
+///
+/// The record is kept until this document's acceptance end plus the skew, or
+/// the class TTL if that is later, and a repeat under the key extends it to
+/// the repeat's own acceptance end (**VTI-OPS-066**). The attempts at one
+/// operation are separate documents, and one stating an `expiresAt` is
+/// acceptable for up to thirty days (VTI-OPS-028): a record kept only for the
+/// 24-hour TTL would let the attempt arriving on the second day perform the
+/// operation again.
 pub(crate) async fn claim(
     ks: &vti_common::store::KeyspaceHandle,
     actor: &str,
@@ -169,8 +179,16 @@ pub(crate) async fn claim(
     let principal = Principal::Did(actor.to_string()).hash();
     let grace = chrono::Duration::minutes(IN_FLIGHT_GRACE_MINS);
 
+    let retain_until = super::retain_until(doc, chrono::Utc::now());
     let outcome = match store
-        .claim(&principal, &key, payload_hash(doc), CLASS, grace)
+        .claim_retained(
+            &principal,
+            &key,
+            payload_hash(doc),
+            CLASS,
+            grace,
+            retain_until,
+        )
         .await
     {
         Ok(o) => o,
@@ -418,6 +436,76 @@ mod tests {
                 Claim::Answer(_)
             ),
             "a new attempt under the same key is answered, not performed again"
+        );
+    }
+
+    /// **VTI-OPS-066.** The record of a key outlasts the latest acceptance end
+    /// of any document accepted under it. The first attempt states a 20-day
+    /// expiry, so its record lasts 20 days, not the 24-hour TTL; a new attempt
+    /// stating 25 days extends it to that.
+    #[tokio::test]
+    async fn vti_ops_066_the_record_lasts_until_the_latest_acceptance_end() {
+        use chrono::{SubsecRound, TimeDelta, Utc};
+        use vti_common::config::StoreConfig;
+        use vti_common::idempotency::{IdempotencyStore, Principal};
+        use vti_common::store::Store;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::IDEMPOTENCY).unwrap();
+        let actor = "did:example:caller";
+        let key = "urn:uuid:long-lived";
+        let now = Utc::now().trunc_subsecs(0);
+        let attempt = |id: &str, days: i64| {
+            let mut d = doc_with(
+                trust_tasks::TASK_KEYS_CREATE_0_1,
+                serde_json::json!({ "keyType": "ed25519" }),
+                Some(key),
+            );
+            d.id = id.into();
+            d.issued_at = Some(now);
+            d.expires_at = Some(now + TimeDelta::days(days));
+            d
+        };
+        let record = || async {
+            IdempotencyStore::new(ks.clone())
+                .get(&Principal::Did(actor.to_string()).hash(), key)
+                .await
+                .unwrap()
+                .expect("the key has a record")
+        };
+        let skew = trust_tasks_rs::DEFAULT_SKEW;
+
+        let Claim::Proceed { key: k, safety } =
+            claim(&ks, actor, &attempt("urn:uuid:a1", 20)).await
+        else {
+            panic!("the first attempt runs");
+        };
+        assert_eq!(record().await.expires_at, now + TimeDelta::days(20) + skew);
+        record_outcome(
+            &ks,
+            actor,
+            &k,
+            safety,
+            &TrustTaskOutcome {
+                status: axum::http::StatusCode::OK,
+                body: b"{}".to_vec(),
+                restart: false,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            claim(&ks, actor, &attempt("urn:uuid:a2", 25)).await,
+            Claim::Answer(_)
+        ));
+        assert_eq!(
+            record().await.expires_at,
+            now + TimeDelta::days(25) + skew,
+            "the later attempt's acceptance end extends the record"
         );
     }
 

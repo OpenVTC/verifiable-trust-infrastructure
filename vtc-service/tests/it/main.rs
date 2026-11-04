@@ -43,6 +43,7 @@ mod auth_di_trust_task;
 mod auth_forged_plaintext;
 mod backup;
 mod backup_didcomm;
+mod board_tasks;
 mod ceremonies_list;
 mod ceremony_execute;
 mod cnm_vtc_admin_live;

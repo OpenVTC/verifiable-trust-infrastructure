@@ -783,6 +783,7 @@ pub async fn delete_context(
     }
 
     let (mut keys, mut acl_removed, mut acl_updated, mut templates) = (0, 0, 0, 0);
+    let mut rows = PurgedRows::default();
     #[allow(unused_mut)]
     let mut dids = 0usize;
 
@@ -812,19 +813,14 @@ pub async fn delete_context(
             }
         }
 
-        let purged = purge_context_resources(
-            keys_ks,
-            acl_ks,
-            did_templates_ks,
-            #[cfg(feature = "webvh")]
-            webvh_ks,
-            ctx_id,
-        )
-        .await?;
+        let purged = purge_context_resources(ks, ctx_id).await?;
         keys += purged.keys.len();
         acl_removed += purged.acl_entries_removed.len();
         acl_updated += purged.acl_entries_updated.len();
         templates += purged.did_templates.len();
+        // Everything held *for* the context, keyed by its id: left behind, a
+        // context later created under the same id inherits it.
+        rows += purge_context_rows(ks, ctx_id).await?;
         delete_context_store(contexts_ks, ctx_id).await?;
     }
 
@@ -853,6 +849,18 @@ pub async fn delete_context(
         acl_removed,
         acl_updated,
         templates_removed = templates,
+        app_state_records_removed = rows.app_state,
+        memory_entries_removed = rows.memory,
+        persona_records_removed = rows.persona,
+        credentials_removed = rows.credentials,
+        vault_entries_removed = rows.vault_entries,
+        consent_records_removed = rows.consent,
+        consent_approvers_removed = rows.consent_approvers,
+        notifications_removed = rows.notifications,
+        pcs_engine_records_removed = rows.pcs_engine,
+        external_accounts_removed = rows.external_accounts,
+        quota_counters_removed = rows.quota_counters,
+        collection_records_removed = rows.collection,
         "context (and subtree) deleted"
     );
     Ok(DeleteContextResultBody {
@@ -915,28 +923,32 @@ async fn list_descendants(contexts_ks: &KeyspaceHandle, id: &str) -> Result<Vec<
     Ok(descendants)
 }
 
-/// Collect **and delete** every resource (keys, WebVH DIDs, ACL refs, DID
-/// templates) attached to a single `context_id`. Returns the collected preview
-/// (for counts). Does NOT delete the context record itself.
+/// Collect **and delete** every resource (keys and their secret material, ACL
+/// refs, DID templates) attached to a single `context_id`. Returns the
+/// collected preview (for counts). Does NOT delete the context record itself.
 async fn purge_context_resources(
-    keys_ks: &KeyspaceHandle,
-    acl_ks: &KeyspaceHandle,
-    did_templates_ks: &KeyspaceHandle,
-    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
+    ks: &super::Keyspaces<'_>,
     context_id: &str,
 ) -> Result<DeleteContextPreviewResultBody, AppError> {
     let preview = collect_context_resources(
-        keys_ks,
-        acl_ks,
-        did_templates_ks,
+        ks.keys,
+        ks.acl,
+        ks.did_templates,
         #[cfg(feature = "webvh")]
-        webvh_ks,
+        ks.webvh,
         context_id,
     )
     .await?;
 
     for key_id in &preview.keys {
-        keys_ks.remove(crate::keys::store_key(key_id)).await?;
+        // The material first, then the record that names it. An imported
+        // key's wrapped secret and an internal key's material are stored
+        // under the key id; left behind, they outlive the only record that
+        // says what they are. `revoke_key` destroys an imported secret the same
+        // way. Both removals are no-ops for a key of the other origins.
+        vta_keys::imported::delete_secret(ks.imported, key_id).await?;
+        vta_keys::internal::delete(ks.internal, key_id).await?;
+        ks.keys.remove(crate::keys::store_key(key_id)).await?;
     }
     // No DID deletion here. The subtree's `did:webvh` DIDs are deleted by
     // `delete_context` through the full webvh path *before* this runs, so by
@@ -944,17 +956,127 @@ async fn purge_context_resources(
     // as well would be a second, weaker implementation of the same step — the
     // one that left host copies published.
     for did in &preview.acl_entries_removed {
-        crate::acl::delete_acl_entry(acl_ks, did).await?;
+        crate::acl::delete_acl_entry(ks.acl, did).await?;
     }
     for did in &preview.acl_entries_updated {
-        if let Some(mut entry) = crate::acl::get_acl_entry(acl_ks, did).await? {
+        if let Some(mut entry) = crate::acl::get_acl_entry(ks.acl, did).await? {
             entry.allowed_contexts.retain(|c| c != context_id);
-            crate::acl::store_acl_entry(acl_ks, &entry).await?;
+            crate::acl::store_acl_entry(ks.acl, &entry).await?;
         }
     }
-    crate::did_templates::delete_all_context_templates(did_templates_ks, context_id).await?;
+    crate::did_templates::delete_all_context_templates(ks.did_templates, context_id).await?;
 
     Ok(preview)
+}
+
+/// The keyspaces [`delete_context`] purges a deleted context's rows from — the
+/// cascade's own statement of what it reaches.
+///
+/// `context_delete_labels_match_the_cascade` holds
+/// [`vta_keyspaces::context_delete_effect`]'s `Purged` set to exactly this
+/// list, so a keyspace cannot be labelled purged without being added here, and
+/// one added here has to be labelled. Keep it in step with [`purge_context_rows`]
+/// and [`purge_context_resources`].
+#[cfg(test)]
+const PURGED_ON_CONTEXT_DELETE: &[&str] = &[
+    crate::keyspaces::CONTEXTS,
+    crate::keyspaces::KEYS,
+    crate::keyspaces::IMPORTED_SECRETS,
+    crate::keyspaces::INTERNAL_KEYS,
+    crate::keyspaces::WEBVH,
+    crate::keyspaces::ACL,
+    crate::keyspaces::DID_TEMPLATES,
+    crate::keyspaces::APP_STATE,
+    crate::keyspaces::MEMORY,
+    crate::keyspaces::PERSONA,
+    crate::keyspaces::VAULT,
+    crate::keyspaces::CONSENT,
+    crate::keyspaces::CONSENT_APPROVERS,
+    crate::keyspaces::NOTIFICATIONS,
+    crate::keyspaces::PCS_ENGINE,
+    crate::keyspaces::EXTERNAL_ACCOUNTS,
+    crate::keyspaces::EXTERNAL_SECRETS,
+    crate::keyspaces::COLLECTION,
+];
+
+/// How many rows [`purge_context_rows`] removed, by store, for the log line.
+#[derive(Debug, Default)]
+struct PurgedRows {
+    app_state: usize,
+    memory: usize,
+    persona: usize,
+    credentials: usize,
+    vault_entries: usize,
+    consent: usize,
+    consent_approvers: usize,
+    notifications: usize,
+    pcs_engine: usize,
+    external_accounts: usize,
+    quota_counters: usize,
+    collection: usize,
+}
+
+impl std::ops::AddAssign for PurgedRows {
+    fn add_assign(&mut self, o: Self) {
+        self.app_state += o.app_state;
+        self.memory += o.memory;
+        self.persona += o.persona;
+        self.credentials += o.credentials;
+        self.vault_entries += o.vault_entries;
+        self.consent += o.consent;
+        self.consent_approvers += o.consent_approvers;
+        self.notifications += o.notifications;
+        self.pcs_engine += o.pcs_engine;
+        self.external_accounts += o.external_accounts;
+        self.collection += o.collection;
+        self.quota_counters += o.quota_counters;
+    }
+}
+
+/// Remove every record keyed by, or carrying, `context_id` in the stores that
+/// hold data *for* the context — everything but its keys, ACL scope, DID
+/// templates and DIDs, which [`purge_context_resources`] and the DID deletion
+/// take.
+///
+/// A context can be created again under the same id, and whatever survives
+/// here is inherited by it: application state syncing a deleted profile's
+/// personas back (#2415), a vetter engine pinned to the old member DID so the
+/// new context's `vta/pcs/root-request` fails with `memberMismatch`. Each store
+/// purges itself, next to the code that writes it.
+///
+/// Not part of the not-empty gate: the gate must agree with `preview-delete`,
+/// whose wire shape has no member for any of these, and a refusal the preview
+/// cannot explain is the failure that function's comment describes. Counted in
+/// the log line instead.
+async fn purge_context_rows(
+    ks: &super::Keyspaces<'_>,
+    context_id: &str,
+) -> Result<PurgedRows, AppError> {
+    Ok(PurgedRows {
+        app_state: super::app_state::purge_context(ks.app_state, context_id).await?,
+        memory: super::memory::purge_context(ks.memory, context_id).await?,
+        persona: vta_persona::storage::purge_context(ks.persona, context_id).await?,
+        credentials: vta_vault::storage::purge_context(ks.vault, context_id).await?,
+        vault_entries: vti_common::vault::purge_context(ks.vault, context_id).await?,
+        consent: vti_common::consent::purge_context_consent(ks.consent, context_id).await?,
+        consent_approvers: vti_common::consent::purge_context_approvers(
+            ks.consent_approvers,
+            context_id,
+        )
+        .await?,
+        notifications: super::notifications::purge_context(ks.notifications, context_id).await?,
+        pcs_engine: super::pcs::purge_context(ks.pcs_engine, context_id).await?,
+        external_accounts: vta_external::store::purge_context(
+            ks.external_accounts,
+            ks.external_secrets,
+            context_id,
+        )
+        .await?,
+        quota_counters: crate::contexts::purge_quota_counters(ks.contexts, context_id).await?,
+        // Every collection claim for the context's identifiers ends with it
+        // (VTI-NTF-090); the collector stops on its next pass.
+        collection: super::collection::purge_context(ks.collection, context_id).await?,
+    })
 }
 
 /// Everything a deletion of `context_ids` (a context and its whole subtree)
@@ -1379,6 +1501,18 @@ mod tests {
         did_templates: KeyspaceHandle,
         audit: KeyspaceHandle,
         imported: KeyspaceHandle,
+        memory: KeyspaceHandle,
+        app_state: KeyspaceHandle,
+        internal: KeyspaceHandle,
+        vault: KeyspaceHandle,
+        consent: KeyspaceHandle,
+        consent_approvers: KeyspaceHandle,
+        persona: KeyspaceHandle,
+        pcs_engine: KeyspaceHandle,
+        notifications: KeyspaceHandle,
+        external_accounts: KeyspaceHandle,
+        external_secrets: KeyspaceHandle,
+        collection: KeyspaceHandle,
         #[cfg(feature = "webvh")]
         webvh: KeyspaceHandle,
     }
@@ -1392,6 +1526,18 @@ mod tests {
                 did_templates: &self.did_templates,
                 audit: &self.audit,
                 imported: &self.imported,
+                memory: &self.memory,
+                app_state: &self.app_state,
+                internal: &self.internal,
+                vault: &self.vault,
+                consent: &self.consent,
+                consent_approvers: &self.consent_approvers,
+                persona: &self.persona,
+                pcs_engine: &self.pcs_engine,
+                notifications: &self.notifications,
+                external_accounts: &self.external_accounts,
+                external_secrets: &self.external_secrets,
+                collection: &self.collection,
                 #[cfg(feature = "webvh")]
                 webvh: &self.webvh,
             }
@@ -1413,6 +1559,18 @@ mod tests {
             did_templates: k(ks::DID_TEMPLATES),
             audit: k(ks::AUDIT),
             imported: k(ks::IMPORTED_SECRETS),
+            memory: k(ks::MEMORY),
+            app_state: k(ks::APP_STATE),
+            internal: k(ks::INTERNAL_KEYS),
+            vault: k(ks::VAULT),
+            consent: k(ks::CONSENT),
+            consent_approvers: k(ks::CONSENT_APPROVERS),
+            persona: k(ks::PERSONA),
+            pcs_engine: k(ks::PCS_ENGINE),
+            notifications: k(ks::NOTIFICATIONS),
+            external_accounts: k(ks::EXTERNAL_ACCOUNTS),
+            external_secrets: k(ks::EXTERNAL_SECRETS),
+            collection: k(ks::COLLECTION),
             #[cfg(feature = "webvh")]
             webvh: k(ks::WEBVH),
             _dir: dir,
@@ -1705,6 +1863,509 @@ mod tests {
                 "{id} should be gone"
             );
         }
+    }
+
+    /// Application state and agent memory go with the context.
+    ///
+    /// Both are keyed by context id alone. Left behind, a context recreated
+    /// under the same id inherited them: an OpenVTC profile wiped locally and
+    /// re-provisioned into a fresh `openvtc-bob` synced the deleted profile's
+    /// personas and communities straight back from `vta/app-state`.
+    #[tokio::test]
+    async fn delete_purges_app_state_and_memory_across_the_subtree() {
+        use crate::operations::{app_state, memory};
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+        // A sibling sharing the prefix, which must survive.
+        seed(&ks.contexts, "acme2", None).await;
+
+        let locks = app_state::NamespaceLocks::default();
+        let v = serde_json::json!({"n": 1});
+        for ctx in ["acme", "acme/eng", "acme2"] {
+            app_state::put(
+                &ks.app_state,
+                &locks,
+                ctx,
+                "openvtc",
+                "persona",
+                Some(&v),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            memory::put(&ks.memory, ctx, "note", "x").await.unwrap();
+        }
+        // A tombstone and its version index, so every record family is present.
+        app_state::put(
+            &ks.app_state,
+            &locks,
+            "acme",
+            "openvtc",
+            "gone",
+            Some(&v),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        app_state::delete(&ks.app_state, &locks, "acme", "openvtc", "gone", None)
+            .await
+            .unwrap();
+
+        delete_context(&ks.as_ks(), &super_admin(), "acme", true, "t", None)
+            .await
+            .expect("cascade delete");
+
+        for ctx in ["acme", "acme/eng"] {
+            for family in ["app", "appv", "appc", "appt"] {
+                let left = ks
+                    .app_state
+                    .prefix_keys(format!("{family}:{ctx}:"))
+                    .await
+                    .unwrap();
+                assert!(left.is_empty(), "{family} records left for {ctx}: {left:?}");
+            }
+            assert!(memory::list(&ks.memory, ctx).await.unwrap().is_empty());
+        }
+
+        // Recreated under the same id, the context starts empty.
+        seed(&ks.contexts, "acme", None).await;
+        assert!(matches!(
+            app_state::get(&ks.app_state, "acme", "openvtc", "persona", true).await,
+            Err(app_state::AppStateError::NotFound)
+        ));
+
+        // The prefix-sharing sibling is untouched.
+        assert!(
+            app_state::get(&ks.app_state, "acme2", "openvtc", "persona", false)
+                .await
+                .is_ok()
+        );
+        assert_eq!(memory::list(&ks.memory, "acme2").await.unwrap().len(), 1);
+    }
+
+    /// The `Purged` labels in `vta_keyspaces::context_delete_effect` are a
+    /// claim about this cascade, held to the cascade's own list: a keyspace
+    /// cannot be labelled purged without being purged here, nor purged here
+    /// without being labelled.
+    #[test]
+    fn context_delete_labels_match_the_cascade() {
+        use vta_keyspaces::{ContextDeleteEffect, context_delete_effect};
+        for ks in crate::keyspaces::ALL {
+            let labelled = context_delete_effect(ks) == Some(ContextDeleteEffect::Purged);
+            let purged = PURGED_ON_CONTEXT_DELETE.contains(ks);
+            assert_eq!(
+                labelled, purged,
+                "{ks}: labelled purged = {labelled}, purged by delete_context = {purged}"
+            );
+        }
+    }
+
+    const COMMUNITY: &str = "did:webvh:QmCommunity:vtc.example.org";
+
+    /// One record of every kind a context's deletion must take, written into
+    /// `ctx` through each store's own writer where it has one.
+    async fn seed_context_rows(ks: &OwnedKs, ctx: &str) {
+        use vta_persona::storage as ps;
+        let tag = ctx.replace('/', "-");
+        let now = Utc::now();
+
+        // A key record, with material in both secret stores under its id —
+        // an imported key's wrapped secret, an internal key's material.
+        let key_id = format!("did:key:z{tag}#k");
+        let record = crate::keys::KeyRecord {
+            key_id: key_id.clone(),
+            derivation_path: "m/26'/0'".into(),
+            key_type: vta_sdk::keys::KeyType::Ed25519,
+            status: vta_sdk::keys::KeyStatus::Active,
+            public_key: "z".into(),
+            label: None,
+            context_id: Some(ctx.into()),
+            seed_id: None,
+            exportable: None,
+            origin: vta_sdk::keys::KeyOrigin::Imported,
+            created_at: now,
+            updated_at: now,
+        };
+        ks.keys
+            .insert(crate::keys::store_key(&key_id), &record)
+            .await
+            .unwrap();
+        ks.imported
+            .insert_raw(format!("secret:{key_id}"), b"wrapped".to_vec())
+            .await
+            .unwrap();
+        ks.internal
+            .insert_raw(format!("internal:{key_id}"), b"material".to_vec())
+            .await
+            .unwrap();
+
+        // Persona: every context-scoped prefix, and a face-value edge naming
+        // one of the context's local profiles.
+        for key in [
+            ps::binding_key(ctx, "did:key:zPersona"),
+            ps::contact_key(ctx, "c1"),
+            ps::contact_revision_key(ctx, "c1", 1),
+            ps::disclosure_key(ctx, 1),
+            ps::local_profile_key(ctx, "p1"),
+            ps::local_binding_key(ctx, "did:key:zPersona"),
+            format!("pca:{ctx}:c1"),
+            format!("pcl:{ctx}:l1"),
+            ps::face_value_key("abcd", &ps::face_carrier(Some(ctx), "p1")),
+        ] {
+            ks.persona.insert_raw(key, b"{}".to_vec()).await.unwrap();
+        }
+
+        // Vault: a credential in the context's custody, and a vault entry.
+        let cred = vta_vault::StoredCredential {
+            id: format!("cred-{tag}"),
+            format: vta_vault::CredentialFormat::SdJwtVc,
+            types: vec!["MembershipCredential".into()],
+            schema_id: None,
+            community_did: Some(COMMUNITY.into()),
+            context_id: Some(ctx.into()),
+            subject_did: None,
+            issuer_did: Some(COMMUNITY.into()),
+            purpose: None,
+            status: vta_vault::CredentialStatus::Valid,
+            valid_from: None,
+            valid_until: None,
+            received_at: now.to_rfc3339(),
+            source: None,
+            tags: Default::default(),
+            body: b"opaque".to_vec(),
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
+        };
+        vta_vault::storage::put(&ks.vault, &cred).await.unwrap();
+        let entry: vti_common::vault::StoredVaultEntry =
+            serde_json::from_value(serde_json::json!({
+                "entry": {
+                    "id": format!("entry-{tag}"), "contextId": ctx,
+                    "targets": [{"kind": "web-origin", "origin": "https://example.org"}],
+                    "label": "login", "secretKind": "password",
+                    "createdAt": now.to_rfc3339(), "updatedAt": now.to_rfc3339(),
+                    "version": 1, "status": "active"
+                },
+                "secret": {"kind": "password", "password": "hunter2"}
+            }))
+            .unwrap();
+        vti_common::vault::put_stored_vault_entry(&ks.vault, &entry)
+            .await
+            .unwrap();
+
+        // Inbound-messaging consent: a grant and a pending request decided in
+        // the context, and its approver binding.
+        use vti_common::consent as c;
+        let subject = c::ConsentSubject {
+            platform: "slack".into(),
+            conversation_ref: format!("conv-{tag}"),
+            kind: c::ConsentKind::Dm,
+            agent: "did:key:zAgent".into(),
+        };
+        c::store_consent_grant(
+            &ks.consent,
+            &c::ConsentGrant {
+                subject: subject.clone(),
+                effect: c::ConsentEffect::Allow,
+                scope: Some(c::ConsentScope::Receive),
+                granted_by: "did:key:zApprover".into(),
+                granted_at: 0,
+                expires_at: None,
+                evidence: "did-signed".into(),
+                context: Some(ctx.into()),
+            },
+        )
+        .await
+        .unwrap();
+        let pending = c::new_pending_consent(
+            subject,
+            c::ConsentScope::Receive,
+            format!("ch-{tag}"),
+            "did:key:zBridge",
+            Some(ctx.into()),
+            3600,
+        );
+        c::store_pending_consent(&ks.consent, &pending)
+            .await
+            .unwrap();
+        c::store_approver(
+            &ks.consent_approvers,
+            &c::ApproverBinding {
+                platform: "slack".into(),
+                context: ctx.into(),
+                approver: "did:key:zApprover".into(),
+                route: None,
+                route_hint: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // A held notification.
+        let held = crate::operations::notifications::HeldRecord {
+            record_id: format!("rec-{tag}"),
+            context_id: ctx.into(),
+            addressee: "did:key:zAddressee".into(),
+            originator: COMMUNITY.into(),
+            relayed_by: vec![],
+            delivered_by: COMMUNITY.into(),
+            notification: serde_json::json!({"notificationId": format!("n-{tag}")}),
+            revision: 1,
+            kind: "election".into(),
+            held_by: "did:key:zAddressee".into(),
+            withdrawn: false,
+            valid_until: None,
+            state: crate::operations::notifications::HeldState::Active,
+            received_at: now,
+            dismissed_at: None,
+            lapsed_at: None,
+            document: serde_json::json!({}),
+        };
+        ks.notifications
+            .insert(format!("held:{ctx}\0rec-{tag}"), &held)
+            .await
+            .unwrap();
+
+        // PCS engine records of every kind, each with its wrapped state.
+        let vetter = crate::operations::pcs::vetter_key(ctx, COMMUNITY);
+        for (key, extra) in [
+            (vetter.clone(), None),
+            (format!("app:app-{tag}"), None),
+            (format!("voter:{tag}"), Some(format!("voter-casts:{tag}"))),
+            (format!("trustee:{tag}"), None),
+        ] {
+            ks.pcs_engine
+                .insert(
+                    key.clone(),
+                    &serde_json::json!({"contextId": ctx, "memberDid": "did:key:zOld", "path": "m/1"}),
+                )
+                .await
+                .unwrap();
+            ks.pcs_engine
+                .insert_raw(format!("secret:{key}"), b"wrapped".to_vec())
+                .await
+                .unwrap();
+            if let Some(extra) = extra {
+                ks.pcs_engine
+                    .insert_raw(format!("secret:{extra}"), b"wrapped".to_vec())
+                    .await
+                    .unwrap();
+            }
+        }
+
+        // An external account with its secret.
+        let account = vta_external::model::AccountRecord {
+            id: "acct1".into(),
+            label: "storage".into(),
+            context: ctx.into(),
+            settings: serde_json::json!({"model": "static-secret"}),
+            state: vta_external::model::AccountState::Active,
+            public_material: None,
+            secret: None,
+            bindings: vec![],
+            provider_setup_required: false,
+            last_probe: None,
+            created_at: now,
+            updated_at: now,
+        };
+        assert!(
+            vta_external::store::insert_new(&ks.external_accounts, &account)
+                .await
+                .unwrap()
+        );
+        ks.external_secrets
+            .insert_raw(format!("secret:external:{ctx}:acct1"), b"wrapped".to_vec())
+            .await
+            .unwrap();
+
+        // Today's quota counter.
+        crate::contexts::enforce_daily_quota(&ks.contexts, ctx, "sign", 10)
+            .await
+            .unwrap();
+    }
+
+    /// Which of [`seed_context_rows`]'s kinds `ctx` still holds, by name.
+    async fn context_rows(ks: &OwnedKs, ctx: &str) -> Vec<&'static str> {
+        use vta_persona::storage as ps;
+        let tag = ctx.replace('/', "-");
+        let key_id = format!("did:key:z{tag}#k");
+        let mut found = Vec::new();
+        let mut check = |name: &'static str, present: bool| {
+            if present {
+                found.push(name);
+            }
+        };
+        let raw = |ks: &KeyspaceHandle, key: String| {
+            let ks = ks.clone();
+            async move { ks.get_raw(key).await.unwrap().is_some() }
+        };
+        let prefixed = |ks: &KeyspaceHandle, prefix: String| {
+            let ks = ks.clone();
+            async move { !ks.prefix_keys(prefix).await.unwrap().is_empty() }
+        };
+
+        check(
+            "key record",
+            raw(&ks.keys, crate::keys::store_key(&key_id)).await,
+        );
+        check(
+            "imported secret",
+            raw(&ks.imported, format!("secret:{key_id}")).await,
+        );
+        check(
+            "internal key",
+            raw(&ks.internal, format!("internal:{key_id}")).await,
+        );
+        for p in ["pb", "pc", "pcr", "pca", "pcl", "pd", "plp", "plb"] {
+            check(
+                "persona",
+                prefixed(&ks.persona, format!("{p}:{ctx}:")).await,
+            );
+        }
+        check(
+            "persona face edge",
+            raw(
+                &ks.persona,
+                ps::face_value_key("abcd", &ps::face_carrier(Some(ctx), "p1")),
+            )
+            .await,
+        );
+        check(
+            "credential",
+            vta_vault::storage::get(&ks.vault, &format!("cred-{tag}"))
+                .await
+                .unwrap()
+                .is_some(),
+        );
+        // The credential's index rows go with it: a search by its type finds
+        // nothing of this context's.
+        check(
+            "credential index",
+            vta_vault::storage::find_by_index(
+                &ks.vault,
+                vta_vault::IndexField::Type,
+                "MembershipCredential",
+            )
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.id == format!("cred-{tag}")),
+        );
+        check(
+            "vault entry",
+            vti_common::vault::get_vault_entry(&ks.vault, &format!("entry-{tag}"))
+                .await
+                .unwrap()
+                .is_some(),
+        );
+        check(
+            "consent grant",
+            vti_common::consent::list_consent_grants(&ks.consent)
+                .await
+                .unwrap()
+                .iter()
+                .any(|g| g.context.as_deref() == Some(ctx)),
+        );
+        check(
+            "pending consent",
+            raw(&ks.consent, format!("consent_pending:ch-{tag}")).await,
+        );
+        check(
+            "consent approver",
+            vti_common::consent::get_approver(&ks.consent_approvers, "slack", ctx)
+                .await
+                .unwrap()
+                .is_some(),
+        );
+        check(
+            "notification",
+            prefixed(&ks.notifications, format!("held:{ctx}\0")).await,
+        );
+        let vetter = crate::operations::pcs::vetter_key(ctx, COMMUNITY);
+        for key in [
+            vetter,
+            format!("app:app-{tag}"),
+            format!("voter:{tag}"),
+            format!("trustee:{tag}"),
+        ] {
+            check("pcs record", raw(&ks.pcs_engine, key.clone()).await);
+            check(
+                "pcs secret",
+                raw(&ks.pcs_engine, format!("secret:{key}")).await,
+            );
+        }
+        check(
+            "pcs voter casts",
+            raw(&ks.pcs_engine, format!("secret:voter-casts:{tag}")).await,
+        );
+        check(
+            "external account",
+            vta_external::store::get(&ks.external_accounts, ctx, "acct1")
+                .await
+                .unwrap()
+                .is_some(),
+        );
+        check(
+            "external secret",
+            raw(&ks.external_secrets, format!("secret:external:{ctx}:acct1")).await,
+        );
+        check(
+            "quota counter",
+            prefixed(&ks.contexts, format!("quota:{ctx}:")).await,
+        );
+        found
+    }
+
+    /// Everything held for a context goes with it, so a context created again
+    /// under the same id starts empty.
+    ///
+    /// Each kind here survived the deletion before, and each was inherited by
+    /// the recreated context — most visibly a vetter engine record pinned to
+    /// the old member DID, which made the new context's `vta/pcs/root-request`
+    /// fail with `memberMismatch`.
+    #[tokio::test]
+    async fn delete_purges_every_context_scoped_store_and_a_recreated_context_inherits_nothing() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+        // A sibling sharing the prefix, which must survive.
+        seed(&ks.contexts, "acme2", None).await;
+        for ctx in ["acme", "acme/eng", "acme2"] {
+            seed_context_rows(&ks, ctx).await;
+        }
+        let everything = context_rows(&ks, "acme2").await;
+
+        delete_context(&ks.as_ks(), &super_admin(), "acme", true, "t", None)
+            .await
+            .expect("cascade delete");
+
+        // Recreated under the same ids, the contexts inherit nothing.
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+        for ctx in ["acme", "acme/eng"] {
+            assert_eq!(
+                context_rows(&ks, ctx).await,
+                Vec::<&str>::new(),
+                "{ctx} inherited records from the deleted context"
+            );
+            // The external account's id stays retired: a provider-side trust
+            // policy may still name it, so the recreated context cannot reuse it.
+            assert!(
+                vta_external::store::is_retired(&ks.external_accounts, ctx, "acct1")
+                    .await
+                    .unwrap()
+            );
+        }
+
+        // The prefix-sharing sibling keeps every kind.
+        assert_eq!(context_rows(&ks, "acme2").await, everything);
+        assert!(everything.contains(&"quota counter"), "{everything:?}");
+        assert!(everything.contains(&"pcs voter casts"), "{everything:?}");
     }
 
     #[tokio::test]

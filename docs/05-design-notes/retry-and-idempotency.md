@@ -157,9 +157,19 @@ fjall has released the first's directory lock.
 
 ### Retention window
 
-**24 hours** (`IdempotencyClass::NonDestructive`), swept by
-`vta_sweepers::idempotency_sweeper`. Records are also read-through-expiry, so a
-stale one is never served even between sweeps.
+**At least 24 hours** (`IdempotencyClass::NonDestructive`), and longer when a
+document under the key is acceptable for longer (**VTI-OPS-066**): the record is
+kept until the latest acceptance end, plus the skew, of any document accepted
+under the key (`IdempotencyStore::claim_retained`). The attempts at one
+operation are separate documents, and a document stating an `expiresAt` is
+acceptable for up to thirty days (VTI-OPS-028). A record kept only for 24 hours
+would let the attempt arriving on the second day perform the operation again.
+Each repeat of the same request under the key extends the record to its own
+acceptance end; a different request under the key (a conflict) extends nothing.
+
+Swept by `vta_sweepers::idempotency_sweeper`, which goes by each record's own
+expiry. Records are also read-through-expiry, so a stale one is never served
+even between sweeps.
 
 Sized for the two real retry shapes: an automated backoff loop finishes within
 seconds, and an operator re-running a failed provisioning step comes back within
@@ -312,14 +322,19 @@ window from `AcceptanceWindow` rather than from two constants.
 | Wire `retryAfter` → typed error | `VtaError::Unavailable` |
 | Store (shared with the VTC's HTTP path) | `vti-common/src/idempotency/` |
 | Dispatch policy | `vta-service/src/trust_tasks/idempotency.rs` |
-| Envelope-id replay dedup (the *other* layer) | `vta-service/src/trust_tasks/replay.rs` |
+| Accepted-document-id record (the *other* layer) | `vti-trust-task-server/src/accepted_store.rs` (`StoreAcceptedIds`, keyspace `accepted_ids`), claimed in `vta-service/src/trust_tasks/mod.rs` |
 | TTL sweep | `vta-sweepers/src/idempotency_sweeper.rs` |
 | Acceptance tests | `vta-service/tests/it/idempotency_trust_task.rs` |
 
 ### The two dedup layers are not the same thing
 
-`replay.rs` keys on `(actor, envelope-id)` and refuses a byte-identical
-resubmission — the cross-transport fallback case. It **cannot** catch a genuine
-retry, because every dispatch mints a fresh envelope id. `idempotency.rs` keys on
+The accepted-document-id record (SPEC §7.2 item 11, VTI-OPS-025 … 027) keys on
+the document `id` alone and compares digests: the same document again is a
+duplicate, answered with the first result; a different document under that `id`
+is `idConflict`. It is in the store, shared with the VTC's implementation, so it
+survives a restart and every binding consults one record; its rows live until
+the document's acceptance end plus the skew (VTI-OPS-029): ten minutes after
+`issuedAt`, or a stated `expiresAt` up to thirty days after it. It **cannot** catch a genuine retry, because every
+dispatch mints a fresh document `id`. `idempotency.rs` keys on
 `(actor, idempotency-key)`, which is stable across attempts of one operation.
 Both stay; they answer different questions.

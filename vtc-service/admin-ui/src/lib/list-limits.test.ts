@@ -57,6 +57,9 @@ const ACTIVITY = `${T}/git-ns/activity/list/0.3`;
 const DIRECTORY_ENTRIES = `${T}/vtc/directory/entries/list/0.2`;
 const DIRECTORY_EXPORT = `${T}/vtc/directory/export/0.2`;
 const GROUPS_LIST = `${T}/vtc/groups/list/0.2`;
+const BOARDS_LIST = `${T}/vtc/boards/list/0.1`;
+const BOARDS_SHOW = `${T}/vtc/boards/show/0.1`;
+const BOARDS_NOTES = `${T}/vtc/boards/notes/list/0.1`;
 const GROUPS_MEMBERS = `${T}/vtc/groups/members/list/0.2`;
 const GROUPS_REQUESTS = `${T}/vtc/groups/requests/list/0.2`;
 const ELECTIONS = `${T}/vtc/elections/list/0.5`;
@@ -94,6 +97,17 @@ const SITES: Site[] = [
   { file: "lib/groups.ts", site: "(GROUPS_LIST_TASK, {\n      limit: PAGE", uri: GROUPS_LIST, from: ["PAGE"] },
   { file: "lib/groups.ts", site: "(GROUPS_MEMBERS_LIST_TASK, {\n      groupId,\n      limit: PAGE", uri: GROUPS_MEMBERS, from: ["PAGE"] },
   { file: "lib/groups.ts", site: "(GROUPS_REQUESTS_LIST_TASK, {\n    limit: PAGE", uri: GROUPS_REQUESTS, from: ["PAGE"] },
+  // Boards, as facilitators read them: every board, idea and note, a page at a time.
+  { file: "lib/boards.ts", site: "(LIST, { limit: PAGE", uri: BOARDS_LIST, from: ["PAGE"] },
+  { file: "lib/boards.ts", site: "(SHOW, { boardId, limit: PAGE })", uri: BOARDS_SHOW, from: ["PAGE"] },
+  { file: "lib/boards.ts", site: "(SHOW, { boardId, limit: PAGE, cursor", uri: BOARDS_SHOW, from: ["PAGE"] },
+  { file: "lib/boards.ts", site: 'scope: "all",\n      limit: PAGE', uri: BOARDS_NOTES, from: ["PAGE"] },
+  // The member portal's boards: one page of boards, and a board's ideas and notes to the end.
+  { file: "members/boards-api.ts", site: '{ status: "open", limit: 100 }', uri: BOARDS_LIST, from: ["100"] },
+  { file: "members/boards-api.ts", site: "(BOARDS_LIST_TASK, { limit: 100 })", uri: BOARDS_LIST, from: ["100"] },
+  { file: "members/boards-api.ts", site: "{ boardId, limit: 200 })", uri: BOARDS_SHOW, from: ["200"] },
+  { file: "members/boards-api.ts", site: "{ boardId, limit: 200, cursor", uri: BOARDS_SHOW, from: ["200"] },
+  { file: "members/boards-api.ts", site: "{ boardId, limit: 200, ...(ideaId", uri: BOARDS_NOTES, from: ["200"] },
   // The member portal's groups: one page of a hundred groups, and of a group's members.
   { file: "members/groups-api.ts", site: "(GROUPS_LIST_TASK, { limit: 100 })", uri: GROUPS_LIST, from: ["100"] },
   { file: "members/groups-api.ts", site: "{ groupId, limit: 100 }", uri: GROUPS_MEMBERS, from: ["100"] },

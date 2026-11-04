@@ -51,6 +51,7 @@ use crate::protocols::vetting::vetters;
 use vti_specs::credential_exchange;
 use vti_specs::did_management::did::register;
 use vti_specs::git_ns::view as git_ns_view;
+use vti_specs::vtc::boards;
 use vti_specs::vtc::config;
 use vti_specs::vtc::directory;
 use vti_specs::vtc::endorsement_types;
@@ -384,6 +385,58 @@ spec_types! {
     GroupsLeave01Payload(groups::leave::v0_1::Payload);
     /// `vtc/groups/leave/0.1#response` — what came of it.
     GroupsLeave01Response(groups::leave::v0_1::Response);
+    /// `vtc/boards/create/0.1` payload — creating a board.
+    BoardsCreate01Payload(boards::create::v0_1::Payload);
+    /// `vtc/boards/create/0.1#response` — the board as created.
+    BoardsCreate01Response(boards::create::v0_1::Response);
+    /// `vtc/boards/update/0.1` payload — changing, closing or archiving a board.
+    BoardsUpdate01Payload(boards::update::v0_1::Payload);
+    /// `vtc/boards/update/0.1#response` — the board as changed.
+    BoardsUpdate01Response(boards::update::v0_1::Response);
+    /// `vtc/boards/list/0.1` payload — the boards the caller may see.
+    BoardsList01Payload(boards::list::v0_1::Payload);
+    /// `vtc/boards/list/0.1#response` — the boards.
+    BoardsList01Response(boards::list::v0_1::Response);
+    /// `vtc/boards/show/0.1` payload — one board and its ideas.
+    BoardsShow01Payload(boards::show::v0_1::Payload);
+    /// `vtc/boards/show/0.1#response` — the board and a page of its ideas.
+    BoardsShow01Response(boards::show::v0_1::Response);
+    /// `vtc/boards/ideas/propose/0.1` payload — proposing an idea.
+    BoardsIdeasPropose01Payload(boards::ideas::propose::v0_1::Payload);
+    /// `vtc/boards/ideas/propose/0.1#response` — the idea as proposed.
+    BoardsIdeasPropose01Response(boards::ideas::propose::v0_1::Response);
+    /// `vtc/boards/ideas/update/0.1` payload — changing one's own proposed idea.
+    BoardsIdeasUpdate01Payload(boards::ideas::update::v0_1::Payload);
+    /// `vtc/boards/ideas/update/0.1#response` — the idea as changed.
+    BoardsIdeasUpdate01Response(boards::ideas::update::v0_1::Response);
+    /// `vtc/boards/ideas/withdraw/0.1` payload — withdrawing one's own proposed idea.
+    BoardsIdeasWithdraw01Payload(boards::ideas::withdraw::v0_1::Payload);
+    /// `vtc/boards/ideas/withdraw/0.1#response` — the idea, withdrawn.
+    BoardsIdeasWithdraw01Response(boards::ideas::withdraw::v0_1::Response);
+    /// `vtc/boards/ideas/decide/0.1` payload — a facilitator accepting, declining, merging or reopening an idea.
+    BoardsIdeasDecide01Payload(boards::ideas::decide::v0_1::Payload);
+    /// `vtc/boards/ideas/decide/0.1#response` — the idea as decided.
+    BoardsIdeasDecide01Response(boards::ideas::decide::v0_1::Response);
+    /// `vtc/boards/ideas/select/0.1` payload — a facilitator selecting a tallied idea or not.
+    BoardsIdeasSelect01Payload(boards::ideas::select::v0_1::Payload);
+    /// `vtc/boards/ideas/select/0.1#response` — the idea, with the result it was decided with.
+    BoardsIdeasSelect01Response(boards::ideas::select::v0_1::Response);
+    /// `vtc/boards/notes/add/0.1` payload — adding a note to a board or an idea.
+    BoardsNotesAdd01Payload(boards::notes::add::v0_1::Payload);
+    /// `vtc/boards/notes/add/0.1#response` — the note.
+    BoardsNotesAdd01Response(boards::notes::add::v0_1::Response);
+    /// `vtc/boards/notes/list/0.1` payload — a board's or an idea's notes.
+    BoardsNotesList01Payload(boards::notes::list::v0_1::Payload);
+    /// `vtc/boards/notes/list/0.1#response` — the notes the caller may read.
+    BoardsNotesList01Response(boards::notes::list::v0_1::Response);
+    /// `vtc/boards/notes/withdraw/0.1` payload — withdrawing one's own note.
+    BoardsNotesWithdraw01Payload(boards::notes::withdraw::v0_1::Payload);
+    /// `vtc/boards/notes/withdraw/0.1#response` — the note, withdrawn.
+    BoardsNotesWithdraw01Response(boards::notes::withdraw::v0_1::Response);
+    /// `vtc/boards/notes/hide/0.1` payload — a facilitator hiding or showing a note.
+    BoardsNotesHide01Payload(boards::notes::hide::v0_1::Payload);
+    /// `vtc/boards/notes/hide/0.1#response` — the note.
+    BoardsNotesHide01Response(boards::notes::hide::v0_1::Response);
     /// `vtc/groups/requests/list/0.2` payload — requests to the caller's groups.
     GroupsRequestsList02Payload(groups::requests::list::v0_2::Payload);
     /// `vtc/groups/requests/list/0.2#response` — the requests.
@@ -852,6 +905,32 @@ mod tests {
         check::<GroupsJoin01Response>();
         check::<GroupsLeave01Payload>();
         check::<GroupsLeave01Response>();
+        check::<BoardsCreate01Payload>();
+        check::<BoardsCreate01Response>();
+        check::<BoardsUpdate01Payload>();
+        check::<BoardsUpdate01Response>();
+        check::<BoardsList01Payload>();
+        check::<BoardsList01Response>();
+        check::<BoardsShow01Payload>();
+        check::<BoardsShow01Response>();
+        check::<BoardsIdeasPropose01Payload>();
+        check::<BoardsIdeasPropose01Response>();
+        check::<BoardsIdeasUpdate01Payload>();
+        check::<BoardsIdeasUpdate01Response>();
+        check::<BoardsIdeasWithdraw01Payload>();
+        check::<BoardsIdeasWithdraw01Response>();
+        check::<BoardsIdeasDecide01Payload>();
+        check::<BoardsIdeasDecide01Response>();
+        check::<BoardsIdeasSelect01Payload>();
+        check::<BoardsIdeasSelect01Response>();
+        check::<BoardsNotesAdd01Payload>();
+        check::<BoardsNotesAdd01Response>();
+        check::<BoardsNotesList01Payload>();
+        check::<BoardsNotesList01Response>();
+        check::<BoardsNotesWithdraw01Payload>();
+        check::<BoardsNotesWithdraw01Response>();
+        check::<BoardsNotesHide01Payload>();
+        check::<BoardsNotesHide01Response>();
         check::<GroupsRequestsList02Payload>();
         check::<GroupsRequestsList02Response>();
         check::<GroupsRequestsDecide01Payload>();

@@ -340,6 +340,18 @@ pub(crate) enum Commands {
         command: NotificationsCommands,
     },
 
+    /// Who collects your personas' messages at their mediator — this VTA, one of your
+    /// clients under a claim, or nobody and why.
+    ///
+    /// Backed by the `vta/collection/{claim,release,list}/0.1` Trust Tasks (VTI-NTF-080 –
+    /// 093). A mediator permits one connection per DID, so a client that collects for a
+    /// persona itself claims it first and connects only once the claim is granted.
+    #[command(name = "collection")]
+    Collection {
+        #[command(subcommand)]
+        command: CollectionCommands,
+    },
+
     /// Manage the external accounts this VTA holds at clouds and third-party
     /// services, and the integrations bound to them.
     ///
@@ -382,6 +394,17 @@ pub(crate) enum Commands {
         command: ElectionCommands,
     },
 
+    /// Take part in your community's boards: propose ideas, leave notes, and take the tickets
+    /// for the ideas put to a vote. Your VTA signs every request as your identity at the
+    /// community (`vault/sign-trust-task`); voting on an idea is `pnm elections`.
+    ///
+    /// Needs the `SignTrustTask` capability, and `pcsVoter` for `take-tickets`.
+    #[command(name = "boards")]
+    Boards {
+        #[command(subcommand)]
+        command: BoardCommands,
+    },
+
     /// Operate an Affinidi messaging mediator as a DID this VTA manages.
     #[command(name = "messaging")]
     Messaging {
@@ -405,6 +428,121 @@ pub(crate) struct ElectionTarget {
     /// The VTA context that persona lives in; your voter keys are derived there.
     #[arg(long)]
     pub(crate) context: String,
+}
+
+/// The community a member uses boards at, and who they are there.
+#[derive(clap::Args)]
+pub(crate) struct BoardTarget {
+    /// Base URL of the community's Trust Task endpoint (e.g. `https://vtc.example.com/v1`).
+    #[arg(long)]
+    pub(crate) vtc: String,
+    /// The community's DID.
+    #[arg(long)]
+    pub(crate) vtc_did: String,
+    /// Your membership DID at the community: the identity your VTA's vault entry for it holds.
+    #[arg(long)]
+    pub(crate) member: String,
+    /// The vault entry to sign as. Default: your one active entry for the community as
+    /// `--member`.
+    #[arg(long)]
+    pub(crate) entry: Option<String>,
+}
+
+/// What an idea says: its title, what it covers, and where it is filed.
+#[derive(clap::Args, Default)]
+pub(crate) struct IdeaText {
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+    /// What the idea covers, and who should come.
+    #[arg(long)]
+    pub(crate) description: Option<String>,
+    /// One of the board's formats (e.g. Discussion, Talk, Workshop), where it states them.
+    #[arg(long)]
+    pub(crate) format: Option<String>,
+    /// One of the board's topics, where it states them.
+    #[arg(long)]
+    pub(crate) topic: Option<String>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BoardCommands {
+    /// The boards you can see.
+    List {
+        /// Only boards in this status: open, closed or archived.
+        #[arg(long)]
+        status: Option<String>,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// One board and its ideas, lane by lane, with each open idea's election.
+    Show {
+        board_id: String,
+        /// Only ideas in these states (proposed, open, selected, notSelected, declined, merged,
+        /// withdrawn). Repeat for several.
+        #[arg(long = "state")]
+        states: Vec<String>,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Propose an idea while the board takes proposals. It is shown under your name.
+    Propose {
+        board_id: String,
+        #[command(flatten)]
+        idea: IdeaText,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Change your idea while it is still proposed.
+    Update {
+        idea_id: String,
+        #[command(flatten)]
+        idea: IdeaText,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Withdraw your idea while it is still proposed.
+    Withdraw {
+        idea_id: String,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// The notes on a board, or on one of its ideas.
+    Notes {
+        board_id: String,
+        /// Only this idea's notes.
+        #[arg(long)]
+        idea: Option<String>,
+        /// Every note on the board, its ideas' included.
+        #[arg(long, conflicts_with = "idea")]
+        all: bool,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Add a note to a board, or to one of its ideas. It is shown under your name.
+    Note {
+        board_id: String,
+        text: String,
+        #[arg(long)]
+        idea: Option<String>,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Withdraw one of your notes.
+    WithdrawNote {
+        note_id: String,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Take your ticket for every idea open for votes, each in its own request a few seconds
+    /// apart. Vote later, one idea at a time, with `pnm elections vote`.
+    TakeTickets {
+        board_id: String,
+        /// The VTA context your membership persona lives in; your voter keys are derived there.
+        #[arg(long)]
+        context: String,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
 }
 
 /// A membership credential you choose to present, for an election whose roll is the holders of
@@ -1690,6 +1828,52 @@ pub(crate) enum RoomFileCommands {
         /// Where to write the file. Must not exist.
         #[arg(long)]
         out: std::path::PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum CollectionCommands {
+    /// Claim a persona DID — or renew your claim — so that you, not the VTA, collect for it
+    /// until the granted end. Connect only after this succeeds.
+    Claim {
+        /// TARGET SCOPE: the context the persona belongs to.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// The persona DID to collect for.
+        #[arg(long, value_name = "DID")]
+        identifier: String,
+        /// How long the claim should last, in seconds (60–2592000; the VTA may grant less).
+        /// Twenty-four hours (86400) is the recommended lease.
+        #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(60..=2_592_000))]
+        duration: Option<i64>,
+    },
+    /// Release the claim for a persona DID: yours ends at once (stop collecting first);
+    /// another client's ends at its stated end without renewal.
+    Release {
+        /// TARGET SCOPE: the context the persona belongs to.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// The persona DID whose claim to release.
+        #[arg(long, value_name = "DID")]
+        identifier: String,
+    },
+    /// List who collects for each persona DID of a context.
+    List {
+        /// TARGET SCOPE: the context to list.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// Only this identifier.
+        #[arg(long, value_name = "DID")]
+        identifier: Option<String>,
+        /// Only identifiers with this collector.
+        #[arg(long, value_parser = ["vta", "client", "none"])]
+        collector: Option<String>,
+        /// The most items to return (1–200).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Continue from a previous page's cursor (same filters).
+        #[arg(long)]
+        cursor: Option<String>,
     },
 }
 

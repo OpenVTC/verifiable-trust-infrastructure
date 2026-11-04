@@ -297,6 +297,7 @@ pub(super) async fn handle_create(
         Ok(r) => r,
         Err(reason) => return app_error_to_reject(&doc, AppError::Validation(reason)),
     };
+    let successor = entry.subject.clone();
     let result = if rollover {
         operations::acl_v0_2::rollover(
             &state.acl_ks,
@@ -318,6 +319,16 @@ pub(super) async fn handle_create(
         )
         .await
     };
+    // A rollover carries the predecessor's collection claims to its successor
+    // (VTI-NTF-084).
+    if rollover
+        && result.is_ok()
+        && let Err(e) =
+            crate::operations::collection::carry_claims(&state.collection_ks, &auth.did, &successor)
+                .await
+    {
+        tracing::warn!(error = %e, "could not carry collection claims across a rollover");
+    }
     typed_response::<grant_spec::Response>(&doc, result, grant_codes())
 }
 
@@ -560,6 +571,17 @@ pub(super) async fn handle_swap_key(
                         ),
                     },
                 );
+            }
+            // A key rotation carries the subject's collection claims
+            // (VTI-NTF-084, VTI-CLT-025).
+            if let Err(e) = crate::operations::collection::carry_claims(
+                &state.collection_ks,
+                &auth.did,
+                &result.did,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "could not carry collection claims across a key swap");
             }
             // Canonical `acl/swap-key/0.1` responds with the realized entry
             // plus the swapped-out `previousSubject` (#857).

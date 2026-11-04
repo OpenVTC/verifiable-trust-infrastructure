@@ -23,9 +23,8 @@ pub const LISTING_SCHEMA: &str =
 /// (VTI-VTN-012); repudiating a grant is departure.
 pub const REPUDIATES_V1: &str = "https://registry.trustoverip.org/dtg/vsc/repudiates/1";
 
-/// The issuer (a member) registers the subject (a group it owns) to serve a network role.
-/// `object.value` = `{ network, role }`. Used by network groups (phase 2).
-pub const SERVES_ROLE_V1: &str = "https://openvtc.org/vtn/vsc/servesRole/1";
-
-/// The network accepts a group registration. `object.digestMultibase` = the servesRole VSC.
+/// The network accepts a group registration. `object.digestMultibase` = the registration
+/// digest of the member's signed `vtn/groups/register` request
+/// ([`crate::groups::registration_digest`]), proof included. The request replaces the
+/// retired `servesRole/1` VSC: the request asks, this credential is the proof (A19).
 pub const GROUP_REGISTERED_V1: &str = "https://openvtc.org/vtn/vsc/groupRegistered/1";

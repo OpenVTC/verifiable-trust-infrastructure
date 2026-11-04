@@ -564,11 +564,10 @@ pub async fn verify_statement(
             AppError::Config("this VTC has no DID; it cannot be an audience".into())
         })?;
     let now = Utc::now();
-    let window = vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW;
-    if doc
-        .validate_freshness(now, &window.freshness_policy().requiring_issued_at())
-        .is_err()
-    {
+    let freshness = vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
+        .freshness_policy()
+        .requiring_issued_at();
+    if doc.validate_freshness(now, &freshness).is_err() {
         return Err(invalid("outside its acceptance window"));
     }
     if doc.validate_basic(now, &vtc_did).is_err() || doc.recipient.as_deref() != Some(&vtc_did) {
@@ -637,7 +636,13 @@ pub async fn verify_statement(
         {
             return Err(invalid("statement id already spent"));
         }
-        let until = issued_at + window.max_age + window.clock_skew + skew;
+        // Until the statement's acceptance end plus the skew (VTI-OPS-029): a
+        // stated `expiresAt` is honoured up to thirty days (VTI-OPS-028), and
+        // a statement still acceptable after its id is forgotten is spent
+        // twice. `requiring_issued_at` means there is always an end.
+        let until = vti_trust_task_server::retain_until(&freshness, &doc, now)
+            .ok_or_else(|| invalid("no acceptance end"))?
+            + skew;
         ks.insert(key, &until.timestamp()).await?;
     }
 

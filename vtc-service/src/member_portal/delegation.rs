@@ -28,16 +28,20 @@
 //! community, refuses a delegated signer itself (`card/update` widening a
 //! value to `public`).
 
+//! The generic half — the scope match, the exclusions, recording the row and
+//! reading it back as armed or not — is [`vti_oob_server::delegation`]. What
+//! stays here is the VTC's: the row's shape (it names the session), the
+//! session that keeps it live, and the audit row item 7 requires.
+
 use serde::{Deserialize, Serialize};
 use vti_common::audit::{AuditEvent, MemberPortalKeyUsedData};
 use vti_common::auth::session::{SessionState, get_session, now_epoch};
 use vti_common::store::KeyspaceHandle;
+use vti_oob_server::delegation::{self as shared, DelegatedKey, DelegationLiveness, Liveness};
 
 use crate::error::AppError;
 
-fn key(start_key: &str) -> Vec<u8> {
-    format!("delegation:{start_key}").into_bytes()
-}
+pub use vti_oob_server::delegation::covers;
 
 /// One armed delegation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,27 +61,44 @@ pub struct Delegation {
     pub grant_id: Option<String>,
 }
 
-/// Families a delegated key never signs for (grant 0.2 consumer item 6 and
-/// wallet item 5): authentication, access control and consent.
-const EXCLUDED: &[&str] = &["auth", "acl", "consent", "task-consent", "confirm"];
-
-/// `https://trusttasks.org/spec/vtc/directory/card/update/0.1` → `vtc/directory/card/update`.
-fn slug_of(type_uri: &str) -> Option<&str> {
-    let path = type_uri.split('#').next()?;
-    let path = path.split_once("/spec/")?.1;
-    Some(path.rsplit_once('/')?.0)
+impl DelegatedKey for Delegation {
+    fn approver(&self) -> &str {
+        &self.member_did
+    }
+    fn scope(&self) -> &[String] {
+        &self.scope
+    }
+    fn not_after(&self) -> u64 {
+        self.not_after
+    }
 }
 
-fn under(slug: &str, family: &str) -> bool {
-    slug == family || slug.starts_with(&format!("{family}/"))
+/// A delegation is live while the session `redeem` created is: present,
+/// authenticated, the member's, not past its `notAfter` or refresh end, and
+/// still carrying `K_b`. A session that is gone disarms the key for good.
+struct SessionLiveness<'a> {
+    ks: &'a KeyspaceHandle,
 }
 
-/// Whether `scope` lets the key sign `type_uri`, exclusions applied.
-pub fn covers(scope: &[String], type_uri: &str) -> bool {
-    let Some(slug) = slug_of(type_uri) else {
-        return false;
-    };
-    !EXCLUDED.iter().any(|f| under(slug, f)) && scope.iter().any(|f| under(slug, f))
+#[async_trait::async_trait]
+impl DelegationLiveness<Delegation> for SessionLiveness<'_> {
+    async fn liveness(&self, signer: &str, d: &Delegation) -> Result<Liveness, AppError> {
+        let now = now_epoch();
+        let Some(s) = get_session(self.ks, &d.session_id).await? else {
+            return Ok(Liveness::Gone);
+        };
+        let live = s.state == SessionState::Authenticated
+            && s.did == d.member_did
+            && s.not_after.is_none_or(|end| end > now)
+            && s.refresh_expires_at.is_none_or(|end| end > now)
+            && s.session_pubkey_b58btc.as_deref()
+                == crate::member_portal::oob::did_key_multikey(signer);
+        Ok(if live {
+            Liveness::Live
+        } else {
+            Liveness::Paused
+        })
+    }
 }
 
 /// Arm the delegation `redeem` just issued a session for.
@@ -86,7 +107,7 @@ pub async fn record(
     start_key: &str,
     delegation: &Delegation,
 ) -> Result<(), AppError> {
-    ks.insert(key(start_key), delegation).await
+    shared::record(ks, start_key, delegation).await
 }
 
 /// The member `signer` signs as for `type_uri`, if `signer` is a portal
@@ -145,27 +166,7 @@ async fn armed(
     signer: &str,
     type_uri: &str,
 ) -> Result<Option<Delegation>, AppError> {
-    let Some(d): Option<Delegation> = ks.get(key(signer)).await? else {
-        return Ok(None);
-    };
-    let now = now_epoch();
-    let session = get_session(ks, &d.session_id).await?;
-    let live = session.as_ref().is_some_and(|s| {
-        s.state == SessionState::Authenticated
-            && s.did == d.member_did
-            && s.not_after.is_none_or(|end| end > now)
-            && s.refresh_expires_at.is_none_or(|end| end > now)
-            && s.session_pubkey_b58btc.as_deref()
-                == crate::member_portal::oob::did_key_multikey(signer)
-    });
-    if !live || d.not_after <= now {
-        // Disarmed for good once its session has gone.
-        if session.is_none() || d.not_after <= now {
-            ks.remove(key(signer)).await?;
-        }
-        return Ok(None);
-    }
-    Ok(covers(&d.scope, type_uri).then_some(d))
+    shared::armed(ks, signer, type_uri, &SessionLiveness { ks }).await
 }
 
 #[cfg(test)]

@@ -418,6 +418,7 @@ mod external;
 pub use external::presign_split_at;
 #[cfg(feature = "sealed-transfer")]
 pub use external::{open_external_credential, seal_external_secret};
+mod collection;
 #[cfg(feature = "test-loopback")]
 pub mod loopback;
 mod memory;

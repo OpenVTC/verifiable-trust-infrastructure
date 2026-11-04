@@ -110,7 +110,7 @@ allowed        = ["did:webvh:Qm…:vtc.example.org"]
 
 | Key | Meaning |
 |---|---|
-| `data_dir` | The journal: one directory per election, named by a digest of the community and election (no caller-supplied string becomes a path). Back it up; it **is** the boards. |
+| `data_dir` | The journal: one directory per election, named by a digest of the community and election (no caller-supplied string becomes a path). Back it up; it **is** the boards. With `[identity]`, `data_dir/store` also keeps the service's TSP relationships, so a restart does not forget the communities it talks to. |
 | `listen` | Where the HTTPS binding is served. Terminate TLS in front of it, at the host `https_url` names. |
 | `operator_vta_did` | The VTA that minted the identity. The service never answers as it. |
 | `resolver_url` | Optional DID resolver sidecar. |
@@ -130,6 +130,10 @@ vti-voting-service run --config /etc/vti-voting/config.toml
 
 - **Opens the identity's mediator session.** It waits until the DID resolves over the network,
   connects with capped, jittered backoff, and supervises the session as the witness does.
+  TSP relationships are kept in `data_dir/store`, not in memory: TSP drops, unanswered, every
+  frame from a party it holds no relationship with, and a community keeps its half across the
+  service's restart. Kept in memory, a restart left every community's registrations waiting
+  forever (a VTC now also re-forms the relationship when a reply times out).
 - **Serves HTTPS on `listen`.**
 
 SIGINT or SIGTERM closes both.

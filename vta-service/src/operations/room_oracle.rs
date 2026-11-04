@@ -153,9 +153,18 @@ impl Principal {
 ///
 /// The candidates [`principal`] chooses from, and what `rooms/keys/act` resolves its
 /// `issuer` against. Empty when there are none — a room nobody here holds anything from and
-/// a room only somebody the caller cannot act as holds read alike. A persona holding two
-/// authority credentials, or two membership credentials, from one room is refused rather
-/// than guessed between, as it always was.
+/// a room only somebody the caller cannot act as holds read alike.
+///
+/// # A persona holding two from one room
+///
+/// A member removed and admitted again holds the room's first grant beside its second: the
+/// accept stores the new credentials and nothing retires the old. The one used is the
+/// room's credential with the **latest `validFrom`** ([`current`]) — of the authority and of
+/// the membership credential alike, each chosen on its own. That is the room's own rule, not
+/// a guess: a room withdraws a member with a `subject` entry covering every credential issued
+/// **before** its `revokedAt` (`rooms/revocations/put` *Matching*), so after a removal and a
+/// re-admission the earlier credential is the withdrawn one and the later one is the grant in
+/// force. Only two equally recent credentials are refused, naming their vault ids.
 pub async fn principals(
     state: &AppState,
     auth: &AuthClaims,
@@ -163,67 +172,114 @@ pub async fn principals(
 ) -> Result<Vec<Principal>, AppError> {
     let scope = auth.act_scope();
     let stores = crate::operations::persona::PersonaStores::from_state(state);
+    let now = Utc::now();
 
-    let mut held: Vec<(DTGCredential, Value, crate::operations::persona::PersonaKey)> = Vec::new();
-    for vac in room_credentials(&state.vault_ks, room_id, AUTHORITY_TYPE, &scope).await? {
+    // Every authority credential whose subject is a persona the caller may act as, grouped
+    // by that persona.
+    let mut by_persona: Vec<(String, crate::operations::persona::PersonaKey, Vec<Held>)> =
+        Vec::new();
+    for (id, vac) in room_credentials(&state.vault_ks, room_id, AUTHORITY_TYPE, &scope).await? {
         let parsed: DTGCredential = serde_json::from_value(vac.clone()).map_err(|e| {
             AppError::Internal(format!("stored authority credential for `{room_id}`: {e}"))
         })?;
+        let subject = parsed.subject().to_string();
+        if let Some((_, _, held)) = by_persona.iter_mut().find(|(did, _, _)| *did == subject) {
+            held.push(Held::new(id, &parsed, vac));
+            continue;
+        }
         if let Some(key) =
-            crate::operations::persona::persona_signing_key(stores, auth, parsed.subject()).await?
+            crate::operations::persona::persona_signing_key(stores, auth, &subject).await?
         {
-            held.push((parsed, vac, key));
+            by_persona.push((subject, key, vec![Held::new(id, &parsed, vac)]));
         }
     }
 
-    // Two credentials for one persona is the ambiguity this always refused.
-    let mut subjects: Vec<String> = held
-        .iter()
-        .map(|(c, _, _)| c.subject().to_string())
-        .collect();
-    subjects.sort_unstable();
-    let total = subjects.len();
-    subjects.dedup();
-    if subjects.len() != total {
-        return Err(AppError::Conflict(format!(
-            "this VTA holds more than one {AUTHORITY_TYPE} issued by room `{room_id}` to one \
-             persona; which one to attenuate from is not a question this can answer safely"
-        )));
-    }
-
     let vmcs = room_credentials(&state.vault_ks, room_id, MEMBERSHIP_TYPE, &scope).await?;
-    let mut out = Vec::with_capacity(held.len());
-    for (root, vac, key) in held {
-        let did = root.subject().to_string();
+    let mut out = Vec::with_capacity(by_persona.len());
+    for (did, key, vacs) in by_persona {
+        let vac = current(vacs, AUTHORITY_TYPE, room_id, now)?;
         // The membership credential of the same persona — never another's, which would pair
         // one member's authority with somebody else's membership.
         let mut mine = Vec::new();
-        for vmc in &vmcs {
+        for (id, vmc) in &vmcs {
             let parsed: DTGCredential = serde_json::from_value(vmc.clone()).map_err(|e| {
                 AppError::Internal(format!("stored membership credential for `{room_id}`: {e}"))
             })?;
             if parsed.subject() == did {
-                mine.push(vmc.clone());
+                mine.push(Held::new(id.clone(), &parsed, vmc.clone()));
             }
         }
-        let vmc = match mine.len() {
-            0 => {
-                return Err(AppError::NotFound(format!(
-                    "this VTA holds no {MEMBERSHIP_TYPE} issued by room `{room_id}` to the \
-                     persona its {AUTHORITY_TYPE} names"
-                )));
-            }
-            1 => mine.remove(0),
-            n => {
-                return Err(AppError::Conflict(format!(
-                    "this VTA holds {n} {MEMBERSHIP_TYPE}s issued by room `{room_id}` to one \
-                     persona; which one to present is not a question this can answer safely"
-                )));
-            }
-        };
+        if mine.is_empty() {
+            return Err(AppError::NotFound(format!(
+                "this VTA holds no {MEMBERSHIP_TYPE} issued by room `{room_id}` to the \
+                 persona its {AUTHORITY_TYPE} names"
+            )));
+        }
+        let vmc = current(mine, MEMBERSHIP_TYPE, room_id, now)?;
         out.push(Principal { did, key, vac, vmc });
     }
     Ok(out)
+}
+
+/// One room credential held for a persona: its vault id, its validity window, and the
+/// credential.
+struct Held {
+    id: String,
+    valid_from: chrono::DateTime<Utc>,
+    valid_until: Option<chrono::DateTime<Utc>>,
+    credential: Value,
+}
+
+impl Held {
+    fn new(id: String, parsed: &DTGCredential, credential: Value) -> Self {
+        Self {
+            id,
+            valid_from: parsed.valid_from(),
+            valid_until: parsed.valid_until(),
+            credential,
+        }
+    }
+
+    fn in_force(&self, now: chrono::DateTime<Utc>) -> bool {
+        self.valid_from <= now && self.valid_until.is_none_or(|until| now < until)
+    }
+}
+
+/// Of one persona's credentials of one kind from one room (never empty), the one the room
+/// means now: the latest `validFrom` among those in force at `now`, or among all of them
+/// where none is — a host then refuses it for what it is, rather than this refusing over a
+/// choice. A credential not yet valid never displaces one in force, so a grant dated ahead
+/// does not lock a member out before it starts.
+///
+/// Two with the same `validFrom` are a choice the room's rule does not make. They are
+/// refused with their vault ids, so the holder can archive the one it does not mean.
+fn current(
+    mut held: Vec<Held>,
+    type_tag: &str,
+    room_id: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<Value, AppError> {
+    if held.iter().any(|h| h.in_force(now)) {
+        held.retain(|h| h.in_force(now));
+    }
+    held.sort_by_key(|h| std::cmp::Reverse(h.valid_from));
+    let latest = held[0].valid_from;
+    let tied: Vec<&str> = held
+        .iter()
+        .take_while(|h| h.valid_from == latest)
+        .map(|h| h.id.as_str())
+        .collect();
+    if tied.len() > 1 {
+        return Err(AppError::Conflict(format!(
+            "this VTA holds {} {type_tag}s issued by room `{room_id}` to one persona with the \
+             same validFrom ({}); which one is current is not a question this can answer \
+             safely — archive the one you do not mean: {}",
+            tied.len(),
+            latest.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            tied.join(", ")
+        )));
+    }
+    Ok(held.swap_remove(0).credential)
 }
 
 /// The persona the caller acts as in `room_id`, and the credentials the room issued it.
@@ -420,14 +476,15 @@ pub async fn present_as(
     })
 }
 
-/// Every credential of `type_tag` issued by `room_id` that the caller's custody scope
-/// reaches, parsed. Whose they are is [`principal`]'s question, not this one's.
+/// Every Active credential of `type_tag` issued by `room_id` that the caller's custody scope
+/// reaches, parsed, with its vault id. Whose they are is [`principal`]'s question, not this
+/// one's.
 async fn room_credentials(
     vault: &KeyspaceHandle,
     room_id: &str,
     type_tag: &str,
     scope: &ActScope,
-) -> Result<Vec<Value>, AppError> {
+) -> Result<Vec<(String, Value)>, AppError> {
     let query = crate::vault::query::CredentialQuery {
         r#type: Some(type_tag.to_string()),
         issuer_did: Some(room_id.to_string()),
@@ -446,11 +503,12 @@ async fn room_credentials(
         // byte values, which then fails to deserialise as a credential with "invalid
         // type: sequence, expected struct DTGCommon". That is what it did until the
         // round-trip test below was written.
-        out.push(
+        out.push((
+            found.id,
             serde_json::from_slice(&stored.body).map_err(|e| {
                 AppError::Internal(format!("stored {type_tag} for `{room_id}`: {e}"))
             })?,
-        );
+        ));
     }
     Ok(out)
 }
@@ -778,14 +836,34 @@ mod tests {
     /// case where the vault's own custody gate admits every caller, so only the persona rule
     /// stands between one context and another's credentials.
     async fn grant(state: &AppState, room: &Party, subject: &str, tag: &str, actions: &[&str]) {
-        let now = Utc::now();
+        grant_from(
+            state,
+            room,
+            subject,
+            tag,
+            actions,
+            Utc::now() - Span::minutes(1),
+        )
+        .await;
+    }
+
+    /// [`grant`], valid from `from` for thirty days; answers the VAC and VMC as stored.
+    async fn grant_from(
+        state: &AppState,
+        room: &Party,
+        subject: &str,
+        tag: &str,
+        actions: &[&str],
+        from: chrono::DateTime<Utc>,
+    ) -> (Value, Value) {
+        let now = from;
         let mut vac = DTGCredential::new_vac(
             room.did.clone(),
             dtg_credentials::IssuerScope::Public,
             subject.to_string(),
             room.did.clone(),
             actions.iter().map(|a| a.to_string()).collect(),
-            now - Span::minutes(1),
+            now,
             now + Span::days(30),
         )
         .expect("the room's grant")
@@ -794,7 +872,7 @@ mod tests {
         let mut vmc = DTGCredential::new_vmc(
             room.did.clone(),
             subject.to_string(),
-            now - Span::minutes(1),
+            now,
             Some(now + Span::days(30)),
             false,
         );
@@ -817,6 +895,10 @@ mod tests {
             &vmc,
         )
         .await;
+        (
+            serde_json::to_value(&vac).expect("the VAC"),
+            serde_json::to_value(&vmc).expect("the VMC"),
+        )
     }
 
     fn room_row(room: &str, owner: &str) -> Room {
@@ -1082,5 +1164,116 @@ mod tests {
         .expect("alice's membership, unambiguously");
         let vmc: DTGCredential = serde_json::from_value(p.vmc).unwrap();
         assert_eq!(vmc.subject(), alice.did);
+    }
+
+    /// **Removed, then admitted again.** The accept stores the room's second grant beside its
+    /// first, and nothing retires the first. The persona acts on the later one — the grant
+    /// the room's own revocation rule leaves in force — instead of being refused every
+    /// action in the room from then on.
+    #[tokio::test]
+    async fn a_readmitted_member_acts_on_the_later_grant() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        two_contexts(&state).await;
+        let alice = did_key_persona(&state, "alice", "alice-persona").await;
+        let room = Party::new();
+        let now = Utc::now();
+        // The re-admission's grant is stored first, so vault order cannot be what decides.
+        let (vac_new, vmc_new) = grant_from(
+            &state,
+            &room,
+            &alice.did,
+            "again",
+            &["read", "write"],
+            now - Span::minutes(1),
+        )
+        .await;
+        let (vac_old, vmc_old) = grant_from(
+            &state,
+            &room,
+            &alice.did,
+            "first",
+            &["read"],
+            now - Span::days(2),
+        )
+        .await;
+
+        let caller = crate::test_support::admin_claims_for_context("alice");
+        let p = principal(&state, &caller, &room.did)
+            .await
+            .expect("the later grant is the current one, not an ambiguity");
+        assert_eq!(p.did, alice.did);
+        assert_eq!(p.vac, vac_new);
+        assert_eq!(p.vmc, vmc_new);
+        assert_ne!(p.vac, vac_old);
+        assert_ne!(p.vmc, vmc_old);
+        assert!(p.confers("write").unwrap(), "the later grant's actions");
+        present(&state, &caller, &Party::new().did, &room.did, "write")
+            .await
+            .expect("and it presents");
+    }
+
+    /// A grant dated ahead does not displace the one in force before it starts.
+    #[tokio::test]
+    async fn a_grant_not_yet_valid_does_not_displace_the_one_in_force() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        two_contexts(&state).await;
+        let alice = did_key_persona(&state, "alice", "alice-persona").await;
+        let room = Party::new();
+        let now = Utc::now();
+        let (vac_now, vmc_now) = grant_from(
+            &state,
+            &room,
+            &alice.did,
+            "now",
+            &["read"],
+            now - Span::days(1),
+        )
+        .await;
+        grant_from(
+            &state,
+            &room,
+            &alice.did,
+            "later",
+            &["read"],
+            now + Span::days(1),
+        )
+        .await;
+
+        let p = principal(
+            &state,
+            &crate::test_support::admin_claims_for_context("alice"),
+            &room.did,
+        )
+        .await
+        .expect("the grant in force");
+        assert_eq!(p.vac, vac_now);
+        assert_eq!(p.vmc, vmc_now);
+    }
+
+    /// Two grants equally recent are a choice the room's rule does not make: refused, naming
+    /// both vault ids so the holder can archive the one it does not mean.
+    #[tokio::test]
+    async fn two_equally_recent_grants_are_refused_by_id() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        two_contexts(&state).await;
+        let alice = did_key_persona(&state, "alice", "alice-persona").await;
+        let room = Party::new();
+        let at = Utc::now() - Span::minutes(1);
+        grant_from(&state, &room, &alice.did, "one", &["read"], at).await;
+        grant_from(&state, &room, &alice.did, "two", &["write"], at).await;
+
+        let err = principal(
+            &state,
+            &crate::test_support::admin_claims_for_context("alice"),
+            &room.did,
+        )
+        .await
+        .expect_err("a tie");
+        assert!(matches!(err, AppError::Conflict(_)), "{err}");
+        let text = err.to_string();
+        assert!(
+            text.contains("vac-one") && text.contains("vac-two"),
+            "{text}"
+        );
     }
 }

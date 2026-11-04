@@ -32,6 +32,13 @@ export interface PageElection {
   ticketHeld: boolean;
 }
 
+/** One election of a `takeTickets` call: what came of it. The community knows all of it already. */
+export interface PageBatchTicket {
+  electionId: string;
+  outcome: "taken" | "held" | "unavailable" | "notEligible" | "failed";
+  error?: string;
+}
+
 export interface PageElectionQuestion {
   key: string;
   type: "choice" | "ranking" | "score" | "text" | string;
@@ -82,6 +89,10 @@ export interface WalletElections {
   show(p: { hostDid: string; electionId: string; member?: string }): Promise<PageElectionView>;
   /** The member decides in the wallet's own window. */
   takeTicket(p: { hostDid: string; electionId: string; member?: string }): Promise<{ ticketHeld: true; taken: boolean }>;
+  /** Several tickets in one decision (a board's ideas). Each is still its own request, a pause
+   *  apart, so this resolves some seconds after the member agrees. Absent from an older wallet:
+   *  take them one at a time instead. */
+  takeTickets?(p: { hostDid: string; electionIds: string[]; member?: string }): Promise<{ tickets: PageBatchTicket[] }>;
   /** Opens the wallet's ballot (or, with no ticket held, takes one and stops).
    *  Resolves when the wallet's window closes, whatever the member did. */
   vote(p: { hostDid: string; electionId: string; member?: string }): Promise<{ ticketTaken: boolean }>;
@@ -138,5 +149,5 @@ export function actionableFirst(list: readonly PageElection[], now = Date.now())
 /** A wallet answer the member chose, in the wallet's own window — not an error to show. */
 export function declinedInWallet(e: unknown): boolean {
   const text = e instanceof Error ? e.message : String(e);
-  return /did not take a ticket|declined|did not allow/.test(text);
+  return /did not take a ticket|did not take your tickets|declined|did not allow/.test(text);
 }

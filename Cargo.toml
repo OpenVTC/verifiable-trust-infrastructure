@@ -36,11 +36,13 @@ members = [
   "vti-specs-rooms",
   "vti-specs-vta",
   "vti-specs-vtc",
+  "vti-specs-vtn",
   "vti-rooms",
   "vti-rooms-dtg",
   "vti-rooms-wasm",
   "vti-vtn",
   "vti-trust-task-server",
+  "vti-oob-server",
   "vti-secrets",
   "vti-webauthn",
   # The witness host service (docs/05-design-notes/witness-host-service.md):
@@ -93,9 +95,11 @@ default-members = [
   "vti-specs-rooms",
   "vti-specs-vta",
   "vti-specs-vtc",
+  "vti-specs-vtn",
   "vti-webauthn",
   "vti-vtn",
   "vti-trust-task-server",
+  "vti-oob-server",
 ]
 exclude = [
   "deploy/nitro/enclave-proxy",
@@ -150,7 +154,9 @@ uniffi = "0.32"
 # 0.35 goes with `affinidi-messaging-sdk` 0.43 and mediator 0.47.
 # 0.36 goes with `trust-tasks-rs` 0.36, `affinidi-messaging-sdk` 0.44 and
 # mediator 0.48 (affinidi-tdk-rs #978, affinidi-messaging-mediator #46).
-affinidi-tdk = "0.36"
+# 0.37 goes with `trust-tasks-rs` 0.37, `affinidi-messaging-sdk` 0.45 and
+# mediator 0.50 (affinidi-tdk-rs #983, affinidi-messaging-mediator #55).
+affinidi-tdk = "0.37"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -305,7 +311,8 @@ affinidi-messaging-core = "0.1"
 # `affinidi_tdk::messaging::tasks`, not `trust_tasks_rs::specs::messaging`.
 # Mediator 0.47 serves 0.2 (affinidi-messaging-mediator #40).
 # 0.44 is on `trust-tasks-rs` 0.36 (affinidi-tdk-rs #978).
-affinidi-messaging-sdk = { version = "0.44", default-features = false }
+# 0.45 is on `trust-tasks-rs` 0.37 (affinidi-tdk-rs #983).
+affinidi-messaging-sdk = { version = "0.45", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
@@ -753,19 +760,23 @@ aws-smithy-types = ">=1.6.1, <1.10"
 # 0.36.2: rooms/owner/group/remove/0.4 (trust-tasks-tf #975) and
 # vtc/install/claim/passkey/{start,finish}/0.1 (#976, #978), and `type_index`,
 # which the generated indexes' entries are.
+# 0.37: a stated `expiresAt` replaces the maximum age, up to an expiry horizon
+# (trust-tasks-tf #1021; VTI-OPS-024, VTI-OPS-028). Breaking in behaviour as
+# well as API: a consumer must keep its replay record to `record_expiry`, not
+# `issuedAt + max_age` (`vti_common::trust_task::acceptance::retain_until`).
 # Only `validate` here, and no crate adds a spec family (see "SPEC VERSIONS ARE
 # PINNED IN THE `vti-specs-*` CRATES" above).
-trust-tasks-rs = { version = "0.36.2", default-features = false, features = [
+trust-tasks-rs = { version = "0.37.0", default-features = false, features = [
   "validate",
 ] }
-trust-tasks-capability-client = "0.36"
+trust-tasks-capability-client = "0.37"
 # The build-time generator behind the `vti-specs-*` crates: each one's build.rs
 # turns the versions its `trust-tasks.lock` pins into Rust types and a Type URI
 # index (`.index(true)`). 0.1.3 is the floor: the first with the index.
 # trust-tasks-rs 0.36.2 above is the runtime that index's entries need
 # (`trust_tasks_rs::type_index`).
 trust-tasks-build = "0.1.3"
-trust-tasks-https = { version = "0.36", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-https = { version = "0.37", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -776,7 +787,7 @@ trust-tasks-https = { version = "0.36", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.36", default-features = false }
+trust-tasks-didcomm = { version = "0.37", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -795,9 +806,9 @@ trust-tasks-didcomm = { version = "0.36", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.36", default-features = false }
+trust-tasks-tsp = { version = "0.37", default-features = false }
 # 0.33.2: a did:scid key named with its `?src=` locator verifies (trust-tasks-tf #863).
-trust-tasks-proof = { version = "0.36.0", default-features = false, features = ["affinidi"] }
+trust-tasks-proof = { version = "0.37.0", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }

@@ -393,6 +393,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         step_up_approvers_ks: store.keyspace("step_up_approvers").unwrap(),
         member_pushes_ks,
         notifications_ks: store.keyspace("notifications").unwrap(),
+        boards_ks: store.keyspace("boards").unwrap(),
         oid4vp_keys_ks: store.keyspace("oid4vp_keys").unwrap(),
         oid4vp_signers: Arc::new(vtc_service::oid4vp::VerifierSigners::new()),
         oid4vp_sessions_ks: store.keyspace("oid4vp_sessions").unwrap(),

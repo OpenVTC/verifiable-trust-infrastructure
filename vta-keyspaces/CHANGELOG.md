@@ -2,6 +2,64 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.28.0...vta-keyspaces-v0.29.0) — 2026-11-03
+
+
+### Added
+
+- **vta-service**: The accepted-document-id record in the store, shared with the VTC (VTI-OPS-026, VTI-OPS-027) ([#2417](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2417))
+
+The VTA kept its record of accepted document ids (SPEC §7.2 item 11) in a
+  process-local InMemoryReplayGuard, so a document accepted before a restart
+  executed again when replayed after it, still inside its acceptance window
+  (VTI-OPS-026).
+
+  The VTC's store-backed record moves into vti-trust-task-server as
+  StoreAcceptedIds (with its sweep and tests) and the VTA adopts it over a new
+  `accepted_ids` keyspace: encrypted, excluded from backup, Unrelated to DID
+  deletion, swept on the storage thread's timer. Rows keep the `accepted:<id>`
+  shape, so the VTC needs no migration. admit_carried_document now returns the
+  claim it took, and the deposit handler settles it.
+
+  Also fixes a document refused after its claim (schema, spec policy, proof,
+  idempotency) keeping its id spent as in-flight: the corrected resend under
+  the same id was answered 202 and never ran. The post-claim work is now
+  dispatch_claimed, and the caller settles the claim on every outcome.
+
+  Retention is unchanged (issuedAt + max_age + skew); it moves to expiresAt when
+  the nodes adopt trust-tasks-rs 0.37.
+
+
+
+### Fixed
+
+- **contexts**: Context deletion purges the context's app-state and agent memory ([#2415](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2415))
+
+vta/contexts/delete removed a context's keys, DIDs, ACL entries and DID
+  templates, but left its application state (app:/appv:/appc:/appt:<ctx>:…)
+  and agent memory (mem:<ctx>:…) in place. Both are keyed by context id
+  alone, so a context later created under the same id inherited them.
+
+  Seen with OpenVTC: a profile wiped locally (config, keychain) and its VTA
+  context deleted, then re-provisioned into a fresh context under the same
+  id, synced the deleted profile's personas and communities straight back
+  from vta/app-state — personas whose keys were gone, so every one failed to
+  load with "not within the caller's scope".
+
+  - operations::app_state::purge_context removes every record family for a
+    context (records live and tombstoned, version index, write counters, reap
+    watermarks), so a recreated context starts with an empty store and a
+    change feed from zero.
+  - operations::memory::purge_context removes the context's memory entries.
+  - delete_context calls both for every context in the deleted subtree, and
+    logs the counts.
+  - Not added to the not-empty gate: the gate has to agree with
+    preview-delete, whose wire shape has no member for either, and a refusal
+    the preview cannot explain is the failure that function already warns
+    about. Surfacing them in the preview needs a spec revision.
+
+
+
 ## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.27.0...vta-keyspaces-v0.28.0) — 2026-11-03
 
 

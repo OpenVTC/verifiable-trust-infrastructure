@@ -21,6 +21,8 @@ path = "src/main.rs"
 vti-rooms = { path = "../vti-rooms", version = "0.26" }
 # The store and AppError. Nothing else internal.
 vti-common = { path = "../vti-common", version = "0.55" }
+# The store-backed accepted-document-id record the VTA and the VTC keep (VTI-OPS-029).
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.1" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 # The room client, for pulling from a write-primary. Host-neutral despite the
 # name: a mirror reads its primary exactly as any member would, because that is
@@ -153,7 +155,7 @@ didcomm = [
 # rather than a simulator. Everything `tests/carrier.rs` covers is packing,
 # routing, threading and acking — a simulator would be a second opinion about
 # exactly the parts that were wrong.
-affinidi-messaging-test-mediator = { version = "0.48", features = ["tsp"] }
+affinidi-messaging-test-mediator = { version = "0.50", features = ["tsp"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
