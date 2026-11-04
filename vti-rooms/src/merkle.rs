@@ -378,6 +378,9 @@ mod tests {
             cleartext: None,
             author: None,
             updated_at: 1_700_000_000,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         }
     }
 
@@ -456,6 +459,9 @@ mod tests {
                 "updated_at",
                 Record {
                     updated_at: 1_700_000_001,
+                    created_at: None,
+                    created_by: None,
+                    body_stored_at: None,
                     ..base.clone()
                 },
             ),

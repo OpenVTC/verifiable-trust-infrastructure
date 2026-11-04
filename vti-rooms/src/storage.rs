@@ -793,6 +793,25 @@ pub async fn put_record(
     // the version a body was sealed at when it stores it"). Whatever an earlier body at this
     // key was sealed at no longer applies.
     record.sealed_version = record.sealed.as_ref().map(|_| room.next_version);
+    // The host's own times and first author (`rooms/records/put/0.5` Host items 16–17),
+    // whichever put version wrote this: they are the host's metadata, not the writer's, so
+    // what a caller supplied is replaced. A record's first version sets `createdAt` and
+    // `createdBy`; every later one keeps what the first recorded — `None` included, for a
+    // record stored before this host kept them, which stays unknown rather than guessed.
+    // Every put stores a new author body, so `bodyStoredAt` is now.
+    match &existing {
+        Some(current) => {
+            record.created_at = current.created_at;
+            record.created_by = current.created_by.clone();
+        }
+        None => {
+            record.created_at = Some(now);
+            // The author it authenticated, where the tier discloses one — `None` on a
+            // private room, which was refused above if it carried one.
+            record.created_by = record.author.clone();
+        }
+    }
+    record.body_stored_at = Some(now);
     record.version = room.next_version;
     record.updated_at = now;
     room.next_version += 1;
@@ -1421,6 +1440,9 @@ mod tests {
             cleartext: None,
             author: None,
             updated_at: 0,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         }
     }
 
@@ -1437,6 +1459,9 @@ mod tests {
             cleartext: Some(serde_json::json!({ "body": "hello" })),
             author: Some("did:key:zBob".into()),
             updated_at: 0,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         }
     }
 
@@ -2751,6 +2776,9 @@ mod purge_and_freeze_tests {
             cleartext: Some(serde_json::json!({ "body": "hello" })),
             author: Some("did:key:zBob".into()),
             updated_at: 0,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         }
     }
 
@@ -3116,6 +3144,329 @@ mod purge_and_freeze_tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+}
+
+/// The host's record times and first author (`rooms/records/put/0.5` Host items 16–17), and
+/// how `rooms/records/list/0.6` and `rooms/records/get/0.3` serve them (trust-tasks-tf #1027).
+#[cfg(test)]
+mod record_times_tests {
+    use super::*;
+    use crate::Visibility;
+    use serde_json::json;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    async fn open() -> (tempfile::TempDir, KeyspaceHandle, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let rooms = store.keyspace(crate::ROOMS_KEYSPACE).unwrap();
+        let records = store.keyspace(crate::ROOM_RECORDS_KEYSPACE).unwrap();
+        (dir, rooms, records)
+    }
+
+    fn room(visibility: Visibility) -> Room {
+        Room {
+            room_id: "r1".into(),
+            owner_did: "did:key:zOwner".into(),
+            visibility,
+            retention_policy: crate::RetentionPolicy::Chained,
+            anchor_cadence: Default::default(),
+            epoch: 1,
+            next_version: 1,
+            retention_days: 90,
+            epoch_expires_at: None,
+            created_at: 0,
+            updated_at: 0,
+            mirror_of: None,
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
+            frozen_at: None,
+        }
+    }
+
+    /// A write as a host builds it: the author where the tier discloses one, and host times
+    /// a writer tried to choose, which the store replaces.
+    fn write(visibility: Visibility, author: &str, cleartext: serde_json::Value) -> Record {
+        let open = visibility.stores_cleartext();
+        Record {
+            key: "k".into(),
+            version: 0,
+            epoch: (!open).then_some(1),
+            status: RecordStatus::Active,
+            pinned: false,
+            sealed: (!open).then(|| "c2VhbGVk".to_string()),
+            nonce: (!open).then(|| "bm9uY2U".to_string()),
+            sealed_version: None,
+            cleartext: open.then_some(cleartext),
+            author: visibility.discloses_actor().then(|| author.to_string()),
+            updated_at: 0,
+            created_at: Some(1),
+            created_by: Some("did:key:zForged".into()),
+            body_stored_at: Some(1),
+        }
+    }
+
+    fn curation(status: Option<RecordStatus>, pinned: Option<bool>) -> Curation {
+        Curation {
+            status,
+            pinned,
+            expected_version: None,
+        }
+    }
+
+    /// Host items 16–17 on both tiers that record an author: `createdAt` and `createdBy` are
+    /// set by the first version and never move — not by an edit (by another member too), a
+    /// pin, a demotion or a retraction — while `bodyStoredAt` moves with each put and with
+    /// nothing else. What a writer put in any of them is replaced.
+    #[tokio::test]
+    async fn created_at_and_by_are_set_once_and_body_stored_at_moves_only_with_a_body() {
+        for visibility in [Visibility::Open, Visibility::Attributed] {
+            let (_d, rooms, rec) = open().await;
+            create_room(&rooms, &room(visibility)).await.unwrap();
+
+            let first = put_record(
+                &rooms,
+                &rec,
+                "r1",
+                write(visibility, "did:key:zAlice", json!({ "body": "one" })),
+                None,
+                100,
+            )
+            .await
+            .unwrap();
+            assert_eq!(first.created_at, Some(100), "{visibility:?}");
+            assert_eq!(first.created_by.as_deref(), Some("did:key:zAlice"));
+            assert_eq!(
+                first.body_stored_at,
+                Some(100),
+                "first version: equals createdAt"
+            );
+
+            // An edit, by someone else: a new body, the first version's creation kept.
+            let edited = put_record(
+                &rooms,
+                &rec,
+                "r1",
+                write(visibility, "did:key:zBob", json!({ "body": "two" })),
+                None,
+                200,
+            )
+            .await
+            .unwrap();
+            assert_eq!(edited.created_at, Some(100));
+            assert_eq!(edited.created_by.as_deref(), Some("did:key:zAlice"));
+            assert_eq!(edited.body_stored_at, Some(200));
+
+            for (when, c) in [
+                (300, curation(None, Some(true))),
+                (400, curation(Some(RecordStatus::Deprecated), None)),
+                (500, curation(Some(RecordStatus::Retracted), None)),
+            ] {
+                let curated = curate_record(&rooms, &rec, "r1", "k", c, when)
+                    .await
+                    .unwrap();
+                assert_eq!(curated.updated_at, when);
+                assert_eq!(curated.created_at, Some(100), "curation at {when}");
+                assert_eq!(curated.created_by.as_deref(), Some("did:key:zAlice"));
+                assert_eq!(curated.body_stored_at, Some(200), "no new body at {when}");
+            }
+            let stored = get_record(&rec, "r1", "k").await.unwrap();
+            assert_eq!(stored.created_at, Some(100));
+            assert_eq!(stored.created_by.as_deref(), Some("did:key:zAlice"));
+        }
+    }
+
+    /// Host item 17: a `private` room's host records no author, so it has none to keep or
+    /// serve. The times are kept on every tier.
+    #[tokio::test]
+    async fn created_by_is_never_recorded_on_a_private_room() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room(Visibility::Private))
+            .await
+            .unwrap();
+        let stored = put_record(
+            &rooms,
+            &rec,
+            "r1",
+            write(Visibility::Private, "did:key:zAlice", json!({})),
+            None,
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored.created_by, None);
+        assert_eq!(stored.created_at, Some(100));
+        assert_eq!(stored.body_stored_at, Some(100));
+        let row = stored.metadata_v3(Visibility::Private);
+        assert!(row.get("createdBy").is_none(), "{row}");
+        assert_eq!(row["createdAt"], "1970-01-01T00:01:40Z");
+        assert_eq!(row["bodyStoredAt"], "1970-01-01T00:01:40Z");
+    }
+
+    /// A record stored before the host kept these times reads cleanly, serves none of them,
+    /// and keeps `createdAt` and `createdBy` unknown after an edit — they describe the first
+    /// version, which this host did not time. Only the new body's time is known.
+    #[tokio::test]
+    async fn a_record_stored_before_the_times_serves_them_absent() {
+        let (_d, rooms, rec) = open().await;
+        let mut r = room(Visibility::Open);
+        r.next_version = 8;
+        create_room(&rooms, &r).await.unwrap();
+        // A row as an earlier host wrote it: none of the three members.
+        let legacy = json!({
+            "key": "k",
+            "version": 7,
+            "epoch": null,
+            "status": "active",
+            "cleartext": { "body": "old", "kind": "message" },
+            "author": "did:key:zAlice",
+            "updatedAt": 50,
+        });
+        rec.insert(record_key("r1", "k"), &legacy).await.unwrap();
+
+        let stored = get_record(&rec, "r1", "k").await.unwrap();
+        assert_eq!(stored.created_at, None);
+        assert_eq!(stored.created_by, None);
+        assert_eq!(stored.body_stored_at, None);
+        let row = stored.metadata_v3(Visibility::Open);
+        for absent in ["createdAt", "createdBy", "bodyStoredAt"] {
+            assert!(row.get(absent).is_none(), "{absent} guessed: {row}");
+        }
+        assert_eq!(row["kind"], "message");
+
+        let edited = put_record(
+            &rooms,
+            &rec,
+            "r1",
+            write(Visibility::Open, "did:key:zAlice", json!({ "body": "new" })),
+            None,
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(edited.created_at, None);
+        assert_eq!(edited.created_by, None);
+        assert_eq!(edited.body_stored_at, Some(100));
+    }
+
+    /// list/0.6: `kind` exactly as the open record's cleartext carries it, absent where it
+    /// carries none and on a tombstone, and never on a sealed tier.
+    #[tokio::test]
+    async fn kind_is_served_on_an_open_room_only_and_never_on_a_tombstone() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room(Visibility::Open)).await.unwrap();
+        let mut r = write(
+            Visibility::Open,
+            "did:key:zAlice",
+            json!({ "body": "hi", "kind": "message" }),
+        );
+        let stored = put_record(&rooms, &rec, "r1", r.clone(), None, 100)
+            .await
+            .unwrap();
+        let row = stored.metadata_v3(Visibility::Open);
+        assert_eq!(row["kind"], "message");
+        assert_eq!(row["createdBy"], "did:key:zAlice");
+        assert_eq!(row["bodyStoredAt"], row["createdAt"]);
+        // 0.5's rows are unchanged.
+        let v2 = stored.metadata();
+        for m in ["kind", "createdAt", "createdBy", "bodyStoredAt"] {
+            assert!(v2.get(m).is_none(), "{m} on a 0.5 row: {v2}");
+        }
+
+        // None carried: none served, not a default.
+        r.key = "plain".into();
+        r.cleartext = Some(json!({ "body": "note" }));
+        let plain = put_record(&rooms, &rec, "r1", r, None, 110).await.unwrap();
+        assert!(plain.metadata_v3(Visibility::Open).get("kind").is_none());
+
+        let tomb = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "k",
+            curation(Some(RecordStatus::Retracted), None),
+            120,
+        )
+        .await
+        .unwrap();
+        let row = tomb.metadata_v3(Visibility::Open);
+        assert!(
+            row.get("kind").is_none(),
+            "a tombstone keeps no body: {row}"
+        );
+        assert_eq!(row["createdBy"], "did:key:zAlice");
+
+        // A sealed tier never serves it, whatever a row holds.
+        for v in [Visibility::Attributed, Visibility::Private] {
+            assert!(stored.metadata_v3(v).get("kind").is_none(), "{v:?}");
+        }
+        assert!(
+            stored
+                .metadata_v3(Visibility::Private)
+                .get("createdBy")
+                .is_none()
+        );
+    }
+
+    /// get/0.3's members are not committed: removing them (and `blobs`) from the response,
+    /// as the specification tells a reader to, leaves exactly the committed record — so the
+    /// leaf a reader hashes is the one in the host's tree, and its trace reaches the root.
+    #[tokio::test]
+    async fn the_get_0_3_leaf_is_unchanged_by_the_record_times() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room(Visibility::Attributed))
+            .await
+            .unwrap();
+        let stored = put_record(
+            &rooms,
+            &rec,
+            "r1",
+            write(Visibility::Attributed, "did:key:zAlice", json!({})),
+            None,
+            100,
+        )
+        .await
+        .unwrap();
+        let (head, trace) = tree_head_with_trace(&rec, "r1", "k").await.unwrap();
+        let trace = trace.expect("a held record has a trace");
+
+        let mut body = serde_json::to_value(crate::wire::GetRecordResponse::of(
+            &stored,
+            Some(&head),
+            Some(trace.clone()),
+        ))
+        .unwrap();
+        for (name, value) in stored.host_times(Visibility::Attributed) {
+            body[name] = value;
+        }
+        assert!(body.get("createdAt").is_some() && body.get("createdBy").is_some());
+        // What get/0.3 *The leaf preimage is this response* removes.
+        let obj = body.as_object_mut().unwrap();
+        for m in [
+            "dataCommitment",
+            "recordCount",
+            "headVersion",
+            "trace",
+            "ext",
+            "blobs",
+            "createdAt",
+            "createdBy",
+            "bodyStoredAt",
+        ] {
+            obj.remove(m);
+        }
+        let reassembled: crate::wire::CommittedRecord = serde_json::from_value(body).unwrap();
+        let leaf = crate::merkle::leaf_hash(&reassembled).unwrap();
+        assert_eq!(leaf, crate::merkle::leaf_hash(&stored.committed()).unwrap());
+        assert!(
+            crate::merkle::verify_inclusion(&head.root, &leaf, &trace),
+            "the reassembled leaf reaches the host's root"
         );
     }
 }

@@ -53,7 +53,8 @@ pub use vti_rooms::wire::{
     PutRecordResponse, ROOMS_CREATE_V2_TYPE, ROOMS_EPOCH_CHAIN_V2_TYPE, ROOMS_EPOCH_COMMITS_TYPE,
     ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_V2_TYPE, ROOMS_OWNER_CLAIM_TYPE,
     ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_V2_TYPE,
-    ROOMS_RECORDS_PUT_V3_TYPE, RelayedCommit, SealedContent,
+    ROOMS_RECORDS_GET_V3_TYPE, ROOMS_RECORDS_LIST_V6_TYPE, ROOMS_RECORDS_PUT_V3_TYPE,
+    RelayedCommit, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -207,6 +208,10 @@ impl VtcClient {
     /// Presents exactly as a write does, and needs no session — which is the point on a
     /// sealed room: authorizing reads by session would hand the host a member identifier on
     /// every access, and a period of those reconstructs the membership the tier withholds.
+    ///
+    /// Asked as `rooms/records/get/0.3`, whose answer carries the host's `createdAt`,
+    /// `createdBy` and `bodyStoredAt`; a host that answers `unsupportedType` predates it,
+    /// and is asked again as `0.2`, whose answer has none of them.
     pub async fn get_record(
         &self,
         session: &RoomSession,
@@ -219,13 +224,26 @@ impl VtcClient {
             "key": key,
             "presentation": session.presentation,
         });
-        self.room_task(
-            ROOMS_RECORDS_GET_V2_TYPE,
-            payload,
-            signer_did,
-            private_key_multibase,
-        )
-        .await
+        match self
+            .room_task(
+                ROOMS_RECORDS_GET_V3_TYPE,
+                payload.clone(),
+                signer_did,
+                private_key_multibase,
+            )
+            .await
+        {
+            Err(e) if is_unsupported_type(&e) => {
+                self.room_task(
+                    ROOMS_RECORDS_GET_V2_TYPE,
+                    payload,
+                    signer_did,
+                    private_key_multibase,
+                )
+                .await
+            }
+            other => other,
+        }
     }
 
     /// List record metadata.
@@ -238,6 +256,11 @@ impl VtcClient {
     /// `cursor` continues a previous page. **A listing is not complete until the response's
     /// `cursor` is absent** — a page shorter than the one asked for says nothing, which is
     /// why this takes the token rather than leaving callers to guess from a length.
+    ///
+    /// Asked as `rooms/records/list/0.6`, whose rows carry an `open` record's `kind` and the
+    /// host's `createdAt`, `createdBy` and `bodyStoredAt`; a host that answers
+    /// `unsupportedType` predates it and is asked again as `0.5`. A cursor is the host's,
+    /// whichever version issued it.
     pub async fn list_records(
         &self,
         session: &RoomSession,
@@ -260,15 +283,27 @@ impl VtcClient {
         if let Some(c) = cursor {
             payload["cursor"] = serde_json::json!(c);
         }
-        let mut value = self
+        let mut value = match self
             .room_task(
-                vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
-                payload,
+                ROOMS_RECORDS_LIST_V6_TYPE,
+                payload.clone(),
                 signer_did,
                 private_key_multibase,
             )
-            .await?;
-        // `rooms/records/list/0.5` names the continuation token `nextCursor`; the listing
+            .await
+        {
+            Err(e) if is_unsupported_type(&e) => {
+                self.room_task(
+                    vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
+                    payload,
+                    signer_did,
+                    private_key_multibase,
+                )
+                .await?
+            }
+            other => other?,
+        };
+        // `rooms/records/list/0.5` and `0.6` name the continuation token `nextCursor`; the listing
         // type reads it as `cursor`.
         if let Some(obj) = value.as_object_mut()
             && let Some(next) = obj.remove("nextCursor")
@@ -763,12 +798,26 @@ fn prune_payload(
     payload
 }
 
-#[allow(deprecated)] // list/0.5 is what hosts serve until they move to 0.6
+/// Whether a refusal says the host does not serve the task's type at all — the framework's
+/// `unsupportedType` — so a reader may ask again at an earlier version. Any other refusal is
+/// the answer.
+fn is_unsupported_type(e: &VtcError) -> bool {
+    let VtcError::Http { body, .. } = e else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(body).is_ok_and(|doc| {
+        doc["payload"]["code"] == "unsupportedType" || doc["code"] == "unsupportedType"
+    })
+}
+
+#[allow(deprecated)] // list/0.5 and get/0.2 are still read from hosts that predate 0.6 and 0.3
 fn is_room_read(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
     use vti_specs::rooms;
     [
         ROOMS_RECORDS_GET_V2_TYPE,
+        ROOMS_RECORDS_GET_V3_TYPE,
+        ROOMS_RECORDS_LIST_V6_TYPE,
         ROOMS_EPOCH_CHAIN_V2_TYPE,
         ROOMS_EPOCH_COMMITS_TYPE,
         rooms::records::list::v0_5::Payload::TYPE_URI,

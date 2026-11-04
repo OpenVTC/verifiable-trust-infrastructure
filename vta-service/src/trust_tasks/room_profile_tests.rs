@@ -73,6 +73,9 @@ async fn start_host_with(contend: bool) -> Host {
                             cleartext: Some(json!({ "body": "another member's write" })),
                             author: None,
                             updated_at: 0,
+                            created_at: None,
+                            created_by: None,
+                            body_stored_at: None,
                         };
                         vti_rooms::storage::put_record(
                             shared.rooms(),
@@ -931,6 +934,9 @@ async fn put_sealed(s: &Sealed, key: &str, epoch: u32, ciphertext: String, nonce
             cleartext: None,
             author: Some(s.owner.persona.clone()),
             updated_at: 0,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         },
         Some(0),
         Utc::now().timestamp() as u64,

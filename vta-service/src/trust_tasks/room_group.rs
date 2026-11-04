@@ -1888,6 +1888,9 @@ mod verification_tests {
                 cleartext: None,
                 author: None,
                 updated_at: 1_756_000_000,
+                created_at: None,
+                created_by: None,
+                body_stored_at: None,
             })
             .collect()
     }
