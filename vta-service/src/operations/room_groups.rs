@@ -115,8 +115,8 @@ const ROOTS: &str = "room-roots";
 ///
 /// **Group state with this row is a prior membership, not a join** (`rooms/keys/welcome/0.1`,
 /// `rooms/keys/open/0.2`): a Welcome for the member after it re-admits them, and [`join`]
-/// moves the group and this row's epoch into [`PRIOR`] and clears the row. Only group state
-/// with no removal recorded is `alreadyJoined`.
+/// moves the group and this row's epoch into [`PRIOR`] and clears the row. A member removed
+/// while idle has no such row; [`join`] then learns of the removal from the Welcome's tree.
 const REMOVED: &str = "room-removed";
 /// The member's earlier memberships of the room, each ended by a removal, per member:
 /// `room-prior/<roomId>/<persona>` — one row holding a list, oldest first
@@ -232,19 +232,48 @@ struct RemovalRecord {
 /// One [`PRIOR`] entry: a membership a removal ended, kept so that what it opened still
 /// opens after the member is admitted again (`rooms/keys/welcome/0.1`,
 /// `rooms/keys/open/0.2`).
+///
+/// # A removal known, or one only evidenced
+///
+/// `rooms/keys/welcome/0.1` (*Rejoining after a removal*) gives two pieces of evidence that a
+/// membership ended. A removal this VTA processed ([`apply_commit`] → [`REMOVED`]) says at
+/// which epoch. A Welcome whose ratchet tree no longer holds this membership's own leaf
+/// ([`join`]) says only that it ended somewhere above the epoch the state holds and at or
+/// below the epoch the Welcome admits the member at — a member idle at its removal never
+/// applied the removing commit, and could not fetch it afterwards. Such an entry has no
+/// `removed_epoch` until a repair applies the room's commits to it
+/// ([`apply_prior_commit`]) and reaches the removing one.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PriorMembership {
-    /// The group state as the removal left it, with its epoch links.
+    /// The group state as the removal left it — or, while the removal is not yet known, as
+    /// far as this VTA has carried it — with its epoch links.
     pub group: RoomGroupRecord,
     /// The room epoch this membership was joined at ([`JOINED`]); absent for one joined
     /// before that was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joined_epoch: Option<u32>,
-    /// The first room epoch this membership cannot open: the [`REMOVED`] row's epoch.
-    pub removed_epoch: u32,
-    /// Unix seconds when the removing commit was processed here.
-    pub removed_at: u64,
+    /// The first room epoch this membership cannot open. Absent while the removal is known
+    /// only from a Welcome: the membership then covers every epoch from its join epoch up
+    /// to the next join epoch, and one above the epoch its group holds is a commit not yet
+    /// delivered to it (`rooms/keys/open/0.2`), never `removed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed_epoch: Option<u32>,
+    /// Unix seconds when the removing commit was processed here; absent with
+    /// `removed_epoch`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed_at: Option<u64>,
+}
+
+impl PriorMembership {
+    /// The signature key of this membership's own leaf: what identifies it among the
+    /// member's prior memberships, and what a Welcome's ratchet tree is searched for.
+    fn signature_key(&self) -> Result<Vec<u8>, AppError> {
+        self.group
+            .snapshot
+            .signature_public_key()
+            .map_err(|e| AppError::Internal(format!("read a prior membership's leaf key: {e}")))
+    }
 }
 
 /// The rows a build keyed by room alone wrote, read only to migrate them
@@ -464,7 +493,8 @@ async fn legacy_key_package(
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum JoinError {
-    /// This member already holds group state for the room — `alreadyJoined`.
+    /// This member already holds current group state for the room — `alreadyJoined`: no
+    /// removal recorded, and the Welcome's tree still holds the state's own leaf.
     AlreadyJoined,
     /// The KeyPackage the Welcome is sealed to expired before it arrived. Its private half
     /// has been discarded (`rooms/keys/key-package/0.2` *The private half is retained*: it **MUST** be
@@ -489,13 +519,33 @@ impl From<AppError> for JoinError {
 ///
 /// # A removal ends a membership; a Welcome after it starts the next
 ///
-/// Group state with a removal recorded ([`REMOVED`]) is a **prior membership**, not a join
-/// (`rooms/keys/welcome/0.1`): the member was removed, and the owner admitted them again
-/// with a fresh invitation, a new leaf and a new Welcome. That Welcome is accepted. The old
-/// group and its removal epoch move into [`PRIOR`] — so every record it opened still opens
-/// ([`open_record`], `rooms/keys/open/0.2`) — the new group becomes the current one, and
-/// the removal row is cleared, in one conditional write. Only current group state with no
-/// removal recorded is [`JoinError::AlreadyJoined`].
+/// Group state a removal ended is a **prior membership**, not a join
+/// (`rooms/keys/welcome/0.1`, *Rejoining after a removal*): the member was removed, and the
+/// owner admitted them again with a fresh invitation, a new leaf and a new Welcome. That
+/// Welcome is accepted. The old group moves into [`PRIOR`] — so every record it opened still
+/// opens ([`open_record`], `rooms/keys/open/0.2`) — the new group becomes the current one, and
+/// the removal row is cleared, in one conditional write.
+///
+/// Two things show that a removal ended the state held:
+///
+/// 1. **A removal recorded** ([`REMOVED`]) — this VTA applied the removing commit, and the
+///    prior membership's removal epoch is known.
+/// 2. **The Welcome.** A member idle when it was removed never applied that commit, and
+///    cannot fetch it now: the host serves commits under the `read` grant the removal
+///    withdrew. So with no removal recorded the Welcome is processed anyway — without
+///    keeping what it forms — and its ratchet tree searched for the held state's own leaf,
+///    by that leaf's **signature key**, never the member's DID: the re-admitted leaf carries
+///    the same DID under a new key. Still there, the member was never removed and the
+///    state is current: [`JoinError::AlreadyJoined`], with nothing kept and the KeyPackage
+///    not consumed. Gone, the member was removed by a commit producing an epoch above the
+///    one the state holds and at or below the Welcome's: the prior membership is kept with
+///    its removal epoch not yet known, and a repair fixes it later
+///    ([`apply_prior_commit`]). The join never waits for, or fetches, that commit.
+///
+/// Where the state is current by every evidence available — no removal recorded and no
+/// Welcome this VTA can process to look in (no held KeyPackage, an expired one, a Welcome
+/// that does not process) — the answer is [`JoinError::AlreadyJoined`], as it always was,
+/// and nothing is discarded.
 pub async fn join(
     groups: &KeyspaceHandle,
     member: &Member,
@@ -503,15 +553,15 @@ pub async fn join(
     now: u64,
 ) -> Result<u64, JoinError> {
     let room_id = member.room_id();
-    // What the join ends, if anything: the current group and the removal that ended it,
-    // exactly as read, so the write below lands only on what was decided from.
-    let ended = match groups.get_raw(member.key(GROUP)).await? {
+    // What the join ends, if anything: the current group, and the removal that ended it
+    // where one is recorded, exactly as read, so the write below lands only on what was
+    // decided from.
+    let held = match groups.get_raw(member.key(GROUP)).await? {
         None => None,
-        Some(group_raw) => match groups.get_raw(member.key(REMOVED)).await? {
-            None => return Err(JoinError::AlreadyJoined),
-            Some(removed_raw) => Some((group_raw, removed_raw)),
-        },
+        Some(group_raw) => Some((group_raw, groups.get_raw(member.key(REMOVED)).await?)),
     };
+    // State no removal is recorded for is current unless the Welcome shows otherwise.
+    let unproven = matches!(held, Some((_, None)));
 
     // The KeyPackage the owner added is the one we minted, so the private half is in the
     // pending record — joining with a fresh identity would produce a group whose leaf
@@ -524,17 +574,25 @@ pub async fn join(
         Some(p) => Some(p),
         None => legacy_key_package(groups, member).await?,
     };
-    let pending = pending.ok_or_else(|| {
-        AppError::Validation(format!(
+    let Some(pending) = pending else {
+        // No Welcome this VTA can process, so no evidence against the state it holds.
+        if unproven {
+            return Err(JoinError::AlreadyJoined);
+        }
+        return Err(AppError::Validation(format!(
             "no key package was minted for room `{room_id}`; a welcome can only be accepted \
              against the package the owner was given"
         ))
-    })?;
+        .into());
+    };
     // The same bound `holds_key_package` applies (act 0.3 item 10): a package past its
     // expiry is not held. Its private half is discarded here rather than used — retaining
     // it past expiry keeps a key alive for a join nobody is still expecting, and accepting
     // a Welcome against it would make the expiry decorative.
     if pending.expires_at <= now {
+        if unproven {
+            return Err(JoinError::AlreadyJoined);
+        }
         groups
             .remove(member.key(KEY_PACKAGE))
             .await
@@ -542,13 +600,19 @@ pub async fn join(
         return Err(JoinError::KeyPackageExpired);
     }
 
-    let group = RoomGroup::join_from_identity(&pending.snapshot, welcome)
-        .map_err(|e| AppError::Validation(format!("the welcome did not process: {e}")))?;
+    // Processing a Welcome stores nothing: the group lives in memory until the batch below.
+    let group = match RoomGroup::join_from_identity(&pending.snapshot, welcome) {
+        Ok(g) => g,
+        Err(_) if unproven => return Err(JoinError::AlreadyJoined),
+        Err(e) => {
+            return Err(AppError::Validation(format!("the welcome did not process: {e}")).into());
+        }
+    };
     let epoch = group.epoch();
     let joined = record_of(member, &group, Vec::new(), now)?;
 
     let mut batch = vti_common::store::Batch::new();
-    match ended {
+    match held {
         None => {
             batch.require_absent(member.key(GROUP));
         }
@@ -556,9 +620,37 @@ pub async fn join(
             let ended_group: RoomGroupRecord = serde_json::from_slice(&group_raw).map_err(|e| {
                 AppError::Internal(format!("decode group state for `{room_id}`: {e}"))
             })?;
-            let removal: RemovalRecord = serde_json::from_slice(&removed_raw).map_err(|e| {
-                AppError::Internal(format!("decode the removal record for `{room_id}`: {e}"))
-            })?;
+            let (removed_epoch, removed_at) = match &removed_raw {
+                Some(raw) => {
+                    let removal: RemovalRecord = serde_json::from_slice(raw).map_err(|e| {
+                        AppError::Internal(format!(
+                            "decode the removal record for `{room_id}`: {e}"
+                        ))
+                    })?;
+                    (Some(removal.epoch), Some(removal.removed_at))
+                }
+                // No removal processed: the Welcome is the evidence, or there is none.
+                None => {
+                    let own_leaf = ended_group.snapshot.signature_public_key().map_err(|e| {
+                        AppError::Internal(format!("read the held leaf's key for `{room_id}`: {e}"))
+                    })?;
+                    if group.has_leaf_with_signature_key(&own_leaf) {
+                        // The held state's leaf is in the room's tree at the Welcome's epoch:
+                        // the member was never removed, and this would be a second join.
+                        // Nothing the Welcome formed is kept, and the KeyPackage stays.
+                        return Err(JoinError::AlreadyJoined);
+                    }
+                    let held_epoch = RoomGroup::restore(&ended_group.snapshot)
+                        .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?
+                        .epoch();
+                    if held_epoch >= epoch {
+                        // A removal is a commit after the state held and at or before the
+                        // Welcome; a Welcome at or below the held epoch cannot show one.
+                        return Err(JoinError::AlreadyJoined);
+                    }
+                    (None, None)
+                }
+            };
             let prior_raw = groups.get_raw(member.key(PRIOR)).await?;
             let mut prior: Vec<PriorMembership> = match &prior_raw {
                 Some(raw) => serde_json::from_slice(raw).map_err(|e| {
@@ -566,15 +658,19 @@ pub async fn join(
                 })?,
                 None => Vec::new(),
             };
+            // Appended: a membership ends before the next begins, so the list stays in the
+            // order the memberships were held, oldest first.
             prior.push(PriorMembership {
                 group: ended_group,
                 joined_epoch: joined_epoch(groups, member).await?,
-                removed_epoch: removal.epoch,
-                removed_at: removal.removed_at,
+                removed_epoch,
+                removed_at,
             });
-            prior.sort_by_key(|p| p.removed_epoch);
             batch.require_unchanged(member.key(GROUP), group_raw);
-            batch.require_unchanged(member.key(REMOVED), removed_raw);
+            match removed_raw {
+                Some(raw) => batch.require_unchanged(member.key(REMOVED), raw),
+                None => batch.require_absent(member.key(REMOVED)),
+            };
             match prior_raw {
                 Some(raw) => batch.require_unchanged(member.key(PRIOR), raw),
                 None => batch.require_absent(member.key(PRIOR)),
@@ -602,9 +698,11 @@ pub async fn join(
     }
 }
 
-/// Whether `member` holds a **current** membership of the room: group state with no removal
-/// recorded. Group state a removal ended is a prior membership (`rooms/keys/welcome/0.1`),
-/// and a Welcome for it is a re-admission, not `alreadyJoined`.
+/// Whether `member` holds a **current** membership of the room as far as this VTA knows:
+/// group state with no removal recorded. Group state a removal ended is a prior membership
+/// (`rooms/keys/welcome/0.1`), and a Welcome for it is a re-admission, not `alreadyJoined`.
+/// A removal this VTA never processed is not known here; [`join`] learns of it from the
+/// re-admitting Welcome.
 pub async fn holds_current(groups: &KeyspaceHandle, member: &Member) -> Result<bool, AppError> {
     Ok(load(groups, member).await?.is_some() && removed_at(groups, member).await?.is_none())
 }
@@ -623,10 +721,23 @@ pub async fn prior_memberships(
     Ok(prior.unwrap_or_default())
 }
 
+/// Which of `member`'s group states a repair works on: the current one, or one prior
+/// membership, named by its own leaf's signature key (stable for as long as the entry is held,
+/// unlike its place in the list or its epoch).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepairTarget {
+    Current,
+    Prior { signature_key: Vec<u8> },
+}
+
 /// Which of `member`'s memberships answers for one room epoch.
 enum Holding {
-    /// This group — the current one, or a prior membership whose range holds the epoch.
-    Group(RoomGroupRecord),
+    /// This group — the current one, or a prior membership whose range holds the epoch —
+    /// and which it is.
+    Group {
+        record: RoomGroupRecord,
+        target: RepairTarget,
+    },
     /// The epoch falls after a removal and before the next join: no group of this member's
     /// was ever given its key.
     Removed { removed_at: u32 },
@@ -643,16 +754,21 @@ enum Holding {
 ///
 /// - At or above the current group's join epoch, the current group answers, and says
 ///   itself whether the epoch is ahead of it or after its own removal.
-/// - Otherwise the newest prior membership first: an epoch at or after its removal (and so
-///   before the next join) is `removed`, with that removal's epoch; one at or above its
-///   join epoch is its to open, with its own epoch links — and its chain says whether it
-///   reaches (`beyondChain` under the room's epoch floor).
+/// - Otherwise the newest prior membership first: an epoch at or after its known removal
+///   (and so before the next join) is `removed`, with that removal's epoch; one at or above
+///   its join epoch is its to open, with its own epoch links — and its chain says whether it
+///   reaches (`beyondChain` under the room's epoch floor). A prior membership whose removal
+///   is not yet known ([`PriorMembership::removed_epoch`] absent) answers every epoch from
+///   its join epoch up to the next join, and an epoch above the one its group holds is then
+///   `notDelivered` with that group's epoch — never `removed` before the removing commit is
+///   applied to it.
 /// - Below the first join epoch, `beyondChain`.
 ///
 /// A membership's join epoch is its [`JOINED`] row; one joined before that row existed
 /// has none, and the earliest epoch its chain reaches stands in for it.
 ///
-/// Only opening asks this; sealing always uses the current group ([`current_for_seal`]).
+/// Only opening and repair ask this; sealing always uses the current group
+/// ([`current_for_seal`]).
 async fn holding_for(
     groups: &KeyspaceHandle,
     member: &Member,
@@ -664,22 +780,34 @@ async fn holding_for(
     };
     let prior = prior_memberships(groups, member).await?;
     if prior.is_empty() {
-        return Ok(Some(Holding::Group(current)));
+        return Ok(Some(Holding::Group {
+            record: current,
+            target: RepairTarget::Current,
+        }));
     }
     let joined = joined_epoch(groups, member).await?;
     if epoch >= start_of(member, &current, joined, floor)? {
-        return Ok(Some(Holding::Group(current)));
+        return Ok(Some(Holding::Group {
+            record: current,
+            target: RepairTarget::Current,
+        }));
     }
     let mut earliest = u32::MAX;
     for p in prior.into_iter().rev() {
-        if epoch >= p.removed_epoch {
+        if let Some(removed) = p.removed_epoch
+            && epoch >= removed
+        {
             return Ok(Some(Holding::Removed {
-                removed_at: p.removed_epoch,
+                removed_at: removed,
             }));
         }
         let start = start_of(member, &p.group, p.joined_epoch, floor)?;
         if epoch >= start {
-            return Ok(Some(Holding::Group(p.group)));
+            let signature_key = p.signature_key()?;
+            return Ok(Some(Holding::Group {
+                record: p.group,
+                target: RepairTarget::Prior { signature_key },
+            }));
         }
         earliest = start.max(floor);
     }
@@ -903,7 +1031,7 @@ pub async fn file_key(
     let floor = epoch_floor(groups, member)
         .await
         .map_err(FileKeyError::App)?;
-    let record = match holding_for(groups, member, epoch, floor)
+    let (record, target) = match holding_for(groups, member, epoch, floor)
         .await
         .map_err(FileKeyError::App)?
     {
@@ -914,7 +1042,7 @@ pub async fn file_key(
         Some(Holding::BeforeFirstJoin { earliest }) => {
             return Err(FileKeyError::BeyondChain { epoch, earliest });
         }
-        Some(Holding::Group(record)) => record,
+        Some(Holding::Group { record, target }) => (record, target),
     };
     let mut room = sealed_room(member, &record, floor).map_err(FileKeyError::App)?;
     match room.file_key_for_open(file_id, epoch) {
@@ -922,9 +1050,12 @@ pub async fn file_key(
         Err(RoomKeyError::EpochAhead { sealed, held }) => {
             // A removal leaves the group where it was, so a file sealed after it is also
             // "ahead of the group". The row says which — as `open_record_detailed` reads it.
-            if let Some(removed_at) = removed_at(groups, member)
-                .await
-                .map_err(FileKeyError::App)?
+            // Only the current group's: a prior membership's known removal was answered
+            // above, and one not yet known is `notDelivered` until a repair applies it.
+            if target == RepairTarget::Current
+                && let Some(removed_at) = removed_at(groups, member)
+                    .await
+                    .map_err(FileKeyError::App)?
                 && sealed >= removed_at
             {
                 return Err(FileKeyError::Removed {
@@ -983,7 +1114,7 @@ pub async fn profile_location(
                 Some(Holding::BeforeFirstJoin { earliest }) => {
                     return Err(OpenError::BeyondChain { epoch, earliest }.into());
                 }
-                Some(Holding::Group(record)) => record,
+                Some(Holding::Group { record, .. }) => record,
             };
             sealed_room(member, &record, floor)?
                 .profile_key_for_open(epoch)
@@ -1020,11 +1151,12 @@ pub async fn profile_locations(
         joined_epoch(groups, member).await?
     };
     let mut ranges = vec![(record, joined, None)];
+    // A prior membership whose removal is not yet known reaches as far as its group holds.
     ranges.extend(prior.into_iter().rev().map(|p| {
         (
             p.group,
             p.joined_epoch,
-            Some(p.removed_epoch.saturating_sub(1)),
+            p.removed_epoch.map(|r| r.saturating_sub(1)),
         )
     }));
     let mut out: Vec<(u32, String)> = Vec::new();
@@ -1103,8 +1235,8 @@ async fn members_under(groups: &KeyspaceHandle, prefix: &str) -> Result<Vec<Memb
 /// The epoch and reach are the **current** group's. Prior memberships a removal ended
 /// ([`PRIOR`]) are not folded in: their ranges have gaps between them, and an earliest
 /// epoch below a gap would read as a contiguous history this member does not have. A read
-/// repair (`room_catch_up`) catches up and backfills the current group, which is the only
-/// one that can move.
+/// repair (`room_catch_up`) asks [`repair_state`] instead, which picks the membership by the
+/// record's epoch.
 pub async fn held_room(groups: &KeyspaceHandle, member: &Member) -> Result<HeldRoom, AppError> {
     let room_id = member.room_id();
     let record = load(groups, member)
@@ -1130,6 +1262,179 @@ pub async fn held_room(groups: &KeyspaceHandle, member: &Member) -> Result<HeldR
         epoch,
         earliest_readable_epoch: earliest,
     })
+}
+
+/// The group state a repair of room epoch `epoch` works on, and how far it reads
+/// (`room_catch_up`).
+#[derive(Debug, Clone)]
+pub struct RepairState {
+    /// The membership `epoch` chose: the current group, or a prior membership.
+    pub target: RepairTarget,
+    /// The room epoch that group holds.
+    pub epoch: u32,
+    /// The earliest room epoch its chain reaches.
+    pub earliest_readable_epoch: u32,
+}
+
+/// Which of `member`'s group states opens room epoch `epoch`, as [`open_record`] chooses it
+/// (`rooms/keys/open/0.2`), and how far that state reads — `None` when no state does
+/// (no group, an epoch a known removal put out of reach, or one below the first join), so
+/// nothing can repair it.
+///
+/// A prior membership whose removal is not yet known is chosen for an epoch above the one
+/// it holds, and a repair applies the room's commits to it ([`apply_prior_commit`]) until
+/// it reaches the removing one.
+pub async fn repair_state(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    epoch: u32,
+) -> Result<Option<RepairState>, AppError> {
+    let floor = epoch_floor(groups, member).await?;
+    let Some(Holding::Group { record, target }) = holding_for(groups, member, epoch, floor).await?
+    else {
+        return Ok(None);
+    };
+    let mut room = sealed_room(member, &record, floor)?;
+    let earliest = room.earliest_readable_epoch().map_err(|e| {
+        AppError::Internal(format!("walk the chain for `{}`: {e}", member.room_id()))
+    })?;
+    Ok(Some(RepairState {
+        target,
+        epoch: room.room_epoch(),
+        earliest_readable_epoch: earliest,
+    }))
+}
+
+/// What applying a commit to a prior membership did ([`apply_prior_commit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorCommit {
+    /// The membership's group advanced to (or was already at) this MLS epoch.
+    Applied(u64),
+    /// The membership's removal is known, at this room epoch: the commit applied now removed
+    /// the member, or one applied before did. Nothing later applies to it.
+    Removed { epoch: u32 },
+}
+
+/// Apply a commit to the prior membership whose own leaf's signature key is
+/// `signature_key` — the repair of a membership that a Welcome showed ended, at an epoch this
+/// VTA has not seen (`rooms/keys/welcome/0.1`, *Rejoining after a removal*).
+///
+/// Ordered exactly as [`apply_commit`]: a replay is a no-op success and a gap is refused with
+/// the epoch held. The commit that removes the member fixes the membership's removal epoch
+/// ([`PriorCommit::Removed`]) and leaves its group where it was, as a removal leaves the
+/// current group; from then on it is a prior membership with a known removal. Only a
+/// membership whose removal is not yet known is advanced, and never to the epoch the member
+/// joined at again or past it: the Welcome showed the removal at or below that epoch.
+///
+/// Written conditionally on the [`PRIOR`] row it read, so a join or an epoch floor applied
+/// meanwhile is not overwritten; such a race is `Conflict`. The caller holds the member's
+/// repair lock (`room_catch_up`), so two repairs do not race each other.
+pub async fn apply_prior_commit(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    signature_key: &[u8],
+    commit: &[u8],
+    claimed_epoch: u64,
+    now: u64,
+) -> Result<PriorCommit, AppError> {
+    let room_id = member.room_id();
+    let Some(prior_raw) = groups.get_raw(member.key(PRIOR)).await? else {
+        return Err(no_prior(member));
+    };
+    let mut prior: Vec<PriorMembership> = serde_json::from_slice(&prior_raw).map_err(|e| {
+        AppError::Internal(format!("decode the prior memberships of `{room_id}`: {e}"))
+    })?;
+    let mut at = None;
+    for (i, p) in prior.iter().enumerate() {
+        if p.signature_key()? == signature_key {
+            at = Some(i);
+            break;
+        }
+    }
+    let Some(at) = at else {
+        return Err(no_prior(member));
+    };
+    if let Some(epoch) = prior[at].removed_epoch {
+        return Ok(PriorCommit::Removed { epoch });
+    }
+    // The epoch the member joined at next: the next prior membership's, or the current one's.
+    let next_join = match prior.get(at + 1) {
+        Some(next) => next.joined_epoch,
+        None => joined_epoch(groups, member).await?,
+    };
+
+    let mut room = SealedRoom::new(
+        room_id,
+        RoomGroup::restore(&prior[at].group.snapshot)
+            .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?,
+    );
+    let current = room.group().epoch();
+    if claimed_epoch == current {
+        return Ok(PriorCommit::Applied(current));
+    }
+    if claimed_epoch != current + 1 {
+        return Err(AppError::Conflict(format!(
+            "commit produces epoch {claimed_epoch} but this member's prior membership of room \
+             `{room_id}` is at {current}; resume from {}",
+            current + 1
+        )));
+    }
+    // Room epoch `claimed + 1`: never at or past the next join, where the Welcome showed
+    // this membership had already ended.
+    if let Some(next_join) = next_join
+        && claimed_epoch + 1 >= u64::from(next_join)
+    {
+        return Err(AppError::Conflict(format!(
+            "a prior membership of room `{room_id}` cannot advance to room epoch {}: the member \
+             joined again at {next_join}, and was removed before it",
+            claimed_epoch + 1
+        )));
+    }
+
+    let outcome = match room.apply_commit(commit) {
+        Ok((_, link)) => {
+            let p = &mut prior[at];
+            if let Some(link) = link {
+                p.group.links.push(link);
+            }
+            p.group = record_of(
+                member,
+                room.group(),
+                std::mem::take(&mut p.group.links),
+                now,
+            )?;
+            PriorCommit::Applied(room.group().epoch())
+        }
+        Err(RoomKeyError::Removed { epoch }) => {
+            let p = &mut prior[at];
+            p.removed_epoch = Some(epoch);
+            p.removed_at = Some(now);
+            PriorCommit::Removed { epoch }
+        }
+        Err(e) => {
+            return Err(AppError::Validation(format!(
+                "the commit did not process: {e}"
+            )));
+        }
+    };
+    let mut batch = vti_common::store::Batch::new();
+    batch.require_unchanged(member.key(PRIOR), prior_raw);
+    batch.insert(member.key(PRIOR), &prior)?;
+    match groups.apply_batch(batch).await? {
+        vti_common::store::BatchOutcome::Applied => Ok(outcome),
+        vti_common::store::BatchOutcome::Refused { .. } => Err(AppError::Conflict(format!(
+            "the prior memberships of room `{room_id}` changed while a commit was applied; \
+             try again"
+        ))),
+    }
+}
+
+/// The refusal for a prior membership this VTA no longer holds.
+fn no_prior(member: &Member) -> AppError {
+    AppError::NotFound(format!(
+        "this VTA holds no such prior membership of room `{}`",
+        member.room_id()
+    ))
 }
 
 /// One room this VTA can open, as `rooms/keys/list` reports it.
@@ -1351,7 +1656,7 @@ pub async fn open_record_at(
     // or a prior one a removal ended — and an epoch between a removal and the next join is
     // `removed`, with that removal's epoch.
     let floor = epoch_floor(groups, member).await?;
-    let record = match holding_for(groups, member, epoch, floor).await? {
+    let (record, target) = match holding_for(groups, member, epoch, floor).await? {
         None => return Err(no_group(member).into()),
         Some(Holding::Removed { removed_at }) => {
             return Err(OpenError::Removed { epoch, removed_at });
@@ -1359,7 +1664,7 @@ pub async fn open_record_at(
         Some(Holding::BeforeFirstJoin { earliest }) => {
             return Err(OpenError::BeyondChain { epoch, earliest });
         }
-        Some(Holding::Group(record)) => record,
+        Some(Holding::Group { record, target }) => (record, target),
     };
     let group = RoomGroup::restore(&record.snapshot)
         .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
@@ -1367,8 +1672,12 @@ pub async fn open_record_at(
     let held = group.epoch() + 1;
     if u64::from(epoch) > held {
         // A removal leaves the group where it was, so "ahead of the group" is also what a
-        // record sealed after it looks like. The row says which.
-        if let Some(removed_at) = removed_at(groups, member).await?
+        // record sealed after it looks like. The row says which — the current group's
+        // only: a prior membership's known removal was answered above, and one only a
+        // Welcome evidenced is `notDelivered`, with that membership's epoch, until a repair
+        // applies the removing commit to it (`rooms/keys/open/0.2`).
+        if target == RepairTarget::Current
+            && let Some(removed_at) = removed_at(groups, member).await?
             && epoch >= removed_at
         {
             return Err(OpenError::Removed { epoch, removed_at });
@@ -1472,12 +1781,25 @@ pub async fn apply_epoch_floor(
     // The prior memberships likewise: one wholly below the floor — every epoch it opened,
     // up to the one before its removal, below the floor — has nothing left to open and goes
     // whole; the rest lose their rungs at or below it.
+    // A membership whose removal is not yet known ends, at the latest, below the next one's
+    // join epoch — the next prior membership's, or the current group's.
     let prior = prior_memberships(groups, member).await?;
     if !prior.is_empty() {
+        let current_join = joined_epoch(groups, member).await?;
+        let next_joins: Vec<Option<u32>> = prior
+            .iter()
+            .skip(1)
+            .map(|p| p.joined_epoch)
+            .chain(std::iter::once(current_join))
+            .collect();
         let kept: Vec<PriorMembership> = prior
             .into_iter()
-            .filter(|p| p.removed_epoch > floor)
-            .map(|mut p| {
+            .zip(next_joins)
+            .filter(|(p, next_join)| match p.removed_epoch.or(*next_join) {
+                Some(end) => end > floor,
+                None => true,
+            })
+            .map(|(mut p, _)| {
                 p.group.links.retain(|l| l.epoch > floor);
                 p
             })
@@ -3580,7 +3902,7 @@ mod readmission_tests {
         let prior = prior_memberships(&r.ks, &r.bob).await.unwrap();
         assert_eq!(
             prior.iter().map(|p| p.removed_epoch).collect::<Vec<_>>(),
-            [3, 5]
+            [Some(3), Some(5)]
         );
         let opens: [(&str, &vti_rooms::wire::SealedContent, &[u8]); 3] = [
             ("k2", &e2, b"two"),
@@ -3618,7 +3940,7 @@ mod readmission_tests {
         let prior = prior_memberships(&r.ks, &r.bob).await.unwrap();
         assert_eq!(
             prior.iter().map(|p| p.removed_epoch).collect::<Vec<_>>(),
-            [5]
+            [Some(5)]
         );
         assert!(matches!(
             r.open("k2", &e2).await,
@@ -3630,6 +3952,209 @@ mod readmission_tests {
         forget(&r.ks, &r.bob).await.unwrap();
         assert!(prior_memberships(&r.ks, &r.bob).await.unwrap().is_empty());
         assert!(load(&r.ks, &r.bob).await.unwrap().is_none());
+    }
+
+    impl Room {
+        /// The owner admits Bob with a fresh KeyPackage, without Bob's VTA taking the
+        /// Welcome: the Welcome, and the KeyPackage it is sealed to.
+        async fn welcome_for_fresh_key_package(&mut self) -> (Vec<u8>, Vec<u8>) {
+            let pending = mint_key_package(&self.ks, &self.bob, 3600, 0)
+                .await
+                .unwrap();
+            let kp = B64.decode(&pending.key_package).unwrap();
+            let (added, _) = self.alice.add_member(&kp).unwrap();
+            (added.welcome.unwrap(), kp)
+        }
+    }
+
+    /// `rooms/keys/welcome/0.1`, *Rejoining after a removal*, the second piece of evidence:
+    /// a member idle when it was removed never applies the removing commit (and cannot fetch
+    /// it — the host serves commits under the grant the removal withdrew), so its VTA comes
+    /// to the re-admission holding state at h with no removal recorded. The Welcome's tree
+    /// no longer holds that state's leaf, so the Welcome is accepted, and the state is a
+    /// prior membership whose removal epoch is not yet known. Records at or below h open;
+    /// one in (h, j) is `notDelivered` with the prior's held epoch until commits are applied
+    /// to that state, and then opens below r and is `removed` in [r, j); records after the
+    /// re-admission open under the current group (`rooms/keys/open/0.2`,
+    /// `rooms/keys/file-key/0.2`). The host round trip is driven at the operations level:
+    /// the commits are the owner's own, handed to [`apply_prior_commit`] as
+    /// `room_catch_up` hands it what `rooms/epoch/commits` serves.
+    #[tokio::test]
+    async fn a_member_that_never_applied_its_removal_is_admitted_again_by_the_welcome() {
+        let mut r = Room::new().await;
+        r.admit().await.unwrap(); // room epoch 2: Bob's VTA holds h = 2 from here on
+        let before = r.seal("notes/before", b"before");
+        assert_eq!(before.epoch, 2);
+
+        // The room moves on; Bob's VTA applies none of it.
+        let (renewal, _) = r.alice.renew().unwrap(); // 3
+        let between = r.seal("notes/between", b"between");
+        assert_eq!(between.epoch, 3);
+        let leaf = r.alice.group().leaf_of(BOB).unwrap();
+        let (removal, _) = r.alice.remove_member(leaf).unwrap(); // 4 = r
+        let during = r.seal("notes/during", b"during");
+        assert_eq!(during.epoch, 4);
+        assert_eq!(removed_at(&r.ks, &r.bob).await.unwrap(), None);
+        assert!(holds_current(&r.ks, &r.bob).await.unwrap());
+
+        // Re-admitted at j = 5: the Welcome is the evidence, and nothing is fetched first.
+        let (welcome, _) = r.welcome_for_fresh_key_package().await;
+        let joined = join(&r.ks, &r.bob, &welcome, 1)
+            .await
+            .expect("a Welcome whose tree lacks the held leaf is a re-admission");
+        assert_eq!(joined + 1, 5);
+        let after = r.seal("notes/after", b"after");
+        assert_eq!(after.epoch, 5);
+        let prior = prior_memberships(&r.ks, &r.bob).await.unwrap();
+        assert_eq!(prior.len(), 1);
+        assert_eq!(
+            prior[0].removed_epoch, None,
+            "the removal epoch is not yet known"
+        );
+        assert_eq!(prior[0].joined_epoch, Some(2));
+        let signature_key = prior[0].signature_key().unwrap();
+
+        // At or below h: opens. After the re-admission: opens, and sealing is current.
+        assert_eq!(r.open("notes/before", &before).await.unwrap(), b"before");
+        assert_eq!(r.open("notes/after", &after).await.unwrap(), b"after");
+        let file = [7u8; 32];
+        assert_eq!(file_key(&r.ks, &r.bob, &file, None).await.unwrap().1, 5);
+
+        // In (h, j) before any repair: `notDelivered`, with the prior's held epoch — never
+        // `removed`, whichever side of the unseen removal the record is on.
+        for s in [&between, &during] {
+            match r.open("k", s).await {
+                Err(OpenError::NotDelivered { epoch, held }) => {
+                    assert_eq!((epoch, held), (s.epoch, 2))
+                }
+                other => panic!("epoch {}: expected NotDelivered, got {other:?}", s.epoch),
+            }
+            assert!(matches!(
+                file_key(&r.ks, &r.bob, &file, Some(s.epoch)).await,
+                Err(FileKeyError::NotDelivered { held: 2, .. })
+            ));
+        }
+        // And a repair is pointed at that prior membership, by the record's epoch.
+        let state = repair_state(&r.ks, &r.bob, 3).await.unwrap().unwrap();
+        assert_eq!(
+            state.target,
+            RepairTarget::Prior {
+                signature_key: signature_key.clone()
+            }
+        );
+        assert_eq!(state.epoch, 2);
+        assert_eq!(
+            repair_state(&r.ks, &r.bob, 5)
+                .await
+                .unwrap()
+                .unwrap()
+                .target,
+            RepairTarget::Current
+        );
+
+        // The repair applies the commits to the prior state. A gap is refused, a replay is
+        // a no-op, and the renewal opens the record between h and r.
+        assert!(matches!(
+            apply_prior_commit(&r.ks, &r.bob, &signature_key, &removal.commit, 3, 2).await,
+            Err(AppError::Conflict(_))
+        ));
+        assert_eq!(
+            apply_prior_commit(&r.ks, &r.bob, &signature_key, &renewal.commit, 2, 2)
+                .await
+                .unwrap(),
+            PriorCommit::Applied(2)
+        );
+        assert_eq!(
+            apply_prior_commit(&r.ks, &r.bob, &signature_key, &renewal.commit, 2, 2)
+                .await
+                .unwrap(),
+            PriorCommit::Applied(2)
+        );
+        assert_eq!(r.open("notes/between", &between).await.unwrap(), b"between");
+        assert!(file_key(&r.ks, &r.bob, &file, Some(3)).await.is_ok());
+        match r.open("notes/during", &during).await {
+            Err(OpenError::NotDelivered { epoch, held }) => assert_eq!((epoch, held), (4, 3)),
+            other => panic!("expected NotDelivered before the removal applies, got {other:?}"),
+        }
+
+        // The removing commit fixes r; [r, j) is `removed` from then on.
+        assert_eq!(
+            apply_prior_commit(&r.ks, &r.bob, &signature_key, &removal.commit, 3, 3)
+                .await
+                .unwrap(),
+            PriorCommit::Removed { epoch: 4 }
+        );
+        let prior = prior_memberships(&r.ks, &r.bob).await.unwrap();
+        assert_eq!(prior[0].removed_epoch, Some(4));
+        assert_eq!(prior[0].removed_at, Some(3));
+        match r.open("notes/during", &during).await {
+            Err(OpenError::Removed { epoch, removed_at }) => {
+                assert_eq!((epoch, removed_at), (4, 4))
+            }
+            other => panic!("expected Removed, got {other:?}"),
+        }
+        assert!(matches!(
+            file_key(&r.ks, &r.bob, &file, Some(4)).await,
+            Err(FileKeyError::Removed {
+                epoch: 4,
+                removed_at: 4
+            })
+        ));
+        assert!(repair_state(&r.ks, &r.bob, 4).await.unwrap().is_none());
+        assert_eq!(
+            apply_prior_commit(&r.ks, &r.bob, &signature_key, &removal.commit, 4, 3)
+                .await
+                .unwrap(),
+            PriorCommit::Removed { epoch: 4 },
+            "nothing applies to a membership once its removal is known"
+        );
+
+        // Everything else still answers as before.
+        assert_eq!(r.open("notes/before", &before).await.unwrap(), b"before");
+        assert_eq!(r.open("notes/between", &between).await.unwrap(), b"between");
+        assert_eq!(r.open("notes/after", &after).await.unwrap(), b"after");
+        let walked: Vec<u32> = profile_locations(&r.ks, &r.bob, usize::MAX)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(e, _)| e)
+            .collect();
+        assert_eq!(walked, [5, 3, 2]);
+    }
+
+    /// `rooms/keys/welcome/0.1`: a Welcome whose ratchet tree still holds the leaf of the
+    /// state this VTA has is a second join — `alreadyJoined` — and the refused join keeps
+    /// nothing it formed and does not consume the KeyPackage it was sealed to.
+    #[tokio::test]
+    async fn a_welcome_that_still_holds_the_members_leaf_is_already_joined_and_consumes_nothing() {
+        let mut r = Room::new().await;
+        r.admit().await.unwrap(); // 2
+        let held = load(&r.ks, &r.bob).await.unwrap().unwrap();
+
+        // The owner adds a second leaf for Bob while the first is still in the group.
+        let (welcome, kp) = r.welcome_for_fresh_key_package().await; // 3
+        assert!(
+            r.alice
+                .group()
+                .has_leaf_with_signature_key(&held.snapshot.signature_public_key().unwrap()),
+            "the held leaf is still in the tree"
+        );
+        assert!(matches!(
+            join(&r.ks, &r.bob, &welcome, 1).await,
+            Err(JoinError::AlreadyJoined)
+        ));
+        assert!(
+            holds_key_package(&r.ks, &r.bob, &kp, 1).await.unwrap(),
+            "a refused join does not consume the KeyPackage"
+        );
+        let still = load(&r.ks, &r.bob).await.unwrap().unwrap();
+        assert_eq!(
+            still.snapshot.signature_public_key().unwrap(),
+            held.snapshot.signature_public_key().unwrap(),
+            "the held group is untouched"
+        );
+        assert!(prior_memberships(&r.ks, &r.bob).await.unwrap().is_empty());
+        assert_eq!(joined_epoch(&r.ks, &r.bob).await.unwrap(), Some(2));
     }
 }
 

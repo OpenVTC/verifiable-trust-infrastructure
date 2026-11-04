@@ -791,8 +791,8 @@ they were in. Re-admitting them later works: fresh credentials are issued after
 the withdrawal, which does not reach them.
 
 **On the member's VTA, a removal ends a membership and a re-admission starts the
-next** (`rooms/keys/welcome/0.1`, `rooms/keys/open/0.2`). Once its VTA has applied
-the commit that removed it, the member's group state is a *prior membership*: it
+next** (`rooms/keys/welcome/0.1`, `rooms/keys/open/0.2`). Once its VTA knows of
+the removal, the member's group state is a *prior membership*: it
 still opens what it opened, and it seals nothing — `rooms/keys/act`, `file-key`
 for sealing and a profile write answer as for a room the VTA holds nothing for.
 When the owner admits the member again (a fresh invitation, KeyPackage and
@@ -809,9 +809,27 @@ then goes by its epoch:
   if a backfill reached the current group's chain that far back;
 - below the first join epoch: `beyondChain`.
 
+**A member idle when it was removed** never applied the removing commit, and cannot
+fetch it afterwards (the host serves commits under the `read` grant the removal
+withdrew), so its VTA meets the re-admitting Welcome holding state at some epoch `h`
+with no removal recorded. The Welcome is the evidence: `keys welcome` processes it
+without keeping anything and looks in its ratchet tree for the held state's own leaf,
+by that leaf's signature key (never the member's DID, which the new leaf shares).
+Still there, the member was never removed: `alreadyJoined`, and the KeyPackage is not
+consumed. Gone, the held state becomes a prior membership whose removal epoch is **not
+yet known**, and the join completes without waiting for or fetching anything. Such a
+membership opens its join epoch through `h`; a record above `h` and below the
+re-admission is `notDelivered` (with `heldEpoch` `h`) until a read's repair applies the
+room's commits to **that** state — the host serves them to the re-admitted member's
+fresh credentials, whatever their `validFrom` — and the removing commit fixes the
+removal epoch. From then on it answers as above: below the removal opens, from it to
+the next join is `removed`. The repair runs under the same per-member lock as the
+current group's, and sealing never uses a prior state.
+
 Prior memberships are kept with the group, backed up with it, and discarded with it;
 an epoch prune drops one whose epochs all lie below the room's epoch floor. Only a
-Welcome for group state with **no** removal recorded is `alreadyJoined`.
+Welcome for group state with no removal recorded **and** whose tree still holds that
+state's leaf is `alreadyJoined`.
 
 ### Withdraw credentials without removing anyone
 

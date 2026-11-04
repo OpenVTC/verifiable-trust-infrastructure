@@ -427,6 +427,23 @@ impl RoomGroup {
             (m.credential.serialized_content() == member_did.as_bytes()).then_some(m.index)
         })
     }
+
+    /// Whether the group's ratchet tree holds a leaf whose signature key is `signature_key`.
+    ///
+    /// **The way to recognise one particular leaf, never [`Self::leaf_of`].** A member
+    /// removed and admitted again has a new leaf carrying the same identifier under a new
+    /// signature key, so the identifier says only that *a* leaf names the member; the
+    /// signature key says whether it is *this* leaf. Every identity is minted with a fresh
+    /// signature keypair ([`IdentitySnapshot::mint`]) and a leaf's own updates here keep it
+    /// ([`Self::self_update`]), so a leaf keeps its signature key for as long as it is in the
+    /// tree. `rooms/keys/welcome/0.1`, *Rejoining after a removal*: a Welcome whose tree no
+    /// longer holds the leaf of the state a key holder already has is the evidence that the
+    /// member was removed from that state.
+    pub fn has_leaf_with_signature_key(&self, signature_key: &[u8]) -> bool {
+        self.group
+            .members()
+            .any(|m| m.signature_key.as_slice() == signature_key)
+    }
 }
 
 #[cfg(test)]
@@ -868,6 +885,16 @@ fn entries_of(provider: &OpenMlsRustCrypto) -> Result<Vec<(String, String)>, Roo
         .collect())
 }
 
+impl GroupSnapshot {
+    /// The signature public key of this member's own leaf — the key
+    /// [`RoomGroup::has_leaf_with_signature_key`] recognises that leaf by — read without
+    /// restoring the group.
+    pub fn signature_public_key(&self) -> Result<Vec<u8>, RoomKeyError> {
+        B64.decode(&self.signature_public)
+            .map_err(|e| RoomKeyError::Group(format!("decode the signature key: {e}")))
+    }
+}
+
 impl IdentitySnapshot {
     /// Mint an identity and a KeyPackage for one room, and snapshot both.
     ///
@@ -989,6 +1016,43 @@ pub fn key_package_ref(key_package: &[u8]) -> Result<Vec<u8>, RoomKeyError> {
         .hash_ref(provider.crypto())
         .map(|r| r.as_slice().to_vec())
         .map_err(|e| RoomKeyError::Group(format!("hash the key package: {e:?}")))
+}
+
+#[cfg(test)]
+mod leaf_recognition_tests {
+    use super::*;
+
+    /// A leaf is recognised by its signature key: present while the member is in the group,
+    /// gone once it is removed, and not confused with a later leaf for the same member.
+    #[test]
+    fn a_leaf_is_recognised_by_its_signature_key_and_not_by_the_member() {
+        let mut alice = RoomGroup::create("did:key:zAlice").unwrap();
+        let (first, kp) = IdentitySnapshot::mint("did:key:zBob").unwrap();
+        let first_key = B64.decode(&first.signature_public).unwrap();
+        alice.add_member_from_bytes(&kp).unwrap();
+        assert!(alice.has_leaf_with_signature_key(&first_key));
+
+        let leaf = alice.leaf_of("did:key:zBob").unwrap();
+        alice.remove_member(leaf).unwrap();
+        assert!(!alice.has_leaf_with_signature_key(&first_key));
+
+        let (second, kp) = IdentitySnapshot::mint("did:key:zBob").unwrap();
+        let change = alice.add_member_from_bytes(&kp).unwrap();
+        let bob = RoomGroup::join_from_identity(&second, &change.welcome.unwrap()).unwrap();
+        assert!(
+            bob.leaf_of("did:key:zBob").is_some(),
+            "the member is in the tree again"
+        );
+        assert!(
+            !bob.has_leaf_with_signature_key(&first_key),
+            "but not under its earlier leaf"
+        );
+        assert!(bob.has_leaf_with_signature_key(&B64.decode(&second.signature_public).unwrap()));
+        assert_eq!(
+            bob.snapshot().unwrap().signature_public_key().unwrap(),
+            B64.decode(&second.signature_public).unwrap()
+        );
+    }
 }
 
 #[cfg(test)]
