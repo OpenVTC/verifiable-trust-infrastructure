@@ -1218,7 +1218,11 @@ never through the community. After a vote the page is told only that the
 wallet's window closed (and whether a ticket had to be taken first), never
 whether a vote was cast; the wallet shows the outcome. Voting with no
 ticket held takes one and stops, so the two are apart in time. The wallet
-must be allowed to reach the ballot box's address from its popup. See
+must be allowed to reach the ballot box's address from its popup. Elections
+the member was notified of are listed beside the community's own, showing only
+what the notification says (VTI-NTF-063), and are opened as a member of the
+party the notification names (`memberOf`), the wallet asking before it shows
+that membership. See
 [Community elections](elections.md#voting-from-the-member-portal).
 
 **Routing.** The mount is fixed at `/members` and takes precedence

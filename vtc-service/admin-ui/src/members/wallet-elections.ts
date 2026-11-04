@@ -84,27 +84,130 @@ export interface PageElectionView {
   certified?: { certifiedAt: string; result: unknown };
 }
 
+/** An election the member's agent holds a notification of from this community (VTI-NTF-063),
+ *  as the page may show it until the member opens it: the community's identifier for it, the
+ *  party it is put to, the period the notification states and whether it was withdrawn —
+ *  nothing of the election itself. One the community does not list (put to a party that is
+ *  itself a member of the community, VTI-VOT-015) is opened by its id with `memberOf` set to
+ *  `audience`, and the wallet reads it as that party's member — asking first. */
+export interface PageNotifiedElection {
+  electionId: string;
+  /** The DID the election is put to: under a credential roll, the party whose members may take
+   *  part (`roll.memberOf`). */
+  audience: string;
+  status: "available" | "withdrawn";
+  votingOpensAt?: string;
+  votingClosesAt?: string;
+}
+
+/** What `list` comes to on this page, whichever wallet answered. */
+export interface ElectionList {
+  elections: PageElection[];
+  /** Empty from a wallet that does not pass notifications on. */
+  notified: PageNotifiedElection[];
+}
+
+/** Which identity reads, and — for an election the member was told about — whose member. */
+export interface ReadAs {
+  member?: string;
+  /** The party to read the election as a member of. The wallet presents the member's credential
+   *  issued by exactly this DID, and only after the member agreed in its own window
+   *  (VTI-VOT-016); the page never presents anything. A wallet before credential rolls refuses
+   *  the field, so it is passed only for a notification, which only a newer wallet reports. */
+  memberOf?: string;
+}
+
+/** The wallet's methods as this page calls them. `list` is normalised (`electionListOf`). */
 export interface WalletElections {
-  list(p: { hostDid: string; member?: string }): Promise<{ elections: PageElection[] }>;
-  show(p: { hostDid: string; electionId: string; member?: string }): Promise<PageElectionView>;
+  list(p: { hostDid: string; member?: string }): Promise<ElectionList>;
+  show(p: { hostDid: string; electionId: string } & ReadAs): Promise<PageElectionView>;
   /** The member decides in the wallet's own window. */
-  takeTicket(p: { hostDid: string; electionId: string; member?: string }): Promise<{ ticketHeld: true; taken: boolean }>;
+  takeTicket(p: { hostDid: string; electionId: string } & ReadAs): Promise<{ ticketHeld: true; taken: boolean }>;
   /** Several tickets in one decision (a board's ideas). Each is still its own request, a pause
    *  apart, so this resolves some seconds after the member agrees. Absent from an older wallet:
    *  take them one at a time instead. */
   takeTickets?(p: { hostDid: string; electionIds: string[]; member?: string }): Promise<{ tickets: PageBatchTicket[] }>;
   /** Opens the wallet's ballot (or, with no ticket held, takes one and stops).
    *  Resolves when the wallet's window closes, whatever the member did. */
-  vote(p: { hostDid: string; electionId: string; member?: string }): Promise<{ ticketTaken: boolean }>;
+  vote(p: { hostDid: string; electionId: string } & ReadAs): Promise<{ ticketTaken: boolean }>;
+}
+
+type RawWallet = Omit<WalletElections, "list"> & { list(p: { hostDid: string; member?: string }): Promise<unknown> };
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/** A notification as the page keeps it: only the fields VTI-NTF-063 lets it see. */
+function notifiedOf(v: unknown): PageNotifiedElection | null {
+  if (!isRecord(v) || typeof v.electionId !== "string" || typeof v.audience !== "string") return null;
+  if (v.status !== "available" && v.status !== "withdrawn") return null;
+  return {
+    electionId: v.electionId,
+    audience: v.audience,
+    status: v.status,
+    ...(typeof v.votingOpensAt === "string" ? { votingOpensAt: v.votingOpensAt } : {}),
+    ...(typeof v.votingClosesAt === "string" ? { votingClosesAt: v.votingClosesAt } : {}),
+  };
+}
+
+/** `list`'s answer, whichever wallet gave it: `{ elections, notified }` (with notifications),
+ *  `{ elections }` (before them), or a bare list of elections. Wallets update independently of
+ *  this portal, so none of these is an error. */
+export function electionListOf(raw: unknown): ElectionList {
+  const elections = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.elections) ? raw.elections : [];
+  const notified = isRecord(raw) && Array.isArray(raw.notified) ? raw.notified : [];
+  return {
+    elections: elections as PageElection[],
+    notified: notified.map(notifiedOf).filter((n): n is PageNotifiedElection => n !== null),
+  };
 }
 
 /** The wallet's election methods, or `null` when no wallet (or an older one) is on this page. */
 export function walletElections(): WalletElections | null {
   // A theme preview never reaches the member's agent.
   if (isThemePreview()) return null;
-  const w = (window as { vtaWallet?: { elections?: Partial<WalletElections> } }).vtaWallet;
+  const w = (window as { vtaWallet?: { elections?: Partial<RawWallet> } }).vtaWallet;
   const e = w?.elections;
-  return e && typeof e.list === "function" && typeof e.vote === "function" ? (e as WalletElections) : null;
+  if (!e || typeof e.list !== "function" || typeof e.vote !== "function") return null;
+  const raw = e as RawWallet;
+  const takeTickets = raw.takeTickets;
+  return {
+    list: async (p) => electionListOf(await raw.list(p)),
+    show: (p) => raw.show(p),
+    takeTicket: (p) => raw.takeTicket(p),
+    ...(typeof takeTickets === "function" ? { takeTickets: (p) => takeTickets.call(raw, p) } : {}),
+    vote: (p) => raw.vote(p),
+  };
+}
+
+/** The notifications naming an election the community's list does not show the member, one
+ *  per election (one still standing before a withdrawn one). The rest are in the list. */
+export function notifiedOnly(list: ElectionList): PageNotifiedElection[] {
+  const listed = new Set(list.elections.map((e) => e.electionId));
+  const one = new Map<string, PageNotifiedElection>();
+  for (const n of list.notified) {
+    if (listed.has(n.electionId)) continue;
+    const had = one.get(n.electionId);
+    if (!had || (had.status === "withdrawn" && n.status === "available")) one.set(n.electionId, n);
+  }
+  return [...one.values()];
+}
+
+/** The party to read an election as a member of: the audience of a notification the member's
+ *  agent holds for it that was not withdrawn (VTI-NTF-024), else none. Never the page's own
+ *  choice. */
+export function memberOfFor(list: ElectionList | undefined, electionId: string): string | undefined {
+  return list?.notified.find((n) => n.electionId === electionId && n.status === "available")?.audience;
+}
+
+/** Which of the community's answers a wallet refusal is. The wallet passes the page only its
+ *  message, so this matches both its own wording and a bare code. */
+export type RefusalKind = "electionUnknown" | "indeterminate" | "other";
+
+export function refusalKind(e: unknown): RefusalKind {
+  const text = e instanceof Error ? e.message : String(e);
+  if (/\bindeterminate\b|could not check your membership/i.test(text)) return "indeterminate";
+  if (/\belectionUnknown\b|shows you no such election|no such election is open to you/i.test(text)) return "electionUnknown";
+  return "other";
 }
 
 /** Where an election stands for the member, in their words, and what they can do now. */
@@ -149,5 +252,5 @@ export function actionableFirst(list: readonly PageElection[], now = Date.now())
 /** A wallet answer the member chose, in the wallet's own window — not an error to show. */
 export function declinedInWallet(e: unknown): boolean {
   const text = e instanceof Error ? e.message : String(e);
-  return /did not take a ticket|did not take your tickets|declined|did not allow/.test(text);
+  return /did not take a ticket|did not take your tickets|declined|did not allow|chose not to show your membership/.test(text);
 }

@@ -18,7 +18,17 @@ vi.mock("./directory-api", async (orig) => ({
 
 import { BOARDS_LIST_TASK } from "./boards-api";
 import { ElectionPage, ElectionsPage } from "./Elections";
-import { actionableFirst, stageOf, type PageElection, type PageElectionView } from "./wallet-elections";
+import {
+  actionableFirst,
+  electionListOf,
+  memberOfFor,
+  notifiedOnly,
+  refusalKind,
+  stageOf,
+  type PageElection,
+  type PageElectionView,
+  type PageNotifiedElection,
+} from "./wallet-elections";
 
 const HOST = "did:webvh:QmHost:acme.example";
 const ME = "did:key:z6MkMember";
@@ -255,5 +265,185 @@ describe("one election", () => {
       expect(screen.queryByText(/may identify who wrote it/)).toBeNull();
       unmount();
     }
+  });
+});
+
+// VTI-NTF-063: a wallet with notifications answers `list` with `{ elections, notified }`; one
+// before them with `{ elections }`. Wallets update apart from the portal, so both must work.
+const PARTY = "did:webvh:QmParty:partner.example";
+
+// One clock reading for every notice, so two built in one test compare equal.
+const NOW = Date.now();
+
+function notice(over: Partial<PageNotifiedElection> = {}): PageNotifiedElection {
+  return {
+    electionId: "partner-poll",
+    audience: PARTY,
+    status: "available",
+    votingOpensAt: iso(NOW - HOUR),
+    votingClosesAt: iso(NOW + 6 * HOUR),
+    ...over,
+  };
+}
+
+describe("both wallet shapes", () => {
+  it("reads notifications from a newer wallet, none from an older one, and a bare list too", () => {
+    expect(electionListOf({ elections: [listed()], notified: [notice()] }).notified).toEqual([notice()]);
+    const one = listed();
+    expect(electionListOf({ elections: [one] })).toEqual({ elections: [one], notified: [] });
+    expect(electionListOf([one])).toEqual({ elections: [one], notified: [] });
+    expect(electionListOf(undefined)).toEqual({ elections: [], notified: [] });
+  });
+
+  it("keeps only what VTI-NTF-063 lets the page see, and drops what is not a notification", () => {
+    const got = electionListOf({
+      elections: [],
+      notified: [{ ...notice(), title: "Secret", manifest: { questions: [] } }, { electionId: "x" }, null, { ...notice(), status: "odd" }],
+    });
+    expect(got.notified).toEqual([notice()]);
+  });
+
+  it("de-duplicates: a listed election stays in the list, and one notice per election", () => {
+    const list = electionListOf({
+      elections: [listed()],
+      notified: [notice({ electionId: "agm-2027", audience: HOST }), notice({ status: "withdrawn" }), notice()],
+    });
+    expect(notifiedOnly(list)).toEqual([notice()]);
+  });
+
+  it("takes memberOf only from a notice still standing", () => {
+    const list = electionListOf({ elections: [], notified: [notice({ status: "withdrawn" })] });
+    expect(memberOfFor(list, "partner-poll")).toBeUndefined();
+    expect(memberOfFor(electionListOf({ elections: [], notified: [notice()] }), "partner-poll")).toBe(PARTY);
+    expect(memberOfFor(undefined, "partner-poll")).toBeUndefined();
+  });
+
+  it("an older wallet lists as before, with nothing told", async () => {
+    withWallet({ list: vi.fn(async () => ({ elections: [listed()] })) });
+    renderWith(<ElectionsPage hostDid={HOST} member={ME} />);
+    await screen.findByText("AGM 2027");
+    expect(screen.queryByText(/told about/i)).toBeNull();
+  });
+
+  it("an older wallet opens an election with no memberOf sent", async () => {
+    const wallet = withWallet({ list: vi.fn(async () => ({ elections: [listed()] })) });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Vote, or see my vote, in my wallet" }));
+    await waitFor(() => expect(wallet.vote).toHaveBeenCalled());
+    expect(wallet.show).toHaveBeenCalledWith({ hostDid: HOST, electionId: "agm-2027", member: ME });
+    expect(wallet.vote).toHaveBeenCalledWith({ hostDid: HOST, electionId: "agm-2027", member: ME });
+  });
+});
+
+describe("elections the member was told about", () => {
+  it("lists one the community does not, with only what the notice says", async () => {
+    withWallet({ list: vi.fn(async () => ({ elections: [listed()], notified: [notice()] })) });
+    renderWith(<ElectionsPage hostDid={HOST} member={ME} />);
+    const told = await screen.findByRole("list", { name: "Elections you were told about" });
+    expect(told.textContent).toContain("partner-poll");
+    expect(told.textContent).toContain(PARTY);
+    expect(told.textContent).toContain("You were told about this");
+    expect(told.querySelector('a[href="#/elections/partner-poll"]')).toBeTruthy();
+    // The community's own list is unchanged.
+    expect(screen.getByRole("link", { name: "AGM 2027" })).toBeTruthy();
+  });
+
+  it("marks a listed election the member was told about once, in the list", async () => {
+    withWallet({ list: vi.fn(async () => ({ elections: [listed()], notified: [notice({ electionId: "agm-2027", audience: HOST })] })) });
+    renderWith(<ElectionsPage hostDid={HOST} member={ME} />);
+    await screen.findByText(/you were told about this/);
+    expect(screen.queryByRole("list", { name: "Elections you were told about" })).toBeNull();
+    expect(screen.getAllByRole("link", { name: "AGM 2027" })).toHaveLength(1);
+  });
+
+  it("shows a withdrawn notice without a way to open it", async () => {
+    withWallet({ list: vi.fn(async () => ({ elections: [], notified: [notice({ status: "withdrawn" })] })) });
+    renderWith(<ElectionsPage hostDid={HOST} member={ME} />);
+    await screen.findByText("Notice withdrawn");
+    expect(screen.queryByRole("link", { name: "Open in my wallet" })).toBeNull();
+    expect(screen.queryByText(/no elections you can vote in/)).toBeNull();
+  });
+
+  it("passes the notice's party on as memberOf to show, take ticket and vote", async () => {
+    const wallet = withWallet({
+      list: vi.fn(async () => ({ elections: [], notified: [notice()] })),
+      show: vi.fn(async () => shown({ electionId: "partner-poll", title: "Partner poll", state: "registration" })),
+      vote: vi.fn(async () => ({ ticketTaken: true })),
+    });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="partner-poll" />);
+    await screen.findByText("Partner poll");
+    const expected = { hostDid: HOST, electionId: "partner-poll", member: ME, memberOf: PARTY };
+    expect(wallet.show).toHaveBeenCalledWith(expected);
+    // Read with the party named from the first read, never without and then again.
+    expect(wallet.show).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Take my ticket" }));
+    await waitFor(() => expect(wallet.takeTicket).toHaveBeenCalledWith(expected));
+    fireEvent.click(screen.getByRole("button", { name: "Vote, or see my vote, in my wallet" }));
+    await waitFor(() => expect(wallet.vote).toHaveBeenCalledWith(expected));
+    // The page passes a DID, never a presentation or a credential.
+    for (const call of [...wallet.show.mock.calls, ...wallet.takeTicket.mock.calls, ...wallet.vote.mock.calls]) {
+      expect(Object.keys((call as unknown[])[0] as object).sort()).toEqual(["electionId", "hostDid", "member", "memberOf"]);
+    }
+  });
+
+  it("sends no memberOf for a withdrawn notice", async () => {
+    const wallet = withWallet({ list: vi.fn(async () => ({ elections: [listed()], notified: [notice({ electionId: "agm-2027", status: "withdrawn" })] })) });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    await screen.findByText("Who chairs?");
+    expect(wallet.show).toHaveBeenCalledWith({ hostDid: HOST, electionId: "agm-2027", member: ME });
+  });
+});
+
+describe("the community's refusals, in words", () => {
+  it("classifies the wallet's wording and bare codes", () => {
+    expect(refusalKind(new Error("Acme shows you no such election — it may not be open to you."))).toBe("electionUnknown");
+    expect(refusalKind(new Error("Acme refused (https://openvtc.org/errors#electionUnknown)."))).toBe("electionUnknown");
+    expect(refusalKind(new Error("No such election is open to you at this community."))).toBe("electionUnknown");
+    expect(refusalKind(new Error("Acme could not check your membership credential just now: ..."))).toBe("indeterminate");
+    expect(refusalKind(new Error("Acme refused (indeterminate)."))).toBe("indeterminate");
+    expect(refusalKind(new Error("The wallet holds no identity you use at this community."))).toBe("other");
+  });
+
+  it("electionUnknown says it cannot tell which, and names the party it was told about", async () => {
+    withWallet({
+      list: vi.fn(async () => ({ elections: [], notified: [notice()] })),
+      show: vi.fn(async () => Promise.reject(new Error("Acme shows you no such election — it may not be open to you."))),
+    });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="partner-poll" />);
+    expect(await screen.findByText("This community shows you no such election.")).toBeTruthy();
+    expect(screen.getByText(/gives the same answer in each case/)).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain(PARTY);
+  });
+
+  it("indeterminate says nothing was recorded and to try again", async () => {
+    withWallet({
+      show: vi.fn(async () =>
+        Promise.reject(new Error("Acme could not check your membership credential just now: its issuer's DID document or status list could not be read.")),
+      ),
+    });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    expect(await screen.findByText("The community couldn’t check your membership just now.")).toBeTruthy();
+    expect(screen.getByText(/nothing was recorded\. Try again/)).toBeTruthy();
+  });
+
+  it("a ticket refused as indeterminate is said in words too", async () => {
+    withWallet({
+      list: vi.fn(async () => ({ elections: [listed({ ticketHeld: false })] })),
+      takeTicket: vi.fn(async () => Promise.reject(new Error("Acme refused (indeterminate)."))),
+    });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Take my ticket" }));
+    expect(await screen.findByText("The community couldn’t check your membership just now.")).toBeTruthy();
+  });
+
+  it("choosing in the wallet not to show a membership is not an error, and can be asked again", async () => {
+    const wallet = withWallet({
+      list: vi.fn(async () => ({ elections: [], notified: [notice()] })),
+      show: vi.fn(async () => Promise.reject(new Error("You chose not to show your membership, so the election was not read."))),
+    });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="partner-poll" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Ask my wallet again" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(wallet.show).toHaveBeenCalledTimes(2));
   });
 });

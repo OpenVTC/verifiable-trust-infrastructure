@@ -99,6 +99,20 @@ the cast to the ballot box itself, after a random pause, as `pnm` does. The page
 whether a vote was cast. The wallet must be allowed to reach the ballot box's address (the
 `TrustTaskHTTPS` service in its DID document) from its popup.
 
+Beside the community's own list, the page shows the elections the member's agent holds a
+[notification](notifications.md) of from this community (VTI-NTF-063) — one the community's list
+does not show them, such as an election put to the members of a party that is itself a member of
+the community (VTI-VOT-015), and a mark on a listed one. Until the member opens it the page sees
+only what the notification says: the election's identifier, the party it is put to, the voting
+period and whether the notice was withdrawn. Opening one passes that party to the wallet as
+`memberOf` for show, ticket and vote; the wallet asks the member in its own window before it
+presents the membership credential that party issued, and presents no other (VTI-VOT-016). The
+page presents nothing itself. A withdrawn notice cannot be opened from the page. The community's
+`electionUnknown` (the same answer whether the election does not exist, is not open to the
+member, or is put to a party whose membership was not shown) and `indeterminate` (a check it
+could not complete, which records nothing) are shown in words. A wallet that predates
+notifications lists as before and is never sent `memberOf`.
+
 ### From the command line, as a member
 
 A member, with their membership persona held by their VTA:
