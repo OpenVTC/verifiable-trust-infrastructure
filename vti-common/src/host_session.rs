@@ -120,6 +120,10 @@ pub struct IdentitySession {
     identity: Arc<dyn Responder>,
     mediator_did: String,
     secrets: Vec<Secret>,
+    /// Where this identity's TSP relationships are kept. `None` keeps them in
+    /// the SDK's in-memory default — lost on every reconnect as well as every
+    /// restart, since each session builds a fresh ATM.
+    relationships: Option<Arc<crate::relationship_store::KeyspaceRelationshipStore>>,
 }
 
 /// Hand-written: `secrets` holds private keys.
@@ -128,6 +132,7 @@ impl std::fmt::Debug for IdentitySession {
         f.debug_struct("IdentitySession")
             .field("identity", &self.identity.did())
             .field("mediator_did", &self.mediator_did)
+            .field("durable_relationships", &self.relationships.is_some())
             .field(
                 "secrets",
                 &format_args!("<{} redacted>", self.secrets.len()),
@@ -143,7 +148,26 @@ impl IdentitySession {
             identity,
             mediator_did,
             secrets,
+            relationships: None,
         }
+    }
+
+    /// Keep this identity's TSP relationships in `store`, so they outlive both
+    /// a reconnect and a restart.
+    ///
+    /// Without it a peer that formed a relationship before the session was
+    /// rebuilt still holds its half, sends without re-inviting, and every frame
+    /// it sends is dropped here unanswered (TSP §7.2.2) — which is how a ballot
+    /// box restarted under a live community stopped registering its elections.
+    /// Build `store` once per process
+    /// ([`crate::relationship_store::build_relationship_store`]) and run its
+    /// [`crate::relationship_store::maintenance_loop`] once, beside it.
+    pub fn with_relationship_store(
+        mut self,
+        store: Arc<crate::relationship_store::KeyspaceRelationshipStore>,
+    ) -> Self {
+        self.relationships = Some(store);
+        self
     }
 }
 
@@ -309,8 +333,11 @@ async fn connect(session: &IdentitySession, shared: &Shared) -> Result<Live, Str
     // Frames this identity cannot unpack are deleted by the messaging SDK, the
     // one owner of that decision; left alone, one would be redelivered on
     // every reconnect forever.
-    let atm_config = ATMConfig::builder()
-        .with_delete_unprocessable(true)
+    let mut atm_config = ATMConfig::builder().with_delete_unprocessable(true);
+    if let Some(store) = &session.relationships {
+        atm_config = atm_config.with_relationship_store(store.clone());
+    }
+    let atm_config = atm_config
         .build()
         .map_err(|e| format!("build ATM config: {e}"))?;
     let atm = Arc::new(

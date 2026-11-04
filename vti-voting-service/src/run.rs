@@ -15,6 +15,9 @@ use crate::identity::{Identity, load_keys};
 use crate::journal::FileJournal;
 use crate::messaging::{BallotBoxResponder, IdentitySession, Shared, supervise_reporting};
 
+/// The keyspace this service's TSP relationships are kept in, under `<data_dir>/store`.
+const TSP_RELATIONSHIPS: &str = "tsp_relationships";
+
 /// How long a stop waits for the mediator session to close its socket.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(15);
 
@@ -95,16 +98,41 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
     let state = Arc::new(state);
 
     let (stop, stopped) = watch::channel(false);
+    // TSP relationships are kept on disk: a community that formed one keeps its half across
+    // our restart and sends without re-inviting, and TSP §7.2.2 has us drop — unanswered —
+    // every frame from a VID we hold no relationship with. Kept in memory, a restart (or a
+    // reconnect, which builds a fresh ATM) silently stopped every registration.
+    let relationships = match &session_keys {
+        Some(_) => {
+            let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+                data_dir: config.data_dir.join("store"),
+            })
+            .map_err(|e| anyhow::anyhow!("open the relationship store: {e}"))?;
+            let keyspace = store
+                .keyspace(TSP_RELATIONSHIPS)
+                .map_err(|e| anyhow::anyhow!("open keyspace {TSP_RELATIONSHIPS}: {e}"))?;
+            let relationships = vti_common::relationship_store::build_relationship_store(keyspace);
+            // Once per process, never per session.
+            tokio::spawn(vti_common::relationship_store::maintenance_loop(
+                relationships.clone(),
+            ));
+            Some(relationships)
+        }
+        None => None,
+    };
     let session = session_keys.map(|(mediator_did, secrets)| {
         let shared = Arc::new(Shared {
             did_resolver: did_resolver.clone(),
             resolver_url: config.resolver_url.clone(),
         });
-        let session = IdentitySession::new(
+        let mut session = IdentitySession::new(
             BallotBoxResponder::new(state.clone()),
             mediator_did,
             secrets,
         );
+        if let Some(relationships) = relationships {
+            session = session.with_relationship_store(relationships);
+        }
         tokio::spawn(supervise_reporting(
             session,
             shared,
