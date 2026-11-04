@@ -36,7 +36,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::RequestPayload;
 use vti_common::audit::{AuditEvent, NetworkMembershipChangedData};
-use vti_common::auth::{ProofPurpose, PurposeVmResolver, TrustTaskVmResolver};
 use vti_common::error::AppError;
 use vti_specs::vtn::entries::show::v0_1 as entries_show;
 use vti_specs::vtn::membership::{
@@ -46,7 +45,8 @@ use vti_vtn::credentials::member;
 use vti_vtn::identity::{Party, SignFuture};
 use vti_vtn::model::EntryKind;
 use vti_vtn::relay::{self, Envelope};
-use vti_vtn::verify::{KeyFuture, KeyResolver, verify_signed_by};
+use vti_vtn::resolve::VmKeyResolver;
+use vti_vtn::verify::verify_signed_by;
 use vti_vtn::vocab::{GROUP_REGISTERED_V1, LISTS_V1};
 use vti_vtn::{ClientError, VtnClient, VtnError};
 
@@ -148,6 +148,10 @@ impl From<VtnError> for NetError {
 /// A network's refusal: `notListed` (from any `vtn/*` task that declares it) as such,
 /// anything else as the network's refusal.
 fn refused(e: ClientError) -> NetError {
+    // An answer not provably the network's is the network's URL answering as another.
+    if matches!(e, ClientError::Unverified(_)) {
+        return NetError::Mismatch(e.to_string());
+    }
     match e.code() {
         Some(code) if code.ends_with(":notListed") => NetError::NotListed(e.to_string()),
         _ => NetError::Refused(e.to_string()),
@@ -222,42 +226,28 @@ async fn community(state: &AppState) -> Result<Community, NetError> {
 }
 
 /// Parties' keys, through the community's DID resolver, checked for the proof's purpose.
-pub(crate) struct Resolver(TrustTaskVmResolver);
-
-impl KeyResolver for Resolver {
-    fn resolve<'a>(&'a self, verification_method: &'a str, purpose: &'a str) -> KeyFuture<'a> {
-        Box::pin(async move {
-            let purpose = ProofPurpose::parse(purpose).map_err(VtnError::from)?;
-            let key = self
-                .0
-                .resolve_vm_for_purpose(verification_method, purpose)
-                .await
-                .map_err(VtnError::from)?;
-            Ok(key.public_key_bytes)
-        })
-    }
+fn resolver(state: &AppState) -> VmKeyResolver {
+    VmKeyResolver::from(state.trust_task_vm_resolver())
 }
 
-fn resolver(state: &AppState) -> Resolver {
-    Resolver(state.trust_task_vm_resolver())
-}
-
-/// A client for the network at `url`, over the hardened foreign-fetch client. The URL is
-/// one an administrator named, so the workspace's private-endpoint opt-in applies.
-fn client(url: &str) -> Result<VtnClient, NetError> {
+/// A client for the network at `url`, over the hardened foreign-fetch client, verifying the
+/// network's answers through the community's resolver. The URL is one an administrator
+/// named, so the workspace's private-endpoint opt-in applies.
+fn client(state: &AppState, url: &str) -> Result<VtnClient, NetError> {
+    let resolver = Arc::new(resolver(state));
     // Tests reach a fake network on loopback without TLS. Never in a production build: the
     // same gate as `crate::test_support`.
     #[cfg(any(test, feature = "test-support"))]
     if url.starts_with("http://127.0.0.1:") {
-        return Ok(VtnClient::new(url));
+        return Ok(VtnClient::new(url).verifying(resolver));
     }
     let policy = vta_sdk::http::EndpointPolicy::process_default();
     vta_sdk::http::guard_foreign_url(url, policy)
         .map_err(|e| NetError::Refused(format!("{url}: {e}")))?;
-    Ok(VtnClient::with_http(
-        vta_sdk::http::foreign_fetch_client_for(policy),
-        url,
-    ))
+    Ok(
+        VtnClient::with_http(vta_sdk::http::foreign_fetch_client_for(policy), url)
+            .verifying(resolver),
+    )
 }
 
 async fn relay_endpoint(state: &AppState, group_id: &str) -> Result<String, NetError> {
@@ -359,8 +349,12 @@ fn audit_data(network: &str, event: &str) -> NetworkMembershipChangedData {
 
 /// Read the network's profile at `url` and check it is `network`. There is nothing to sign
 /// in to: each request the community sends is signed (`vtn/*` Trust Tasks).
-async fn session(url: &str, network: &str) -> Result<(VtnClient, Value), NetError> {
-    let client = client(url)?;
+async fn session(
+    state: &AppState,
+    url: &str,
+    network: &str,
+) -> Result<(VtnClient, Value), NetError> {
+    let client = client(state, url)?;
     let profile = client.profile().await.map_err(refused)?;
     let answering = profile["did"].as_str().unwrap_or_default();
     if answering != network {
@@ -376,14 +370,16 @@ async fn own_listing(
     client: &VtnClient,
     network: &str,
     community: &Community,
-    resolver: &Resolver,
+    resolver: &VmKeyResolver,
 ) -> Result<Value, NetError> {
-    // A party always reads its own entry; any refusal means it has none there.
+    // A party always reads its own entry; any refusal means it has none there. An answer
+    // that is not the network's says nothing about the entry.
     let answer =
         ask::<entries_show::Payload>(client, community, network, json!({ "did": community.did }))
             .await
-            .map_err(|e| {
-                NetError::NotListed(format!("{network} has no entry for this community: {e}"))
+            .map_err(|e| match e {
+                NetError::Mismatch(_) => e,
+                e => NetError::NotListed(format!("{network} has no entry for this community: {e}")),
             })?;
     let listing = answer["entry"]["listing"].clone();
     let vsc = verify_signed_by(&listing, network, resolver, Utc::now())
@@ -412,7 +408,7 @@ async fn register_with(
     community: &Community,
     role: &str,
     group: &crate::groups::Group,
-    resolver: &Resolver,
+    resolver: &VmKeyResolver,
 ) -> Result<RegisteredGroup, NetError> {
     let endpoint = relay_endpoint(state, &group.group_id).await?;
     let registration =
@@ -461,7 +457,7 @@ pub async fn join(
         groups.push((role.clone(), group(state, group_id).await?));
     }
     let url = url.trim_end_matches('/');
-    let (client, profile) = session(url, network).await?;
+    let (client, profile) = session(state, url, network).await?;
     for required in profile["roles"]
         .as_array()
         .into_iter()
@@ -552,7 +548,7 @@ pub async fn repudiate(
         return Err(NetError::IsMember);
     }
     let url = url.trim_end_matches('/');
-    let (client, profile) = session(url, network).await?;
+    let (client, profile) = session(state, url, network).await?;
     let listing = own_listing(&client, network, &community, &resolver(state)).await?;
     let repudiation = member::repudiate_as(&listing, &community, signing_time()).await?;
     ask::<repudiate_task::Payload>(
@@ -597,7 +593,7 @@ pub async fn leave(
     let grant = membership.grant.clone().ok_or(NetError::NotMember)?;
     let repudiation = member::repudiate_as(&grant, &community, signing_time()).await?;
     ask::<repudiate_task::Payload>(
-        &client(&membership.url)?,
+        &client(state, &membership.url)?,
         &community,
         network,
         json!({ "repudiation": repudiation }),
@@ -627,7 +623,7 @@ pub async fn register_group(
         .filter(|m| m.state == State::Acknowledged)
         .ok_or(NetError::NotMember)?;
     let g = group(state, group_id).await?;
-    let client = client(&membership.url)?;
+    let client = client(state, &membership.url)?;
     let registered = register_with(
         state,
         &client,

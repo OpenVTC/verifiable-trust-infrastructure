@@ -115,7 +115,18 @@ async fn fake_network(community: &str, required: bool) -> (String, String, Share
     /// `vtn/*` Trust Tasks, answered as a network does: the request's proof must be its
     /// issuer's, for `authentication`, addressed to this network. `refuse.session` refuses
     /// the community outright, as a network that does not list it.
-    async fn tasks(
+    /// Every answer signed by the network for `authentication`, as the spine signs it.
+    async fn tasks(AxState(s): AxState<Shared>, doc: Json<Value>) -> (StatusCode, Json<Value>) {
+        let identity = s.lock().await.identity.clone();
+        let (status, Json(answer)) = answer(AxState(s), doc).await;
+        let signed = identity
+            .sign_document_for(answer, AUTHENTICATION)
+            .await
+            .unwrap();
+        (status, Json(signed))
+    }
+
+    async fn answer(
         AxState(s): AxState<Shared>,
         Json(doc): Json<Value>,
     ) -> (StatusCode, Json<Value>) {
