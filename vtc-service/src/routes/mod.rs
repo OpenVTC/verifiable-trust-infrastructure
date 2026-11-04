@@ -192,6 +192,8 @@ use crate::server::AppState;
         vta_sdk::openapi::BoardsCreate01Response,
         vta_sdk::openapi::BoardsUpdate01Payload,
         vta_sdk::openapi::BoardsUpdate01Response,
+        vta_sdk::openapi::BoardsDelete01Payload,
+        vta_sdk::openapi::BoardsDelete01Response,
         vta_sdk::openapi::BoardsList01Payload,
         vta_sdk::openapi::BoardsList01Response,
         vta_sdk::openapi::BoardsShow01Payload,

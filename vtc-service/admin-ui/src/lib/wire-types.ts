@@ -369,6 +369,7 @@ export type BoardCreatePayload = Schemas["VtcBoardsCreateV0_1Payload"];
 export type BoardCreateResponse = Schemas["VtcBoardsCreateV0_1Response"];
 export type BoardUpdatePayload = Schemas["VtcBoardsUpdateV0_1Payload"];
 export type BoardUpdateResponse = Schemas["VtcBoardsUpdateV0_1Response"];
+export type BoardDeleteResponse = Schemas["VtcBoardsDeleteV0_1Response"];
 export type BoardListResponse = Schemas["VtcBoardsListV0_1Response"];
 export type BoardShowResponse = Schemas["VtcBoardsShowV0_1Response"];
 export type BoardIdeasProposeResponse = Schemas["VtcBoardsIdeasProposeV0_1Response"];

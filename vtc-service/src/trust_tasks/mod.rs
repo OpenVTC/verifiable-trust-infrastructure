@@ -2904,6 +2904,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // The community's boards (VTI-BRD-*): ideas, notes, and each idea's election.
     board_tasks::CREATE_TYPE,
     board_tasks::UPDATE_TYPE,
+    board_tasks::DELETE_TYPE,
     board_tasks::LIST_TYPE,
     board_tasks::SHOW_TYPE,
     board_tasks::IDEAS_PROPOSE_TYPE,

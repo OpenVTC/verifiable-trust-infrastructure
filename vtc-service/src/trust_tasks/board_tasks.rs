@@ -18,11 +18,12 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::audit::{AuditEvent, BoardChangedData};
 use vti_common::error::AppError;
 use vti_specs::vtc::boards::{
     create::v0_1 as board_create,
+    delete::v0_1 as board_delete,
     ideas::{
         decide::v0_1 as ideas_decide, propose::v0_1 as ideas_propose, select::v0_1 as ideas_select,
         update::v0_1 as ideas_update, withdraw::v0_1 as ideas_withdraw,
@@ -51,6 +52,7 @@ use crate::server::AppState;
 
 pub(crate) const CREATE_TYPE: &str = <board_create::Payload as Payload>::TYPE_URI;
 pub(crate) const UPDATE_TYPE: &str = <board_update::Payload as Payload>::TYPE_URI;
+pub(crate) const DELETE_TYPE: &str = <board_delete::Payload as Payload>::TYPE_URI;
 pub(crate) const LIST_TYPE: &str = <board_list::Payload as Payload>::TYPE_URI;
 pub(crate) const SHOW_TYPE: &str = <board_show::Payload as Payload>::TYPE_URI;
 pub(crate) const IDEAS_PROPOSE_TYPE: &str = <ideas_propose::Payload as Payload>::TYPE_URI;
@@ -67,6 +69,7 @@ pub(crate) const NOTES_HIDE_TYPE: &str = <notes_hide::Payload as Payload>::TYPE_
 pub(crate) const URIS: &[&str] = &[
     CREATE_TYPE,
     UPDATE_TYPE,
+    DELETE_TYPE,
     LIST_TYPE,
     SHOW_TYPE,
     IDEAS_PROPOSE_TYPE,
@@ -93,6 +96,9 @@ codes! {
     CREATE_ERR_SCHEDULE_INVALID = board_create::SCHEDULE_INVALID;
     CREATE_ERR_TIMETABLE_INVALID = board_create::TIMETABLE_INVALID;
     UPDATE_ERR_NOT_FOUND = board_update::NOT_FOUND;
+    DELETE_ERR_NOT_FOUND = board_delete::NOT_FOUND;
+    DELETE_ERR_NOT_CLOSED = board_delete::NOT_CLOSED;
+    DELETE_ERR_ELECTIONS_RUNNING = board_delete::ELECTIONS_RUNNING;
     UPDATE_ERR_FIXED_AFTER_VOTING_OPENS = board_update::FIXED_AFTER_VOTING_OPENS;
     UPDATE_ERR_STATUS_INVALID = board_update::STATUS_INVALID;
     UPDATE_ERR_ARCHIVED = board_update::ARCHIVED;
@@ -158,6 +164,7 @@ pub(super) async fn dispatch(
     Some(match type_uri {
         CREATE_TYPE => handle_create(state, ctx, doc).await,
         UPDATE_TYPE => handle_update(state, ctx, doc).await,
+        DELETE_TYPE => handle_delete(state, ctx, doc).await,
         LIST_TYPE => handle_list(state, ctx, doc).await,
         SHOW_TYPE => handle_show(state, ctx, doc).await,
         IDEAS_PROPOSE_TYPE => handle_propose(state, ctx, doc).await,
@@ -762,7 +769,9 @@ async fn handle_update(
         }
     }
     let mut change = "updated";
+    let mut closes = false;
     if let Some(s) = str_of(p, "status") {
+        closes = board.status == BoardStatus::Open;
         let next = match (board.status, s) {
             (BoardStatus::Open, "closed") => BoardStatus::Closed,
             (BoardStatus::Open | BoardStatus::Closed, "archived") => BoardStatus::Archived,
@@ -789,7 +798,185 @@ async fn handle_update(
     if let Err(e) = boards::put_board(&state.boards_ks, &board).await {
         return app_error_to_reject(&doc, &e);
     }
-    board_answer(state, &doc, &who, &board).await
+    if !closes {
+        return board_answer(state, &doc, &who, &board).await;
+    }
+    // Item 6: recorded closed first; then its voting is ended (VTI-BRD-006), outside the board
+    // lock (R1.3). The answer does not wait for the ballot box.
+    drop(_guard);
+    #[cfg(feature = "voting")]
+    let closing = match boards::ops::end_voting(state, &board, now).await {
+        Ok(c) => c.wire(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    #[cfg(not(feature = "voting"))]
+    let closing = json!({ "closedEarly": 0, "cancelled": 0, "runningToClose": [] });
+    match boards::board_wire(state, &board, &who).await {
+        Ok(w) => success_response(&doc, json!({ "board": w, "closing": closing })),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+// Without voting a board opens no election, so none can still be running at a deletion.
+#[cfg(not(feature = "voting"))]
+const _: &str = DELETE_ERR_ELECTIONS_RUNNING;
+
+/// `delete/0.1` (items 1 – 7, VTI-BRD-007, VTI-BRD-008).
+async fn handle_delete(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::acl::bound_step_up::{self, Gate};
+    let who = match facilitator(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<board_delete::Payload>(&doc) {
+        return r;
+    }
+    let p = &doc.payload;
+    let board_id = str_of(p, "boardId").unwrap_or_default().to_string();
+    let reason = str_of(p, "reason").unwrap_or_default().to_string();
+    let now = Utc::now();
+    // Item 1.
+    let board = match visible_board(state, &who, &board_id).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            return declared(
+                &doc,
+                DELETE_ERR_NOT_FOUND,
+                "No board you may see has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if !who.manages_all() {
+        return denied(
+            &doc,
+            "deleting a board takes vtc.boards.manage unqualified; a facilitator of one board may \
+             close it, not delete it",
+        );
+    }
+    // Item 3: closed, and its voting over.
+    if board.status == BoardStatus::Open {
+        return declared(
+            &doc,
+            DELETE_ERR_NOT_CLOSED,
+            "This board is open. Close it first, which ends its voting (VTI-BRD-006).",
+        );
+    }
+    let ideas = match boards::ideas_of(&state.boards_ks, &board.board_id).await {
+        Ok(i) => i,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    #[cfg(feature = "voting")]
+    let mut records = Vec::new();
+    #[cfg(feature = "voting")]
+    {
+        let mut running = Vec::new();
+        for idea in &ideas {
+            let Some(id) = &idea.election_id else {
+                continue;
+            };
+            match crate::elections::store::get(state.elections.ks(), id).await {
+                Ok(Some(rec)) => {
+                    if !matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
+                        running.push(idea.idea_id.clone());
+                    }
+                    records.push(rec);
+                }
+                Ok(None) => {}
+                Err(e) => return app_error_to_reject(&doc, &e),
+            }
+        }
+        if !running.is_empty() {
+            return declared(
+                &doc,
+                DELETE_ERR_ELECTIONS_RUNNING,
+                format!(
+                    "{} idea(s) on this board still have an election running ({}). Retry once \
+                     each has closed or been cancelled.",
+                    running.len(),
+                    running.join(", ")
+                ),
+            );
+        }
+    }
+    // Item 2: a step-up bound to this one document, spent only once every check above passed.
+    match bound_step_up::redeem_or_request(state, &who.did, DELETE_TYPE, &doc.payload, &reason)
+        .await
+    {
+        Ok(Gate::Satisfied) => {}
+        Ok(Gate::Required(request)) => {
+            return reject_with_code(
+                &doc,
+                TrustTaskCode::Standard(StandardCode::PermissionDenied),
+                "a passkey gesture bound to this deletion is required",
+                Some(bound_step_up::refusal_details(&request)),
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    let retention = state.config.read().await.boards.tombstone_retention;
+    let remove_at = retention.remove_at(now);
+    // Item 6: audited before anything is removed; the reason and counts, never any text.
+    let data = BoardChangedData {
+        fields: vec![
+            format!("reason:{reason}"),
+            format!("tombstones:{}", retention.describe()),
+        ],
+        ..changed(&board.board_id, "deleted")
+    };
+    if let Err(e) = audit(state, &who.did, data).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    // Item 4: each election's content goes, its tombstone stays for the retention.
+    #[allow(unused_mut)]
+    let mut elections_removed = 0u64;
+    #[allow(unused_mut)]
+    let mut kept = 0u64;
+    #[cfg(feature = "voting")]
+    for rec in &records {
+        let ks = state.elections.ks();
+        if retention.keeps() {
+            let t = crate::elections::store::Tombstone::of(rec, now, remove_at);
+            if let Err(e) = crate::elections::store::put_tombstone(ks, &t).await {
+                return app_error_to_reject(&doc, &e);
+            }
+            kept += 1;
+        }
+        if let Err(e) = crate::elections::store::remove_tickets(ks, &rec.election_id).await {
+            return app_error_to_reject(&doc, &e);
+        }
+        if let Err(e) = crate::elections::store::remove(ks, &rec.election_id).await {
+            return app_error_to_reject(&doc, &e);
+        }
+        elections_removed += 1;
+    }
+    let _guard = boards::WRITE_LOCK.lock().await;
+    let (ideas_removed, notes_removed) =
+        match boards::remove_board(&state.boards_ks, &board.board_id).await {
+            Ok(n) => n,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+    drop(ideas);
+    let mut tombstones = json!({ "kept": kept });
+    if kept > 0
+        && let Some(at) = remove_at
+    {
+        tombstones["removeAt"] = json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    }
+    success_response(
+        &doc,
+        json!({
+            "boardId": board.board_id,
+            "ideasRemoved": ideas_removed,
+            "notesRemoved": notes_removed,
+            "electionsRemoved": elections_removed,
+            "tombstones": tombstones,
+        }),
+    )
 }
 
 // ─── reads ───────────────────────────────────────────────────────────────
@@ -1364,6 +1551,14 @@ async fn handle_decide(
                     &doc,
                     DECIDE_ERR_VOTING_CLOSED,
                     "This board's voting has closed.",
+                );
+            }
+            // A closed board opens no election (VTI-BRD-005): closing it ended its voting.
+            if board.status != BoardStatus::Open {
+                return declared(
+                    &doc,
+                    DECIDE_ERR_VOTING_CLOSED,
+                    "This board is closed, and its voting has ended; no idea on it is put to a vote.",
                 );
             }
             #[cfg(feature = "voting")]

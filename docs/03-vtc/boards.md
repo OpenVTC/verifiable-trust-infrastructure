@@ -21,12 +21,20 @@ Boards need elections, so build with `voting` and configure `[voting]` exactly a
 [elections.md](elections.md) describes. Without `voting` the tasks are served, but `create`
 refuses every template (`templateInvalid`), because a board's ideas could not be put to a vote.
 
+A deleted board's elections each keep a tombstone for a while (see *Deleting a board*):
+
+```toml
+[boards]
+tombstone_retention = 365        # days; 0 keeps none; "forever" keeps them for good
+```
+
 ## Who does what
 
 | Who | Holds | May |
 |---|---|---|
 | Board creator | `vtc.boards.manage` **and** `vtc.elections.manage`, both unqualified | create boards, change a board's election template |
-| Facilitator | `vtc.boards.manage`, unqualified or `board:<boardId>` | change, close and archive the board; accept, decline, merge, reopen and select its ideas; hide notes |
+| Board manager | `vtc.boards.manage` unqualified (every `community-admin`) | everything a facilitator may, on every board, and delete a closed board |
+| Facilitator | `vtc.boards.manage`, unqualified or `board:<boardId>` | change, close and archive the board — closing ends its voting; accept, decline, merge, reopen and select its ideas; hide notes |
 | Member of the audience | an active member (and, for a group board, a member of that group) | propose, edit and withdraw their own ideas; add and withdraw their own notes; read the board |
 
 `community-admin` holds `vtc.boards.manage` like every `vtc.*` capability. A facilitator for
@@ -34,8 +42,9 @@ one board is an entry whose capability scope lists `vtc.boards.manage` at `board
 A facilitator who is not in the audience can run the board, but cannot propose to it.
 
 Opening an election needs no `vtc.elections.manage` from the facilitator: the template was
-fixed by someone who holds it, and it is never binding. Closing early, cancelling and
-certifying a board's election still take `vtc.elections.manage` (VTI-BRD-032).
+fixed by someone who holds it, and it is never binding. Closing the board ends its elections
+on that same authority (VTI-BRD-006). Otherwise, closing early, cancelling and certifying a
+board's election still take `vtc.elections.manage` (VTI-BRD-032).
 
 A facilitator does not decide their own idea while the board has another facilitator. If there
 is none, they may, and the decision is marked `ownIdea` (VTI-BRD-013).
@@ -75,8 +84,28 @@ member's wallet, as for every election.
    opened (`fixedAfterVotingOpens`), and a slot a selected idea is placed in stays. A change
    applies to ideas accepted after it: an idea already open for votes keeps the voting window its
    election was registered with, since a registered election's window cannot move.
-7. **Close and archive.** `closed` takes no new ideas or notes; facilitators still decide.
-   `archived` takes no change at all.
+7. **Close: voting ends.** `closed` takes no new ideas or notes and opens no election, and it
+   ends the voting on every idea (VTI-BRD-006):
+   - an election open for voting is **closed early**: the ballot box counts it as it stands, and
+     that count is final;
+   - one not yet open for voting, or not yet registered, is **cancelled**, and its idea is not
+     selected;
+   - one whose manifest does not allow closing early runs to the close its manifest states, and
+     the close answers which ideas those are (`closing.runningToClose`). Every board election is
+     opened allowing it now (VTI-BRD-030); only elections opened before this rule can't.
+
+   The board is recorded closed first; each close or cancellation is recorded on its election,
+   asked for at once, and asked again by the elections sweeper until the ballot box answers. The
+   answer doesn't wait for the ballot box. Facilitators still decide and select afterwards.
+8. **Archive.** `archived` takes no change at all, and hides the board from members.
+9. **Delete.** A board manager deletes a closed or archived board once every election on it has
+   closed or been cancelled (`vtc/boards/delete`, VTI-BRD-007), with a passkey gesture bound to
+   the deletion. It removes the board, its ideas, its notes and each election's title,
+   description, roll and ticket records. Each election keeps a **tombstone** — identifier,
+   manifest digest and the board heads the community kept — for `[boards] tombstone_retention`
+   (VTI-BRD-008), so a voter can still check a receipt against the community's record. The
+   elections sweeper removes tombstones once their retention has passed; a retention of `0`
+   keeps none. In the console: **Delete board** on a closed board.
 
 ## From the command line
 
@@ -93,7 +122,8 @@ cnm boards decide <idea-id> accept            # opens the idea's election
 cnm boards decide <idea-id> decline --reason "Covered in the keynote"
 cnm boards decide <idea-id> merge --into <other-idea-id>
 cnm boards select <idea-id> selected --slot <slot-id>
-cnm boards close <board-id>
+cnm boards close <board-id>                    # ends its voting
+cnm boards delete <board-id> --reason "The event is over"   # closed boards only
 ```
 
 `init --group <group-id>` puts the board to one group. Pick the ballot box from
@@ -123,12 +153,15 @@ because the election's manifest carries them and cannot change.
 
 ## Audit
 
-`BoardChanged` rows cover board creation and changes, every idea decision and selection, and
-hiding or showing a note. They name ideas and notes by identifier, never their text, and never
+`BoardChanged` rows cover board creation, changes, closing and deletion (with its reason and the
+tombstone retention applied), every idea decision and selection, and hiding or showing a note.
+Each election a closing ended writes its own `ElectionChanged` row (`closedEarly`,
+`cancelled`), and so does each tombstone removed (`tombstoneRemoved`). They name ideas and notes by identifier, never their text, and never
 anything about tickets or ballots. Opening an idea's election also writes the election's own
 `ElectionChanged` row, as `vtc/elections/create` does.
 
 ## Storage
 
 The `boards` keyspace, backed up. An accepted idea keeps only its election's identifier; where
-the election stands is always read from the `elections` keyspace.
+the election stands is always read from the `elections` keyspace. A deleted board's tombstones
+are `tombstone:<electionId>` rows in `elections`.

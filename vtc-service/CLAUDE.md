@@ -900,7 +900,16 @@ When adding a flow, add it here and a line to the root index.
   `ideas/select`, `notes/hide`) go through `member_signer` only and never do (VTI-BRD-051).
   Audit (`BoardChanged`) by reference, never text. Departure withdraws proposed ideas; erasure
   removes text no election carries (`boards::on_departure`, called beside
-  `groups::on_departure`).
+  `groups::on_departure`). **Closing ends the voting** (VTI-BRD-006, `boards::ops::end_voting`):
+  the board is stored closed first, then each election gets a `PendingEnd` (close early if voting,
+  cancel if not yet) recorded **before** the ballot box is asked; the answer never waits, and the
+  elections sweeper is the one retry owner. Every board election is opened `allowEarlyClose: true`
+  whatever the template says, and a template with `false` is `templateInvalid` (VTI-BRD-030). A
+  closed board opens no election. **Deleting** (`vtc/boards/delete`, VTI-BRD-007/008) takes
+  `vtc.boards.manage` unqualified and a bound step-up spent only after every check passed; only a
+  closed/archived board with no election running; audited before anything goes; each election
+  leaves only a `Tombstone` (id, manifest digest, kept heads — never title, roll or tickets) for
+  `[boards] tombstone_retention` (days, `0` = none, `"forever"`), removed by the sweeper.
 - **Code**: `vtc-service/src/boards/{mod,ops}.rs`, `vtc-service/src/trust_tasks/board_tasks.rs`,
   `vtc-service/tests/it/board_tasks.rs`.
 - **Docs**: `docs/03-vtc/boards.md`, `docs/05-design-notes/vtc-boards.md`.

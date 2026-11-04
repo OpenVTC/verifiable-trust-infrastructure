@@ -3451,6 +3451,38 @@ export interface components {
             /** Format: date-time */
             opensAt: string;
         };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsDeleteV0_1BoardId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsDeleteV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A board manager deletes a closed board: its ideas, notes and each election's content are removed, and each election keeps only a tombstone for the community's tombstone retention. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsDeleteV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsDeleteV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsDeleteV0_1Ext"];
+            /** @description Why, recorded with the deletion in the community's audit trail. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/boards/delete/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/delete/0.1#response. */
+        VtcBoardsDeleteV0_1Response: {
+            boardId: components["schemas"]["VtcBoardsDeleteV0_1BoardId"];
+            /** @description Elections whose content the community removed. Each keeps a tombstone unless the retention is zero. */
+            electionsRemoved: number;
+            ext?: components["schemas"]["VtcBoardsDeleteV0_1Ext"];
+            ideasRemoved: number;
+            notesRemoved: number;
+            /** @description What the community keeps of the board's elections (VTI-BRD-007, VTI-BRD-008). */
+            tombstones: {
+                /** @description Tombstones kept: each an election's identifier, manifest digest and the board heads the community kept. Zero when the retention is zero. */
+                kept: number;
+                /**
+                 * Format: date-time
+                 * @description When they are removed. Absent when the retention is unbounded, or when none was kept.
+                 */
+                removeAt?: string;
+            };
+        };
         /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
         VtcBoardsIdeasDecideV0_1Author: {
             entryId?: components["schemas"]["VtcBoardsIdeasDecideV0_1EntryId"];
@@ -5070,6 +5102,8 @@ export interface components {
         VtcBoardsUpdateV0_1GroupId: string;
         /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
         VtcBoardsUpdateV0_1IdeaFormat: string;
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsUpdateV0_1IdeaId: string;
         /** @description A question or option key, unique within its manifest or question. */
         VtcBoardsUpdateV0_1Key: string;
         /** @description A facilitator changes a board's title, description, topics, formats, timetable or selection rule, closes or archives it, or — before voting opens — its schedule; changing its election template takes an elections manager. The outer document members are owned by the framework — SPEC §6.3. */
@@ -5136,6 +5170,15 @@ export interface components {
         /** @description The success response to a vtc/boards/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/update/0.1#response. */
         VtcBoardsUpdateV0_1Response: {
             board: components["schemas"]["VtcBoardsUpdateV0_1Board"];
+            /** @description Present when this update closed the board: how its voting was ended (VTI-BRD-006). Counts the requests made; the ballot box answers them after this response. */
+            closing?: {
+                /** @description Elections not yet open for voting, or not yet registered, that were cancelled; their ideas are not selected. */
+                cancelled: number;
+                /** @description Elections open for voting that were closed early; each is counted as it stood, and the count is final. */
+                closedEarly: number;
+                /** @description Ideas whose election does not allow closing early and closes when its manifest says. */
+                runningToClose: components["schemas"]["VtcBoardsUpdateV0_1IdeaId"][];
+            };
             ext?: components["schemas"]["VtcBoardsUpdateV0_1Ext"];
         };
         /**

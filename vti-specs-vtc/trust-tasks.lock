@@ -99,6 +99,12 @@ type_uri = "https://trusttasks.org/spec/vtc/boards/create/0.1"
 digest = "sha256:d48592f48ab06a8d96d2a33d3e72104e23b2cb22a23a3c81ddc62259b1efaa84"
 
 [[task]]
+slug = "vtc/boards/delete"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/delete/0.1"
+digest = "sha256:4e6e6f2be63fb797a6b18b9864929dd9a2b72ec64af230330f2ad1d10df1fb11"
+
+[[task]]
 slug = "vtc/boards/ideas/decide"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/boards/ideas/decide/0.1"
@@ -168,7 +174,7 @@ digest = "sha256:d83ca9f0903240946ede18434c3010b5c8b91bea2536474206f2a5080523008
 slug = "vtc/boards/update"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/boards/update/0.1"
-digest = "sha256:dea4517437383187e2d41d067a419654224031cc0e9f67ca9c93ca18e38d35b9"
+digest = "sha256:a037b207c20ab8ecf67a47cba80894b549280de04f0df7bb2cee29860d947dc9"
 
 [[task]]
 slug = "vtc/ceremonies/list"

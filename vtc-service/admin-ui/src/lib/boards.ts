@@ -10,6 +10,7 @@
 // Every act is signed by this browser's console key, never a member portal key (VTI-BRD-051).
 
 import { postSignedRead, postSignedTrustTask } from "./api";
+import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 import type {
   BoardCreatePayload,
   BoardCreateResponse,
@@ -21,6 +22,7 @@ import type {
   BoardShowResponse,
   BoardUpdatePayload,
   BoardUpdateResponse,
+  BoardDeleteResponse,
 } from "./wire-types";
 
 export const BOARDS_MANAGE = "vtc.boards.manage";
@@ -29,6 +31,7 @@ export const BOARDS_KEY = ["boards"] as const;
 
 const CREATE = "https://trusttasks.org/spec/vtc/boards/create/0.1";
 const UPDATE = "https://trusttasks.org/spec/vtc/boards/update/0.1";
+export const DELETE = "https://trusttasks.org/spec/vtc/boards/delete/0.1";
 const LIST = "https://trusttasks.org/spec/vtc/boards/list/0.1";
 const SHOW = "https://trusttasks.org/spec/vtc/boards/show/0.1";
 const DECIDE = "https://trusttasks.org/spec/vtc/boards/ideas/decide/0.1";
@@ -89,6 +92,15 @@ export async function listAllNotes(boardId: string): Promise<Note[]> {
 export const createBoard = (p: BoardCreatePayload) => postSignedTrustTask<BoardCreateResponse>(CREATE, p);
 export const updateBoard = (p: BoardUpdatePayload) => postSignedTrustTask<BoardUpdateResponse>(UPDATE, p);
 
+/**
+ * Delete a closed board whose voting has ended (VTI-BRD-007): its ideas, notes and each
+ * election's content go, each election keeping a tombstone for the community's retention
+ * (VTI-BRD-008). Takes `vtc.boards.manage` unqualified and a passkey gesture bound to this one
+ * request, which `confirm` asks the operator for.
+ */
+export const deleteBoard = (boardId: string, reason: string, confirm: ConfirmGesture) =>
+  postSignedWithStepUp<BoardDeleteResponse>(DELETE, { boardId, reason }, confirm);
+
 export type Decision = "accept" | "decline" | "merge" | "reopen";
 
 export function decideIdea(ideaId: string, decision: Decision, opts: { reason?: string; mergeInto?: string } = {}) {
@@ -146,7 +158,7 @@ export function defaultTemplate(ballotBox: string): Template {
     revote: "replace",
     board: { visibility: "public", auditors: [] },
     ballotBox,
-    allowEarlyClose: false,
+    allowEarlyClose: true,
     resultsBeforeClose: false,
     textReleaseThreshold: 10,
   } as Template;

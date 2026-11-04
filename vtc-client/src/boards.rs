@@ -23,6 +23,7 @@ use crate::{HolderKey, VtcClient, VtcError};
 /// on `trust-tasks-rs` itself.
 pub use vti_specs::vtc::boards::{
     create::v0_1 as create,
+    delete::v0_1 as delete,
     ideas::{
         decide::v0_1 as ideas_decide, propose::v0_1 as ideas_propose, select::v0_1 as ideas_select,
         update::v0_1 as ideas_update, withdraw::v0_1 as ideas_withdraw,
@@ -42,6 +43,7 @@ pub mod task {
 
     pub const CREATE: &str = <super::create::Payload as Payload>::TYPE_URI;
     pub const UPDATE: &str = <super::update::Payload as Payload>::TYPE_URI;
+    pub const DELETE: &str = <super::delete::Payload as Payload>::TYPE_URI;
     pub const LIST: &str = <super::list::Payload as Payload>::TYPE_URI;
     pub const SHOW: &str = <super::show::Payload as Payload>::TYPE_URI;
     pub const IDEAS_PROPOSE: &str = <super::ideas_propose::Payload as Payload>::TYPE_URI;
@@ -93,6 +95,7 @@ pub fn declared(type_uri: &str) -> &'static [trust_tasks_rs::DeclaredErrorCode] 
     match type_uri {
         task::CREATE => create::ERROR_CODES,
         task::UPDATE => update::ERROR_CODES,
+        task::DELETE => delete::ERROR_CODES,
         task::LIST => list::ERROR_CODES,
         task::SHOW => show::ERROR_CODES,
         task::IDEAS_PROPOSE => ideas_propose::ERROR_CODES,
@@ -157,6 +160,28 @@ impl VtcClient {
         key: &HolderKey,
     ) -> Result<update::Response, VtcError> {
         self.board_task(task::UPDATE, body, key).await
+    }
+
+    /// `vtc/boards/delete/0.1` — delete a closed board whose voting has ended: its ideas, notes
+    /// and each election's content go, each election keeping a tombstone for the community's
+    /// retention (VTI-BRD-007, VTI-BRD-008). Takes `vtc.boards.manage` unqualified and a step-up
+    /// bound to this one request; without the gesture the refusal carries `stepUpRequest`.
+    ///
+    /// # Errors
+    /// [`VtcError::InvalidPayload`] out of schema; the VTC's refusal otherwise (`notClosed`,
+    /// `electionsRunning`, `notFound`, `permissionDenied`).
+    pub async fn boards_delete(
+        &self,
+        board_id: &str,
+        reason: &str,
+        key: &HolderKey,
+    ) -> Result<delete::Response, VtcError> {
+        self.board_task(
+            task::DELETE,
+            json!({ "boardId": board_id, "reason": reason }),
+            key,
+        )
+        .await
     }
 
     /// `vtc/boards/list/0.1` — the boards the caller may see.

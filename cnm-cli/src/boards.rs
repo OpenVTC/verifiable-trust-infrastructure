@@ -68,10 +68,22 @@ pub enum BoardsCommands {
     /// Change a board from a JSON file of the members to change (`vtc/boards/update`, without
     /// `boardId`). Changing `template` also takes `vtc.elections.manage`.
     Update { board_id: String, changes: PathBuf },
-    /// Close a board to new ideas and notes. Facilitators still decide and select.
+    /// Close a board to new ideas and notes, and end its voting: each idea's election open for
+    /// voting is closed early, so its count is final; one not yet open is cancelled
+    /// (VTI-BRD-006). Facilitators still decide and select.
     Close { board_id: String },
     /// Archive a closed board: no change at all after this.
     Archive { board_id: String },
+    /// Delete a closed board whose voting has ended: its ideas, notes and each election's
+    /// content go; each election keeps only a tombstone (its identifier, manifest digest and the
+    /// board heads the community kept) for the community's `[boards] tombstone_retention`.
+    /// Takes vtc.boards.manage unqualified and a passkey gesture bound to the deletion.
+    Delete {
+        board_id: String,
+        /// Why, recorded with the deletion in the audit trail.
+        #[arg(long)]
+        reason: String,
+    },
     /// Accept, decline, merge or reopen a proposed idea. Accepting opens its election.
     Decide {
         idea_id: String,
@@ -154,7 +166,7 @@ pub fn starter_board(ballot_box: &str, title: &str, group: Option<&str>) -> Valu
             "revote": "replace",
             "board": { "visibility": "public", "auditors": [] },
             "ballotBox": ballot_box,
-            "allowEarlyClose": false,
+            "allowEarlyClose": true,
             "resultsBeforeClose": false,
             "textReleaseThreshold": 10
         }
@@ -320,6 +332,22 @@ fn refusal(vtc: &Connected, err: VtcError, subject: &str) -> Box<dyn std::error:
              voting must close after proposals close."
                 .into(),
         )
+    } else if text.contains("notClosed") {
+        Some(format!(
+            "{subject} is open. Close it first, which ends its voting: `{bin} boards close {subject}`."
+        ))
+    } else if text.contains("electionsRunning") {
+        Some(format!(
+            "An idea on {subject} still has an election running — one that cannot close early, or \
+             one the ballot box has not answered yet. See which with `{bin} boards show {subject}`; \
+             wait for it to close, or cancel it with `{bin} elections cancel <election-id> --reason …`."
+        ))
+    } else if text.contains("stepUpRequest") || text.contains("passkey gesture") {
+        Some(format!(
+            "The VTC needs a passkey gesture from {} bound to this request: approve it in the \
+             admin console, then run the same command again.",
+            vtc.client_did
+        ))
     } else if text.contains("ownIdea") {
         Some(format!(
             "You proposed {subject}, and the board has another facilitator: they decide it."
@@ -366,6 +394,22 @@ async fn set_status(
         return Ok(print_json(&updated)?);
     }
     println!("{GREEN}{status}{RESET} {BOLD}{board_id}{RESET}");
+    if let Some(c) = serde_json::to_value(&updated)?.get("closing") {
+        println!(
+            "  voting ended: {} election(s) closed early, their counts final; {} cancelled",
+            c["closedEarly"], c["cancelled"]
+        );
+        let running: Vec<&str> = c["runningToClose"]
+            .as_array()
+            .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        if !running.is_empty() {
+            println!(
+                "  {YELLOW}still running{RESET} (cannot close early, close when their manifest says): {}",
+                running.join(", ")
+            );
+        }
+    }
     Ok(())
 }
 
@@ -501,6 +545,34 @@ async fn run_command(command: BoardsCommands, vtc: &Connected, keyring_key: &str
         }
         BoardsCommands::Close { board_id } => set_status(vtc, &key, &board_id, "closed").await,
         BoardsCommands::Archive { board_id } => set_status(vtc, &key, &board_id, "archived").await,
+        BoardsCommands::Delete { board_id, reason } => {
+            let out = c
+                .boards_delete(&board_id, &reason, &key)
+                .await
+                .map_err(|e| refusal(vtc, e, &board_id))?;
+            if is_json_output() {
+                return Ok(print_json(&out)?);
+            }
+            let v = serde_json::to_value(&out)?;
+            println!(
+                "{GREEN}deleted{RESET} {BOLD}{board_id}{RESET}: {} idea(s), {} note(s), {} election(s)",
+                v["ideasRemoved"], v["notesRemoved"], v["electionsRemoved"]
+            );
+            match (
+                v["tombstones"]["kept"].as_u64(),
+                v["tombstones"]["removeAt"].as_str(),
+            ) {
+                (Some(0) | None, _) => {
+                    println!("  no tombstone kept: nothing of its elections remains")
+                }
+                (Some(n), Some(at)) => println!(
+                    "  {n} tombstone(s) kept until {at}: each election's identifier, manifest digest \
+                     and kept board heads, so receipts stay checkable until then"
+                ),
+                (Some(n), None) => println!("  {n} tombstone(s) kept for ever"),
+            }
+            Ok(())
+        }
         BoardsCommands::Decide {
             idea_id,
             decision,
