@@ -4,6 +4,7 @@ pub mod agent_names;
 /// consent, and who may approve.
 pub mod approvals;
 pub mod audit;
+pub mod boards;
 pub mod collection;
 pub mod config;
 pub mod contexts;

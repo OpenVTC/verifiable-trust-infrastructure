@@ -453,6 +453,23 @@ async fn take_ticket(
     Ok(true)
 }
 
+/// Read `election_id` without presenting anything and take its ticket, printing nothing: for a
+/// caller taking several in one run (`pnm boards take-tickets`). True when this call took it,
+/// false when the VTA held it already. An election under a credential roll is refused by the
+/// community here (`membershipCredentialRequired`): take that one alone with
+/// `pnm elections ticket <id> --membership-credential <handle>`.
+///
+/// # Errors
+/// The community's or the VTA's refusal, with the hint `pnm elections ticket` would give.
+pub async fn ticket_for(
+    client: &VtaClient,
+    t: &VoteTarget<'_>,
+    election_id: &str,
+) -> CliResult<bool> {
+    let shown = read(client, t, "show", json!({ "electionId": election_id })).await?;
+    take_ticket(client, t, &shown, None).await
+}
+
 /// `vta/pcs/voter/register` for the election `shown` describes: the manifest and parameters
 /// exactly as the community published them, so the VTA's digest is the community's.
 fn register_payload(t: &VoteTarget<'_>, shown: &Value) -> Value {

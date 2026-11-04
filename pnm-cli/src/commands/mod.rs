@@ -15,6 +15,7 @@ pub(crate) mod audit;
 pub(crate) mod auth;
 pub(crate) mod auth_credential;
 pub(crate) mod backup;
+pub(crate) mod boards;
 pub(crate) mod bootstrap;
 pub(crate) mod collection;
 pub(crate) mod config;
