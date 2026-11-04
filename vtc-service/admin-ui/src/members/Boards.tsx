@@ -37,6 +37,7 @@ import {
   listAllBoards,
   listNotes,
   phaseOf,
+  votingOpensLater,
   proposeIdea,
   showBoard,
   takesNotes,
@@ -365,6 +366,7 @@ function BoardView({
                           ticketHeld={i.election ? tickets.held.has(i.election.electionId) : false}
                           walletKnows={tickets.ready}
                           slot={board.timetable?.find((s) => s.slotId === i.decision?.slotId)}
+                          votingFrom={votingOpensLater(board)}
                           onOpen={() => setOpenId(i.ideaId)}
                         />
                       ))}
@@ -429,7 +431,7 @@ function settledWords(i: Idea, ideas: Idea[]): string {
 
 // ── Cards ───────────────────────────────────────────────────────────────────
 
-function Meter({ idea }: { idea: Idea }) {
+function Meter({ idea, votingFrom }: { idea: Idea; votingFrom: string | null }) {
   if (idea.state === "proposed") {
     return (
       <div className="bd-meter-row">
@@ -457,7 +459,13 @@ function Meter({ idea }: { idea: Idea }) {
   const n = idea.election?.ballotsOnBoard;
   return (
     <div className="bd-meter-row">
-      <span>{n === undefined ? "Voting" : `${n} ballot${n === 1 ? "" : "s"} on the board`}</span>
+      <span>
+        {votingFrom
+          ? `Voting opens ${when(votingFrom)}`
+          : n === undefined
+            ? "Voting"
+            : `${n} ballot${n === 1 ? "" : "s"} on the board`}
+      </span>
     </div>
   );
 }
@@ -467,12 +475,14 @@ function IdeaCard({
   ticketHeld,
   walletKnows,
   slot,
+  votingFrom,
   onOpen,
 }: {
   idea: Idea;
   ticketHeld: boolean;
   walletKnows: boolean;
   slot?: { label: string; startsAt: string };
+  votingFrom: string | null;
   onOpen: () => void;
 }) {
   return (
@@ -498,7 +508,7 @@ function IdeaCard({
       </span>
       <span className="bd-idea-title">{idea.title}</span>
       <span className="bd-idea-desc">{idea.description}</span>
-      <Meter idea={idea} />
+      <Meter idea={idea} votingFrom={votingFrom} />
       <span className="bd-idea-foot">
         <span className="bd-who">{authorName(idea.proposer)}</span>
         <span className="bd-notes">
@@ -530,6 +540,7 @@ function IdeaPanel({
   onChanged: () => void;
 }) {
   const qc = useQueryClient();
+  const votingFrom = votingOpensLater(board);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [after, setAfter] = useState<string | null>(null);
   useEffect(() => {
@@ -563,7 +574,7 @@ function IdeaPanel({
       <div className="bd-scrim" onClick={onClose} aria-hidden="true" />
       <aside className="bd-drawer" role="dialog" aria-modal="true" aria-labelledby="idea-title">
         <div className="bd-drawer-head">
-          <StatePill idea={idea} />
+          <StatePill idea={idea} votingFrom={votingFrom} />
           <span className="bd-fmt">{[idea.format, idea.topic].filter(Boolean).join(" · ")}</span>
           <button ref={closeRef} type="button" className="btn btn-ghost btn-sm bd-push" onClick={onClose} aria-label="Close">
             <X size={16} aria-hidden="true" />
@@ -622,12 +633,19 @@ function IdeaPanel({
               </>
             ) : (
               <>
-                <Meter idea={idea} />
+                <Meter idea={idea} votingFrom={votingFrom} />
                 <p className="small muted">How people voted is counted when voting closes on {when(board.voting.closesAt)}.</p>
                 {idea.state === "open" &&
                   (wallet && hostDid ? (
                     <div className="actions">
-                      {ticketHeld ? (
+                      {ticketHeld && votingFrom ? (
+                        <>
+                          <span className="pill pill-ok">
+                            <TicketCheck size={12} aria-hidden="true" /> Ticket held
+                          </span>
+                          <p className="small muted">Voting opens {when(votingFrom)}. Your ticket is ready; come back then to vote.</p>
+                        </>
+                      ) : ticketHeld ? (
                         <>
                           <button type="button" className="btn btn-primary" onClick={() => vote.mutate()} disabled={vote.isPending}>
                             <Vote size={16} aria-hidden="true" /> Vote in your wallet
@@ -689,10 +707,10 @@ function IdeaPanel({
   );
 }
 
-function StatePill({ idea }: { idea: Idea }) {
+function StatePill({ idea, votingFrom }: { idea: Idea; votingFrom: string | null }) {
   switch (idea.state) {
     case "open":
-      return <span className="pill bd-pill-brand">Voting</span>;
+      return <span className="pill bd-pill-brand">{votingFrom ? "Voting soon" : "Voting"}</span>;
     case "selected":
       return <span className="pill pill-ok">Selected</span>;
     case "notSelected":
