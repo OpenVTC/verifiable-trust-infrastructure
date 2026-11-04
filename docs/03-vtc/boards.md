@@ -69,7 +69,13 @@ member's wallet, as for every election.
    the election record **uncertified**. A facilitator then selects or does not select each idea,
    optionally into a timetable slot. The decision records the result's board head and whether it
    was certified. If it departs from the board's selection rule, it needs a reason.
-6. **Close and archive.** `closed` takes no new ideas or notes; facilitators still decide.
+6. **Changing a board.** A facilitator changes the title, description, windows, topics,
+   formats, limit, selection rule and timetable with `vtc/boards/update` — in the console, **Edit
+   board** on the board's page. The audience and the voting window are fixed once voting has
+   opened (`fixedAfterVotingOpens`), and a slot a selected idea is placed in stays. A change
+   applies to ideas accepted after it: an idea already open for votes keeps the voting window its
+   election was registered with, since a registered election's window cannot move.
+7. **Close and archive.** `closed` takes no new ideas or notes; facilitators still decide.
    `archived` takes no change at all.
 
 ## From the command line
