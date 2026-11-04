@@ -2951,6 +2951,112 @@ mod tests {
         );
     }
 
+    /// `rooms/keys/welcome/0.1`, `rooms/keys/open/0.2` on an **attributed** room: a member
+    /// withdrawn and removed (`remove/0.4`), then admitted again with a fresh KeyPackage and
+    /// Welcome, joins — the removal is a prior membership, not a join. What it read before
+    /// the removal still opens, what was sealed while it was out is `removed`, what is
+    /// sealed after the re-admission opens, a second Welcome while current is
+    /// `alreadyJoined`, and `forget` discards the prior membership too.
+    #[tokio::test]
+    async fn a_member_removed_from_an_attributed_room_is_admitted_again_and_reads_on() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (m_state, _m_dir, m_did) = admitted(&o).await; // epoch 2
+        let ks = m_state.room_groups_ks.clone();
+        let member = Member::new(&o.room.did, &m_did).unwrap();
+        let open = |rec: vti_rooms::wire::SealedContent, key: &'static str| {
+            let (ks, member) = (ks.clone(), member.clone());
+            async move {
+                room_groups::open_record_detailed(
+                    &ks,
+                    &member,
+                    key,
+                    1,
+                    &rec.ciphertext,
+                    &rec.nonce,
+                    rec.epoch,
+                )
+                .await
+            }
+        };
+        let seal = |key: &'static str, body: &'static [u8]| {
+            let ks = o.state.room_groups_ks.clone();
+            let owner = om(&o);
+            async move {
+                room_groups::seal_record(&ks, &owner, key, 1, body)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let before = seal("notes/before", b"before").await;
+        assert_eq!(before.epoch, 2);
+
+        let out = remove_withdrawing(&o, &m_did, &[]).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert_eq!(out["payload"]["revocation"]["sequence"], 1, "{out}");
+        let removal = commit_of_last_mint(&o);
+        let err = room_groups::apply_commit(&ks, &member, &removal, 2, 0)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("removed this holder"), "{err}");
+
+        let during = seal("notes/during", b"during").await;
+        assert_eq!(during.epoch, 3);
+
+        // Re-admitted: a fresh KeyPackage on the member's VTA, a new leaf and Welcome.
+        let kp = room_groups::mint_key_package(&ks, &member, 3600, 0)
+            .await
+            .unwrap();
+        let out = add(&o, &m_did, &kp.key_package).await;
+        assert_eq!(out["payload"]["epoch"], 4, "{out}");
+        let welcome = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(out["payload"]["welcome"].as_str().expect("{out}"))
+                .unwrap()
+        };
+        let joined = room_groups::join(&ks, &member, &welcome, 0)
+            .await
+            .expect("a Welcome after a removal is accepted");
+        assert_eq!(joined + 1, 4);
+
+        let after = seal("notes/after", b"after").await;
+        assert_eq!(after.epoch, 4);
+
+        assert_eq!(open(before, "notes/before").await.unwrap(), b"before");
+        match open(during, "notes/during").await {
+            Err(room_groups::OpenError::Removed { epoch, removed_at }) => {
+                assert_eq!((epoch, removed_at), (3, 3))
+            }
+            other => panic!("expected Removed, got {other:?}"),
+        }
+        assert_eq!(open(after, "notes/after").await.unwrap(), b"after");
+
+        // A second Welcome while the membership is current is `alreadyJoined`.
+        assert!(matches!(
+            room_groups::join(&ks, &member, &welcome, 0).await,
+            Err(room_groups::JoinError::AlreadyJoined)
+        ));
+
+        // And `forget` discards the prior membership with the current group.
+        assert_eq!(
+            room_groups::prior_memberships(&ks, &member)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        room_groups::forget(&ks, &member).await.unwrap();
+        assert!(
+            room_groups::prior_memberships(&ks, &member)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(room_groups::load(&ks, &member).await.unwrap().is_none());
+    }
+
     fn commit_of_last_mint(o: &Owner) -> Vec<u8> {
         use base64::Engine as _;
         let mint = o

@@ -176,9 +176,12 @@ pub(super) async fn handle_welcome(
             let joined =
                 match room_member::member_as(state, auth, &req.room_id, invitation.subject()).await
                 {
-                    Ok(member) => room_groups::load(&state.room_groups_ks, &member)
+                    // A current membership only: group state a removal ended is a prior
+                    // membership (welcome/0.1), and this spent invitation is not what
+                    // admitted the member again.
+                    Ok(member) => room_groups::holds_current(&state.room_groups_ks, &member)
                         .await
-                        .is_ok_and(|g| g.is_some()),
+                        .unwrap_or(false),
                     Err(_) => false,
                 };
             if joined {

@@ -692,7 +692,7 @@ saying which; a client acts on the reason, never on the message:
 |---|---|---|---|
 | `notDelivered` (`heldEpoch`) | *"a commit has not been delivered"* | the record is **newer** than this VTA's epoch | `pnm rooms keys commit --host …`, then try again |
 | `beyondChain` (`earliestEpoch`) | *"cannot reach … the epoch key chain reaches back only to N"* | the record is **older** than any key this VTA can derive | `pnm rooms keys backfill`. If the reach does not move, the links for that stretch never reached the host, or the history was deliberately severed — nothing recovers it |
-| `removed` (`removedAtEpoch`) | *"this member was removed from the room's group at epoch N"* | you were removed, and it was sealed at or after that | nothing, and do not retry: what you read before still opens, nothing written after does, and no commit changes that |
+| `removed` (`removedAtEpoch`) | *"this member was removed from the room's group at epoch N"* | you were removed, and it was sealed at or after that — and, if you were admitted again, before you rejoined | nothing, and do not retry: what you read before still opens, nothing written while you were out does, and no commit changes that |
 
 A VTA that knows of the removal never answers `notDelivered` for an epoch at or
 after it — that reason's remedy, catching up, cannot work. At 0.1, which a VTA
@@ -789,6 +789,29 @@ fetches and applies it.
 the member already read, and on a `chained` room they keep reading the epochs
 they were in. Re-admitting them later works: fresh credentials are issued after
 the withdrawal, which does not reach them.
+
+**On the member's VTA, a removal ends a membership and a re-admission starts the
+next** (`rooms/keys/welcome/0.1`, `rooms/keys/open/0.2`). Once its VTA has applied
+the commit that removed it, the member's group state is a *prior membership*: it
+still opens what it opened, and it seals nothing — `rooms/keys/act`, `file-key`
+for sealing and a profile write answer as for a room the VTA holds nothing for.
+When the owner admits the member again (a fresh invitation, KeyPackage and
+Welcome), `keys welcome` accepts the new Welcome rather than answering
+`alreadyJoined`: the old group moves aside with its removal epoch, the new group is
+the one the member seals with, and the removal is cleared. A member removed and
+re-admitted more than once holds one prior membership per removal. Opening a record
+then goes by its epoch:
+
+- at or after the current membership's join epoch: the current group;
+- from a prior membership's join epoch up to, not including, its removal epoch:
+  that membership's group and its epoch links;
+- between a removal and the next join: `removed`, with that removal's epoch — even
+  if a backfill reached the current group's chain that far back;
+- below the first join epoch: `beyondChain`.
+
+Prior memberships are kept with the group, backed up with it, and discarded with it;
+an epoch prune drops one whose epochs all lie below the room's epoch floor. Only a
+Welcome for group state with **no** removal recorded is `alreadyJoined`.
 
 ### Withdraw credentials without removing anyone
 

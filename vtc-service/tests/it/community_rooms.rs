@@ -2847,6 +2847,44 @@ async fn joined_on_attributed_room(fix: &mut Fixture) -> (String, Party) {
     (room, alice)
 }
 
+/// The `attributed` counterpart of [`a_member_removed_at_0_2_can_be_admitted_again`], on
+/// the community's side: a member removed from a sealed room (withdrawn and dropped from
+/// the group) is offered admission again and accepts with a fresh KeyPackage, and the
+/// record says `admitted`. The member's own key holder accepting that second Welcome —
+/// the old group a prior membership, not `alreadyJoined` (`rooms/keys/welcome/0.1`) — is
+/// the VTA's, and is held end to end against a real MLS group in `vta-service`
+/// (`room_owner_group::a_member_removed_from_an_attributed_room_is_admitted_again_and_reads_on`):
+/// this harness's VTA is scripted and holds no group.
+#[tokio::test]
+async fn a_member_removed_from_an_attributed_room_can_be_admitted_again() {
+    let mut fix = fixture().await;
+    let (room, alice) = joined_on_attributed_room(&mut fix).await;
+    let (_, removed) = admin_call(
+        &mut fix,
+        REMOVE,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    assert!(removed["payload"]["epoch"].is_number(), "{removed}");
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "removed");
+
+    fix.vta.0.lock().unwrap().issue_from_now = true;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
+    let accepted = call_as(
+        &fix,
+        &alice,
+        ACCEPT,
+        json!({ "roomId": room, "keyPackage": "S1B" }),
+    )
+    .await;
+    assert!(
+        accepted["payload"]["welcome"].is_string(),
+        "a Welcome for the re-admission: {accepted}"
+    );
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "admitted");
+}
+
 /// `rooms/owner/group/remove/0.4` item 8.2: the VTA gave up an earlier removal it was
 /// settling and did nothing of this one. The administrator is told so — and what to do —
 /// nothing is recorded, and repeating the removal proceeds.
