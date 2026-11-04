@@ -990,6 +990,12 @@ pub const TASK_ROOMS_KEYS_ACT_0_10: &str =
 pub const TASK_ROOMS_KEYS_ACT_0_11: &str =
     <vti_specs::rooms::keys::act::v0_11::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `rooms/changed/0.1` — a room's host tells a watch's address that the room moved past
+/// the version its member had read to: the room and its latest version, nothing about what
+/// changed, and no response. A VTA receives it when its own DID is the address.
+pub const TASK_ROOMS_CHANGED_0_1: &str =
+    <vti_specs::rooms::changed::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/file-key/0.2` — one file's key, for the member's own client to
 /// seal or open that file itself, so file bytes never pass through the VTA. A third
 /// `unknownEpoch` reason, `removed` (with `removedAtEpoch`), marks a file sealed at or
@@ -2727,6 +2733,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_ACT_0_9,
     TASK_ROOMS_KEYS_ACT_0_10,
     TASK_ROOMS_KEYS_ACT_0_11,
+    TASK_ROOMS_CHANGED_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_2,
     TASK_ROOMS_KEYS_LABEL_0_1,

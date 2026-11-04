@@ -875,6 +875,48 @@ pub(crate) enum RoomCommands {
         to: Option<String>,
     },
 
+    /// Your name in a room — what the room's other members see beside your records. A
+    /// record of kind `memberProfile`, written by you into the room (sealed on `attributed`
+    /// and `private` rooms), and only where the room's profile lists `kind` and
+    /// `memberProfile` in its record members. It names you in this room only, and is your
+    /// own claim: nobody verifies it.
+    Name {
+        #[command(subcommand)]
+        command: RoomNameCommands,
+    },
+
+    /// Watch a room: the host sends one content-free signal (`rooms/changed`) to
+    /// `--address` the first time the room moves past `--since`, then nothing until you
+    /// watch again — so a wallet learns a room changed without polling. Needs `read`.
+    ///
+    /// The signal says only that the room moved; read the room to learn what. On a
+    /// `private` room, use an address you use for nothing else.
+    Watch {
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the host storing the room.
+        #[arg(long)]
+        host: String,
+        /// The host's DID: the request's recipient, and who the signal comes from.
+        #[arg(long)]
+        host_did: String,
+        /// The DID the signal is sent to — one whose keys you or your agent hold, reached
+        /// through its mediator.
+        #[arg(long)]
+        address: String,
+        /// The highest version of the room you have read to. Omitted, the host takes the
+        /// room's latest, and a change made since your last read is not signalled.
+        #[arg(long, conflicts_with = "cancel")]
+        since: Option<u64>,
+        /// How long the watch lasts if it does not fire, such as `7d` or `12h` (at least
+        /// 60 seconds, at most 30 days). The host may grant less.
+        #[arg(long, conflicts_with = "cancel")]
+        lease: Option<String>,
+        /// End the watch on this room and address instead.
+        #[arg(long)]
+        cancel: bool,
+    },
+
     /// Change a record's standing. Needs `curate`, which `write` does not imply.
     Curate {
         /// Record key.
@@ -1655,6 +1697,35 @@ pub(crate) enum RoomKeysCommands {
     },
 }
 
+/// `pnm rooms name …` — your own name in a room (`memberProfile`).
+#[derive(Subcommand)]
+pub(crate) enum RoomNameCommands {
+    /// Set your name in the room: one line, at most 64 characters. Writes a new version
+    /// of the name record you already hold, or your first one.
+    Set {
+        /// The name the room's other members should call you.
+        name: String,
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the host storing the room.
+        #[arg(long)]
+        host: String,
+        /// The host's DID. Needed to read the room's profile, which must permit names.
+        #[arg(long)]
+        host_did: Option<String>,
+    },
+    /// Withdraw your name in the room: a new version of your name record with an empty
+    /// name, after which readers show you as they would had you written none.
+    Clear {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+    },
+}
+
 /// `pnm rooms profile …` — the room's own profile.
 #[derive(Subcommand)]
 pub(crate) enum RoomProfileCommands {
@@ -1702,8 +1773,9 @@ pub(crate) enum RoomProfileCommands {
         #[arg(long)]
         no_emoji: bool,
         /// The optional record members the room's writers may use, comma separated:
-        /// `kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`.
-        /// Replaces the current list. List one only once every reader the room
+        /// `kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`,
+        /// and `memberProfile` (with `kind`: members may write their names — `pnm rooms
+        /// name set`). Replaces the current list. List one only once every reader the room
         /// expects accepts it — a reader that predates a member refuses records
         /// carrying it, and one that predates this list refuses the profile.
         #[arg(

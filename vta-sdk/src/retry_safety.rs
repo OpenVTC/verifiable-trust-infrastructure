@@ -710,6 +710,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_9, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_10, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_11, RetrySafe),
+    // A one-way signal this VTA only logs: nothing is stored or changed on it.
+    (trust_tasks::TASK_ROOMS_CHANGED_0_1, ReadOnly),
     // A read: names each entry's member and can carry the member's own labels.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),
     // Idempotent by specification (`rooms/keys/label/0.1` *Retry safety*): each detail is

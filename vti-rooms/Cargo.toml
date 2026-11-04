@@ -85,6 +85,8 @@ thiserror = { workspace = true }
 serde_json = { workspace = true }
 # The published schema types `updatedAt` as an RFC 3339 string.
 chrono = { workspace = true }
+# A member's name is bounded in code points after NFC (`MemberName`, `member_profile`).
+unicode-normalization = "0.1"
 
 # The record commitment (`merkle`). RFC 8785 canonicalisation so a leaf commits
 # to the record's *meaning* rather than to one serialiser's field order, and

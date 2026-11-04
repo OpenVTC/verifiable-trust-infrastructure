@@ -864,7 +864,8 @@ pub struct ProfileEdit {
     pub tags: Change<Vec<String>>,
     pub emoji: Change<String>,
     /// `recordMembers`: the optional record members the room's writers may use
-    /// (`kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`), as a set.
+    /// (`kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`), and the
+    /// record kinds they may write (`memberProfile`: a member's name), as a set.
     /// List one only once every reader the room expects accepts it.
     pub record_members: Change<Vec<String>>,
 }

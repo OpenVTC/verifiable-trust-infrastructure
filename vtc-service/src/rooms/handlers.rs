@@ -108,6 +108,25 @@ pub(crate) async fn dispatch(
     doc: TrustTask<Value>,
     presenter: &str,
 ) -> TrustTaskOutcome {
+    let moved_room = doc.payload["roomId"].as_str().map(str::to_string);
+    let outcome = dispatch_task(state, doc, presenter).await;
+    // Whatever moved the room — a put of any kind, a curation, a retraction, a prune, a
+    // profile written — fires the watches it put past their watermark, alike
+    // (`rooms/watch/0.1` Host item 6). Only after the task committed, and never failing it.
+    if outcome.status.is_success()
+        && let Some(room_id) = &moved_room
+    {
+        state.room_watches.room_moved(room_id).await;
+    }
+    outcome
+}
+
+/// [`dispatch`], without the watches.
+async fn dispatch_task(
+    state: &AppState,
+    doc: TrustTask<Value>,
+    presenter: &str,
+) -> TrustTaskOutcome {
     let ctx = RoomCtx {
         state: state.clone(),
         presenter: presenter.to_string(),
@@ -192,6 +211,7 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(super::files::handle_upload_commit_v2)
         .on_async(super::files::handle_upload_abort_v2)
         .on_async(super::files::handle_blob_get_v2)
+        .on_async(super::watch::handle_watch)
 }
 
 /// Charge an operation the room has just authorized to the presenter's budget in that
@@ -2354,6 +2374,7 @@ mod tests {
                 actions: vec!["read".into()],
                 member: Some(presenter.to_string()),
                 presented: Default::default(),
+                valid_until: None,
             })
         }
     }
@@ -3339,6 +3360,63 @@ mod tests {
         .await;
         assert!(!out.status.is_success());
         assert_eq!(payload_of(&out)["code"], "malformedRequest");
+    }
+
+    /// Records every `rooms/changed` signal; reaches every address.
+    #[derive(Default)]
+    struct Signals(std::sync::Mutex<Vec<(String, Value)>>);
+
+    #[async_trait::async_trait]
+    impl vti_rooms::watch::Signals for Signals {
+        async fn reachable(&self, _address: &str) -> bool {
+            true
+        }
+        async fn send_changed(&self, address: &str, payload: Value) -> Result<(), String> {
+            self.0.lock().unwrap().push((address.into(), payload));
+            Ok(())
+        }
+    }
+
+    /// `rooms/watch/0.1` on the VTC's host, as room-host serves it: armed as a listing is
+    /// authorized, one put fires one content-free signal and disarms the watch.
+    #[tokio::test]
+    async fn a_watch_is_signalled_once_when_a_put_moves_the_room() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+        let signals = std::sync::Arc::new(Signals::default());
+        state.room_watches.set_signals(signals.clone());
+        state.room_watches.set_signal_delay_ms(10, 20);
+
+        let watch = vti_rooms::watch::WATCH_TYPE;
+        let out = send(
+            state,
+            watch,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(),
+                    "address": "did:key:z6MkWatchAddress", "sinceVersion": 0 }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "watch: {}", payload_of(&out));
+        assert_eq!(payload_of(&out)["armed"], true);
+
+        for key in ["m1", "m2"] {
+            let out = send(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
+                json!({ "roomId": f.room.room_id, "key": key, "presentation": f.as_owner(),
+                        "cleartext": { "body": "hi" } }),
+                &f,
+            )
+            .await;
+            assert!(out.status.is_success(), "put: {}", payload_of(&out));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let sent = signals.0.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "one signal per arming: {sent:?}");
+        assert_eq!(sent[0].0, "did:key:z6MkWatchAddress");
+        assert_eq!(sent[0].1["roomId"], f.room.room_id.as_str());
     }
 
     /// Put/0.5 Host item 15, `[rooms] refuse_rewrites_by_others`: on by default, a message's

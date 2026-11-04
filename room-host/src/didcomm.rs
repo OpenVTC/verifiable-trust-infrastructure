@@ -291,6 +291,14 @@ pub async fn serve(
     let profile = atm.profile_add(&profile, false).await?;
     atm.profile_enable_websocket(&profile).await?;
 
+    // The watches' outbound leg (`rooms/changed/0.1`): this socket, and nothing else.
+    state.set_signals(Arc::new(MediatorSignals {
+        atm: atm.clone(),
+        profile: profile.clone(),
+        host_did: identity.did.clone(),
+        mediator_did: mediator_did.clone(),
+    }));
+
     let transport = DidCommTransport::new((*atm).clone(), profile.clone()).await?;
     tracing::info!(
         host_did = %identity.did,
@@ -373,6 +381,92 @@ pub async fn serve(
     }
 
     Ok(())
+}
+
+/// How this host signals a watch's address (`rooms/changed/0.1`): over the one mediator
+/// session it already holds, by the transport the address's DID document advertises — TSP
+/// before DIDComm (`vta_sdk::protocol::matching::select_protocol`), never REST, which this
+/// host does not send. One-way: the signal has no response, and a send the delivery layer
+/// refused is not retried (`rooms/changed/0.1` Producer item 5).
+struct MediatorSignals {
+    atm: Arc<ATM>,
+    profile: Arc<ATMProfile>,
+    host_did: String,
+    mediator_did: String,
+}
+
+impl MediatorSignals {
+    /// The transport both sides speak, by service `type`, or `None`.
+    async fn select(&self, address: &str) -> Option<vta_sdk::protocol::matching::ProtocolMatch> {
+        use vta_sdk::protocol::matching::{ServiceCapabilities, select_protocol};
+        let resolved = self
+            .atm
+            .get_tdk()
+            .did_resolver()
+            .resolve(address)
+            .await
+            .ok()?;
+        let doc = serde_json::to_value(&resolved.doc).ok()?;
+        let theirs = ServiceCapabilities::from_did_document(&doc);
+        let ours = ServiceCapabilities {
+            tsp: Some(self.host_did.clone()),
+            didcomm: Some(self.host_did.clone()),
+            rest: None,
+        };
+        select_protocol(&ours, &theirs, address).ok()
+    }
+}
+
+#[async_trait::async_trait]
+impl vti_rooms::watch::Signals for MediatorSignals {
+    async fn reachable(&self, address: &str) -> bool {
+        self.select(address).await.is_some()
+    }
+
+    async fn send_changed(&self, address: &str, payload: serde_json::Value) -> Result<(), String> {
+        use vta_sdk::protocol::matching::Protocol as Wire;
+        let matched = self
+            .select(address)
+            .await
+            .ok_or_else(|| format!("{address} advertises no transport this host speaks"))?;
+        let doc = vti_common::capability_client::build_document(
+            &self.host_did,
+            address,
+            vti_rooms::watch::CHANGED_TYPE,
+            payload,
+        );
+        let doc = serde_json::to_value(&doc).map_err(|e| e.to_string())?;
+        match matched.protocol {
+            Wire::Tsp => {
+                let body = serde_json::to_vec(&doc).map_err(|e| e.to_string())?;
+                vti_common::tsp_route::send_reestablishing(
+                    &self.atm,
+                    &self.profile,
+                    &self.mediator_did,
+                    address,
+                    Some(matched.peer_endpoint.as_str()),
+                    &vta_sdk::tsp_binding::wrap_envelope(&body),
+                )
+                .await
+                .map_err(|e| format!("TSP send: {e}"))
+            }
+            Wire::Didcomm => {
+                let thread = doc["id"].as_str().unwrap_or_default().to_string();
+                send_didcomm(
+                    &self.atm,
+                    &self.profile,
+                    &self.host_did,
+                    &self.mediator_did,
+                    address,
+                    doc,
+                    &thread,
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            other => Err(format!("{other} is not a transport this host signals over")),
+        }
+    }
 }
 
 /// One inbound frame, reduced to what answering it needs.

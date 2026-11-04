@@ -6,7 +6,9 @@
 //!
 //! A record may carry `kind`, `inReplyTo`, `writtenAt`, `editedAt`, and in its `file` a
 //! `width`, `height` or `preview`, only where the room's current profile lists them in
-//! `recordMembers` (`SealedRecordBody`, *When a writer may use these members*). Neither the
+//! `recordMembers` (`SealedRecordBody`, *When a writer may use these members*); a member's
+//! name — a record of kind `memberProfile` — only where it also lists `memberProfile`
+//! (`rooms/_shared/0.3` `MemberProfileRecord`). Neither the
 //! VTA sealing a body nor a host on a sealed tier checks it: it is the writer's, so it is
 //! here. [`VtaClient::room_check_record_members`] reads the profile only when a body uses
 //! one of them, applies the rule ([`record_members_permitted`] — the rule of
@@ -94,10 +96,22 @@ pub const RECORD_BODY_MEMBERS: [&str; 4] = ["kind", "inReplyTo", "writtenAt", "e
 /// (`vti_rooms::record_members::FILE_MEMBERS`).
 pub const RECORD_FILE_MEMBERS: [&str; 3] = ["width", "height", "preview"];
 
+/// The record kind of a member's name in a room (`rooms/_shared/0.3` `MemberProfileRecord`),
+/// and the `recordMembers` value that permits writing one.
+pub const MEMBER_PROFILE_KIND: &str = "memberProfile";
+
+/// The `recordMembers` values that permit a record **kind**: a record of that kind is
+/// written only where the profile lists the value as well as `kind`. `memberProfile`, a
+/// member's name in the room (`rooms/_shared/0.3` `MemberProfileRecord`;
+/// `vti_rooms::record_members::KIND_VALUES`).
+pub const RECORD_KIND_VALUES: [&str; 1] = [MEMBER_PROFILE_KIND];
+
 /// Every governed member `body` carries, by the name `recordMembers` lists it under, in a
-/// fixed order (`vti_rooms::record_members::used`).
+/// fixed order — and, last, the value its `kind` needs listed where that kind is one of
+/// [`RECORD_KIND_VALUES`] (`vti_rooms::record_members::used`).
 pub fn record_members_used(body: &Map<String, Value>) -> Vec<&'static str> {
     let file = body.get("file").and_then(Value::as_object);
+    let kind = body.get("kind").and_then(Value::as_str);
     RECORD_BODY_MEMBERS
         .iter()
         .filter(|m| body.contains_key(**m))
@@ -106,6 +120,7 @@ pub fn record_members_used(body: &Map<String, Value>) -> Vec<&'static str> {
                 .iter()
                 .filter(|m| file.is_some_and(|f| f.contains_key(**m))),
         )
+        .chain(RECORD_KIND_VALUES.iter().filter(|v| kind == Some(**v)))
         .copied()
         .collect()
 }

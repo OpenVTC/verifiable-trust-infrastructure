@@ -311,6 +311,10 @@ async fn main() -> anyhow::Result<()> {
                     Ok(n) => tracing::debug!(removed = n, "expired accepted-id records swept"),
                     Err(e) => tracing::warn!(error = %e, "accepted-id record sweep failed"),
                 }
+                // Watches whose lease ran out (`rooms/watch/0.1` Host item 5).
+                if let Err(e) = state.sweep_watches().await {
+                    tracing::warn!(error = %e, "room watch sweep failed");
+                }
             }
         });
     }

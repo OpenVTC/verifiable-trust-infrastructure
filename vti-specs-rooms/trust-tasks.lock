@@ -45,6 +45,12 @@ type_uri = "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2"
 digest = "sha256:446dd96abeeb68e7fec478918ad160cc8ab2bb010111f04a2308fe811586b40b"
 
 [[task]]
+slug = "rooms/changed"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/rooms/changed/0.1"
+digest = "sha256:3c9f1db8c91f6a31007e4747c7a915ad2f4d9be70e3a4b78c99852b2710d1ee1"
+
+[[task]]
 slug = "rooms/create"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/rooms/create/0.2"
@@ -433,3 +439,9 @@ slug = "rooms/usage"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/rooms/usage/0.1"
 digest = "sha256:1ba1d14f8a47f2b4a116a05653eb3fec8343d3c660a9d66a42bbcc4fd5feae4b"
+
+[[task]]
+slug = "rooms/watch"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/rooms/watch/0.1"
+digest = "sha256:48149377cbd009c7a71035968ec51e554c6d80c7c419a00357567a1b3ceb7194"

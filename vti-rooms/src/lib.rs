@@ -94,6 +94,10 @@ pub mod error;
 /// Files: the blob manifest everywhere; the file key and STREAM sealing behind `files`.
 pub mod files;
 pub mod lifecycle;
+/// A member's name in a room: a record of kind `memberProfile` (`rooms/_shared/0.3`
+/// `member-profile`, trust-tasks-tf #1035). The writer's and the reader's rules; no host
+/// or key holder changes for it.
+pub mod member_profile;
 /// The record commitment — a Merkle tree over a room's records, so a listing
 /// that omits one can be caught.
 ///
@@ -142,6 +146,10 @@ pub mod sealed;
 /// The room and record keyspaces, behind the `host` feature.
 #[cfg(feature = "host")]
 pub mod storage;
+/// `rooms/watch/0.1` and the `rooms/changed/0.1` signal it arms, host-neutral, behind the
+/// `host` feature: one content-free signal per arming, to an address the member names.
+#[cfg(feature = "host")]
+pub mod watch;
 pub mod wire;
 
 use serde::{Deserialize, Serialize};

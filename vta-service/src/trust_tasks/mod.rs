@@ -100,6 +100,7 @@ mod provision_integration;
 pub(crate) mod received;
 mod room_act;
 mod room_catch_up;
+pub(crate) mod room_changed;
 mod room_group;
 mod room_keys;
 mod room_label;
@@ -2825,6 +2826,12 @@ dispatch_table! {
     // notify / relay are counterparty tasks (`notifications::is_counterparty_task`):
     // the acceptance policy, not the ACL, decides what is kept (VTI-NTF-030). The
     // reads disclose who originated and relayed each notification — metadata.
+    // ─── Rooms: a watch's signal (`rooms/changed/0.1`) ────────────
+    // A counterparty task (`room_changed::is_counterparty_task`): a room's host signals
+    // the address a member armed a watch with. One-way and content-free; accepted,
+    // logged at debug and answered with nothing, since nothing here reads a room on it.
+    vta_sdk::trust_tasks::TASK_ROOMS_CHANGED_0_1 => room_changed::handle_changed
+        [ None None false ],
     vta_sdk::trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1 => notifications::handle_notify
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_NOTIFICATIONS_RELAY_0_1 => notifications::handle_relay

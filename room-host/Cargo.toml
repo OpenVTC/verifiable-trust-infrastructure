@@ -42,6 +42,8 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 anyhow = "1"
 affinidi-did-resolver-cache-sdk = { workspace = true }
+# `vti_rooms::watch::Signals` is an async trait object.
+async-trait = "0.1"
 
 # A room host and a VTC serve the same protocol, so they must speak the same
 # wire form: requests and responses are Trust Task documents, not bare JSON.
@@ -147,7 +149,12 @@ didcomm = [
     "dep:trust-tasks-didcomm",
     "dep:trust-tasks-tsp",
     "dep:futures-util",
-
+    # The watches' signal (`rooms/changed/0.1`): the workspace's transport selection by
+    # service type (`vta_sdk::protocol::matching`), the TSP binding's envelope, and the
+    # cross-mediator TSP send (`vti_common::tsp_route`).
+    "dep:vta-sdk",
+    "vta-sdk/tsp",
+    "vti-common/tsp",
 ]
 
 [dev-dependencies]
