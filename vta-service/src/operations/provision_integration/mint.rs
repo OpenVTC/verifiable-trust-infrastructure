@@ -247,7 +247,8 @@ pub(super) async fn mint_integration_via_did_key_template(
         .map_err(|e| match e {
             AppError::NotFound(_) => AppError::Validation(format!(
                 "integration template '{template_name}' is not registered on this VTA. \
-                 Register it via 'pnm did-templates create {template_name} --file <path>' \
+                 Register it via 'pnm did-templates create --file <path> --context {context}' (the file's \
+                 `name` must be '{template_name}') \
                  then retry."
             )),
             other => other,
