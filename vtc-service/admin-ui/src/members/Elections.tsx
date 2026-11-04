@@ -12,7 +12,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, TicketCheck, Vote } from "lucide-react";
 
 import { textReleaseWarning } from "@/lib/election-manifest";
+import { groupByBoard } from "@/lib/election-origin";
 
+import { listAllBoards } from "./boards-api";
 import { InstallWallet } from "./InstallWallet";
 import { Crumbs } from "./member-card";
 import {
@@ -102,14 +104,42 @@ function ElectionList({ wallet, hostDid, member }: { wallet: WalletElections; ho
     queryFn: () => wallet.list({ hostDid, ...(member ? { member } : {}) }),
     retry: false,
   });
+  // Only to name the boards elections came from; read through the portal like the Boards page.
+  // Without it every board's elections are still shown, under the board's identifier.
+  const boards = useQuery({ queryKey: ["member-boards", "all"], queryFn: listAllBoards, retry: false });
   if (list.isPending) return <p className="muted">Asking your wallet…</p>;
   if (list.isError) return <WalletError error={list.error} />;
   const elections = actionableFirst(list.data.elections);
   if (elections.length === 0) {
     return <p className="muted">There are no elections you can vote in right now.</p>;
   }
+  const titles = boards.data ? new Map(boards.data.boards.map((b) => [b.boardId, b.title])) : null;
+  // A board the member no longer sees is closed or archived to them, not necessarily deleted.
+  const grouped = groupByBoard(elections, titles, "A board no longer shown");
+  if (grouped.boards.length === 0) return <ElectionCards elections={grouped.standalone} label="Elections" />;
   return (
-    <ul className="election-list" aria-label="Elections">
+    <>
+      {grouped.standalone.length > 0 && <ElectionCards elections={grouped.standalone} label="Stand-alone elections" />}
+      {grouped.boards.map((b) => (
+        <details key={b.boardId} className="election-group" open>
+          <summary>
+            <strong>{b.title}</strong> · {b.items.length} idea{b.items.length === 1 ? "" : "s"} to vote on
+          </summary>
+          {b.known && (
+            <p className="muted">
+              <a href={`#/boards/${encodeURIComponent(b.boardId)}`}>Open the board</a>
+            </p>
+          )}
+          <ElectionCards elections={b.items} label={`${b.title} elections`} />
+        </details>
+      ))}
+    </>
+  );
+}
+
+function ElectionCards({ elections, label }: { elections: PageElection[]; label: string }) {
+  return (
+    <ul className="election-list" aria-label={label}>
       {elections.map((e) => (
         <li key={e.electionId} className="card">
           <div className="card-head">
