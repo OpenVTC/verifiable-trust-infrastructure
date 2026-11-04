@@ -2,6 +2,20 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vtn-v0.2.0...vti-vtn-v0.3.0) — 2026-11-04
+
+
+### Added
+
+- **vtc-service**: Talk to networks over vtn/* Trust Tasks ([#2422](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2422))
+
+The community's VTN client signs each request as the community (vtn/entries/show,
+  vtn/membership/{offer,acknowledge,repudiate}, the signed vtn/groups/register
+  request) instead of signing in and calling the REST routes the VTN removed.
+  Answers are read as their generated #response types.
+
+
+
 ## [0.2.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vtn-v0.1.0...vti-vtn-v0.2.0) — 2026-11-03
 
 

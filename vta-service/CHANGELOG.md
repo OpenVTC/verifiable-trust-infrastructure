@@ -2,6 +2,176 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.73.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.72.0...vta-service-v0.73.0) — 2026-11-04
+
+
+### Added
+
+- **trust-task-push**: Pushed documents state their delivery deadline as expiresAt (VTI-TRN-048) ([#2428](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2428))
+
+A pushed document stated no expiry, so a recipient accepted it for ten
+  minutes after its issuedAt. A push runs for hours or days (thirty for a
+  removal notice), so a copy a mediator held while the recipient was offline
+  was refused as stale when collected, and the engine had to keep issuing new
+  documents under VTI-TRN-046 for the delivery to land. Since #2423 a VTI
+  consumer accepts a document until its stated expiresAt, up to thirty days
+  (VTI-OPS-024, VTI-OPS-028), so stating the deadline keeps the document
+  acceptable for as long as it is pursued.
+
+  vti-common trust_task_push:
+  - `state_delivery_expiry` stamps an unsigned document's expiresAt at its
+    push's deadline, counted from issuedAt in whole seconds, keeping an earlier
+    expiry the task already states, and refusing a signed document. New
+    attempts already carry it unchanged.
+  - The engine places a document by its acceptance end (VTI-TRN-044): the
+    stated expiry, bounded by the horizon, or issuedAt + the maximum age
+    without one. It no longer issues new attempts at ten minutes for a
+    document that is still acceptable, and counts a copy collected inside its
+    stated expiry as delivered.
+
+  Stated at every push whose window outlasts the ten-minute maximum age: the
+  VTC's removal, authority-reduced, authority-reduction-pending, step-up passkey
+  and break-glass notices, its notifications, and its consent requests (the
+  action's expiry, capped at a week); the VTA's credential-exchange steps.
+  The VTA's step-up and consent pushes run five to ten minutes, inside the
+  maximum age, and are unchanged.
+
+- **idempotency**: Keep a keyed operation's record until the latest acceptance end under its key (VTI-OPS-066) ([#2426](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2426))
+
+A keyed Trust Task's idempotency record lived 24 hours (the NonDestructive
+  class TTL). The attempts at one operation are separate documents, and since
+  #2423 a document stating an expiresAt is acceptable for up to thirty days
+  (VTI-OPS-028), so an attempt arriving after the 24 hours would perform the
+  operation again. VTI-OPS-066 requires the record to last until the latest
+  acceptance end, plus the skew, of any document carrying the key that the node
+  has accepted.
+
+- **trust-tasks**: Honour a stated expiresAt up to 30 days, and keep the replay record to the acceptance end (VTI-OPS-024, VTI-OPS-028, VTI-OPS-029) ([#2423](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2423))
+
+trust-tasks-rs 0.37 (trustoverip/dtgwg-trust-tasks-tf #1021), with
+  affinidi-tdk 0.37, affinidi-messaging-sdk 0.45 (affinidi-tdk-rs #983) and
+  mediator 0.50 (affinidi-messaging-mediator #55), which move with it.
+
+  Acceptance. A document that states an expiresAt is accepted until then, up to
+  thirty days after its issuedAt, whatever the ten-minute maximum age
+  (VTI-OPS-024, VTI-OPS-028). An expiry beyond the horizon is clamped, not
+  refused. A document without one keeps the ten-minute window. The horizon is
+  `vti_common::trust_task::acceptance::EXPIRY_HORIZON`, applied by
+  `AcceptanceWindow::freshness_policy`, so every VTI consumer takes it.
+
+  Retention. Every record of an accepted document was capped at
+  issuedAt + max_age + skew, relying on the freshness check to refuse anything
+  older. Under 0.37 that check accepts a document with a later expiresAt, so
+  the record would be dropped while its document was still acceptable and a
+  replay would execute twice. One rule now decides retention for every consumer,
+  `vti_common::trust_task::acceptance::retain_until`: the acceptance end plus the
+  skew (VTI-OPS-029), bounded by the horizon. It is used by the shared receive
+  pipeline (VTA and VTC accepted-id records), the VTC's spent step-up approver
+  statements, vti-witness and room-host.
+
+  Behaviour change for producers: a document stating a long expiresAt is no
+  longer refused as stale after ten minutes. Step-up approver statements are
+  included, as VTI-OPS-028 requires of any document that states an expiry.
+
+  Not here: idempotency records still live 24 hours although a keyed document
+  can now be acceptable for 30 days (VTI-OPS-066, next step); room-host's replay
+  record is still in memory and lost on restart (VTI-OPS-029).
+
+- **vta**: Collection for the principal's identifiers — claims, the collector, collection by default off (VTI-NTF-080 – 093) ([#2421](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2421))
+
+* feat(vti-specs): pin vta/collection/{claim,release,list} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1023 and #1024: a client's
+  collection claim on a persona DID, its release, and the listing of who
+  collects for each of a context's identifiers (VTI-NTF-080 – VTI-NTF-093).
+
+
+
+### Fixed
+
+- **vta-service**: A re-admitted room member acts on the room's later grant instead of being locked out ([#2424](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2424))
+
+A member removed from a room and offered it again holds the room's first
+  AuthorityCredential and MembershipCredential beside the re-issued ones:
+  accepting stores the new credentials and nothing retires the old. The
+  presentation oracle refused any persona holding two of a kind from one
+  room, so from the accept on every action in that room failed with
+  "which one to attenuate from is not a question this can answer safely",
+  at every VTA version, with no way out short of archiving the older
+  credential by hand.
+
+  The oracle now uses, of each kind separately, the credential with the
+  latest validFrom among those in force (one not yet valid never displaces
+  one that is). That is the room's own rule rather than a guess: a removal
+  withdraws the member with a subject entry covering every credential
+  issued before its revokedAt (rooms/revocations/put, Matching), so after
+  re-admission the earlier credential is the withdrawn one. Only two
+  equally recent credentials are still refused, and the refusal now names
+  their vault ids so the holder can archive the one it does not mean.
+
+  Reported from Keyring (berkmancenter/keyring-wallet
+  docs/upstream/2026-11-rooms-findings.md, finding 1).
+
+- **contexts**: Purge every context-scoped record on delete ([#2419](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2419))
+
+vta/contexts/delete removed a context's keys, DIDs, ACL scope, DID
+  templates, app state and memory ([#2415](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2415)), but every other store that holds
+  data for a context kept its rows. Most are keyed by the context id, or by a
+  digest of it, so a context later created under the same id inherited them.
+
+  Seen with OpenVTC: a context deleted and recreated under the same id failed
+  vta/pcs/root-request with memberMismatch. The vetter engine record
+  (pcs_engine vetter:<sha256(ctx, community)>) had survived, still pinned to
+  the old member DID and to a derivation path under the old context's base.
+
+  delete_context now purges, for every context in the subtree:
+
+  - pcs_engine: vetter, applicant, voter and trustee records whose contextId
+    is the context, with the wrapped state beside each (secret:<key>, and a
+    voter's secret:voter-casts:<digest>). The keys are digests, so the purge
+    scans each record prefix and matches the record's own contextId.
+  - persona: every context-scoped prefix (pb, pc, pcr, pca, pcl, pd, plp, plb),
+    driven from PREFIX_SCOPES so a new context-scoped prefix is purged without
+    anyone remembering to; and the agent-scoped face-value edges that name one
+    of the context's local profiles.
+  - vault: credentials in the context's custody (with their index rows) and
+    vault entries, hard-deleted whatever their lifecycle state.
+  - notifications: held records with their dedup and bound rows (the sweep's
+    removal, factored out and shared).
+  - consent: grants decided in, and pending requests scoped to, the context;
+    consent_approvers: its approver bindings.
+  - external_accounts / external_secrets: each live account deleted the way
+    external/accounts/delete deletes one (secret gone, id retired).
+  - contexts: the daily quota counters (quota:<ctx>:...).
+  - imported_secrets / internal_keys: the material of each key record the
+    purge removes, as revoke_key does for an imported key.
+
+  Each store purges itself next to the code that writes it, and the counts go
+  in the deletion's log line. As in #2415 none of this is in the not-empty
+  gate: the gate must agree with preview-delete, whose wire shape has no
+  member for these, so surfacing them needs a spec revision.
+
+  Kept on purpose: the audit log; issued credentials (revoked through the DID
+  cascade, never deleted); operator policy; room groups and invitations (keyed
+  by persona DID / credential id, unreachable from a recreated context); and
+  external accounts' retired: tombstones, which hold no data and stop a
+  recreated context reusing an account id a provider-side trust policy may
+  still name.
+
+  The census is now a claim the code is held to:
+
+  - vta_keyspaces::context_delete_effect classifies every keyspace for a
+    context deletion (Purged / Retained / Lapses / Unrelated), and
+    context_delete_labels_match_the_cascade ties the Purged set to the
+    cascade's own list.
+  - did_delete_effect labelled most keyspaces Cascade (and five Blocks) though
+    the DID deletion reaches only keys, webvh, acl, sessions, issued
+    credentials and contexts. Those labels are now Orphaned, with the intended
+    effect beside each, and did_delete_labels_match_the_cascade holds
+    Cascade / Blocks / Revoke to DID_DELETE_REACHES.
+
+
+
 ## [0.72.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.71.0...vta-service-v0.72.0) — 2026-11-03
 
 
