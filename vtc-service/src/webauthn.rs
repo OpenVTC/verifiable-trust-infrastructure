@@ -53,6 +53,37 @@ use crate::error::AppError;
 /// runtime check is independent of upstream renaming `COSEAlgorithm::EDDSA`.
 pub const EDDSA_ALG: i64 = -8;
 
+/// Longest `user.name` / `user.displayName` (in bytes) sent to an
+/// authenticator. CTAP2 only requires authenticators to accept 64 bytes and
+/// some reject more outright: a YubiKey 5 (firmware 5.7.4) answers
+/// `CTAP1_ERR_INVALID_LENGTH` to a 65-byte `user.name` before it asks for a
+/// touch, which Chrome reports as "Passkey creation was cancelled".
+const MAX_AUTHENTICATOR_NAME_BYTES: usize = 64;
+
+/// What an authenticator shows a passkey as. A `did:peer` or `did:webvh` is
+/// often far longer than [`MAX_AUTHENTICATOR_NAME_BYTES`], so a long DID is
+/// shown by its two ends. Display only: the credential is bound to the DID by
+/// this service's record (and the stable `user.id`), never by this name.
+///
+/// Every registration goes through [`start_passkey_registration`], which
+/// applies this to both `user.name` and `user.displayName`.
+pub(crate) fn authenticator_name(did: &str) -> String {
+    const HEAD_BYTES: usize = 40;
+    const TAIL_BYTES: usize = 16;
+    if did.len() <= MAX_AUTHENTICATOR_NAME_BYTES {
+        return did.to_string();
+    }
+    let mut head_end = HEAD_BYTES;
+    while !did.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = did.len() - TAIL_BYTES;
+    while !did.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!("{}…{}", &did[..head_end], &did[tail_start..])
+}
+
 /// Start a passkey registration ceremony that accepts ES256, RS256,
 /// and EdDSA. The upstream default offers ES256 + RS256 — sufficient
 /// for every browser-platform authenticator. This wrapper adds EdDSA
@@ -71,8 +102,8 @@ pub fn start_passkey_registration(
     let (mut ccr, reg_state) = webauthn
         .start_passkey_registration(
             user_unique_id,
-            user_name,
-            user_display_name,
+            &authenticator_name(user_name),
+            &authenticator_name(user_display_name),
             exclude_credentials,
         )
         .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
@@ -331,6 +362,34 @@ pub fn verify_install_assertion(
 
 #[cfg(test)]
 mod tests {
+    use super::{MAX_AUTHENTICATOR_NAME_BYTES, authenticator_name};
+
+    #[test]
+    fn a_long_did_is_named_by_its_two_ends_within_webauthns_limit() {
+        assert_eq!(authenticator_name("did:key:z6Mkshort"), "did:key:z6Mkshort");
+        let exact = "a".repeat(MAX_AUTHENTICATOR_NAME_BYTES);
+        assert_eq!(authenticator_name(&exact), exact);
+        let long = format!("did:peer:2.{}", "V".repeat(900));
+        let name = authenticator_name(&long);
+        assert!(name.len() <= MAX_AUTHENTICATOR_NAME_BYTES, "{name}");
+        assert!(name.starts_with("did:peer:2."));
+    }
+
+    #[test]
+    fn the_portal_did_that_a_yubikey_rejected_now_fits() {
+        let did = "did:webvh:QmSyntheticExampleScid000000000000000000000000:dids.example.org:example-member-000001";
+        assert!(did.len() > MAX_AUTHENTICATOR_NAME_BYTES);
+        let name = authenticator_name(did);
+        assert!(name.len() <= MAX_AUTHENTICATOR_NAME_BYTES, "{name}");
+        assert!(name.ends_with("member-000001"), "{name}");
+    }
+
+    #[test]
+    fn the_limit_is_in_bytes_and_cuts_on_char_boundaries() {
+        let long = "é".repeat(100); // 2 bytes per char
+        assert!(authenticator_name(&long).len() <= MAX_AUTHENTICATOR_NAME_BYTES);
+    }
+
     use super::*;
     use uuid::Uuid;
     use vti_common::auth::passkey::build_webauthn;
