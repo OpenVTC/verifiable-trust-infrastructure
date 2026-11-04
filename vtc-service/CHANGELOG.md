@@ -2,6 +2,171 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.20.0...vtc-service-v0.21.0) — 2026-11-04
+
+
+### Added
+
+- **console**: Edit a board from its page ([#2434](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2434))
+
+A facilitator could close or archive a board in the console but change
+  nothing else; every other change took `cnm` or a hand-built
+  `vtc/boards/update`. The board's page now has **Edit board**, a form
+  filled from the board as read: title, description, audience, the
+  proposal and voting windows, topics, formats, ideas per member, the
+  selection rule and the timetable.
+
+  Only the fields that differ are sent (`boardChanges`), compared to the
+  minute since a datetime input holds whole minutes, so an untouched
+  voting window or audience never reaches the board after voting opens,
+  where it is refused as `fixedAfterVotingOpens`; the form also shows
+  both as fixed then. Timetable slots keep their identifiers, so a
+  selected idea stays placed, and a new slot takes one no other slot has
+  used. The election template is not edited here (it takes
+  `vtc.elections.manage` as well).
+
+- **trust-task-push**: Pushed documents state their delivery deadline as expiresAt (VTI-TRN-048) ([#2428](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2428))
+
+A pushed document stated no expiry, so a recipient accepted it for ten
+  minutes after its issuedAt. A push runs for hours or days (thirty for a
+  removal notice), so a copy a mediator held while the recipient was offline
+  was refused as stale when collected, and the engine had to keep issuing new
+  documents under VTI-TRN-046 for the delivery to land. Since #2423 a VTI
+  consumer accepts a document until its stated expiresAt, up to thirty days
+  (VTI-OPS-024, VTI-OPS-028), so stating the deadline keeps the document
+  acceptable for as long as it is pursued.
+
+  vti-common trust_task_push:
+  - `state_delivery_expiry` stamps an unsigned document's expiresAt at its
+    push's deadline, counted from issuedAt in whole seconds, keeping an earlier
+    expiry the task already states, and refusing a signed document. New
+    attempts already carry it unchanged.
+  - The engine places a document by its acceptance end (VTI-TRN-044): the
+    stated expiry, bounded by the horizon, or issuedAt + the maximum age
+    without one. It no longer issues new attempts at ten minutes for a
+    document that is still acceptable, and counts a copy collected inside its
+    stated expiry as delivered.
+
+  Stated at every push whose window outlasts the ten-minute maximum age: the
+  VTC's removal, authority-reduced, authority-reduction-pending, step-up passkey
+  and break-glass notices, its notifications, and its consent requests (the
+  action's expiry, capped at a week); the VTA's credential-exchange steps.
+  The VTA's step-up and consent pushes run five to ten minutes, inside the
+  maximum age, and are unchanged.
+
+- **trust-tasks**: Honour a stated expiresAt up to 30 days, and keep the replay record to the acceptance end (VTI-OPS-024, VTI-OPS-028, VTI-OPS-029) ([#2423](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2423))
+
+trust-tasks-rs 0.37 (trustoverip/dtgwg-trust-tasks-tf #1021), with
+  affinidi-tdk 0.37, affinidi-messaging-sdk 0.45 (affinidi-tdk-rs #983) and
+  mediator 0.50 (affinidi-messaging-mediator #55), which move with it.
+
+  Acceptance. A document that states an expiresAt is accepted until then, up to
+  thirty days after its issuedAt, whatever the ten-minute maximum age
+  (VTI-OPS-024, VTI-OPS-028). An expiry beyond the horizon is clamped, not
+  refused. A document without one keeps the ten-minute window. The horizon is
+  `vti_common::trust_task::acceptance::EXPIRY_HORIZON`, applied by
+  `AcceptanceWindow::freshness_policy`, so every VTI consumer takes it.
+
+  Retention. Every record of an accepted document was capped at
+  issuedAt + max_age + skew, relying on the freshness check to refuse anything
+  older. Under 0.37 that check accepts a document with a later expiresAt, so
+  the record would be dropped while its document was still acceptable and a
+  replay would execute twice. One rule now decides retention for every consumer,
+  `vti_common::trust_task::acceptance::retain_until`: the acceptance end plus the
+  skew (VTI-OPS-029), bounded by the horizon. It is used by the shared receive
+  pipeline (VTA and VTC accepted-id records), the VTC's spent step-up approver
+  statements, vti-witness and room-host.
+
+  Behaviour change for producers: a document stating a long expiresAt is no
+  longer refused as stale after ten minutes. Step-up approver statements are
+  included, as VTI-OPS-028 requires of any document that states an expiry.
+
+  Not here: idempotency records still live 24 hours although a keyed document
+  can now be acceptable for 30 days (VTI-OPS-066, next step); room-host's replay
+  record is still in memory and lost on restart (VTI-OPS-029).
+
+- **vtc-service**: Talk to networks over vtn/* Trust Tasks ([#2422](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2422))
+
+The community's VTN client signs each request as the community (vtn/entries/show,
+  vtn/membership/{offer,acknowledge,repudiate}, the signed vtn/groups/register
+  request) instead of signing in and calling the REST routes the VTN removed.
+  Answers are read as their generated #response types.
+
+- **vtc-service**: Community boards — members propose ideas and leave notes, each accepted idea is its own election (VTI-BRD-001 – VTI-BRD-080) ([#2420](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2420))
+
+* build(vti-specs-vtc): pin vtc/boards/*/0.1
+
+  The thirteen Community Boards tasks (VTI-BRD-001 – VTI-BRD-080): create, update, list and show a board; propose, update, withdraw, decide and select ideas; add, list, withdraw and hide notes. Resolved against a local build of dtgwg-trust-tasks-tf feat/vtc-boards — re-pin against trusttasks.org once that publishes.
+
+
+
+### Changed
+
+- **vtc-service**: Wallet sign-in (auth/oob/*) as the vti-oob-server crate ([#2425](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2425))
+
+* refactor(vtc-service): wallet sign-in (auth/oob/*) as the vti-oob-server crate
+
+  The auth/oob key-grant flow (a wallet approving a browser's key K_b)
+  moves out of vtc-service into a new workspace crate, so the VTN service
+  can serve the same flow instead of a copy.
+
+  The crate owns the request store and compare-and-set, the claim and
+  decision clocks, the redeem long poll and its caps, the did:key precheck
+  (T21), the carried-document checks (T7, T15) and the check order of
+  request, claim, prove, respond, redeem and cancel. A host implements
+  OobHost: records keyspace, DID, origin and name, step signer,
+  carried-proof verifiers, accepted-id record, a per-audience gate at three
+  fixed points, signingScope, audit, and redeem's completion. Audiences
+  are the host's associated type, and the default is never stored or
+  signed, so VTC rows and signatures are byte for byte unchanged. The
+  generic half of delegated signing (scope match, exclusions, record,
+  armed over the host's row and liveness) moves too.
+
+  vtc-service keeps SessionAudience, the member and admin gates,
+  PORTAL_SIGNING_SCOPE, the audit events, session and cookie minting, its
+  delegation row, the session liveness check, and the DID-document checks.
+  Behaviour is unchanged. Every existing test passes unmodified.
+
+
+
+### Fixed
+
+- **portal**: Offer a board vote only once voting opens ([#2433](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2433))
+
+An idea accepted before the board's `voting.opensAt` gets an election
+  whose voting window starts then; its ticket can be taken at once
+  (VTI-VOT-033), but a cast is refused by the voter's VTA as `notOpen`.
+  The portal offered "Vote in your wallet" for every open idea, so a
+  member who took a ticket early was sent to the wallet only to be told
+  "voting is not open".
+
+  Until voting opens the idea now reads "Voting soon" and "Voting opens
+  <date>", keeps "Take your ticket", and in place of the vote button
+  says the ticket is ready and when to come back.
+
+- **vtc,voting**: Recover a TSP relationship the peer forgot ([#2427](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2427))
+
+A ballot box restarted under a live community stopped answering it: the
+  voting service kept TSP relationships in memory, so after a restart (or
+  a reconnect, which builds a fresh ATM) it held none with the community
+  and, by TSP §7.2.2, dropped every frame unanswered. The VTC's durable
+  half still read "related", so it never re-invited, and every election
+  registration timed out for good.
+
+  Both halves are fixed:
+
+  - vtc-service: `PeerTasks::exchange` resets the TSP relationship on a
+    reply timeout (D4 of tsp-relationship-recovery.md, as the registry
+    client already does), so the caller's next attempt re-forms it through
+    `send_reestablishing`. Repair only; the caller's backoff stays the one
+    retry owner.
+  - vti-common: `IdentitySession::with_relationship_store` lets a host
+    service keep its relationships in a durable store.
+  - vti-voting-service: keeps them in `data_dir/store` (`tsp_relationships`)
+    and runs the store's maintenance loop once per process.
+
+
+
 ## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.19.0...vtc-service-v0.20.0) — 2026-11-03
 
 

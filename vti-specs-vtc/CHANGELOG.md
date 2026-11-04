@@ -2,6 +2,19 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.3.0...vti-specs-vtc-v0.3.1) — 2026-11-04
+
+
+### Added
+
+- **vtc-service**: Community boards — members propose ideas and leave notes, each accepted idea is its own election (VTI-BRD-001 – VTI-BRD-080) ([#2420](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2420))
+
+* build(vti-specs-vtc): pin vtc/boards/*/0.1
+
+  The thirteen Community Boards tasks (VTI-BRD-001 – VTI-BRD-080): create, update, list and show a board; propose, update, withdraw, decide and select ideas; add, list, withdraw and hide notes. Resolved against a local build of dtgwg-trust-tasks-tf feat/vtc-boards — re-pin against trusttasks.org once that publishes.
+
+
+
 ## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.2.0...vti-specs-vtc-v0.3.0) — 2026-11-03
 
 

@@ -2,6 +2,71 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.30.0...vta-support-v0.31.0) — 2026-11-04
+
+
+### Fixed
+
+- **contexts**: Purge every context-scoped record on delete ([#2419](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2419))
+
+vta/contexts/delete removed a context's keys, DIDs, ACL scope, DID
+  templates, app state and memory ([#2415](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2415)), but every other store that holds
+  data for a context kept its rows. Most are keyed by the context id, or by a
+  digest of it, so a context later created under the same id inherited them.
+
+  Seen with OpenVTC: a context deleted and recreated under the same id failed
+  vta/pcs/root-request with memberMismatch. The vetter engine record
+  (pcs_engine vetter:<sha256(ctx, community)>) had survived, still pinned to
+  the old member DID and to a derivation path under the old context's base.
+
+  delete_context now purges, for every context in the subtree:
+
+  - pcs_engine: vetter, applicant, voter and trustee records whose contextId
+    is the context, with the wrapped state beside each (secret:<key>, and a
+    voter's secret:voter-casts:<digest>). The keys are digests, so the purge
+    scans each record prefix and matches the record's own contextId.
+  - persona: every context-scoped prefix (pb, pc, pcr, pca, pcl, pd, plp, plb),
+    driven from PREFIX_SCOPES so a new context-scoped prefix is purged without
+    anyone remembering to; and the agent-scoped face-value edges that name one
+    of the context's local profiles.
+  - vault: credentials in the context's custody (with their index rows) and
+    vault entries, hard-deleted whatever their lifecycle state.
+  - notifications: held records with their dedup and bound rows (the sweep's
+    removal, factored out and shared).
+  - consent: grants decided in, and pending requests scoped to, the context;
+    consent_approvers: its approver bindings.
+  - external_accounts / external_secrets: each live account deleted the way
+    external/accounts/delete deletes one (secret gone, id retired).
+  - contexts: the daily quota counters (quota:<ctx>:...).
+  - imported_secrets / internal_keys: the material of each key record the
+    purge removes, as revoke_key does for an imported key.
+
+  Each store purges itself next to the code that writes it, and the counts go
+  in the deletion's log line. As in #2415 none of this is in the not-empty
+  gate: the gate must agree with preview-delete, whose wire shape has no
+  member for these, so surfacing them needs a spec revision.
+
+  Kept on purpose: the audit log; issued credentials (revoked through the DID
+  cascade, never deleted); operator policy; room groups and invitations (keyed
+  by persona DID / credential id, unreachable from a recreated context); and
+  external accounts' retired: tombstones, which hold no data and stop a
+  recreated context reusing an account id a provider-side trust policy may
+  still name.
+
+  The census is now a claim the code is held to:
+
+  - vta_keyspaces::context_delete_effect classifies every keyspace for a
+    context deletion (Purged / Retained / Lapses / Unrelated), and
+    context_delete_labels_match_the_cascade ties the Purged set to the
+    cascade's own list.
+  - did_delete_effect labelled most keyspaces Cascade (and five Blocks) though
+    the DID deletion reaches only keys, webvh, acl, sessions, issued
+    credentials and contexts. Those labels are now Orphaned, with the intended
+    effect beside each, and did_delete_labels_match_the_cascade holds
+    Cascade / Blocks / Revoke to DID_DELETE_REACHES.
+
+
+
 ## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.29.0...vta-support-v0.30.0) — 2026-11-03
 
 

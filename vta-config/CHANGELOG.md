@@ -2,6 +2,21 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.32.0...vta-config-v0.33.0) — 2026-11-04
+
+
+### Added
+
+- **vta**: Collection for the principal's identifiers — claims, the collector, collection by default off (VTI-NTF-080 – 093) ([#2421](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2421))
+
+* feat(vti-specs): pin vta/collection/{claim,release,list} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1023 and #1024: a client's
+  collection claim on a persona DID, its release, and the listing of who
+  collects for each of a context's identifiers (VTI-NTF-080 – VTI-NTF-093).
+
+
+
 ## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.31.0...vta-config-v0.32.0) — 2026-11-03
 
 
