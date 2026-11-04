@@ -789,6 +789,15 @@ textarea {
   display: grid;
   gap: 0.75rem;
 }
+/* One board's elections, under the board's name (src/lib/election-origin.ts). */
+.election-group {
+  margin: 1.25rem 0 0;
+}
+.election-group > summary {
+  cursor: pointer;
+  font-size: 1.05rem;
+  padding: 0.25rem 0;
+}
 .election-description {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

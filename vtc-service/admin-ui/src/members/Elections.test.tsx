@@ -7,6 +7,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// Board titles are read through the portal's own signed reads; nothing about elections is.
+const send = vi.fn(async (..._a: unknown[]): Promise<unknown> => {
+  throw new Error("no portal reads in this test");
+});
+vi.mock("./directory-api", async (orig) => ({
+  ...(await orig<typeof import("./directory-api")>()),
+  send: (...a: unknown[]) => send(...a),
+}));
+
+import { BOARDS_LIST_TASK } from "./boards-api";
 import { ElectionPage, ElectionsPage } from "./Elections";
 import { actionableFirst, stageOf, type PageElection, type PageElectionView } from "./wallet-elections";
 
@@ -72,6 +82,41 @@ function renderWith(node: React.ReactNode) {
 
 afterEach(() => {
   delete (window as { vtaWallet?: unknown }).vtaWallet;
+});
+
+describe("grouped by the board they came from", () => {
+  const BOARD = "brd_ff-8cTg0yX5EWSyHPcluzA";
+  const fromBoard = listed({
+    electionId: `board.${BOARD}.ida_zgA8cE7kD8Ty8Zt_Qk1-VQ`,
+    title: "Hart should buy me lunch",
+    ticketHeld: false,
+  });
+
+  it("lists stand-alone elections apart from each board's, named from the board list", async () => {
+    send.mockImplementation(async (type: unknown) => {
+      if (type === BOARDS_LIST_TASK) return { boards: [{ boardId: BOARD, title: "IIW Sessions" }] };
+      throw new Error(`unexpected ${String(type)}`);
+    });
+    withWallet({ list: vi.fn(async () => ({ elections: [fromBoard, listed()] })) });
+    renderWith(<ElectionsPage hostDid={HOST} member={ME} />);
+    const standalone = await screen.findByRole("list", { name: "Stand-alone elections" });
+    expect(standalone.textContent).toContain("AGM 2027");
+    const iiw = (await screen.findByText("IIW Sessions", { selector: "summary strong" })).closest("details")!;
+    expect(iiw.textContent).toContain("1 idea to vote on");
+    expect(iiw.textContent).toContain("Hart should buy me lunch");
+    expect(iiw.querySelector(`a[href="#/boards/${BOARD}"]`)).toBeTruthy();
+    // VTI-VOT-001: grouping adds nothing about whether anyone voted.
+    expect(screen.queryByText(/you have voted|vote (was )?(cast|recorded)/i)).toBeNull();
+  });
+
+  it("still groups when the boards cannot be read", async () => {
+    send.mockReset();
+    send.mockRejectedValue(new Error("offline"));
+    withWallet({ list: vi.fn(async () => ({ elections: [fromBoard, listed()] })) });
+    renderWith(<ElectionsPage hostDid={HOST} member={ME} />);
+    expect(await screen.findByText("Board ff-8cTg0…", { selector: "summary strong" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "AGM 2027" })).toBeTruthy();
+  });
 });
 
 describe("stages", () => {

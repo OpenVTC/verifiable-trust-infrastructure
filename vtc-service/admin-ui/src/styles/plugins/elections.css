@@ -140,3 +140,12 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* One board's elections, under the board's name (src/lib/election-origin.ts). */
+.election-group {
+  margin-top: 1rem;
+}
+.election-group > summary {
+  cursor: pointer;
+  padding: 0.25rem 0 0.5rem;
+}

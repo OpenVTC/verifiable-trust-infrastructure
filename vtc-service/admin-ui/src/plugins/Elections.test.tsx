@@ -99,6 +99,71 @@ describe("Elections", () => {
     expect(screen.getByRole("cell", { name: "Voting" })).toBeTruthy();
   });
 
+  describe("grouped by the board they came from", () => {
+    const BOARD = "brd_ff-8cTg0yX5EWSyHPcluzA";
+    const GONE = "brd_Uc7N2qLm4Rt8Vx1ZAAAAAA";
+    const row = (electionId: string, title: string, state: string) => ({
+      electionId,
+      title,
+      state,
+      votingOpensAt: manifest.votingOpensAt,
+      votingClosesAt: manifest.votingClosesAt,
+      binding: false,
+      ticketHeld: false,
+    });
+    const listed = [
+      row(`board.${BOARD}.ida_zgA8cE7kD8Ty8Zt_Qk1-VQ`, "Hart should buy me lunch", "registration"),
+      row("agm-2027", "Annual meeting", "voting"),
+      row(`board.${BOARD}.ida_Pk3Wq9Ls2Dn6Hy4BAAAAAA`, "Accessible sign-in", "voting"),
+      row(`board.${GONE}.ida_Zt5Mv8Qr1Kc7Jw3EAAAAAA`, "An old idea", "tallied"),
+    ];
+    const grouped = (boards: MockRoute) => [
+      taskRoute("https://trusttasks.org/spec/trust-task-discovery/0.3", { supportedTypes: [ELECTIONS_LIST_TASK] }),
+      taskRoute(ELECTIONS_LIST_TASK, { elections: listed }),
+      boards,
+    ];
+    const boardsList = taskRoute("https://trusttasks.org/spec/vtc/boards/list/0.1", {
+      boards: [{ boardId: BOARD, title: "IIW Sessions" }],
+    });
+
+    it("puts stand-alone elections first, then each board's, without the generated identifier", async () => {
+      mockFetch(grouped(boardsList));
+      renderWithProviders(<Elections />, { route: "/elections", path: "/elections/*" });
+      const standalone = await screen.findByRole("region", { name: "Stand-alone elections" });
+      expect(standalone.textContent).toContain("Annual meeting");
+      expect(standalone.textContent).not.toContain("Hart should buy me lunch");
+      const iiw = (await screen.findByText("IIW Sessions", { selector: "summary strong" })).closest("details")!;
+      expect(iiw.textContent).toContain("2 elections");
+      expect(iiw.textContent).toContain("1 taking tickets · 1 voting");
+      expect(iiw.textContent).toContain("Accessible sign-in");
+      expect(iiw.textContent).not.toContain("board.brd_");
+      const gone = screen.getByText("Deleted board", { selector: "summary strong" }).closest("details")!;
+      expect(gone.textContent).toContain("An old idea");
+      expect(gone.querySelector('a[href*="/boards/"]')).toBeNull();
+    });
+
+    it("filters to stand-alone elections or one board", async () => {
+      mockFetch(grouped(boardsList));
+      renderWithProviders(<Elections />, { route: "/elections", path: "/elections/*" });
+      const show = await screen.findByLabelText("Show");
+      await screen.findByRole("option", { name: "IIW Sessions (2)" });
+      fireEvent.change(show, { target: { value: "standalone" } });
+      expect(screen.queryByText("Hart should buy me lunch")).toBeNull();
+      expect(screen.getByRole("link", { name: "Annual meeting" })).toBeTruthy();
+      fireEvent.change(show, { target: { value: BOARD } });
+      expect(screen.queryByRole("link", { name: "Annual meeting" })).toBeNull();
+      expect(screen.queryByText("An old idea")).toBeNull();
+      expect(screen.getByRole("link", { name: "Hart should buy me lunch" })).toBeTruthy();
+    });
+
+    it("still groups by board when the boards cannot be read", async () => {
+      mockFetch(grouped(taskRoute("https://trusttasks.org/spec/vtc/boards/list/0.1", {}, 403)));
+      renderWithProviders(<Elections />, { route: "/elections", path: "/elections/*" });
+      expect(await screen.findByText("Board ff-8cTg0…", { selector: "summary strong" })).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Annual meeting" })).toBeTruthy();
+    });
+  });
+
   it("shows what members are told, and warns when one operator runs both", async () => {
     mockFetch(routes([taskRoute(ELECTIONS_SHOW_TASK, shown("voting"))]));
     renderWithProviders(<Elections />, { route: "/elections/agm-2027", path: "/elections/*" });

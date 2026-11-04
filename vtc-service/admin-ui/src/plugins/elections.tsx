@@ -10,7 +10,7 @@
 // Members take tickets and vote through their own VTA; nothing here can see or
 // cast a ballot, and nothing here shows who took a ticket.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, Route, Routes, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -32,7 +32,9 @@ import {
   type ElectionResult,
   type QuestionResult,
 } from "@/lib/elections-api";
+import { listBoards } from "@/lib/boards";
 import { MEMBER_OF_KIND_TEXT, textReleaseWarning } from "@/lib/election-manifest";
+import { groupByBoard, stageSummary } from "@/lib/election-origin";
 import { formatIso, shorten } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
@@ -81,6 +83,13 @@ function ElectionRoute() {
 
 function ElectionList() {
   const list = useQuery({ queryKey: [...ELECTIONS_KEY, "list"], queryFn: fetchElections });
+  // Only to name the boards elections came from: a viewer who may not list boards, or a read
+  // that fails, still sees every election, grouped under the board's identifier.
+  const boards = useQuery({ queryKey: ["boards"], queryFn: listBoards, retry: false });
+  const titles = useMemo(
+    () => (boards.data ? new Map(boards.data.map((b) => [b.boardId, b.title])) : null),
+    [boards.data],
+  );
   return (
     <div className="page">
       <header className="page-header">
@@ -98,16 +107,74 @@ function ElectionList() {
       {list.data && list.data.length === 0 && (
         <EmptyState title="No elections yet">Create one from its manifest.</EmptyState>
       )}
-      {list.data && list.data.length > 0 && <ElectionsTable items={list.data} />}
+      {list.data && list.data.length > 0 && <GroupedElections items={list.data} titles={titles} />}
     </div>
   );
 }
 
-function ElectionsTable({ items }: { items: ElectionListItem[] }) {
+const ALL = "all";
+const STANDALONE = "standalone";
+
+/**
+ * Stand-alone elections first, then one group per board its ideas' elections came from
+ * (`board.<boardId>.<ideaId>`, VTI-BRD-031). `titles` is `null` until the boards are read, or
+ * when they cannot be: the groups are then named by the board's identifier.
+ */
+function GroupedElections({ items, titles }: { items: ElectionListItem[]; titles: ReadonlyMap<string, string> | null }) {
+  const grouped = useMemo(() => groupByBoard(items, titles, "Deleted board"), [items, titles]);
+  const [show, setShow] = useState(ALL);
+  if (grouped.boards.length === 0) return <ElectionsTable items={grouped.standalone} />;
+  const label = (e: ElectionListItem) => STATE_LABEL[e.state] ?? e.state;
+  const boards = show === ALL ? grouped.boards : grouped.boards.filter((b) => b.boardId === show);
+  return (
+    <>
+      <div className="toolbar">
+        <Field label="Show">
+          <select value={show} onChange={(e) => setShow(e.target.value)} aria-label="Show">
+            <option value={ALL}>All elections</option>
+            <option value={STANDALONE}>Stand-alone only</option>
+            {grouped.boards.map((b) => (
+              <option key={b.boardId} value={b.boardId}>
+                {b.title} ({b.items.length})
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      {(show === ALL || show === STANDALONE) && grouped.standalone.length > 0 && (
+        <section aria-label="Stand-alone elections">
+          <h2>Stand-alone</h2>
+          <ElectionsTable items={grouped.standalone} />
+        </section>
+      )}
+      {show === STANDALONE && grouped.standalone.length === 0 && (
+        <EmptyState title="No stand-alone elections">Every election here came from a board.</EmptyState>
+      )}
+      {show !== STANDALONE &&
+        boards.map((b) => (
+          <details key={b.boardId} className="card election-group" open>
+            <summary>
+              <strong>{b.title}</strong> · {b.items.length} election{b.items.length === 1 ? "" : "s"}
+              <span className="muted"> · {stageSummary(b.items, label)}</span>
+            </summary>
+            {b.known && (
+              <p className="muted rooms-sub">
+                <Link to={`/boards/${encodeURIComponent(b.boardId)}`}>Open the board</Link>
+              </p>
+            )}
+            <ElectionsTable items={b.items} fromBoard />
+          </details>
+        ))}
+    </>
+  );
+}
+
+/** `fromBoard`: the rows are one board's ideas, so their generated identifier is left out. */
+function ElectionsTable({ items, fromBoard = false }: { items: ElectionListItem[]; fromBoard?: boolean }) {
   return (
     <DataTable
       columns={[
-        { key: "election", label: "Election" },
+        { key: "election", label: fromBoard ? "Idea" : "Election" },
         { key: "state", label: "State" },
         { key: "voting", label: "Voting" },
         { key: "binding", label: "Binding" },
@@ -117,7 +184,7 @@ function ElectionsTable({ items }: { items: ElectionListItem[] }) {
         <tr key={e.electionId}>
           <td>
             <Link to={encodeURIComponent(e.electionId)}>{e.title || e.electionId}</Link>
-            {e.title && (
+            {e.title && !fromBoard && (
               <div className="muted rooms-sub">
                 <code>{e.electionId}</code>
               </div>
