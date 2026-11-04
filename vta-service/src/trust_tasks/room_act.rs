@@ -1,7 +1,8 @@
-//! Acting **as** the member — `rooms/keys/act` 0.8, 0.9 and 0.10, and `rooms/keys/seal/0.2`.
-//! No earlier `act` is served. Every client in this workspace sends 0.10; `pnm-browser-plugin`
-//! sends 0.8, which keeps its own table until the plugin moves, and 0.9 stays served for a
-//! client not yet moved.
+//! Acting **as** the member — `rooms/keys/act` 0.8 to 0.11, and `rooms/keys/seal` 0.2 and
+//! 0.3. No earlier `act` is served. Every client in this workspace sends act 0.10 and seal
+//! 0.2; `pnm-browser-plugin` sends act 0.8, which keeps its own table until the plugin moves,
+//! and 0.9 stays served for a client not yet moved. Act 0.11 and seal 0.3 (trust-tasks-tf
+//! #1027) are served for a client writing messages, replies and reactions.
 //!
 //! The member's own client (a `pnm` session, a wallet extension, a phone) holds no key of
 //! the persona the room admitted. These two tasks are how it writes and reads as that
@@ -215,9 +216,31 @@ pub(super) async fn handle_act_v0_10(
     .await
 }
 
+/// `rooms/keys/act/0.11`: 0.10, with `rooms/records/put/0.5` (`write`) and
+/// `rooms/records/list/0.6` and `rooms/records/get/0.3` (`read`) in the table, so a member
+/// writes a message or a reply to an open room and reads what its readers' rules need
+/// (trust-tasks-tf #1027). Completed exactly as their predecessors are: the `cleartext` is
+/// signed unaltered, and neither its new members nor the room's `recordMembers` are checked
+/// here — that is the writer's rule (put/0.5 Producer item 11).
+pub(super) async fn handle_act_v0_11(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_act(
+        state,
+        auth,
+        doc,
+        room_act::actable_0_11,
+        room_act::is_community_type_0_10,
+    )
+    .await
+}
+
 /// One `rooms/keys/act` request, against the closed table of the version it names
-/// (Recipient item 1). 0.10 extends 0.9, which extends 0.8 — the same request, response and
-/// error codes — so all three are read and answered as 0.10's types; only the tables differ.
+/// (Recipient item 1). 0.11 extends 0.10, which extends 0.9 and 0.8 — the same request,
+/// response and error codes — so all are read and answered as 0.11's types; only the tables
+/// differ.
 async fn handle_act(
     state: &AppState,
     auth: &AuthClaims,
@@ -225,7 +248,7 @@ async fn handle_act(
     actable: fn(&str) -> Option<Option<&'static str>>,
     community: fn(&str) -> bool,
 ) -> TrustTaskOutcome {
-    use vti_specs::rooms::keys::act::v0_10 as spec;
+    use vti_specs::rooms::keys::act::v0_11 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -506,7 +529,7 @@ async fn complete_offer(
     room_id: Option<&str>,
     document: Value,
 ) -> Result<room_act::Completed, TrustTaskOutcome> {
-    use vti_specs::rooms::keys::act::v0_10::error_codes as codes;
+    use vti_specs::rooms::keys::act::v0_11::error_codes as codes;
 
     // Item 2b: the named `issuer`, never one picked for the caller — not the only persona
     // held, not one inferred from the offer.
@@ -593,13 +616,50 @@ fn decode_b64(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
 }
 
 /// `rooms/keys/seal/0.2`. Without `signAsPrincipal` it is 0.1; with it, the body is signed
-/// as its `author` — a member the caller acts as — before it is sealed.
+/// as its `author` — a member the caller acts as — before it is sealed. A body carrying a
+/// member `recordMembers` governs is refused `bodyInvalid`, as a 0.2 key holder refuses it
+/// (`rooms/keys/seal/0.3`, *What changed from 0.2*): 0.3 is how a writer learns that its key
+/// holder accepts them, so 0.2 never does.
 pub(super) async fn handle_seal_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use vti_specs::rooms::keys::seal::v0_2 as spec;
+    handle_seal(state, auth, doc, BodyMembers::V0_2).await
+}
+
+/// `rooms/keys/seal/0.3`: 0.2, accepting under `signAsPrincipal` a body carrying `kind`,
+/// `inReplyTo`, `writtenAt` or `editedAt`, or a `file` with `width`, `height` or `preview`
+/// (Recipient item 3; trust-tasks-tf #1027). Each is checked against its schema and signed as
+/// given. Not against the room's `recordMembers`: that is the writer's rule, and the
+/// specification says the key holder does not apply it.
+pub(super) async fn handle_seal_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_seal(state, auth, doc, BodyMembers::V0_3).await
+}
+
+/// Which `SealedRecordBody` members a `rooms/keys/seal` version accepts under
+/// `signAsPrincipal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyMembers {
+    /// 0.2: the base set and provenance; none of the members `recordMembers` governs.
+    V0_2,
+    /// 0.3: 0.2's, and every member `recordMembers` governs.
+    V0_3,
+}
+
+/// One `rooms/keys/seal` request. 0.3 extends 0.2 — the same request, response and error
+/// codes — so both are read and answered as 0.3's types; only the bodies they accept differ.
+async fn handle_seal(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    members: BodyMembers,
+) -> TrustTaskOutcome {
+    use vti_specs::rooms::keys::seal::v0_3 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -637,7 +697,7 @@ pub(super) async fn handle_seal_v0_2(
     let key = req.key.as_str();
 
     let (member, plaintext) = if sign {
-        let body = match unsigned_body(&plaintext) {
+        let body = match unsigned_body(&plaintext, members) {
             Ok(b) => b,
             Err(why) => {
                 return reject_declared(&doc, spec::error_codes::BODY_INVALID, why);
@@ -793,12 +853,19 @@ const BODY_MEMBERS: &[&str] = &[
     "validFor",
     "validUntil",
     "file",
+    // What a record is to a reader, what it answers, when it was written and edited
+    // (trust-tasks-tf #1027): accepted from `rooms/keys/seal/0.3` only (`BodyMembers`).
+    "kind",
+    "inReplyTo",
+    "writtenAt",
+    "editedAt",
 ];
 const BODY_REQUIRED: &[&str] = &["roomId", "key", "version", "author"];
 
 /// Decode an unsigned `SealedRecordBody` (`bodyInvalid` otherwise): JSON, an object, no
-/// `proof`, no unknown member, every required one present and of the right shape.
-fn unsigned_body(plaintext: &[u8]) -> Result<Value, String> {
+/// `proof`, no member `members` does not accept, every required one present and of the right
+/// shape.
+fn unsigned_body(plaintext: &[u8], members: BodyMembers) -> Result<Value, String> {
     let value: Value =
         serde_json::from_slice(plaintext).map_err(|e| format!("the body is not JSON: {e}"))?;
     let obj = value
@@ -809,6 +876,20 @@ fn unsigned_body(plaintext: &[u8]) -> Result<Value, String> {
     }
     if let Some(unknown) = obj.keys().find(|k| !BODY_MEMBERS.contains(&k.as_str())) {
         return Err(format!("the body carries an unknown member `{unknown}`"));
+    }
+    match members {
+        // A 0.2 key holder predates them, inside `file` too: refused, never signed.
+        BodyMembers::V0_2 => {
+            if let Some(m) = vti_rooms::record_members::used(obj).first() {
+                return Err(format!(
+                    "the body carries `{m}`, which rooms/keys/seal/0.2 does not accept; \
+                     send rooms/keys/seal/0.3"
+                ));
+            }
+        }
+        // Their shape is the specification's; whether the room's writers may use them is
+        // the writer's to know, and not checked here (Recipient item 3).
+        BodyMembers::V0_3 => vti_rooms::record_members::check(obj)?,
     }
     if let Some(missing) = BODY_REQUIRED.iter().find(|k| !obj.contains_key(**k)) {
         return Err(format!("the body lacks `{missing}`"));
@@ -1124,7 +1205,7 @@ mod tests {
                 "{out}"
             );
             assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_11::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.3 response");
@@ -1200,7 +1281,7 @@ mod tests {
                 completed["proof"]["proofPurpose"], "authentication",
                 "{out}"
             );
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_11::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.8 response");
@@ -1350,7 +1431,7 @@ mod tests {
             "{out}"
         );
         assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_11::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.4 response");
@@ -1428,7 +1509,7 @@ mod tests {
             out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_8)),
             "{out}"
         );
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_11::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.2 response");
@@ -2159,6 +2240,134 @@ mod tests {
         // And the good one seals.
         let out = seal(&f.state, &client, payload(&good, 1)).await;
         assert!(out["payload"]["sealed"]["ciphertext"].is_string(), "{out}");
+    }
+
+    async fn seal_v0_3(state: &AppState, auth: &AuthClaims, payload: Value) -> Value {
+        body(
+            handle_seal_v0_3(
+                state,
+                auth,
+                request(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_3, payload),
+            )
+            .await,
+        )
+    }
+
+    /// **seal/0.3 accepts what 0.2 refuses** (Recipient item 3, trust-tasks-tf #1027): a
+    /// message answering another record, with when it was written and edited, and a file
+    /// carrying an image's size and preview. 0.2 refuses each of them `bodyInvalid`; 0.3 signs
+    /// the body as given — every member kept, under the persona's proof — and seals it. It
+    /// does not consult the room's `recordMembers`: this room has no profile at all.
+    #[tokio::test]
+    async fn seal_v0_3_accepts_what_0_2_refuses_and_signs_it_as_given() {
+        let f = fixture(&["read", "write"]).await;
+        found_group(&f, &f.alice.did).await;
+        let client = alice_client();
+        let payload = |body: &Value| {
+            json!({
+                "roomId": f.room.did, "key": KEY, "version": 1,
+                "plaintext": b64(body), "signAsPrincipal": true,
+            })
+        };
+        let base = json!({ "roomId": f.room.did, "key": KEY, "version": 1, "author": f.alice.did });
+        let with = |member: &str, value: Value| {
+            let mut b = base.clone();
+            b[member] = value;
+            b
+        };
+        let file = |member: &str, value: Value| {
+            let mut manifest = json!({ "fileId": "A".repeat(43), "name": "photo.png" });
+            manifest[member] = value;
+            with("file", manifest)
+        };
+        let governed = [
+            with("kind", json!("message")),
+            with(
+                "inReplyTo",
+                json!({ "key": "giXFLTGBdnnQJRoIsktuIg", "version": 2 }),
+            ),
+            with("writtenAt", json!("2026-01-01T00:00:00Z")),
+            with("editedAt", json!("2026-01-01T00:05:00.5Z")),
+            file("width", json!(640)),
+            file("height", json!(480)),
+            file(
+                "preview",
+                json!({ "mediaType": "image/webp", "data": "UklGRhIAAABXRUJQ" }),
+            ),
+        ];
+        for body in &governed {
+            let out = seal(&f.state, &client, payload(body)).await;
+            assert_eq!(
+                code(&out),
+                "rooms/keys/seal:bodyInvalid",
+                "0.2: {body} {out}"
+            );
+            let out = seal_v0_3(&f.state, &client, payload(body)).await;
+            assert!(
+                out["payload"]["sealed"]["ciphertext"].is_string(),
+                "0.3: {body} {out}"
+            );
+        }
+
+        // All of them at once, opened again: signed as the persona, every member as sent.
+        let mut message = with("kind", json!("message"));
+        message["body"] = json!("Do not reprice before renewal.");
+        message["inReplyTo"] = json!({ "key": "giXFLTGBdnnQJRoIsktuIg" });
+        message["writtenAt"] = json!("2026-01-01T00:00:00Z");
+        let out = seal_v0_3(&f.state, &client, payload(&message)).await;
+        let sealed = &out["payload"]["sealed"];
+        let opened = room_groups::open_record(
+            &f.state.room_groups_ks,
+            &Member::new(&f.room.did, &f.alice.did).unwrap(),
+            KEY,
+            1,
+            sealed["ciphertext"].as_str().unwrap(),
+            sealed["nonce"].as_str().unwrap(),
+            sealed["epoch"].as_u64().unwrap() as u32,
+        )
+        .await
+        .unwrap();
+        let mut signed: Value = serde_json::from_slice(&opened).unwrap();
+        assert!(signed["proof"].is_object(), "{signed}");
+        signed.as_object_mut().unwrap().remove("proof");
+        assert_eq!(signed, message);
+    }
+
+    /// seal/0.3 checks each new member's shape, and still refuses what 0.2 refuses: an
+    /// unknown member is unknown in both.
+    #[tokio::test]
+    async fn seal_v0_3_refuses_a_malformed_member() {
+        let f = fixture(&["read", "write"]).await;
+        found_group(&f, &f.alice.did).await;
+        let client = alice_client();
+        let base = json!({ "roomId": f.room.did, "key": KEY, "version": 1, "author": f.alice.did });
+        for (member, value) in [
+            ("kind", json!("Message")),
+            ("kind", json!("")),
+            ("inReplyTo", json!("giXFLTGBdnnQJRoIsktuIg")),
+            ("inReplyTo", json!({ "key": "k", "version": 0 })),
+            ("writtenAt", json!("2026-01-01T09:00:00+09:00")),
+            ("editedAt", json!("2026-01-01")),
+            ("file", json!({ "width": 0 })),
+            (
+                "file",
+                json!({ "preview": { "mediaType": "image/svg+xml", "data": "PHN2Zz4" } }),
+            ),
+            ("colour", json!("blue")),
+        ] {
+            let mut body = base.clone();
+            body[member] = value;
+            let out = seal_v0_3(
+                &f.state,
+                &client,
+                json!({
+                    "roomId": f.room.did, "key": KEY, "version": 1,
+                    "plaintext": b64(&body), "signAsPrincipal": true,
+                }),
+            )
+            .await;
+            assert_eq!(code(&out), "rooms/keys/seal:bodyInvalid", "{body} {out}");
+        }
     }
 
     /// Without `signAsPrincipal`, 0.2 is 0.1: the bytes are sealed exactly as given.

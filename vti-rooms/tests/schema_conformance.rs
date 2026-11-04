@@ -30,6 +30,10 @@
 //! wants plain strings and `u64`, and a storage layer should not be forced through a
 //! builder. Agreeing on the wire is the requirement; agreeing on the Rust shape is not.
 
+// put/0.4, get/0.2 and list/0.5 are what hosts serve until they move to put/0.5, get/0.3
+// and list/0.6 (trust-tasks-tf #1027); their conformance holds until then.
+#![allow(deprecated)]
+
 use serde_json::{Value, json};
 use trust_tasks_rs::validate::ValidatedPayload;
 use vti_rooms::wire::*;

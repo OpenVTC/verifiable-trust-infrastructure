@@ -353,7 +353,11 @@ async fn admit_at(s: &Sealed, key_path: &str, actions: &[&str]) -> Vta {
     let welcome = {
         use base64::Engine as _;
         base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(out["payload"]["welcome"].as_str().expect("{out}"))
+            .decode(
+                out["payload"]["welcome"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{out}")),
+            )
             .unwrap()
     };
     room_groups::join(
@@ -529,6 +533,62 @@ async fn an_advance_re_writes_the_profile_under_the_new_epoch() {
     assert_eq!(got["payload"]["epoch"], 3);
     assert_eq!(got["payload"]["stale"], false);
     assert_eq!(got["payload"]["profile"], board());
+}
+
+/// **`recordMembers` survives every advance.** The owner's key holder re-writes the profile
+/// under the epoch each advance moves to, and must carry `recordMembers` through unchanged
+/// (`RoomProfile.recordMembers`, *Turning them on*, step 2): one that dropped it would
+/// silently turn the room's record members off at the next removal. An admission and a
+/// renewal here; a removal takes the same read-before and re-write-after
+/// (`room_owner_group::handle_remove_v0_4`), which this fixture cannot drive — its room's
+/// signing key is not the room DID's, so the host refuses the withdrawal a removal sends.
+#[tokio::test]
+async fn an_advance_carries_record_members_into_the_new_epoch() {
+    let s = sealed_room().await;
+    let profile = json!({
+        "name": "Deal room",
+        "recordMembers": ["kind", "inReplyTo", "writtenAt", "editedAt", "width", "height",
+                          "preview"],
+    });
+    write_profile(&s.owner, &s.room.did, &s.host, profile.clone()).await;
+    let before = read(&s.owner, &s.room.did, &s.host).await;
+    assert_eq!(before["payload"]["profile"], profile, "{before}");
+    assert_eq!(before["payload"]["epoch"], 1, "{before}");
+
+    // An admission advances the room to epoch 2.
+    let _member = admit(&s, &["read", "write"]).await;
+    let admitted = read(&s.owner, &s.room.did, &s.host).await;
+    assert_eq!(admitted["payload"]["epoch"], 2, "{admitted}");
+    assert_eq!(
+        admitted["payload"]["stale"], false,
+        "re-written under epoch 2"
+    );
+    assert_eq!(
+        admitted["payload"]["profile"], profile,
+        "carried through the admission"
+    );
+
+    // A renewal to epoch 3.
+    let renewed = body(
+        super::super::room_owner_group::handle_renew_v0_2(
+            &s.owner.state,
+            &admin(),
+            request(
+                vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
+                json!({ "roomId": s.room.did, "host": s.host.did }),
+            ),
+        )
+        .await,
+    );
+    assert_eq!(renewed["payload"]["epoch"], 3, "{renewed}");
+    let after = read(&s.owner, &s.room.did, &s.host).await;
+    assert_eq!(after["payload"]["status"], "found", "{after}");
+    assert_eq!(after["payload"]["epoch"], 3);
+    assert_eq!(after["payload"]["stale"], false, "re-written under epoch 3");
+    assert_eq!(
+        after["payload"]["profile"], profile,
+        "recordMembers carried through unchanged"
+    );
 }
 
 /// Clearing retracts the current epoch's record (curate at the host), and the walk stops

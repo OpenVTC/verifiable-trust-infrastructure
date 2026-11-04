@@ -117,6 +117,10 @@ pub mod profile;
 /// be used for, and when it lapses (trust-tasks-tf #865). Display and weighting, never
 /// authority; expiry is a reader's rule.
 pub mod provenance;
+/// A record's kind, what it answers, when it was written and edited, and an image's size and
+/// preview — the members a room's profile governs (`recordMembers`, trust-tasks-tf #1027).
+/// Description, never authority; whether a writer may use them is the writer's rule.
+pub mod record_members;
 /// A room's record retention, what it makes eligible, and the mark a prune leaves
 /// (trust-tasks-tf #868).
 pub mod record_retention;

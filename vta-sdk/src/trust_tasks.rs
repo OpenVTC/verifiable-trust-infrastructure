@@ -917,6 +917,7 @@ pub const TASK_ROOMS_KEYS_READ_0_1: &str = "https://trusttasks.org/spec/rooms/ke
 ///
 /// Never returns bodies; that is a property of the task rather than of the tier,
 /// and is why browsing and reading are two. Auth: `roomOpen` capability.
+#[allow(deprecated)] // superseded by 0.4, which this VTA does not serve yet
 pub const TASK_ROOMS_KEYS_BROWSE_0_3: &str =
     <vti_specs::rooms::keys::browse::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -925,8 +926,17 @@ pub const TASK_ROOMS_KEYS_BROWSE_0_3: &str =
 /// record body as its `author` (a member the caller acts as) before sealing it, so the
 /// record is attributed to the member rather than to the client that wrote it. Auth:
 /// `roomOpen` capability; `signAsPrincipal` is refused to a delegate.
+#[allow(deprecated)] // superseded by 0.3, and still served and sent
 pub const TASK_ROOMS_KEYS_SEAL_0_2: &str =
     <vti_specs::rooms::keys::seal::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/seal/0.3` — [`TASK_ROOMS_KEYS_SEAL_0_2`], accepting under
+/// `signAsPrincipal` a body carrying `kind`, `inReplyTo`, `writtenAt` or `editedAt`, or a
+/// file with `width`, `height` or `preview`, which 0.2 refuses `bodyInvalid`. The key holder
+/// does not check them against the room's `recordMembers`: that is the writer's rule. A VTA
+/// serves both; this SDK still sends 0.2.
+pub const TASK_ROOMS_KEYS_SEAL_0_3: &str =
+    <vti_specs::rooms::keys::seal::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/act/0.8` — the member's own client hands the VTA an unsigned
 /// host-bound room request, or a request to a community about the rooms it offers the
@@ -953,8 +963,16 @@ pub const TASK_ROOMS_KEYS_ACT_0_9: &str =
 /// of the community's rooms stands (archived, scheduled for removal, removed) and which of
 /// their admissions are `suspended`. The version this SDK sends; a VTA still serves 0.9,
 /// and 0.8, which `pnm-browser-plugin` sends.
+#[allow(deprecated)] // superseded by 0.11, and still served and sent
 pub const TASK_ROOMS_KEYS_ACT_0_10: &str =
     <vti_specs::rooms::keys::act::v0_10::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/act/0.11` — [`TASK_ROOMS_KEYS_ACT_0_10`], with
+/// `rooms/records/put/0.5` (`write`), `rooms/records/list/0.6` and `rooms/records/get/0.3`
+/// (`read`) in its table, so a member writes a message, a reply or a reaction to an open
+/// room. A VTA serves it beside 0.10, which this SDK still sends.
+pub const TASK_ROOMS_KEYS_ACT_0_11: &str =
+    <vti_specs::rooms::keys::act::v0_11::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/file-key/0.2` — one file's key, for the member's own client to
 /// seal or open that file itself, so file bytes never pass through the VTA. A third
@@ -2686,9 +2704,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_READ_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_3,
     TASK_ROOMS_KEYS_SEAL_0_2,
+    TASK_ROOMS_KEYS_SEAL_0_3,
     TASK_ROOMS_KEYS_ACT_0_8,
     TASK_ROOMS_KEYS_ACT_0_9,
     TASK_ROOMS_KEYS_ACT_0_10,
+    TASK_ROOMS_KEYS_ACT_0_11,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_2,
     TASK_ROOMS_KEYS_LABEL_0_1,

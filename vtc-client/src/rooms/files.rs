@@ -30,6 +30,8 @@ use crate::{VtcClient, VtcError};
 pub use blob_get_v2::Response as BlobGetV2Response;
 pub use blob_get_v2::TransferTarget as ReadTarget;
 pub use download_chunk::Response as DownloadChunkResponse;
+#[allow(deprecated)]
+// get/0.3 adds only host-recorded times and author, which this client does not read yet
 pub use get_v2::Response as GetRecordV2Response;
 #[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
 pub use put_v3::Response as PutRecordV3Response;
@@ -350,6 +352,7 @@ impl VtcClient {
     ///
     /// On a sealed tier the body is still ciphertext; open it through the member's VTA and
     /// check it with [`super::body::verify_record_body`] before using anything in it.
+    #[allow(deprecated)] // get/0.3 adds only host-recorded times and author, which this client does not read yet
     pub async fn get_record_v2(
         &self,
         session: &RoomSession,

@@ -1660,6 +1660,20 @@ pub(crate) enum RoomProfileCommands {
         /// Drop the emoji.
         #[arg(long)]
         no_emoji: bool,
+        /// The optional record members the room's writers may use, comma separated:
+        /// `kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`.
+        /// Replaces the current list. List one only once every reader the room
+        /// expects accepts it — a reader that predates a member refuses records
+        /// carrying it, and one that predates this list refuses the profile.
+        #[arg(
+            long = "record-members",
+            value_delimiter = ',',
+            conflicts_with = "no_record_members"
+        )]
+        record_members: Vec<String>,
+        /// Drop the list: writers may use none of the optional record members.
+        #[arg(long)]
+        no_record_members: bool,
         #[arg(long)]
         member: Option<String>,
     },

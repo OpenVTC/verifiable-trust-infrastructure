@@ -763,6 +763,7 @@ fn prune_payload(
     payload
 }
 
+#[allow(deprecated)] // list/0.5 is what hosts serve until they move to 0.6
 fn is_room_read(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
     use vti_specs::rooms;

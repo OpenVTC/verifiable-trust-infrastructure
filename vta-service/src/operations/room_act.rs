@@ -176,6 +176,7 @@ pub fn actable_0_8(type_uri: &str) -> Option<Option<&'static str>> {
 
 /// The rows `rooms/keys/act/0.9` adds to 0.8's table: `rooms/records/put/0.4` in the put
 /// row, `write`, so a member writes an open room's file record (trust-tasks-tf #990).
+#[allow(deprecated)] // rooms/keys/act/0.9 names put 0.4, superseded by 0.5
 pub const ACT_TABLE_0_9_ADDS: &[ActRow] =
     &[(spec::records::put::v0_4::Payload::TYPE_URI, Some("write"))];
 
@@ -189,6 +190,23 @@ pub fn actable_0_9(type_uri: &str) -> Option<Option<&'static str>> {
 /// type ([`is_community_type_0_10`]) and no host-bound one.
 pub fn actable_0_10(type_uri: &str) -> Option<Option<&'static str>> {
     actable_0_9(type_uri)
+}
+
+/// The rows `rooms/keys/act/0.11` adds to 0.10's table (trust-tasks-tf #1027), each in the
+/// row of the versions it already lists and on the same terms: `rooms/records/put/0.5`
+/// (`write`), `rooms/records/list/0.6` and `rooms/records/get/0.3` (`read`). The recipient
+/// signs what the producer built, unaltered; it does not read `kind`, `inReplyTo`,
+/// `writtenAt` or `editedAt`, nor check the write against the room's `recordMembers`.
+pub const ACT_TABLE_0_11_ADDS: &[ActRow] = &[
+    (spec::records::put::v0_5::Payload::TYPE_URI, Some("write")),
+    (spec::records::list::v0_6::Payload::TYPE_URI, Some("read")),
+    (spec::records::get::v0_3::Payload::TYPE_URI, Some("read")),
+];
+
+/// The row of `rooms/keys/act/0.11`'s table for `type_uri`: 0.10's, and
+/// [`ACT_TABLE_0_11_ADDS`]. The community types are 0.10's unchanged.
+pub fn actable_0_11(type_uri: &str) -> Option<Option<&'static str>> {
+    row(ACT_TABLE_0_11_ADDS, type_uri).or_else(|| actable_0_10(type_uri))
 }
 
 fn row(table: &[ActRow], type_uri: &str) -> Option<Option<&'static str>> {
@@ -424,6 +442,7 @@ mod tests {
 
     /// 0.9's table is 0.8's and `rooms/records/put/0.4` as `write`; 0.8's does not name it.
     #[test]
+    #[allow(deprecated)] // the tables of 0.9 and 0.10 name put 0.4
     fn act_0_9_adds_put_0_4_to_0_8s_table() {
         let put_0_4 = spec::records::put::v0_4::Payload::TYPE_URI;
         assert_eq!(actable_0_8(put_0_4), None);
@@ -444,6 +463,7 @@ mod tests {
     /// 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.8 and 0.9 do
     /// not name it, and every type they complete 0.10 completes on the same terms.
     #[test]
+    #[allow(deprecated)] // the tables of 0.9 and 0.10 name put 0.4
     fn act_0_10_adds_memberships_list_0_2() {
         assert!(!is_community_type_0_8(MEMBERSHIPS_LIST_0_2));
         assert!(is_community_type_0_10(MEMBERSHIPS_LIST_0_2));
@@ -461,6 +481,26 @@ mod tests {
             Some(Some("write"))
         );
         assert_eq!(actable_0_10(MEMBERSHIPS_LIST_0_2), None);
+    }
+
+    /// 0.11 adds put/0.5 (`write`), list/0.6 and get/0.3 (`read`); 0.10 names none of them,
+    /// and every type 0.10 completes 0.11 completes on the same terms.
+    #[test]
+    fn act_0_11_adds_put_0_5_list_0_6_and_get_0_3() {
+        let put = spec::records::put::v0_5::Payload::TYPE_URI;
+        let list = spec::records::list::v0_6::Payload::TYPE_URI;
+        let get = spec::records::get::v0_3::Payload::TYPE_URI;
+        assert_eq!(actable_0_11(put), Some(Some("write")));
+        assert_eq!(actable_0_11(&format!("{put}#request")), Some(Some("write")));
+        assert_eq!(actable_0_11(list), Some(Some("read")));
+        assert_eq!(actable_0_11(get), Some(Some("read")));
+        for t in [put, list, get] {
+            assert_eq!(actable_0_10(t), None, "0.10 does not name {t}");
+        }
+        for (t, action) in ACT_TABLE_0_8.iter().chain(ACT_TABLE_0_9_ADDS) {
+            assert_eq!(actable_0_11(t), Some(*action), "{t}");
+        }
+        assert_eq!(actable_0_11(MEMBERSHIPS_LIST_0_2), None);
     }
 
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),

@@ -120,6 +120,7 @@ impl VtaClient {
     /// associated data. The host assigns versions from a room-wide counter, so
     /// a put that lands at another version does not open; the writer re-seals
     /// at the version the host reports and writes again.
+    #[allow(deprecated)] // seal/0.3 is served beside it; this SDK moves to it in a later PR
     pub async fn room_seal(
         &self,
         room_id: &str,
@@ -159,6 +160,7 @@ impl VtaClient {
     /// attributed to the member rather than to this client. An agent acting under an
     /// attenuated chain signs its own body and uses [`VtaClient::room_seal`] instead; the
     /// VTA refuses it this flag.
+    #[allow(deprecated)] // seal/0.3 is served beside it; this SDK moves to it in a later PR
     pub async fn room_seal_as_principal(
         &self,
         room_id: &str,
@@ -218,6 +220,7 @@ impl VtaClient {
     ///
     /// **Send the returned `document` to its `recipient` unaltered**, and to nobody else.
     /// Nothing in it names this client: the host records the member.
+    #[allow(deprecated)] // act/0.11 is served beside it; this SDK moves to it in a later PR
     pub async fn room_act(
         &self,
         document: &vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest,
@@ -233,6 +236,7 @@ impl VtaClient {
     /// Sent at 0.10 only: a VTA that does not serve it answers
     /// [`VtaError::UnsupportedTaskType`], and is upgraded rather than asked at an older
     /// version.
+    #[allow(deprecated)] // act/0.11 is served beside it; this SDK moves to it in a later PR
     pub async fn room_act_community(
         &self,
         document: &vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest,
@@ -240,6 +244,7 @@ impl VtaClient {
         self.act_v0_10(json!({ "document": document })).await
     }
 
+    #[allow(deprecated)] // act/0.11 is served beside it; this SDK moves to it in a later PR
     async fn act_v0_10(
         &self,
         payload: Value,

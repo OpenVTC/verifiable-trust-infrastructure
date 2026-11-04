@@ -357,6 +357,7 @@ pub async fn info_v3(
 /// A listing as `rooms/records/list/0.5` answers: each record's `blobs`, the room's
 /// `lastPrune` on every page once the room has been pruned (omitted otherwise), and the
 /// continuation token named `nextCursor` (0.4), absent on the last page.
+#[allow(deprecated)] // still served: hosts move to list/0.6 in a later PR (trust-tasks-tf #1027)
 pub async fn list_v5_response(
     snapshot: &ReadSnapshot<'_>,
     room: &Room,

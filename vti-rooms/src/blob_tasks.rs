@@ -520,6 +520,7 @@ pub fn put_v3_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Ref
 /// [`put_v3_parts`] for `rooms/records/put/0.4`, whose open-room `cleartext` may also carry
 /// a `file`. The host checks that file against the record's `blobs` once it knows the room
 /// ([`open_file_refused`]).
+#[allow(deprecated)] // still served: hosts move to put/0.5 in a later PR (trust-tasks-tf #1027)
 pub fn put_v4_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Refusal> {
     parse::<put_v4::Payload>(payload)?;
     put_parts(payload)
@@ -691,6 +692,7 @@ pub fn prune_floor_refused(room: &Room, before_epoch: u32) -> Option<Refusal> {
 ///
 /// `blobs` is exactly what the stored version names: absent when it names none, which
 /// includes a retraction (which released them) and a 0.1 write.
+#[allow(deprecated)] // still served: hosts move to get/0.3 in a later PR (trust-tasks-tf #1027)
 pub async fn get_v2_response(
     snapshot: &ReadSnapshot<'_>,
     room_id: &str,
