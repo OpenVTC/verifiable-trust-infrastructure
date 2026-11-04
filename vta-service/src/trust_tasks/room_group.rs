@@ -176,9 +176,12 @@ pub(super) async fn handle_welcome(
             let joined =
                 match room_member::member_as(state, auth, &req.room_id, invitation.subject()).await
                 {
-                    Ok(member) => room_groups::load(&state.room_groups_ks, &member)
+                    // A current membership only: group state a removal ended is a prior
+                    // membership (welcome/0.1), and this spent invitation is not what
+                    // admitted the member again.
+                    Ok(member) => room_groups::holds_current(&state.room_groups_ks, &member)
                         .await
-                        .is_ok_and(|g| g.is_some()),
+                        .unwrap_or(false),
                     Err(_) => false,
                 };
             if joined {
@@ -233,6 +236,19 @@ pub(super) async fn handle_welcome(
                     "the key package this welcome is sealed to expired and has been discarded; \
                      mint a fresh one for room `{}` (rooms/keys/key-package) and have the owner \
                      add that",
+                    req.room_id
+                ),
+            );
+        }
+        Err(room_groups::JoinError::WelcomeForAnotherGroup) => {
+            return super::helpers::reject_declared(
+                &doc,
+                vti_specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID,
+                format!(
+                    "this welcome is for an MLS group other than the one this VTA holds for \
+                     `{}` in room `{}`; a re-admission is into that group, so nothing was \
+                     joined or consumed",
+                    member.persona(),
                     req.room_id
                 ),
             );

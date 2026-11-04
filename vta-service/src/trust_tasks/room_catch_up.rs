@@ -14,11 +14,22 @@
 //! grant, from the same host the read was addressed to — the repair discloses nothing the
 //! read did not. A removed member is never repaired: no commit and no link will open what
 //! was sealed after the removal.
+//!
+//! **The record's epoch chooses which state is repaired** (`rooms/keys/open/0.2`): the
+//! current group, or a prior membership. A member idle when it was removed and admitted
+//! again holds a prior membership whose removal it never saw (`rooms/keys/welcome/0.1`,
+//! *Rejoining after a removal*); a record sealed above the epoch that state holds and below
+//! the re-admission is `notDelivered` from it, and catching it up applies the room's commits
+//! to *that* state until the removing one fixes its removal epoch. The host serves them under
+//! the member's current `read` grant: `rooms/epoch/commits` takes any `sinceEpoch` from a
+//! presenter it authorizes now, and keeps every commit, so the re-admitted member's fresh
+//! credentials reach the commits from before their `validFrom`. Sealing only ever uses the
+//! current group, so nothing here is a way to write under prior state.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use crate::operations::room_groups::{self, OpenError};
+use crate::operations::room_groups::{self, OpenError, PriorCommit, RepairTarget};
 use crate::server::AppState;
 use vti_common::auth::AuthClaims;
 
@@ -67,17 +78,36 @@ pub(super) async fn repair(
         return Err("another read of this room is still fetching from the host".into());
     };
 
-    // Another request may have repaired this while we waited.
-    let held = room_groups::held_room(&state.room_groups_ks, &member.member)
+    let epoch = match *refused {
+        OpenError::NotDelivered { epoch, .. } | OpenError::BeyondChain { epoch, .. } => epoch,
+        OpenError::Removed { .. } | OpenError::App(_) => return Err("nothing to repair".into()),
+    };
+    // Which state the record's epoch chooses, read under the lock: another request may have
+    // repaired it while we waited, or fixed a prior membership's removal.
+    let Some(held) = room_groups::repair_state(&state.room_groups_ks, &member.member, epoch)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("no group state of this member's holds that epoch".into());
+    };
     match *refused {
         OpenError::NotDelivered { epoch, .. } if held.epoch >= epoch => Ok(()),
         OpenError::NotDelivered { .. } => {
-            catch_up(state, auth, member, resolver, host, held.epoch).await
+            catch_up(
+                state,
+                auth,
+                member,
+                resolver,
+                host,
+                &held.target,
+                held.epoch,
+            )
+            .await
         }
         OpenError::BeyondChain { epoch, .. } if held.earliest_readable_epoch <= epoch => Ok(()),
-        OpenError::BeyondChain { epoch, .. } => {
+        // Links are stored to the current group; a prior membership's chain is what it
+        // accrued while it was held.
+        OpenError::BeyondChain { epoch, .. } if held.target == RepairTarget::Current => {
             extend_chain(
                 state,
                 auth,
@@ -89,17 +119,21 @@ pub(super) async fn repair(
             )
             .await
         }
-        OpenError::Removed { .. } | OpenError::App(_) => Err("nothing to repair".into()),
+        _ => Err("nothing to repair".into()),
     }
 }
 
-/// Apply every commit the host relays above `held` (a room epoch), in order.
+/// Apply every commit the host relays above `held` (a room epoch), in order, to `target`.
+///
+/// For a prior membership, until the commit that removed the member: that one fixes its
+/// removal epoch, and nothing after it is the membership's.
 async fn catch_up(
     state: &AppState,
     auth: &AuthClaims,
     member: &PresentingMember,
     resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
     host: &str,
+    target: &RepairTarget,
     held: u32,
 ) -> Result<(), String> {
     let room_id = member.member.room_id();
@@ -140,15 +174,36 @@ async fn catch_up(
             let Some(mls) = u64::from(c.epoch).checked_sub(1) else {
                 return Err(format!("room host `{host}` served a commit for epoch 0"));
             };
-            let applied = room_groups::apply_commit(
-                &state.room_groups_ks,
-                &member.member,
-                &commit,
-                mls,
-                super::room_group::now(),
-            )
-            .await
-            .map_err(|e| format!("applying the commit for room epoch {}: {e}", c.epoch))?;
+            let applied = match target {
+                RepairTarget::Current => room_groups::apply_commit(
+                    &state.room_groups_ks,
+                    &member.member,
+                    &commit,
+                    mls,
+                    super::room_group::now(),
+                )
+                .await
+                .map_err(|e| format!("applying the commit for room epoch {}: {e}", c.epoch))?,
+                RepairTarget::Prior { signature_key } => match room_groups::apply_prior_commit(
+                    &state.room_groups_ks,
+                    &member.member,
+                    signature_key,
+                    &commit,
+                    mls,
+                    super::room_group::now(),
+                )
+                .await
+                .map_err(|e| {
+                    format!(
+                        "applying the commit for room epoch {} to a prior membership: {e}",
+                        c.epoch
+                    )
+                })? {
+                    PriorCommit::Applied(applied) => applied,
+                    // The removal is known now; the open that follows answers by it.
+                    PriorCommit::Removed { .. } => return Ok(()),
+                },
+            };
             at = u32::try_from(applied + 1).unwrap_or(u32::MAX);
         }
         if at == before || at >= page.room_epoch {

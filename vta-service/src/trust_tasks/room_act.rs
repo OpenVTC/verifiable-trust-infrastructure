@@ -674,10 +674,11 @@ pub(super) async fn handle_seal_v0_2(
             Err(e) => return app_error_to_reject(&doc, e),
         };
         // Item 1: the group state of the member the request concerns — the author's, and
-        // never another member's this VTA also serves.
-        match room_groups::load(&state.room_groups_ks, &member).await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
+        // never another member's this VTA also serves. A current membership: state a
+        // removal ended opens what it could, and seals nothing (`rooms/keys/open/0.2`).
+        match room_groups::holds_current(&state.room_groups_ks, &member).await {
+            Ok(true) => {}
+            Ok(false) => {
                 return reject_declared(
                     &doc,
                     spec::error_codes::NOT_A_MEMBER,
