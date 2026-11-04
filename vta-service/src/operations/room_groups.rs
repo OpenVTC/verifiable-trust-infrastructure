@@ -749,10 +749,28 @@ pub async fn prior_memberships(
 /// Which of `member`'s group states a repair works on: the current one, or one prior
 /// membership, named by its own leaf's signature key (stable for as long as the entry is held,
 /// unlike its place in the list or its epoch).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum RepairTarget {
     Current,
     Prior { signature_key: Vec<u8> },
+}
+
+/// Written by hand so no log line carries key bytes: the leaf's signature key is public,
+/// but the workspace's rule (`vta-sdk/tests/secret_debug_census.rs`) is that a `*_key`
+/// field is never formatted by a derived `Debug`.
+impl std::fmt::Debug for RepairTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Current => f.write_str("Current"),
+            Self::Prior { signature_key } => f
+                .debug_struct("Prior")
+                .field(
+                    "signature_key",
+                    &format_args!("<{} bytes>", signature_key.len()),
+                )
+                .finish(),
+        }
+    }
 }
 
 /// Which of `member`'s memberships answers for one room epoch.
