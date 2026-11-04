@@ -548,7 +548,11 @@ When adding a flow, add it here and a line to the root index.
   the ballot box; never render a ballot here, add a `/v1/member/*` route or a
   `signingScope` family that carries a choice, a ticket or a cast, or show the
   page whether a vote was cast — the community is never trusted to learn how
-  anyone voted (VTI-VOT-001).
+  anyone voted (VTI-VOT-001). Notified elections (`list`'s `notified`, VTI-NTF-063) show only
+  identifier, audience, period and status; `memberOf` is passed only from a notification still
+  standing — never the page's own choice, never to a wallet that reports no notifications (it
+  refuses the field) — and the page never presents anything: the wallet asks first
+  (VTI-VOT-016). `electionListOf` accepts every list shape a wallet may answer.
 - **Join page** (`/members/?join`, the landing page's *Join this community*):
   the sign-in page's wallet code, worded for a newcomer, with no
   membership-only option. It changes words only — the wallet decides from

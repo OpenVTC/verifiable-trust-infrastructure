@@ -798,6 +798,19 @@ textarea {
   font-size: 1.05rem;
   padding: 0.25rem 0;
 }
+/* Elections the member's agent was notified of, which the community's list does not show
+   them: a party's DID is long, so it wraps. */
+.election-notified {
+  margin: 1.5rem 0 0;
+}
+.election-notified > h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.25rem;
+}
+.election-notified code,
+.alert code {
+  overflow-wrap: anywhere;
+}
 .election-description {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
