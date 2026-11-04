@@ -816,7 +816,10 @@ with no removal recorded. The Welcome is the evidence: `keys welcome` processes 
 without keeping anything and looks in its ratchet tree for the held state's own leaf,
 by that leaf's signature key (never the member's DID, which the new leaf shares).
 Still there, the member was never removed: `alreadyJoined`, and the KeyPackage is not
-consumed. Gone, the held state becomes a prior membership whose removal epoch is **not
+consumed. A Welcome for another MLS group (a different group id) is no evidence —
+it holds none of the state's leaves by construction — and is refused as
+`welcomeInvalid` with nothing consumed or changed. Gone from one for the same group,
+the held state becomes a prior membership whose removal epoch is **not
 yet known**, and the join completes without waiting for or fetching anything. Such a
 membership opens its join epoch through `h`; a record above `h` and below the
 re-admission is `notDelivered` (with `heldEpoch` `h`) until a read's repair applies the

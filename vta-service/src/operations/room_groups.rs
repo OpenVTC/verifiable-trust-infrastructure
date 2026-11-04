@@ -500,6 +500,10 @@ pub enum JoinError {
     /// has been discarded (`rooms/keys/key-package/0.2` *The private half is retained*: it **MUST** be
     /// discarded at expiry), so the Welcome can never process — `welcomeInvalid`.
     KeyPackageExpired,
+    /// The Welcome is for an MLS group other than the one this member's held state is in,
+    /// so its ratchet tree is no evidence that the state ended (`rooms/keys/welcome/0.1`,
+    /// *Rejoining after a removal*) — `welcomeInvalid`. Nothing was consumed or changed.
+    WelcomeForAnotherGroup,
     App(AppError),
 }
 
@@ -537,8 +541,12 @@ impl From<AppError> for JoinError {
 ///    by that leaf's **signature key**, never the member's DID: the re-admitted leaf carries
 ///    the same DID under a new key. Still there, the member was never removed and the
 ///    state is current: [`JoinError::AlreadyJoined`], with nothing kept and the KeyPackage
-///    not consumed. Gone, the member was removed by a commit producing an epoch above the
-///    one the state holds and at or below the Welcome's: the prior membership is kept with
+///    not consumed. Gone from a Welcome for **another** MLS group, it says nothing — such a
+///    group has none of the held state's leaves by construction — and the Welcome is
+///    refused ([`JoinError::WelcomeForAnotherGroup`], `welcomeInvalid`) with nothing consumed
+///    or changed. Gone from one for the same group (equal group ids), the member was removed
+///    by a commit producing an epoch above the one the state holds and at or below the
+///    Welcome's: the prior membership is kept with
 ///    its removal epoch not yet known, and a repair fixes it later
 ///    ([`apply_prior_commit`]). The join never waits for, or fetches, that commit.
 ///
@@ -639,6 +647,15 @@ pub async fn join(
                         // the member was never removed, and this would be a second join.
                         // Nothing the Welcome formed is kept, and the KeyPackage stays.
                         return Err(JoinError::AlreadyJoined);
+                    }
+                    // An absent leaf is evidence only in the same group: a Welcome for any
+                    // other has none of the held state's leaves by construction, and would
+                    // retire current state on nothing. Refused before anything is written.
+                    let held_group = ended_group.snapshot.group_id().map_err(|e| {
+                        AppError::Internal(format!("read the held group's id for `{room_id}`: {e}"))
+                    })?;
+                    if group.group_id() != held_group {
+                        return Err(JoinError::WelcomeForAnotherGroup);
                     }
                     let held_epoch = RoomGroup::restore(&ended_group.snapshot)
                         .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?
@@ -4120,6 +4137,45 @@ mod readmission_tests {
             .map(|(e, _)| e)
             .collect();
         assert_eq!(walked, [5, 3, 2]);
+    }
+
+    /// `rooms/keys/welcome/0.1`, *Rejoining after a removal*: an absent leaf is evidence
+    /// only in the same MLS group. A Welcome for another group — which has none of the held
+    /// state's leaves by construction — is `welcomeInvalid`, and retires nothing: the held
+    /// group, its join epoch and the KeyPackage stay exactly as they were.
+    #[tokio::test]
+    async fn a_welcome_for_another_group_retires_nothing() {
+        let mut r = Room::new().await;
+        r.admit().await.unwrap(); // 2
+        let held = load(&r.ks, &r.bob).await.unwrap().unwrap();
+
+        // Another group entirely adds Bob under a fresh KeyPackage.
+        let pending = mint_key_package(&r.ks, &r.bob, 3600, 0).await.unwrap();
+        let kp = B64.decode(&pending.key_package).unwrap();
+        let mut other = SealedRoom::new(ROOM, RoomGroup::create("did:key:zMallory").unwrap());
+        other.renew().unwrap();
+        other.renew().unwrap(); // its epoch is above Bob's, so only the group id tells
+        let (added, _) = other.add_member(&kp).unwrap();
+        assert_ne!(other.group().group_id(), held.snapshot.group_id().unwrap());
+
+        assert!(matches!(
+            join(&r.ks, &r.bob, &added.welcome.unwrap(), 1).await,
+            Err(JoinError::WelcomeForAnotherGroup)
+        ));
+        assert!(
+            holds_key_package(&r.ks, &r.bob, &kp, 1).await.unwrap(),
+            "the KeyPackage is not consumed"
+        );
+        let still = load(&r.ks, &r.bob).await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&still.snapshot).unwrap(),
+            serde_json::to_value(&held.snapshot).unwrap(),
+            "the held group is untouched"
+        );
+        assert!(prior_memberships(&r.ks, &r.bob).await.unwrap().is_empty());
+        assert_eq!(joined_epoch(&r.ks, &r.bob).await.unwrap(), Some(2));
+        assert_eq!(removed_at(&r.ks, &r.bob).await.unwrap(), None);
+        assert!(holds_current(&r.ks, &r.bob).await.unwrap());
     }
 
     /// `rooms/keys/welcome/0.1`: a Welcome whose ratchet tree still holds the leaf of the

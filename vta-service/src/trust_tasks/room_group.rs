@@ -240,6 +240,19 @@ pub(super) async fn handle_welcome(
                 ),
             );
         }
+        Err(room_groups::JoinError::WelcomeForAnotherGroup) => {
+            return super::helpers::reject_declared(
+                &doc,
+                vti_specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID,
+                format!(
+                    "this welcome is for an MLS group other than the one this VTA holds for \
+                     `{}` in room `{}`, so it is no evidence that membership ended; nothing \
+                     was consumed",
+                    member.persona(),
+                    req.room_id
+                ),
+            );
+        }
         Err(room_groups::JoinError::App(e)) => return app_error_to_reject(&doc, e),
     };
 

@@ -444,6 +444,13 @@ impl RoomGroup {
             .members()
             .any(|m| m.signature_key.as_slice() == signature_key)
     }
+
+    /// The MLS group id. Two states are of the same group only when these are equal — which
+    /// [`Self::has_leaf_with_signature_key`]'s answer is meaningless without: a group other
+    /// than the one a leaf was in has none of its leaves by construction.
+    pub fn group_id(&self) -> Vec<u8> {
+        self.group.group_id().as_slice().to_vec()
+    }
 }
 
 #[cfg(test)]
@@ -893,6 +900,13 @@ impl GroupSnapshot {
         B64.decode(&self.signature_public)
             .map_err(|e| RoomKeyError::Group(format!("decode the signature key: {e}")))
     }
+
+    /// The MLS group id this snapshot is of ([`RoomGroup::group_id`]), read without restoring
+    /// the group.
+    pub fn group_id(&self) -> Result<Vec<u8>, RoomKeyError> {
+        B64.decode(&self.group_id)
+            .map_err(|e| RoomKeyError::Group(format!("decode the group id: {e}")))
+    }
 }
 
 impl IdentitySnapshot {
@@ -1051,6 +1065,16 @@ mod leaf_recognition_tests {
         assert_eq!(
             bob.snapshot().unwrap().signature_public_key().unwrap(),
             B64.decode(&second.signature_public).unwrap()
+        );
+        assert_eq!(bob.group_id(), alice.group_id());
+        assert_eq!(
+            bob.snapshot().unwrap().group_id().unwrap(),
+            alice.group_id()
+        );
+        assert_ne!(
+            RoomGroup::create("did:key:zCarol").unwrap().group_id(),
+            alice.group_id(),
+            "another group has another id"
         );
     }
 }
