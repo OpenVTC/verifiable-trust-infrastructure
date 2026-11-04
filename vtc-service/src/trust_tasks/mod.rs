@@ -72,8 +72,8 @@ mod credential_exchange;
 // literal directly (`tests/emergency_bootstrap.rs`, `tests/passkey_state.rs`)
 // — every other item the module exports stays `pub(crate)`.
 pub mod size;
-// `trust-task-discovery/0.3`: what this VTC serves and the acceptance window it
-// applies (VTI-TRN-047).
+// `trust-task-discovery/0.4` (and the superseded 0.3): what this VTC serves
+// and the acceptance window it applies (VTI-TRN-047).
 mod discovery;
 
 // The canonical `acl/{show,list,update,revoke}` tasks, and the operation-bound
@@ -617,7 +617,7 @@ pub(crate) fn spec_policy_for(type_uri: &str) -> Option<trust_tasks_rs::SpecPoli
 /// `VtaClient::dispatch_trust_task` for every transport), and 52 of the 95
 /// specifications this service binds declare the member REQUIRED in any case.
 pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
-    // The window this node also advertises in its `trust-task-discovery/0.3`
+    // The window this node also advertises in its `trust-task-discovery/0.4`
     // answer (VTI-TRN-047): one value, so the two cannot drift. It is the
     // spine's default, `VTI_ACCEPTANCE_WINDOW` requiring `issuedAt`.
     vti_trust_task_server::default_freshness_policy()
@@ -1192,7 +1192,9 @@ fn dispatch_typed<'a>(
                 None => unreachable!("action_tasks::URIS names {uri}, which it does not route"),
             }
         }),
-        discovery::DISCOVERY_V0_3_TYPE => Box::pin(async move { discovery::handle(ctx, doc) }),
+        discovery::DISCOVERY_V0_4_TYPE | discovery::DISCOVERY_V0_3_TYPE => {
+            Box::pin(async move { discovery::handle(ctx, doc) })
+        }
         other => Box::pin(async move { unsupported_type_or_version(&doc, other) }),
     }
 }
@@ -1800,6 +1802,10 @@ mod spine_proof_tests {
         (
             recognise_tasks::RECOGNISE_TYPE,
             "the peer VTC's answer is authenticated via the Trust Registry lookup the handler performs, not a request-level proof",
+        ),
+        (
+            discovery::DISCOVERY_V0_4_TYPE,
+            "a public discovery read; names no identity to authorize",
         ),
         (
             discovery::DISCOVERY_V0_3_TYPE,
@@ -3011,7 +3017,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
     // does not cover these; they are pinned by `rooms_dispatch_matches_wire` below.
     //
-    // Discovery, with this VTC's acceptance window (VTI-TRN-047).
+    // Discovery, with this VTC's acceptance window (VTI-TRN-047): 0.4, and the
+    // superseded 0.3 for the clients that still ask it.
+    discovery::DISCOVERY_V0_4_TYPE,
     discovery::DISCOVERY_V0_3_TYPE,
 ];
 

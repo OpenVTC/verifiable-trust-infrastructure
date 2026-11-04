@@ -100,11 +100,11 @@ fn error_code(reply: &Value) -> &str {
 async fn discovery_is_answered_with_this_identitys_task_list_and_signed_by_it() {
     let identity = witness();
     let party = party();
-    let doc = request(DISCOVERY_V0_3, &party.did, identity.did(), json!({}));
+    let doc = request(DISCOVERY_V0_4, &party.did, identity.did(), json!({}));
     let reply = signed_reply(&identity, &party.did, &doc).await;
 
-    assert_eq!(reply["type"], format!("{DISCOVERY_V0_3}#response"));
-    v0_3::Response::validate_value(&reply["payload"]).expect("a schema-valid 0.3 response");
+    assert_eq!(reply["type"], format!("{DISCOVERY_V0_4}#response"));
+    v0_4::Response::validate_value(&reply["payload"]).expect("a schema-valid 0.4 response");
     let listed: Vec<&str> = reply["payload"]["supportedTypes"]
         .as_array()
         .expect("supportedTypes")
@@ -121,8 +121,28 @@ async fn discovery_is_answered_with_this_identitys_task_list_and_signed_by_it() 
         );
     }
     assert!(
-        reply["payload"]["acceptanceWindow"].is_object(),
-        "the window this identity applies is advertised (VTI-TRN-047): {reply:#}"
+        reply["payload"]["acceptanceWindow"]["expiryHorizonSeconds"].is_u64(),
+        "the window this identity applies is advertised, horizon included \
+         (VTI-TRN-047): {reply:#}"
+    );
+}
+
+/// The superseded discovery 0.3 is still answered, in its own shape: the same
+/// list, and the window without the horizon 0.3 has no member for.
+#[tokio::test]
+#[allow(deprecated)]
+async fn discovery_0_3_is_still_answered_without_the_horizon() {
+    let identity = witness();
+    let party = party();
+    let doc = request(DISCOVERY_V0_3, &party.did, identity.did(), json!({}));
+    let reply = signed_reply(&identity, &party.did, &doc).await;
+    assert_eq!(reply["type"], format!("{DISCOVERY_V0_3}#response"));
+    v0_3::Response::validate_value(&reply["payload"]).expect("a schema-valid 0.3 response");
+    assert!(reply["payload"]["acceptanceWindow"]["maxAgeSeconds"].is_u64());
+    assert!(
+        reply["payload"]["acceptanceWindow"]
+            .get("expiryHorizonSeconds")
+            .is_none()
     );
 }
 
@@ -148,7 +168,7 @@ async fn a_signed_request_is_verified_and_answered() {
     let identity = witness();
     let party = party();
     let body = build_signed(
-        DISCOVERY_V0_3,
+        DISCOVERY_V0_4,
         json!({}),
         &party.did,
         party.private_key_multibase(),
@@ -158,7 +178,7 @@ async fn a_signed_request_is_verified_and_answered() {
     .unwrap();
     let doc: Value = serde_json::from_str(&body).unwrap();
     let reply = signed_reply(&identity, &party.did, &doc).await;
-    assert_eq!(reply["type"], format!("{DISCOVERY_V0_3}#response"));
+    assert_eq!(reply["type"], format!("{DISCOVERY_V0_4}#response"));
 }
 
 /// A proof by someone other than the document's issuer is not the issuer's.
@@ -168,7 +188,7 @@ async fn a_proof_by_another_key_than_the_issuers_is_refused() {
     let party = party();
     let other = EphemeralSetupKey::generate().unwrap();
     let body = build_signed(
-        DISCOVERY_V0_3,
+        DISCOVERY_V0_4,
         json!({}),
         &other.did,
         other.private_key_multibase(),
@@ -222,7 +242,7 @@ async fn a_document_addressed_to_another_did_is_refused_as_this_identity() {
     let identity = witness();
     let party = party();
     let elsewhere = "did:webvh:QmVTA:vta.operator.example";
-    let doc = request(DISCOVERY_V0_3, &party.did, elsewhere, json!({}));
+    let doc = request(DISCOVERY_V0_4, &party.did, elsewhere, json!({}));
     let reply = signed_reply(&identity, &party.did, &doc).await;
     assert_eq!(error_code(&reply), "wrongRecipient", "{reply:#}");
     assert_ne!(reply["issuer"], elsewhere);
@@ -233,7 +253,7 @@ async fn a_document_addressed_to_another_did_is_refused_as_this_identity() {
 async fn a_document_with_no_recipient_is_refused() {
     let identity = witness();
     let party = party();
-    let mut doc = request(DISCOVERY_V0_3, &party.did, identity.did(), json!({}));
+    let mut doc = request(DISCOVERY_V0_4, &party.did, identity.did(), json!({}));
     doc.as_object_mut().unwrap().remove("recipient");
     let reply = signed_reply(&identity, &party.did, &doc).await;
     assert_eq!(error_code(&reply), "malformedRequest", "{reply:#}");
@@ -245,7 +265,7 @@ async fn an_issuer_other_than_the_proven_sender_is_an_identity_mismatch() {
     let identity = witness();
     let party = party();
     let doc = request(
-        DISCOVERY_V0_3,
+        DISCOVERY_V0_4,
         "did:example:someone-else",
         identity.did(),
         json!({}),
@@ -258,7 +278,7 @@ async fn an_issuer_other_than_the_proven_sender_is_an_identity_mismatch() {
 async fn a_stale_document_is_refused() {
     let identity = witness();
     let party = party();
-    let mut doc = request(DISCOVERY_V0_3, &party.did, identity.did(), json!({}));
+    let mut doc = request(DISCOVERY_V0_4, &party.did, identity.did(), json!({}));
     doc["issuedAt"] = json!((Utc::now() - chrono::TimeDelta::hours(2)).to_rfc3339());
     let reply = signed_reply(&identity, &party.did, &doc).await;
     assert_eq!(error_code(&reply), "expired", "{reply:#}");
@@ -289,7 +309,7 @@ async fn errors_and_responses_are_dropped_rather_than_answered() {
     let response = json!({
         "id": "urn:uuid:00000000-0000-4000-8000-000000000002",
         "threadId": "urn:uuid:00000000-0000-4000-8000-000000000000",
-        "type": format!("{DISCOVERY_V0_3}#response"),
+        "type": format!("{DISCOVERY_V0_4}#response"),
         "issuer": party.did,
         "recipient": identity.did(),
         "issuedAt": Utc::now().to_rfc3339(),
