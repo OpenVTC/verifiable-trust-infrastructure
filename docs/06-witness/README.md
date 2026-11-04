@@ -144,7 +144,7 @@ editing `config.toml`.
 
 | Key | Meaning |
 |---|---|
-| `data_dir` | Local state: the plaintext secret store if one is explicitly chosen, and setup's `did/<name>.jsonl` logs. |
+| `data_dir` | Local state: the plaintext secret store if one is explicitly chosen, setup's `did/<name>.jsonl` logs, and `store/` — witness sessions and the TSP relationships every identity holds, kept on disk so a restart or reconnect does not drop a community's frames (TSP §7.2.2). |
 | `operator_vta_did` | The VTA that minted the identities. Read only to warn about correlators; the witness never acts as it. |
 | `resolver_url` | Optional DID resolver sidecar (network mode). |
 | `[secrets]` | The secret-store backend — the same table and backends as the VTA and VTC. `config_seed` is refused, since it would put keys in this file. |
