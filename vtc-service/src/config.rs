@@ -1547,7 +1547,10 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "vti_common::rate_limit::deserialize_trusted_proxy_cidrs"
+    )]
     pub trust_xff_cidrs: Vec<IpNetwork>,
     /// Retired: `trust_xff`. Present only to **refuse** a config that still
     /// declares it — replaced by `trust_xff_cidrs`, an explicit trusted-proxy
@@ -2440,6 +2443,17 @@ mod tests {
         let cfg: ServerConfig =
             toml::from_str("trust_xff_cidrs = [\"127.0.0.1/32\"]").expect("parse");
         assert_eq!(cfg.trust_xff_cidrs.len(), 1);
+    }
+
+    /// A range trusting every peer would let any client name its own
+    /// rate-limit bucket.
+    #[test]
+    fn a_catch_all_trust_xff_range_is_refused() {
+        for cidr in ["0.0.0.0/0", "::/0"] {
+            let err = toml::from_str::<ServerConfig>(&format!("trust_xff_cidrs = [\"{cidr}\"]"))
+                .expect_err("a catch-all range must be refused");
+            assert!(err.to_string().contains("covers every address"), "{err}");
+        }
     }
 
     #[test]

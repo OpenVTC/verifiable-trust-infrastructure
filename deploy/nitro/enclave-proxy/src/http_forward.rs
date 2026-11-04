@@ -39,9 +39,10 @@
 //! the enclave VTA trusts — one declaration, not two) names the peers entitled
 //! to make that claim. When the TCP peer is one of them, [`sanitise_forwarding_headers`]
 //! *extends* the existing `X-Forwarded-For` with that peer instead of replacing
-//! it, mirroring `vti_common::rate_limit::TrustedProxyKeyExtractor`'s chain
-//! walk on the receiving end (a separate crate this proxy does not depend on —
-//! the two are consistent by convention, not by shared code). An untrusted
+//! it, mirroring the chain walk on the receiving end (`affinidi-rate-limit`'s
+//! `ClientIpExtractor`, through `vti_common::rate_limit::TrustedProxyKeyExtractor`;
+//! crates this proxy does not depend on — the two are consistent by
+//! convention, not by shared code). An untrusted
 //! peer's claim is still discarded
 //! outright — trusting a hop is an explicit, per-CIDR decision, never assumed.
 //!
@@ -155,12 +156,11 @@ pub fn sanitise_forwarding_headers<B>(
 /// Upper bound on entries read from the existing chain before this proxy's
 /// own peer is appended below.
 ///
-/// Mirrors `vti_common::rate_limit::MAX_FORWARDED_ENTRIES` (a separate crate
-/// this one does not depend on — consistent by convention) minus one: the
-/// receiver falls back to the peer once a chain exceeds that many entries,
-/// and inside the enclave the peer is always the trusted loopback address, so
-/// an unbounded extend here would let a client force itself into that shared
-/// fallback bucket by sending enough entries. Truncating to one less than the
+/// Mirrors `affinidi_rate_limit::MAX_FORWARDED_ENTRIES` (64; a crate this one
+/// does not depend on — consistent by convention) minus one: the receiver
+/// refuses a chain of more than that many entries with `400`, so an unbounded
+/// extend here would let a client get every request it sends through the
+/// enclave refused, just by sending enough entries. Truncating to one less than the
 /// receiver's cap leaves room for the peer this function appends.
 const MAX_EXISTING_ENTRIES: usize = 63;
 
@@ -269,12 +269,11 @@ mod tests {
         assert_eq!(header_values(&req, "x-forwarded-for"), ["203.0.113.9"]);
     }
 
-    /// Mirrors `vti_common::rate_limit::MAX_FORWARDED_ENTRIES` (a separate
-    /// crate this one does not depend on) — the receiver falls back to the
-    /// peer once a chain exceeds this many entries, and inside the enclave
-    /// the peer is always the trusted loopback address. An unbounded extend
-    /// here would let a client force itself into that shared fallback bucket
-    /// by sending enough junk entries.
+    /// Mirrors `affinidi_rate_limit::MAX_FORWARDED_ENTRIES` (a crate this one
+    /// does not depend on): the receiver refuses a chain of more than that
+    /// many entries with `400`. An unbounded extend here would let a client
+    /// get its requests refused rather than limited, by sending enough junk
+    /// entries.
     ///
     /// Pins the *direction* of truncation, not just the count: the real
     /// client's claim sits at the rightmost end of the junk, exactly where a

@@ -102,12 +102,15 @@ pub const USER_ACTIVITY_HEADER: &str = "x-vtc-user-activity";
 )]
 pub async fn dispatch(
     State(state): State<AppState>,
-    Extension(ClientAddress(address)): Extension<ClientAddress>,
+    Extension(ClientAddress(client)): Extension<ClientAddress>,
     Extension(limits): Extension<TrustTaskLimits>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let admission = match Admission::begin(&state, &limits, address, &body).await {
+    // The limiters charge the client's key (an IPv6 client's /64); the
+    // handlers see the address it came from.
+    let address = client.ip;
+    let admission = match Admission::begin(&state, &limits, client.key, &body).await {
         Ok(admission) => admission,
         Err(limited) => return limited.into_response(),
     };

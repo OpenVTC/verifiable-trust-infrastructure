@@ -75,23 +75,19 @@
 //!   primary signal and the body names the limiter for a human too.
 
 use std::net::IpAddr;
-use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 
+use affinidi_rate_limit::{RateLimiterState, Refusal, TooManyRequests};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Response, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
-use governor::clock::{Clock, DefaultClock};
-use governor::{DefaultKeyedRateLimiter, RateLimiter};
-use ipnetwork::IpNetwork;
 use tokio::sync::RwLock;
-use tower_governor::key_extractor::KeyExtractor;
 use utoipa_axum::router::OpenApiRouter;
 use vta_config::{AppConfig, ServerConfig};
-use vti_common::rate_limit::TrustedProxyKeyExtractor;
+use vti_common::rate_limit::{LimiterSweep, TrustedProxyKeyExtractor};
 
 /// Response header naming who produced a 429. Always `vta` here.
 ///
@@ -195,10 +191,17 @@ impl Quota {
         self.burst
     }
 
-    fn to_governor(self) -> governor::Quota {
-        governor::Quota::with_period(Duration::from_secs(self.interval_secs))
-            .expect("interval is clamped to >= 1 s, so the period is non-zero")
-            .allow_burst(NonZeroU32::new(self.burst).expect("burst is clamped to >= 1"))
+    fn to_limiter(self) -> RateLimiterState {
+        let limiter =
+            RateLimiterState::per_period(Duration::from_secs(self.interval_secs), self.burst);
+        // A zero period gives a limiter that refuses nothing. The clamp in
+        // `new` rules it out; failing here keeps a future path that skips the
+        // clamp from turning a limit off rather than making it strict.
+        assert!(
+            limiter.is_enabled(),
+            "a quota is clamped to a non-zero interval, so it always limits"
+        );
+        limiter
     }
 }
 
@@ -271,17 +274,21 @@ impl QuotaSource {
     }
 }
 
-/// A keyed limiter at one quota.
+/// A keyed limiter at one quota, swept of idle buckets for as long as it is
+/// in force: replacing it at a new quota drops its sweep with it.
 struct Buckets {
     quota: Quota,
-    limiter: DefaultKeyedRateLimiter<IpAddr>,
+    limiter: RateLimiterState,
+    _sweep: LimiterSweep,
 }
 
 impl Buckets {
     fn new(quota: Quota) -> Arc<Self> {
+        let sweep = LimiterSweep::new();
         Arc::new(Self {
             quota,
-            limiter: RateLimiter::keyed(quota.to_governor()),
+            limiter: sweep.swept(quota.to_limiter()),
+            _sweep: sweep,
         })
     }
 }
@@ -291,13 +298,15 @@ impl Buckets {
 struct LimiterState {
     limiter: Limiter,
     extractor: TrustedProxyKeyExtractor,
+    /// Answers a request with no attributable client, naming this limiter.
+    unattributable: RateLimiterState,
     source: QuotaSource,
     /// Held only for a pointer clone or swap — never across an await.
     buckets: StdRwLock<Arc<Buckets>>,
 }
 
 impl LimiterState {
-    fn new(limiter: Limiter, trust_xff_cidrs: &[IpNetwork], source: &QuotaSource) -> Self {
+    fn new(limiter: Limiter, extractor: &TrustedProxyKeyExtractor, source: &QuotaSource) -> Self {
         // Seed the buckets at the default quota; the first request compares
         // against the configured quota and swaps if they differ, before any
         // client has been charged.
@@ -307,7 +316,10 @@ impl LimiterState {
         };
         Self {
             limiter,
-            extractor: TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
+            extractor: extractor.clone(),
+            unattributable: RateLimiterState::disabled()
+                .with_source(RATE_LIMIT_SOURCE_VTA)
+                .with_limiter_name(limiter.name()),
             source: source.clone(),
             buckets: StdRwLock::new(Buckets::new(initial)),
         }
@@ -337,8 +349,22 @@ impl LimiterState {
         Arc::clone(&current)
     }
 
-    fn client_ip(&self, req: &Request) -> Option<IpAddr> {
-        self.extractor.extract(req).ok()
+    /// The key `req`'s client is charged to, or the refusal for a request
+    /// with no peer address or an unreadable chain from a trusted proxy.
+    fn client_key(&self, req: &Request) -> Result<IpAddr, Refusal> {
+        self.extractor.client_of(req).map(|client| client.key)
+    }
+
+    /// The answer to a request with no attributable client: a `403` with no
+    /// peer, a `400` for an unreadable chain, each carrying the source and
+    /// scope headers every refusal here carries.
+    fn refuse_unattributable(&self, refusal: &Refusal) -> Response<Body> {
+        let mut response = self.unattributable.refuse(refusal);
+        response.headers_mut().insert(
+            RATE_LIMIT_SCOPE_HEADER,
+            HeaderValue::from_static(self.limiter.name()),
+        );
+        response
     }
 }
 
@@ -348,13 +374,13 @@ impl LimiterState {
 pub(super) fn apply<S>(
     router: OpenApiRouter<S>,
     limiter: Limiter,
-    trust_xff_cidrs: &[IpNetwork],
+    extractor: &TrustedProxyKeyExtractor,
     source: &QuotaSource,
 ) -> OpenApiRouter<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    let state = Arc::new(LimiterState::new(limiter, trust_xff_cidrs, source));
+    let state = Arc::new(LimiterState::new(limiter, extractor, source));
     router.layer(axum::middleware::from_fn_with_state(state, enforce))
 }
 
@@ -384,16 +410,16 @@ where
 /// is read (within the anonymous ceiling) and then charged.
 pub(super) fn apply_trust_tasks<S>(
     router: OpenApiRouter<S>,
-    trust_xff_cidrs: &[IpNetwork],
+    extractor: &TrustedProxyKeyExtractor,
     source: &QuotaSource,
 ) -> OpenApiRouter<S>
 where
     S: Clone + Send + Sync + 'static,
 {
     let state = Arc::new(TrustTaskLimiters {
-        auth: LimiterState::new(Limiter::Auth, trust_xff_cidrs, source),
-        authenticate: LimiterState::new(Limiter::AuthAuthenticate, trust_xff_cidrs, source),
-        refresh: LimiterState::new(Limiter::AuthRefresh, trust_xff_cidrs, source),
+        auth: LimiterState::new(Limiter::Auth, extractor, source),
+        authenticate: LimiterState::new(Limiter::AuthAuthenticate, extractor, source),
+        refresh: LimiterState::new(Limiter::AuthRefresh, extractor, source),
     });
     router.layer(axum::middleware::from_fn_with_state(
         state,
@@ -438,7 +464,7 @@ async fn enforce_trust_tasks(
         .and_then(|v| v.to_str().ok())
         .map(|t| limiters.for_type(Some(t)));
     if let Some(state) = labelled
-        && let Some(refused) = refusal(state, state.client_ip(&req)).await
+        && let Some(refused) = refusal(state, state.client_key(&req)).await
     {
         return refused;
     }
@@ -462,7 +488,7 @@ async fn enforce_trust_tasks(
     let Some(bytes) = bytes else {
         let refused = Request::from_parts(parts, Body::empty());
         if labelled.is_none()
-            && let Some(limited) = refusal(&limiters.auth, limiters.auth.client_ip(&refused)).await
+            && let Some(limited) = refusal(&limiters.auth, limiters.auth.client_key(&refused)).await
         {
             return limited;
         }
@@ -478,7 +504,7 @@ async fn enforce_trust_tasks(
     // A label that named another step paid for the wrong bucket: the request
     // pays for the step it really is as well, so mislabelling buys nothing.
     if labelled.map(|l| l.limiter) != Some(actual.limiter)
-        && let Some(limited) = refusal(actual, actual.client_ip(&req)).await
+        && let Some(limited) = refusal(actual, actual.client_key(&req)).await
     {
         return limited;
     }
@@ -505,32 +531,26 @@ where
     F: FnOnce(Request) -> Fut,
     Fut: std::future::Future<Output = Response<Body>>,
 {
-    match refusal(state, state.client_ip(&req)).await {
+    match refusal(state, state.client_key(&req)).await {
         None => serve(req).await,
         Some(refused) => refused,
     }
 }
 
-/// Charge client `ip` (from [`LimiterState::client_ip`]) one token from
+/// Charge client `ip` (from [`LimiterState::client_key`]) one token from
 /// `state`'s bucket: `None` if it was charged, or the response that refuses
 /// it. Takes the address rather than the request, which is not `Sync` and so
 /// cannot be borrowed across the quota lookup's await.
-async fn refusal(state: &LimiterState, ip: Option<IpAddr>) -> Option<Response<Body>> {
-    let Some(ip) = ip else {
-        // Same outcome as the tower_governor layer this replaced: no
-        // attributable client means no request, not an unlimited one.
-        return Some(
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("Unable To Extract Key!"))
-                .expect("static response always builds"),
-        );
+async fn refusal(state: &LimiterState, ip: Result<IpAddr, Refusal>) -> Option<Response<Body>> {
+    let ip = match ip {
+        Ok(ip) => ip,
+        // No attributable client means no request, not an unlimited one.
+        Err(refusal) => return Some(state.refuse_unattributable(&refusal)),
     };
     let quota = state.source.current(state.limiter).await;
     let buckets = state.buckets_for(quota);
-    let not_until = buckets.limiter.check_key(&ip).err()?;
-    let wait = not_until.wait_time_from(DefaultClock::default().now());
-    Some(too_many_requests(state.limiter.name(), ceil_secs(wait)))
+    let TooManyRequests { retry_after_secs } = buckets.limiter.charge(ip).err()?;
+    Some(too_many_requests(state.limiter.name(), retry_after_secs))
 }
 
 /// Whole seconds, rounded up: a client honouring `retry-after` must never be
@@ -581,8 +601,8 @@ mod tests {
         "ok"
     }
 
-    fn trusted_loopback() -> Vec<IpNetwork> {
-        vec!["127.0.0.1/32".parse().unwrap()]
+    fn trusted_loopback() -> TrustedProxyKeyExtractor {
+        TrustedProxyKeyExtractor::new(vec!["127.0.0.1/32".parse().unwrap()]).unwrap()
     }
 
     /// Two branches, each behind its own limiter, merged into one router —
@@ -764,6 +784,46 @@ mod tests {
         assert_eq!(admitted(&app, "/auth", "198.51.100.8", 20).await, 1);
     }
 
+    /// An operator's `0` is the strictest quota, never "no limit": a zero
+    /// period would build a limiter that refuses nothing.
+    #[test]
+    fn a_zero_quota_still_limits() {
+        let quota = Quota::new(0, 0);
+        assert_eq!((quota.interval_secs(), quota.burst()), (1, 1));
+        let limiter = quota.to_limiter();
+        let client: IpAddr = "198.51.100.1".parse().unwrap();
+        assert!(limiter.charge(client).is_ok());
+        assert!(limiter.charge(client).is_err(), "a burst of one");
+    }
+
+    /// An unreadable chain from a trusted proxy is refused with `400`, saying
+    /// which VTA limiter refused it, rather than charged to the proxy.
+    #[tokio::test]
+    async fn an_unreadable_chain_from_a_trusted_proxy_is_refused() {
+        let app = two_branch_router(QuotaSource::Fixed(tight()));
+        for _ in 0..3 {
+            let resp = get_from(&app, "/auth", "not-an-ip").await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(resp.headers()[RATE_LIMIT_SOURCE_HEADER], "vta");
+            assert_eq!(resp.headers()[RATE_LIMIT_SCOPE_HEADER], "auth");
+            let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "invalid_forwarded_for");
+            assert_eq!(body["limiter"], "auth");
+        }
+        // The proxy's own bucket (the test peer, 127.0.0.1) was not charged for
+        // them: its whole burst of 2 is still there. Charging the proxy, as the
+        // old fallback did, would leave nothing.
+        for _ in 0..2 {
+            let from_the_proxy = HttpRequest::builder()
+                .uri("/auth")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(from_the_proxy).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+    }
+
     /// A request with no `ConnectInfo` has no un-spoofable anchor, so it must
     /// be refused rather than charged to a placeholder. Asserted on **both**
     /// attribution modes: the trusted-CIDR mode is the one that matters, since
@@ -771,19 +831,23 @@ mod tests {
     /// own bucket through `x-forwarded-for`.
     #[tokio::test]
     async fn no_attributable_client_is_refused_not_unlimited() {
-        for cidrs in [vec![], trusted_loopback()] {
+        let nothing_trusted = TrustedProxyKeyExtractor::new(Vec::new()).unwrap();
+        for extractor in [nothing_trusted, trusted_loopback()] {
             let router = apply(
                 OpenApiRouter::<()>::new().route("/auth", get(ok)),
                 Limiter::Auth,
-                &cidrs,
+                &extractor,
                 &QuotaSource::Fixed(RateLimits::default()),
             );
             let (app, _) = router.split_for_parts();
             let resp = get_from(&app, "/auth", "198.51.100.9").await;
-            assert_eq!(
-                resp.status(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "cidrs={cidrs:?}"
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{extractor:?}");
+            assert_eq!(resp.headers()[RATE_LIMIT_SOURCE_HEADER], "vta");
+            assert_eq!(resp.headers()[RATE_LIMIT_SCOPE_HEADER], "auth");
+            let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            assert!(
+                serde_json::from_slice::<serde_json::Value>(&body).is_err(),
+                "the 403 is plain text, not a JSON refusal"
             );
         }
     }

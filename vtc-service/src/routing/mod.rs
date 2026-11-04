@@ -9,7 +9,7 @@
 //! - [`trust_task_admission`] — the budgets `POST /v1/trust-tasks` charges
 //!   a document to: per address when anonymous, per signer once verified.
 //!
-//! Body-cap enforcement + tower-governor rate limiting are layered
+//! Body-cap enforcement + per-IP rate limiting are layered
 //! directly in [`crate::routes::router_with`] at the API nest
 //! boundary; they live near the route attach site so per-route
 //! overrides (M5.5) can opt out without reaching back into this

@@ -2239,10 +2239,10 @@ fn run_rest_thread(
             ));
 
         let shutdown_rx = shutdown_rx.clone();
-        // `into_make_service_with_connect_info` is required for the
-        // tower-governor `SmartIpKeyExtractor` to fall back to the
-        // peer socket address when `X-Forwarded-For` / `X-Real-IP`
-        // headers are absent (Phase 5 M5.1.5).
+        // `into_make_service_with_connect_info` is required: the per-IP
+        // rate limiters key on the peer socket address (or, behind a
+        // trusted proxy, the client it names), and refuse a request
+        // without one (Phase 5 M5.1.5).
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
