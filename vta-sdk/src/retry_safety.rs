@@ -680,11 +680,16 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // that persist and matter, which is what `Keyed` is for.
     (trust_tasks::TASK_ROOMS_OWNER_ANCHOR_0_1, Keyed),
     (trust_tasks::TASK_ROOMS_KEYS_READ_0_1, RetrySafe),
+    // 0.1 for each of up to 32 keys. The repair it may make applies the commits and keeps
+    // the links the host relays — a retry finds them applied and fetches nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_READ_0_2, RetrySafe),
     // Same, over a listing. The room may have moved between attempts, so two
     // tries can differ — that is the room changing, not the task misbehaving,
     // and `headVersion` is what tells them apart.
     // `lastPrune` passes through from the host: still a read, stores nothing.
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3, RetrySafe),
+    // 0.3 over list/0.6's rows: still a read, stores nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
     // same body yields a different nonce, which is correct and changes nothing. The

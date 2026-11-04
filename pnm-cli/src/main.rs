@@ -789,6 +789,127 @@ mod tests {
         }
     }
 
+    /// `rooms put --kind/--reply-to`, and `--react VALUE --to KEY` in place of a body
+    /// (trust-tasks-tf #1027).
+    #[test]
+    fn rooms_put_takes_a_kind_a_reply_and_a_reaction() {
+        use crate::cli::RoomCommands;
+        let base = [
+            "put",
+            "msg-2",
+            "--room",
+            "did:webvh:r",
+            "--host",
+            "https://h",
+        ];
+        let mut args = base.to_vec();
+        args.extend([
+            "Thursday works.",
+            "--kind",
+            "message",
+            "--reply-to",
+            "msg-1@4",
+        ]);
+        match rooms(&args) {
+            RoomCommands::Put {
+                body,
+                kind,
+                reply_to,
+                react,
+                to,
+                ..
+            } => {
+                assert_eq!(body.as_deref(), Some("Thursday works."));
+                assert_eq!(kind.as_deref(), Some("message"));
+                assert_eq!(reply_to.as_deref(), Some("msg-1@4"));
+                assert!(react.is_none() && to.is_none());
+            }
+            _ => panic!("expected Put"),
+        }
+
+        let mut args = base.to_vec();
+        args.extend(["--react", "👍", "--to", "msg-1"]);
+        match rooms(&args) {
+            RoomCommands::Put {
+                body, react, to, ..
+            } => {
+                assert!(body.is_none());
+                assert_eq!(react.as_deref(), Some("👍"));
+                assert_eq!(to.as_deref(), Some("msg-1"));
+            }
+            _ => panic!("expected Put"),
+        }
+
+        let full = |extra: &[&str]| {
+            let mut v = vec!["pnm", "rooms"];
+            v.extend_from_slice(&base);
+            v.extend_from_slice(extra);
+            Cli::try_parse_from(v)
+        };
+        assert!(full(&[]).is_err(), "a body, or a reaction");
+        assert!(
+            full(&["--react", "👍"]).is_err(),
+            "a reaction names what it reacts to"
+        );
+        assert!(
+            full(&["text", "--to", "msg-1"]).is_err(),
+            "--to is --react's"
+        );
+        assert!(
+            full(&["text", "--react", "👍", "--to", "msg-1"]).is_err(),
+            "a reaction's body is the reaction"
+        );
+        assert!(
+            full(&["--react", "👍", "--to", "msg-1", "--kind", "message"]).is_err(),
+            "a reaction's kind is `reaction`"
+        );
+    }
+
+    /// `rooms read` takes several keys and the host's DID, which the VTA reads from.
+    #[test]
+    fn rooms_read_takes_several_keys_and_the_host_did() {
+        use crate::cli::RoomCommands;
+        match rooms(&[
+            "read",
+            "msg-1",
+            "msg-2",
+            "react-1",
+            "--room",
+            "did:webvh:r",
+            "--host-did",
+            "did:web:h",
+        ]) {
+            RoomCommands::Read {
+                keys,
+                host_did,
+                host,
+                ..
+            } => {
+                assert_eq!(keys, vec!["msg-1", "msg-2", "react-1"]);
+                assert_eq!(host_did, "did:web:h");
+                assert!(host.is_none());
+            }
+            _ => panic!("expected Read"),
+        }
+        assert!(
+            Cli::try_parse_from(["pnm", "rooms", "read", "k", "--room", "did:webvh:r"]).is_err(),
+            "the VTA finds the host by its DID"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "rooms",
+                "read",
+                "--room",
+                "did:webvh:r",
+                "--host-did",
+                "did:web:h"
+            ])
+            .is_err(),
+            "at least one key"
+        );
+    }
+
     #[test]
     fn rooms_owner_register_requires_an_explicit_owner_and_tier() {
         use crate::cli::{RoomCommands, RoomOwnerCommands};

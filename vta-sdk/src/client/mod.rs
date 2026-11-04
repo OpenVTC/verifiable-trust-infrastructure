@@ -280,6 +280,9 @@ pub struct VtaClient {
     /// receive leg belongs to the session they share. See
     /// [`VtaClient::receive_health`].
     pub(super) receive_leg: std::sync::Arc<ReceiveLeg>,
+    /// The room profiles' `recordMembers` this client resolved, per room epoch — see
+    /// [`VtaClient::room_record_members`]. Shared by clones.
+    pub(super) record_members: std::sync::Arc<rooms_records::RecordMembersCache>,
 }
 
 /// Reply timeouts in a row after which a client stops re-forming its TSP
@@ -427,11 +430,16 @@ mod pcs;
 mod persona;
 mod policy;
 mod rooms;
+mod rooms_records;
 mod witness;
 pub use rooms::{
     RoomAction, RoomLabelEdit, RoomRegistration, RoomRetentionPolicy, RoomVisibility,
     is_community_type, is_offer_type, room_label_payload, unsigned_community_request,
     unsigned_room_request,
+};
+pub use rooms_records::{
+    RECORD_BODY_MEMBERS, RECORD_FILE_MEMBERS, ROOM_READ_MAX_KEYS, RoomBrowse, check_record_members,
+    record_members_permitted, record_members_used, unsigned_room_request_v0_11,
 };
 mod secrets;
 mod vault;
@@ -526,6 +534,7 @@ impl VtaClient {
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
             receive_leg: Default::default(),
+            record_members: Default::default(),
             identity: None,
             transport: Transport::Rest {
                 client: crate::http::rest_client(),
@@ -577,6 +586,7 @@ impl VtaClient {
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
             receive_leg: Default::default(),
+            record_members: Default::default(),
             identity: Some(std::sync::Arc::new(identity)),
             transport: Transport::Rest {
                 client: http,
@@ -683,6 +693,7 @@ impl VtaClient {
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
             receive_leg: Default::default(),
+            record_members: Default::default(),
             identity: identity.map(std::sync::Arc::new),
             transport: Transport::DIDComm {
                 session,
@@ -990,6 +1001,7 @@ impl VtaClient {
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
             receive_leg: Default::default(),
+            record_members: Default::default(),
             identity: identity.map(std::sync::Arc::new),
             transport: Transport::Tsp {
                 session: std::sync::Arc::new(session),

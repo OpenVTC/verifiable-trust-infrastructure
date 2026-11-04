@@ -305,7 +305,7 @@ impl<'a> Speaker<'a> {
 
     /// The host's head version, from a listing narrowed to `key` — what the next write's
     /// version is predicted from.
-    #[allow(deprecated)] // list/0.5 is what hosts serve until they move to list/0.6
+    #[allow(deprecated)] // list/0.5 on purpose: only the head is read, which list/0.6 serves identically, and every host serves 0.5
     async fn head_version(&self, key: &str) -> Result<u64, ProfileError> {
         let reply = self
             .send(

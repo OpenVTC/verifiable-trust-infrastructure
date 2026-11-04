@@ -108,6 +108,7 @@ mod room_owner;
 mod room_owner_group;
 mod room_owner_revoke;
 mod room_profile;
+mod room_read;
 mod seeds;
 #[cfg(test)]
 mod spec_pin_census;
@@ -2898,10 +2899,18 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1 => room_group::handle_read
         [ None Secret true ],
+    // 0.2 adds the host's `createdAt` / `createdBy` / `bodyStoredAt` and the batch form.
+    // `Mutating`, as its specification declares: a repair applies the commits and keeps
+    // the links the host relays, which changes this VTA's key state.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_2 => room_read::handle_read_v0_2
+        [ Mutating Secret true ],
     // Metadata only, and still `actsAsSubject`: the presentation names a member
     // of the room to the host it is shown to. 0.3 adds the room's `lastPrune` (as
     // `prunedAt`), passed through from list 0.5; 0.1 and 0.2 are not served.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3 => room_group::handle_browse_v0_3
+        [ None Metadata true ],
+    // 0.4: list/0.6's `RecordMetadataV3` rows, passed through exactly as served.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4 => room_group::handle_browse_v0_4
         [ None Metadata true ],
     // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
     // 0.3 accepts the members a room's `recordMembers` governs, which 0.2 refuses.

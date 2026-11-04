@@ -276,7 +276,7 @@ pub(super) async fn handle_anchor(
 }
 
 #[cfg(feature = "webvh")]
-#[allow(deprecated)] // list/0.5 is what hosts serve until they move to list/0.6
+#[allow(deprecated)] // list/0.5 on purpose: only the head is read, which list/0.6 serves identically, and every host serves 0.5
 async fn anchor_inner(
     state: &AppState,
     auth: &AuthClaims,
