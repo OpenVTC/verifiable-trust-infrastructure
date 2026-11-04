@@ -17,7 +17,8 @@ pub use vti_secrets::{SecretBackend, SecretsConfig};
 /// deployments. See `docs/05-design-notes/tenant-config-allowlist.md`.
 pub mod tenant_overlay;
 pub use tenant_overlay::{
-    TenantConfigOverlay, TenantKmsOverlay, TenantMessagingOverlay, TenantOverlayError,
+    TenantCollectionOverlay, TenantConfigOverlay, TenantKmsOverlay, TenantMessagingOverlay,
+    TenantOverlayError,
 };
 
 /// The notifications this VTA holds for its principal (`notifications/*`,
@@ -60,6 +61,90 @@ impl Default for NotificationsConfig {
             accept_any: false,
             retain_lapsed_days: default_notifications_retain_lapsed_days(),
         }
+    }
+}
+
+/// **Collection** of the principal's identifiers (`vta/collection/*`,
+/// VTI-NTF-080 – 093): the VTA holding the one mediator connection of each
+/// persona DID whose keys it holds and that no client has claimed.
+///
+/// `collect_by_default` is the operator setting of VTI-NTF-093 and is **off**
+/// by default: a client that predates collection claims connects for the
+/// principal's personas without claiming them, and a VTA collecting beside it
+/// would be the second connection to every persona — each would evict the
+/// other. Turn it on once every client in use claims first. Claims are granted,
+/// renewed, released and listed whether it is on or off. A change is recorded
+/// in the audit trail at the boot that applies it.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct CollectionConfig {
+    /// Collect for every unclaimed persona DID (VTI-NTF-080). Off by default.
+    #[serde(default)]
+    pub collect_by_default: bool,
+    /// The most identifiers the VTA collects for at once (VTI-NTF-088; default
+    /// 64). One beyond it is listed as collected by nobody, reason `limit`.
+    #[serde(default = "default_collection_max_identifiers")]
+    pub max_identifiers: usize,
+    /// The longest claim the VTA grants, in seconds (VTI-NTF-082; default and
+    /// ceiling thirty days).
+    #[serde(default = "default_collection_max_claim_secs")]
+    pub max_claim_secs: u64,
+    /// The claim granted when a client asks for no duration (default 24 hours,
+    /// the length VTI-NTF-083 asks clients to request).
+    #[serde(default = "default_collection_default_claim_secs")]
+    pub default_claim_secs: u64,
+    /// The VTA's clock-skew tolerance in seconds (default 60): it resumes
+    /// collecting for an identifier no earlier than a claim's end plus this,
+    /// unless the claimant released it (VTI-NTF-084).
+    #[serde(default = "default_collection_clock_skew_secs")]
+    pub clock_skew_secs: u64,
+    /// Identifiers the VTA never collects for, beside the ones it already
+    /// excludes (its own DID, any DID holding an ACL entry, and the identities
+    /// provision-integration minted for another party). For an integration
+    /// provisioned before this setting existed, whose holder collects for it.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+/// Thirty days: the ceiling VTI-NTF-082 puts on the maximum a VTA states.
+pub const COLLECTION_MAX_CLAIM_SECS_CEILING: u64 = 30 * 24 * 3600;
+
+fn default_collection_max_identifiers() -> usize {
+    64
+}
+
+fn default_collection_max_claim_secs() -> u64 {
+    COLLECTION_MAX_CLAIM_SECS_CEILING
+}
+
+fn default_collection_default_claim_secs() -> u64 {
+    24 * 3600
+}
+
+fn default_collection_clock_skew_secs() -> u64 {
+    60
+}
+
+impl Default for CollectionConfig {
+    fn default() -> Self {
+        Self {
+            collect_by_default: false,
+            max_identifiers: default_collection_max_identifiers(),
+            max_claim_secs: default_collection_max_claim_secs(),
+            default_claim_secs: default_collection_default_claim_secs(),
+            clock_skew_secs: default_collection_clock_skew_secs(),
+            exclude: Vec::new(),
+        }
+    }
+}
+
+impl CollectionConfig {
+    /// The maximum claim the VTA states: the configured value, held to between
+    /// one minute and thirty days.
+    #[must_use]
+    pub fn stated_max_claim_secs(&self) -> u64 {
+        self.max_claim_secs
+            .clamp(60, COLLECTION_MAX_CLAIM_SECS_CEILING)
     }
 }
 
@@ -282,6 +367,10 @@ pub struct AppConfig {
     /// policy and retention (VTI-NTF-030, VTI-NTF-052).
     #[serde(default)]
     pub notifications: NotificationsConfig,
+    /// Collection for the principal's identifiers (VTI-NTF-080 – 093): the
+    /// operator's "collection by default" setting, off unless enabled.
+    #[serde(default)]
+    pub collection: CollectionConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
     /// Verifier DIDs the holder **auto-consents** to when answering a

@@ -54,6 +54,28 @@ pub struct TenantConfigOverlay {
     /// runs the enclave on. See [`TenantServerOverlay`].
     #[serde(default)]
     pub server: Option<TenantServerOverlay>,
+    /// The operator's "collection by default" setting (VTI-NTF-093). See
+    /// [`TenantCollectionOverlay`].
+    #[serde(default)]
+    pub collection: Option<TenantCollectionOverlay>,
+}
+
+/// The tenant-scoped subset of `[collection]` an operator may deliver at
+/// runtime: whether the VTA collects for the principal's unclaimed persona DIDs
+/// (VTI-NTF-093), and nothing else.
+///
+/// It belongs here because whether to turn it on follows the clients the
+/// tenant's principal uses, which the image does not know, and because the
+/// overlay is delivered on every boot, so the choice survives an enclave
+/// restart (a `config/patch` would not). It confers nothing on the parent:
+/// collecting uses keys the enclave already holds, inside the enclave, and the
+/// parent that carries every packet can already withhold every message.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TenantCollectionOverlay {
+    #[serde(default)]
+    pub collect_by_default: Option<bool>,
 }
 
 /// The tenant-scoped subset of `[tee.kms]` an operator may deliver at runtime.
@@ -411,6 +433,12 @@ pub fn apply_tenant_overlay(
                 *field = value;
             }
         }
+    }
+
+    if let Some(c) = overlay.collection
+        && let Some(v) = c.collect_by_default
+    {
+        base.collection.collect_by_default = v;
     }
 
     if let Some(m) = overlay.messaging {
@@ -906,6 +934,29 @@ mod tests {
     #[cfg(feature = "tee")]
     fn claim_overlay(did: &str) -> TenantConfigOverlay {
         serde_json::from_value(serde_json::json!({ "bootstrap_claim_did": did })).unwrap()
+    }
+
+    /// VTI-NTF-093: the overlay may turn collection by default on or off, and
+    /// without the field the baked value — off unless baked on — stands.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn vti_ntf_093_apply_overlay_sets_collection_by_default() {
+        let mut base = empty_base();
+        assert!(!base.collection.collect_by_default, "off unless enabled");
+        let on: TenantConfigOverlay =
+            serde_json::from_str(r#"{"collection":{"collect_by_default":true}}"#).unwrap();
+        apply_tenant_overlay(&mut base, on).expect("apply succeeds");
+        assert!(base.collection.collect_by_default);
+        let absent: TenantConfigOverlay = serde_json::from_str(r#"{"collection":{}}"#).unwrap();
+        apply_tenant_overlay(&mut base, absent).expect("apply succeeds");
+        assert!(base.collection.collect_by_default, "absent keeps the base");
+        // Nothing else of `[collection]` reaches the enclave this way.
+        assert!(
+            serde_json::from_str::<TenantConfigOverlay>(
+                r#"{"collection":{"max_identifiers":100000}}"#
+            )
+            .is_err()
+        );
     }
 
     #[cfg(feature = "tee")]

@@ -959,3 +959,29 @@ When adding a flow, add it here and a line to the root index.
   `vta-service/src/trust_tasks/{notifications,notifications_tests}.rs`,
   `vta-cli-common/src/commands/notifications.rs`.
 - **Docs**: `docs/02-vta/notifications.md`.
+
+### Collection for the principal's identifiers (`vta/collection/*/0.1`)
+- **What**: Who holds each persona DID's one mediator connection (VTI-NTF-080 – 093): the VTA,
+  or one client under a **collection claim** (a lease), or nobody and why. `pnm collection
+  claim|release|list`. The VTA collects only when `[collection] collect_by_default` is on — **off
+  by default** (VTI-NTF-093), audited at the boot that changes it, tenant-overlay settable, never a
+  `config/patch` key. Claims are served either way.
+- **Invariants to preserve**: one session (TDK + ATM + one websocket) per collected DID —
+  `CollectionControl::insert` refuses a second, and never the VTA's own DID. A grant writes the
+  claim and closes the VTA's connection **under the identifier's lock** before it answers; the
+  collector re-reads the claim under the same lock before opening one. Release by the claimant
+  ends at once; by anyone else it only makes the claim unrenewable, and the VTA waits for the end
+  plus `clock_skew_secs`. Candidates exclude the VTA's DID, every ACL subject, every
+  `provisioned:` DID (written by provision-integration) and `[collection] exclude`. A collected
+  notify/relay goes through exactly the deposit path (`bind_document_to_sender`,
+  `verify_delivery`, `admit_carried_document`, `receive`) and is answered **as the persona**
+  (persona issuer and proof) with the same receipt; everything else is `unsupportedType` as the
+  persona — never dispatched to the spine, never naming the VTA. Budget: no standing → the
+  unauthenticated bound; never per identifier. Conflicts: 5 short-lived connections in 15 min →
+  stop, `conflict:` record, `collection.conflict` audit, cleared by a claim. Rollover / swap-key
+  carry claims (`carry_claims`); context deletion purges them; sweeps drop claims on DIDs no
+  longer collectable. Keyspace `collection` is backed up.
+- **Code**: `vta-service/src/operations/collection.rs` (+ `_tests.rs`),
+  `vta-service/src/messaging/collector.rs`, `vta-service/src/trust_tasks/collection.rs`
+  (+ `_tests.rs`), `vta_sdk::client` (`collection_*`), `vta-cli-common/src/commands/collection.rs`.
+- **Docs**: `docs/02-vta/collection.md`.

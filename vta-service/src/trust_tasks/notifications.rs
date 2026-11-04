@@ -117,7 +117,11 @@ async fn handle_delivery(state: &AppState, doc: TrustTask<Value>, relay: bool) -
     }
 }
 
-fn refuse_chain(doc: &TrustTask<Value>, e: &ChainError, relay: bool) -> TrustTaskOutcome {
+pub(super) fn refuse_chain(
+    doc: &TrustTask<Value>,
+    e: &ChainError,
+    relay: bool,
+) -> TrustTaskOutcome {
     if relay && e.is_chain_invalid() {
         return reject_declared(
             doc,
@@ -408,7 +412,7 @@ pub(super) async fn handle_deposit(
     )
 }
 
-fn disposition_label(disposition: &Disposition) -> String {
+pub(super) fn disposition_label(disposition: &Disposition) -> String {
     match disposition {
         Disposition::Held { record_id } => format!("held as {record_id}"),
         Disposition::Replaced { record_id } => format!("replaced {record_id}"),

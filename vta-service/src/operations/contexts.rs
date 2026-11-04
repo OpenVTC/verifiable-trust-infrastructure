@@ -860,6 +860,7 @@ pub async fn delete_context(
         pcs_engine_records_removed = rows.pcs_engine,
         external_accounts_removed = rows.external_accounts,
         quota_counters_removed = rows.quota_counters,
+        collection_records_removed = rows.collection,
         "context (and subtree) deleted"
     );
     Ok(DeleteContextResultBody {
@@ -995,6 +996,7 @@ const PURGED_ON_CONTEXT_DELETE: &[&str] = &[
     crate::keyspaces::PCS_ENGINE,
     crate::keyspaces::EXTERNAL_ACCOUNTS,
     crate::keyspaces::EXTERNAL_SECRETS,
+    crate::keyspaces::COLLECTION,
 ];
 
 /// How many rows [`purge_context_rows`] removed, by store, for the log line.
@@ -1011,6 +1013,7 @@ struct PurgedRows {
     pcs_engine: usize,
     external_accounts: usize,
     quota_counters: usize,
+    collection: usize,
 }
 
 impl std::ops::AddAssign for PurgedRows {
@@ -1025,6 +1028,7 @@ impl std::ops::AddAssign for PurgedRows {
         self.notifications += o.notifications;
         self.pcs_engine += o.pcs_engine;
         self.external_accounts += o.external_accounts;
+        self.collection += o.collection;
         self.quota_counters += o.quota_counters;
     }
 }
@@ -1069,6 +1073,9 @@ async fn purge_context_rows(
         )
         .await?,
         quota_counters: crate::contexts::purge_quota_counters(ks.contexts, context_id).await?,
+        // Every collection claim for the context's identifiers ends with it
+        // (VTI-NTF-090); the collector stops on its next pass.
+        collection: super::collection::purge_context(ks.collection, context_id).await?,
     })
 }
 
@@ -1505,6 +1512,7 @@ mod tests {
         notifications: KeyspaceHandle,
         external_accounts: KeyspaceHandle,
         external_secrets: KeyspaceHandle,
+        collection: KeyspaceHandle,
         #[cfg(feature = "webvh")]
         webvh: KeyspaceHandle,
     }
@@ -1529,6 +1537,7 @@ mod tests {
                 notifications: &self.notifications,
                 external_accounts: &self.external_accounts,
                 external_secrets: &self.external_secrets,
+                collection: &self.collection,
                 #[cfg(feature = "webvh")]
                 webvh: &self.webvh,
             }
@@ -1561,6 +1570,7 @@ mod tests {
             notifications: k(ks::NOTIFICATIONS),
             external_accounts: k(ks::EXTERNAL_ACCOUNTS),
             external_secrets: k(ks::EXTERNAL_SECRETS),
+            collection: k(ks::COLLECTION),
             #[cfg(feature = "webvh")]
             webvh: k(ks::WEBVH),
             _dir: dir,

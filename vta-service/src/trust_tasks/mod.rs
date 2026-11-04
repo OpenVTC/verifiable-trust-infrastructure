@@ -123,6 +123,8 @@ pub(crate) mod transport;
 // approve-response that elevates a session. What decides a ceremony is needed
 // is [`policy_gate`] and nothing else — the `RequireStepUp` extractor and its
 // per-route op markers are gone with the config floors they read.
+/// `vta/collection/*` and what the VTA answers as a persona it collects for.
+pub(crate) mod collection;
 pub(crate) mod notifications;
 pub(crate) mod step_up;
 mod vault;
@@ -2849,6 +2851,16 @@ dispatch_table! {
     // exactly as a direct delivery would be.
     vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1 => notifications::handle_deposit
         [ Mutating None false ],
+    // ─── Collection (`vta/collection/*`, VTI-NTF-080 – 093) ────────
+    // Who holds each persona DID's one mediator connection. Served whether or
+    // not collection by default is on (VTI-NTF-093); the listing discloses
+    // which client collects for which persona — metadata.
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_CLAIM_0_1 => collection::handle_claim
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_RELEASE_0_1 => collection::handle_release
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_LIST_0_1 => collection::handle_list
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list

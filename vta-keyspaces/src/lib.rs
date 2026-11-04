@@ -63,6 +63,9 @@ pub struct Keyspaces<'a> {
     pub external_accounts: &'a KeyspaceHandle,
     /// The wrapped secrets of external accounts ([`EXTERNAL_SECRETS`]).
     pub external_secrets: &'a KeyspaceHandle,
+    /// Collection claims and conflicts ([`COLLECTION`]). Here so a context
+    /// deletion ends every claim for its identifiers (VTI-NTF-090).
+    pub collection: &'a KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh: &'a KeyspaceHandle,
 }
@@ -388,6 +391,21 @@ pub const WITNESS_SESSIONS: &str = "witness_sessions";
 /// in, a member-party election among it (VTI-NTF-063).
 pub const NOTIFICATIONS: &str = "notifications";
 
+/// **Collection** of the principal's identifiers (`vta/collection/*`,
+/// VTI-NTF-080 – 093): the collection claims — `claim:<contextId>\0<did>`, a
+/// client's lease on being a persona DID's one collector at its mediator — the
+/// identifiers the VTA stopped collecting for after another connection kept
+/// closing its own (`conflict:<contextId>\0<did>`), the identities provisioned
+/// for another party, which their holders collect for (`provisioned:<did>`),
+/// and the last applied value of the operator's "collection by default" setting
+/// (`setting`), so a change is audited once (VTI-NTF-093).
+///
+/// In [`BACKED_UP`]: a claim names a client that is connected for the
+/// identifier until the claim ends. A restore without it would make the
+/// restored VTA the second connection to every claimed persona, which is the
+/// eviction fight the claim exists to prevent (VTI-NTF-081).
+pub const COLLECTION: &str = "collection";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -431,6 +449,7 @@ pub const ALL: &[&str] = &[
     PCS_ENGINE,
     WITNESS_SESSIONS,
     NOTIFICATIONS,
+    COLLECTION,
 ];
 
 /// Keyspaces a backup carries, **every row of each**, as a raw dump.
@@ -505,6 +524,9 @@ pub const BACKED_UP: &[&str] = &[
     // What the principal was told they may take part in. An originator sends each
     // revision once, so a lost record is not fetched again (VTI-NTF-050).
     NOTIFICATIONS,
+    // Who collects for each persona. A restored VTA without the claims would be
+    // the second connection to every claimed persona (VTI-NTF-081).
+    COLLECTION,
 ];
 
 /// Keyspaces deliberately **not** in a backup, each for a stated reason.
@@ -771,6 +793,11 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         b"witness_sessions" => Orphaned,
         // A held notification was addressed to the DID.
         b"notifications" => Orphaned,
+        // A collection claim, conflict or provisioned marker names the DID. Not
+        // reached by the cascade; the collector's sweep drops claims and
+        // conflicts on an identifier that is no longer collectable within one
+        // pass, and such a claim is not in force meanwhile (VTI-NTF-090).
+        b"collection" => Orphaned,
         // Persona is two scopes in one keyspace and only one half is DID-keyed:
         // a binding is keyed by the persona DID, and a contact records the
         // persona that knows it. Those should cascade (a context deletion takes
@@ -919,6 +946,9 @@ pub const fn context_delete_effect(keyspace: &str) -> Option<ContextDeleteEffect
         // one: secret gone, id retired. The `retired:` tombstones are kept —
         // see `Retained` below for why that is not a resurrection.
         b"external_accounts" | b"external_secrets" => Purged,
+        // Collection claims and conflicts on the context's identifiers end with
+        // it (VTI-NTF-090).
+        b"collection" => Purged,
 
         // ---- Kept on purpose --------------------------------------------
         // Append-only; the record that a context was deleted must survive it.

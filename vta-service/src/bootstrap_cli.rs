@@ -649,6 +649,13 @@ pub async fn run_provision_integration(
     )
     .await
     .map_err(|e| format!("provision-integration: {e}"))?;
+    // Its holder collects for the integration's DID, never this VTA
+    // (VTI-NTF-080 item 2).
+    if let Some(did) = output.summary.integration_did.as_deref() {
+        crate::operations::collection::mark_provisioned(&state.collection_ks, did)
+            .await
+            .map_err(|e| format!("record the integration as provisioned: {e}"))?;
+    }
 
     // 6. Persist nonce-store writes + any other fjall flushes. The
     //    shared fn already committed its rows via the keyspaces; this
@@ -1077,6 +1084,7 @@ pub async fn run_context_delete(
     let notifications_ks = cs.keyspace(crate::keyspaces::NOTIFICATIONS)?;
     let external_accounts_ks = cs.keyspace(crate::keyspaces::EXTERNAL_ACCOUNTS)?;
     let external_secrets_ks = cs.keyspace(crate::keyspaces::EXTERNAL_SECRETS)?;
+    let collection_ks = cs.keyspace(crate::keyspaces::COLLECTION)?;
     #[cfg(feature = "webvh")]
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
@@ -1130,6 +1138,7 @@ pub async fn run_context_delete(
         notifications: &notifications_ks,
         external_accounts: &external_accounts_ks,
         external_secrets: &external_secrets_ks,
+        collection: &collection_ks,
         #[cfg(feature = "webvh")]
         webvh: &webvh_ks,
     };

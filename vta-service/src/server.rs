@@ -281,6 +281,12 @@ pub struct AppState {
     /// The notifications held for the principal (`vta/notifications/*`) — see
     /// [`crate::keyspaces::NOTIFICATIONS`].
     pub notifications_ks: KeyspaceHandle,
+    /// Collection claims, conflicts and the setting's last applied value — see
+    /// [`crate::keyspaces::COLLECTION`].
+    pub collection_ks: KeyspaceHandle,
+    /// Who collects for each persona DID: the handle the `vta/collection/*`
+    /// handlers and the collector share (`operations::collection`).
+    pub collection: Arc<crate::operations::collection::CollectionControl>,
     /// A member's MLS group for each room they belong to. Group secrets — see
     /// [`crate::keyspaces::ROOM_GROUPS`].
     pub room_groups_ks: KeyspaceHandle,
@@ -632,6 +638,7 @@ pub async fn build_app_state(
     // Held notifications: each names who the principal belongs to, so it is
     // encrypted at rest like the vault.
     let notifications_ks = apply_encryption(store.keyspace(crate::keyspaces::NOTIFICATIONS)?);
+    let collection_ks = apply_encryption(store.keyspace(crate::keyspaces::COLLECTION)?);
     // Encrypted alongside the key store where a TEE deployment provides a storage key: a
     // group snapshot decrypts every record its room holds, which is the same class of
     // material as a derived key and deserves the same treatment.
@@ -756,6 +763,10 @@ pub async fn build_app_state(
         pcs_engine_ks,
         witness_sessions_ks,
         notifications_ks,
+        collection_ks,
+        collection: Arc::new(crate::operations::collection::CollectionControl::new(
+            config.collection.collect_by_default,
+        )),
         room_groups_ks,
         room_invitations_ks,
         app_state_ks,
@@ -1675,6 +1686,16 @@ pub async fn run(
             }
         }
 
+        // The collector: the connections the VTA holds for the principal's
+        // persona DIDs (VTI-NTF-080 – 093). It runs whether or not collection
+        // by default is on, so a change of the setting is audited and, when
+        // off, nothing is opened.
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        let collector_handle = tokio::spawn(crate::messaging::collector::run(
+            app_state.clone(),
+            didcomm_shutdown.clone(),
+        ));
+
         // TSP inbound is no longer a standalone websocket. The delivery-layer
         // `DidCommTransport` built above multiplexes TSP frames off its single
         // mediator websocket (`Inbound.message.protocol` tags DIDComm vs TSP);
@@ -1814,6 +1835,20 @@ pub async fn run(
                     let _ = shutdown_tx.send(true);
                     is_restart = true;
                 }
+            }
+        }
+
+        // The collector's connections are closed before this generation ends,
+        // so a soft restart never opens a persona's socket while the last
+        // generation's is still up (one socket per DID).
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        {
+            didcomm_shutdown.cancel();
+            if tokio::time::timeout(std::time::Duration::from_secs(30), collector_handle)
+                .await
+                .is_err()
+            {
+                warn!("the collector did not close its connections within 30s");
             }
         }
 
