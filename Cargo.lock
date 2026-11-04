@@ -9180,6 +9180,7 @@ dependencies = [
  "vti-rooms-dtg",
  "vti-secrets",
  "vti-specs",
+ "vti-trust-task-server",
 ]
 
 [[package]]

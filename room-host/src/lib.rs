@@ -86,6 +86,7 @@ use vti_rooms::{
     storage,
 };
 use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier, nomination};
+use vti_trust_task_server::Acceptance;
 
 /// Default retention after a room's epoch lapses without renewal.
 const DEFAULT_RETENTION_DAYS: u32 = 90;
@@ -110,6 +111,10 @@ pub struct HostState {
     /// Room files: the blob index, transfers, limits and usage, and the store
     /// the ciphertext lives in. Ciphertext this host cannot read, again.
     files: Arc<vti_rooms::blobs::BlobHost>,
+    /// The record of accepted document identifiers (SPEC §7.2 item 11,
+    /// VTI-OPS-025 … 029): in the store, so it survives a restart and is shared
+    /// by every carrier that reaches [`dispatch`].
+    accepted_ids: KeyspaceHandle,
     /// How a DID resolves to the key that signed a credential.
     ///
     /// A room's credentials are issued by the room, which is normally a `did:webvh`, so a
@@ -142,6 +147,14 @@ impl HostState {
     /// This host's DID, when it has one.
     pub fn host_did(&self) -> Option<&str> {
         self.host_did.get().map(String::as_str)
+    }
+
+    /// Drop every accepted-id record whose retention has passed, returning how
+    /// many. Run on a timer: the record is read-through-expiry, so this only
+    /// bounds the keyspace.
+    pub async fn sweep_accepted_ids(&self) -> Result<usize, AppError> {
+        vti_trust_task_server::accepted_store::sweep_expired(&self.accepted_ids, chrono::Utc::now())
+            .await
     }
 
     /// The room keyspace.
@@ -500,26 +513,13 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
     // nothing), so a duplicate read is answered `204` with no body.
     let keep_response = is_consequential(&doc.type_uri.to_string());
 
-    let doc_id = doc.id.clone();
-    let digest = match trust_tasks_rs::document_digest(&doc) {
-        Ok(d) => d,
-        Err(e) => {
-            return reject(
-                &doc,
-                RejectReason::InternalError {
-                    reason: format!(
-                        "cannot canonicalise the document to key its replay record: {e}"
-                    ),
-                },
-            );
-        }
-    };
     let retain_until = retain_until(&doc, now);
-    match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc_id, &digest, retain_until, now)
+    let claim = match vti_trust_task_server::StoreAcceptedIds::new(state.accepted_ids.clone())
+        .claim(&doc, retain_until, now)
         .await
     {
-        Ok(trust_tasks_rs::ReplayVerdict::Fresh) => {}
-        Ok(trust_tasks_rs::ReplayVerdict::Duplicate {
+        Ok(Acceptance::Fresh(claim)) => claim,
+        Ok(Acceptance::Duplicate {
             prior_response,
             in_flight,
         }) => {
@@ -546,40 +546,30 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
         }
         // A *different* document under an already-spent id. Digest-keyed precisely so this
         // is refused rather than absorbed as a retry of the original.
-        Ok(trust_tasks_rs::ReplayVerdict::Conflict) => {
+        Ok(Acceptance::Conflict) => {
             return reject(&doc, RejectReason::IdConflict);
         }
         // Fail closed: a host that cannot establish whether a document is a duplicate has
         // not satisfied item 11, so it must not execute. `unavailable` is retryable, which
-        // is the truthful signal.
+        // is the truthful signal; an undigestible document is the document's fault.
         Err(e) => {
-            tracing::error!(error = %e, id = %doc_id, "replay guard unavailable");
-            return reject(&doc, RejectReason::Unavailable { retry_after: None });
+            tracing::error!(error = ?e, id = %doc.id, "accepted-id record unavailable");
+            return reject(&doc, e.reject_reason());
         }
-        // `ReplayVerdict` is `#[non_exhaustive]`; every variant so far is a reason not to
-        // run the task, so an unknown one is refused rather than guessed permissively.
-        Ok(other) => {
-            tracing::error!(verdict = ?other, id = %doc_id, "replay guard: unknown verdict");
-            return reject(&doc, RejectReason::Unavailable { retry_after: None });
-        }
-    }
+    };
 
     let answer = route(state, doc).await;
 
     // Close out the claim. A success records its response so the redelivery this exists to
     // absorb is answered with the result; a failure releases, or a document refused
     // downstream of the claim would burn its id and a corrected resend under the same id
-    // would come back `idConflict` until the record expired.
-    {
-        let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
-        if (200..300).contains(&answer.status) {
-            let kept = keep_response.then_some(&answer.document);
-            if let Err(e) = guard.record_response(&doc_id, kept).await {
-                tracing::warn!(error = %e, id = %doc_id, "replay guard: response not recorded");
-            }
-        } else if let Err(e) = guard.release(&doc_id, &digest).await {
-            tracing::warn!(error = %e, id = %doc_id, "replay guard: claim not released");
-        }
+    // would come back `202` (still in flight) until the record expired.
+    if (200..300).contains(&answer.status) {
+        claim
+            .completed(keep_response.then_some(&answer.document))
+            .await;
+    } else {
+        claim.release().await;
     }
 
     answer
@@ -664,13 +654,14 @@ fn is_consequential(type_uri: &str) -> bool {
     )
 }
 
-/// Process-local duplicate-execution records (SPEC §7.2 item 11).
+/// The keyspace the accepted-document-id record lives in (SPEC §7.2 item 11).
 ///
-/// In-memory and single-process, matching the VTA's and the VTC's. A replicated host would
-/// need a shared store behind the same trait — two replicas each hold their own map, so a
-/// document accepted at one is `Fresh` at the other and the write happens twice.
-static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
-    std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
+/// In the store rather than in the process, as the VTA's and the VTC's are: a document
+/// stating an `expiresAt` is acceptable for up to thirty days (VTI-OPS-028), so a restart
+/// inside its window is routine, and a record held only in memory would let its replay
+/// after the restart execute again (VTI-OPS-029). One host process owns its store; a
+/// replicated host would still need the record shared between replicas.
+pub const ACCEPTED_IDS_KEYSPACE: &str = "accepted_ids";
 
 /// The acceptance window: the VTC's (`VTI_ACCEPTANCE_WINDOW`, `issuedAt` required), so a
 /// document a VTC host would accept is accepted here and one it would refuse is refused.
@@ -1772,6 +1763,7 @@ pub fn open_state_with_files(
             )),
             files.limits,
         )),
+        accepted_ids: store.keyspace(ACCEPTED_IDS_KEYSPACE)?,
         resolver,
         host_did: Arc::new(std::sync::OnceLock::new()),
     }))
@@ -2495,6 +2487,79 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["version"], 1, "the record was written twice");
+    }
+
+    /// **VTI-OPS-029.** The record survives a restart. A write accepted before the host
+    /// restarts is still inside its acceptance window after it, and a redelivery then must
+    /// be answered from the record, not written again. With the record in memory the
+    /// second process had never seen the document and wrote version 2.
+    #[tokio::test]
+    async fn a_write_redelivered_after_a_restart_is_executed_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = RoomFixture::new(Visibility::Open).await;
+        let doc = vta_sdk::trust_task_sign::build_signed(
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "decision/pricing",
+                "presentation": f.as_owner(),
+                "cleartext": { "body": "a decision" },
+            }),
+            &f.owner.did,
+            &f.owner.secret_multibase,
+            "did:key:zHost",
+        )
+        .await
+        .expect("sign the request");
+
+        let first = {
+            let st = open_state(dir.path()).expect("open store");
+            let app = router(st.clone());
+            register(&app, &f).await;
+            let (status, first) = post_raw(&app, doc.as_bytes()).await;
+            assert_eq!(status, StatusCode::OK, "{first}");
+            assert_eq!(first["version"], 1);
+            // In the store, not the process: a static map would also pass the rest of
+            // this test, which runs both "processes" in one.
+            let id = serde_json::from_str::<Value>(&doc).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                st.accepted_ids
+                    .get_raw(format!("accepted:{id}").into_bytes())
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "the accepted id is recorded in the host's store"
+            );
+            first
+        };
+
+        // The first process is gone; its store is all that remains.
+        let app = router(open_state(dir.path()).expect("reopen store"));
+        let (status, second) = post_raw(&app, doc.as_bytes()).await;
+        assert_eq!(status, StatusCode::OK, "{second}");
+        assert_eq!(
+            second, first,
+            "answered with the original result, not executed again"
+        );
+        let (status, body) = call(
+            &app,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "decision/pricing",
+                "presentation": f.as_owner(),
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["version"], 1,
+            "the record was written twice across the restart"
+        );
     }
 
     /// A *different* document under an already-spent `id` is a conflict, not a retry.

@@ -287,6 +287,23 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // The accepted-document-id record: rows past their retention are dropped on a
+    // timer. Reads already treat them as absent, so this only bounds the keyspace.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                tick.tick().await;
+                match state.sweep_accepted_ids().await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::debug!(removed = n, "expired accepted-id records swept"),
+                    Err(e) => tracing::warn!(error = %e, "accepted-id record sweep failed"),
+                }
+            }
+        });
+    }
+
     // Mirrors start before the listener: a host that is going to serve a copy
     // should begin catching up before it starts answering reads from it, and a
     // config that does not parse is a startup failure rather than a warning
