@@ -27,6 +27,7 @@ pub use vti_specs::vtc::elections::{
     ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
     certify::v0_1 as certify, close::v0_1 as close, create::v0_5 as create, list::v0_5 as list,
     show::v0_6 as show, tickets::issue::v0_3 as tickets_issue,
+    tombstones::show::v0_1 as tombstone_show,
 };
 
 /// The Type URI of each task, read off the generated payloads.
@@ -41,6 +42,7 @@ pub mod task {
     pub const CERTIFY: &str = <super::certify::Payload as Payload>::TYPE_URI;
     pub const TICKETS_ISSUE: &str = <super::tickets_issue::Payload as Payload>::TYPE_URI;
     pub const BALLOT_BOXES_LIST: &str = <super::ballot_boxes_list::Payload as Payload>::TYPE_URI;
+    pub const TOMBSTONE_SHOW: &str = <super::tombstone_show::Payload as Payload>::TYPE_URI;
 }
 
 impl VtcClient {
@@ -101,6 +103,28 @@ impl VtcClient {
         let payload = checked::<show::Payload>(json!({ "electionId": election_id }))?;
         self.acl_task(task::SHOW, payload, key, show::ERROR_CODES)
             .await
+    }
+
+    /// `vtc/elections/tombstones/show/0.1` — what the community keeps of an election on a deleted
+    /// board (VTI-BRD-009): identifier, manifest digest, ballot box and the board heads it kept,
+    /// each in the ballot box's signed document, to check a receipt against.
+    ///
+    /// # Errors
+    /// [`VtcError::InvalidPayload`] out of schema; the VTC's refusal otherwise
+    /// (`electionUnknown` for no tombstone, or one the caller may not read).
+    pub async fn elections_tombstone(
+        &self,
+        election_id: &str,
+        key: &HolderKey,
+    ) -> Result<tombstone_show::Response, VtcError> {
+        let payload = checked::<tombstone_show::Payload>(json!({ "electionId": election_id }))?;
+        self.acl_task(
+            task::TOMBSTONE_SHOW,
+            payload,
+            key,
+            tombstone_show::ERROR_CODES,
+        )
+        .await
     }
 
     /// `vtc/elections/close/0.1` — close an election early, where its manifest allows it.

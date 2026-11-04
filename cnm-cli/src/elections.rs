@@ -59,6 +59,9 @@ pub enum ElectionsCommands {
     },
     /// Show one election: its manifest, state, disclosure and board checkpoints.
     Show { election_id: String },
+    /// Show what the community keeps of an election on a deleted board — its tombstone: the
+    /// manifest digest, ballot box and the board heads it kept, to check a receipt against.
+    Tombstone { election_id: String },
     /// Close an election early, where its manifest allows it.
     Close {
         election_id: String,
@@ -432,6 +435,44 @@ async fn run_command(command: ElectionsCommands, vtc: &Connected, keyring_key: &
                     e.voting_opens_at,
                     e.voting_closes_at,
                     if e.binding { "  binding" } else { "" },
+                );
+            }
+            Ok(())
+        }
+        ElectionsCommands::Tombstone { election_id } => {
+            let t = c
+                .elections_tombstone(&election_id, &key)
+                .await
+                .map_err(|e| refusal(vtc, e, &election_id, None))?;
+            if is_json_output() {
+                return Ok(print_json(&t)?);
+            }
+            let v = serde_json::to_value(&t)?;
+            println!("{BOLD}{election_id}{RESET}  tombstone (its board was deleted)");
+            println!(
+                "  manifest     {}",
+                v["manifestDigest"].as_str().unwrap_or_default()
+            );
+            println!(
+                "  ballot box   {}",
+                v["ballotBox"].as_str().unwrap_or_default()
+            );
+            println!(
+                "  deleted      {}",
+                v["deletedAt"].as_str().unwrap_or_default()
+            );
+            println!(
+                "  removed      {}",
+                v["removeAt"].as_str().unwrap_or("never — kept for ever")
+            );
+            let heads = v["checkpoints"].as_array().cloned().unwrap_or_default();
+            println!("  heads kept   {}", heads.len());
+            for h in heads {
+                println!(
+                    "    {}  size {}  root {}",
+                    h["head"]["issuedAt"].as_str().unwrap_or_default(),
+                    h["head"]["treeSize"],
+                    h["head"]["rootHash"].as_str().unwrap_or_default()
                 );
             }
             Ok(())

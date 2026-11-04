@@ -1398,6 +1398,8 @@ async fn vti_brd_031_concurrent_accepts_open_one_election_and_refuse_neither() {
 
 // ─── closing and deleting ────────────────────────────────────────────────
 
+const TOMBSTONE_ERR_ELECTION_UNKNOWN: &str =
+    vti_specs::vtc::elections::tombstones::show::v0_1::error_codes::ELECTION_UNKNOWN.code;
 const DELETE_ERR_NOT_FOUND: &str = b::delete::v0_1::error_codes::NOT_FOUND.code;
 const DELETE_ERR_NOT_CLOSED: &str = b::delete::v0_1::error_codes::NOT_CLOSED.code;
 const DELETE_ERR_ELECTIONS_RUNNING: &str = b::delete::v0_1::error_codes::ELECTIONS_RUNNING.code;
@@ -1730,4 +1732,78 @@ async fn vti_brd_008_a_zero_retention_keeps_nothing() {
             .unwrap()
             .is_none()
     );
+}
+
+/// VTI-BRD-009: while it keeps a tombstone, the community shows it to an active member and an
+/// elections manager — identifier, manifest digest, ballot box and the kept heads, nothing the
+/// board held — and answers an unknown election, an unreadable one and a removed one alike.
+#[tokio::test]
+async fn vti_brd_009_a_tombstone_is_read_by_members_until_it_is_removed() {
+    let bx = InProcessBox::new();
+    let tv = community(bx.clone()).await;
+    let chair = GatedAdmin::new(&tv).await;
+    let alice = member(&tv).await;
+    let board = create_board(&tv, &chair.requester, board_body()).await;
+    let idea = propose(&tv, &alice, &board, "Kept as evidence").await;
+    let e = accepted(&tv, &chair.requester, &idea).await;
+    call(
+        &tv,
+        &chair.requester,
+        &uri("update"),
+        json!({ "boardId": board, "status": "closed" }),
+    )
+    .await;
+    assert_eq!(settled(&tv, &e).await, "closed");
+    // The final head is kept once voting has closed.
+    vtc_service::elections::sweeper::pass(&tv.state, Utc::now())
+        .await
+        .unwrap();
+    let (status, doc) = chair
+        .call(
+            &tv,
+            &uri("delete"),
+            json!({ "boardId": board, "reason": "Done." }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+
+    let read = format!("{SPEC}vtc/elections/tombstones/show/0.1");
+    let (status, doc) = call(&tv, &alice, &read, json!({ "electionId": e })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let t = payload(&doc);
+    assert_eq!(t["electionId"], e);
+    assert_eq!(t["ballotBox"], BOX);
+    assert!(t["manifestDigest"].as_str().is_some_and(|d| !d.is_empty()));
+    assert!(t["removeAt"].is_string(), "{doc}");
+    let checkpoints = t["checkpoints"].as_array().unwrap();
+    assert!(!checkpoints.is_empty(), "the final head is kept: {doc}");
+    assert!(
+        checkpoints
+            .iter()
+            .all(|c| c["document"]["payload"]["head"] == c["head"])
+    );
+    assert!(
+        !doc.to_string().contains("Kept as evidence"),
+        "no text: {doc}"
+    );
+
+    // An unknown election, and a caller who is not a member, are answered alike.
+    let (_, doc) = call(
+        &tv,
+        &alice,
+        &read,
+        json!({ "electionId": "board.nope.nope" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), TOMBSTONE_ERR_ELECTION_UNKNOWN, "{doc}");
+    let stranger = party_with_role(&tv, VtcRole::Application, &[]).await;
+    let (_, doc) = call(&tv, &stranger, &read, json!({ "electionId": e })).await;
+    assert_eq!(tt_error_code(&doc), TOMBSTONE_ERR_ELECTION_UNKNOWN, "{doc}");
+
+    // Gone once its retention has passed.
+    vtc_service::elections::sweeper::pass(&tv.state, Utc::now() + Duration::days(366))
+        .await
+        .unwrap();
+    let (_, doc) = call(&tv, &alice, &read, json!({ "electionId": e })).await;
+    assert_eq!(tt_error_code(&doc), TOMBSTONE_ERR_ELECTION_UNKNOWN, "{doc}");
 }
