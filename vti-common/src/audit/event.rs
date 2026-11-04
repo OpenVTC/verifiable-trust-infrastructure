@@ -682,6 +682,14 @@ pub enum AuditEvent {
     /// or description.
     GroupChanged(GroupChangedData),
 
+    /// A community board changed (VTI-BRD-080): a board created, changed, closed or
+    /// archived; an idea accepted, declined, merged, reopened or selected; a note hidden
+    /// or shown again.
+    ///
+    /// Carries identifiers only — never an idea's or a note's text, and never anything
+    /// about an election's tickets or ballots (VTI-VOT-100).
+    BoardChanged(BoardChangedData),
+
     /// A member joined or left a community group, or a request to join one was
     /// made or decided (`vtc/groups/*`). By reference: the group and the
     /// member's entry, never their DID or a request's message.
@@ -1300,6 +1308,7 @@ impl AuditEvent {
             Self::DirectoryNoteAccessed(..) => "DirectoryNoteAccessed",
             Self::DirectoryExported(..) => "DirectoryExported",
             Self::GroupChanged(..) => "GroupChanged",
+            Self::BoardChanged(..) => "BoardChanged",
             Self::GroupMembershipChanged(..) => "GroupMembershipChanged",
             Self::GroupGrantsChanged(..) => "GroupGrantsChanged",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
@@ -3065,6 +3074,33 @@ pub struct GroupChangedData {
     pub reason: Option<String>,
 }
 
+/// Payload for [`AuditEvent::BoardChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardChangedData {
+    pub board_id: String,
+    /// The idea the change concerns, by identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idea_id: Option<String>,
+    /// The note the change concerns, by identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<String>,
+    /// `created`, `updated`, `closed`, `archived`, `ideaAccepted`, `ideaDeclined`,
+    /// `ideaMerged`, `ideaReopened`, `ideaSelected`, `ideaNotSelected`, `noteHidden` or
+    /// `noteShown`.
+    pub change: String,
+    /// The election an accepted idea was put to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub election_id: Option<String>,
+    /// The settings an update named, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    /// A facilitator deciding their own idea because no other facilitator existed
+    /// (VTI-BRD-013).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_idea: bool,
+}
+
 /// Payload for [`AuditEvent::GroupMembershipChanged`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -4683,6 +4719,20 @@ mod tests {
                     reason: Some("the working group starts".into()),
                 }),
                 "GroupChanged",
+            ),
+            (
+                AuditEvent::BoardChanged(BoardChangedData {
+                    board_id: "brd_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    idea_id: Some("ida_AAAAAAAAAAAAAAAAAAAAAA".into()),
+                    note_id: None,
+                    change: "ideaAccepted".into(),
+                    election_id: Some(
+                        "board.brd_AAAAAAAAAAAAAAAAAAAAAA.ida_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    ),
+                    fields: Vec::new(),
+                    own_idea: false,
+                }),
+                "BoardChanged",
             ),
             (
                 AuditEvent::GroupMembershipChanged(GroupMembershipChangedData {

@@ -93,6 +93,84 @@ type_uri = "https://trusttasks.org/spec/vtc/backup/import/0.1"
 digest = "sha256:0802d5681f03edace3e5754836cedca9ae6c1216e868fe1823cbdbf0c4dcc56e"
 
 [[task]]
+slug = "vtc/boards/create"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/create/0.1"
+digest = "sha256:d48592f48ab06a8d96d2a33d3e72104e23b2cb22a23a3c81ddc62259b1efaa84"
+
+[[task]]
+slug = "vtc/boards/ideas/decide"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/ideas/decide/0.1"
+digest = "sha256:ee1185ff91730a27d2d15355927cc70d5984fc26fff0d368b42e42a500fa6eb1"
+
+[[task]]
+slug = "vtc/boards/ideas/propose"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/ideas/propose/0.1"
+digest = "sha256:e8c4461b601ef048adcca557c76a3dbc1334de7489404d577f903675b2687e95"
+
+[[task]]
+slug = "vtc/boards/ideas/select"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/ideas/select/0.1"
+digest = "sha256:780042730405f0de8b16b34c9d3a6b9bd1261041ce83850cc7727474d4e54797"
+
+[[task]]
+slug = "vtc/boards/ideas/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/ideas/update/0.1"
+digest = "sha256:1a98ecf664eaa5a51a8d69c22f163181952177908c7a30715018691d6514103c"
+
+[[task]]
+slug = "vtc/boards/ideas/withdraw"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/ideas/withdraw/0.1"
+digest = "sha256:8663b8593b708c16dccbfa7ecd91ecb2351238bf880d498824e06688dc37edf6"
+
+[[task]]
+slug = "vtc/boards/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/list/0.1"
+digest = "sha256:ecdf520b9364906e0f8a275a5af8a91e385a2afde26a79f95b807a17aed41f18"
+
+[[task]]
+slug = "vtc/boards/notes/add"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/notes/add/0.1"
+digest = "sha256:932c1ce88bc6e0d0e0b66ab325d43814874e45aa4c536d932da8f751d5adf6dc"
+
+[[task]]
+slug = "vtc/boards/notes/hide"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/notes/hide/0.1"
+digest = "sha256:7cf9a511dca65c49df8041b017b4a1fdaa5cbd1a0cb9b483c3ed6f182827fcde"
+
+[[task]]
+slug = "vtc/boards/notes/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/notes/list/0.1"
+digest = "sha256:a0bba0b991cbca87720592e1f4519cccdf2bcc5b2f3ad4286b5f910d2ed9ce52"
+
+[[task]]
+slug = "vtc/boards/notes/withdraw"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/notes/withdraw/0.1"
+digest = "sha256:ca4dee637b75dbcb80f3a4377cc58cfd4be3f44aba66f4ad7e1678e3a0f743e7"
+
+[[task]]
+slug = "vtc/boards/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/show/0.1"
+digest = "sha256:d83ca9f0903240946ede18434c3010b5c8b91bea2536474206f2a50805230082"
+
+[[task]]
+slug = "vtc/boards/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/update/0.1"
+digest = "sha256:dea4517437383187e2d41d067a419654224031cc0e9f67ca9c93ca18e38d35b9"
+
+[[task]]
 slug = "vtc/ceremonies/list"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/ceremonies/list/0.1"

@@ -346,6 +346,7 @@ pub async fn create(
         ceremony: None,
         decryption_authorized: false,
         roll_party: checked.roll_party.clone(),
+        verified: None,
     };
     if !store::put_new(state.elections.ks(), &rec).await? {
         return Err(CreateError::ElectionExists);
@@ -1135,32 +1136,28 @@ pub struct Certified {
 /// The most entries one `voting/board/read` asks for.
 const READ_PAGE: u64 = 1000;
 
-/// Certify `election_id`: read the result, the head and every entry from the ballot box itself —
-/// never from the requester — verify the board from the community's own voting key, check each
-/// auditor's attestation, and only then record (certify items 2 – 11).
+/// A published result the community verified from the board (certify items 3 – 9).
+pub struct Verified {
+    pub result: Value,
+}
+
+/// Read the published result, the head and every entry from the ballot box itself and verify
+/// them from the community's own voting key — what certification checks before it records
+/// anything (certify items 3 – 9). Records nothing: [`certify`] records a certification, and
+/// [`verify_and_keep`] keeps an uncertified result for a board's facilitators.
 ///
 /// # Errors
-/// As the certify specification lists, the first failure found.
-pub async fn certify(
+/// As [`certify`] lists for those items.
+pub async fn verify(
     state: &AppState,
-    election_id: &str,
-    attestations: &[Value],
-    now: DateTime<Utc>,
-) -> Result<Certified, CertifyError> {
+    rec: &store::ElectionRecord,
+    community: &str,
+) -> Result<Verified, CertifyError> {
     use vti_voting::audit::{AuditFailure, Evidence, HeadRef};
-    let ks = state.elections.ks();
-    let Some(rec) = store::get(ks, election_id).await? else {
-        return Err(CertifyError::ElectionUnknown);
-    };
-    // Item 2.
-    if rec.certified.is_some() {
-        return Err(CertifyError::AlreadyCertified);
-    }
     if !rec.is_registered() {
         return Err(CertifyError::NotTallied);
     }
-    let community = community_did(state).await;
-    let sel = json!({ "community": community, "electionId": election_id });
+    let sel = json!({ "community": community, "electionId": rec.election_id });
     let unavailable = |e: LinkError| CertifyError::BallotBoxUnavailable(e.to_string());
 
     // Item 3: the result, the head, every entry under it.
@@ -1223,6 +1220,70 @@ pub async fn certify(
         AuditFailure::ResultMismatch(why) => CertifyError::ResultMismatch(why),
         other => CertifyError::ResultMismatch(other.to_string()),
     })?;
+    Ok(Verified { result })
+}
+
+/// Verify `election_id`'s published result ([`verify`]) and keep it on the record as
+/// `verified`, uncertified: `{result, head, verifiedAt}`. A result already kept, or a certified
+/// election, is answered from the record without asking the ballot box again.
+///
+/// # Errors
+/// As [`verify`].
+pub async fn verify_and_keep(
+    state: &AppState,
+    election_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Value, CertifyError> {
+    let ks = state.elections.ks();
+    let Some(rec) = store::get(ks, election_id).await? else {
+        return Err(CertifyError::ElectionUnknown);
+    };
+    if let Some(c) = &rec.certified {
+        return Ok(c["result"].clone());
+    }
+    if let Some(v) = &rec.verified {
+        return Ok(v["result"].clone());
+    }
+    let community = community_did(state).await;
+    let Verified { result } = verify(state, &rec, &community).await?;
+    // Re-read: the sweeper or a certification may have written meanwhile.
+    let mut rec = store::get(ks, election_id)
+        .await?
+        .ok_or(CertifyError::ElectionUnknown)?;
+    if rec.certified.is_none() && rec.verified.is_none() {
+        rec.verified = Some(json!({
+            "result": result,
+            "head": result["head"],
+            "verifiedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        }));
+        store::put(ks, &rec).await?;
+    }
+    Ok(result)
+}
+
+/// Certify `election_id`: read the result, the head and every entry from the ballot box itself —
+/// never from the requester — verify the board from the community's own voting key, check each
+/// auditor's attestation, and only then record (certify items 2 – 11).
+///
+/// # Errors
+/// As the certify specification lists, the first failure found.
+pub async fn certify(
+    state: &AppState,
+    election_id: &str,
+    attestations: &[Value],
+    now: DateTime<Utc>,
+) -> Result<Certified, CertifyError> {
+    let ks = state.elections.ks();
+    let Some(rec) = store::get(ks, election_id).await? else {
+        return Err(CertifyError::ElectionUnknown);
+    };
+    // Item 2.
+    if rec.certified.is_some() {
+        return Err(CertifyError::AlreadyCertified);
+    }
+    let community = community_did(state).await;
+    // Items 3 – 9.
+    let Verified { result } = verify(state, &rec, &community).await?;
 
     // Item 10: each attestation, beside the community's own verification, never instead of it.
     let counted_head = result["head"].clone();

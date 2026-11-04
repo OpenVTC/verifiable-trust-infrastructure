@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, BookUser, Boxes, GitBranch, LogOut, Sparkles, Vote } from "lucide-react";
+import { BadgeCheck, BookUser, Boxes, GitBranch, LogOut, Sparkles, SquareKanban, Vote } from "lucide-react";
 
 import { MemberApiError, memberFetch, postMember, vtcDid, type MemberMe } from "./api";
 import { DirectoryPage, EntryPage, MyCardPage } from "./Directory";
@@ -13,6 +13,7 @@ import { listFields, showCard } from "./directory-api";
 import { MemberAvatar, nameOf, text } from "./member-card";
 import { ReposPage } from "./Repos";
 import { ElectionPage, ElectionsPage } from "./Elections";
+import { BoardPage, BoardsPage } from "./Boards";
 import { RoomPage, RoomsPage } from "./Rooms";
 import { Passkeys } from "./Passkeys";
 import { forgetMemberSessionKey } from "@/lib/console-key";
@@ -35,6 +36,7 @@ async function fetchMe(): Promise<MemberMe | null> {
 /** The portal's page, from the location hash: `#/rooms`, `#/rooms/<roomId>`,
  *  `#/directory`, `#/directory/<entryId>`, `#/card`, `#/groups`,
  *  `#/groups/<groupId>`, `#/repos`, `#/elections`, `#/elections/<electionId>`,
+ *  `#/boards`, `#/boards/<boardId>`,
  *  else home. */
 export type Route =
   | { page: "home" }
@@ -47,13 +49,18 @@ export type Route =
   | { page: "group"; groupId: string }
   | { page: "repos" }
   | { page: "elections" }
-  | { page: "election"; electionId: string };
+  | { page: "election"; electionId: string }
+  | { page: "boards" }
+  | { page: "board"; boardId: string };
 
 export function routeOf(hash: string): Route {
   const path = hash.replace(/^#/, "");
   if (path === "/rooms") return { page: "rooms" };
   if (path === "/repos") return { page: "repos" };
   if (path === "/elections") return { page: "elections" };
+  if (path === "/boards") return { page: "boards" };
+  const board = /^\/boards\/(brd_[A-Za-z0-9_-]{16,64})$/.exec(path);
+  if (board) return { page: "board", boardId: board[1]! };
   const election = /^\/elections\/([A-Za-z0-9._-]{1,128})$/.exec(path);
   if (election) return { page: "election", electionId: election[1]! };
   if (path === "/directory") return { page: "directory" };
@@ -161,7 +168,8 @@ function SignedIn({ me }: { me: MemberMe }) {
     route.page === "room" ||
     route.page === "repos" ||
     route.page === "elections" ||
-    route.page === "election";
+    route.page === "election" ||
+    route.page === "board";
   const host = useQuery({
     queryKey: ["community-did"],
     queryFn: async () => me.community.did ?? (await vtcDid()),
@@ -174,6 +182,9 @@ function SignedIn({ me }: { me: MemberMe }) {
   if (route.page === "card") return <MyCardPage />;
   if (route.page === "groups") return <GroupsPage />;
   if (route.page === "group") return <GroupPage groupId={route.groupId} />;
+  if (route.page === "boards") return <BoardsPage />;
+  // A board reads without the wallet; only its vote buttons need the community's DID.
+  if (route.page === "board") return <BoardPage boardId={route.boardId} hostDid={host.data} member={me.did} />;
   if (!host.data) {
     return (
       <main className="home" id="main">
@@ -370,6 +381,21 @@ function Home({ me }: { me: MemberMe }) {
           <p>
             <a className="btn btn-primary" href="#/elections">
               See elections
+            </a>
+          </p>
+        </section>
+
+        <section className="card" aria-labelledby="boards-card-heading">
+          <div className="card-head">
+            <SquareKanban size={18} aria-hidden="true" />
+            <h2 id="boards-card-heading">Boards</h2>
+          </div>
+          <p className="muted">
+            Propose ideas and sessions, leave notes on what others suggest, and vote on the ideas you want to see happen.
+          </p>
+          <p>
+            <a className="btn btn-primary" href="#/boards">
+              See boards
             </a>
           </p>
         </section>

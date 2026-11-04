@@ -30,6 +30,22 @@ const PASS_INTERVAL: Duration = Duration::from_secs(60);
 /// How often a head is kept while voting is open.
 pub const CHECKPOINT_EVERY: chrono::Duration = chrono::Duration::hours(6);
 
+/// How often, at most, a head is kept for a board's election while voting is open: a board
+/// shows the ballot count of the latest kept head (VTI-BRD-033), so it is read more often.
+pub const BOARD_CHECKPOINT_EVERY: chrono::Duration = chrono::Duration::minutes(30);
+
+/// The checkpoints a board's election spreads over its voting period, leaving room under the
+/// 256 an election keeps for the first head and the final one. Past 256 none is kept but the
+/// final, so a fixed 30-minute pace would freeze a board's ballot count after about five days.
+const BOARD_CHECKPOINTS_PER_PERIOD: i32 = 240;
+
+/// The pace of a board election's checkpoints: every 30 minutes, or slower where its voting
+/// period would otherwise outrun the checkpoints it may keep.
+fn board_checkpoint_every(rec: &store::ElectionRecord) -> chrono::Duration {
+    let spread = (rec.voting_closes - rec.voting_opens) / BOARD_CHECKPOINTS_PER_PERIOD;
+    spread.max(BOARD_CHECKPOINT_EVERY)
+}
+
 /// Run [`pass`] every minute until shutdown.
 pub fn spawn(
     state: AppState,
@@ -135,6 +151,18 @@ async fn settle(
             if now >= rec.voting_closes {
                 discard_pre_credentials(state, &rec.election_id).await?;
             }
+            // A board's facilitators select with the result in view (VTI-BRD-040): once voting
+            // has closed and the final head is kept, verify the published result and keep it,
+            // uncertified. Best effort: a result not published yet is tried on the next pass.
+            if closed
+                && rec.final_checkpoint
+                && rec.certified.is_none()
+                && rec.verified.is_none()
+                && crate::boards::is_board_election(&rec.election_id)
+                && let Err(e) = ops::verify_and_keep(state, &rec.election_id, now).await
+            {
+                tracing::debug!(election = %rec.election_id, error = ?e, "a board election's result is not verified yet");
+            }
         }
         // A pre-credential is discarded once voting is over, however it ended (tickets/issue
         // item 10).
@@ -151,8 +179,13 @@ async fn settle(
 /// that dated its heads ahead would put every later checkpoint off, leaving it free to show
 /// different boards in between.
 fn checkpoint_due(rec: &store::ElectionRecord, now: DateTime<Utc>) -> bool {
+    let every = if crate::boards::is_board_election(&rec.election_id) {
+        board_checkpoint_every(rec)
+    } else {
+        CHECKPOINT_EVERY
+    };
     rec.checkpoint_asked_at
-        .is_none_or(|at| now - at >= CHECKPOINT_EVERY || now < at)
+        .is_none_or(|at| now - at >= every || now < at)
 }
 
 async fn discard_pre_credentials(state: &AppState, election_id: &str) -> Result<(), AppError> {
@@ -207,5 +240,24 @@ mod tests {
         assert!(checkpoint_due(&rec, now + CHECKPOINT_EVERY));
         // Its own clock set back: due again, rather than never.
         assert!(checkpoint_due(&rec, now - chrono::Duration::hours(1)));
+    }
+
+    #[test]
+    fn vti_brd_033_a_long_boards_ballot_count_keeps_moving_to_the_end() {
+        let now = Utc::now();
+        let mut rec = store::test_record(now);
+        rec.election_id = "board.brd_Uc7N2qLm4Rt8Vx1Z00.ida_Pk3Wq9Ls2Dn6Hy4B00".into();
+        // A short period is read every 30 minutes.
+        rec.voting_opens = now;
+        rec.voting_closes = now + chrono::Duration::days(2);
+        assert_eq!(board_checkpoint_every(&rec), BOARD_CHECKPOINT_EVERY);
+        // A long one is spread so its checkpoints never run out before it closes.
+        rec.voting_closes = now + chrono::Duration::days(30);
+        let every = board_checkpoint_every(&rec);
+        assert!(every > BOARD_CHECKPOINT_EVERY);
+        assert!((rec.voting_closes - rec.voting_opens).num_seconds() / every.num_seconds() <= 240);
+        rec.checkpoint_asked_at = Some(now);
+        assert!(!checkpoint_due(&rec, now + BOARD_CHECKPOINT_EVERY));
+        assert!(checkpoint_due(&rec, now + every));
     }
 }

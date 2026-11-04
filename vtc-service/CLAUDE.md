@@ -881,6 +881,30 @@ When adding a flow, add it here and a line to the root index.
   `vtc-service/tests/it/election_tasks.rs`.
 - **Docs**: `docs/03-vtc/elections.md`.
 
+### VTC community boards (`vtc/boards/*`, VTI-BRD-001 – 080)
+- **What**: Boards where members propose ideas and leave notes, each idea a facilitator
+  accepts is put to an election of its own (`board.<boardId>.<ideaId>`), and facilitators
+  select among them with the results in view. Records in the `boards` keyspace (backed up).
+- **Invariants to preserve**: creating a board or changing its template takes
+  `vtc.boards.manage` **and** `vtc.elections.manage` (unqualified); a facilitator
+  (`vtc.boards.manage`, unqualified or `board:<id>`) opens elections only from that template,
+  never binding, through `elections::ops::{check_create, create}` — never a second registrar,
+  never parked. **No copy of election state**: an idea keeps only `election_id` + `accepted_at`;
+  open/opening/refused/cancelled, `ballotsOnBoard` and the result are read from the election
+  record every time (`boards::view`). The election id is written on the idea **before** the
+  election is created. A board never records or reports a ticket or a ballot (VTI-BRD-033).
+  Results for selection come from `elections::ops::verify` (certify's items 3 – 9, factored
+  out), kept uncertified in `ElectionRecord::verified` by the elections sweeper or by `select`;
+  shown `certified: false` until certified. `vtc/boards` is in `PORTAL_SIGNING_SCOPE`: member
+  tasks accept the delegated key, facilitator tasks (`create`, `update`, `ideas/decide`,
+  `ideas/select`, `notes/hide`) go through `member_signer` only and never do (VTI-BRD-051).
+  Audit (`BoardChanged`) by reference, never text. Departure withdraws proposed ideas; erasure
+  removes text no election carries (`boards::on_departure`, called beside
+  `groups::on_departure`).
+- **Code**: `vtc-service/src/boards/{mod,ops}.rs`, `vtc-service/src/trust_tasks/board_tasks.rs`,
+  `vtc-service/tests/it/board_tasks.rs`.
+- **Docs**: `docs/03-vtc/boards.md`, `docs/05-design-notes/vtc-boards.md`.
+
 ### VTC notifications (`notifications/*`, VTI-NTF-040 – 063)
 - **What**: The community as **originator** of the `election` kind — an election under a
   credential roll naming a member party is notified to that party once the ballot box has

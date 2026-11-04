@@ -1031,6 +1031,21 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1",
+    // The community's boards (VTI-BRD-*): the portal's board pages, signed by the portal
+    // key the member delegated `vtc/boards` to, and the console's facilitator pages.
+    "https://trusttasks.org/spec/vtc/boards/create/0.1",
+    "https://trusttasks.org/spec/vtc/boards/update/0.1",
+    "https://trusttasks.org/spec/vtc/boards/list/0.1",
+    "https://trusttasks.org/spec/vtc/boards/show/0.1",
+    "https://trusttasks.org/spec/vtc/boards/ideas/propose/0.1",
+    "https://trusttasks.org/spec/vtc/boards/ideas/update/0.1",
+    "https://trusttasks.org/spec/vtc/boards/ideas/withdraw/0.1",
+    "https://trusttasks.org/spec/vtc/boards/ideas/decide/0.1",
+    "https://trusttasks.org/spec/vtc/boards/ideas/select/0.1",
+    "https://trusttasks.org/spec/vtc/boards/notes/add/0.1",
+    "https://trusttasks.org/spec/vtc/boards/notes/list/0.1",
+    "https://trusttasks.org/spec/vtc/boards/notes/withdraw/0.1",
+    "https://trusttasks.org/spec/vtc/boards/notes/hide/0.1",
     // The Notifications page: a community's received notifications and the relay decision
     // (VTI-NTF-070 – 074).
     "https://trusttasks.org/spec/vtc/notifications/list/0.1",

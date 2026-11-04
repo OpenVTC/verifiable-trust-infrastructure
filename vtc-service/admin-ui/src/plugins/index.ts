@@ -27,6 +27,7 @@ import {
   PenLine,
   ScanLine,
   Share2,
+  SquareKanban,
   ShieldCheck,
   Smartphone,
   Tag,
@@ -42,6 +43,7 @@ import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
 import { Actions } from "@/plugins/actions";
 import { Audit } from "@/plugins/audit";
+import { Boards } from "@/plugins/boards";
 import { Ceremonies } from "@/plugins/ceremonies";
 import { ConsoleKeys } from "@/plugins/consoleKeys";
 import { Dashboard } from "@/plugins/dashboard";
@@ -144,6 +146,19 @@ export function registerBuiltinPlugins(): void {
     iconComponent: Vote,
     reactComponent: Elections,
     capabilities: ["vtc.elections.manage"],
+  });
+
+  // Community boards: facilitators (vtc.boards.manage, for every board or
+  // qualified to one) decide ideas, select among them and hide notes. Members
+  // propose and leave notes from the member portal.
+  registerPlugin({
+    id: "boards",
+    group: "governance",
+    label: "Boards",
+    path: "/boards",
+    iconComponent: SquareKanban,
+    reactComponent: Boards,
+    capabilities: ["vtc.boards.manage"],
   });
 
   // The community's groups: every administrator reads them; holders of
