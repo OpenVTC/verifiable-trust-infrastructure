@@ -26,13 +26,13 @@ tracing = { workspace = true }
 trust-tasks-rs = { workspace = true }
 url = { workspace = true }
 # `AppError`, `KeyspaceHandle`, `now_epoch`.
-vti-common = { path = "../vti-common", version = "0.55" }
+vti-common = { path = "../vti-common", version = "0.56" }
 # The generated `auth/oob/*` wire types, at the versions
 # `vti-specs-core/trust-tasks.toml` pins. Only that family is read.
 vti-specs-core = { path = "../vti-specs-core", version = "0.3" }
 # The reject/response helpers, `TrustTaskOutcome`, the accepted-id record and
 # the freshness policy carried documents are held to.
-vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.1" }
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.2" }
 
 [dev-dependencies]
 ed25519-dalek = { workspace = true }

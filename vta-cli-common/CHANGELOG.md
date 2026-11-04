@@ -2,6 +2,42 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.53.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.52.0...vta-cli-common-v0.53.0) — 2026-11-04
+
+
+### Added
+
+- **cli**: `pnm boards` and `cnm boards` for community boards ([#2431](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2431))
+
+Members and facilitators can now work a community board from the
+  command line (VTI-BRD-001 – 080), as the portal and console already do.
+
+  - vtc-client: `boards` — every `vtc/boards/*` task, each request read
+    against its pinned schema before it is sent (`checked`), and each
+    task's declared error codes (`declared`).
+  - vta-cli-common: `commands::boards` — a member's acts signed by their
+    own VTA (`vault/sign-trust-task`), never a key the CLI holds, and
+    checked to be the same document, proof aside, before sending.
+    `take-tickets` takes each open idea's ticket in its own request, a
+    random pause apart, so tickets do not arrive together (VTI-BRD-034).
+  - pnm: `boards list|show|propose|update|withdraw|notes|note|
+    withdraw-note|take-tickets`.
+  - cnm: `boards init` (offline starter board, valid against
+    `vtc/boards/create` as written), `create|list|show|update|close|
+    archive|decide|select|notes|hide|unhide`. Refusals print the command
+    that fixes them.
+  - docs/03-vtc/boards.md: *From the command line*.
+
+- **vta**: Collection for the principal's identifiers — claims, the collector, collection by default off (VTI-NTF-080 – 093) ([#2421](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2421))
+
+* feat(vti-specs): pin vta/collection/{claim,release,list} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1023 and #1024: a client's
+  collection claim on a persona DID, its release, and the listing of who
+  collects for each of a context's identifiers (VTI-NTF-080 – VTI-NTF-093).
+
+
+
 ## [0.52.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.51.0...vta-cli-common-v0.52.0) — 2026-11-03
 
 

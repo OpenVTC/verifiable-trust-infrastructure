@@ -2,6 +2,73 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.52.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.51.0...pnm-cli-v0.52.0) — 2026-11-04
+
+
+### Added
+
+- **cli**: `pnm boards` and `cnm boards` for community boards ([#2431](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2431))
+
+Members and facilitators can now work a community board from the
+  command line (VTI-BRD-001 – 080), as the portal and console already do.
+
+  - vtc-client: `boards` — every `vtc/boards/*` task, each request read
+    against its pinned schema before it is sent (`checked`), and each
+    task's declared error codes (`declared`).
+  - vta-cli-common: `commands::boards` — a member's acts signed by their
+    own VTA (`vault/sign-trust-task`), never a key the CLI holds, and
+    checked to be the same document, proof aside, before sending.
+    `take-tickets` takes each open idea's ticket in its own request, a
+    random pause apart, so tickets do not arrive together (VTI-BRD-034).
+  - pnm: `boards list|show|propose|update|withdraw|notes|note|
+    withdraw-note|take-tickets`.
+  - cnm: `boards init` (offline starter board, valid against
+    `vtc/boards/create` as written), `create|list|show|update|close|
+    archive|decide|select|notes|hide|unhide`. Refusals print the command
+    that fixes them.
+  - docs/03-vtc/boards.md: *From the command line*.
+
+- **trust-tasks**: Honour a stated expiresAt up to 30 days, and keep the replay record to the acceptance end (VTI-OPS-024, VTI-OPS-028, VTI-OPS-029) ([#2423](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2423))
+
+trust-tasks-rs 0.37 (trustoverip/dtgwg-trust-tasks-tf #1021), with
+  affinidi-tdk 0.37, affinidi-messaging-sdk 0.45 (affinidi-tdk-rs #983) and
+  mediator 0.50 (affinidi-messaging-mediator #55), which move with it.
+
+  Acceptance. A document that states an expiresAt is accepted until then, up to
+  thirty days after its issuedAt, whatever the ten-minute maximum age
+  (VTI-OPS-024, VTI-OPS-028). An expiry beyond the horizon is clamped, not
+  refused. A document without one keeps the ten-minute window. The horizon is
+  `vti_common::trust_task::acceptance::EXPIRY_HORIZON`, applied by
+  `AcceptanceWindow::freshness_policy`, so every VTI consumer takes it.
+
+  Retention. Every record of an accepted document was capped at
+  issuedAt + max_age + skew, relying on the freshness check to refuse anything
+  older. Under 0.37 that check accepts a document with a later expiresAt, so
+  the record would be dropped while its document was still acceptable and a
+  replay would execute twice. One rule now decides retention for every consumer,
+  `vti_common::trust_task::acceptance::retain_until`: the acceptance end plus the
+  skew (VTI-OPS-029), bounded by the horizon. It is used by the shared receive
+  pipeline (VTA and VTC accepted-id records), the VTC's spent step-up approver
+  statements, vti-witness and room-host.
+
+  Behaviour change for producers: a document stating a long expiresAt is no
+  longer refused as stale after ten minutes. Step-up approver statements are
+  included, as VTI-OPS-028 requires of any document that states an expiry.
+
+  Not here: idempotency records still live 24 hours although a keyed document
+  can now be acceptable for 30 days (VTI-OPS-066, next step); room-host's replay
+  record is still in memory and lost on restart (VTI-OPS-029).
+
+- **vta**: Collection for the principal's identifiers — claims, the collector, collection by default off (VTI-NTF-080 – 093) ([#2421](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2421))
+
+* feat(vti-specs): pin vta/collection/{claim,release,list} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1023 and #1024: a client's
+  collection claim on a persona DID, its release, and the listing of who
+  collects for each of a context's identifiers (VTI-NTF-080 – VTI-NTF-093).
+
+
+
 ## [0.51.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.50.0...pnm-cli-v0.51.0) — 2026-11-03
 
 
