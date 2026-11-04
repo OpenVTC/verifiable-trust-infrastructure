@@ -552,7 +552,13 @@ When adding a flow, add it here and a line to the root index.
   identifier, audience, period and status; `memberOf` is passed only from a notification still
   standing — never the page's own choice, never to a wallet that reports no notifications (it
   refuses the field) — and the page never presents anything: the wallet asks first
-  (VTI-VOT-016). `electionListOf` accepts every list shape a wallet may answer.
+  (VTI-VOT-016). `electionListOf` accepts every list shape a wallet may answer. The home
+  page's attention items take notified elections from the same `member-elections` query
+  (`actionableNotified`: standing, voting not closed, not in the community's list) and link
+  with `electionHref`, so `memberOf` is still read on the election page. `refusalKind` /
+  `declinedInWallet` read the wallet error's `code` first (`REFUSAL_BY_CODE` for Trust Task
+  codes, `WALLET_OUTCOME_BY_CODE` for the wallet's own), its words only for an older wallet
+  or an unknown code.
 - **Join page** (`/members/?join`, the landing page's *Join this community*):
   the sign-in page's wallet code, worded for a newcomer, with no
   membership-only option. It changes words only — the wallet decides from

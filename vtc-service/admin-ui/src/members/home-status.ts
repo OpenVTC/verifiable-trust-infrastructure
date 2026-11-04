@@ -8,7 +8,7 @@ import type { BoardListResponse, GroupListResponse } from "@/lib/wire-types";
 import { phaseOf, PHASE_LABEL } from "./boards-api";
 import { DirectoryError } from "./directory-api";
 import { holdingsOf, type MemberGitView } from "./git-api";
-import { stageOf, type PageElection } from "./wallet-elections";
+import { notifiedOnly, stageOf, type ElectionList, type PageNotifiedElection } from "./wallet-elections";
 import { actionableOffers, type PageOffer, type PageRoom } from "./wallet-rooms";
 
 /** A tile's status line. `attention`: something the member can act on now. */
@@ -70,12 +70,18 @@ export function roomsAttention(offers: Read<{ offers: PageOffer[] }> | null): At
     : [];
 }
 
-/** Elections, by where each stands for the member. */
-export function electionsStatus(
-  hasWallet: boolean,
-  q: Read<{ elections: PageElection[] }>,
-  now = Date.now(),
-): Status | "loading" {
+/** The notified elections the member can still act on that the community's list does not show
+ *  them: one per election (`notifiedOnly`), a notice still standing — a withdrawn one cannot be
+ *  opened (VTI-NTF-024) — and, where it states one, a voting period not yet over. Read only from
+ *  what the notification says (VTI-NTF-063). */
+export function actionableNotified(list: ElectionList, now = Date.now()): PageNotifiedElection[] {
+  return notifiedOnly(list).filter(
+    (n) => n.status === "available" && !(n.votingClosesAt && now >= Date.parse(n.votingClosesAt)),
+  );
+}
+
+/** Elections, by where each stands for the member, and those they were told about. */
+export function electionsStatus(hasWallet: boolean, q: Read<ElectionList>, now = Date.now()): Status | "loading" {
   if (!hasWallet) return muted("Needs the VTA wallet extension");
   if (q.isError) return muted("Your wallet didn't answer");
   if (q.isPending || !q.data) return "loading";
@@ -83,20 +89,25 @@ export function electionsStatus(
   const voting = stages.filter((s) => s === "voting").length;
   const tickets = stages.filter((s) => s === "ticketsOpen").length;
   const upcoming = stages.filter((s) => s === "upcoming").length;
+  const told = actionableNotified(q.data, now).length;
   const parts: string[] = [];
   if (voting) parts.push(`${voting} open for voting`);
   if (tickets) parts.push(`${tickets} taking tickets`);
   if (upcoming) parts.push(`${upcoming} coming up`);
+  if (told) parts.push(`${told} you were told about`);
   if (parts.length === 0) return muted("Nothing open right now");
-  return { text: parts.join(" · "), tone: voting || tickets ? "attention" : "ok" };
+  return { text: parts.join(" · "), tone: voting || tickets || told ? "attention" : "ok" };
 }
 
+/** `href` is the Elections page's own link, so the election page takes `memberOf` from the
+ *  standing notice in the shared list — never from the link. */
 export function electionsAttention(
-  q: Read<{ elections: PageElection[] }>,
+  q: Read<ElectionList>,
   href: (electionId: string) => string,
   now = Date.now(),
 ): Attention[] {
-  return (q.data?.elections ?? []).flatMap((e): Attention[] => {
+  if (!q.data) return [];
+  const listed = q.data.elections.flatMap((e): Attention[] => {
     const s = stageOf(e, now);
     const title = e.title || "An election";
     if (s === "voting") {
@@ -107,6 +118,18 @@ export function electionsAttention(
     }
     return [];
   });
+  // Only the identifier is known of these until the member opens one.
+  const told = actionableNotified(q.data, now).map(
+    (n): Attention => ({
+      key: `el-${n.electionId}`,
+      text:
+        n.votingOpensAt && now >= Date.parse(n.votingOpensAt)
+          ? `Voting is open: ${n.electionId} (you were told about it)`
+          : `You were told about an election: ${n.electionId}`,
+      href: href(n.electionId),
+    }),
+  );
+  return [...listed, ...told];
 }
 
 /** Boards that are not archived, by phase. */
