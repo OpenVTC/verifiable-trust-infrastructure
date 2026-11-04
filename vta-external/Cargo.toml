@@ -16,7 +16,7 @@ repository.workspace = true
 
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.30" }
-vta-keys = { path = "../vta-keys", version = "0.33" }
+vta-keys = { path = "../vta-keys", version = "0.34" }
 vti-common = { path = "../vti-common", version = "0.56" }
 vta-sdk = { path = "../vta-sdk", version = "0.80", features = ["client"] }
 # The generated `external/credentials/issue/0.2` types: a presign batch is read
@@ -24,7 +24,7 @@ vta-sdk = { path = "../vta-sdk", version = "0.80", features = ["client"] }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.4" }
+vti-specs = { path = "../vti-specs", version = "0.5" }
 async-trait = "0.1"
 base64 = { workspace = true }
 chrono = { workspace = true }

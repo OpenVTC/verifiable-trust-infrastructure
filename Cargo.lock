@@ -2872,7 +2872,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.45.1"
+version = "0.46.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "chrono",
@@ -11734,7 +11734,7 @@ dependencies = [
 
 [[package]]
 name = "vta-audit"
-version = "0.27.1"
+version = "0.28.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11876,7 +11876,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keys"
-version = "0.33.1"
+version = "0.34.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-crypto",
@@ -11989,7 +11989,7 @@ dependencies = [
 
 [[package]]
 name = "vta-policy"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "hex",
  "regorus",
@@ -12229,7 +12229,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sweepers"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "chrono",
  "serde_json",
@@ -12245,7 +12245,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.32.1"
+version = "0.33.0"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm 0.11.1",
@@ -12315,7 +12315,7 @@ dependencies = [
 
 [[package]]
 name = "vta-webvh"
-version = "0.29.1"
+version = "0.30.0"
 dependencies = [
  "chrono",
  "serde",
@@ -12329,7 +12329,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-client"
-version = "0.34.1"
+version = "0.35.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -12591,7 +12591,7 @@ dependencies = [
 
 [[package]]
 name = "vti-rooms"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -12622,7 +12622,7 @@ dependencies = [
 
 [[package]]
 name = "vti-rooms-dtg"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-secrets-resolver",
@@ -12667,7 +12667,7 @@ dependencies = [
 
 [[package]]
 name = "vti-secrets"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "argon2 0.6.0",
@@ -12703,7 +12703,7 @@ dependencies = [
 
 [[package]]
 name = "vti-specs"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "trust-tasks-rs",
  "vti-specs-core",
@@ -12779,7 +12779,7 @@ dependencies = [
 
 [[package]]
 name = "vti-vetting-pcs"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -12801,7 +12801,7 @@ dependencies = [
 
 [[package]]
 name = "vti-voting"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "ark-serialize",
  "chacha20poly1305 0.11.0",
