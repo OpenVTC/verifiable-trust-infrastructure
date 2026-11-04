@@ -764,9 +764,13 @@ aws-smithy-types = ">=1.6.1, <1.10"
 # (trust-tasks-tf #1021; VTI-OPS-024, VTI-OPS-028). Breaking in behaviour as
 # well as API: a consumer must keep its replay record to `record_expiry`, not
 # `issuedAt + max_age` (`vti_common::trust_task::acceptance::retain_until`).
+# 0.37.2: trust-task-discovery/0.4 (trust-tasks-tf #1030), whose acceptance
+# window carries the expiry horizon every VTI responder advertises
+# (`vti_common::trust_task::discovery::respond_v0_4`). 0.3 is superseded there,
+# and still answered.
 # Only `validate` here, and no crate adds a spec family (see "SPEC VERSIONS ARE
 # PINNED IN THE `vti-specs-*` CRATES" above).
-trust-tasks-rs = { version = "0.37.0", default-features = false, features = [
+trust-tasks-rs = { version = "0.37.2", default-features = false, features = [
   "validate",
 ] }
 trust-tasks-capability-client = "0.37"

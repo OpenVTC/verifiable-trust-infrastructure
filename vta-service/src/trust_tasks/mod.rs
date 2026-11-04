@@ -2581,7 +2581,10 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0 => audit::handle_update_retention
         [ Mutating None false ],
     // ─── Discovery ───────────────────────────────────────────────
-    // Carries the acceptance window this VTA applies (VTI-TRN-047).
+    // Carries the acceptance window this VTA applies (VTI-TRN-047): 0.4 with
+    // its expiry horizon, the superseded 0.3 without.
+    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_4 => discovery::handle_trust_task_discovery
+        [ None None false ],
     vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3 => discovery::handle_trust_task_discovery
         [ None None false ],
     // ─── Credential-exchange: the holder's steps ─────────────────

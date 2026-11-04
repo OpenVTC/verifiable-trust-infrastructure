@@ -7,7 +7,8 @@
 //!
 //! | type | answer |
 //! |---|---|
-//! | `trust-task-discovery/0.3` | this identity's own task list |
+//! | `trust-task-discovery/0.4` | this identity's own task list |
+//! | `trust-task-discovery/0.3` | the same, superseded, without the expiry horizon |
 //! | `witness/session/0.2` | a session and its challenge ([`crate::witness`]) |
 //! | `witness/session/submit/0.2` | the VWC and its digest ([`crate::witness`]) |
 //!
@@ -64,7 +65,9 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
+#[allow(deprecated)] // 0.3 is superseded, and still answered
 use trust_tasks_rs::specs::trust_task_discovery::v0_3;
+use trust_tasks_rs::specs::trust_task_discovery::v0_4;
 use trust_tasks_rs::validate::ValidatedPayload;
 use vti_specs::witness::session;
 
@@ -79,7 +82,9 @@ use vti_common::trust_task::discovery;
 
 use crate::witness::Witnessing;
 
-/// `trust-task-discovery/0.3` — the version the VTA and VTC both answer.
+/// `trust-task-discovery/0.4` — the version the VTA and VTC both answer.
+pub const DISCOVERY_V0_4: &str = discovery::DISCOVERY_V0_4;
+/// `trust-task-discovery/0.3`, superseded by 0.4 and still answered.
 pub const DISCOVERY_V0_3: &str = discovery::DISCOVERY_V0_3;
 /// `witness/session/0.2`.
 pub const WITNESS_SESSION_V0_2: &str = <session::v0_2::Payload as Payload>::TYPE_URI;
@@ -89,6 +94,7 @@ pub const WITNESS_SESSION_SUBMIT_V0_2: &str = <session::submit::v0_2::Payload as
 /// Every type a witness identity serves — the one table routing and the
 /// discovery answer both read, so discovery cannot list a task nobody routes.
 pub const SERVED: &[&str] = &[
+    DISCOVERY_V0_4,
     DISCOVERY_V0_3,
     WITNESS_SESSION_V0_2,
     WITNESS_SESSION_SUBMIT_V0_2,
@@ -337,6 +343,19 @@ async fn evaluate(
 
     // Dispatch.
     match type_uri.as_str() {
+        DISCOVERY_V0_4 => {
+            if let Err(e) = v0_4::Payload::validate_value(&doc.payload) {
+                return reject(malformed(format!("payload: {e}")));
+            }
+            match serde_json::from_value::<v0_4::Payload>(doc.payload.clone()) {
+                Ok(query) => answered(to_value(discovery::respond_v0_4(
+                    SERVED.iter().copied(),
+                    &query,
+                ))),
+                Err(e) => reject(malformed(format!("payload: {e}"))),
+            }
+        }
+        #[allow(deprecated)]
         DISCOVERY_V0_3 => {
             if let Err(e) = v0_3::Payload::validate_value(&doc.payload) {
                 return reject(malformed(format!("payload: {e}")));

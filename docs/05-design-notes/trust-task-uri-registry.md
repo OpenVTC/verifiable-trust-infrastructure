@@ -317,7 +317,8 @@ Future: `s3-presigned`.
 | URI | Today's surface |
 |---|---|
 | `spec/trust-task-discovery/0.1` | Trust Task only — **the canonical "which tasks do you serve"**, answered from the dispatch table |
-| `spec/trust-task-discovery/0.3` | Trust Task only — 0.1's answer plus the acceptance window the node applies (VTI-TRN-047); served by the VTA and the VTC |
+| `spec/trust-task-discovery/0.3` | Trust Task only — 0.1's answer plus the acceptance window the node applies (VTI-TRN-047); superseded by 0.4, still served by the VTA, the VTC and the witness |
+| `spec/trust-task-discovery/0.4` | Trust Task only — 0.3's answer plus the expiry horizon up to which a stated `expiresAt` is honoured (VTI-OPS-028); served by the VTA, the VTC and the witness |
 
 `GET /capabilities` was removed in #1039. Nothing consumed it, and a REST route
 running parallel to a Trust Task is the shape #1020 removed everywhere else —
