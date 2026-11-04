@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, State as AxState};
+use axum::extract::State as AxState;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{Duration, Utc};
@@ -82,117 +82,164 @@ async fn fake_network(community: &str, required: bool) -> (String, Identity, Sha
             "roles": [{ "name": "admins", "required": n.required }],
         }))
     }
-    async fn challenge(AxState(s): AxState<Shared>, Json(b): Json<Value>) -> Json<Value> {
-        let n = s.lock().await;
-        Json(
-            json!({ "challenge": format!("c-{}", b["did"]), "audience": n.identity.did(), "expiresAt": Utc::now() }),
-        )
-    }
-    async fn session(
+    /// `vtn/*` Trust Tasks, as a network answers them: the request's proof must be its
+    /// issuer's, for `authentication`, and the request addressed to this network.
+    async fn tasks(
         AxState(s): AxState<Shared>,
-        Json(b): Json<Value>,
-    ) -> Result<Json<Value>, axum::http::StatusCode> {
-        let n = s.lock().await;
-        let doc = &b["authentication"];
-        let did = doc["did"].as_str().unwrap_or_default();
-        if doc["audience"].as_str() != Some(n.identity.did()) {
-            return Err(axum::http::StatusCode::UNAUTHORIZED);
+        Json(doc): Json<Value>,
+    ) -> (axum::http::StatusCode, Json<Value>) {
+        let mut n = s.lock().await;
+        let me = n.identity.did().to_string();
+        let issuer = doc["issuer"].as_str().unwrap_or_default().to_string();
+        let kind = doc["type"].as_str().unwrap_or_default().to_string();
+        let slug = kind
+            .trim_start_matches("https://trusttasks.org/spec/")
+            .rsplit_once('/')
+            .map(|(s, _)| s.to_string())
+            .unwrap_or_default();
+        let answer = |payload: Value| {
+            Json(json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": format!("{kind}#response"),
+                "issuer": me,
+                "recipient": issuer,
+                "threadId": doc["id"],
+                "issuedAt": Utc::now(),
+                "payload": payload,
+            }))
+        };
+        let refuse = |code: &str| {
+            (
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                    "type": "https://trusttasks.org/spec/trust-task-error/0.6",
+                    "issuer": me,
+                    "threadId": doc["id"],
+                    "payload": { "code": code, "message": code },
+                })),
+            )
+        };
+        if doc["recipient"].as_str() != Some(me.as_str())
+            || verify_document(&doc, &issuer, AUTHENTICATION, &LocalDidKeyResolver)
+                .await
+                .is_err()
+        {
+            return refuse("permissionDenied");
         }
-        verify_document(doc, did, AUTHENTICATION, &LocalDidKeyResolver)
-            .await
-            .map_err(|_| axum::http::StatusCode::UNAUTHORIZED)?;
-        Ok(Json(
-            json!({ "token": "session", "did": did, "role": "listed" }),
-        ))
-    }
-    async fn entry(AxState(s): AxState<Shared>, Path(_did): Path<String>) -> Json<Value> {
-        let n = s.lock().await;
-        Json(json!({ "listing": n.listing, "grant": n.grant }))
-    }
-    async fn offer_handler(AxState(s): AxState<Shared>, Path(_did): Path<String>) -> Json<Value> {
-        Json(serde_json::to_value(&s.lock().await.offer).unwrap())
-    }
-    async fn groups(
-        AxState(s): AxState<Shared>,
-        Path(did): Path<String>,
-        Json(b): Json<Value>,
-    ) -> Result<Json<Value>, axum::http::StatusCode> {
-        let mut n = s.lock().await;
-        let reg = vti_vtn::groups::verify_registration(
-            &b["registration"],
-            &did,
-            n.identity.did(),
-            &LocalDidKeyResolver,
-            Utc::now(),
-        )
-        .await
-        .map_err(|_| axum::http::StatusCode::UNPROCESSABLE_ENTITY)?;
-        let mut acc = vti_vtn::groups::acceptance(
-            n.identity.did(),
-            &reg.group,
-            &b["registration"],
-            Utc::now() - Duration::seconds(30),
-            json!([]),
-        )
-        .unwrap();
-        n.identity.sign_credential(&mut acc).await.unwrap();
-        n.groups.insert(reg.role.clone(), b["registration"].clone());
-        Ok(Json(json!({ "acceptance": { "credential": acc } })))
-    }
-    async fn acknowledge(
-        AxState(s): AxState<Shared>,
-        Path(did): Path<String>,
-        Json(b): Json<Value>,
-    ) -> Result<Json<Value>, axum::http::StatusCode> {
-        let mut n = s.lock().await;
-        if n.required && !n.groups.contains_key("admins") {
-            return Err(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        let p = &doc["payload"];
+        let ok = axum::http::StatusCode::OK;
+        // The community's `IndexEntry`, as a network publishes it.
+        let entry = |n: &Net, state: &str| {
+            let mut e = json!({
+                "did": issuer,
+                "kind": "community",
+                "state": state,
+                "acknowledged": state == "acknowledged",
+                "profile": {},
+                "listing": n.listing,
+            });
+            if let Some(g) = &n.grant {
+                e["grant"] = g.clone();
+            }
+            e
+        };
+        match slug.as_str() {
+            "vtn/entries/show" => (
+                ok,
+                answer(
+                    json!({ "entry": entry(&n, if n.grant.is_some() { "acknowledged" } else { "listed" }) }),
+                ),
+            ),
+            "vtn/membership/offer" => (
+                ok,
+                answer(json!({ "offer": serde_json::to_value(&n.offer).unwrap() })),
+            ),
+            "vtn/groups/register" => {
+                let Ok(reg) = vti_vtn::groups::verify_registration(
+                    &doc,
+                    &issuer,
+                    &me,
+                    &LocalDidKeyResolver,
+                    Utc::now(),
+                )
+                .await
+                else {
+                    return refuse("malformedRequest");
+                };
+                let mut acc = vti_vtn::groups::acceptance(
+                    &me,
+                    &reg.group,
+                    &doc,
+                    Utc::now() - Duration::seconds(30),
+                    json!([]),
+                )
+                .unwrap();
+                n.identity.sign_credential(&mut acc).await.unwrap();
+                n.groups.insert(reg.role.clone(), doc.clone());
+                (
+                    ok,
+                    answer(json!({ "group": {
+                        "member": issuer,
+                        "role": reg.role,
+                        "group": reg.group,
+                        "endpoint": reg.endpoint,
+                        "registration": doc,
+                        "acceptance": acc,
+                        "registeredAt": Utc::now(),
+                    } })),
+                )
+            }
+            "vtn/membership/acknowledge" => {
+                if n.required && !n.groups.contains_key("admins") {
+                    return refuse("vtn/membership/acknowledge:rolesUnregistered");
+                }
+                if verify_acknowledgement(
+                    &p["acknowledgement"],
+                    &n.offer,
+                    &issuer,
+                    &LocalDidKeyResolver,
+                    Utc::now(),
+                )
+                .await
+                .is_err()
+                {
+                    return refuse("vtn/membership/acknowledge:acknowledgementInvalid");
+                }
+                let mut grant = n.offer.clone();
+                n.identity.sign_credential(&mut grant).await.unwrap();
+                let grant = serde_json::to_value(grant).unwrap();
+                n.grant = Some(grant.clone());
+                (ok, answer(json!({ "entry": entry(&n, "acknowledged") })))
+            }
+            "vtn/membership/repudiate" => {
+                let Ok(target) = verify_repudiation(
+                    &p["repudiation"],
+                    &issuer,
+                    &me,
+                    &n.listing,
+                    n.grant.as_ref(),
+                    &LocalDidKeyResolver,
+                    Utc::now(),
+                )
+                .await
+                else {
+                    return refuse("vtn/membership/repudiate:repudiationInvalid");
+                };
+                n.repudiations.push((target, p["repudiation"].clone()));
+                let state = match target {
+                    Repudiated::Listing => "repudiated",
+                    Repudiated::Grant => "departed",
+                };
+                (ok, answer(json!({ "entry": entry(&n, state) })))
+            }
+            _ => refuse("unsupportedType"),
         }
-        verify_acknowledgement(
-            &b["acknowledgement"],
-            &n.offer,
-            &did,
-            &LocalDidKeyResolver,
-            Utc::now(),
-        )
-        .await
-        .map_err(|_| axum::http::StatusCode::UNPROCESSABLE_ENTITY)?;
-        let mut grant = n.offer.clone();
-        n.identity.sign_credential(&mut grant).await.unwrap();
-        let grant = serde_json::to_value(grant).unwrap();
-        n.grant = Some(grant.clone());
-        Ok(Json(json!({ "state": "acknowledged", "grant": grant })))
-    }
-    async fn repudiate(
-        AxState(s): AxState<Shared>,
-        Path(did): Path<String>,
-        Json(b): Json<Value>,
-    ) -> Result<Json<Value>, axum::http::StatusCode> {
-        let mut n = s.lock().await;
-        let target = verify_repudiation(
-            &b["repudiation"],
-            &did,
-            n.identity.did(),
-            &n.listing,
-            n.grant.as_ref(),
-            &LocalDidKeyResolver,
-            Utc::now(),
-        )
-        .await
-        .map_err(|_| axum::http::StatusCode::UNPROCESSABLE_ENTITY)?;
-        n.repudiations.push((target, b["repudiation"].clone()));
-        Ok(Json(json!({ "state": "repudiated" })))
     }
 
     let app = Router::new()
         .route("/.well-known/vtn", get(profile))
-        .route("/v1/auth/challenge", post(challenge))
-        .route("/v1/auth/session", post(session))
-        .route("/v1/entries/{did}", get(entry))
-        .route("/v1/entries/{did}/offer", get(offer_handler))
-        .route("/v1/entries/{did}/groups", post(groups))
-        .route("/v1/entries/{did}/acknowledge", post(acknowledge))
-        .route("/v1/entries/{did}/repudiate", post(repudiate))
+        .route(vti_vtn::tasks::TRUST_TASKS_PATH, post(tasks))
         .with_state(shared.clone());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (url, identity, shared)

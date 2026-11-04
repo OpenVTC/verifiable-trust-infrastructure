@@ -41,19 +41,14 @@ pub use error::VtnError;
 /// version (`specs::groups::register::v0_1`).
 pub use vti_specs_vtn::vtn as specs;
 
-/// Talking to a network over HTTPS: `vtn/*` Trust Tasks, sign-in links, and status-list
-/// checking.
+/// Talking to a network over HTTPS: `vtn/*` Trust Tasks, and status-list checking.
 #[cfg(feature = "client")]
 pub mod client;
-#[cfg(feature = "client")]
-pub mod link;
 #[cfg(feature = "client")]
 pub mod status_client;
 #[cfg(feature = "client")]
 pub mod tasks;
 #[cfg(feature = "client")]
 pub use client::{ClientError, VtnClient, encode_did, encode_query};
-#[cfg(feature = "client")]
-pub use link::SignInLink;
 #[cfg(feature = "client")]
 pub use status_client::{CredentialState, StatusChecker};

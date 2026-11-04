@@ -13,7 +13,7 @@ readme = "README.md"
 [features]
 default = []
 # Talking to a network over HTTPS: `vtn/*` Trust Tasks addressed to the expected
-# network DID, `vtn-signin:` links, and resolving a credential's Bitstring Status List.
+# network DID, and resolving a credential's Bitstring Status List.
 client = ["dep:reqwest", "dep:tokio"]
 
 [dependencies]
