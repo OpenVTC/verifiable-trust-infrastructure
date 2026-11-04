@@ -322,8 +322,9 @@ The accepted-document-id record (SPEC §7.2 item 11, VTI-OPS-025 … 027) keys o
 the document `id` alone and compares digests: the same document again is a
 duplicate, answered with the first result; a different document under that `id`
 is `idConflict`. It is in the store, shared with the VTC's implementation, so it
-survives a restart and every binding consults one record; its rows live for the
-document's acceptance window. It **cannot** catch a genuine retry, because every
+survives a restart and every binding consults one record; its rows live until
+the document's acceptance end plus the skew (VTI-OPS-029): ten minutes after
+`issuedAt`, or a stated `expiresAt` up to thirty days after it. It **cannot** catch a genuine retry, because every
 dispatch mints a fresh document `id`. `idempotency.rs` keys on
 `(actor, idempotency-key)`, which is stable across attempts of one operation.
 Both stay; they answer different questions.

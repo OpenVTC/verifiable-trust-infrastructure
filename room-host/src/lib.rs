@@ -681,25 +681,15 @@ fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
 }
 
 /// How long the duplicate-execution record for `doc` is kept: until this host would stop
-/// accepting it, which SPEC §7.2 makes the same instant. That is the earlier of the
-/// producer's `expiresAt` and the end of the acceptance window (`issuedAt + max_age +
-/// skew`) — never later, or a producer stamping a distant `expiresAt` pins its id for that
-/// long, and never earlier, or a replay arriving while still acceptable executes twice.
+/// accepting it, plus the skew (VTI-OPS-029). Without an `expiresAt` that is `issuedAt +
+/// max_age`; with one, the `expiresAt`, up to thirty days after `issuedAt` (VTI-OPS-028).
+/// Never earlier, or a replay arriving while still acceptable executes twice; the horizon
+/// is what stops a producer stamping a distant `expiresAt` pinning its id for that long.
 fn retain_until(
     doc: &TrustTask<Value>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let policy = freshness_policy();
-    let window_end = doc
-        .issued_at
-        .zip(policy.max_age)
-        .map(|(issued_at, max_age)| issued_at + max_age + policy.skew);
-    match (doc.expires_at, window_end) {
-        (Some(expires_at), Some(end)) => Some(expires_at.min(end)),
-        (expires_at, end) => expires_at
-            .or(end)
-            .or_else(|| policy.record_expiry(doc, now)),
-    }
+    vti_common::trust_task::acceptance::retain_until(&freshness_policy(), doc, now)
 }
 
 /// `rooms/create/0.2`, which also records the room's record retention.

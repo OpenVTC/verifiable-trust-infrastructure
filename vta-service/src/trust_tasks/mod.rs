@@ -1655,13 +1655,13 @@ mod lifecycle_mapping {}
 /// the principle `a_future_dated_document_is_malformed_not_expired` pins.
 ///
 /// **A document carrying only `expiresAt` has no bounded acceptance window.**
-/// `validate_freshness` accepts it — an `expiresAt` does bound the record —
-/// but the bound is then whatever instant the *producer* chose. `expiresAt =
-/// now + 10 years` is accepted for ten years, and §7.2 makes the replay
-/// record's retention that same bound, so the producer would unilaterally
-/// decide how long this consumer must remember its `id`. Requiring `issuedAt`
-/// makes the last instant any accepted document can return provable —
-/// `issuedAt + max_age + skew` — which is what [`retain_until`] then caps on.
+/// A stated expiry replaces the maximum age (VTI-OPS-024), clamped to thirty
+/// days after `issuedAt` (VTI-OPS-028). With no `issuedAt` there is nothing to
+/// count the thirty days from, so `expiresAt = now + 10 years` would be
+/// accepted for ten years, and §7.2 makes the replay record's retention that
+/// same bound: the producer would decide how long this consumer must remember
+/// its `id`. Requiring `issuedAt` makes the last instant any accepted document
+/// can return provable, which is what [`retain_until`] keeps the record to.
 ///
 /// # What this refuses that a conforming producer may send
 ///
@@ -1691,37 +1691,21 @@ pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
         .requiring_issued_at()
 }
 
-/// How long the duplicate-execution record for `doc` must be kept — the end of
-/// this consumer's willingness to execute it, which SPEC §7.2 makes the same
-/// instant as the end of the record's required retention.
+/// How long the duplicate-execution record for `doc` must be kept: its
+/// acceptance end plus the skew (VTI-OPS-029), which SPEC §7.2 makes the end of
+/// this consumer's willingness to execute it. See
+/// [`vti_trust_task_server::retain_until`].
 ///
-/// `FreshnessPolicy::record_expiry` takes a producer-supplied `expiresAt`
-/// **verbatim**, so a document stamped `expiresAt = now + 10 years` would pin
-/// its `id` in the accepted-id record for ten years — a stored row held long
-/// past the last moment it could be needed, and the producer, not this node,
-/// deciding how long this node must keep it.
-///
-/// `require_issued_at` above makes the cap provable: `validate_freshness` has
-/// already refused any document without an `issuedAt`, and will refuse this
-/// one once `issuedAt + max_age + skew` has passed. Retention beyond that
-/// instant is retention the guard can never draw on.
-///
-/// The cap only ever moves the instant **earlier than a producer asked for**,
-/// never earlier than the acceptance window. Shortening retention below the
-/// window is the direction §7.2 forbids: a replay arriving while the document
-/// is still acceptable, with its record already dropped, executes twice.
+/// A stated `expiresAt` is honoured up to thirty days after `issuedAt`
+/// (VTI-OPS-028), so this is up to thirty days and never the ten-minute
+/// window alone: a record dropped while its document is still acceptable lets
+/// a replay execute twice. The horizon is what keeps a producer from deciding
+/// how long this node must remember an `id`.
 fn retain_until(
     doc: &TrustTask<Value>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let policy = freshness_policy();
-    let expiry = policy.record_expiry(doc, now)?;
-    match (doc.issued_at, policy.max_age) {
-        (Some(issued_at), Some(max_age)) => Some(expiry.min(issued_at + max_age + policy.skew)),
-        // Unreachable while `require_issued_at` holds; if that ever changes,
-        // over-retaining is the safe direction to fail in.
-        _ => Some(expiry),
-    }
+    vti_trust_task_server::retain_until(&freshness_policy(), doc, now)
 }
 
 /// Apply this node's own §7.2 receipt checks to a document **carried** to it rather than sent
@@ -4610,37 +4594,48 @@ mod record_retention {
         );
     }
 
-    /// A far-future `expiresAt` is the producer's to choose, and
-    /// `record_expiry` returns it verbatim. The guard must not hold the record
-    /// past the last instant the document could come back.
+    /// **VTI-OPS-028 / VTI-OPS-029.** A far-future `expiresAt` is clamped to
+    /// the horizon: the document is acceptable for thirty days, so the record
+    /// is kept that long (plus the skew), and no longer.
     #[test]
-    fn a_far_future_expiry_does_not_pin_the_record_past_the_window() {
+    fn vti_ops_029_a_far_future_expiry_is_retained_to_the_horizon() {
         let now = now();
         let far = (now + TimeDelta::days(3650)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let d = doc(now, Some(&far));
-
-        let uncapped = freshness_policy()
-            .record_expiry(&d, now)
-            .expect("a bounded policy always yields one");
-        assert!(
-            uncapped > now + TimeDelta::days(3000),
-            "precondition: the library takes the producer's `expiresAt` verbatim"
-        );
-
-        let capped = retain_until(&d, now).expect("a bounded policy always yields one");
-        let window = now + TimeDelta::minutes(10) + trust_tasks_rs::DEFAULT_SKEW;
         assert_eq!(
-            capped, window,
-            "retention past the acceptance window is retention the guard can \
-             never draw on, and it evicts records that are still needed"
+            retain_until(&d, now).expect("a bounded policy always yields one"),
+            now + vti_common::trust_task::acceptance::EXPIRY_HORIZON + trust_tasks_rs::DEFAULT_SKEW,
         );
     }
 
-    /// The cap must never move retention *earlier* than the window: a replay
-    /// arriving while the document is still acceptable, with its record already
-    /// dropped, executes a second time.
+    /// **VTI-OPS-029.** A stated expiry inside the horizon is the acceptance
+    /// end, whatever the maximum age: a document that stands for a day is
+    /// remembered for the day, plus the skew. A record kept for the ten-minute
+    /// window would let a replay an hour later execute twice.
     #[test]
-    fn a_near_expiry_is_left_alone() {
+    fn vti_ops_029_a_stated_expiry_is_retained_past_the_maximum_age() {
+        let now = now();
+        let day = now + TimeDelta::days(1);
+        let d = doc(
+            now,
+            Some(&day.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        );
+        assert!(
+            d.validate_freshness(now + TimeDelta::hours(1), &freshness_policy())
+                .is_ok(),
+            "precondition: an hour on, the document is still acceptable"
+        );
+        assert_eq!(
+            retain_until(&d, now).expect("a bounded policy always yields one"),
+            day + trust_tasks_rs::DEFAULT_SKEW,
+        );
+    }
+
+    /// A stated expiry shorter than the maximum age is the acceptance end too:
+    /// the document is refused after it, so the record may go then (plus the
+    /// skew), not at the end of the ten-minute window.
+    #[test]
+    fn a_near_expiry_ends_the_record() {
         let now = now();
         let soon = now + TimeDelta::minutes(2);
         let d = doc(
@@ -4649,14 +4644,13 @@ mod record_retention {
         );
         assert_eq!(
             retain_until(&d, now).expect("a bounded policy always yields one"),
-            soon,
-            "an expiry inside the window is the tighter bound and stands"
+            soon + trust_tasks_rs::DEFAULT_SKEW,
         );
     }
 
-    /// With no `expiresAt` the retention is the window itself, unchanged by
-    /// the cap: since trust-tasks-rs 0.33.2 `record_expiry` already includes
-    /// the skew allowance the document is accepted inside.
+    /// With no `expiresAt` the retention is the window itself: since
+    /// trust-tasks-rs 0.33.2 `record_expiry` already includes the skew
+    /// allowance the document is accepted inside.
     #[test]
     fn without_an_expiry_the_window_is_the_retention() {
         let now = now();

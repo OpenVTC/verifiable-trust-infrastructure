@@ -251,8 +251,12 @@ In `dispatch_trust_task_core`, in order, before any handler runs:
    `issuedAt + max_age + skew`, so a document stamped `expiresAt = now + 10
    years` can no longer pin an id for ten years. **VTI-OPS-025 … 027.**
    *(Step 1a replaced the mechanism: the record is now store-backed and
-   shared across bindings, which is what -027 requires. The cap is
-   unchanged. See §6a.)*
+   shared across bindings, which is what -027 requires. See §6a.)*
+   *(Since trust-tasks-rs 0.37 the cap is the expiry horizon, not the maximum
+   age: a stated `expiresAt` is accepted up to thirty days after `issuedAt`
+   (VTI-OPS-024, VTI-OPS-028), so the record is kept to the acceptance end
+   plus the skew (VTI-OPS-029). A record capped at `issuedAt + max_age + skew`
+   would be dropped while its document was still acceptable.)*
 
 All five steps are **unconditional**. There is no configuration that relaxes
 any of them.
@@ -380,8 +384,9 @@ step 1a, and it is done:
   Duplicate, Conflict}`; a `Fresh` claim is settled with
   `AcceptedClaim::{completed, release}`. Each phase-2 call site is that
   match, not a redesign.
-- It is bounded by the acceptance window (`retain_until` still caps a
-  producer-chosen `expiresAt` at `issuedAt + max_age + skew`) and swept on the
+- It is bounded by the acceptance window (`retain_until` keeps it to the
+  document's acceptance end plus the skew: a producer-chosen `expiresAt`, up to
+  the thirty-day horizon, or `issuedAt + max_age` without one) and swept on the
   retention sweeper's tick, because a keyspace has no capacity eviction to
   bound it the way the in-memory map did.
 - Claim-and-insert is atomic **within the process**, which is the whole scope

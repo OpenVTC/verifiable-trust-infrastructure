@@ -141,36 +141,28 @@ pub trait SpineHooks: Send + Sync {
 }
 
 /// The acceptance window every VTI node applies (VTI-OPS-024: ten minutes, 60
-/// seconds of skew), **requiring `issuedAt`**.
+/// seconds of skew, or a stated `expiresAt` up to the thirty-day horizon of
+/// VTI-OPS-028), **requiring `issuedAt`**.
 ///
-/// Requiring `issuedAt` makes the last instant an accepted document can return
-/// provable — `issuedAt + max_age + skew` — which is what [`retain_until`] caps
-/// the duplicate-id record's retention on.
+/// Requiring `issuedAt` is what lets the horizon bound anything: a document
+/// with only an `expiresAt` has no time of issue to count thirty days from, so
+/// it would be accepted, and remembered, for as long as its producer chose.
 pub fn default_freshness_policy() -> FreshnessPolicy {
     vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
         .freshness_policy()
         .requiring_issued_at()
 }
 
-/// How long the duplicate-id record for `doc` must be kept under `policy` — the
-/// end of the consumer's willingness to execute it.
-///
-/// `FreshnessPolicy::record_expiry` takes a producer-supplied `expiresAt`
-/// verbatim, so this caps it at `issuedAt + max_age + skew`: the cap only ever
-/// moves the instant earlier than a producer asked for, never earlier than the
-/// acceptance window.
+/// How long the duplicate-id record for `doc` must be kept under `policy`
+/// (**VTI-OPS-029**): the document's acceptance end, plus the clock-skew
+/// tolerance — up to thirty days with a stated `expiresAt` (VTI-OPS-028). See
+/// [`vti_common::trust_task::acceptance::retain_until`].
 pub fn retain_until(
     policy: &FreshnessPolicy,
     doc: &TrustTask<Value>,
     now: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
-    let expiry = policy.record_expiry(doc, now)?;
-    match (doc.issued_at, policy.max_age) {
-        (Some(issued_at), Some(max_age)) => Some(expiry.min(issued_at + max_age + policy.skew)),
-        // Unreachable while `require_issued_at` holds; over-retaining is the
-        // safe direction to fail in.
-        _ => Some(expiry),
-    }
+    vti_common::trust_task::acceptance::retain_until(policy, doc, now)
 }
 
 /// One service's pipeline: the pieces it injects, borrowed for one call (or

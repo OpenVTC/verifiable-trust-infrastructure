@@ -605,11 +605,11 @@ pub(crate) fn spec_policy_for(type_uri: &str) -> Option<trust_tasks_rs::SpecPoli
 /// timestamp is refused anyway — as `Stale { Unboundable }`, which renders as
 /// the wire code `expired`, telling a producer to wait when what it must do is
 /// reissue with the member it omitted. And a document carrying only
-/// `expiresAt` is accepted for however long its *producer* chose, which would
-/// let the producer decide how long this consumer must remember its `id`.
-/// Requiring `issuedAt` makes the last instant an accepted document can return
-/// provable — `issuedAt + max_age + skew` — which is what [`retain_until`]
-/// caps on.
+/// `expiresAt` is accepted for however long its *producer* chose: the thirty-day
+/// horizon (VTI-OPS-028) is counted from `issuedAt`, so without one it bounds
+/// nothing, and the producer would decide how long this consumer must remember
+/// its `id`. Requiring `issuedAt` makes the last instant an accepted document
+/// can return provable, which is what [`retain_until`] keeps the record to.
 ///
 /// The cost is exact: the one shape that moves from accepted to refused is
 /// **`expiresAt` present, `issuedAt` absent**. Every VTI producer stamps
@@ -623,22 +623,15 @@ pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
     vti_trust_task_server::default_freshness_policy()
 }
 
-/// How long the duplicate-execution record for `doc` must be kept — the end of
-/// this consumer's willingness to execute it, which SPEC §7.2 makes the same
-/// instant as the end of the record's required retention.
+/// How long the duplicate-execution record for `doc` must be kept: its
+/// acceptance end plus the skew (VTI-OPS-029), which SPEC §7.2 makes the end of
+/// this consumer's willingness to execute it. See
+/// [`vti_trust_task_server::retain_until`].
 ///
-/// `FreshnessPolicy::record_expiry` takes a producer-supplied `expiresAt`
-/// **verbatim**, so a document stamped `expiresAt = now + 10 years` would pin
-/// its `id` in the accepted-id record for ten years — an entry held long past
-/// the last moment it could be needed, crowding out the records that are.
-/// `requiring_issued_at` above makes the cap provable: a document with no
-/// `issuedAt` never reaches here, and one that did reach here is refused once
-/// `issuedAt + max_age + skew` has passed.
-///
-/// The cap only ever moves the instant **earlier than a producer asked for**,
-/// never earlier than the acceptance window. Shortening retention below the
-/// window is the direction §7.2 forbids: a replay arriving while the document
-/// is still acceptable, with its record already dropped, executes twice.
+/// A stated `expiresAt` is honoured up to thirty days after `issuedAt`
+/// (VTI-OPS-028), so this is up to thirty days and never the ten-minute window
+/// alone: a record dropped while its document is still acceptable lets a
+/// replay execute twice.
 fn retain_until(
     doc: &TrustTask<Value>,
     now: chrono::DateTime<chrono::Utc>,
@@ -1499,13 +1492,12 @@ mod spine_proof_tests {
         );
     }
 
-    /// **VTI-OPS-024 + VTI-OPS-026.** Acceptance and retention are one bound.
-    /// `record_expiry` takes a producer-supplied `expiresAt` verbatim, so
-    /// without the cap a document stamped ten years out would pin its `id`
-    /// for ten years — retention long past the last instant the document could
-    /// still be accepted, crowding out the records that can be drawn on.
+    /// **VTI-OPS-028 + VTI-OPS-029.** Acceptance and retention are one bound.
+    /// A document stamped ten years out is acceptable only to the thirty-day
+    /// horizon, so its record is kept to the horizon (plus the skew), not for
+    /// ten years.
     #[test]
-    fn vti_ops_026_retention_is_capped_at_the_end_of_the_acceptance_window() {
+    fn vti_ops_029_a_far_expiry_is_retained_to_the_horizon() {
         let h = holder();
         let now = chrono::Utc::now();
         let mut doc = unsigned(&h, UNDER_TEST, json!({}));
@@ -1514,33 +1506,33 @@ mod spine_proof_tests {
 
         let policy = freshness_policy();
         let until = retain_until(&doc, now).expect("a document with an issuedAt is boundable");
-
         assert_eq!(
             until,
-            now + policy.max_age.expect("the window is set") + policy.skew,
-            "retention may not outlast the window in which the document is \
-             still executable"
+            now + vti_common::trust_task::acceptance::EXPIRY_HORIZON + policy.skew,
         );
     }
 
-    /// …and it never moves the instant *earlier* than that window. Shortening
-    /// retention below acceptance is the direction §7.2 forbids: a replay
-    /// arriving while the document is still acceptable, with its record
-    /// already dropped, executes twice.
+    /// **VTI-OPS-029.** A stated expiry inside the horizon is the acceptance
+    /// end, whatever the maximum age: the record is kept to it, plus the skew.
+    /// A record kept for the ten-minute window would let a replay of a
+    /// day-long document an hour later execute twice.
     #[test]
-    fn vti_ops_026_a_short_expiry_does_not_shorten_retention_below_the_window() {
+    fn vti_ops_029_a_stated_expiry_is_retained_past_the_maximum_age() {
         let h = holder();
         let now = chrono::Utc::now();
         let mut doc = unsigned(&h, UNDER_TEST, json!({}));
         doc.issued_at = Some(now);
-        doc.expires_at = Some(now + chrono::TimeDelta::seconds(30));
+        doc.expires_at = Some(now + chrono::TimeDelta::days(1));
 
+        assert!(
+            doc.validate_freshness(now + chrono::TimeDelta::hours(1), &freshness_policy())
+                .is_ok(),
+            "precondition: an hour on, the document is still acceptable"
+        );
         let until = retain_until(&doc, now).expect("boundable");
         assert_eq!(
             until,
-            now + chrono::TimeDelta::seconds(30),
-            "a producer that says its document lapses in 30s has said the \
-             record may be dropped then — it is unacceptable after that too"
+            now + chrono::TimeDelta::days(1) + freshness_policy().skew
         );
     }
 
