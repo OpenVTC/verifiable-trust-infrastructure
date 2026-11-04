@@ -38,6 +38,7 @@ mod provision_integration_provisionable;
 mod push_new_attempt_freshness;
 mod refresh_trust_task;
 mod revoke_session_trust_task;
+mod room_record_members_gate;
 mod security;
 mod session_jti_pin;
 mod sessions_list_trust_task;

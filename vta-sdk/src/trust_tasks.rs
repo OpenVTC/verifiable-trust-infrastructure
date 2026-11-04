@@ -910,6 +910,15 @@ pub const TASK_ROOMS_OWNER_ANCHOR_0_1: &str = "https://trusttasks.org/spec/rooms
 /// Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_READ_0_1: &str = "https://trusttasks.org/spec/rooms/keys/read/0.1";
 
+/// `spec/rooms/keys/read/0.2` — [`TASK_ROOMS_KEYS_READ_0_1`], passing through the
+/// `createdAt`, `createdBy` and `bodyStoredAt` the host's `rooms/records/get/0.3` serves,
+/// and reading up to 32 records in one request (`keys`), each answered on its own in
+/// `results` — a record or that key's own error, `notAttempted` for a key not come to
+/// within the response's size or time budget. Repairs are made once per request. Auth:
+/// `roomOpen` capability. The version this SDK sends.
+pub const TASK_ROOMS_KEYS_READ_0_2: &str =
+    <vti_specs::rooms::keys::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/browse/0.3` — list a room's records at its host, and check the
 /// listing against what the host committed to, with the room's `lastPrune` passed through
 /// from the host's `rooms/records/list/0.5`, its instant named `prunedAt`
@@ -917,9 +926,16 @@ pub const TASK_ROOMS_KEYS_READ_0_1: &str = "https://trusttasks.org/spec/rooms/ke
 ///
 /// Never returns bodies; that is a property of the task rather than of the tier,
 /// and is why browsing and reading are two. Auth: `roomOpen` capability.
-#[allow(deprecated)] // superseded by 0.4, which this VTA does not serve yet
+#[allow(deprecated)] // superseded by 0.4, and still served
 pub const TASK_ROOMS_KEYS_BROWSE_0_3: &str =
     <vti_specs::rooms::keys::browse::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/browse/0.4` — [`TASK_ROOMS_KEYS_BROWSE_0_3`], its rows the
+/// `RecordMetadataV3` the host's `rooms/records/list/0.6` serves, passed through exactly as
+/// served: `createdAt` and `bodyStoredAt`, `createdBy` (`open` and `attributed`), `kind`
+/// (`open`) and `blobs`. Auth: `roomOpen` capability. The version this SDK sends.
+pub const TASK_ROOMS_KEYS_BROWSE_0_4: &str =
+    <vti_specs::rooms::keys::browse::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/seal/0.2` — seal one record body with the room's current epoch key;
 /// it does not write. With `signAsPrincipal` the VTA signs the
@@ -2702,7 +2718,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_CHAIN_0_2,
     TASK_ROOMS_KEYS_BACKFILL_0_2,
     TASK_ROOMS_KEYS_READ_0_1,
+    TASK_ROOMS_KEYS_READ_0_2,
     TASK_ROOMS_KEYS_BROWSE_0_3,
+    TASK_ROOMS_KEYS_BROWSE_0_4,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_SEAL_0_3,
     TASK_ROOMS_KEYS_ACT_0_8,

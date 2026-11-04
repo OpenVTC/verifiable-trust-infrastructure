@@ -3647,6 +3647,95 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_BROWSE_0_4,
+            checked!(
+                specs::rooms::keys::browse::v0_4::Payload,
+                specs::rooms::keys::browse::v0_4::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community"
+                }),
+                // An open room's row as list/0.6 serves it, passed through: when the host
+                // first stored it and by whom, when it stored this body, and its kind.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "records": [{
+                        "key": "giXFLTGBdnnQJRoIsktuIg",
+                        "version": 412,
+                        "status": "active",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                        "createdAt": "2025-12-31T09:14:02Z",
+                        "createdBy": "did:webvh:example.com:people:alice",
+                        "bodyStoredAt": "2025-12-31T09:14:02Z",
+                        "kind": "message"
+                    }],
+                    "complete": true,
+                    "verification": {
+                        "priorRoots": "notChecked",
+                        "anchor": "notChecked",
+                        "count": "agrees",
+                        "head": {
+                            "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                            "recordCount": 1,
+                            "headVersion": 412
+                        }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_READ_0_2,
+            checked!(
+                specs::rooms::keys::read::v0_2::Payload,
+                specs::rooms::keys::read::v0_2::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "keys": ["giXFLTGBdnnQJRoIsktuIg", "Hc7pY2wQe9tLmB4sVn1KxA", "q1Zr8mVbT0yWl3nK5xHc2A"]
+                }),
+                // The batch form: a record, a key the host does not hold, and one not come to.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "results": [
+                        {
+                            "key": "giXFLTGBdnnQJRoIsktuIg",
+                            "version": 412,
+                            "status": "active",
+                            "updatedAt": "2026-01-01T00:00:00Z",
+                            "createdAt": "2025-12-31T09:14:02Z",
+                            "createdBy": "did:webvh:example.com:people:alice",
+                            "bodyStoredAt": "2025-12-31T09:14:02Z",
+                            "author": "did:webvh:example.com:people:alice",
+                            "plaintext": "eyJ0aXRsZSI6IlByaWNpbmcgaG9sZHMifQ",
+                            "verification": {
+                                "trace": "verified",
+                                "priorRoots": "agree",
+                                "anchor": "notChecked",
+                                "head": {
+                                    "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                                    "recordCount": 118,
+                                    "headVersion": 412
+                                }
+                            }
+                        },
+                        {
+                            "key": "Hc7pY2wQe9tLmB4sVn1KxA",
+                            "error": {
+                                "code": "rooms/keys/read:hostRefused",
+                                "message": "room host refused: notFound",
+                                "retryable": false,
+                                "details": { "code": "notFound", "reason": "no such record" }
+                            }
+                        },
+                        {
+                            "key": "q1Zr8mVbT0yWl3nK5xHc2A",
+                            "error": { "code": "rooms/keys/read:notAttempted", "retryable": true }
+                        }
+                    ]
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_SEAL_0_2,
             checked!(
                 specs::rooms::keys::seal::v0_2::Payload,

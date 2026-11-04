@@ -741,6 +741,8 @@ pub(crate) enum GrantRole {
 /// action it performs — `read` for list/get, `write` for put, `curate` for
 /// curate, `admin` for renew — so a member who holds less is refused by their
 /// own VTA rather than by the host.
+// Parsed once per invocation; `Put`'s flags are what make it large.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum RoomCommands {
     /// List the room's records. Metadata only — never bodies.
@@ -770,6 +772,24 @@ pub(crate) enum RoomCommands {
         limit: Option<usize>,
     },
 
+    /// Read several records at once through your VTA (`rooms/keys/read/0.2`): it
+    /// fetches each from the host as you, checks it, and opens it, and answers each key on
+    /// its own — the record, or why that key was not read.
+    Read {
+        /// Record keys, in the order to show them.
+        #[arg(required = true)]
+        keys: Vec<String>,
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the host storing the room. Unused by this command, which reaches the
+        /// host through your VTA; accepted so a `get` line can be turned into a `read`.
+        #[arg(long)]
+        host: Option<String>,
+        /// The host's DID. Your VTA resolves it and reads as you.
+        #[arg(long)]
+        host_did: String,
+    },
+
     /// Read one record, decrypting through your VTA when it is sealed.
     Get {
         /// Record key.
@@ -790,8 +810,9 @@ pub(crate) enum RoomCommands {
         /// be descriptive.
         key: String,
         /// The record body (markdown — written for a human, recalled by an
-        /// agent).
-        body: String,
+        /// agent). With `--react`, the reaction is the body.
+        #[arg(required_unless_present = "react", conflicts_with = "react")]
+        body: Option<String>,
         #[arg(long = "room")]
         room_id: String,
         #[arg(long)]
@@ -832,6 +853,26 @@ pub(crate) enum RoomCommands {
         /// Readers hide it after that; it is not deleted.
         #[arg(long)]
         valid_until: Option<String>,
+        /// What kind of record this is: `message`, `note`, … (lowerCamelCase). Only where
+        /// the room's profile lists `kind` in its record members.
+        #[arg(long, conflicts_with = "react")]
+        kind: Option<String>,
+        /// The record this one answers: `KEY`, or `KEY@VERSION`. Only where the room's
+        /// profile lists `inReplyTo`.
+        #[arg(long, value_name = "KEY[@VERSION]", conflicts_with = "react")]
+        reply_to: Option<String>,
+        /// React to `--to` with this (an emoji, a word): a record of kind `reaction`
+        /// answering it. Only where the room's profile lists `kind` and `inReplyTo`.
+        #[arg(long, value_name = "VALUE", requires = "to")]
+        react: Option<String>,
+        /// The record `--react` reacts to: `KEY`, or `KEY@VERSION`.
+        #[arg(
+            long,
+            value_name = "KEY[@VERSION]",
+            requires = "react",
+            conflicts_with = "body"
+        )]
+        to: Option<String>,
     },
 
     /// Change a record's standing. Needs `curate`, which `write` does not imply.

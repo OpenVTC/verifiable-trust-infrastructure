@@ -2040,7 +2040,8 @@ and `vtc-service`:
 | `rooms/keys/act/0.8`, `0.9`, `0.10`, `0.11` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.11 adds `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3` |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
-| `rooms/keys/browse/0.3` | `roomOpen` capability; passes the host's `lastPrune` through |
+| `rooms/keys/browse/0.3`, `0.4` | `roomOpen` capability; passes the host's `lastPrune` through. 0.4 lists with `rooms/records/list/0.6` (else 0.5) and passes its `RecordMetadataV3` rows through as served: `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`), `kind` (`open`) |
+| `rooms/keys/read/0.1`, `0.2` | `roomOpen` capability. 0.2 fetches with `rooms/records/get/0.3` (else 0.2) and passes `createdAt`, `createdBy` and `bodyStoredAt` through; `keys` reads up to 32 records, each answered on its own in `results` (`notAttempted` past 512 KiB of answers or 15 s), repairing once per batch |
 | `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
 | `rooms/keys/backfill/0.2` | `roomOpen` capability; fetches with `rooms/epoch/chain/0.2`, applies and reports the floor |
 | `rooms/keys/present/0.2` | `roomPresent` capability + acting in the persona's context |

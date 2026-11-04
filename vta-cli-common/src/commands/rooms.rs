@@ -175,26 +175,195 @@ async fn act_and_send_as(
 ) -> Result<(String, Value), Box<dyn std::error::Error>> {
     let host_did = target.host_did.unwrap_or("did:key:zHost");
     let document = vta_sdk::client::unsigned_room_request(type_uri, host_did, issuer, payload)?;
-    let completed = client.room_act(&document).await.map_err(|e| {
-        let text = e.to_string();
-        let hint = if text.contains("principalAmbiguous") {
-            "\n\nYou may act as more than one member of this room: act from the context of \
-             the one you mean."
-        } else if text.contains("notAMember") {
-            "\n\nYour VTA holds no credential this room issued to a persona you may act as. \
-             The owner issues them with `pnm rooms owner issue-membership` and \
-             `issue-authority --store`."
-        } else if text.contains("actionNotHeld") {
-            "\n\nYour own credentials for this room do not confer that action."
-        } else {
-            ""
-        };
-        format!("{e}{hint}")
-    })?;
+    let completed = client.room_act(&document).await.map_err(act_refusal)?;
     let principal = completed.principal.to_string();
     let document = serde_json::to_value(&completed.document)?;
     let reply = target.client().send_signed_room_document(&document).await?;
     Ok((principal, reply))
+}
+
+/// Send `newest` (a type `rooms/keys/act/0.11` completes) as the member, falling back to
+/// `older` through [`act_and_send`] (`rooms/keys/act/0.10`) when the VTA does not serve
+/// act/0.11 or the host answers the newer type `unsupportedType`. With no `older` — a
+/// request using what only the newer type carries — either is an error that says which
+/// party to upgrade. Returns the member, the host's response payload, and whether the
+/// newer type was the one answered.
+async fn act_and_send_newest(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    newest: (&str, Value),
+    older: Option<(&str, Value)>,
+) -> Result<(String, Value, bool), Box<dyn std::error::Error>> {
+    let (new_type, new_payload) = newest;
+    let host_did = target.host_did.unwrap_or("did:key:zHost");
+    let document =
+        vta_sdk::client::unsigned_room_request_v0_11(new_type, host_did, None, new_payload)?;
+    let fall_back = |why: String| -> Result<(&str, Value), Box<dyn std::error::Error>> {
+        older.clone().ok_or_else(|| why.into())
+    };
+    let (old_type, old_payload) = match client.room_act_v0_11(&document).await {
+        Ok(completed) => {
+            let principal = completed.principal.to_string();
+            let document = serde_json::to_value(&completed.document)?;
+            match target.client().send_signed_room_document(&document).await {
+                Ok(reply) => return Ok((principal, reply, true)),
+                Err(e)
+                    if vtc_client::git_ns::task_error(&e)
+                        .is_some_and(|(code, _)| code == "unsupportedType") =>
+                {
+                    fall_back(format!(
+                        "the room's host does not serve `{new_type}`, which this record needs: \
+                         it predates it. Write the record without the members only that \
+                         version carries, or ask the host's operator to upgrade."
+                    ))?
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(VtaError::UnsupportedTaskType { .. }) => fall_back(format!(
+            "your VTA does not serve `rooms/keys/act/0.11`, which completes `{new_type}`: \
+             upgrade it, or write the record without the members only that version carries."
+        ))?,
+        Err(e) => return Err(act_refusal(e).into()),
+    };
+    let (principal, reply) = act_and_send(client, target, old_type, old_payload).await?;
+    Ok((principal, reply, false))
+}
+
+/// A `rooms/keys/act` refusal, with what the operator can do about it.
+fn act_refusal(e: VtaError) -> String {
+    let text = e.to_string();
+    let hint = if text.contains("principalAmbiguous") {
+        "\n\nYou may act as more than one member of this room: act from the context of \
+         the one you mean."
+    } else if text.contains("notAMember") {
+        "\n\nYour VTA holds no credential this room issued to a persona you may act as. \
+         The owner issues them with `pnm rooms owner issue-membership` and \
+         `issue-authority --store`."
+    } else if text.contains("actionNotHeld") {
+        "\n\nYour own credentials for this room do not confer that action."
+    } else {
+        ""
+    };
+    format!("{e}{hint}")
+}
+
+/// What kind of record this is and what it answers (`kind`, `inReplyTo`; trust-tasks-tf
+/// #1027), as `rooms put` takes them. A writer uses either only where the room's profile
+/// lists it in `recordMembers`, which [`writer_members`] checks before anything is sent.
+#[derive(Debug, Clone, Default)]
+pub struct RecordThread {
+    /// `message`, `reaction`, `note`, … — an open lowerCamelCase set.
+    pub kind: Option<String>,
+    /// The record this one answers: `KEY`, or `KEY@VERSION` to answer what it said then.
+    pub reply_to: Option<String>,
+}
+
+impl RecordThread {
+    /// The members as a record body carries them, checked against the specification's
+    /// shapes.
+    pub fn members(&self) -> Result<serde_json::Map<String, Value>, String> {
+        let mut m = serde_json::Map::new();
+        if let Some(k) = &self.kind {
+            m.insert("kind".into(), serde_json::json!(k));
+        }
+        if let Some(r) = &self.reply_to {
+            let (key, version) = match r.rsplit_once('@') {
+                Some((k, v)) => (
+                    k,
+                    Some(v.parse::<u64>().map_err(|_| {
+                        format!("--reply-to {r}: the version after `@` is not a number")
+                    })?),
+                ),
+                None => (r.as_str(), None),
+            };
+            let mut reference = serde_json::json!({ "key": key });
+            if let Some(v) = version {
+                reference["version"] = serde_json::json!(v);
+            }
+            m.insert("inReplyTo".into(), reference);
+        }
+        vti_rooms::record_members::check(&m)?;
+        Ok(m)
+    }
+}
+
+/// The members a new record carries beyond the base set: `wanted` (from [`RecordThread`]),
+/// refused before anything is sent unless the room's profile lists each
+/// ([`VtaClient::room_check_record_members`]'s rule), and `writtenAt`, now, wherever the
+/// profile lists it. The profile is read through the VTA, which needs the host's DID; with
+/// none, nothing beyond `wanted` is added and `wanted` must be empty.
+async fn writer_members(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    wanted: serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>, Box<dyn std::error::Error>> {
+    let Some(host_did) = target.host_did else {
+        if wanted.is_empty() {
+            return Ok(wanted);
+        }
+        return Err(format!(
+            "{} may be written only where the room's profile lists {}, and reading the \
+             profile takes the host's DID: pass --host-did.",
+            wanted.keys().cloned().collect::<Vec<_>>().join(" and "),
+            if wanted.len() == 1 { "it" } else { "them" }
+        )
+        .into());
+    };
+    let (listed, unresolved) = match client
+        .room_record_members(target.room_id, host_did, None)
+        .await
+    {
+        Ok(l) => (l, None),
+        Err(e) => (None, Some(e.to_string())),
+    };
+    if !wanted.is_empty() {
+        vta_sdk::client::check_record_members(
+            target.room_id,
+            &Value::Object(wanted.clone()),
+            listed.as_deref(),
+            unresolved,
+        )
+        .map_err(|e| record_members_refused(e, target))?;
+    }
+    let mut out = wanted;
+    if listed
+        .as_ref()
+        .is_some_and(|l| l.iter().any(|m| m == "writtenAt"))
+    {
+        out.insert(
+            "writtenAt".into(),
+            serde_json::json!(
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+        );
+    }
+    Ok(out)
+}
+
+/// A record the room's profile does not permit, with the command that permits it.
+fn record_members_refused(e: VtaError, target: &RoomTarget<'_>) -> Box<dyn std::error::Error> {
+    let VtaError::RecordMembersNotPermitted {
+        refused, listed, ..
+    } = &e
+    else {
+        return e.into();
+    };
+    let mut all = listed.clone();
+    for r in refused {
+        if !all.contains(r) {
+            all.push(r.clone());
+        }
+    }
+    format!(
+        "{e}\n\nNothing was written. A curator of the room permits them with:\n\n  \
+         pnm rooms profile set --room {} --host-did {} --record-members {}\n\n\
+         or write the record without --kind, --reply-to and --react.",
+        target.room_id,
+        target.host_did.unwrap_or("<host-did>"),
+        all.join(",")
+    )
+    .into()
 }
 
 /// [`act_and_send`], with the response parsed into its wire type.
@@ -319,14 +488,18 @@ async fn list_page(
     if let Some(c) = cursor {
         payload["cursor"] = serde_json::json!(c);
     }
-    let (_, mut reply) = act_and_send(
+    // list/0.6 where the VTA and host serve it — its rows add when the host stored each
+    // record and by whom, and an open room's `kind` — else list/0.5. A cursor is the
+    // version's own, so a later page asks the version the first one was answered at.
+    let (_, mut reply, _) = act_and_send_newest(
         client,
         target,
-        vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
-        payload,
+        (vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE, payload.clone()),
+        Some((vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE, payload)),
     )
     .await?;
-    // List 0.5 names the continuation token `nextCursor`; the listing type reads `cursor`.
+    // List 0.5 and 0.6 name the continuation token `nextCursor`; the listing type reads
+    // `cursor`.
     if let Some(obj) = reply.as_object_mut()
         && let Some(next) = obj.remove("nextCursor")
     {
@@ -347,13 +520,15 @@ pub async fn cmd_rooms_get(
     target: RoomTarget<'_>,
     key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (_, record) = act_and_send(
+    let payload = serde_json::json!({ "roomId": target.room_id, "key": key });
+    let (_, record, _) = act_and_send_newest(
         client,
         &target,
-        vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
-        serde_json::json!({ "roomId": target.room_id, "key": key }),
+        (vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE, payload.clone()),
+        Some((vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE, payload)),
     )
     .await?;
+    let stored = stored_line(&record);
 
     // An `open`-tier record arrives readable. A sealed one arrives as
     // ciphertext this process cannot decrypt, and must not try to: the group
@@ -374,6 +549,14 @@ pub async fn cmd_rooms_get(
                 && vti_rooms::provenance::carries_any(obj)
             {
                 println!("\n{} (unsigned on an open room)", provenance_line(obj));
+            }
+            if let Some(obj) = cleartext.as_object()
+                && let Some(line) = thread_line(obj)
+            {
+                println!("\n{line}");
+            }
+            if let Some(line) = &stored {
+                println!("{line}");
             }
         }
         return Ok(());
@@ -412,6 +595,171 @@ pub async fn cmd_rooms_get(
     println!("\nWritten by {} at version {version}.", body.author);
     if let Ok(Value::Object(obj)) = serde_json::to_value(body) {
         println!("{}", provenance_line(&obj));
+        if let Some(line) = thread_line(&obj) {
+            println!("{line}");
+        }
+    }
+    if let Some(line) = &stored {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// A record's `kind`, what it answers and when its author says it was written and edited —
+/// the author's word, shown as such.
+fn thread_line(obj: &serde_json::Map<String, Value>) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(k) = obj.get("kind").and_then(Value::as_str) {
+        parts.push(format!("Kind: {}", inert(k)));
+    }
+    if let Some(r) = obj.get("inReplyTo") {
+        let key = r
+            .get("key")
+            .and_then(Value::as_str)
+            .map(inert)
+            .unwrap_or_default();
+        match r.get("version").and_then(Value::as_u64) {
+            Some(v) => parts.push(format!("In reply to {key}@{v}")),
+            None => parts.push(format!("In reply to {key}")),
+        }
+    }
+    if let Some(w) = obj.get("writtenAt").and_then(Value::as_str) {
+        parts.push(format!("written {}", inert(w)));
+    }
+    if let Some(e) = obj.get("editedAt").and_then(Value::as_str) {
+        parts.push(format!("edited {}", inert(e)));
+    }
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+/// What the host recorded about a record (`rooms/records/get/0.3`, `RecordMetadataV3`):
+/// when it first stored it and for whom, and when it stored this body.
+fn stored_line(record: &Value) -> Option<String> {
+    let created = record.get("createdAt").and_then(Value::as_str);
+    let by = record.get("createdBy").and_then(Value::as_str);
+    let body = record.get("bodyStoredAt").and_then(Value::as_str);
+    if created.is_none() && body.is_none() {
+        return None;
+    }
+    let mut line = String::from("The host first stored it");
+    if let Some(c) = created {
+        line.push_str(&format!(" at {}", inert(c)));
+    }
+    if let Some(b) = by {
+        line.push_str(&format!(" for {}", inert(b)));
+    }
+    if let Some(b) = body {
+        line.push_str(&format!("; this body at {}", inert(b)));
+    }
+    line.push('.');
+    Some(line)
+}
+
+/// `rooms read` — several records at once, read **by your VTA** (`rooms/keys/read/0.2`):
+/// it fetches each from the host as you, checks what the host asserted, and opens it, and
+/// answers every key on its own — a record, or why that one key was not read. Keys past
+/// [`vta_sdk::client::ROOM_READ_MAX_KEYS`] go in further requests.
+///
+/// A sealed record is shown only after its body checks out, as `rooms get` checks it
+/// ([`verify_record_body`]); one that fails is reported for its key and nothing of it shown.
+pub async fn cmd_rooms_read(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    keys: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let host_did = target.host_did.ok_or(
+        "`rooms read` has your VTA fetch the records from the host, which it finds by its DID: \
+         pass --host-did",
+    )?;
+    let mut results = Vec::with_capacity(keys.len());
+    let mut sealed_at = serde_json::Map::new();
+    for chunk in keys.chunks(vta_sdk::client::ROOM_READ_MAX_KEYS) {
+        let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+        let answer = client
+            .room_read_batch(target.room_id, host_did, &refs, None)
+            .await?;
+        let answer = serde_json::to_value(answer)?;
+        if let Some(Value::Object(at)) = answer.pointer("/ext/org.openvtc.rooms/sealedAt") {
+            sealed_at.extend(at.clone());
+        }
+        results.extend(answer["results"].as_array().cloned().unwrap_or_default());
+    }
+    if crate::render::is_json_output() {
+        crate::render::print_json(&results)?;
+        return Ok(());
+    }
+    let resolver = vta_sdk::trust_task_proof::TrustTaskVmResolver::from_optional(
+        vta_sdk::resolver::shared_did_resolver_from_env().await.ok(),
+    );
+    for (i, r) in results.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let key = r["key"].as_str().unwrap_or("?");
+        if let Some(e) = r.get("error") {
+            let code = e["code"].as_str().unwrap_or("?");
+            let again = if e["retryable"] == true {
+                " — ask for it again"
+            } else {
+                ""
+            };
+            println!(
+                "{}: not read [{code}]{again}: {}",
+                inert(key),
+                inert(e["message"].as_str().unwrap_or(""))
+            );
+            continue;
+        }
+        let version = r["version"].as_u64().unwrap_or(0);
+        let status = r["status"].as_str().unwrap_or("active");
+        println!("{}  v{version}  {status}", inert(key));
+        let shown = if let Some(cleartext) = r.get("cleartext").and_then(Value::as_object) {
+            Some(cleartext.clone())
+        } else if let Some(plaintext) = r["plaintext"].as_str() {
+            let bytes = base64::Engine::decode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                plaintext,
+            )?;
+            let at = sealed_at
+                .get(key)
+                .and_then(Value::as_u64)
+                .unwrap_or(version);
+            let location = RecordLocation {
+                room_id: target.room_id,
+                key,
+                version: at,
+            };
+            match verify_record_body(&bytes, location, r["author"].as_str(), &resolver).await {
+                Ok(body) => match serde_json::to_value(body.body())? {
+                    Value::Object(obj) => Some(obj),
+                    _ => None,
+                },
+                Err(e) => {
+                    println!("  refused: {e}");
+                    continue;
+                }
+            }
+        } else {
+            // A tombstone, or the room's own profile, which is not opened here.
+            None
+        };
+        if let Some(obj) = &shown {
+            if let Some(title) = obj.get("title").and_then(Value::as_str) {
+                println!("  {}", inert(title));
+            }
+            if let Some(text) = obj.get("body").and_then(Value::as_str) {
+                println!("  {}", inert(text));
+            }
+            if let Some(line) = thread_line(obj) {
+                println!("  {line}");
+            }
+            if let Some(author) = obj.get("author").and_then(Value::as_str) {
+                println!("  Written by {}.", inert(author));
+            }
+        }
+        if let Some(line) = stored_line(r) {
+            println!("  {line}");
+        }
     }
     Ok(())
 }
@@ -430,8 +778,12 @@ pub async fn cmd_rooms_put(
     body: String,
     expected_version: Option<u64>,
     provenance: RecordProvenance,
+    thread: RecordThread,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Checked before anything is sent: the shapes here, the room's permission below.
+    let wanted = thread.members()?;
     let (sealed_tier, member) = room_tier(client, &target).await?;
+    let members = writer_members(client, &target, wanted.clone()).await?;
 
     if !sealed_tier {
         if provenance.is_stated() {
@@ -445,11 +797,21 @@ pub async fn cmd_rooms_put(
         if let Some(v) = expected_version {
             payload["expectedVersion"] = serde_json::json!(v);
         }
-        let (_, reply) = act_and_send(
+        // put/0.3 carries none of the governed members: it is the fallback only for a record
+        // that asked for none — `writtenAt`, added because the profile permits it, is left
+        // out rather than refusing the write.
+        let older = wanted
+            .is_empty()
+            .then(|| (vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE, payload.clone()));
+        let mut newest = payload;
+        for (k, v) in members {
+            newest["cleartext"][k] = v;
+        }
+        let (_, reply, _) = act_and_send_newest(
             client,
             &target,
-            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
-            payload,
+            (vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE, newest),
+            older,
         )
         .await?;
         let put: vti_rooms::wire::PutRecordResponse = parse_reply("rooms/records/put", reply)?;
@@ -468,6 +830,15 @@ pub async fn cmd_rooms_put(
     content.title = title;
     content.body = Some(body);
     provenance.apply(&mut content)?;
+    content.kind = members
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    content.in_reply_to = members.get("inReplyTo").cloned();
+    content.written_at = members
+        .get("writtenAt")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let version = write_sealed(client, &target, content, expected_version).await?;
     println!("Wrote {key} at version {version}, sealed and signed by {member}");
     Ok(())
@@ -1540,20 +1911,45 @@ async fn write_sealed_naming(
     let mut intended = head + 1;
     let mut expected = expected_version;
     let mut landed = 0;
+    let mut content = content;
     for _ in 0..SEALED_WRITE_ATTEMPTS {
         // Unsigned: the VTA signs it as its author, the member, before sealing.
+        // seal/0.3 where the VTA serves it, which a body carrying the governed members needs.
         let unsigned = serde_json::to_vec(&content.clone().at_version(intended))?;
-        let sealed = client
-            .room_seal_as_principal(target.room_id, &key, intended, &unsigned)
-            .await?
-            .sealed;
+        let sealed = match client
+            .room_seal_as_principal_v0_3(target.room_id, &key, intended, &unsigned)
+            .await
+        {
+            Ok(r) => serde_json::to_value(r.sealed)?,
+            // A VTA that predates seal/0.3 seals only bodies without them. A `writtenAt`
+            // added because the profile permits it is dropped rather than refusing the
+            // write; one the operator asked for is not.
+            Err(VtaError::UnsupportedTaskType { .. })
+                if content.written_at.is_some()
+                    && content.kind.is_none()
+                    && content.in_reply_to.is_none()
+                    && content.edited_at.is_none() =>
+            {
+                content.written_at = None;
+                continue;
+            }
+            Err(e @ VtaError::UnsupportedTaskType { .. }) => {
+                return Err(format!(
+                    "{e}\n\nYour VTA predates `rooms/keys/seal/0.3`, which seals a body \
+                     carrying --kind or --reply-to: upgrade it, or write the record without \
+                     them."
+                )
+                .into());
+            }
+            Err(e) => return Err(e.into()),
+        };
         let mut payload = serde_json::json!({
             "roomId": target.room_id,
             "key": key,
             "sealed": {
-                "ciphertext": sealed.ciphertext,
-                "nonce": sealed.nonce,
-                "epoch": sealed.epoch.get(),
+                "ciphertext": sealed["ciphertext"],
+                "nonce": sealed["nonce"],
+                "epoch": sealed["epoch"],
             },
         });
         if let Some(v) = expected {
@@ -1562,10 +1958,29 @@ async fn write_sealed_naming(
         if let Some(b) = &blobs {
             payload["blobs"] = serde_json::json!(b);
         }
-        let put_type = vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE;
-        let (_, reply) = act_and_send(client, target, put_type, payload)
+        // put/0.5 where the VTA and host serve it, else put/0.3: on a sealed tier the host
+        // sees ciphertext either way. A record naming blobs keeps to put/0.3, whose blob
+        // handling every host serves.
+        let (_, reply) = if blobs.is_some() {
+            act_and_send(
+                client,
+                target,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+                payload,
+            )
+            .await
+            .map_err(|e| put_refused(e, target))?
+        } else {
+            let (principal, reply, _) = act_and_send_newest(
+                client,
+                target,
+                (vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE, payload.clone()),
+                Some((vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE, payload)),
+            )
             .await
             .map_err(|e| put_refused(e, target))?;
+            (principal, reply)
+        };
         let put: vti_rooms::wire::PutRecordResponse = parse_reply("rooms/records/put", reply)?;
         landed = put.version;
         if landed == intended {
@@ -3926,5 +4341,65 @@ mod tests {
             None,
             "neither flag must leave the pin alone, not clear it"
         );
+    }
+
+    /// `--kind` and `--reply-to KEY[@VERSION]` as a body carries them, shape-checked.
+    #[test]
+    fn a_record_thread_is_the_bodys_kind_and_in_reply_to() {
+        let m = RecordThread {
+            kind: Some("message".into()),
+            reply_to: Some("msg-1@4".into()),
+        }
+        .members()
+        .unwrap();
+        assert_eq!(m["kind"], "message");
+        assert_eq!(m["inReplyTo"], json!({ "key": "msg-1", "version": 4 }));
+        let m = RecordThread {
+            kind: None,
+            reply_to: Some("msg-1".into()),
+        }
+        .members()
+        .unwrap();
+        assert_eq!(m["inReplyTo"], json!({ "key": "msg-1" }));
+        assert!(RecordThread::default().members().unwrap().is_empty());
+        for bad in [
+            RecordThread {
+                kind: Some("Message".into()),
+                reply_to: None,
+            },
+            RecordThread {
+                kind: None,
+                reply_to: Some("msg-1@four".into()),
+            },
+            RecordThread {
+                kind: None,
+                reply_to: Some("msg-1@0".into()),
+            },
+        ] {
+            assert!(bad.members().is_err(), "{bad:?}");
+        }
+    }
+
+    /// A member the profile does not list is refused with the command that lists it — every
+    /// member already listed, and the one refused.
+    #[test]
+    fn a_refused_record_member_prints_the_profile_command() {
+        let target = prune_target();
+        let refused = vta_sdk::client::check_record_members(
+            target.room_id,
+            &json!({ "kind": "reaction", "inReplyTo": { "key": "k" } }),
+            Some(&["kind".to_string()]),
+            None,
+        )
+        .unwrap_err();
+        let text = record_members_refused(refused, &target).to_string();
+        assert!(
+            text.contains(
+                "pnm rooms profile set --room did:webvh:Qm:example.com:rooms:northwind \
+                 --host-did did:web:host.example --record-members kind,inReplyTo"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("Nothing was written"), "{text}");
     }
 }
