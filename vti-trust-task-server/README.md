@@ -30,7 +30,7 @@ Used by:
 | `ProofVerifier` | Proof verification. `ResolverProofVerifier` wraps a `TrustTaskVmResolver`. |
 | `SpineHooks` | The service's DID, plus optional checks before and after the proof |
 | `VerifiedAdmission` | Optional per-signer rate limiting |
-| `AcceptedIdStore` | The duplicate-id record. `InMemoryAcceptedIds` is for tests. |
+| `AcceptedIdStore` | The duplicate-id record. `StoreAcceptedIds` keeps it in a `vti-common` keyspace (durable, shared by every binding); `InMemoryAcceptedIds` is for tests. |
 | `Dispatcher` | The service's `match type_uri` |
 | `ResponseSigner` | Signs every response document |
 

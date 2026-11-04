@@ -378,6 +378,7 @@ async fn main() {
         Commands::Keys { command } => commands::keys::run(&client, command).await,
         Commands::Memory { command } => commands::memory::run(&client, command).await,
         Commands::Notifications { command } => commands::notifications::run(&client, command).await,
+        Commands::Collection { command } => commands::collection::run(&client, command).await,
         Commands::External { command } => commands::external::run(&client, command).await,
         Commands::Rooms { command } => commands::rooms::run(&client, &keyring_key, command).await,
         Commands::Elections { command } => commands::elections::run(&client, command).await,

@@ -158,6 +158,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         app_state: Default::default(),
         witness: Default::default(),
         notifications: Default::default(),
+        collection: Default::default(),
         policy: Default::default(),
         secrets: Default::default(),
         tee: Default::default(),
@@ -1486,6 +1487,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         ),
         internal_ks: store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap(),
         idempotency_ks: store.keyspace(crate::keyspaces::IDEMPOTENCY).unwrap(),
+        accepted_ids_ks: store.keyspace(crate::keyspaces::ACCEPTED_IDS).unwrap(),
         // Empty by default: a test VTA trusts no mdoc issuer until one is
         // configured, matching the fail-closed production default. A test that
         // needs mdoc receive builds its own anchors and swaps this out.
@@ -1519,6 +1521,10 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         pcs_engine_ks: store.keyspace(crate::keyspaces::PCS_ENGINE).unwrap(),
         witness_sessions_ks: store.keyspace(crate::keyspaces::WITNESS_SESSIONS).unwrap(),
         notifications_ks: store.keyspace(crate::keyspaces::NOTIFICATIONS).unwrap(),
+        collection_ks: store.keyspace(crate::keyspaces::COLLECTION).unwrap(),
+        collection: std::sync::Arc::new(crate::operations::collection::CollectionControl::new(
+            config.read().await.collection.collect_by_default,
+        )),
         room_groups_ks: store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap(),
         room_invitations_ks: store.keyspace(crate::keyspaces::ROOM_INVITATIONS).unwrap(),
         app_state_ks: store.keyspace(crate::keyspaces::APP_STATE).unwrap(),

@@ -17,6 +17,9 @@ pub mod audit;
 /// `descriptor_deps_from_app_state` below), and the deployment glue — how a
 /// restored seed is committed — in `crate::restore`.
 pub use vta_backup::ops as backup;
+/// Collection for the principal's identifiers (`vta/collection/*`,
+/// VTI-NTF-080 – 093): who holds each persona DID's mediator connection.
+pub mod collection;
 pub mod config;
 pub mod contexts;
 pub mod credential_exchange;
@@ -118,6 +121,16 @@ pub fn keyspaces_from_app_state(s: &crate::server::AppState) -> Keyspaces<'_> {
         imported: &s.imported_ks,
         memory: &s.memory_ks,
         app_state: &s.app_state_ks,
+        internal: &s.internal_ks,
+        vault: &s.vault_ks,
+        consent: &s.consent_ks,
+        consent_approvers: &s.consent_approvers_ks,
+        persona: &s.persona_ks,
+        pcs_engine: &s.pcs_engine_ks,
+        notifications: &s.notifications_ks,
+        external_accounts: &s.external_accounts_ks,
+        external_secrets: &s.external_secrets_ks,
+        collection: &s.collection_ks,
         #[cfg(feature = "webvh")]
         webvh: &s.webvh_ks,
     }
