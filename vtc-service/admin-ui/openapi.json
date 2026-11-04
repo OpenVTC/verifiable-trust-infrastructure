@@ -225,53 +225,6 @@
         }
       }
     },
-    "/v1/networks/relay/{group_id}": {
-      "post": {
-        "tags": [
-          "networks"
-        ],
-        "operationId": "networkRelayDeliver",
-        "parameters": [
-          {
-            "name": "group_id",
-            "in": "path",
-            "description": "The community group the broadcast is for",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RelayDelivery"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Accepted, and pushed to the group's active members; or already seen",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RelayReceipt"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The envelope does not verify, or is not from a network this community registered the group with"
-          },
-          "503": {
-            "description": "The community cannot relay right now"
-          }
-        }
-      }
-    },
     "/v1/oid4vp/request/{session}": {
       "get": {
         "tags": [
@@ -4940,31 +4893,6 @@
             "items": {
               "$ref": "#/components/schemas/GraphNode"
             }
-          }
-        }
-      },
-      "RelayDelivery": {
-        "type": "object",
-        "required": [
-          "envelope"
-        ],
-        "properties": {
-          "envelope": {
-            "type": "object",
-            "description": "The network's envelope: the originating network's signed message and the signed\nrelay hops."
-          }
-        }
-      },
-      "RelayReceipt": {
-        "type": "object",
-        "description": "What the community answers a network: the receipt the VTN relay protocol reads.",
-        "required": [
-          "status"
-        ],
-        "properties": {
-          "status": {
-            "type": "string",
-            "description": "`delivered` — accepted, and pushed to the group's active members — or `duplicate`, a\nmessage this community has already relayed."
           }
         }
       },

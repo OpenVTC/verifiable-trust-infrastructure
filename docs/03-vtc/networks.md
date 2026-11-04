@@ -8,10 +8,10 @@ This page covers the community's side, `vtc/networks/*` (`vtc-service/src/networ
 
 | Task | Effect |
 |---|---|
-| `vtc/networks/join/0.1` `{ url, network, groups }` | Accept a listing. The community checks that the network at `url` answers as `network`, then verifies its listing of the community. It registers each group in `groups` for its role (every role the network marks required must be assigned), signs the acknowledgement, and verifies the grant. |
-| `vtc/networks/repudiate/0.1` `{ url, network, reason? }` | Reject a listing. The network must publish the repudiation beside it (VTI-VTN-012). |
-| `vtc/networks/leave/0.1` `{ network, reason? }` | Depart by repudiating the network's grant. The network revokes what it issued for the community (VTI-VTN-053). |
-| `vtc/networks/groups/register/0.1` `{ network, role, groupId }` | Register, or replace, the group serving one of the network's roles. |
+| `vtc/networks/join/0.2` `{ url, network, groups }` | Accept a listing. The community checks that the network at `url` answers as `network`, then verifies its listing of the community. It registers each group in `groups` for its role (every role the network marks required must be assigned), signs the acknowledgement, and verifies the grant. |
+| `vtc/networks/repudiate/0.2` `{ url, network, reason? }` | Reject a listing. The network must publish the repudiation beside it (VTI-VTN-012). |
+| `vtc/networks/leave/0.2` `{ network, reason? }` | Depart by repudiating the network's grant. The network revokes what it issued for the community (VTI-VTN-053). |
+| `vtc/networks/groups/register/0.2` `{ network, role, groupId }` | Register, or replace, the group serving one of the network's roles. |
 | `vtc/networks/list`, `show` | The memberships, and the credentials that evidence each one. |
 
 **Gating:**
@@ -23,21 +23,24 @@ A group needs a DID of its own (minted by the community's VTA) to be registered.
 
 ## Broadcasts
 
-The community gives a network a relay endpoint for each registered group: `<public_url>/v1/networks/relay/<group id>`. `public_url` must be set.
+Every registered group has the same delivery endpoint: the community's Trust Task endpoint, `<public_url>/v1/trust-tasks`. `public_url` must be set.
 
-When a network broadcasts to a role, it posts the envelope there. The community then:
-1. Verifies the envelope end to end:
+When a network broadcasts to a role, it sends `vtc/networks/deliver/0.1` `{ role, envelope }`, signed by the network. The community then:
+1. Refuses unless the signer is a network the community is an acknowledged member of (`vtc/networks/deliver:notMember`), and it registered a group for `role` there (`vtc/networks/deliver:roleUnregistered`).
+2. Verifies the envelope end to end (`vtc/networks/deliver:envelopeInvalid` otherwise):
    - the originating network's signature;
-   - the hop chain;
-   - that the last hop is signed by a network the community is an acknowledged member of, delivering to the group it registered there.
-2. Drops repeats by message id.
-3. Pushes the envelope, unchanged, to each active member of the group as `vtc/networks/notice/0.1`.
+   - the hop chain, at most 8 hops;
+   - that the last hop is the signer's, addressed to the group registered for `role`.
+3. Answers `duplicate` for a message id it has already delivered, and sends nothing.
+4. Otherwise pushes the envelope, unchanged, to each active member of the group as `vtc/networks/notice/0.1`, and answers `delivered`. The answer carries no member count, so the network does not learn the group's size.
 
-A delivery that does not verify is refused with `403`, which the network treats as final. Each relay is audited as `NetworkMembershipChanged { event: broadcastRelayed }`.
+Each delivery is audited as `NetworkMembershipChanged { event: broadcastRelayed }`.
+
+A group registered under 0.1 named a REST endpoint, `<public_url>/v1/networks/relay/<group id>`, which is gone. Register the group again (`vtc/networks/groups/register/0.2`) so the network delivers to the Trust Task endpoint.
 
 ## Room passes
 
-A network can open a room for one of its roles. A member asks for `vtc/networks/evidence/0.1`, which returns the community's registration of each group they are in, plus the network's acceptance. They present that with their group membership credential to get the network's room pass. The evidence is released only to active members of the group.
+A network can open a room for one of its roles. A member asks for `vtc/networks/evidence/0.2`, which returns the community's registration of each group they are in (its signed `vtn/groups/register` request), plus the network's acceptance. They present that with their group membership credential to get the network's room pass. The evidence is released only to active members of the group.
 
 ## Not yet a capability module
 
