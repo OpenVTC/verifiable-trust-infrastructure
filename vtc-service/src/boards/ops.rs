@@ -22,6 +22,9 @@ pub enum OpenError {
         code: String,
         message: String,
     },
+    /// Another accept of the same idea created its election first: answered with the idea as it
+    /// stands, never as a refusal of an election that exists.
+    AlreadyOpening,
     App(AppError),
 }
 
@@ -118,6 +121,10 @@ pub async fn check_template(
         Ok(m) => m,
         Err(OpenError::Refused { message, .. }) => return Err(("templateInvalid", message)),
         Err(OpenError::App(e)) => return Err(("templateInvalid", e.to_string())),
+        // Forming a manifest creates no election, so nothing can have opened one.
+        Err(OpenError::AlreadyOpening) => {
+            return Err(("templateInvalid", "the template formed no manifest".into()));
+        }
     };
     // The voting window may already have closed when a board is changed after the fact; the
     // template is still checked as for a window open now.
@@ -197,12 +204,7 @@ pub async fn open_election(
                 "the board's audience group cannot be put as a credential roll".into(),
             ));
         }
-        Err(CreateError::ElectionExists) => {
-            return Err(refused(
-                "electionExists",
-                "an election already holds this idea's identifier".into(),
-            ));
-        }
+        Err(CreateError::ElectionExists) => return Err(OpenError::AlreadyOpening),
         Err(CreateError::BallotBoxRefused { code, message }) => {
             return Err(refused(&code, message));
         }
@@ -214,12 +216,7 @@ pub async fn open_election(
         Err(CreateError::BallotBoxRefused { code, message }) => {
             return Err(refused(&code, message));
         }
-        Err(CreateError::ElectionExists) => {
-            return Err(refused(
-                "electionExists",
-                "an election already holds this idea's identifier".into(),
-            ));
-        }
+        Err(CreateError::ElectionExists) => return Err(OpenError::AlreadyOpening),
         Err(e) => return Err(refused("invalidManifest", format!("{e:?}"))),
     };
     // The election's own audit row (VTI-VOT-100), as `vtc/elections/create` writes it.

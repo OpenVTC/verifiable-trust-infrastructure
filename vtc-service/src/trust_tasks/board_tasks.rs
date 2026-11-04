@@ -1295,7 +1295,7 @@ async fn handle_decide(
     if let Err(r) = parse_spec_payload::<ideas_decide::Payload>(&doc) {
         return r;
     }
-    let _guard = boards::WRITE_LOCK.lock().await;
+    let mut _guard = boards::WRITE_LOCK.lock().await;
     let (board, mut idea) = match facilitated_idea(
         state,
         &doc,
@@ -1376,17 +1376,48 @@ async fn handle_decide(
                 if let Err(e) = boards::put_idea(&state.boards_ks, &idea).await {
                     return app_error_to_reject(&doc, &e);
                 }
-                match crate::boards::ops::open_election(state, &board, &idea, &who.did, now).await {
+                // The election is created over the ballot box's link: never under the board
+                // lock (R1.3). The id is recorded and deterministic, so an accept racing this
+                // one finds the election and is answered with the idea as it stands.
+                drop(_guard);
+                let opened =
+                    crate::boards::ops::open_election(state, &board, &idea, &who.did, now).await;
+                _guard = boards::WRITE_LOCK.lock().await;
+                // Re-read: another decision may have landed while the lock was free.
+                idea = match boards::get_idea(&state.boards_ks, &idea.idea_id).await {
+                    Ok(Some(i)) => i,
+                    Ok(None) => {
+                        return declared(&doc, DECIDE_ERR_IDEA_NOT_FOUND, "No such idea.");
+                    }
+                    Err(e) => return app_error_to_reject(&doc, &e),
+                };
+                match opened {
                     Ok(_) => {}
+                    Err(crate::boards::ops::OpenError::AlreadyOpening) => {
+                        drop(_guard);
+                        return idea_answer(state, &doc, &who, &idea).await;
+                    }
                     Err(crate::boards::ops::OpenError::Refused { code, message }) => {
-                        idea.election_id = None;
-                        idea.accepted_at = None;
-                        idea.refusal = Some(crate::boards::Refusal {
-                            code: code.clone(),
-                            refused_at: now,
-                        });
-                        if let Err(e) = boards::put_idea(&state.boards_ks, &idea).await {
-                            return app_error_to_reject(&doc, &e);
+                        // Withdraw the id only while it still names this election and nothing
+                        // created it since.
+                        let still_ours = idea.election_id.as_deref() == Some(election_id.as_str());
+                        let created =
+                            match crate::elections::store::get(state.elections.ks(), &election_id)
+                                .await
+                            {
+                                Ok(r) => r.is_some(),
+                                Err(e) => return app_error_to_reject(&doc, &e),
+                            };
+                        if still_ours && !created {
+                            idea.election_id = None;
+                            idea.accepted_at = None;
+                            idea.refusal = Some(crate::boards::Refusal {
+                                code: code.clone(),
+                                refused_at: now,
+                            });
+                            if let Err(e) = boards::put_idea(&state.boards_ks, &idea).await {
+                                return app_error_to_reject(&doc, &e);
+                            }
                         }
                         return reject_with_code(
                             &doc,

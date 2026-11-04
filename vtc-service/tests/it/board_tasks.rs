@@ -1334,3 +1334,55 @@ async fn vti_brd_060_departure_withdraws_proposed_ideas() {
         "its manifest carries it"
     );
 }
+
+/// VTI-BRD-031: two facilitators accepting one idea at once — the board lock is not held while
+/// the ballot box is asked (R1.3), so the two can overlap. However they interleave, neither is
+/// answered as refused, the idea ends open, and it has one election.
+#[tokio::test]
+async fn vti_brd_031_concurrent_accepts_open_one_election_and_refuse_neither() {
+    let bx = InProcessBox::new();
+    let tv = community(bx.clone()).await;
+    let chair = admin(&tv).await;
+    let co_chair = admin(&tv).await;
+    let alice = member(&tv).await;
+    let board = create_board(&tv, &chair, board_body()).await;
+    let idea = propose(&tv, &alice, &board, "Accessible sign-in").await;
+
+    let ((s1, d1), (s2, d2)) = tokio::join!(
+        decide(&tv, &chair, &idea, json!({ "decision": "accept" })),
+        decide(&tv, &co_chair, &idea, json!({ "decision": "accept" })),
+    );
+    for (status, doc) in [(s1, &d1), (s2, &d2)] {
+        if status != StatusCode::OK {
+            // The later one may only find the idea already accepted.
+            assert_eq!(tt_error_code(doc), DECIDE_ERR_STATE_INVALID, "{doc}");
+        }
+    }
+    assert!(
+        s1 == StatusCode::OK || s2 == StatusCode::OK,
+        "one accept succeeds: {d1} / {d2}"
+    );
+
+    let (_, shown) = call(&tv, &chair, &uri("show"), json!({ "boardId": board })).await;
+    let listed = payload(&shown)["ideas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["ideaId"] == idea.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(listed["state"], "open", "{shown}");
+    assert!(
+        listed
+            .get("opening")
+            .is_none_or(|o| o.get("refusal").is_none()),
+        "{shown}"
+    );
+    let ours: Vec<_> = vtc_service::elections::store::all(tv.state.elections.ks())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.election_id.ends_with(idea.as_str()))
+        .collect();
+    assert_eq!(ours.len(), 1);
+}
