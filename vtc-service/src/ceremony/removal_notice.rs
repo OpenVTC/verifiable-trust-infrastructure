@@ -138,6 +138,11 @@ async fn try_send(
     let doc = build_document(&vtc_did, target_did, MEMBER_REMOVAL_NOTICE_TYPE, payload);
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise removal-notice document: {e}")))?;
+    vti_common::trust_task_push::state_delivery_expiry(
+        &mut doc_value,
+        crate::server::REMOVAL_NOTICE_DELIVER_BY,
+        chrono::Utc::now(),
+    )?;
     signer.sign_operational_doc(&mut doc_value).await?;
 
     // Over whichever transport the removed member speaks — TSP, DIDComm or

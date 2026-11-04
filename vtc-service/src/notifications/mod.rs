@@ -43,6 +43,7 @@ pub(crate) async fn push_signed(
     let doc = vti_common::capability_client::build_document(&vtc_did, recipient, type_uri, payload);
     let mut value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise a notification document: {e}")))?;
+    vti_common::trust_task_push::state_delivery_expiry(&mut value, deliver_by, chrono::Utc::now())?;
     signer.sign_operational_doc(&mut value).await?;
     crate::member_push::push_trust_task(state, recipient, value, deliver_by).await
 }

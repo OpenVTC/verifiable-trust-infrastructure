@@ -164,7 +164,6 @@ async fn try_send(
     let mut doc_value = serde_json::to_value(&doc).map_err(|e| {
         AppError::Internal(format!("serialise authority-reduction-pending notice: {e}"))
     })?;
-    signer.sign_operational_doc(&mut doc_value).await?;
 
     // Deliverable until the reduction lands, and a little past it: after the
     // landing the reduced notice is what is true.
@@ -174,6 +173,8 @@ async fn try_send(
         .unwrap_or_default()
         .max(std::time::Duration::from_secs(3600))
         .saturating_add(std::time::Duration::from_secs(3600));
+    vti_common::trust_task_push::state_delivery_expiry(&mut doc_value, window, chrono::Utc::now())?;
+    signer.sign_operational_doc(&mut doc_value).await?;
     crate::member_push::push_trust_task(state, &prior.did, doc_value, window).await?;
     info!(
         subject = %prior.did,
