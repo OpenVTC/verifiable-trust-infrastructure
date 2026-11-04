@@ -1050,8 +1050,3 @@ type_complexity = "allow"
 # ever reports one, the fix is the same choice we faced here: patch it (fast,
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
-
-# TEMPORARY: affinidi-rate-limit 0.1.4 is unpublished (affinidi/affinidi-tdk-rs#982).
-# Remove this patch once 0.1.4 is on crates.io, before merging.
-[patch.crates-io]
-affinidi-rate-limit = { git = "https://github.com/affinidi/affinidi-tdk-rs", branch = "feat/rate-limit-shared-limiters" }

@@ -696,7 +696,8 @@ dependencies = [
 [[package]]
 name = "affinidi-rate-limit"
 version = "0.1.4"
-source = "git+https://github.com/affinidi/affinidi-tdk-rs?branch=feat%2Frate-limit-shared-limiters#2de25377ae0f7fcec487464f751af6fd1c066aec"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf917044c3ef68fe294b0e97611ee507a2ae07f92140bcd6a81068a1751ef27e"
 dependencies = [
  "axum",
  "governor",
