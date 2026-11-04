@@ -234,10 +234,11 @@ When adding a flow, add it here and a line to the root index.
 - **Renewal** (`rooms::community_renewal`, create item 6's SHOULD): a sweeper
   reissues the community's own VMC + `admin` VAC within `[rooms.community]
   authority_renew_within_days` (default 30, ≤ half the life) and stores each
-  **under the vault handle it replaces** — the VTA refuses to choose between
-  two VACs for one persona, so never add one beside the other. Handles are
-  recorded at create (`authority-renewal:<room>`), else found by
-  `vault/credentials/query` + `get` (needs `vault-read`). Remote first: the
+  **under the vault handle it replaces** — never add one beside the other. Handles
+  are recorded at create (`authority-renewal:<room>`), else found by
+  `vault/credentials/query` + `get` (needs `vault-read`), choosing among several
+  by the VTA's own rule (`room_oracle::current`: latest `validFrom` in force; a
+  tie is refused with the vault ids, to archive one). Remote first: the
   owner's record's `ownerAuthorityValidUntil` is written last; the sweeper is
   the only retry owner (capped backoff + jitter); failures are `warn`ed,
   audited at the start of a run, and shown in `get`/`list`'s
