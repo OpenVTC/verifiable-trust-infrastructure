@@ -2,6 +2,50 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.35.0...vtc-client-v0.36.0) — 2026-11-04
+
+
+### Added
+
+- **boards**: Closing a board ends its voting; delete closed boards, keeping tombstones for a set retention (VTI-BRD-005 – 008) ([#2444](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2444))
+
+Closing a board (open → closed, or straight to archived) now ends the
+  voting on it (VTI-BRD-006): each idea's election open for voting is
+  closed early, so its count is final; one not yet open, or not yet
+  registered, is cancelled and its idea not selected; one whose manifest
+  does not allow closing early runs on, and the close answers which
+  (`closing.runningToClose`). The board is stored closed first; each end
+  is recorded on its election (`ElectionRecord::pending_end`) before the
+  ballot box is asked, asked at once in the background, and retried by
+  the elections sweeper — its one retry owner — until answered. The
+  facilitator's request never waits for the ballot box. A closed board
+  opens no election (VTI-BRD-005). Every board election is opened with
+  `allowEarlyClose: true`, and a template stating `false` is
+  `templateInvalid` (VTI-BRD-030); the console and `cnm boards init`
+  starter templates allow it.
+
+  `vtc/boards/delete/0.1` (VTI-BRD-007, VTI-BRD-008): vtc.boards.manage
+  unqualified and a step-up bound to the request, spent only after every
+  check passed; a board that is open is `notClosed`, one with an election
+  still running `electionsRunning`. Audited before anything goes. Removes
+  the board, its ideas and notes, and each election's record and ticket
+  rows; each election keeps a `Tombstone` — identifier, manifest digest,
+  kept board heads, never title, roll or tickets — for
+  `[boards] tombstone_retention` (days, default 365; 0 keeps none;
+  "forever"). The sweeper removes tombstones past their retention.
+
+  - cnm: `boards delete <id> --reason`, `boards close` prints how the
+    voting ended; refusals print the fix (close first, which elections
+    run, the passkey gesture).
+  - console: "Close and end voting", the closing summary in the toast,
+    and "Delete board" (closed boards, board managers only) with the
+    title typed, a reason, and the bound passkey gesture.
+  - vtc-client: `boards_delete`. vta-sdk: the delete schemas in OpenAPI.
+  - Pins vtc/boards/delete/0.1 and the updated vtc/boards/update/0.1.
+  - docs/03-vtc/boards.md: closing, archiving, deleting, retention.
+
+
+
 ## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.34.0...vtc-client-v0.35.0) — 2026-11-04
 
 

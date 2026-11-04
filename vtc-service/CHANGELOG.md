@@ -2,6 +2,210 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.21.0...vtc-service-v0.22.0) — 2026-11-04
+
+
+### Added
+
+- **rate-limit**: VTA and VTC limits run on affinidi-rate-limit ([#2414](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2414))
+
+* feat(rate-limit)!: VTA and VTC limits run on affinidi-rate-limit
+
+  The per-IP limits and the trusted-proxy client-address rule now come from
+  affinidi-rate-limit, the crate the mediator, the DID resolver cache and the
+  DID hosting service use, rather than three separate copies of the rule.
+
+  - vti-common's TrustedProxyKeyExtractor delegates to the crate's
+    ClientIpExtractor. Its constructor now returns a Result: a range covering
+    every address (0.0.0.0/0, ::/0) is refused.
+  - The VTA's limiters run on the crate with the same quotas, runtime quota
+    swaps and 429 contract.
+  - The VTC's unauthenticated limiter is the crate's layer, sharing one
+    budget with the Trust Task admission limits, which also run on the crate.
+
+  Behaviour changes. An X-Forwarded-For chain from a trusted proxy that
+  cannot be read (a malformed entry, more than 64 entries) is refused with
+  400 instead of being charged to the proxy, which gave its sender a second
+  bucket and hid a misbehaving proxy. trust_xff_cidrs refuses 0.0.0.0/0 and
+  ::/0 at load, on the VTA and the VTC. The VTC's sign-in and room limiters
+  refuse a new address once 10,000 are live, where they used to sweep and
+  grow. The VTC's unauthenticated 429 no longer carries tower_governor's
+  informational x-ratelimit-after header; Retry-After is unchanged.
+
+- **boards**: Closing a board ends its voting; delete closed boards, keeping tombstones for a set retention (VTI-BRD-005 – 008) ([#2444](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2444))
+
+Closing a board (open → closed, or straight to archived) now ends the
+  voting on it (VTI-BRD-006): each idea's election open for voting is
+  closed early, so its count is final; one not yet open, or not yet
+  registered, is cancelled and its idea not selected; one whose manifest
+  does not allow closing early runs on, and the close answers which
+  (`closing.runningToClose`). The board is stored closed first; each end
+  is recorded on its election (`ElectionRecord::pending_end`) before the
+  ballot box is asked, asked at once in the background, and retried by
+  the elections sweeper — its one retry owner — until answered. The
+  facilitator's request never waits for the ballot box. A closed board
+  opens no election (VTI-BRD-005). Every board election is opened with
+  `allowEarlyClose: true`, and a template stating `false` is
+  `templateInvalid` (VTI-BRD-030); the console and `cnm boards init`
+  starter templates allow it.
+
+  `vtc/boards/delete/0.1` (VTI-BRD-007, VTI-BRD-008): vtc.boards.manage
+  unqualified and a step-up bound to the request, spent only after every
+  check passed; a board that is open is `notClosed`, one with an election
+  still running `electionsRunning`. Audited before anything goes. Removes
+  the board, its ideas and notes, and each election's record and ticket
+  rows; each election keeps a `Tombstone` — identifier, manifest digest,
+  kept board heads, never title, roll or tickets — for
+  `[boards] tombstone_retention` (days, default 365; 0 keeps none;
+  "forever"). The sweeper removes tombstones past their retention.
+
+  - cnm: `boards delete <id> --reason`, `boards close` prints how the
+    voting ended; refusals print the fix (close first, which elections
+    run, the passkey gesture).
+  - console: "Close and end voting", the closing summary in the toast,
+    and "Delete board" (closed boards, board managers only) with the
+    title typed, a reason, and the bound passkey gesture.
+  - vtc-client: `boards_delete`. vta-sdk: the delete schemas in OpenAPI.
+  - Pins vtc/boards/delete/0.1 and the updated vtc/boards/update/0.1.
+  - docs/03-vtc/boards.md: closing, archiving, deleting, retention.
+
+- **console**: Group elections by the board they came from ([#2445](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2445))
+
+A community board opens one election per accepted idea, so a busy board
+  buries the community's own polls in a flat list. The console's Elections
+  page and the member portal's now show stand-alone elections first, then
+  one collapsible group per board, headed by its title, the count and (in
+  the console) a stage summary such as "1 taking tickets · 1 voting", with
+  a link to the board. Rows in a board's group show the idea's title
+  without the generated identifier. The console adds a filter: all
+  elections, stand-alone only, or one board.
+
+  No wire change. An election a board opens is named
+  `board.<boardId>.<ideaId>` (VTI-BRD-031); `lib/election-origin.ts`, a
+  pure helper both bundles import, reads that and nothing else, so an id
+  that only resembles it stays stand-alone. Titles come from
+  `vtc/boards/list` — the console's signed read, the portal's own. A board
+  the list does not name is "Deleted board" in the console and "A board
+  no longer shown" in the portal (an archived board is hidden from
+  members, not deleted); when the list cannot be read at all, each board
+  is named by its identifier ("Board ff-8cTg0…") and the page still
+  renders. The portal adds nothing about tickets or votes (VTI-VOT-001).
+
+- **portal**: A cleaner member home with live status per service ([#2440](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2440))
+
+The member portal's home had grown into a grid of uneven cards, each a
+  paragraph and a button. It is now:
+
+  - one profile header: picture, greeting, status, role, member since, how
+    the member signed in, their DID (copyable) and what other members see
+    of their card;
+  - "Needs your attention": open voting, tickets not yet taken, boards
+    taking proposals, room offers waiting, a card with no name - each a
+    link to where the member acts on it, shown only when there is one;
+  - uniform tiles for Members, Groups, Boards, Elections, Data rooms and
+    Repositories, each with a live status line;
+  - passkeys under "Sign-in and security".
+
+  Every status is read with the same query (key and function) as the page
+  its tile opens, so the page shows what the tile said without asking
+  again. Nothing on the home page prompts the wallet: it calls only the
+  wallet's `rooms.list`, `rooms.offers` and `elections.list`, which never
+  open a window. A passkey session, which holds no delegated key, is told
+  to sign in with the wallet rather than shown an error.
+
+- **vti-vtn**: Verify the network's proof on every Trust Task answer ([#2439](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2439))
+
+A client accepts a #response only with the network DID's valid
+  authentication proof (ClientError::Unverified otherwise), and sends no
+  task without a resolver (VtnClient::verifying). New `resolve` feature:
+  VmKeyResolver, the purpose-checking DID resolver the VTC, the VTN and
+  the NNM share. The VTC verifies every network answer; an unverified one
+  is a mismatch.
+
+- **discovery**: Answer trust-task-discovery 0.4 and advertise the expiry horizon ([#2437](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2437))
+
+The VTA, the VTC and the witness answer trust-task-discovery/0.4
+  (trust-tasks-tf #1030, trust-tasks-rs 0.37.2). Its acceptance window carries
+  the thirty-day expiry horizon up to which a stated expiresAt is honoured
+  (VTI-OPS-028), so a sender can state an expiry within it instead of issuing a
+  new attempt every max_age (VTI-TRN-047).
+
+  AcceptanceWindow gains expiry_horizon. VTI_ACCEPTANCE_WINDOW sets it to
+  EXPIRY_HORIZON, and freshness_policy applies it, so the advertised horizon is
+  the applied one by construction. Each node's test reads the horizon back out
+  of its own answer and checks it against the spine's policy.
+
+  The superseded 0.3 is still answered, with the same list and a window without
+  the horizon, for the clients that still ask it (the SDK, the console and the
+  git-ns bridge probe).
+
+
+
+### Fixed
+
+- **portal**: Offer a board vote by the idea's election, not the board's window ([#2446](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2446))
+
+#2433 held the vote button back until the board's `voting.opensAt`. But an
+  idea's election keeps the window it was registered with: an idea accepted
+  before a facilitator brought the board's voting window forward still
+  opens on its old date, and the board then reads "Voting" while the
+  member's VTA refuses the cast as `notOpen`.
+
+  The portal now reads whether voting is open from the idea's own
+  election (`election.state`): `registered` / `registration` take tickets
+  but no ballot. The date shown is the board's `voting.opensAt` while that
+  is still ahead; otherwise "Voting on this idea hasn't opened yet", since
+  the board does not carry the election's own window.
+
+- **console**: Theme deciding pages, keep only their decision surfaces out of reach ([#2442](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2442))
+
+vtc/community/theme/show/0.1 client item 2 requires every surface on which
+  a person decides, approves, declines, consents, signs or is warned to be
+  isolated from the theme. The console met it by isolating four whole pages
+  (Actions, Join requests, Members, Repos), so their headers, filters, tables
+  and empty states were drawn in the default look on a themed page: a box of
+  another colour from the breadcrumb down, and a list with nothing to decide
+  on it isolated anyway.
+
+  The isolation now sits on the decision surfaces themselves:
+
+  - Actions: each action card (verified summary, match code, the decision).
+  - Join requests: the vetting card and the Decide card.
+  - Members: the add-member form, entries without a membership, removed
+    members; on a member, notes, step-up passkeys, approver devices, the
+    vetter role and admin actions.
+  - Repos: every form dialog and the signing dialog, and the break-glass and
+    departed-grant warnings.
+
+  Confirm dialogs, banners and the step-up page were already isolated. The
+  page around a surface takes the theme. That is safe because the theme
+  profile admits colours, fonts, borders, radii and gradients only - no
+  position, z-index, margin or content - so a themed ancestor cannot cover,
+  move or relabel an isolated surface.
+
+  `Protected` gains a `card` ground: the card's colour, rounded to the
+  console's `.card` and laid out as a grid, so a protected card shows no
+  square corners and fills a stretched row. While a community theme is drawn,
+  a protected card is outlined and marked "Protected area - standard look,
+  not the community theme", from inside the isolation so no theme can hide
+  it; without a theme nothing is marked.
+
+  Fixes, both found while moving the boundary:
+
+  - A protected surface ignored a pinned light / dark. The production build
+    lowers light-dark() into custom-property toggles that the re-scoped
+    :root rule resets to light inside the isolation, and only [data-theme]
+    flips them back - so Dark pinned on a light OS drew every protected
+    surface light (on main: the Actions, Join requests, Members and Repos
+    pages, and every confirm dialog). The isolation's root now mirrors
+    <html data-theme>, followed live. Tests and the dev server never lower
+    light-dark(), which is why nothing caught it.
+  - Protected portals its children a render after it mounts, so a useModal
+    above it ran before the dialog existed and never moved focus in. The
+    Repos dialogs wrap their surface in Protected instead.
+
+
+
 ## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.20.0...vtc-service-v0.21.0) — 2026-11-04
 
 
