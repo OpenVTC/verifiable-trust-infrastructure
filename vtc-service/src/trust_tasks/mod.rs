@@ -161,6 +161,9 @@ pub(crate) mod community_room_tasks;
 // projection). Its records are `crate::directory`'s.
 pub(crate) mod directory_tasks;
 pub(crate) mod group_tasks;
+// The community's boards (`vtc/boards/*`, VTI-BRD-*): ideas, notes, and each accepted idea's
+// election through `crate::elections`.
+pub(crate) mod board_tasks;
 pub(crate) mod role_tasks;
 // `vtc/members/role/set/0.1` — the community-role move.
 pub mod member_role_tasks;
@@ -1014,6 +1017,13 @@ fn dispatch_typed<'a>(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("group_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if board_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(board_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("board_tasks::URIS names {uri}, which it does not route"),
             }
         }),
         uri if community_room_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -1910,6 +1920,18 @@ mod spine_proof_tests {
         (
             group_tasks::BINDINGS_LIST_TYPE,
             "reads the bindings of a group the signer manages; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            board_tasks::LIST_TYPE,
+            "reads the boards the signer may see; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            board_tasks::SHOW_TYPE,
+            "reads one board the signer may see; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            board_tasks::NOTES_LIST_TYPE,
+            "reads a board's notes as the signer may see them; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
         ),
         (
             community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
@@ -2881,6 +2903,20 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     group_tasks::BINDINGS_ADD_TYPE,
     group_tasks::BINDINGS_REMOVE_TYPE,
     group_tasks::BINDINGS_LIST_TYPE,
+    // The community's boards (VTI-BRD-*): ideas, notes, and each idea's election.
+    board_tasks::CREATE_TYPE,
+    board_tasks::UPDATE_TYPE,
+    board_tasks::LIST_TYPE,
+    board_tasks::SHOW_TYPE,
+    board_tasks::IDEAS_PROPOSE_TYPE,
+    board_tasks::IDEAS_UPDATE_TYPE,
+    board_tasks::IDEAS_WITHDRAW_TYPE,
+    board_tasks::IDEAS_DECIDE_TYPE,
+    board_tasks::IDEAS_SELECT_TYPE,
+    board_tasks::NOTES_ADD_TYPE,
+    board_tasks::NOTES_LIST_TYPE,
+    board_tasks::NOTES_WITHDRAW_TYPE,
+    board_tasks::NOTES_HIDE_TYPE,
     // Credential-sourced fields, filled from a presentation.
     directory_tasks::CARD_PRESENT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,

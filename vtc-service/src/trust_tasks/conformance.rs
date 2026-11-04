@@ -3171,6 +3171,84 @@ fn table() -> Vec<Conformance> {
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "left", "credentialValidUntil": "2026-11-18T09:00:00Z" })
         ),
         checked!(
+            s::boards::create::v0_1::Payload,
+            s::boards::create::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"board": {"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "open", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": true, "ideaCounts": {}}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::update::v0_1::Payload,
+            s::boards::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "status": "closed"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"board": {"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "closed", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": true, "ideaCounts": {"proposed": 2, "open": 4, "selected": 0, "notSelected": 0, "declined": 0, "merged": 0, "withdrawn": 0}}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::list::v0_1::Payload,
+            s::boards::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"status": "open"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boards": [{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "open", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": false, "ideaCounts": {"proposed": 2, "open": 4, "selected": 0, "notSelected": 0, "declined": 0, "merged": 0, "withdrawn": 0}}]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::show::v0_1::Payload,
+            s::boards::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": ["open"]}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"board": {"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "open", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": false, "ideaCounts": {"proposed": 2, "open": 4, "selected": 0, "notSelected": 0, "declined": 0, "merged": 0, "withdrawn": 0}}, "ideas": [{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "open", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat"}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 2, "election": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "state": "voting", "ballotsOnBoard": 38, "boardHeadIssuedAt": "2026-11-10T04:00:00Z"}}]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::propose::v0_1::Payload,
+            s::boards::ideas::propose::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "proposed", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat", "you": true}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 0}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::update::v0_1::Payload,
+            s::boards::ideas::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "title": "Wallet sign-in for everyone"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "proposed", "title": "Wallet sign-in for everyone", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat", "you": true}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 0}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::withdraw::v0_1::Payload,
+            s::boards::ideas::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "withdrawn", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat", "you": true}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 0}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::decide::v0_1::Payload,
+            s::boards::ideas::decide::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "decision": "accept"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "open", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat"}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 2, "election": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "state": "registration"}}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::select::v0_1::Payload,
+            s::boards::ideas::select::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "decision": "selected", "slotId": "a-0900"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "selected", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat"}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 2, "election": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "state": "tallied", "certified": false, "result": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "manifestDigest": "uEiDexampleDigestNotReal0000000000000000000000", "ballotsCounted": 92, "questions": [{"question": "attend", "abstained": 0, "choice": {"yes": 65, "no": 27}}], "head": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "treeSize": 97, "rootHash": "uEiBexampleRootNotReal00000000000000000000000", "issuedAt": "2026-11-12T09:05:00Z"}}}, "decision": {"decidedAt": "2026-11-12T10:00:00Z", "slotId": "a-0900"}}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::notes::add::v0_1::Payload,
+            s::boards::notes::add::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "text": "Happy to co-host the screen-reader half."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"note": {"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "author": {"entryId": "dir_Hm2Vt6Xs9Qe4Jn1F", "name": "Tomás Brandt", "you": true}, "text": "Happy to co-host the screen-reader half.", "createdAt": "2026-11-04T05:00:00Z", "state": "visible"}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::notes::list::v0_1::Payload,
+            s::boards::notes::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"notes": [{"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "author": {"entryId": "dir_Hm2Vt6Xs9Qe4Jn1F", "name": "Tomás Brandt"}, "text": "Happy to co-host the screen-reader half.", "createdAt": "2026-11-04T05:00:00Z", "state": "visible"}]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::notes::withdraw::v0_1::Payload,
+            s::boards::notes::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"note": {"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "author": {"entryId": "dir_Hm2Vt6Xs9Qe4Jn1F", "name": "Tomás Brandt", "you": true}, "text": "Happy to co-host the screen-reader half.", "createdAt": "2026-11-04T05:00:00Z", "state": "withdrawn"}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::notes::hide::v0_1::Payload,
+            s::boards::notes::hide::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "action": "hide", "reason": "Off topic for this board."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"note": {"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "author": {"entryId": "dir_Hm2Vt6Xs9Qe4Jn1F", "name": "Tomás Brandt"}, "text": "Happy to co-host the screen-reader half.", "createdAt": "2026-11-04T05:00:00Z", "state": "hidden", "hiddenReason": "Off topic for this board."}}"#).unwrap()
+        ),
+        checked!(
             s::groups::requests::list::v0_2::Payload,
             s::groups::requests::list::v0_2::Response,
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "pending" }),

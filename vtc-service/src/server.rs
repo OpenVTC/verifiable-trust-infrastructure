@@ -154,6 +154,8 @@ pub struct AppState {
     /// Notifications addressed to this community, and whom it relayed them to
     /// (`crate::notifications`). Encrypted at rest.
     pub notifications_ks: KeyspaceHandle,
+    /// Community boards: boards, ideas and notes (`crate::boards`).
+    pub boards_ks: KeyspaceHandle,
     /// OpenID4VP verifier identities and their keys (`crate::oid4vp`).
     /// Encrypted at rest.
     pub oid4vp_keys_ks: KeyspaceHandle,
@@ -544,6 +546,7 @@ pub async fn run(
     let step_up_approvers_ks = store.keyspace(keyspaces::STEP_UP_APPROVERS)?;
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
     let notifications_ks = store.keyspace(keyspaces::NOTIFICATIONS)?;
+    let boards_ks = store.keyspace(keyspaces::BOARDS)?;
     let oid4vp_keys_ks = store.keyspace(keyspaces::OID4VP_KEYS)?;
     let oid4vp_sessions_ks = store.keyspace(keyspaces::OID4VP_SESSIONS)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
@@ -1082,6 +1085,7 @@ pub async fn run(
         step_up_approvers_ks,
         member_pushes_ks,
         notifications_ks,
+        boards_ks,
         oid4vp_keys_ks,
         oid4vp_signers,
         oid4vp_sessions_ks,

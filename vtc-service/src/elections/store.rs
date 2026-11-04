@@ -145,6 +145,13 @@ pub struct ElectionRecord {
     /// under every other rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roll_party: Option<RollParty>,
+    /// The ballot box's published result, verified by the community from the board and its own
+    /// voting key exactly as certification verifies it, but **not certified**: `{result, head,
+    /// verifiedAt}`. Kept for a board's election (`crate::boards`), whose facilitators select
+    /// with the result in view and may not hold `vtc.elections.manage` (VTI-BRD-040). It decides
+    /// nothing and is never shown as a certification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<Value>,
 }
 
 impl ElectionRecord {
@@ -456,6 +463,7 @@ mod tests {
             ceremony: None,
             decryption_authorized: false,
             roll_party: None,
+            verified: None,
         }
     }
 

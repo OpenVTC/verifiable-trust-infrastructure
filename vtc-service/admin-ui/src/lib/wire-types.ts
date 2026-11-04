@@ -364,6 +364,23 @@ export type GroupMembersListResponse = Schemas["VtcGroupsMembersListV0_2Response
 export type GroupRequestsListResponse = Schemas["VtcGroupsRequestsListV0_2Response"];
 export type GroupManagersResponse = Schemas["VtcGroupsManagersAddV0_1Response"];
 
+// ── Community boards (`vtc/boards/*`) ────────────────────────────────────
+export type BoardCreatePayload = Schemas["VtcBoardsCreateV0_1Payload"];
+export type BoardCreateResponse = Schemas["VtcBoardsCreateV0_1Response"];
+export type BoardUpdatePayload = Schemas["VtcBoardsUpdateV0_1Payload"];
+export type BoardUpdateResponse = Schemas["VtcBoardsUpdateV0_1Response"];
+export type BoardListResponse = Schemas["VtcBoardsListV0_1Response"];
+export type BoardShowResponse = Schemas["VtcBoardsShowV0_1Response"];
+export type BoardIdeasProposeResponse = Schemas["VtcBoardsIdeasProposeV0_1Response"];
+export type BoardIdeasUpdateResponse = Schemas["VtcBoardsIdeasUpdateV0_1Response"];
+export type BoardIdeasWithdrawResponse = Schemas["VtcBoardsIdeasWithdrawV0_1Response"];
+export type BoardIdeasDecideResponse = Schemas["VtcBoardsIdeasDecideV0_1Response"];
+export type BoardIdeasSelectResponse = Schemas["VtcBoardsIdeasSelectV0_1Response"];
+export type BoardNotesAddResponse = Schemas["VtcBoardsNotesAddV0_1Response"];
+export type BoardNotesListResponse = Schemas["VtcBoardsNotesListV0_1Response"];
+export type BoardNotesWithdrawResponse = Schemas["VtcBoardsNotesWithdrawV0_1Response"];
+export type BoardNotesHideResponse = Schemas["VtcBoardsNotesHideV0_1Response"];
+
 // ── Where identities are published (`vtc/config/did-hosting/list`) ──────
 export type DidHostingListResponse = Schemas["VtcConfigDidHostingListV0_1Response"];
 export type HostingServer = Schemas["VtcConfigDidHostingListV0_1HostingServer"];

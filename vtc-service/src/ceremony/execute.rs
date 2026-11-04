@@ -739,6 +739,9 @@ async fn depart(
         // Every group membership ends, so its credentials stop renewing, and
         // every pending request to join is withdrawn.
         crate::groups::on_departure(state.directory.ks(), &entry_id).await?;
+        // Their ideas still proposed are withdrawn; an erasure removes what they wrote
+        // that no election carries (VTI-BRD-060).
+        crate::boards::on_departure(state, &entry_id, disposition == Disposition::Purge).await?;
         crate::directory::notes::on_departure(
             state.directory.ks(),
             &entry_id,

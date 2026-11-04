@@ -86,7 +86,9 @@ pub(crate) const URIS: &[&str] = &[
 /// The task families a member-portal sign-in offers to let `K_b` sign for as
 /// the member (`auth/oob/prove/0.3` `signingScope`): the member directory, so
 /// the portal can read it and edit the member's own card, and the community's
-/// groups, so it can list, join and leave them, without asking the wallet for
+/// groups, so it can list, join and leave them, and the community's boards, so
+/// a member can propose ideas and leave notes (VTI-BRD-050; deciding, selecting
+/// and hiding refuse the key, VTI-BRD-051), without asking the wallet for
 /// every document — and the member's own view of the community's repositories
 /// (`git-ns/view`) with where a forge-account link they began stands
 /// (`git-ns/account/link-status`), never another `git-ns` task: linking,
@@ -96,6 +98,7 @@ pub(crate) const URIS: &[&str] = &[
 pub(crate) const PORTAL_SIGNING_SCOPE: &[&str] = &[
     "vtc/directory",
     "vtc/groups",
+    "vtc/boards",
     "git-ns/view",
     "git-ns/account/link-status",
 ];
