@@ -46,8 +46,23 @@
 //! The VTA's supervisor (`vta-service` `server::MessagingConnect`) and the
 //! VTC's connect loop do the same; their code is bound to their own config
 //! and state types. This module is the host services' one copy.
+//!
+//! # Requests out ([`Requester`])
+//!
+//! A host can also be the one asking: [`IdentitySession::with_requester`]
+//! hands it a [`Requester`] that sends a Trust Task document to a DID over the
+//! identity's live session (DIDComm, the binding envelope, authcrypted as the
+//! identity) and waits for the correlated answer. A waiter is registered under
+//! the request document's `id` **before** the send, so a fast answer is never
+//! lost, and an inbound envelope completes it when its DIDComm `thid` or its
+//! document's `threadId` names that id **and** it comes from the DID the request
+//! went to. Such an answer is not dispatched to the [`Responder`]. A send that
+//! returns is "handed to the mediator", never "delivered" (R1.1): a call is
+//! complete only when its answer arrives, and none within the window is
+//! [`RequestError::Timeout`].
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
@@ -67,7 +82,7 @@ use affinidi_tdk::messaging::profiles::ATMProfile;
 use futures_util::StreamExt as _;
 use rand::RngExt as _;
 use serde_json::Value;
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::{Semaphore, oneshot, watch};
 use tracing::{debug, info, warn};
 use trust_tasks_didcomm::ENVELOPE_TYPE;
 
@@ -124,6 +139,8 @@ pub struct IdentitySession {
     /// the SDK's in-memory default — lost on every reconnect as well as every
     /// restart, since each session builds a fresh ATM.
     relationships: Option<Arc<crate::relationship_store::KeyspaceRelationshipStore>>,
+    /// Requests this identity sends, when it sends any.
+    requester: Option<Requester>,
 }
 
 /// Hand-written: `secrets` holds private keys.
@@ -149,7 +166,16 @@ impl IdentitySession {
             mediator_did,
             secrets,
             relationships: None,
+            requester: None,
         }
+    }
+
+    /// Let the service send Trust Tasks as this identity through `requester`,
+    /// while a session is live. Keep a clone of `requester` to call
+    /// [`Requester::request`] on.
+    pub fn with_requester(mut self, requester: Requester) -> Self {
+        self.requester = Some(requester);
+        self
     }
 
     /// Keep this identity's TSP relationships in `store`, so they outlive both
@@ -246,7 +272,13 @@ pub async fn supervise_reporting(
                          and DIDComm"
                     );
                     let started = tokio::time::Instant::now();
+                    if let Some(requester) = &session.requester {
+                        requester.attach(live.clone(), &did);
+                    }
                     let end = serve(&live, &session, &governor, &mut shutdown, &connected).await;
+                    if let Some(requester) = &session.requester {
+                        requester.detach();
+                    }
                     connected.send_replace(false);
                     // Always: the ATM has no `Drop`, and an abandoned socket
                     // keeps this DID's one slot at the mediator.
@@ -435,11 +467,12 @@ async fn serve(
                 let live = live.clone();
                 let identity = session.identity.clone();
                 let mediator_did = session.mediator_did.clone();
+                let requester = session.requester.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
                     ticket.ready().await;
                     let _ticket = ticket;
-                    handle_frame(frame, &live, &*identity, &mediator_did).await;
+                    handle_frame(frame, &live, &*identity, &mediator_did, requester.as_ref()).await;
                 });
             }
             // A dropped sender disables this arm for the iteration; the
@@ -478,14 +511,26 @@ fn frame_order(frame: &Inbound) -> FrameOrder {
 /// Every way out reaches the ack: an unacked frame is not dropped — the
 /// mediator re-pushes it on every reconnect — and nothing here is a reason to
 /// keep one. The ack comes after any reply is away, never before.
-async fn handle_frame(frame: Inbound, live: &Live, identity: &dyn Responder, mediator_did: &str) {
-    handle(&frame, live, identity, mediator_did).await;
+async fn handle_frame(
+    frame: Inbound,
+    live: &Live,
+    identity: &dyn Responder,
+    mediator_did: &str,
+    requester: Option<&Requester>,
+) {
+    handle(&frame, live, identity, mediator_did, requester).await;
     if let Err(e) = live.transport.ack(frame.ack.clone()).await {
         debug!(identity = %identity.name(), error = %e, "could not ack an inbound frame");
     }
 }
 
-async fn handle(frame: &Inbound, live: &Live, identity: &dyn Responder, mediator_did: &str) {
+async fn handle(
+    frame: &Inbound,
+    live: &Live,
+    identity: &dyn Responder,
+    mediator_did: &str,
+    requester: Option<&Requester>,
+) {
     // The transport proved the sender, or there is nobody to answer.
     let Some(sender) = frame
         .message
@@ -520,7 +565,15 @@ async fn handle(frame: &Inbound, live: &Live, identity: &dyn Responder, mediator
         Protocol::TSP => {
             handle_tsp(frame, live, identity, mediator_did, &sender).await;
         }
-        Protocol::DIDComm => handle_didcomm(frame, live, identity, &sender).await,
+        Protocol::DIDComm => {
+            // An answer to a request this identity sent goes to its waiter.
+            if let Some(requester) = requester
+                && requester.complete(&sender, &frame.message.payload)
+            {
+                return;
+            }
+            handle_didcomm(frame, live, identity, &sender).await
+        }
         other => debug!(
             identity = %identity.name(),
             protocol = ?other,
@@ -659,6 +712,156 @@ async fn handle_didcomm(frame: &Inbound, live: &Live, identity: &dyn Responder, 
     }
 }
 
+/// Why a [`Requester::request`] did not return an answer.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RequestError {
+    /// The identity has no live session right now.
+    #[error("not connected to the mediator")]
+    NotConnected,
+    /// The request has no `id` to correlate its answer by.
+    #[error("the request document has no id")]
+    NoId,
+    /// Packing or handing the request to the mediator failed.
+    #[error("could not send: {0}")]
+    Send(String),
+    /// No answer within the window. Retryable.
+    #[error("no answer within {0:?}")]
+    Timeout(Duration),
+}
+
+/// Sends Trust Tasks as an identity and waits for their answers (see the
+/// module docs, *Requests out*). Clone-cheap; every clone is the same one.
+#[derive(Clone, Default)]
+pub struct Requester {
+    inner: Arc<RequesterInner>,
+}
+
+#[derive(Default)]
+struct RequesterInner {
+    live: RwLock<Option<(Arc<Live>, String)>>,
+    /// Request document id → (the DID it went to, the waiter).
+    pending: Mutex<HashMap<String, (String, oneshot::Sender<Value>)>>,
+}
+
+impl std::fmt::Debug for Requester {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Requester")
+            .field("connected", &self.is_connected())
+            .finish()
+    }
+}
+
+impl Requester {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether a session is live to send through.
+    pub fn is_connected(&self) -> bool {
+        self.inner.live.read().map(|l| l.is_some()).unwrap_or(false)
+    }
+
+    fn attach(&self, live: Arc<Live>, did: &str) {
+        if let Ok(mut slot) = self.inner.live.write() {
+            *slot = Some((live, did.to_string()));
+        }
+    }
+
+    fn detach(&self) {
+        if let Ok(mut slot) = self.inner.live.write() {
+            *slot = None;
+        }
+    }
+
+    /// Send `document` (a signed Trust Task with an `id`) to `peer` over
+    /// DIDComm, and wait up to `timeout` for the document that answers it.
+    pub async fn request(
+        &self,
+        peer: &str,
+        document: Value,
+        timeout: Duration,
+    ) -> Result<Value, RequestError> {
+        let id = document
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(RequestError::NoId)?
+            .to_string();
+        let (live, from) = self
+            .inner
+            .live
+            .read()
+            .ok()
+            .and_then(|l| l.clone())
+            .ok_or(RequestError::NotConnected)?;
+        let (tx, rx) = oneshot::channel();
+        // Before the send, so a fast answer finds its waiter.
+        if let Ok(mut pending) = self.inner.pending.lock() {
+            pending.insert(id.clone(), (peer.to_string(), tx));
+        }
+        let _forget = ForgetOnDrop(&self.inner, &id);
+        let message = Message::build(id.clone(), ENVELOPE_TYPE.to_string(), document)
+            .from(from.clone())
+            .to(peer.to_string())
+            .finalize();
+        let (packed, _) = live
+            .atm
+            .pack_encrypted(&message, peer, Some(&from), Some(&from))
+            .await
+            .map_err(|e| RequestError::Send(format!("pack: {e}")))?;
+        live.transport
+            .send(peer, packed.into_bytes())
+            .await
+            .map_err(|e| RequestError::Send(e.to_string()))?;
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(answer)) => Ok(answer),
+            // The waiter went without an answer: the same as none arriving.
+            Ok(Err(_)) | Err(_) => Err(RequestError::Timeout(timeout)),
+        }
+    }
+
+    /// Complete the waiter `payload` answers, if any: a binding envelope from
+    /// `sender` whose DIDComm `thid`, or whose document's `threadId`, names a
+    /// pending request sent to `sender`. Returns whether it did.
+    fn complete(&self, sender: &str, payload: &[u8]) -> bool {
+        let Ok(message) = serde_json::from_slice::<Value>(payload) else {
+            return false;
+        };
+        if message.get("type").and_then(Value::as_str) != Some(ENVELOPE_TYPE) {
+            return false;
+        }
+        let Some(body) = message.get("body") else {
+            return false;
+        };
+        let keys = [
+            message.get("thid").and_then(Value::as_str),
+            body.get("threadId").and_then(Value::as_str),
+        ];
+        let Ok(mut pending) = self.inner.pending.lock() else {
+            return false;
+        };
+        for key in keys.into_iter().flatten() {
+            if pending.get(key).is_some_and(|(peer, _)| peer == sender)
+                && let Some((_, tx)) = pending.remove(key)
+            {
+                let _ = tx.send(body.clone());
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Drops a request's waiter however the call ends.
+struct ForgetOnDrop<'a>(&'a RequesterInner, &'a str);
+
+impl Drop for ForgetOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.0.pending.lock() {
+            pending.remove(self.1);
+        }
+    }
+}
+
 /// The document a DIDComm binding envelope carries, and the thread to answer
 /// on (the envelope's own `id`, which is what a DIDComm caller correlates on).
 /// `None` for anything that is not a Trust-Task envelope.
@@ -759,6 +962,75 @@ async fn resolves_now(did: &str, resolver_url: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn waiting(requester: &Requester, id: &str, peer: &str) -> oneshot::Receiver<Value> {
+        let (tx, rx) = oneshot::channel();
+        requester
+            .inner
+            .pending
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), (peer.to_string(), tx));
+        rx
+    }
+
+    fn envelope(thid: Option<&str>, body: Value) -> Vec<u8> {
+        let mut m = json!({ "id": "m-2", "type": ENVELOPE_TYPE, "body": body });
+        if let Some(t) = thid {
+            m["thid"] = json!(t);
+        }
+        serde_json::to_vec(&m).unwrap()
+    }
+
+    #[test]
+    fn an_answer_completes_its_request_by_thid_or_thread_id() {
+        let requester = Requester::new();
+        let mut by_thid = waiting(&requester, "req-1", "did:example:registry");
+        let answer = json!({ "id": "a-1", "type": "x#response" });
+        assert!(requester.complete(
+            "did:example:registry",
+            &envelope(Some("req-1"), answer.clone())
+        ));
+        assert_eq!(by_thid.try_recv().unwrap(), answer);
+
+        let mut by_thread = waiting(&requester, "req-2", "did:example:registry");
+        let answer = json!({ "id": "a-2", "threadId": "req-2" });
+        assert!(requester.complete("did:example:registry", &envelope(None, answer.clone())));
+        assert_eq!(by_thread.try_recv().unwrap(), answer);
+        assert!(requester.inner.pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_the_peer_asked_answers_and_anything_else_is_a_request() {
+        let requester = Requester::new();
+        let _rx = waiting(&requester, "req-1", "did:example:registry");
+        // Another sender naming the same thread is not the answer.
+        assert!(!requester.complete("did:example:mallory", &envelope(Some("req-1"), json!({}))));
+        // An unknown thread, or a message that is not a binding envelope, is not one either.
+        assert!(!requester.complete("did:example:registry", &envelope(Some("other"), json!({}))));
+        assert!(!requester.complete("did:example:registry", b"{\"type\":\"ping\"}"));
+        assert_eq!(requester.inner.pending.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_without_a_session_is_not_connected() {
+        let requester = Requester::new();
+        assert!(!requester.is_connected());
+        let err = requester
+            .request(
+                "did:example:registry",
+                json!({ "id": "req-1" }),
+                Duration::from_millis(10),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, RequestError::NotConnected);
+        let err = requester
+            .request("did:example:registry", json!({}), Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert_eq!(err, RequestError::NoId);
+    }
 
     #[test]
     fn the_backoff_grows_to_its_cap_and_never_past_it() {
