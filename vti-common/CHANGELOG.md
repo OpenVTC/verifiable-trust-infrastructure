@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.61.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.60.0...vti-common-v0.61.0) — 2026-11-05
+
+
+### Added
+
+- **vti-common**: Host sessions send Trust Tasks and await their answers ([#2465](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2465))
+
+* feat(vti-common): host sessions send Trust Tasks and await their answers (host_session::Requester)
+
+  A host service reached through its own mediator session (the witness, the
+  ballot box, and now the VTN) could only answer. `IdentitySession::with_requester`
+  hands it a `Requester` that sends a signed Trust Task document to a DID over
+  DIDComm, authcrypted as the identity in the binding envelope, and waits for the
+  answer. The waiter is registered under the request document's `id` before the
+  send. An inbound envelope completes it when its DIDComm `thid` or its document's
+  `threadId` names that id and it comes from the DID the request went to; it is
+  then not dispatched to the `Responder`. A send is "handed to the mediator",
+  never "delivered": no answer within the window is `RequestError::Timeout`, and
+  no live session is `NotConnected`. DIDComm only; TSP requests are not sent yet.
+
+
+
 ## [0.60.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.59.0...vti-common-v0.60.0) — 2026-11-05
 
 
