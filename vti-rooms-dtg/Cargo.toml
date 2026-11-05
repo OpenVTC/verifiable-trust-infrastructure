@@ -25,7 +25,7 @@ test-support = ["dep:ed25519-dalek", "dep:getrandom", "dep:multibase", "dep:vta-
 
 [dependencies]
 vti-rooms = { path = "../vti-rooms", version = "0.30" }
-vti-common = { path = "../vti-common", version = "0.58" }
+vti-common = { path = "../vti-common", version = "0.59" }
 
 # `authority::verify_chain` and the VAC/VDC types. Was a pinned git rev while
 # 0.6.0 sat merged and unreleased; released 2026-09-03. Takes the workspace
