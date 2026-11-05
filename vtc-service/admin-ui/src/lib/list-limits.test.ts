@@ -58,6 +58,7 @@ const DIRECTORY_ENTRIES = `${T}/vtc/directory/entries/list/0.2`;
 const DIRECTORY_EXPORT = `${T}/vtc/directory/export/0.2`;
 const GROUPS_LIST = `${T}/vtc/groups/list/0.2`;
 const BOARDS_LIST = `${T}/vtc/boards/list/0.1`;
+const NETWORKS_LIST = `${T}/vtc/networks/list/0.2`;
 const BOARDS_SHOW = `${T}/vtc/boards/show/0.1`;
 const BOARDS_NOTES = `${T}/vtc/boards/notes/list/0.1`;
 const GROUPS_MEMBERS = `${T}/vtc/groups/members/list/0.2`;
@@ -97,6 +98,8 @@ const SITES: Site[] = [
   { file: "lib/groups.ts", site: "(GROUPS_LIST_TASK, {\n      limit: PAGE", uri: GROUPS_LIST, from: ["PAGE"] },
   { file: "lib/groups.ts", site: "(GROUPS_MEMBERS_LIST_TASK, {\n      groupId,\n      limit: PAGE", uri: GROUPS_MEMBERS, from: ["PAGE"] },
   { file: "lib/groups.ts", site: "(GROUPS_REQUESTS_LIST_TASK, {\n    limit: PAGE", uri: GROUPS_REQUESTS, from: ["PAGE"] },
+  // The Networks page: every membership, the largest page.
+  { file: "lib/networks.ts", site: "(NETWORKS_LIST_TASK, {\n      limit: PAGE", uri: NETWORKS_LIST, from: ["PAGE"] },
   // Boards, as facilitators read them: every board, idea and note, a page at a time.
   { file: "lib/boards.ts", site: "(LIST, { limit: PAGE", uri: BOARDS_LIST, from: ["PAGE"] },
   { file: "lib/boards.ts", site: "(SHOW, { boardId, limit: PAGE })", uri: BOARDS_SHOW, from: ["PAGE"] },

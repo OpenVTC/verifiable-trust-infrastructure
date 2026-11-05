@@ -23,6 +23,7 @@
   "https://trusttasks.org/spec/vtc/groups/requests/list/0.2": 200,
   "https://trusttasks.org/spec/vtc/join-requests/list/0.2": 200,
   "https://trusttasks.org/spec/vtc/members/list/0.2": 200,
+  "https://trusttasks.org/spec/vtc/networks/list/0.2": 100,
   "https://trusttasks.org/spec/vtc/notifications/list/0.1": 200,
   "https://trusttasks.org/spec/vtc/registry/records/list/0.2": 200,
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.2": 200,

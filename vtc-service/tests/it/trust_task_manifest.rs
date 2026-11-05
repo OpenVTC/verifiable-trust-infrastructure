@@ -1031,6 +1031,13 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1",
+    // The console's Networks page (`admin-ui/src/lib/networks.ts`): the community's
+    // memberships, and joining, leaving or rejecting a network (`trust_tasks::network_tasks`).
+    "https://trusttasks.org/spec/vtc/networks/list/0.2",
+    "https://trusttasks.org/spec/vtc/networks/show/0.2",
+    "https://trusttasks.org/spec/vtc/networks/join/0.2",
+    "https://trusttasks.org/spec/vtc/networks/leave/0.2",
+    "https://trusttasks.org/spec/vtc/networks/repudiate/0.2",
     // The community's boards (VTI-BRD-*): the portal's board pages, signed by the portal
     // key the member delegated `vtc/boards` to, and the console's facilitator pages.
     "https://trusttasks.org/spec/vtc/boards/create/0.1",

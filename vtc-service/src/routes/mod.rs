@@ -170,6 +170,18 @@ use crate::server::AppState;
         vta_sdk::openapi::GroupsDelete01Payload,
         vta_sdk::openapi::GroupsDelete01Response,
         vta_sdk::openapi::GroupsList02Payload,
+        // A community's network memberships (`trust_tasks::network_tasks`), signed
+        // documents only.
+        vta_sdk::openapi::NetworksList02Payload,
+        vta_sdk::openapi::NetworksList02Response,
+        vta_sdk::openapi::NetworksShow02Payload,
+        vta_sdk::openapi::NetworksShow02Response,
+        vta_sdk::openapi::NetworksJoin02Payload,
+        vta_sdk::openapi::NetworksJoin02Response,
+        vta_sdk::openapi::NetworksLeave02Payload,
+        vta_sdk::openapi::NetworksLeave02Response,
+        vta_sdk::openapi::NetworksRepudiate02Payload,
+        vta_sdk::openapi::NetworksRepudiate02Response,
         vta_sdk::openapi::GroupsList02Response,
         vta_sdk::openapi::GroupsShow01Payload,
         vta_sdk::openapi::GroupsShow01Response,

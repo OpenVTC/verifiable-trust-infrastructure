@@ -19608,6 +19608,889 @@
         },
         "additionalProperties": false
       },
+      "VtcNetworksJoinV0_2Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcNetworksJoinV0_2NetworkMembership": {
+        "type": "object",
+        "required": [
+          "network",
+          "url",
+          "state",
+          "listing",
+          "groups",
+          "updatedAt"
+        ],
+        "properties": {
+          "acknowledgement": {
+            "type": "object",
+            "description": "The community's acknowledgement (VMC carrying the grant's digest)."
+          },
+          "grant": {
+            "type": "object",
+            "description": "The network's membership grant (VMC), once the community acknowledged."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcNetworksJoinV0_2RegisteredGroup"
+            },
+            "maxItems": 64
+          },
+          "joinedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "listing": {
+            "type": "object",
+            "description": "The network's listing credential naming the community, as the community verified it."
+          },
+          "name": {
+            "type": "string",
+            "description": "The network's name, as its profile gives it.",
+            "maxLength": 200
+          },
+          "network": {
+            "type": "string",
+            "description": "The network's DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "repudiation": {
+            "type": "object",
+            "description": "The community's repudiation (VSC) of the listing, or — on departure — of the grant."
+          },
+          "state": {
+            "type": "string",
+            "description": "`acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.",
+            "enum": [
+              "acknowledged",
+              "repudiated",
+              "departed"
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksJoinV0_2Payload": {
+        "type": "object",
+        "description": "Accept a network's listing of the community: register groups for the network's roles, then acknowledge its membership offer. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "url",
+          "network"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksJoinV0_2Ext"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcNetworksJoinV0_2RoleAssignment"
+            },
+            "description": "The community's groups to serve the network's roles. Every role the network requires must be assigned.",
+            "maxItems": 32
+          },
+          "network": {
+            "type": "string",
+            "description": "The network's DID. For a request naming a `url`, the community refuses if the network found there answers as another DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The network's API base, as the network's administrators gave it.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksJoinV0_2RegisteredGroup": {
+        "type": "object",
+        "required": [
+          "role",
+          "groupId",
+          "groupDid",
+          "endpoint",
+          "registration",
+          "acceptance",
+          "registeredAt"
+        ],
+        "properties": {
+          "acceptance": {
+            "type": "object",
+            "description": "The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof."
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.",
+            "maxLength": 2048
+          },
+          "groupDid": {
+            "type": "string",
+            "description": "The group's own DID, which the registration names as its `group`.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "groupId": {
+            "type": "string",
+            "description": "The community's identifier for the group.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "registeredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "registration": {
+            "type": "object",
+            "description": "The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload."
+          },
+          "role": {
+            "type": "string",
+            "description": "A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`.",
+            "pattern": "^[a-z0-9_-]{1,64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksJoinV0_2Response": {
+        "type": "object",
+        "description": "The membership as it now stands.",
+        "required": [
+          "membership"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksJoinV0_2Ext"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/VtcNetworksJoinV0_2NetworkMembership"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksJoinV0_2RoleAssignment": {
+        "type": "object",
+        "required": [
+          "role",
+          "groupId"
+        ],
+        "properties": {
+          "groupId": {
+            "type": "string",
+            "description": "The community group to serve the role.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "role": {
+            "type": "string",
+            "description": "A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`.",
+            "pattern": "^[a-z0-9_-]{1,64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksLeaveV0_2Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcNetworksLeaveV0_2NetworkMembership": {
+        "type": "object",
+        "required": [
+          "network",
+          "url",
+          "state",
+          "listing",
+          "groups",
+          "updatedAt"
+        ],
+        "properties": {
+          "acknowledgement": {
+            "type": "object",
+            "description": "The community's acknowledgement (VMC carrying the grant's digest)."
+          },
+          "grant": {
+            "type": "object",
+            "description": "The network's membership grant (VMC), once the community acknowledged."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcNetworksLeaveV0_2RegisteredGroup"
+            },
+            "maxItems": 64
+          },
+          "joinedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "listing": {
+            "type": "object",
+            "description": "The network's listing credential naming the community, as the community verified it."
+          },
+          "name": {
+            "type": "string",
+            "description": "The network's name, as its profile gives it.",
+            "maxLength": 200
+          },
+          "network": {
+            "type": "string",
+            "description": "The network's DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "repudiation": {
+            "type": "object",
+            "description": "The community's repudiation (VSC) of the listing, or — on departure — of the grant."
+          },
+          "state": {
+            "type": "string",
+            "description": "`acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.",
+            "enum": [
+              "acknowledged",
+              "repudiated",
+              "departed"
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksLeaveV0_2Payload": {
+        "type": "object",
+        "description": "Withdraw from a network the community is a member of. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "network"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksLeaveV0_2Ext"
+          },
+          "network": {
+            "type": "string",
+            "description": "The network's DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Kept in the community's audit trail. Not sent to the network.",
+            "maxLength": 500
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksLeaveV0_2RegisteredGroup": {
+        "type": "object",
+        "required": [
+          "role",
+          "groupId",
+          "groupDid",
+          "endpoint",
+          "registration",
+          "acceptance",
+          "registeredAt"
+        ],
+        "properties": {
+          "acceptance": {
+            "type": "object",
+            "description": "The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof."
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.",
+            "maxLength": 2048
+          },
+          "groupDid": {
+            "type": "string",
+            "description": "The group's own DID, which the registration names as its `group`.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "groupId": {
+            "type": "string",
+            "description": "The community's identifier for the group.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "registeredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "registration": {
+            "type": "object",
+            "description": "The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload."
+          },
+          "role": {
+            "type": "string",
+            "description": "A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`.",
+            "pattern": "^[a-z0-9_-]{1,64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksLeaveV0_2Response": {
+        "type": "object",
+        "description": "The membership, in state `departed`.",
+        "required": [
+          "membership"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksLeaveV0_2Ext"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/VtcNetworksLeaveV0_2NetworkMembership"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksListV0_2Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcNetworksListV0_2NetworkMembership": {
+        "type": "object",
+        "required": [
+          "network",
+          "url",
+          "state",
+          "listing",
+          "groups",
+          "updatedAt"
+        ],
+        "properties": {
+          "acknowledgement": {
+            "type": "object",
+            "description": "The community's acknowledgement (VMC carrying the grant's digest)."
+          },
+          "grant": {
+            "type": "object",
+            "description": "The network's membership grant (VMC), once the community acknowledged."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcNetworksListV0_2RegisteredGroup"
+            },
+            "maxItems": 64
+          },
+          "joinedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "listing": {
+            "type": "object",
+            "description": "The network's listing credential naming the community, as the community verified it."
+          },
+          "name": {
+            "type": "string",
+            "description": "The network's name, as its profile gives it.",
+            "maxLength": 200
+          },
+          "network": {
+            "type": "string",
+            "description": "The network's DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "repudiation": {
+            "type": "object",
+            "description": "The community's repudiation (VSC) of the listing, or — on departure — of the grant."
+          },
+          "state": {
+            "type": "string",
+            "description": "`acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.",
+            "enum": [
+              "acknowledged",
+              "repudiated",
+              "departed"
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksListV0_2Payload": {
+        "type": "object",
+        "description": "List the community's network memberships, optionally in one state. The outer document members are owned by the framework — SPEC §6.3.",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksListV0_2Ext"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size; clamped to 1..=100 (default 50).",
+            "maximum": 100,
+            "minimum": 1
+          },
+          "state": {
+            "type": "string",
+            "description": "Only memberships in this state.",
+            "enum": [
+              "acknowledged",
+              "repudiated",
+              "departed"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksListV0_2RegisteredGroup": {
+        "type": "object",
+        "required": [
+          "role",
+          "groupId",
+          "groupDid",
+          "endpoint",
+          "registration",
+          "acceptance",
+          "registeredAt"
+        ],
+        "properties": {
+          "acceptance": {
+            "type": "object",
+            "description": "The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof."
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.",
+            "maxLength": 2048
+          },
+          "groupDid": {
+            "type": "string",
+            "description": "The group's own DID, which the registration names as its `group`.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "groupId": {
+            "type": "string",
+            "description": "The community's identifier for the group.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "registeredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "registration": {
+            "type": "object",
+            "description": "The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload."
+          },
+          "role": {
+            "type": "string",
+            "description": "A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`.",
+            "pattern": "^[a-z0-9_-]{1,64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksListV0_2Response": {
+        "type": "object",
+        "description": "The community's network memberships, by network DID.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksListV0_2Ext"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcNetworksListV0_2NetworkMembership"
+            },
+            "maxItems": 100
+          },
+          "nextCursor": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksRepudiateV0_2Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcNetworksRepudiateV0_2NetworkMembership": {
+        "type": "object",
+        "required": [
+          "network",
+          "url",
+          "state",
+          "listing",
+          "groups",
+          "updatedAt"
+        ],
+        "properties": {
+          "acknowledgement": {
+            "type": "object",
+            "description": "The community's acknowledgement (VMC carrying the grant's digest)."
+          },
+          "grant": {
+            "type": "object",
+            "description": "The network's membership grant (VMC), once the community acknowledged."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcNetworksRepudiateV0_2RegisteredGroup"
+            },
+            "maxItems": 64
+          },
+          "joinedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "listing": {
+            "type": "object",
+            "description": "The network's listing credential naming the community, as the community verified it."
+          },
+          "name": {
+            "type": "string",
+            "description": "The network's name, as its profile gives it.",
+            "maxLength": 200
+          },
+          "network": {
+            "type": "string",
+            "description": "The network's DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "repudiation": {
+            "type": "object",
+            "description": "The community's repudiation (VSC) of the listing, or — on departure — of the grant."
+          },
+          "state": {
+            "type": "string",
+            "description": "`acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.",
+            "enum": [
+              "acknowledged",
+              "repudiated",
+              "departed"
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksRepudiateV0_2Payload": {
+        "type": "object",
+        "description": "Reject a network's listing of the community. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "url",
+          "network"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksRepudiateV0_2Ext"
+          },
+          "network": {
+            "type": "string",
+            "description": "The network's DID. For a request naming a `url`, the community refuses if the network found there answers as another DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Kept in the community's audit trail. Not sent to the network.",
+            "maxLength": 500
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The network's API base, as the network's administrators gave it.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksRepudiateV0_2RegisteredGroup": {
+        "type": "object",
+        "required": [
+          "role",
+          "groupId",
+          "groupDid",
+          "endpoint",
+          "registration",
+          "acceptance",
+          "registeredAt"
+        ],
+        "properties": {
+          "acceptance": {
+            "type": "object",
+            "description": "The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof."
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.",
+            "maxLength": 2048
+          },
+          "groupDid": {
+            "type": "string",
+            "description": "The group's own DID, which the registration names as its `group`.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "groupId": {
+            "type": "string",
+            "description": "The community's identifier for the group.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "registeredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "registration": {
+            "type": "object",
+            "description": "The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload."
+          },
+          "role": {
+            "type": "string",
+            "description": "A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`.",
+            "pattern": "^[a-z0-9_-]{1,64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksRepudiateV0_2Response": {
+        "type": "object",
+        "description": "The membership record, in state `repudiated`.",
+        "required": [
+          "membership"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksRepudiateV0_2Ext"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/VtcNetworksRepudiateV0_2NetworkMembership"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksShowV0_2Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcNetworksShowV0_2NetworkMembership": {
+        "type": "object",
+        "required": [
+          "network",
+          "url",
+          "state",
+          "listing",
+          "groups",
+          "updatedAt"
+        ],
+        "properties": {
+          "acknowledgement": {
+            "type": "object",
+            "description": "The community's acknowledgement (VMC carrying the grant's digest)."
+          },
+          "grant": {
+            "type": "object",
+            "description": "The network's membership grant (VMC), once the community acknowledged."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcNetworksShowV0_2RegisteredGroup"
+            },
+            "maxItems": 64
+          },
+          "joinedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "listing": {
+            "type": "object",
+            "description": "The network's listing credential naming the community, as the community verified it."
+          },
+          "name": {
+            "type": "string",
+            "description": "The network's name, as its profile gives it.",
+            "maxLength": 200
+          },
+          "network": {
+            "type": "string",
+            "description": "The network's DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "repudiation": {
+            "type": "object",
+            "description": "The community's repudiation (VSC) of the listing, or — on departure — of the grant."
+          },
+          "state": {
+            "type": "string",
+            "description": "`acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.",
+            "enum": [
+              "acknowledged",
+              "repudiated",
+              "departed"
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksShowV0_2Payload": {
+        "type": "object",
+        "description": "One network membership, by the network's DID. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "network"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksShowV0_2Ext"
+          },
+          "network": {
+            "type": "string",
+            "description": "The network's DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksShowV0_2RegisteredGroup": {
+        "type": "object",
+        "required": [
+          "role",
+          "groupId",
+          "groupDid",
+          "endpoint",
+          "registration",
+          "acceptance",
+          "registeredAt"
+        ],
+        "properties": {
+          "acceptance": {
+            "type": "object",
+            "description": "The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof."
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.",
+            "maxLength": 2048
+          },
+          "groupDid": {
+            "type": "string",
+            "description": "The group's own DID, which the registration names as its `group`.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "groupId": {
+            "type": "string",
+            "description": "The community's identifier for the group.",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "registeredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "registration": {
+            "type": "object",
+            "description": "The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload."
+          },
+          "role": {
+            "type": "string",
+            "description": "A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`.",
+            "pattern": "^[a-z0-9_-]{1,64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksShowV0_2Response": {
+        "type": "object",
+        "description": "The membership.",
+        "required": [
+          "membership"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksShowV0_2Ext"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/VtcNetworksShowV0_2NetworkMembership"
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcRegistryRecordsListV0_2Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
