@@ -2,6 +2,41 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vta-v0.5.1...vti-specs-vta-v0.5.2) — 2026-11-05
+
+
+### Added
+
+- **elections**: Check a vote after close against the head the community kept (VTI-VOT-053) ([#2460](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2460))
+
+The VTA kept each receipt and could check it against a head and an
+  inclusion proof, but nothing ever handed it either after close. Now:
+
+  - VTA: vta/pcs/voter/receipts/list/0.1 returns the receipts kept for an
+    election, whole, and the ballot box recorded at registration.
+    vta/pcs/voter/read/0.7 also signs vtc/elections/tombstones/show/0.1, so a
+    member can read the heads a community keeps once the election's board is
+    deleted (VTI-BRD-009). voter/receipt answers notIncluded for a head too
+    small to hold the cast before it looks at a path (consumer item 7.2), as
+    the ballot box gives no inclusion proof for one.
+  - vta-sdk: pcs_voter_receipts_list(_json); pcs_voter_read_json sends 0.7 only
+    for a tombstone read, so list and show keep working against an older VTA.
+  - pnm elections verify <id>: reads the head the community kept at close
+    (show, or the tombstone on electionUnknown), lists the receipts, fetches
+    each cast's voting/board/inclusion from the ballot box over its own
+    connection, unsigned, and has the VTA check it. A cast the head omits is
+    printed in red and the command fails.
+  - Member portal: "Check my vote in my wallet" on a closed or tallied
+    election, for a wallet that offers checkVote. The wallet answers in its
+    own window; the page is told nothing.
+  - Docs: pcs-engine.md step 7, elections.md.
+
+  Pins vta/pcs/voter/read 0.7 and vta/pcs/voter/receipts/list 0.1 from the
+  Trust Task PR's registry build (read 0.2/0.3/0.6 take its new deprecation
+  notes); lock reset to trusttasks.org.
+
+
+
 ## [0.5.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vta-v0.5.0...vti-specs-vta-v0.5.1) — 2026-11-04
 
 

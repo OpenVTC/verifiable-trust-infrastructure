@@ -2,6 +2,59 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.24.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.24.0...vtc-service-v0.24.1) — 2026-11-05
+
+
+### Added
+
+- **vtc-service**: Preview a network before joining it — vtc/networks/preview/0.1, the console's join form and cnm networks preview ([#2464](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2464))
+- **elections**: Check a vote after close against the head the community kept (VTI-VOT-053) ([#2460](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2460))
+
+The VTA kept each receipt and could check it against a head and an
+  inclusion proof, but nothing ever handed it either after close. Now:
+
+  - VTA: vta/pcs/voter/receipts/list/0.1 returns the receipts kept for an
+    election, whole, and the ballot box recorded at registration.
+    vta/pcs/voter/read/0.7 also signs vtc/elections/tombstones/show/0.1, so a
+    member can read the heads a community keeps once the election's board is
+    deleted (VTI-BRD-009). voter/receipt answers notIncluded for a head too
+    small to hold the cast before it looks at a path (consumer item 7.2), as
+    the ballot box gives no inclusion proof for one.
+  - vta-sdk: pcs_voter_receipts_list(_json); pcs_voter_read_json sends 0.7 only
+    for a tombstone read, so list and show keep working against an older VTA.
+  - pnm elections verify <id>: reads the head the community kept at close
+    (show, or the tombstone on electionUnknown), lists the receipts, fetches
+    each cast's voting/board/inclusion from the ballot box over its own
+    connection, unsigned, and has the VTA check it. A cast the head omits is
+    printed in red and the command fails.
+  - Member portal: "Check my vote in my wallet" on a closed or tallied
+    election, for a wallet that offers checkVote. The wallet answers in its
+    own window; the page is told nothing.
+  - Docs: pcs-engine.md step 7, elections.md.
+
+  Pins vta/pcs/voter/read 0.7 and vta/pcs/voter/receipts/list 0.1 from the
+  Trust Task PR's registry build (read 0.2/0.3/0.6 take its new deprecation
+  notes); lock reset to trusttasks.org.
+
+- **boards**: Appoint a board's facilitators (VTI-BRD-090 – 093) ([#2459](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2459))
+
+Serves vtc/boards/facilitators/{add,remove,list}/0.1. Any facilitator of a board
+  appoints an active member to facilitate it: a resource grant of vtc.boards.manage
+  at board:<boardId> on the member's own entry, beside their role, delegated by and
+  bounded to the signer's own holding, so a member with no administrative role can
+  run one board and nothing else. A facilitator steps down; only a holder of
+  vtc.boards.manage unqualified ends someone else's appointment. When the appointer
+  departs or stops facilitating the board, the appointment goes to an
+  acl.grants.review item (boardGrants) and is withdrawn on decline or at the
+  deadline; deleting the board withdraws every appointment to it. Every change is
+  audited as BoardChanged by entry, never DID.
+
+  The grant/review/withdraw machinery of group managers moves to
+  acl::appointment and now serves both kinds; ResourceGrant::confers answers
+  vtc.boards.manage for the exact board only.
+
+
+
 ## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.23.0...vtc-service-v0.24.0) — 2026-11-05
 
 

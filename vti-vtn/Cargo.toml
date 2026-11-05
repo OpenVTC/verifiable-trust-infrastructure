@@ -1,7 +1,7 @@
 [package]
 name = "vti-vtn"
 description = "The Verifiable Trust Network (VTN) protocol: listings, membership, DTG credentials, status lists, network index, group registration, broadcast envelopes, room passes — shared by the VTN service and the VTC"
-version = "0.6.0"
+version = "0.6.1"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -37,7 +37,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-vta-sdk = { path = "../vta-sdk", version = "0.83", default-features = false, features = [
+vta-sdk = { path = "../vta-sdk", version = "0.84", default-features = false, features = [
   "proof-verify",
 ], optional = true }
 affinidi-did-resolver-cache-sdk = { workspace = true, optional = true }

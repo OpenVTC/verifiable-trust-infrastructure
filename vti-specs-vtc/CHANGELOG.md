@@ -2,6 +2,31 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.6.1...vti-specs-vtc-v0.6.2) — 2026-11-05
+
+
+### Added
+
+- **vtc-service**: Preview a network before joining it — vtc/networks/preview/0.1, the console's join form and cnm networks preview ([#2464](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2464))
+- **boards**: Appoint a board's facilitators (VTI-BRD-090 – 093) ([#2459](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2459))
+
+Serves vtc/boards/facilitators/{add,remove,list}/0.1. Any facilitator of a board
+  appoints an active member to facilitate it: a resource grant of vtc.boards.manage
+  at board:<boardId> on the member's own entry, beside their role, delegated by and
+  bounded to the signer's own holding, so a member with no administrative role can
+  run one board and nothing else. A facilitator steps down; only a holder of
+  vtc.boards.manage unqualified ends someone else's appointment. When the appointer
+  departs or stops facilitating the board, the appointment goes to an
+  acl.grants.review item (boardGrants) and is withdrawn on decline or at the
+  deadline; deleting the board withdraws every appointment to it. Every change is
+  audited as BoardChanged by entry, never DID.
+
+  The grant/review/withdraw machinery of group managers moves to
+  acl::appointment and now serves both kinds; ResourceGrant::confers answers
+  vtc.boards.manage for the exact board only.
+
+
+
 ## [0.6.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.6.0...vti-specs-vtc-v0.6.1) — 2026-11-05
 
 

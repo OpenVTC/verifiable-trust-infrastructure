@@ -2,6 +2,85 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.56.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.55.0...pnm-cli-v0.56.0) — 2026-11-05
+
+
+### Added
+
+- **elections**: Check a vote after close against the head the community kept (VTI-VOT-053) ([#2460](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2460))
+
+The VTA kept each receipt and could check it against a head and an
+  inclusion proof, but nothing ever handed it either after close. Now:
+
+  - VTA: vta/pcs/voter/receipts/list/0.1 returns the receipts kept for an
+    election, whole, and the ballot box recorded at registration.
+    vta/pcs/voter/read/0.7 also signs vtc/elections/tombstones/show/0.1, so a
+    member can read the heads a community keeps once the election's board is
+    deleted (VTI-BRD-009). voter/receipt answers notIncluded for a head too
+    small to hold the cast before it looks at a path (consumer item 7.2), as
+    the ballot box gives no inclusion proof for one.
+  - vta-sdk: pcs_voter_receipts_list(_json); pcs_voter_read_json sends 0.7 only
+    for a tombstone read, so list and show keep working against an older VTA.
+  - pnm elections verify <id>: reads the head the community kept at close
+    (show, or the tombstone on electionUnknown), lists the receipts, fetches
+    each cast's voting/board/inclusion from the ballot box over its own
+    connection, unsigned, and has the VTA check it. A cast the head omits is
+    printed in red and the command fails.
+  - Member portal: "Check my vote in my wallet" on a closed or tallied
+    election, for a wallet that offers checkVote. The wallet answers in its
+    own window; the page is told nothing.
+  - Docs: pcs-engine.md step 7, elections.md.
+
+  Pins vta/pcs/voter/read 0.7 and vta/pcs/voter/receipts/list 0.1 from the
+  Trust Task PR's registry build (read 0.2/0.3/0.6 take its new deprecation
+  notes); lock reset to trusttasks.org.
+
+- **rooms**: The VTA watches rooms for its clients (rooms/keys/watch, rooms/keys/changed), act/0.12, and memberProfile's tie-break and rewrite near the head ([#2461](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2461))
+
+* feat(rooms)!: the VTA watches rooms for its clients (rooms/keys/watch, rooms/keys/changed), act/0.12, and memberProfile's tie-break and rewrite near the head
+
+  rooms/keys/watch/0.1, rooms/keys/changed/0.1 and rooms/keys/act/0.12
+  (trust-tasks-tf #1040), pinned in vti-specs-rooms (act 0.8-0.11 are now
+  marked superseded upstream, so their uses carry allow(deprecated)).
+
+  The VTA serves rooms/keys/watch/0.1: up to 64 rooms at one host, one
+  outcome per room. A delegate is refused permissionDenied, a member the
+  VTA holds no authentication key for that the caller may act as is
+  refused memberNotPrincipal (details.member), a room named twice is
+  malformedRequest. Each room is its own rooms/watch/0.1 at the host,
+  completed as act/0.12 completes one (presentation narrowed to read,
+  granted to and signed by the member), with an address of the VTA's
+  own: a did:peer:2 minted for that one watch from fresh keys, whose
+  only service is DIDCommMessaging at the VTA's mediator. A re-arm of an
+  unfired watch keeps its address; every other arming takes a new one.
+  Per room: notAMember, actionNotHeld, limitReached (the VTA's own bound:
+  64 per member, 64 per caller, 256 in all; a VTA with no mediator holds
+  none), hostUnreachable, or hostRefused with the host's code unaltered.
+
+  The record (operations::room_key_watch, keyspace room_key_watches,
+  encrypted at rest, excluded from backup) is Recipient item 6's list and
+  nothing else: caller, member, room, host, address and its keys, lapse.
+  messaging::watch_addresses holds one mediator connection per address
+  and runs the sweep. A rooms/changed at an address is passed on only
+  when DIDComm authcrypt proved the watch's host as sender, it names the
+  watch's room, and the watch has not lapsed; the watch is forgotten
+  before the pass-on is sent. rooms/keys/changed carries roomId, member,
+  host and latestVersion only, signed by the VTA, through the push path
+  task-consent/granted uses, without a doorbell (Producer item 5) and
+  with a deadline of one attempt window, so an accepted push is never
+  re-sent (Producer item 4). A watch is also forgotten when cancelled,
+  at its lapse (never later than the host's expiresAt, 30 days at most),
+  when its caller loses standing to act as the member, and when the
+  member's credentials for the room are gone. rooms/changed addressed to
+  the VTA's own DID matches no watch and is dropped.
+
+  rooms/keys/act/0.12 is served beside 0.8-0.11; its table adds
+  rooms/watch/0.1 (read). A watch whose address is the caller's DID, the
+  VTA's or the member's is refused malformedRequest (Producer item 6;
+  Recipient item 6).
+
+
+
 ## [0.55.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.54.0...pnm-cli-v0.55.0) — 2026-11-05
 
 
