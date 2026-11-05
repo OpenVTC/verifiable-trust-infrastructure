@@ -2,6 +2,19 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.6.0...vti-specs-vtc-v0.6.1) — 2026-11-05
+
+
+### Added
+
+- **elections**: Read a deleted board's election tombstone (VTI-BRD-009) ([#2455](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2455))
+
+A deleted board's elections each keep a tombstone (VTI-BRD-007/008),
+  but nothing served it, so no voter could check a receipt against the
+  community's kept heads once the board was gone (VTI-VOT-053).
+
+
+
 ## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.5.0...vti-specs-vtc-v0.6.0) — 2026-11-04
 
 

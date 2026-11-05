@@ -2,6 +2,38 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.49.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.48.0...cnm-cli-v0.49.0) — 2026-11-05
+
+
+### Added
+
+- **vtc-service**: Join a network from the console's Networks page or cnm networks ([#2458](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2458))
+
+The community side of Verifiable Trust Network membership (vtc/networks/*/0.2) had no
+  caller: no console page and no cnm command sent join, leave or repudiate.
+
+  - Console: Community → Networks (/admin/networks, vtc.config.admin) lists the
+    memberships with their credentials (the network's listing and grant, the community's
+    acknowledgement or repudiation, the registered groups), and joins, leaves or rejects a
+    listing through the console's operation-bound step-up. A network's invitation links to
+    /admin/networks?join=<network url>&network=<network DID>. A roleUnassigned refusal adds
+    a row for the role; only groups with a DID of their own are offered.
+  - cnm networks list | show | join <url> --network <did> [--group role=groupId]... |
+    leave | repudiate, through cnm's step-up hand-off.
+  - join, repudiate and leave now run every check that would refuse them before asking for
+    the step-up (join_preflight, repudiate_preflight, leave_preflight), so a join that
+    cannot succeed costs the administrator no passkey gesture (VTI-APV-015).
+  - vta-sdk exposes the vtc/networks/{list,show,join,leave,repudiate}/0.2 schemas to the
+    OpenAPI document, so the console's wire types are generated, not written by hand.
+
+- **elections**: Read a deleted board's election tombstone (VTI-BRD-009) ([#2455](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2455))
+
+A deleted board's elections each keep a tombstone (VTI-BRD-007/008),
+  but nothing served it, so no voter could check a receipt against the
+  community's kept heads once the board was gone (VTI-VOT-053).
+
+
+
 ## [0.48.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.47.0...cnm-cli-v0.48.0) — 2026-11-04
 
 

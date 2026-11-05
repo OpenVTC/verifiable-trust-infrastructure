@@ -42,7 +42,7 @@ serde_json_canonicalizer = { workspace = true }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../../vti-specs", version = "0.7" }
+vti-specs = { path = "../../vti-specs", version = "0.8" }
 
 affinidi-tdk = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
