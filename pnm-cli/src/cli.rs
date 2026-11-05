@@ -654,6 +654,17 @@ pub(crate) enum ElectionCommands {
         #[command(flatten)]
         target: ElectionTarget,
     },
+    /// After voting closes, check that each cast you made is in the board the community kept at
+    /// close (VTI-VOT-053) — also once the board the election was opened on is deleted.
+    ///
+    /// Your VTA keeps your receipts; the proof that each is on the board comes from the ballot
+    /// box over this connection, never through your VTA or the community. A missing cast is
+    /// reported and the command fails: your VTA keeps the receipt as evidence.
+    Verify {
+        election_id: String,
+        #[command(flatten)]
+        target: ElectionTarget,
+    },
     /// Serve as a trustee of a sealed or tallied-encrypted election: your VTA holds your
     /// transport key and your share of the election key, and signs every step as you.
     ///

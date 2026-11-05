@@ -2337,9 +2337,16 @@ pub const TASK_VTA_PCS_VOTER_READ_0_2: &str =
 pub const TASK_VTA_PCS_VOTER_READ_0_3: &str =
     <vti_specs::vta::pcs::voter::read::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `vta/pcs/voter/read/0.6` — [`TASK_VTA_PCS_VOTER_READ_0_3`] signing `vtc/elections/list/0.5` or `vtc/elections/show/0.6`, the show carrying the member's presentation of `membershipCredential`, issued by `memberOf` (VTI-VOT-015, VTI-VOT-016). The version this SDK sends.
+/// `vta/pcs/voter/read/0.6` — [`TASK_VTA_PCS_VOTER_READ_0_3`] signing `vtc/elections/list/0.5` or `vtc/elections/show/0.6`, the show carrying the member's presentation of `membershipCredential`, issued by `memberOf` (VTI-VOT-015, VTI-VOT-016). Still served, and the version this SDK sends for a `list` or `show`.
+#[allow(deprecated)] // superseded by vta/pcs/voter/read/0.7, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_VOTER_READ_0_6: &str =
     <vti_specs::vta::pcs::voter::read::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/voter/read/0.7` — [`TASK_VTA_PCS_VOTER_READ_0_6`] that also signs
+/// `vtc/elections/tombstones/show/0.1`, what a community keeps of an election once its board is
+/// deleted (VTI-BRD-009). The version this SDK sends for a `tombstone` read.
+pub const TASK_VTA_PCS_VOTER_READ_0_7: &str =
+    <vti_specs::vta::pcs::voter::read::v0_7::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/voter/accept/0.1` — unblind the community's answer into the ticket.
 pub const TASK_VTA_PCS_VOTER_ACCEPT_0_1: &str =
@@ -2363,6 +2370,11 @@ pub const TASK_VTA_PCS_VOTE_0_4: &str =
 /// `vta/pcs/voter/receipt/0.1` — keep a cast's receipt and check its inclusion.
 pub const TASK_VTA_PCS_VOTER_RECEIPT_0_1: &str =
     <vti_specs::vta::pcs::voter::receipt::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/voter/receipts/list/0.1` — the receipts kept for an election and its ballot box, to
+/// check each against the head the community kept at close (VTI-VOT-053).
+pub const TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1: &str =
+    <vti_specs::vta::pcs::voter::receipts::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── The encrypted levels (trust-tasks-tf #845, VTI-VOT-060 – 064) ──────────
 // The voter's sealed or tallied-encrypted cast, and the trustee role: the VTA
@@ -2813,11 +2825,13 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_PCS_VOTER_READ_0_2,
     TASK_VTA_PCS_VOTER_READ_0_3,
     TASK_VTA_PCS_VOTER_READ_0_6,
+    TASK_VTA_PCS_VOTER_READ_0_7,
     TASK_VTA_PCS_VOTER_ACCEPT_0_1,
     TASK_VTA_PCS_VOTE_0_2,
     TASK_VTA_PCS_VOTE_0_3,
     TASK_VTA_PCS_VOTE_0_4,
     TASK_VTA_PCS_VOTER_RECEIPT_0_1,
+    TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1,
     TASK_VTA_PCS_VOTE_ENCRYPTED_0_3,
     TASK_VTA_PCS_VOTE_ENCRYPTED_0_4,
     TASK_VTA_PCS_VOTE_ENCRYPTED_0_5,

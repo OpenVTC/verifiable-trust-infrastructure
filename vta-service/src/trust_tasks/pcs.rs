@@ -804,11 +804,11 @@ pub(super) async fn handle_voter_read(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::voter::read::v0_6 as t;
+    use spec::voter::read::v0_7 as t;
     use trust_tasks_rs::validate::ValidatedPayload as _;
     use vti_specs::vtc::elections::{
         list::v0_3 as list_0_3, list::v0_5 as list, show::v0_2 as show_0_2, show::v0_3 as show_0_3,
-        show::v0_6 as show,
+        show::v0_6 as show, tombstones::show::v0_1 as tombstone,
     };
     let (_context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
@@ -816,11 +816,13 @@ pub(super) async fn handle_voter_read(
     };
     let named = doc.type_uri.to_string();
     let is = |uri: &str| named.starts_with(uri);
-    // 0 = 0.6, 3 = 0.3, 2 = 0.2.
+    // 0 = 0.7, 6 = 0.6, 3 = 0.3, 2 = 0.2.
     let version = if is(<spec::voter::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI) {
         2
     } else if is(<spec::voter::read::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI) {
         3
+    } else if is(<spec::voter::read::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI) {
+        6
     } else {
         0
     };
@@ -858,6 +860,11 @@ pub(super) async fn handle_voter_read(
         ("show", _) => (
             <show::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             show::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+        ),
+        // Only 0.7 signs a tombstone read (VTI-BRD-009); its schema keeps a presentation out.
+        ("tombstone", 0) => (
+            <tombstone::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            tombstone::Payload::validate_value(&payload).map_err(|e| e.to_string()),
         ),
         (other, _) => ("", Err(format!("`{other}` is not a read this task signs"))),
     };
@@ -924,6 +931,9 @@ pub(super) async fn handle_voter_read(
         }
         Ok(document) if version == 3 => {
             respond::<spec::voter::read::v0_3::Response>(&doc, json!({ "document": document }))
+        }
+        Ok(document) if version == 6 => {
+            respond::<spec::voter::read::v0_6::Response>(&doc, json!({ "document": document }))
         }
         Ok(document) => respond::<t::Response>(&doc, json!({ "document": document })),
         Err(e) => refuse(&doc, e, codes),
@@ -1155,6 +1165,38 @@ pub(super) async fn handle_vote(
             PcsError::ParametersInvalid(_) | PcsError::UnsupportedSuite(_) => {
                 Some(t::error_codes::PARAMETERS_INVALID)
             }
+            _ => None,
+        }),
+    }
+}
+
+/// `vta/pcs/voter/receipts/list/0.1`.
+pub(super) async fn handle_voter_receipts_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::voter::receipts::list::v0_1 as t;
+    let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let election = str_of(&doc, "electionId").to_string();
+    match crate::operations::pcs_voter::receipts(state, &context, &community, &election).await {
+        Ok(answer) => {
+            audit(
+                state,
+                "pcs.voter.receipts.list",
+                auth,
+                &community,
+                &context,
+                Some(&election),
+            )
+            .await;
+            respond::<t::Response>(&doc, answer)
+        }
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::NotFound => Some(t::error_codes::NOT_FOUND),
             _ => None,
         }),
     }

@@ -334,6 +334,9 @@ function ElectionDetail({
     mutationFn: () => wallet.vote({ hostDid, electionId, ...who }),
     onSettled: refresh,
   });
+  const check = useMutation({
+    mutationFn: () => wallet.checkVote!({ hostDid, electionId, ...who }),
+  });
 
   if (shown.isPending) return <p className="muted">Asking your wallet…</p>;
   if (shown.isError) {
@@ -360,7 +363,10 @@ function ElectionDetail({
   const canVote = stage === "voting";
   // VTI-VOT-090: below 10, the member is told before taking a ticket.
   const releaseWarning = textReleaseWarning(e.textReleaseThreshold) !== null;
-  const failure = [ticket.error, vote.error].find((x) => x && !declinedInWallet(x));
+  // VTI-VOT-053: once voting has closed, the member's wallet can check their vote against the
+  // board the community kept. This page is never told whether they voted, so it offers it to all.
+  const canCheck = (e.state === "closed" || e.state === "tallied") && typeof wallet.checkVote === "function";
+  const failure = [ticket.error, vote.error, check.error].find((x) => x && !declinedInWallet(x));
 
   return (
     <>
@@ -411,7 +417,20 @@ function ElectionDetail({
               {vote.isPending ? "Your wallet is open…" : "Vote, or see my vote, in my wallet"}
             </button>
           </p>
-          {!canVote && <p className="muted">Voting opens {when(e.votingOpensAt)}.</p>}
+          {canCheck && (
+            <>
+              <p className="muted">
+                Voting has closed. Your wallet can check that your vote is in the ballot box&rsquo;s board as the
+                community kept it at the close — it shows the answer in its own window, and this site isn&rsquo;t told.
+              </p>
+              <p>
+                <button type="button" className="btn btn-ghost" disabled={check.isPending} onClick={() => check.mutate()}>
+                  {check.isPending ? "Your wallet is checking…" : "Check my vote in my wallet"}
+                </button>
+              </p>
+            </>
+          )}
+          {!canVote && !canCheck && <p className="muted">Voting opens {when(e.votingOpensAt)}.</p>}
         </section>
 
         <section className="card" aria-labelledby="how-heading">

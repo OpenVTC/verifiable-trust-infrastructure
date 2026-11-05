@@ -130,6 +130,10 @@ export interface WalletElections {
   /** Opens the wallet's ballot (or, with no ticket held, takes one and stops).
    *  Resolves when the wallet's window closes, whatever the member did. */
   vote(p: { hostDid: string; electionId: string } & ReadAs): Promise<{ ticketTaken: boolean }>;
+  /** After voting closes: the wallet checks, in its own window, that each vote it cast is in the
+   *  board the community kept at close (VTI-VOT-053). Resolves when that window closes, telling
+   *  this page nothing — not even whether the member voted. Absent from an older wallet. */
+  checkVote?(p: { hostDid: string; electionId: string } & ReadAs): Promise<Record<string, never>>;
 }
 
 type RawWallet = Omit<WalletElections, "list"> & { list(p: { hostDid: string; member?: string }): Promise<unknown> };
@@ -170,11 +174,13 @@ export function walletElections(): WalletElections | null {
   if (!e || typeof e.list !== "function" || typeof e.vote !== "function") return null;
   const raw = e as RawWallet;
   const takeTickets = raw.takeTickets;
+  const checkVote = raw.checkVote;
   return {
     list: async (p) => electionListOf(await raw.list(p)),
     show: (p) => raw.show(p),
     takeTicket: (p) => raw.takeTicket(p),
     ...(typeof takeTickets === "function" ? { takeTickets: (p) => takeTickets.call(raw, p) } : {}),
+    ...(typeof checkVote === "function" ? { checkVote: (p) => checkVote.call(raw, p) } : {}),
     vote: (p) => raw.vote(p),
   };
 }
