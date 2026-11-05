@@ -95,6 +95,8 @@ knowing which half you are standing on saves an afternoon.
 | **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.3`), and an administrator removes what that makes eligible (`rooms/records/prune/0.2`), leaving a `lastPrune` mark that `rooms/records/list/0.5` and `rooms/keys/browse/0.3` carry. `pnm rooms records {prune,retention}` (§10.5) |
 | **Record provenance and expiry** | **Work.** `basis`, `confidence`, `evidence`, `validFor`, `validUntil` inside a sealed body, or in an open room's cleartext at `rooms/records/put/0.3`; readers hide an expired record by default (§9) |
 | **Record kinds, replies and the host's record times** | **On both hosts.** An open room's cleartext may carry `kind`, `inReplyTo`, `writtenAt` and `editedAt` at `rooms/records/put/0.5`, held to their schema and stored as received; a sealed room carries them inside the body. Every put records `bodyStoredAt`, and a record's first version `createdAt` and (on `open` and `attributed`) `createdBy`, kept across edits and curation; `rooms/records/list/0.6` serves them with an open record's `kind`, `rooms/records/get/0.3` serves them uncommitted. A record stored before this carries none and serves none. On an `open` room the host refuses a new version of a `message` or `reaction` from anyone but its original author (`permissionDenied`, put/0.5 Host item 15) — on by default; `room-host --allow-rewrites-by-others` or the VTC's `[rooms] refuse_rewrites_by_others = false` turns it off |
+| **Members' names in a room** | **Writer and reader in `pnm`.** A member writes its own name as a record of kind `memberProfile` with the name in `title` (`rooms/_shared/0.3` `MemberProfileRecord`, trust-tasks-tf #1035) — sealed on `attributed` and `private`, cleartext at `rooms/records/put/0.5` on `open` — only where the room's profile lists `kind` **and** `memberProfile` in `recordMembers`. `pnm rooms name set` / `clear`; `pnm rooms list`, `get` and `read` show a name record as a name, never a note, and a name beside its author's DID. No host, seal or act change: a name is an ordinary record |
+| **Watching a room** | **On both hosts.** `rooms/watch/0.1` (`read`, as a listing) arms one content-free `rooms/changed/0.1` signal to an address the member names, sent once the room moves past the member's watermark — at once if it already has — after a 2–6 s randomised delay, then disarmed (trust-tasks-tf #1036). Over the host's own messaging, TSP before DIDComm by what the address's DID document advertises; a host with none refuses `addressUnreachable`. `pnm rooms watch` (§9) |
 | **Witnessed renewal anchoring** | **Blocked on a decision**, not on effort: §9 says a renewal anchors the epoch authenticator and version watermark in the room's witnessed log, but not *where in the log entry*. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) |
 
 ---
@@ -1636,6 +1638,47 @@ The list is checked by the writer, not by your VTA: `rooms/keys/seal/0.3` and
 profile, as their specifications say. Every re-write after an advance carries
 `recordMembers` through unchanged.
 
+**Names.** Listing `memberProfile` (with `kind`) lets members tell the room
+what to call them: a record of kind `memberProfile` whose `title` is the name,
+written by the member and naming only its author, in this room only
+(`rooms/_shared/0.3` `MemberProfileRecord`):
+
+```bash
+pnm rooms profile set --room <room-did> --host-did <host-did> \
+                      --record-members kind,memberProfile,writtenAt
+pnm rooms name set --room <room-did> --host <url> --host-did <host-did> "Alice"
+pnm rooms name clear --room <room-did> --host <url> --host-did <host-did>
+```
+
+`name set` writes a new version of the name record you already hold — found by
+reading the room's records, which on a sealed tier means opening them through
+your VTA — or your first one, create-only, so a retry leaves one record. A name
+is your claim, not a verified one: `pnm rooms list`, `get` and `read` show it
+beside your DID ("calls themselves …"), never as a note and never instead of the
+DID. After the room's epoch advances, members who join later read only what was
+sealed after they joined: write your name again then.
+
+**Watching instead of polling.** `pnm rooms watch` asks the host for one signal
+(`rooms/changed/0.1`) at an address of yours the first time the room moves past
+the version you have read to, and nothing more until you watch again:
+
+```bash
+pnm rooms watch --room <room-did> --host <url> --host-did <host-did> \
+                --address <your-did> --since 412 --lease 7d
+pnm rooms watch --room <room-did> --host <url> --host-did <host-did> \
+                --address <your-did> --cancel
+```
+
+The signal names the room and its latest version, nothing about what changed:
+read the room to learn that, then watch again with the version you read to. It
+is presented for this client and signed by it, as `prune` is —
+`rooms/keys/act/0.11` does not list `rooms/watch`. On a `private` room use an
+address you use for nothing else. A host keeps a watch at most 30 days, never
+past the first credential of the presentation lapsing, and forgets it once it
+fires; it is host state only, never consulted to authorize anything. A VTA whose
+own DID is the address accepts the signal, logs it at `debug` and answers
+nothing: no consumer on the VTA reads a room on one yet.
+
 `rooms/keys/read` of the profile's key does not open it (its answer says
 `ext["org.openvtc.rooms"].roomProfile`), and `rooms/keys/browse` leaves it out of
 the records. Show `name`, `description` and `tags` as **text**: they are free
@@ -1665,6 +1708,7 @@ use to whoever hosts it. Depth is capped at `MAX_CHAIN_DEPTH` (8).
 | Read | `rooms/records/get/0.3` (0.2 still served) | `read` |
 | List | `rooms/records/list/0.6` (0.5 still served) | `read` |
 | Curate | `rooms/records/curate/0.1` | `curate` |
+| Watch | `rooms/watch/0.1` (`VtcClient::watch`, `cancel_watch`) | `read` |
 | Mint an epoch | `rooms/epoch/mint/0.1` | `admin` |
 | Transfer ownership | `rooms/owner/transfer/0.1` | `admin` |
 | Claim ownership | `rooms/owner/claim/0.1` | a nomination (§10) |
@@ -2020,6 +2064,7 @@ and `vtc-service`:
 | `rooms/records/prune/0.2` | `admin` — removes what the record retention makes eligible (§10.5) |
 | `rooms/records/retention/set/0.1` | `admin` — replaces the record retention (§10.5) |
 | `rooms/records/curate/0.1` | `curate` |
+| `rooms/watch/0.1` | `read` — arms, re-arms or cancels one `rooms/changed/0.1` signal to `address`; `addressUnreachable` without a transport to it, `limitReached` past 1024 per room or 16 per member; lease 7 days by default, 30 at most |
 | `rooms/epoch/mint/0.1` | `admin` |
 | `rooms/epoch/chain/0.2` | `read` — reading the room and reading what was written before you joined are the same act; the room's `epochFloor` on every response once pruned, and no rung at or below it |
 | `rooms/epoch/prune/0.2` | `admin` — raises the epoch floor and returns it (§10.4) |
@@ -2045,6 +2090,7 @@ and `vtc-service`:
 | `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
 | `rooms/keys/backfill/0.2` | `roomOpen` capability; fetches with `rooms/epoch/chain/0.2`, applies and reports the floor |
 | `rooms/keys/present/0.2` | `roomPresent` capability + acting in the persona's context |
+| `rooms/changed/0.1` | none — a host's one-way signal to a watch's address, accepted from a sender with no ACL entry, logged at `debug`, answered with nothing |
 
 **Owner tasks** (`https://trusttasks.org/spec/rooms/owner/…`), served by
 `vta-service` — the room's own key, used without it leaving the VTA. The family

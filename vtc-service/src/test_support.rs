@@ -736,6 +736,26 @@ impl TestVtcBuilder {
             self.ballot_boxes
         };
 
+        // Watches, signalling as the service does; a test lends its own `Signals` with
+        // `state.room_watches.set_signals`.
+        let room_watches = Arc::new(vti_rooms::watch::RoomWatches::new(
+            store
+                .keyspace(crate::store::keyspaces::ROOM_WATCHES)
+                .expect("room_watches ks"),
+            rooms_ks.clone(),
+            room_revocations_ks.clone(),
+        ));
+        if credential_signer.is_some() && did_resolver.is_some() {
+            room_watches.set_signals(Arc::new(crate::rooms::watch::VtcSignals {
+                peers: crate::outbound::PeerTasks {
+                    didcomm: didcomm_cell.clone(),
+                    signer: credential_signer.clone(),
+                    replies: pending_replies.clone(),
+                    resolver: did_resolver.clone(),
+                },
+            }));
+        }
+
         let state = AppState {
             // Fixed key: a test never needs the counter to be unguessable, and
             // a deterministic one keeps a failure reproducible.
@@ -774,6 +794,7 @@ impl TestVtcBuilder {
             room_records_ks,
             room_epoch_links_ks,
             room_revocations_ks,
+            room_watches,
             room_files,
             room_storage,
             community_rooms: crate::rooms::community::CommunityRooms::new(

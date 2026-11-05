@@ -31,10 +31,18 @@ pub const FILE_MEMBERS: [&str; 3] = ["width", "height", "preview"];
 /// The most bytes a `preview` may decode to (`FileManifest.preview`).
 pub const MAX_PREVIEW_BYTES: usize = 8192;
 
+/// The `recordMembers` values that permit a record **kind** rather than a member: a record
+/// of that kind may be written only where the profile lists the value, as well as `kind`.
+/// `memberProfile`, a member's name in the room (`rooms/_shared/0.3` `MemberProfileRecord`,
+/// *When a writer may write one*; [`crate::member_profile`]).
+pub const KIND_VALUES: [&str; 1] = [crate::member_profile::KIND];
+
 /// Every governed member `object` (a `SealedRecordBody`, or an open room's `cleartext`)
-/// carries, by the name `recordMembers` lists it under, in a fixed order.
+/// carries, by the name `recordMembers` lists it under, in a fixed order — and, last, the
+/// value its `kind` needs listed where that kind is one of [`KIND_VALUES`].
 pub fn used(object: &Map<String, Value>) -> Vec<&'static str> {
     let file = object.get("file").and_then(Value::as_object);
+    let kind = object.get("kind").and_then(Value::as_str);
     BODY_MEMBERS
         .iter()
         .filter(|m| object.contains_key(**m))
@@ -43,6 +51,7 @@ pub fn used(object: &Map<String, Value>) -> Vec<&'static str> {
                 .iter()
                 .filter(|m| file.is_some_and(|f| f.contains_key(**m))),
         )
+        .chain(KIND_VALUES.iter().filter(|v| kind == Some(**v)))
         .copied()
         .collect()
 }
@@ -293,5 +302,20 @@ mod tests {
 
         // A body using none of them is always permitted.
         permitted(&obj(json!({ "title": "t", "body": "b" })), None).unwrap();
+    }
+
+    /// A member's name (`kind: memberProfile`, trust-tasks-tf #1035) needs `memberProfile`
+    /// listed as well as `kind`: a reader that predates it would show every name as a note.
+    #[test]
+    fn a_members_name_needs_member_profile_listed_beside_kind() {
+        let name = obj(json!({ "kind": "memberProfile", "title": "Alice" }));
+        assert_eq!(used(&name), ["kind", "memberProfile"]);
+        let kind_only: Vec<String> = vec!["kind".into()];
+        let err = permitted(&name, Some(&kind_only)).unwrap_err();
+        assert!(err.contains("`memberProfile`"), "{err}");
+        let both: Vec<String> = vec!["kind".into(), "memberProfile".into()];
+        permitted(&name, Some(&both)).unwrap();
+        // Listing `memberProfile` permits nothing else: a message still needs only `kind`.
+        assert_eq!(used(&obj(json!({ "kind": "message" }))), ["kind"]);
     }
 }

@@ -342,6 +342,34 @@ pub(crate) async fn usage(state: &HostState, doc: &TrustTask<Value>, payload: Va
     )
 }
 
+/// `rooms/watch/0.1`: arm, re-arm or cancel one content-free signal to an address the
+/// member names, authorized exactly as a listing (`read`). The watch is this host's state
+/// and nothing else ([`vti_rooms::watch`]).
+pub(crate) async fn watch(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(r) = vti_rooms::watch::check_payload(&payload) {
+        return refused(doc, r);
+    }
+    let room_id = payload["roomId"].as_str().unwrap_or_default();
+    let room = match storage::get_room(&state.rooms, room_id).await {
+        Ok(r) => r,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    if let Err(r) = vti_rooms::watch::presentation(&payload, &room) {
+        return refused(doc, r);
+    }
+    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    render(
+        doc,
+        state
+            .watches
+            .watch(&room, authorized, &payload, chrono::Utc::now())
+            .await,
+    )
+}
+
 /// `rooms/records/put/0.3`: 0.2, and an `open` room's `cleartext` may carry the record's
 /// provenance and `validUntil` — stored and served exactly as received, never acted on
 /// (consumer item 11). A sealed write is 0.2's: those members travel inside the body.
@@ -714,6 +742,81 @@ mod tests {
             assert!(old_list["records"][0].get(m).is_none(), "{m} on list/0.5");
             assert!(old_get.get(m).is_none(), "{m} on get/0.2");
         }
+    }
+
+    /// Records every `rooms/changed` signal; reaches every address.
+    #[derive(Default)]
+    struct Signals(std::sync::Mutex<Vec<(String, Value)>>);
+
+    #[async_trait::async_trait]
+    impl vti_rooms::watch::Signals for Signals {
+        async fn reachable(&self, _address: &str) -> bool {
+            true
+        }
+        async fn send_changed(&self, address: &str, payload: Value) -> Result<(), String> {
+            self.0.lock().unwrap().push((address.into(), payload));
+            Ok(())
+        }
+    }
+
+    /// `rooms/watch/0.1` end to end: refused `addressUnreachable` by a host with no
+    /// outbound transport; once it has one, armed as a listing is authorized, and one put
+    /// fires one content-free signal and disarms the watch (Host items 2, 4, 6).
+    #[tokio::test]
+    async fn a_watch_is_signalled_once_when_a_put_moves_the_room() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let watch = |extra: Value| {
+            let mut p = json!({ "roomId": f.room.room_id, "presentation": f.as_owner(),
+                                "address": "did:key:z6MkWatchAddress", "sinceVersion": 0 });
+            for (k, v) in extra.as_object().unwrap() {
+                p[k] = v.clone();
+            }
+            p
+        };
+        let (status, out) = call(
+            &h.app,
+            vti_rooms::watch::WATCH_TYPE,
+            watch(json!({})),
+            &f.owner,
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{out}");
+        assert!(out.to_string().contains("addressUnreachable"), "{out}");
+
+        let signals = Arc::new(Signals::default());
+        h.state.set_signals(signals.clone());
+        h.state.watches.set_signal_delay_ms(10, 20);
+        let (status, out) = call(
+            &h.app,
+            vti_rooms::watch::WATCH_TYPE,
+            watch(json!({})),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["armed"], true, "{out}");
+
+        let (status, out) = put_v5(&h, &f, "n1", json!({ "body": "hello" })).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let (status, out) = put_v5(&h, &f, "n2", json!({ "body": "again" })).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let sent = signals.0.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "one signal per arming: {sent:?}");
+        assert_eq!(sent[0].1["roomId"], f.room.room_id.as_str());
+        assert!(sent[0].1["latestVersion"].as_u64().unwrap() >= 1);
+        assert_eq!(sent[0].1.as_object().unwrap().len(), 2, "nothing else");
+
+        let (status, out) = call(
+            &h.app,
+            vti_rooms::watch::WATCH_TYPE,
+            watch(json!({ "cancel": true })),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["armed"], false);
     }
 
     /// A member put/0.5 holds to its schema is refused as malformed, and nothing is stored.

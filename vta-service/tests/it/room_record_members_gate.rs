@@ -167,7 +167,16 @@ fn the_sdk_governs_exactly_the_members_vti_rooms_does() {
         vta_sdk::client::RECORD_FILE_MEMBERS,
         vti_rooms::record_members::FILE_MEMBERS
     );
+    assert_eq!(
+        vta_sdk::client::RECORD_KIND_VALUES,
+        vti_rooms::record_members::KIND_VALUES
+    );
+    assert_eq!(
+        vta_sdk::client::MEMBER_PROFILE_KIND,
+        vti_rooms::member_profile::KIND
+    );
     for body in [
+        json!({ "kind": "memberProfile", "title": "Alice" }),
         json!({ "kind": "x", "file": { "width": 1, "preview": {} } }),
         json!({ "editedAt": "x", "writtenAt": "y", "inReplyTo": {} }),
         json!({ "body": "none" }),

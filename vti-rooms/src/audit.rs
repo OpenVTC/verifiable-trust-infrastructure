@@ -233,6 +233,7 @@ mod tests {
                 actions: vec!["read".into(), "write".into()],
                 member: Some(presenter.to_string()),
                 presented: Default::default(),
+                valid_until: None,
             })
         }
     }

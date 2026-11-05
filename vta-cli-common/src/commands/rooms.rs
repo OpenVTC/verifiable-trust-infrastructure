@@ -436,38 +436,85 @@ pub async fn cmd_rooms_list(
         crate::render::print_json(&listing.records)?;
         return Ok(());
     }
-    if listing.records.is_empty() {
+    // A member's name (`kind: memberProfile`, which an open room's listing shows) is not a
+    // note: it is never listed or counted as a record, only read as a name
+    // (`MemberProfileRecord`, *Reading one*, rule 1). On a sealed tier the host never sees a
+    // kind, so nothing is set aside there.
+    let (name_rows, records): (Vec<&Value>, Vec<&Value>) = listing.records.iter().partition(|r| {
+        r.get("kind").and_then(Value::as_str) == Some(vti_rooms::member_profile::KIND)
+    });
+    let mut names = vti_rooms::member_profile::Names::default();
+    for r in &name_rows {
+        let Some(by) = r.get("createdBy").and_then(Value::as_str) else {
+            continue;
+        };
+        let row = r.get("cleartext").unwrap_or(r);
+        // A listing row is metadata: its `title` and `kind` stand for the cleartext's, and
+        // an empty body is what a name record carries.
+        let mut cleartext = serde_json::Map::new();
+        for m in ["kind", "title", "writtenAt", "editedAt"] {
+            if let Some(v) = row.get(m) {
+                cleartext.insert(m.into(), v.clone());
+            }
+        }
+        cleartext.insert("body".into(), Value::String(String::new()));
+        let stored = r
+            .get("bodyStoredAt")
+            .or_else(|| r.get("updatedAt"))
+            .and_then(Value::as_str);
+        let author = r.get("author").and_then(Value::as_str).unwrap_or(by);
+        names.offer(author, Some(by), &cleartext, stored, true);
+    }
+
+    if records.is_empty() {
         println!(
             "No records{}.",
             prefix.map(|p| format!(" under `{p}`")).unwrap_or_default()
         );
-        return Ok(());
-    }
-
-    let shown = limit.unwrap_or(usize::MAX).min(listing.records.len());
-    if shown < listing.records.len() {
-        println!(
-            "{} record(s), showing {shown} — pass a larger --limit for the rest:",
-            listing.records.len()
-        );
     } else {
-        println!("{} record(s):", listing.records.len());
+        let shown = limit.unwrap_or(usize::MAX).min(records.len());
+        if shown < records.len() {
+            println!(
+                "{} record(s), showing {shown} — pass a larger --limit for the rest:",
+                records.len()
+            );
+        } else {
+            println!("{} record(s):", records.len());
+        }
+        for r in records.iter().take(shown) {
+            list_row(r, &names);
+        }
     }
-    for r in listing.records.iter().take(shown) {
-        let key = r.get("key").and_then(Value::as_str).unwrap_or("?");
-        let version = r.get("version").and_then(Value::as_u64).unwrap_or(0);
-        let status = r.get("status").and_then(Value::as_str).unwrap_or("active");
-        // On a sealed tier there is no title to show — that is the tier working,
-        // not a gap, so say so rather than printing an empty column.
-        let title = r
-            .get("title")
-            .or_else(|| r.get("cleartext").and_then(|c| c.get("title")))
-            .and_then(Value::as_str)
-            .map(inert)
-            .unwrap_or_else(|| "(sealed)".to_string());
-        println!("  {key}  v{version}  {status:<10} {title}");
+    let mut named: Vec<(&str, &str)> = names.iter().collect();
+    if !named.is_empty() {
+        named.sort();
+        println!("\nMembers' names in this room (each one's own claim, not verified):");
+        for (did, name) in named {
+            println!("  {}  {}", inert(did), inert(name));
+        }
     }
     Ok(())
+}
+
+/// One record of `rooms list`, its writer named as they named themselves where known.
+fn list_row(r: &Value, names: &vti_rooms::member_profile::Names) {
+    let key = r.get("key").and_then(Value::as_str).unwrap_or("?");
+    let version = r.get("version").and_then(Value::as_u64).unwrap_or(0);
+    let status = r.get("status").and_then(Value::as_str).unwrap_or("active");
+    // On a sealed tier there is no title to show — that is the tier working,
+    // not a gap, so say so rather than printing an empty column.
+    let title = r
+        .get("title")
+        .or_else(|| r.get("cleartext").and_then(|c| c.get("title")))
+        .and_then(Value::as_str)
+        .map(inert)
+        .unwrap_or_else(|| "(sealed)".to_string());
+    let by = r
+        .get("createdBy")
+        .and_then(Value::as_str)
+        .and_then(|d| names.name(d).map(|n| format!("  — by \"{}\"", inert(n))))
+        .unwrap_or_default();
+    println!("  {key}  v{version}  {status:<10} {title}{by}");
 }
 
 /// One page of `rooms/records/list`, as the member.
@@ -536,6 +583,19 @@ pub async fn cmd_rooms_get(
     if let Some(cleartext) = record.get("cleartext") {
         if crate::render::is_json_output() {
             crate::render::print_json(cleartext)?;
+        } else if let Some(obj) = cleartext
+            .as_object()
+            .filter(|o| vti_rooms::member_profile::is_member_profile(o))
+        {
+            let author = record
+                .get("createdBy")
+                .or_else(|| record.get("author"))
+                .and_then(Value::as_str)
+                .unwrap_or("its author");
+            println!("{}", name_record_line(obj, author, true));
+            if let Some(line) = &stored {
+                println!("{line}");
+            }
         } else {
             if let Some(title) = cleartext.get("title").and_then(Value::as_str) {
                 println!("{}\n", inert(title));
@@ -577,6 +637,15 @@ pub async fn cmd_rooms_get(
     let body = body.body();
     if crate::render::is_json_output() {
         crate::render::print_json(body)?;
+        return Ok(());
+    }
+    if let Ok(Value::Object(obj)) = serde_json::to_value(body)
+        && vti_rooms::member_profile::is_member_profile(&obj)
+    {
+        println!("{}", name_record_line(&obj, &body.author, false));
+        if let Some(line) = &stored {
+            println!("{line}");
+        }
         return Ok(());
     }
     if let Some(title) = &body.title {
@@ -691,7 +760,62 @@ pub async fn cmd_rooms_read(
     let resolver = vta_sdk::trust_task_proof::TrustTaskVmResolver::from_optional(
         vta_sdk::resolver::shared_did_resolver_from_env().await.ok(),
     );
-    for (i, r) in results.iter().enumerate() {
+    // Open every record first, so a name read anywhere in the batch shows beside its
+    // author's other records (`MemberProfileRecord`, *Showing a name*).
+    let mut opened: Vec<Result<Option<serde_json::Map<String, Value>>, String>> =
+        Vec::with_capacity(results.len());
+    let mut names = vti_rooms::member_profile::Names::default();
+    for r in &results {
+        let key = r["key"].as_str().unwrap_or("?");
+        let version = r["version"].as_u64().unwrap_or(0);
+        let open_tier = r.get("cleartext").is_some();
+        let shown = if let Some(cleartext) = r.get("cleartext").and_then(Value::as_object) {
+            Ok(Some(cleartext.clone()))
+        } else if let Some(plaintext) = r["plaintext"].as_str() {
+            let bytes = base64::Engine::decode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                plaintext,
+            )?;
+            let at = sealed_at
+                .get(key)
+                .and_then(Value::as_u64)
+                .unwrap_or(version);
+            let location = RecordLocation {
+                room_id: target.room_id,
+                key,
+                version: at,
+            };
+            match verify_record_body(&bytes, location, r["author"].as_str(), &resolver).await {
+                Ok(body) => match serde_json::to_value(body.body())? {
+                    Value::Object(obj) => Ok(Some(obj)),
+                    _ => Ok(None),
+                },
+                Err(e) => Err(e.to_string()),
+            }
+        } else {
+            // A tombstone, or the room's own profile, which is not opened here.
+            Ok(None)
+        };
+        if let Ok(Some(obj)) = &shown
+            && r["status"].as_str().unwrap_or("active") == "active"
+        {
+            let author = obj
+                .get("author")
+                .or_else(|| r.get("author"))
+                .or_else(|| r.get("createdBy"))
+                .and_then(Value::as_str);
+            if let Some(author) = author {
+                let stored = r
+                    .get("bodyStoredAt")
+                    .or_else(|| r.get("updatedAt"))
+                    .and_then(Value::as_str);
+                names.offer(author, r["createdBy"].as_str(), obj, stored, open_tier);
+            }
+        }
+        opened.push(shown);
+    }
+
+    for (i, (r, shown)) in results.iter().zip(opened).enumerate() {
         if i > 0 {
             println!();
         }
@@ -713,48 +837,41 @@ pub async fn cmd_rooms_read(
         let version = r["version"].as_u64().unwrap_or(0);
         let status = r["status"].as_str().unwrap_or("active");
         println!("{}  v{version}  {status}", inert(key));
-        let shown = if let Some(cleartext) = r.get("cleartext").and_then(Value::as_object) {
-            Some(cleartext.clone())
-        } else if let Some(plaintext) = r["plaintext"].as_str() {
-            let bytes = base64::Engine::decode(
-                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                plaintext,
-            )?;
-            let at = sealed_at
-                .get(key)
-                .and_then(Value::as_u64)
-                .unwrap_or(version);
-            let location = RecordLocation {
-                room_id: target.room_id,
-                key,
-                version: at,
-            };
-            match verify_record_body(&bytes, location, r["author"].as_str(), &resolver).await {
-                Ok(body) => match serde_json::to_value(body.body())? {
-                    Value::Object(obj) => Some(obj),
-                    _ => None,
-                },
-                Err(e) => {
-                    println!("  refused: {e}");
-                    continue;
-                }
+        let shown = match shown {
+            Ok(s) => s,
+            Err(e) => {
+                println!("  refused: {e}");
+                continue;
             }
-        } else {
-            // A tombstone, or the room's own profile, which is not opened here.
-            None
         };
         if let Some(obj) = &shown {
-            if let Some(title) = obj.get("title").and_then(Value::as_str) {
-                println!("  {}", inert(title));
-            }
-            if let Some(text) = obj.get("body").and_then(Value::as_str) {
-                println!("  {}", inert(text));
-            }
-            if let Some(line) = thread_line(obj) {
-                println!("  {line}");
-            }
-            if let Some(author) = obj.get("author").and_then(Value::as_str) {
-                println!("  Written by {}.", inert(author));
+            let author = obj
+                .get("author")
+                .or_else(|| r.get("createdBy"))
+                .and_then(Value::as_str);
+            if vti_rooms::member_profile::is_member_profile(obj) {
+                // A name, not a note: never shown or counted as one.
+                println!(
+                    "  {}",
+                    name_record_line(
+                        obj,
+                        author.unwrap_or("its author"),
+                        r.get("cleartext").is_some()
+                    )
+                );
+            } else {
+                if let Some(title) = obj.get("title").and_then(Value::as_str) {
+                    println!("  {}", inert(title));
+                }
+                if let Some(text) = obj.get("body").and_then(Value::as_str) {
+                    println!("  {}", inert(text));
+                }
+                if let Some(line) = thread_line(obj) {
+                    println!("  {line}");
+                }
+                if let Some(author) = author {
+                    println!("  Written by {}.", author_line(author, &names));
+                }
             }
         }
         if let Some(line) = stored_line(r) {
@@ -842,6 +959,251 @@ pub async fn cmd_rooms_put(
     let version = write_sealed(client, &target, content, expected_version).await?;
     println!("Wrote {key} at version {version}, sealed and signed by {member}");
     Ok(())
+}
+
+/// `rooms name set` / `rooms name clear` — write the member's own name in the room: a record
+/// of kind `memberProfile` with the name in `title` (`rooms/_shared/0.3`
+/// `MemberProfileRecord`; trust-tasks-tf #1035). `name` empty withdraws it.
+///
+/// Refused before anything is sent unless the room's profile lists both `kind` and
+/// `memberProfile` in `recordMembers` (a reader that predates the kind would show every
+/// name as a note). The member keeps **one** such record: a later name is a new version of
+/// the record it already holds, found by reading the room's records as the member — on a
+/// sealed tier that opens them through the VTA, which costs a read of the room — so that a
+/// retry leaves one record. On `open` it is the cleartext of `rooms/records/put/0.5`; on
+/// `attributed` and `private` a body the VTA signs as the member and seals
+/// (`rooms/keys/seal/0.3`), put with `rooms/keys/act/0.11`.
+pub async fn cmd_rooms_name_set(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vti_rooms::member_profile;
+    member_profile::check_name(name)?;
+    let withdrawing = member_profile::is_withdrawal(name);
+    // `kind` and the name: the writer's rule asks for `kind` and `memberProfile` listed.
+    let wanted = member_profile::sealed_members(name)?;
+    let (sealed_tier, member) = room_tier(client, &target).await?;
+    let members = writer_members(client, &target, wanted).await.map_err(|e| {
+        format!(
+            "{e}\n\nA member's name is a record of kind `memberProfile`, which the room's \
+                 profile must list as well as `kind`."
+        )
+    })?;
+    // `writer_members` refused unless the profile was read; the second read is the cache's.
+    let listed = match target.host_did {
+        Some(h) => client
+            .room_record_members(target.room_id, h, None)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let lists = |m: &str| listed.as_ref().is_some_and(|l| l.iter().any(|x| x == m));
+
+    let held = own_name_record(client, &target, sealed_tier, &member).await?;
+    let (key, expected) = match &held {
+        Some((key, version)) => (key.clone(), *version),
+        // Create-only: a second `memberProfile` record is what a retry must not leave.
+        None => (opaque_key(), 0),
+    };
+    let edited_at = (held.is_some() && lists("editedAt")).then(|| {
+        serde_json::json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    });
+
+    let version = if !sealed_tier {
+        let mut cleartext = member_profile::cleartext(name)?;
+        if let Some(w) = members.get("writtenAt") {
+            cleartext.insert("writtenAt".into(), w.clone());
+        }
+        if let Some(e) = &edited_at {
+            cleartext.insert("editedAt".into(), e.clone());
+        }
+        let payload = serde_json::json!({
+            "roomId": target.room_id,
+            "key": key,
+            "cleartext": cleartext,
+            "expectedVersion": expected,
+        });
+        // put/0.5 only: no earlier version carries `kind`.
+        let (_, reply, _) = act_and_send_newest(
+            client,
+            &target,
+            (vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE, payload),
+            None,
+        )
+        .await
+        .map_err(|e| put_refused(e, &target))?;
+        let put: vti_rooms::wire::PutRecordResponse = parse_reply("rooms/records/put", reply)?;
+        put.version
+    } else {
+        let mut content = SealedRecordBody::new(
+            RecordLocation {
+                room_id: target.room_id,
+                key: &key,
+                version: 1,
+            },
+            &member,
+        );
+        content.title = Some(name.to_string());
+        content.kind = Some(member_profile::KIND.to_string());
+        content.written_at = members
+            .get("writtenAt")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        content.edited_at = edited_at.and_then(|e| e.as_str().map(str::to_string));
+        write_sealed(client, &target, content, Some(expected)).await?
+    };
+    if withdrawing {
+        println!(
+            "Withdrew your name in room {} (record {key}, version {version}, as {member}).",
+            target.room_id
+        );
+    } else {
+        println!(
+            "Your name in room {} is now \"{}\" (record {key}, version {version}, as {member}). \
+             Other members see it beside your records; it is your claim, not a verified one.",
+            target.room_id,
+            inert(name)
+        );
+    }
+    Ok(())
+}
+
+/// The `memberProfile` record `member` already holds in the room, as `(key, version)` —
+/// the one a new name is written over. On `open` the listing says each record's kind and
+/// who created it; on a sealed tier the records `member` may have written (all of them where
+/// the host records no author) are opened through the VTA. The most recently stored wins.
+async fn own_name_record(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    sealed_tier: bool,
+    member: &str,
+) -> Result<Option<(String, u64)>, Box<dyn std::error::Error>> {
+    let mut listing = list_page(client, target, None, None, None).await?;
+    let mut cursor = listing.cursor.clone();
+    while let Some(c) = cursor {
+        let next = list_page(client, target, None, None, Some(&c)).await?;
+        cursor = next.cursor.clone();
+        listing.records.extend(next.records);
+    }
+    let active =
+        |r: &&Value| r.get("status").and_then(Value::as_str).unwrap_or("active") != "retracted";
+    let stamp = |r: &Value| {
+        r.get("bodyStoredAt")
+            .or_else(|| r.get("updatedAt"))
+            .and_then(Value::as_str)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+    };
+    let created_by = |r: &Value| {
+        r.get("createdBy")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let pick = |rows: Vec<&Value>| {
+        rows.into_iter().max_by_key(|r| stamp(r)).and_then(|r| {
+            Some((
+                r.get("key")?.as_str()?.to_string(),
+                r.get("version")?.as_u64()?,
+            ))
+        })
+    };
+    if !sealed_tier {
+        let rows: Vec<&Value> = listing
+            .records
+            .iter()
+            .filter(active)
+            .filter(|r| {
+                r.get("kind").and_then(Value::as_str) == Some(vti_rooms::member_profile::KIND)
+            })
+            .filter(|r| created_by(r).as_deref() == Some(member))
+            .collect();
+        return Ok(pick(rows));
+    }
+    let Some(host_did) = target.host_did else {
+        return Ok(None);
+    };
+    // Where the host records who created a record, only `member`'s need opening.
+    let candidates: Vec<&Value> = listing
+        .records
+        .iter()
+        .filter(active)
+        .filter(|r| created_by(r).is_none_or(|c| c == member))
+        .collect();
+    let keys: Vec<String> = candidates
+        .iter()
+        .filter_map(|r| r.get("key").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let mut mine = std::collections::HashSet::new();
+    for chunk in keys.chunks(vta_sdk::client::ROOM_READ_MAX_KEYS) {
+        let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+        let answer = serde_json::to_value(
+            client
+                .room_read_batch(target.room_id, host_did, &refs, None)
+                .await?,
+        )?;
+        for r in answer["results"].as_array().into_iter().flatten() {
+            let Some(plaintext) = r["plaintext"].as_str() else {
+                continue;
+            };
+            let Ok(bytes) = base64::Engine::decode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                plaintext,
+            ) else {
+                continue;
+            };
+            let Ok(Value::Object(body)) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            if vti_rooms::member_profile::is_member_profile(&body)
+                && body.get("author").and_then(Value::as_str) == Some(member)
+                && let Some(k) = r["key"].as_str()
+            {
+                mine.insert(k.to_string());
+            }
+        }
+    }
+    Ok(pick(
+        candidates
+            .into_iter()
+            .filter(|r| {
+                r.get("key")
+                    .and_then(Value::as_str)
+                    .is_some_and(|k| mine.contains(k))
+            })
+            .collect(),
+    ))
+}
+
+/// A `memberProfile` record shown as what it is — its author's name in this room — and
+/// never as a note (`MemberProfileRecord`, *Reading one*, rule 1). One whose shape is not a
+/// name's is said to be refused as one.
+fn name_record_line(obj: &serde_json::Map<String, Value>, author: &str, open: bool) -> String {
+    use vti_rooms::member_profile;
+    match member_profile::check(obj, open) {
+        Err(e) => format!(
+            "A member-name record by {}, refused as a name: {e}",
+            inert(author)
+        ),
+        Ok(()) => match member_profile::name_of(obj, open) {
+            Some(n) => format!(
+                "{}'s name in this room: \"{}\" — their own claim, not verified.",
+                inert(author),
+                inert(n)
+            ),
+            None => format!("{} withdrew their name in this room.", inert(author)),
+        },
+    }
+}
+
+/// How a reader shows an author: the DID, and the name they gave themselves in this room
+/// where one was read — always beside the DID, so two members giving the same name stay
+/// apart, and worded as their claim (`MemberProfileRecord`, *Showing a name*).
+fn author_line(author: &str, names: &vti_rooms::member_profile::Names) -> String {
+    match names.name(author) {
+        Some(n) => format!("{} (calls themselves \"{}\")", inert(author), inert(n)),
+        None => inert(author),
+    }
 }
 
 /// A record's provenance and expiry as `rooms put` takes them (`rooms/_shared/0.1`
@@ -1075,6 +1437,97 @@ pub async fn cmd_rooms_renew(
         .await?;
     println!("Room {} is at epoch {}", minted.room_id, minted.epoch);
     Ok(())
+}
+
+/// `rooms watch` — ask the room's host for one content-free signal (`rooms/changed/0.1`) at
+/// `address` the first time the room moves past `since` (`rooms/watch/0.1`), or cancel
+/// that watch.
+///
+/// Moves the way `prune` does: the VTA presents for this client (`read`, as a listing) and
+/// this client signs, because `rooms/keys/act/0.11`'s table — closed — does not list
+/// `rooms/watch`, so the VTA cannot complete it as the member. One signal per arming: arm
+/// again after reading the room, with the version read to.
+pub async fn cmd_rooms_watch(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    signer: RoomSigner<'_>,
+    address: &str,
+    since: Option<u64>,
+    lease_secs: Option<u64>,
+    cancel: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !address.starts_with("did:") {
+        return Err(format!("--address {address}: a watch's address is a DID").into());
+    }
+    let session = present(client, &target, "read").await?;
+    let host = target.client();
+    let answer = if cancel {
+        host.cancel_watch(&session, address, signer.did, signer.key_multibase)
+            .await
+    } else {
+        host.watch(
+            &session,
+            address,
+            since,
+            lease_secs,
+            signer.did,
+            signer.key_multibase,
+        )
+        .await
+    }
+    .map_err(|e| watch_refused(e, &target, address))?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&answer)?;
+        return Ok(());
+    }
+    match (answer.armed, &answer.expires_at) {
+        (true, Some(until)) => println!(
+            "Watching room {} for {address} until {}: the host sends one signal the first \
+             time the room moves past {}, then nothing until you watch again.",
+            target.room_id,
+            wire_str(until),
+            since.map_or_else(
+                || "its current version".to_string(),
+                |v| format!("version {v}")
+            ),
+        ),
+        (true, None) => println!("Watching room {} for {address}.", target.room_id),
+        (false, _) => println!(
+            "No watch on room {} for {address} any more.",
+            target.room_id
+        ),
+    }
+    Ok(())
+}
+
+/// A `rooms/watch` refusal, with what the operator can do about it.
+fn watch_refused(
+    e: vtc_client::VtcError,
+    target: &RoomTarget<'_>,
+    address: &str,
+) -> Box<dyn std::error::Error> {
+    let code = vtc_client::git_ns::task_error(&e).map(|(c, _)| c);
+    let hint = match code.as_deref() {
+        Some(c) if c.ends_with("addressUnreachable") => format!(
+            "\n\nThe host could not resolve {address}, or its DID document advertises no \
+             transport the host speaks (TSP or DIDComm). Use an address whose document names \
+             a mediator."
+        ),
+        Some(c) if c.ends_with("limitReached") => format!(
+            "\n\nThe host holds as many watches as it allows. Cancel one you no longer need:\n\n  \
+             pnm rooms watch --room {} --host {} --host-did {} --address <DID> --cancel",
+            target.room_id,
+            target.host_url,
+            target.host_did.unwrap_or("<host-did>")
+        ),
+        Some("unsupportedType") => {
+            "\n\nThe room's host does not serve `rooms/watch/0.1`: poll the room with \
+             `pnm rooms list --since-version` instead."
+                .to_string()
+        }
+        _ => String::new(),
+    };
+    format!("{e}{hint}").into()
 }
 
 /// `pnm rooms renew` is an open room's renewal only. A sealed room (`attributed` or
@@ -4401,5 +4854,31 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Nothing was written"), "{text}");
+    }
+
+    /// A name record reads as its author's name — or a withdrawal, or a refusal — never as
+    /// a note; an author is shown by DID with the name beside it, as their own claim.
+    #[test]
+    fn a_name_record_is_shown_as_a_name_and_beside_its_authors_did() {
+        let obj = |v: Value| v.as_object().unwrap().clone();
+        let named = obj(serde_json::json!({ "kind": "memberProfile", "title": "Alice" }));
+        let line = name_record_line(&named, "did:key:zA", false);
+        assert!(
+            line.contains("did:key:zA's name in this room: \"Alice\""),
+            "{line}"
+        );
+        assert!(line.contains("not verified"), "{line}");
+        let withdrawn = obj(serde_json::json!({ "kind": "memberProfile", "title": "" }));
+        assert!(name_record_line(&withdrawn, "did:key:zA", false).contains("withdrew"));
+        let bad = obj(serde_json::json!({ "kind": "memberProfile", "title": "A", "body": "x" }));
+        assert!(name_record_line(&bad, "did:key:zA", false).contains("refused as a name"));
+
+        let mut names = vti_rooms::member_profile::Names::default();
+        names.offer("did:key:zA", Some("did:key:zA"), &named, None, false);
+        assert_eq!(
+            author_line("did:key:zA", &names),
+            "did:key:zA (calls themselves \"Alice\")"
+        );
+        assert_eq!(author_line("did:key:zB", &names), "did:key:zB");
     }
 }

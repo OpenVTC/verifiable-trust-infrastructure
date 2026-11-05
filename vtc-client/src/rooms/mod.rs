@@ -428,6 +428,81 @@ impl VtcClient {
         })
     }
 
+    /// Arm, or re-arm, a watch on the room (`rooms/watch/0.1`): the host sends one
+    /// content-free `rooms/changed/0.1` signal to `address` the first time the room's
+    /// latest version is above `since_version` — at once if it already is — and nothing more
+    /// until the watch is armed again.
+    ///
+    /// Needs `read`, as a listing does. `address` is a DID whose keys the member (or its
+    /// agent) holds and through which it receives Trust Task documents; on a `private` room
+    /// it **must** be one used for nothing else. `since_version` is the highest version
+    /// read to; `None` lets the host take the room's latest, which may miss a change made
+    /// since the last listing. `lease_secs` (60 – 2592000) asks how long the watch lasts if
+    /// it does not fire; the host may grant less and says what it granted in `expiresAt`.
+    pub async fn watch(
+        &self,
+        session: &RoomSession,
+        address: &str,
+        since_version: Option<u64>,
+        lease_secs: Option<u64>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<vti_specs::rooms::watch::v0_1::Response, VtcError> {
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "presentation": session.presentation,
+            "address": address,
+        });
+        if let Some(v) = since_version {
+            payload["sinceVersion"] = serde_json::json!(v);
+        }
+        if let Some(l) = lease_secs {
+            payload["leaseSeconds"] = serde_json::json!(l);
+        }
+        self.watch_task(payload, signer_did, private_key_multibase)
+            .await
+    }
+
+    /// Cancel the watch on the room and `address` (`rooms/watch/0.1` with `cancel`). A watch
+    /// the host does not hold answers `armed: false` too, so a retry is harmless.
+    pub async fn cancel_watch(
+        &self,
+        session: &RoomSession,
+        address: &str,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<vti_specs::rooms::watch::v0_1::Response, VtcError> {
+        let payload = serde_json::json!({
+            "roomId": session.room_id,
+            "presentation": session.presentation,
+            "address": address,
+            "cancel": true,
+        });
+        self.watch_task(payload, signer_did, private_key_multibase)
+            .await
+    }
+
+    async fn watch_task(
+        &self,
+        payload: serde_json::Value,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<vti_specs::rooms::watch::v0_1::Response, VtcError> {
+        use trust_tasks_rs::Payload as _;
+        let value = self
+            .room_task(
+                vti_specs::rooms::watch::v0_1::Payload::TYPE_URI,
+                payload,
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("watch response is not a rooms/watch/0.1 response: {e}"),
+        })
+    }
+
     /// Fetch the room's epoch key chain, highest epoch first (`rooms/epoch/chain/0.2`).
     ///
     /// What a member calls after joining, or after restoring their group state, so that

@@ -115,6 +115,10 @@ pub struct HostState {
     /// VTI-OPS-025 … 029): in the store, so it survives a restart and is shared
     /// by every carrier that reaches [`dispatch`].
     accepted_ids: KeyspaceHandle,
+    /// The watches members armed (`rooms/watch/0.1`): this host's own state, never the
+    /// room's, consulted to authorize nothing, and signalled over the mediator session
+    /// when this host has one ([`HostState::set_signals`]).
+    watches: Arc<vti_rooms::watch::RoomWatches>,
     /// How a DID resolves to the key that signed a credential.
     ///
     /// A room's credentials are issued by the room, which is normally a `did:webvh`, so a
@@ -178,6 +182,24 @@ impl HostState {
     pub async fn sweep_accepted_ids(&self) -> Result<usize, AppError> {
         vti_trust_task_server::accepted_store::sweep_expired(&self.accepted_ids, chrono::Utc::now())
             .await
+    }
+
+    /// Lend the watches this host's outbound transport (`rooms/changed/0.1`). Until a host
+    /// has one — it is not reachable at a mediator — every watch is refused
+    /// `addressUnreachable`: there is no transport it could signal over.
+    pub fn set_signals(&self, signals: Arc<dyn vti_rooms::watch::Signals>) {
+        self.watches.set_signals(signals);
+    }
+
+    /// Forget the watches whose lease ran out, returning how many. Run on a timer beside
+    /// [`Self::sweep_accepted_ids`]; a room's own watches are also swept when it moves.
+    pub async fn sweep_watches(&self) -> Result<usize, AppError> {
+        self.watches.sweep(chrono::Utc::now()).await
+    }
+
+    /// A task may have moved `room_id`: fire the watches it put past their watermark.
+    pub(crate) async fn room_moved(&self, room_id: &str) {
+        self.watches.room_moved(room_id).await;
     }
 
     /// The room keyspace.
@@ -581,7 +603,17 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
         }
     };
 
+    let moved_room = doc.payload["roomId"].as_str().map(str::to_string);
     let answer = route(state, doc).await;
+
+    // Whatever moved the room — a put of any kind, a curation, a retraction, a prune, a
+    // profile written — fires the watches it put past their watermark, alike
+    // (`rooms/watch/0.1` Host item 6). Only after the task committed, and never failing it.
+    if (200..300).contains(&answer.status)
+        && let Some(room_id) = &moved_room
+    {
+        state.room_moved(room_id).await;
+    }
 
     // Close out the claim. A success records its response so the redelivery this exists to
     // absorb is answered with the result; a failure releases, or a document refused
@@ -646,6 +678,7 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         files::UPLOAD_COMMIT_V2_TYPE => files::commit_v2(state, &doc, payload).await,
         files::UPLOAD_ABORT_V2_TYPE => files::abort_v2(state, &doc, payload).await,
         files::BLOB_GET_V2_TYPE => files::get_blob_v2(state, &doc, payload).await,
+        vti_rooms::watch::WATCH_TYPE => files::watch(state, &doc, payload).await,
         other => reject(
             &doc,
             // The framework's own code for this: a host that does not implement a task
@@ -1841,6 +1874,11 @@ pub fn open_state_with_files(
             files.limits,
         )),
         accepted_ids: store.keyspace(ACCEPTED_IDS_KEYSPACE)?,
+        watches: Arc::new(vti_rooms::watch::RoomWatches::new(
+            store.keyspace(vti_rooms::watch::ROOM_WATCHES_KEYSPACE)?,
+            store.keyspace(ROOMS_KEYSPACE)?,
+            store.keyspace(vti_rooms::ROOM_REVOCATIONS_KEYSPACE)?,
+        )),
         resolver,
         host_did: Arc::new(std::sync::OnceLock::new()),
         refuse_rewrites_by_others: Arc::new(std::sync::atomic::AtomicBool::new(true)),

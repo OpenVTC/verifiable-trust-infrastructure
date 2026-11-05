@@ -169,7 +169,13 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_PUT_V5_TYPE,
     ROOMS_RECORDS_LIST_V6_TYPE,
     ROOMS_RECORDS_GET_V3_TYPE,
+    // A watch, and its one signal (trust-tasks-tf #1036).
+    ROOMS_WATCH_TYPE,
 ];
+
+/// `rooms/watch/0.1`: arm, re-arm or cancel one `rooms/changed/0.1` signal.
+pub const ROOMS_WATCH_TYPE: &str =
+    <vti_specs_rooms::rooms::watch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// What a party presents to act on a room.
 ///

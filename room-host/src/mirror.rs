@@ -276,6 +276,10 @@ pub async fn pull_once(state: &HostState, mirror: &MirroredRoom) -> anyhow::Resu
         }
     }
 
+    // A copy moved too: a watch armed at this host fires as at the primary.
+    if outcome.copied > 0 {
+        state.room_moved(&mirror.room_id).await;
+    }
     Ok(outcome)
 }
 

@@ -438,8 +438,9 @@ pub use rooms::{
     unsigned_room_request,
 };
 pub use rooms_records::{
-    RECORD_BODY_MEMBERS, RECORD_FILE_MEMBERS, ROOM_READ_MAX_KEYS, RoomBrowse, check_record_members,
-    record_members_permitted, record_members_used, unsigned_room_request_v0_11,
+    MEMBER_PROFILE_KIND, RECORD_BODY_MEMBERS, RECORD_FILE_MEMBERS, RECORD_KIND_VALUES,
+    ROOM_READ_MAX_KEYS, RoomBrowse, check_record_members, record_members_permitted,
+    record_members_used, unsigned_room_request_v0_11,
 };
 mod secrets;
 mod vault;

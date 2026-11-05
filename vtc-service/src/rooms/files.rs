@@ -241,7 +241,7 @@ fn payload_json<P: serde::Serialize>(doc: &TrustTask<P>) -> Result<Value, TrustT
 ///
 /// A chain that does not confer `action` is the framework's standard `permissionDenied`, as
 /// for every `rooms/*` task: the family declares no task-specific code that would shadow it.
-async fn authorize<P>(
+pub(super) async fn authorize<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     payload: &Value,

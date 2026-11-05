@@ -19,8 +19,8 @@ use vta_cli_common::commands::rooms_custody as custody;
 use vta_sdk::client::VtaClient;
 
 use crate::cli::{
-    RoomCommands, RoomFileCommands, RoomKeysCommands, RoomOffersCommands, RoomOwnerCommands,
-    RoomProfileCommands, RoomRecordsCommands, RoomRetentionCommands,
+    RoomCommands, RoomFileCommands, RoomKeysCommands, RoomNameCommands, RoomOffersCommands,
+    RoomOwnerCommands, RoomProfileCommands, RoomRecordsCommands, RoomRetentionCommands,
 };
 
 /// The operator's DID and key, from the session this CLI authenticates with.
@@ -660,6 +660,60 @@ pub(crate) async fn run(
                 signer,
                 epoch,
                 reason,
+            )
+            .await
+        }
+        RoomCommands::Watch {
+            room_id,
+            host,
+            host_did,
+            address,
+            since,
+            lease,
+            cancel,
+        } => {
+            let lease_secs = lease
+                .as_deref()
+                .map(vta_cli_common::duration::parse_duration_secs)
+                .transpose()?;
+            rooms::cmd_rooms_watch(
+                client,
+                RoomTarget {
+                    host_url: &host,
+                    host_did: Some(&host_did),
+                    room_id: &room_id,
+                },
+                signer,
+                &address,
+                since,
+                lease_secs,
+                cancel,
+            )
+            .await
+        }
+        RoomCommands::Name { command } => {
+            let (name, room_id, host, host_did) = match command {
+                RoomNameCommands::Set {
+                    name,
+                    room_id,
+                    host,
+                    host_did,
+                } => (name, room_id, host, host_did),
+                // An empty name withdraws it (`MemberName`).
+                RoomNameCommands::Clear {
+                    room_id,
+                    host,
+                    host_did,
+                } => (String::new(), room_id, host, host_did),
+            };
+            rooms::cmd_rooms_name_set(
+                client,
+                RoomTarget {
+                    host_url: &host,
+                    host_did: host_did.as_deref(),
+                    room_id: &room_id,
+                },
+                &name,
             )
             .await
         }

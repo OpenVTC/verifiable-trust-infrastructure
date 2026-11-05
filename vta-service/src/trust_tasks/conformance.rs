@@ -3018,6 +3018,18 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        // ─── rooms/changed: a watch's signal ─────────────────────
+        // One-way: the specification declares no response and this VTA answers
+        // nothing, so the response side is the empty acknowledgement.
+        (
+            uris::TASK_ROOMS_CHANGED_0_1,
+            checked!(
+                specs::rooms::changed::v0_1::Payload,
+                Acknowledgement,
+                json!({ "roomId": "did:webvh:QmRoom:rooms.example:deal", "latestVersion": 415 }),
+                json!({})
+            ),
+        ),
         // ─── notifications/* + vta/notifications/* ──────────────
         (
             uris::TASK_NOTIFICATIONS_NOTIFY_0_1,

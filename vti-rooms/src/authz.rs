@@ -120,6 +120,11 @@ pub struct VerifiedChain {
     /// A verifier that reports nothing here cannot be held to a list: [`authorize`] then
     /// refuses a disclosing tier's presentation whenever the room's list withdraws anything.
     pub presented: Presented,
+    /// The earliest instant at which any credential the presentation carried stops being
+    /// valid, where the verifier read one — what bounds a state a host keeps on the strength
+    /// of this presentation (`rooms/watch/0.1` Host item 5: a watch lapses no later). `None`
+    /// is "none of them expires", or a verifier that does not say.
+    pub valid_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Cryptographic verification of a presentation.
@@ -265,6 +270,11 @@ impl AuthorizedAction {
     /// is later held to ([`revocation::Presented`]).
     pub fn presented(&self) -> &Presented {
         &self.verified.presented
+    }
+    /// When the first credential of the presentation stops being valid
+    /// ([`VerifiedChain::valid_until`]).
+    pub fn valid_until(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.verified.valid_until
     }
     /// Refuse unless `credential` — presented beside the chain, such as a succession
     /// nomination — is withdrawn by none of the list this was authorized against. The same
@@ -923,6 +933,7 @@ mod tests {
                 actions: self.0.clone(),
                 member: Some(presenter.to_string()),
                 presented: Default::default(),
+                valid_until: None,
             })
         }
     }
@@ -944,6 +955,7 @@ mod tests {
                 actions: vec!["read".into()],
                 member: Some("did:key:zSomeoneElse".into()),
                 presented: Default::default(),
+                valid_until: None,
             })
         }
     }

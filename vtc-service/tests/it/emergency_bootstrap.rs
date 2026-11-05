@@ -354,6 +354,11 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         room_records_ks: room_records_ks.clone(),
         room_epoch_links_ks: room_epoch_links_ks.clone(),
         room_revocations_ks: room_revocations_ks.clone(),
+        room_watches: std::sync::Arc::new(vti_rooms::watch::RoomWatches::new(
+            store.keyspace("room_watches").unwrap(),
+            rooms_ks.clone(),
+            room_revocations_ks.clone(),
+        )),
         room_files: std::sync::Arc::new(
             vtc_service::rooms::files::open_blob_host(
                 &store,

@@ -53,7 +53,7 @@ const LEGACY_RECORDS_PREFIX: &str = "room_records:";
 const LEGACY_EPOCH_LINKS_PREFIX: &str = "room_epoch_links:";
 const LEGACY_COMMITS_PREFIX: &str = "room-commit:";
 
-fn room_key(room_id: &str) -> String {
+pub(crate) fn room_key(room_id: &str) -> String {
     format!("{ROOMS_PREFIX}{room_id}")
 }
 

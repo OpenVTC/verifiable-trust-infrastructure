@@ -297,6 +297,8 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
 
 /// Final-segment verbs that only ever read.
 const READ_VERBS: &[&str] = &[
+    // `rooms/changed`: a host's one-way signal, which the VTA only logs.
+    "changed",
     "list",
     "get",
     "get-many",

@@ -62,6 +62,12 @@ pub use vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE as ROOM_EPOCH_LINKS;
 /// **Backed up.** It is the room's state, not this host's: a restore without it would
 /// honour again every credential the room withdrew, until somebody re-delivered the list.
 pub use vti_rooms::ROOM_REVOCATIONS_KEYSPACE as ROOM_REVOCATIONS;
+
+/// The watches members armed on hosted rooms (`rooms/watch/0.1`): room, address, watermark,
+/// lease. This host's state, never the room's — consulted to authorize nothing, and it
+/// does not move with the room. **Not backed up**: a watch lapses within 30 days anyway, and
+/// a restore must not signal addresses on the strength of watches nobody re-armed.
+pub use vti_rooms::watch::ROOM_WATCHES_KEYSPACE as ROOM_WATCHES;
 /// The VTC's OpenID4VP verifier identities (`crate::oid4vp`): one record per
 /// identity, each holding the private P-256 key its request objects are
 /// signed with. Encrypted at rest under the storage key, like `install` and
@@ -308,6 +314,7 @@ pub const ALL: &[&str] = &[
     ROOM_RECORDS,
     ROOM_EPOCH_LINKS,
     ROOM_REVOCATIONS,
+    ROOM_WATCHES,
     ROOM_BLOBS,
     ROOM_BLOB_TRANSFERS,
     STORAGE_CONFIGS,
@@ -464,6 +471,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // files on this host that a backup does not carry. A client resumes from
     // `begin` against the restored host.
     ROOM_BLOB_TRANSFERS,
+    // Watches on hosted rooms (`rooms/watch/0.1`): this host's state, not the
+    // rooms', lapsing within 30 days. A watch does not move with a room, and a
+    // restored one would signal an address nobody re-armed.
+    ROOM_WATCHES,
     // Console signing-key delegations. Excluded deliberately, and it is the
     // one exclusion here that is a security decision rather than a
     // housekeeping one: a delegation names a browser profile on a particular
@@ -539,8 +550,9 @@ mod tests {
         // two `AppState::room_storage` holds (`STORAGE_CONFIGS`, `STORAGE_CREDENTIALS`), plus the one
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
         // `AppState::directory` holds (`DIRECTORY`), plus the one
-        // `AppState::elections` holds (`ELECTIONS`).
-        assert_eq!(ALL.len(), 58, "ALL must list every AppState keyspace");
+        // `AppState::elections` holds (`ELECTIONS`), plus the one
+        // `AppState::room_watches` holds (`ROOM_WATCHES`).
+        assert_eq!(ALL.len(), 59, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

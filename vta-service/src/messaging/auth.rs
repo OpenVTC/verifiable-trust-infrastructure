@@ -109,6 +109,12 @@ pub(crate) async fn resolve_trust_task_sender(
             ceremony::ceremony_claims(sender_did),
             Standing::ZeroAuthority,
         )),
+        // A room's host signalling a watch this VTA's member armed (`rooms/changed/0.1`):
+        // a host holds no ACL entry, and the handler reads nothing on the claim.
+        Some(uri) if crate::trust_tasks::room_changed::is_counterparty_task(uri) => Ok((
+            ceremony::ceremony_claims(sender_did),
+            Standing::ZeroAuthority,
+        )),
         Some(uri) if crate::trust_tasks::credential_exchange::is_counterparty_task(uri) => {
             tracing::debug!(
                 sender = %sender_did,

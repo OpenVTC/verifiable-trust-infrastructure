@@ -952,6 +952,10 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::records::get::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
+            vti_rooms::wire::ROOMS_WATCH_TYPE,
+            <rooms::watch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
             ROOMS_RECORDS_CURATE_TYPE,
             <rooms::records::curate::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),

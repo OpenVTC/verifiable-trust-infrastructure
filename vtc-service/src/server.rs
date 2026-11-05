@@ -202,6 +202,9 @@ pub struct AppState {
     /// Each hosted room's revocation list (`rooms/revocations/put`), consulted by every
     /// room authorization.
     pub room_revocations_ks: KeyspaceHandle,
+    /// The watches members armed on hosted rooms (`rooms/watch/0.1`): host state only,
+    /// consulted to authorize nothing, signalled over this VTC's messaging.
+    pub room_watches: Arc<vti_rooms::watch::RoomWatches>,
     /// Room files: the blob index, transfers in flight, limits and the blob store
     /// (`[rooms.files]`). Ciphertext only: this service never holds a file key.
     pub room_files: Arc<vti_rooms::blobs::BlobHost>,
@@ -949,6 +952,25 @@ pub async fn run(
         ballot_box_link,
     ));
 
+    // Watches on hosted rooms (`rooms/watch/0.1`). Their signal leaves over this VTC's
+    // messaging as this community, so it needs the signing key and a resolver; without
+    // them every address is unreachable and a watch is refused `addressUnreachable`.
+    let room_watches = Arc::new(vti_rooms::watch::RoomWatches::new(
+        store.keyspace(keyspaces::ROOM_WATCHES)?,
+        rooms_ks.clone(),
+        room_revocations_ks.clone(),
+    ));
+    if let (Some(signer), Some(resolver)) = (credential_signer.clone(), did_resolver.clone()) {
+        room_watches.set_signals(Arc::new(crate::rooms::watch::VtcSignals {
+            peers: crate::outbound::PeerTasks {
+                didcomm: didcomm_cell.clone(),
+                signer: Some(signer),
+                replies: pending_replies.clone(),
+                resolver: Some(resolver),
+            },
+        }));
+    }
+
     // Sealed storage credentials (`rooms::storage_credentials`): opened with the
     // community's own key, kept encrypted under the storage key. Without either there
     // is nowhere safe to keep one, and a `sealed` config reports its credential
@@ -1099,6 +1121,7 @@ pub async fn run(
         room_records_ks,
         room_epoch_links_ks,
         room_revocations_ks,
+        room_watches,
         room_files,
         room_storage,
         community_rooms,
@@ -1722,6 +1745,24 @@ pub async fn run(
                     crate::step_up_approver::sweep_expired(&ks, chrono::Utc::now()).await
                 {
                     warn!(error = %e, "step-up approver sweep failed");
+                }
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+                }
+            }
+        });
+    }
+
+    // Room watches whose lease ran out (`rooms/watch/0.1` Host item 5). A storage bound:
+    // a lapsed watch never fires, and a room's own are also swept when it moves.
+    {
+        let watches = state.room_watches.clone();
+        let mut shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = watches.sweep(chrono::Utc::now()).await {
+                    warn!(error = %e, "room watch sweep failed");
                 }
                 tokio::select! {
                     _ = shutdown.changed() => return,

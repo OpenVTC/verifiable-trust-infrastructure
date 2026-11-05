@@ -12577,6 +12577,7 @@ dependencies = [
  "tokio",
  "tracing",
  "trust-tasks-rs",
+ "unicode-normalization",
  "uuid",
  "vti-common",
  "vti-specs-rooms",
