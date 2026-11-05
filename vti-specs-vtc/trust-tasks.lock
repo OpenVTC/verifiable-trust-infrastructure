@@ -105,6 +105,24 @@ type_uri = "https://trusttasks.org/spec/vtc/boards/delete/0.1"
 digest = "sha256:4e6e6f2be63fb797a6b18b9864929dd9a2b72ec64af230330f2ad1d10df1fb11"
 
 [[task]]
+slug = "vtc/boards/facilitators/add"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/facilitators/add/0.1"
+digest = "sha256:3450c5f35e942b94eee73b84a414b6dfa25886084fc8b8254250e1a4e82d2ca7"
+
+[[task]]
+slug = "vtc/boards/facilitators/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/facilitators/list/0.1"
+digest = "sha256:0b81ea027b368d2299797b4e744750c88eeea2660b91b167f8751895ea042581"
+
+[[task]]
+slug = "vtc/boards/facilitators/remove"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/boards/facilitators/remove/0.1"
+digest = "sha256:7685a0e1600866843e5c1e2fddb759934458cf2140fb80faceb5b847c7844bf5"
+
+[[task]]
 slug = "vtc/boards/ideas/decide"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/boards/ideas/decide/0.1"

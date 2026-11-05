@@ -1,4 +1,4 @@
-//! The community's boards on the signed-document spine (`vtc/boards/*`, VTI-BRD-001 – 080;
+//! The community's boards on the signed-document spine (`vtc/boards/*`, VTI-BRD-001 – 093;
 //! [`crate::boards`]).
 //!
 //! | task | authority (read now) |
@@ -9,6 +9,8 @@
 //! | `ideas/{propose,update,withdraw}/0.1` | a member of the board's audience; update and withdraw only the proposer |
 //! | `ideas/{decide,select}/0.1`, `notes/hide/0.1` | `vtc.boards.manage` for the board — never a portal key (VTI-BRD-051) |
 //! | `notes/{add,withdraw}/0.1` | a member of the board's audience; withdraw only the author |
+//! | `facilitators/{add,list}/0.1` | `vtc.boards.manage` for the board (VTI-BRD-090, 093) |
+//! | `facilitators/remove/0.1` | the facilitator themselves, or `vtc.boards.manage` unqualified (VTI-BRD-091) |
 //!
 //! The member tasks accept a document signed by the portal's sign-in key for the member's
 //! live session (`member_portal::delegation`, VTI-BRD-050); the facilitator tasks take the
@@ -24,6 +26,10 @@ use vti_common::error::AppError;
 use vti_specs::vtc::boards::{
     create::v0_1 as board_create,
     delete::v0_1 as board_delete,
+    facilitators::{
+        add::v0_1 as facilitators_add, list::v0_1 as facilitators_list,
+        remove::v0_1 as facilitators_remove,
+    },
     ideas::{
         decide::v0_1 as ideas_decide, propose::v0_1 as ideas_propose, select::v0_1 as ideas_select,
         update::v0_1 as ideas_update, withdraw::v0_1 as ideas_withdraw,
@@ -64,6 +70,10 @@ pub(crate) const NOTES_ADD_TYPE: &str = <notes_add::Payload as Payload>::TYPE_UR
 pub(crate) const NOTES_LIST_TYPE: &str = <notes_list::Payload as Payload>::TYPE_URI;
 pub(crate) const NOTES_WITHDRAW_TYPE: &str = <notes_withdraw::Payload as Payload>::TYPE_URI;
 pub(crate) const NOTES_HIDE_TYPE: &str = <notes_hide::Payload as Payload>::TYPE_URI;
+pub(crate) const FACILITATORS_ADD_TYPE: &str = <facilitators_add::Payload as Payload>::TYPE_URI;
+pub(crate) const FACILITATORS_REMOVE_TYPE: &str =
+    <facilitators_remove::Payload as Payload>::TYPE_URI;
+pub(crate) const FACILITATORS_LIST_TYPE: &str = <facilitators_list::Payload as Payload>::TYPE_URI;
 
 /// Every type this module serves.
 pub(crate) const URIS: &[&str] = &[
@@ -81,6 +91,9 @@ pub(crate) const URIS: &[&str] = &[
     NOTES_LIST_TYPE,
     NOTES_WITHDRAW_TYPE,
     NOTES_HIDE_TYPE,
+    FACILITATORS_ADD_TYPE,
+    FACILITATORS_REMOVE_TYPE,
+    FACILITATORS_LIST_TYPE,
 ];
 
 macro_rules! codes {
@@ -153,6 +166,12 @@ codes! {
     HIDE_ERR_NOTE_NOT_FOUND = notes_hide::NOTE_NOT_FOUND;
     HIDE_ERR_STATE_INVALID = notes_hide::STATE_INVALID;
     HIDE_ERR_REASON_REQUIRED = notes_hide::REASON_REQUIRED;
+    FACILITATORS_ADD_ERR_NOT_FOUND = facilitators_add::NOT_FOUND;
+    FACILITATORS_ADD_ERR_ENTRY_NOT_FOUND = facilitators_add::ENTRY_NOT_FOUND;
+    FACILITATORS_ADD_ERR_ALREADY_FACILITATOR = facilitators_add::ALREADY_FACILITATOR;
+    FACILITATORS_REMOVE_ERR_NOT_FOUND = facilitators_remove::NOT_FOUND;
+    FACILITATORS_REMOVE_ERR_NOT_FACILITATOR = facilitators_remove::NOT_FACILITATOR;
+    FACILITATORS_LIST_ERR_NOT_FOUND = facilitators_list::NOT_FOUND;
 }
 
 pub(super) async fn dispatch(
@@ -176,6 +195,9 @@ pub(super) async fn dispatch(
         NOTES_LIST_TYPE => handle_notes_list(state, ctx, doc).await,
         NOTES_WITHDRAW_TYPE => handle_note_withdraw(state, ctx, doc).await,
         NOTES_HIDE_TYPE => handle_note_hide(state, ctx, doc).await,
+        FACILITATORS_ADD_TYPE => handle_facilitators_add(state, ctx, doc).await,
+        FACILITATORS_REMOVE_TYPE => handle_facilitators_remove(state, ctx, doc).await,
+        FACILITATORS_LIST_TYPE => handle_facilitators_list(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -920,7 +942,7 @@ async fn handle_delete(
     }
     let retention = state.config.read().await.boards.tombstone_retention;
     let remove_at = retention.remove_at(now);
-    // Item 6: audited before anything is removed; the reason and counts, never any text.
+    // Item 7: audited before anything is removed; the reason and counts, never any text.
     let data = BoardChangedData {
         fields: vec![
             format!("reason:{reason}"),
@@ -961,6 +983,11 @@ async fn handle_delete(
             Err(e) => return app_error_to_reject(&doc, &e),
         };
     drop(ideas);
+    drop(_guard);
+    // Item 5: every appointment to facilitate it goes with it (VTI-BRD-092).
+    if let Err(e) = boards::facilitators::withdraw_all(state, &board.board_id).await {
+        return app_error_to_reject(&doc, &e);
+    }
     let mut tombstones = json!({ "kept": kept });
     if kept > 0
         && let Some(at) = remove_at
@@ -2228,4 +2255,246 @@ async fn handle_note_hide(
     }
     drop(_guard);
     note_answer(state, &doc, &who, &note).await
+}
+
+// ─── facilitators (VTI-BRD-090 – 093) ────────────────────────────────────
+
+/// The board `board_id` for a facilitator's task: `Err(notFound)` where the caller may not
+/// see it, `Err(permissionDenied)` where they see it but do not facilitate it.
+async fn facilitated_board(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    who: &Who,
+    board_id: &str,
+    not_found: &str,
+) -> Result<Board, TrustTaskOutcome> {
+    match visible_board(state, who, board_id).await {
+        Ok(Some(b)) if who.facilitates(&b.board_id) => Ok(b),
+        Ok(Some(_)) => Err(denied(doc, "only a facilitator of this board may do this")),
+        Ok(None) => Err(declared(
+            doc,
+            not_found,
+            "No board you may see has this identifier.",
+        )),
+        Err(e) => Err(app_error_to_reject(doc, &e)),
+    }
+}
+
+/// The DID of the active member whose entry is `entry_id`.
+async fn active_entry(state: &AppState, entry_id: &str) -> Result<Option<String>, AppError> {
+    let Some(card) = crate::directory::cards::get(state.directory.ks(), entry_id).await? else {
+        return Ok(None);
+    };
+    Ok(
+        crate::member_portal::active::active_member(state, &card.did)
+            .await?
+            .map(|_| card.did),
+    )
+}
+
+async fn facilitators_answer(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    board_id: &str,
+) -> TrustTaskOutcome {
+    match boards::facilitators::entries(state, board_id).await {
+        Ok(f) => success_response(doc, json!({ "boardId": board_id, "facilitators": f })),
+        Err(e) => app_error_to_reject(doc, &e),
+    }
+}
+
+/// `facilitators/add/0.1` (items 1 – 7).
+async fn handle_facilitators_add(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match facilitator(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<facilitators_add::Payload>(&doc) {
+        return r;
+    }
+    let p = &doc.payload;
+    let board_id = str_of(p, "boardId").unwrap_or_default();
+    let entry_id = str_of(p, "entryId").unwrap_or_default();
+    // Items 1 and 4: facilitating the board is covering the grant (VTI-ACL-071).
+    let board = match facilitated_board(state, &doc, &who, board_id, FACILITATORS_ADD_ERR_NOT_FOUND)
+        .await
+    {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let did = match active_entry(state, entry_id).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return declared(
+                &doc,
+                FACILITATORS_ADD_ERR_ENTRY_NOT_FOUND,
+                "No active member has this entry.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 2: by an appointment to this board, or by managing every board.
+    let already = match crate::acl::get_acl_entry(&state.acl_ks, &did).await {
+        Ok(Some(e)) => e.can(
+            Capability::BoardsManage,
+            Some(&ResourceQualifier::Board(board.board_id.clone())),
+        ),
+        Ok(None) => false,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if already {
+        return declared(
+            &doc,
+            FACILITATORS_ADD_ERR_ALREADY_FACILITATOR,
+            "This member already facilitates the board.",
+        );
+    }
+    // Item 7: audited before the grant is written.
+    if let Err(e) = boards::audit_facilitator(
+        state,
+        &who.did,
+        &board.board_id,
+        entry_id,
+        "facilitatorAppointed",
+        None,
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    // Item 3.
+    let reason = str_of(p, "reason").map(str::to_string);
+    if let Err(e) =
+        boards::facilitators::appoint(state, &who.did, &did, &board.board_id, reason).await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    facilitators_answer(state, &doc, &board.board_id).await
+}
+
+/// `facilitators/remove/0.1` (items 1 – 4).
+async fn handle_facilitators_remove(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match facilitator(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<facilitators_remove::Payload>(&doc) {
+        return r;
+    }
+    let p = &doc.payload;
+    let board_id = str_of(p, "boardId").unwrap_or_default();
+    let entry_id = str_of(p, "entryId").unwrap_or_default();
+    let board = match facilitated_board(
+        state,
+        &doc,
+        &who,
+        board_id,
+        FACILITATORS_REMOVE_ERR_NOT_FOUND,
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    // Item 2: the facilitators of one board do not end one another's appointments.
+    if !who.is(entry_id) && !who.manages_all() {
+        return denied(
+            &doc,
+            "only a holder of vtc.boards.manage unqualified ends another facilitator's appointment",
+        );
+    }
+    let not_facilitator = || {
+        declared(
+            &doc,
+            FACILITATORS_REMOVE_ERR_NOT_FACILITATOR,
+            "This entry holds no appointment to facilitate the board.",
+        )
+    };
+    let did = match crate::directory::cards::get(state.directory.ks(), entry_id).await {
+        Ok(Some(card)) => card.did,
+        Ok(None) => return not_facilitator(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 3: the capability held unqualified, or through a role, is no appointment.
+    match boards::facilitators::withdraw(state, &did, &board.board_id).await {
+        Ok(true) => {}
+        Ok(false) => return not_facilitator(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    // Item 4.
+    if let Err(e) = boards::audit_facilitator(
+        state,
+        &who.did,
+        &board.board_id,
+        entry_id,
+        "facilitatorRemoved",
+        str_of(p, "reason"),
+    )
+    .await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
+    facilitators_answer(state, &doc, &board.board_id).await
+}
+
+/// `facilitators/list/0.1` (items 1 – 3).
+async fn handle_facilitators_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match facilitator(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<facilitators_list::Payload>(&doc) {
+        return r;
+    }
+    let board_id = str_of(&doc.payload, "boardId").unwrap_or_default();
+    let board =
+        match facilitated_board(state, &doc, &who, board_id, FACILITATORS_LIST_ERR_NOT_FOUND).await
+        {
+            Ok(b) => b,
+            Err(r) => return r,
+        };
+    let held = match boards::facilitators::appointments(state, &board.board_id).await {
+        Ok(h) => h,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let ks = state.directory.ks();
+    let mut out = Vec::with_capacity(held.len());
+    for a in held {
+        // Item 2: by entry, never by DID; an appointee with no entry is not shown.
+        let entry = match crate::directory::cards::entry_of(ks, &a.subject).await {
+            Ok(Some(e)) => e,
+            Ok(None) => continue,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        let mut row = json!({ "entryId": entry, "appointedAt": stamp(a.granted_at) });
+        match crate::directory::cards::entry_of(ks, &a.granter).await {
+            Ok(Some(g)) => row["appointedBy"] = json!(g),
+            Ok(None) => {}
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
+        if let Some(d) = a.review_deadline {
+            row["reviewEndsAt"] = json!(stamp(d));
+        }
+        out.push(row);
+    }
+    success_response(
+        &doc,
+        json!({ "boardId": board.board_id, "facilitators": out }),
+    )
+}
+
+fn stamp(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }

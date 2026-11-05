@@ -1932,6 +1932,10 @@ mod spine_proof_tests {
             "reads a board's notes as the signer may see them; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
         ),
         (
+            board_tasks::FACILITATORS_LIST_TYPE,
+            "reads the facilitators of a board the signer facilitates; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
             community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
             "a community read; the handler refuses an unsigned caller where that read is gated at all",
         ),
@@ -2924,6 +2928,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     board_tasks::NOTES_LIST_TYPE,
     board_tasks::NOTES_WITHDRAW_TYPE,
     board_tasks::NOTES_HIDE_TYPE,
+    // A board's facilitators by appointment (VTI-BRD-090 – 093).
+    board_tasks::FACILITATORS_ADD_TYPE,
+    board_tasks::FACILITATORS_REMOVE_TYPE,
+    board_tasks::FACILITATORS_LIST_TYPE,
     // Credential-sourced fields, filled from a presentation.
     directory_tasks::CARD_PRESENT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,

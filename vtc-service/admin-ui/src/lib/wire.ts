@@ -3452,6 +3452,87 @@ export interface components {
                 removeAt?: string;
             };
         };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsFacilitatorsAddV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsFacilitatorsAddV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsFacilitatorsAddV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A facilitator of a board appoints an active member a facilitator of that board: an access-control resource grant of `vtc.boards.manage` qualified to the board (VTI-BRD-090). The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsFacilitatorsAddV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsAddV0_1BoardId"];
+            entryId: components["schemas"]["VtcBoardsFacilitatorsAddV0_1EntryId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsAddV0_1Ext"];
+            /** @description Why, recorded with the change. Plain text. */
+            reason?: string;
+        };
+        /** @description The success response to a vtc/boards/facilitators/add/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/facilitators/add/0.1#response. The board's appointed facilitators after the appointment. */
+        VtcBoardsFacilitatorsAddV0_1Response: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsAddV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsAddV0_1Ext"];
+            /** @description The board's appointed facilitators after the change, by entry: entries holding `vtc.boards.manage` qualified to this board, read from the access-control list. Holders of the capability unqualified or through a role are not listed (VTI-BRD-093). */
+            facilitators: components["schemas"]["VtcBoardsFacilitatorsAddV0_1EntryId"][];
+        };
+        /** @description One member's appointment to facilitate the board: a resource grant of `vtc.boards.manage` qualified to it. */
+        VtcBoardsFacilitatorsListV0_1Appointment: {
+            /**
+             * Format: date-time
+             * @description When the grant was written, or last re-affirmed under a new granter.
+             */
+            appointedAt: string;
+            appointedBy?: components["schemas"]["VtcBoardsFacilitatorsListV0_1EntryId"];
+            entryId: components["schemas"]["VtcBoardsFacilitatorsListV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description Present while the appointment is under review because its granter departed or no longer facilitates the board: it is withdrawn at this time unless an administrator who facilitates the board re-affirms it (VTI-BRD-092).
+             */
+            reviewEndsAt?: string;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsFacilitatorsListV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsFacilitatorsListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsFacilitatorsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A facilitator of a board reads who is appointed to facilitate it (VTI-BRD-093). The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsFacilitatorsListV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsListV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsListV0_1Ext"];
+        };
+        /** @description The success response to a vtc/boards/facilitators/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/facilitators/list/0.1#response. The board's appointed facilitators. */
+        VtcBoardsFacilitatorsListV0_1Response: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsListV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsListV0_1Ext"];
+            /** @description The board's appointments, by entry, oldest first. Holders of `vtc.boards.manage` unqualified or through a role are not listed: they facilitate every board. */
+            facilitators: components["schemas"]["VtcBoardsFacilitatorsListV0_1Appointment"][];
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsFacilitatorsRemoveV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsFacilitatorsRemoveV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsFacilitatorsRemoveV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A facilitator steps down, or a holder of `vtc.boards.manage` unqualified ends another member's appointment as a board's facilitator (VTI-BRD-091). The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsFacilitatorsRemoveV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1BoardId"];
+            entryId: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1EntryId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1Ext"];
+            /** @description Why, recorded with the change. Plain text. */
+            reason?: string;
+        };
+        /** @description The success response to a vtc/boards/facilitators/remove/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/facilitators/remove/0.1#response. The board's appointed facilitators after the removal. */
+        VtcBoardsFacilitatorsRemoveV0_1Response: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1Ext"];
+            /** @description The board's appointed facilitators after the removal, by entry: entries holding `vtc.boards.manage` qualified to this board, read from the access-control list. Holders of the capability unqualified or through a role are not listed (VTI-BRD-093). */
+            facilitators: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1EntryId"][];
+        };
         /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
         VtcBoardsIdeasDecideV0_1Author: {
             entryId?: components["schemas"]["VtcBoardsIdeasDecideV0_1EntryId"];

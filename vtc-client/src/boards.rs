@@ -1,4 +1,4 @@
-//! Community boards: the thirteen `vtc/boards/*/0.1` tasks (VTI-BRD-001 – 080).
+//! Community boards: the `vtc/boards/*/0.1` tasks (VTI-BRD-001 – 093).
 //!
 //! Members propose ideas and leave notes; a facilitator accepts, declines and merges ideas
 //! (accepting opens the idea's election from the board's template), selects among them once
@@ -24,6 +24,10 @@ use crate::{HolderKey, VtcClient, VtcError};
 pub use vti_specs::vtc::boards::{
     create::v0_1 as create,
     delete::v0_1 as delete,
+    facilitators::{
+        add::v0_1 as facilitators_add, list::v0_1 as facilitators_list,
+        remove::v0_1 as facilitators_remove,
+    },
     ideas::{
         decide::v0_1 as ideas_decide, propose::v0_1 as ideas_propose, select::v0_1 as ideas_select,
         update::v0_1 as ideas_update, withdraw::v0_1 as ideas_withdraw,
@@ -55,13 +59,17 @@ pub mod task {
     pub const NOTES_LIST: &str = <super::notes_list::Payload as Payload>::TYPE_URI;
     pub const NOTES_WITHDRAW: &str = <super::notes_withdraw::Payload as Payload>::TYPE_URI;
     pub const NOTES_HIDE: &str = <super::notes_hide::Payload as Payload>::TYPE_URI;
+    pub const FACILITATORS_ADD: &str = <super::facilitators_add::Payload as Payload>::TYPE_URI;
+    pub const FACILITATORS_REMOVE: &str =
+        <super::facilitators_remove::Payload as Payload>::TYPE_URI;
+    pub const FACILITATORS_LIST: &str = <super::facilitators_list::Payload as Payload>::TYPE_URI;
 }
 
 /// `payload` for `type_uri`, once it validates against that task's published schema.
 ///
 /// # Errors
 /// [`VtcError::InvalidPayload`] for a payload out of schema, or a Type URI that is not one of
-/// the thirteen board tasks.
+/// the board tasks.
 pub fn checked(type_uri: &str, payload: Value) -> Result<Value, VtcError> {
     fn v<P: ValidatedPayload>(p: &Value) -> Result<(), VtcError> {
         P::validate_value(p).map_err(|e| VtcError::InvalidPayload(e.to_string()))
@@ -80,6 +88,10 @@ pub fn checked(type_uri: &str, payload: Value) -> Result<Value, VtcError> {
         task::NOTES_LIST => v::<notes_list::Payload>(&payload)?,
         task::NOTES_WITHDRAW => v::<notes_withdraw::Payload>(&payload)?,
         task::NOTES_HIDE => v::<notes_hide::Payload>(&payload)?,
+        task::DELETE => v::<delete::Payload>(&payload)?,
+        task::FACILITATORS_ADD => v::<facilitators_add::Payload>(&payload)?,
+        task::FACILITATORS_REMOVE => v::<facilitators_remove::Payload>(&payload)?,
+        task::FACILITATORS_LIST => v::<facilitators_list::Payload>(&payload)?,
         other => {
             return Err(VtcError::InvalidPayload(format!(
                 "{other} is not a vtc/boards task"
@@ -97,6 +109,9 @@ pub fn declared(type_uri: &str) -> &'static [trust_tasks_rs::DeclaredErrorCode] 
         task::UPDATE => update::ERROR_CODES,
         task::DELETE => delete::ERROR_CODES,
         task::LIST => list::ERROR_CODES,
+        task::FACILITATORS_ADD => facilitators_add::ERROR_CODES,
+        task::FACILITATORS_REMOVE => facilitators_remove::ERROR_CODES,
+        task::FACILITATORS_LIST => facilitators_list::ERROR_CODES,
         task::SHOW => show::ERROR_CODES,
         task::IDEAS_PROPOSE => ideas_propose::ERROR_CODES,
         task::IDEAS_UPDATE => ideas_update::ERROR_CODES,
@@ -182,6 +197,61 @@ impl VtcClient {
             key,
         )
         .await
+    }
+
+    /// `vtc/boards/facilitators/add/0.1` — appoint the active member `entry_id` a facilitator
+    /// of `board_id` (VTI-BRD-090): `vtc.boards.manage` qualified to that board, written on their
+    /// entry and delegated by the signer, who must facilitate the board themselves.
+    ///
+    /// # Errors
+    /// [`VtcError::InvalidPayload`] out of schema; the VTC's refusal otherwise (`notFound`,
+    /// `entryNotFound`, `alreadyFacilitator`, `permissionDenied`).
+    pub async fn boards_facilitators_add(
+        &self,
+        board_id: &str,
+        entry_id: &str,
+        reason: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<facilitators_add::Response, VtcError> {
+        let mut body = json!({ "boardId": board_id, "entryId": entry_id });
+        if let Some(r) = reason {
+            body["reason"] = json!(r);
+        }
+        self.board_task(task::FACILITATORS_ADD, body, key).await
+    }
+
+    /// `vtc/boards/facilitators/remove/0.1` — end `entry_id`'s appointment to facilitate
+    /// `board_id`: one's own, or anyone's with `vtc.boards.manage` unqualified (VTI-BRD-091).
+    ///
+    /// # Errors
+    /// [`VtcError::InvalidPayload`] out of schema; the VTC's refusal otherwise (`notFound`,
+    /// `notFacilitator`, `permissionDenied`).
+    pub async fn boards_facilitators_remove(
+        &self,
+        board_id: &str,
+        entry_id: &str,
+        reason: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<facilitators_remove::Response, VtcError> {
+        let mut body = json!({ "boardId": board_id, "entryId": entry_id });
+        if let Some(r) = reason {
+            body["reason"] = json!(r);
+        }
+        self.board_task(task::FACILITATORS_REMOVE, body, key).await
+    }
+
+    /// `vtc/boards/facilitators/list/0.1` — who is appointed to facilitate `board_id`, by entry,
+    /// with when, by whom, and any review under way (VTI-BRD-093).
+    ///
+    /// # Errors
+    /// The VTC's refusal (`notFound`, `permissionDenied`).
+    pub async fn boards_facilitators_list(
+        &self,
+        board_id: &str,
+        key: &HolderKey,
+    ) -> Result<facilitators_list::Response, VtcError> {
+        self.board_task(task::FACILITATORS_LIST, json!({ "boardId": board_id }), key)
+            .await
     }
 
     /// `vtc/boards/list/0.1` — the boards the caller may see.

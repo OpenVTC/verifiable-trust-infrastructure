@@ -3243,6 +3243,24 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideasRemoved": 18, "notesRemoved": 42, "electionsRemoved": 14, "tombstones": {"kept": 14, "removeAt": "2027-11-20T09:00:01Z"}}"#).unwrap()
         ),
         checked!(
+            s::boards::facilitators::add::v0_1::Payload,
+            s::boards::facilitators::add::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "entryId": "dir_Q7m2K9xVb4Tz8LpR", "reason": "Carol convenes the security track."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": ["dir_Q7m2K9xVb4Tz8LpR"]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::facilitators::remove::v0_1::Payload,
+            s::boards::facilitators::remove::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "entryId": "dir_Q7m2K9xVb4Tz8LpR"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": []}"#).unwrap()
+        ),
+        checked!(
+            s::boards::facilitators::list::v0_1::Payload,
+            s::boards::facilitators::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": [{"entryId": "dir_Q7m2K9xVb4Tz8LpR", "appointedAt": "2026-11-01T10:00:00Z", "appointedBy": "dir_K3n8P2xWc5Rz9MqT"}, {"entryId": "dir_T4v9L3xZd6Sq2NpW", "appointedAt": "2026-11-02T14:30:00Z", "reviewEndsAt": "2026-11-12T14:30:00Z"}]}"#).unwrap()
+        ),
+        checked!(
             s::boards::list::v0_1::Payload,
             s::boards::list::v0_1::Response,
             serde_json::from_str::<Value>(r#"{"status": "open"}"#).unwrap(),

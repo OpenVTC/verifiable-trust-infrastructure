@@ -34,12 +34,13 @@ tombstone_retention = 365        # days; 0 keeps none; "forever" keeps them for 
 |---|---|---|
 | Board creator | `vtc.boards.manage` **and** `vtc.elections.manage`, both unqualified | create boards, change a board's election template |
 | Board manager | `vtc.boards.manage` unqualified (every `community-admin`) | everything a facilitator may, on every board, and delete a closed board |
-| Facilitator | `vtc.boards.manage`, unqualified or `board:<boardId>` | change, close and archive the board — closing ends its voting; accept, decline, merge, reopen and select its ideas; hide notes |
+| Facilitator | `vtc.boards.manage`, unqualified or `board:<boardId>` | change, close and archive the board — closing ends its voting; accept, decline, merge, reopen and select its ideas; hide notes; appoint other members its facilitators |
 | Member of the audience | an active member (and, for a group board, a member of that group) | propose, edit and withdraw their own ideas; add and withdraw their own notes; read the board |
 
 `community-admin` holds `vtc.boards.manage` like every `vtc.*` capability. A facilitator for
-one board is an entry whose capability scope lists `vtc.boards.manage` at `board:<boardId>`.
-A facilitator who is not in the audience can run the board, but cannot propose to it.
+one board holds `vtc.boards.manage` at `board:<boardId>`, usually by **appointment** (below);
+an administrator's role may also list it. A facilitator who is not in the audience can run the
+board, but cannot propose to it.
 
 Opening an election needs no `vtc.elections.manage` from the facilitator: the template was
 fixed by someone who holds it, and it is never binding. Closing the board ends its elections
@@ -48,6 +49,31 @@ board's election still take `vtc.elections.manage` (VTI-BRD-032).
 
 A facilitator does not decide their own idea while the board has another facilitator. If there
 is none, they may, and the decision is marked `ownIdea` (VTI-BRD-013).
+
+### Appointing facilitators
+
+Any facilitator of a board appoints an active member to facilitate it too
+(`vtc/boards/facilitators/add`, VTI-BRD-090), from the board's page in the console or with
+`cnm boards facilitators add`. The member needs no administrative role: the appointment is a
+grant of `vtc.boards.manage` at `board:<boardId>` on their own access-control entry, beside
+their role, naming who appointed them. It covers that one board and nothing else, and nobody
+appoints to a board they do not facilitate themselves.
+
+- **Ending one.** A facilitator steps down themselves. Ending someone else's appointment takes
+  `vtc.boards.manage` for every board: the facilitators of one board do not remove one another
+  (VTI-BRD-091). Holding the capability for every board, or through a role, is not an
+  appointment and is changed with `cnm access`.
+- **When the appointer goes.** If whoever appointed a facilitator leaves the community or stops
+  facilitating the board, the appointment goes to review: an `acl.grants.review` item
+  (`boardGrants`) on the action list asks the administrators to re-affirm it. Approved, the
+  approving administrator becomes its appointer; declined, or unanswered by the action
+  lifetime's deadline, it is withdrawn (VTI-BRD-092). The console shows *Under review until …*
+  beside it meanwhile.
+- **When the board or the member goes.** Deleting the board withdraws every appointment to it.
+  A member's appointments go with their access-control entry when they leave.
+- **Who sees them.** `vtc/boards/facilitators/list` shows a board's appointments — by
+  directory entry, never DID, with when, by whom and any review deadline — to the board's
+  facilitators (VTI-BRD-093). Administrators who run every board are not listed.
 
 ## The member portal
 
@@ -131,6 +157,9 @@ cnm boards decide <idea-id> merge --into <other-idea-id>
 cnm boards select <idea-id> selected --slot <slot-id>
 cnm boards close <board-id>                    # ends its voting
 cnm boards delete <board-id> --reason "The event is over"   # closed boards only
+cnm boards facilitators add <board-id> <entry-id> --reason "Convenes the security track"
+cnm boards facilitators list <board-id>
+cnm boards facilitators remove <board-id> <entry-id>          # your own, or as a board manager
 ```
 
 `init --group <group-id>` puts the board to one group. Pick the ballot box from
@@ -161,7 +190,10 @@ because the election's manifest carries them and cannot change.
 ## Audit
 
 `BoardChanged` rows cover board creation, changes, closing and deletion (with its reason and the
-tombstone retention applied), every idea decision and selection, and hiding or showing a note.
+tombstone retention applied), every idea decision and selection, hiding or showing a note, and
+each facilitator appointed, removed or withdrawn at a review's deadline
+(`facilitatorAppointed`, `facilitatorRemoved`, `facilitatorWithdrawn`, naming the facilitator by
+`entry:<entryId>`).
 Each election a closing ended writes its own `ElectionChanged` row (`closedEarly`,
 `cancelled`), and so does each tombstone removed (`tombstoneRemoved`). They name ideas and notes by identifier, never their text, and never
 anything about tickets or ballots. Opening an idea's election also writes the election's own
@@ -171,4 +203,6 @@ anything about tickets or ballots. Opening an idea's election also writes the el
 
 The `boards` keyspace, backed up. An accepted idea keeps only its election's identifier; where
 the election stands is always read from the `elections` keyspace. A deleted board's tombstones
-are `tombstone:<electionId>` rows in `elections`.
+are `tombstone:<electionId>` rows in `elections`. Appointments are not board records: they are
+resource grants on the appointees' access-control entries (`acl`), so every gate reads them where
+the community's authority is recorded.

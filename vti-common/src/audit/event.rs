@@ -3086,8 +3086,9 @@ pub struct BoardChangedData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_id: Option<String>,
     /// `created`, `updated`, `closed`, `archived`, `ideaAccepted`, `ideaDeclined`,
-    /// `ideaMerged`, `ideaReopened`, `ideaSelected`, `ideaNotSelected`, `noteHidden` or
-    /// `noteShown`.
+    /// `ideaMerged`, `ideaReopened`, `ideaSelected`, `ideaNotSelected`, `noteHidden`,
+    /// `noteShown`, `facilitatorAppointed`, `facilitatorRemoved` or `facilitatorWithdrawn` (each
+    /// with the facilitator's `entry:<entryId>` in `fields`, never a DID).
     pub change: String,
     /// The election an accepted idea was put to.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -99,6 +99,18 @@ const NOTE_WITHDRAW_ERR_ALREADY_WITHDRAWN: &str =
 const HIDE_ERR_NOTE_NOT_FOUND: &str = b::notes::hide::v0_1::error_codes::NOTE_NOT_FOUND.code;
 const HIDE_ERR_STATE_INVALID: &str = b::notes::hide::v0_1::error_codes::STATE_INVALID.code;
 const HIDE_ERR_REASON_REQUIRED: &str = b::notes::hide::v0_1::error_codes::REASON_REQUIRED.code;
+const FACILITATORS_ADD_ERR_NOT_FOUND: &str =
+    b::facilitators::add::v0_1::error_codes::NOT_FOUND.code;
+const FACILITATORS_ADD_ERR_ENTRY_NOT_FOUND: &str =
+    b::facilitators::add::v0_1::error_codes::ENTRY_NOT_FOUND.code;
+const FACILITATORS_ADD_ERR_ALREADY_FACILITATOR: &str =
+    b::facilitators::add::v0_1::error_codes::ALREADY_FACILITATOR.code;
+const FACILITATORS_REMOVE_ERR_NOT_FOUND: &str =
+    b::facilitators::remove::v0_1::error_codes::NOT_FOUND.code;
+const FACILITATORS_REMOVE_ERR_NOT_FACILITATOR: &str =
+    b::facilitators::remove::v0_1::error_codes::NOT_FACILITATOR.code;
+const FACILITATORS_LIST_ERR_NOT_FOUND: &str =
+    b::facilitators::list::v0_1::error_codes::NOT_FOUND.code;
 
 const BOX: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
 const OTHER_BOX: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
@@ -1806,4 +1818,311 @@ async fn vti_brd_009_a_tombstone_is_read_by_members_until_it_is_removed() {
         .unwrap();
     let (_, doc) = call(&tv, &alice, &read, json!({ "electionId": e })).await;
     assert_eq!(tt_error_code(&doc), TOMBSTONE_ERR_ELECTION_UNKNOWN, "{doc}");
+}
+
+// ─── facilitators by appointment (VTI-BRD-090 – 093) ─────────────────────
+
+/// The directory entry of `p`, made if they have none yet.
+async fn entry_of(tv: &TestVtc, p: &Party) -> String {
+    let dir = &tv.state.directory;
+    vtc_service::directory::cards::ensure(dir.ks(), &p.did, &dir.settings(), None)
+        .await
+        .unwrap()
+        .entry_id
+}
+
+fn appointed(doc: &Value) -> Vec<String> {
+    payload(doc)["facilitators"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            v.as_str().map_or_else(
+                || v["entryId"].as_str().unwrap().to_string(),
+                str::to_string,
+            )
+        })
+        .collect()
+}
+
+/// VTI-BRD-090 – 093: a plain member appointed to one board facilitates it and nothing else,
+/// appoints a co-facilitator, never removes a peer, and loses what they appointed once they no
+/// longer stand behind it; deleting the board withdraws every appointment to it.
+#[tokio::test]
+async fn vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed() {
+    let tv = community(InProcessBox::new()).await;
+    let chair = GatedAdmin::new(&tv).await;
+    let alice = member(&tv).await;
+    let bob = member(&tv).await;
+    let carol = member(&tv).await;
+    let dave = member(&tv).await;
+    let (bob_e, carol_e, dave_e) = (
+        entry_of(&tv, &bob).await,
+        entry_of(&tv, &carol).await,
+        entry_of(&tv, &dave).await,
+    );
+    let board = create_board(&tv, &chair.requester, board_body()).await;
+    let other = create_board(&tv, &chair.requester, board_body()).await;
+    let idea = propose(&tv, &alice, &board, "Key ceremonies").await;
+    let add = |board: &str, entry: &str| json!({ "boardId": board, "entryId": entry });
+
+    // Bob is a plain member: he cannot decide an idea yet.
+    let (_, doc) = decide(
+        &tv,
+        &bob,
+        &idea,
+        json!({ "decision": "decline", "reason": "Off topic." }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+
+    // Refusals the specification declares.
+    let (_, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/add"),
+        add(UNKNOWN_BOARD, &bob_e),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), FACILITATORS_ADD_ERR_NOT_FOUND, "{doc}");
+    let (_, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/add"),
+        add(&board, "dir_AAAAAAAAAAAAAAAAAAAA"),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        FACILITATORS_ADD_ERR_ENTRY_NOT_FOUND,
+        "{doc}"
+    );
+    let (_, doc) = call(&tv, &alice, &uri("facilitators/add"), add(&board, &bob_e)).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        "permissionDenied",
+        "a member who does not facilitate: {doc}"
+    );
+    let (_, doc) = call(
+        &tv,
+        &alice,
+        &uri("facilitators/list"),
+        json!({ "boardId": board }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    let (_, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/list"),
+        json!({ "boardId": UNKNOWN_BOARD }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        FACILITATORS_LIST_ERR_NOT_FOUND,
+        "{doc}"
+    );
+
+    // VTI-BRD-090: the chair appoints Bob, by entry.
+    let (status, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/add"),
+        json!({ "boardId": board, "entryId": bob_e, "reason": "Bob convenes the security track." }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(appointed(&doc), vec![bob_e.clone()]);
+    let (_, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/add"),
+        add(&board, &bob_e),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        FACILITATORS_ADD_ERR_ALREADY_FACILITATOR,
+        "{doc}"
+    );
+    // The grant sits beside Bob's role: he holds no administrative role at all.
+    let entry = vtc_service::acl::get_acl_entry(&tv.state.acl_ks, &bob.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!entry.is_administrator());
+    assert_eq!(entry.resource_grants.len(), 1);
+    assert_eq!(entry.resource_grants[0].delegated_by, chair.requester.did);
+
+    // Bob now facilitates this board, and only this one.
+    let (status, doc) = decide(
+        &tv,
+        &bob,
+        &idea,
+        json!({ "decision": "decline", "reason": "Covered on Tuesday." }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (_, doc) = call(&tv, &bob, &uri("show"), json!({ "boardId": board })).await;
+    assert_eq!(payload(&doc)["board"]["facilitator"], true, "{doc}");
+    let (_, doc) = call(&tv, &bob, &uri("show"), json!({ "boardId": other })).await;
+    assert_eq!(payload(&doc)["board"]["facilitator"], false, "{doc}");
+    // Bounded by his own holding (VTI-ACL-071): he appoints nobody to a board he does not run.
+    let (_, doc) = call(&tv, &bob, &uri("facilitators/add"), add(&other, &carol_e)).await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+
+    // He appoints Carol a co-facilitator of his board.
+    let (status, doc) = call(&tv, &bob, &uri("facilitators/add"), add(&board, &carol_e)).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut both = vec![bob_e.clone(), carol_e.clone()];
+    both.sort();
+    assert_eq!(appointed(&doc), both);
+    let (_, doc) = call(
+        &tv,
+        &carol,
+        &uri("facilitators/list"),
+        json!({ "boardId": board }),
+    )
+    .await;
+    let rows = payload(&doc)["facilitators"].as_array().unwrap().clone();
+    assert_eq!(rows.len(), 2, "{doc}");
+    assert_eq!(rows[1]["entryId"], json!(carol_e));
+    assert_eq!(
+        rows[1]["appointedBy"],
+        json!(bob_e),
+        "named by entry, never DID: {doc}"
+    );
+    assert!(
+        !doc.to_string().contains(&bob.did),
+        "no DID in the answer: {doc}"
+    );
+
+    // VTI-BRD-091: facilitators of one board do not end one another's appointments.
+    let (_, doc) = call(
+        &tv,
+        &carol,
+        &uri("facilitators/remove"),
+        add(&board, &bob_e),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    let (_, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/remove"),
+        add(UNKNOWN_BOARD, &bob_e),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        FACILITATORS_REMOVE_ERR_NOT_FOUND,
+        "{doc}"
+    );
+    let (_, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/remove"),
+        add(&board, &dave_e),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        FACILITATORS_REMOVE_ERR_NOT_FACILITATOR,
+        "{doc}"
+    );
+
+    // VTI-BRD-092: the chair ends Bob's appointment, so Bob no longer stands behind Carol's.
+    let (status, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/remove"),
+        add(&board, &bob_e),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(appointed(&doc), vec![carol_e.clone()]);
+    assert_eq!(
+        vtc_service::boards::facilitators::sweep(&tv.state)
+            .await
+            .unwrap(),
+        0
+    );
+    let (_, doc) = call(
+        &tv,
+        &carol,
+        &uri("facilitators/list"),
+        json!({ "boardId": board }),
+    )
+    .await;
+    assert!(
+        payload(&doc)["facilitators"][0]["reviewEndsAt"].is_string(),
+        "under review: {doc}"
+    );
+    // The review's deadline passes unanswered: the appointment is withdrawn, and audited.
+    let mut entry = vtc_service::acl::get_acl_entry(&tv.state.acl_ks, &carol.did)
+        .await
+        .unwrap()
+        .unwrap();
+    entry.resource_grants[0].review.as_mut().unwrap().deadline = Utc::now() - Duration::seconds(1);
+    store_acl_entry(&tv.state.acl_ks, &entry).await.unwrap();
+    assert_eq!(
+        vtc_service::boards::facilitators::sweep(&tv.state)
+            .await
+            .unwrap(),
+        1
+    );
+    let (_, doc) = call(&tv, &carol, &uri("show"), json!({ "boardId": board })).await;
+    assert_eq!(payload(&doc)["board"]["facilitator"], false, "{doc}");
+    // A facilitator steps down: Dave is appointed, then ends his own appointment.
+    call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/add"),
+        add(&board, &dave_e),
+    )
+    .await;
+    let (status, doc) = call(
+        &tv,
+        &dave,
+        &uri("facilitators/remove"),
+        add(&board, &dave_e),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(appointed(&doc).is_empty());
+
+    // Deleting the board withdraws every appointment to it.
+    let (status, doc) = call(
+        &tv,
+        &chair.requester,
+        &uri("facilitators/add"),
+        add(&board, &dave_e),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    call(
+        &tv,
+        &chair.requester,
+        &uri("update"),
+        json!({ "boardId": board, "status": "closed" }),
+    )
+    .await;
+    let (status, doc) = chair
+        .call(
+            &tv,
+            &uri("delete"),
+            json!({ "boardId": board, "reason": "The event is over." }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let entry = vtc_service::acl::get_acl_entry(&tv.state.acl_ks, &dave.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        entry.resource_grants.is_empty(),
+        "{:?}",
+        entry.resource_grants
+    );
 }

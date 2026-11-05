@@ -418,6 +418,18 @@ spec_types! {
     BoardsDelete01Payload(boards::delete::v0_1::Payload);
     /// `vtc/boards/delete/0.1#response` — what was removed, and when the tombstones go.
     BoardsDelete01Response(boards::delete::v0_1::Response);
+    /// `vtc/boards/facilitators/add/0.1` payload — appointing a board's facilitator.
+    BoardsFacilitatorsAdd01Payload(boards::facilitators::add::v0_1::Payload);
+    /// `vtc/boards/facilitators/add/0.1#response` — the board's appointed facilitators.
+    BoardsFacilitatorsAdd01Response(boards::facilitators::add::v0_1::Response);
+    /// `vtc/boards/facilitators/remove/0.1` payload — ending a facilitator's appointment.
+    BoardsFacilitatorsRemove01Payload(boards::facilitators::remove::v0_1::Payload);
+    /// `vtc/boards/facilitators/remove/0.1#response` — the board's appointed facilitators.
+    BoardsFacilitatorsRemove01Response(boards::facilitators::remove::v0_1::Response);
+    /// `vtc/boards/facilitators/list/0.1` payload — the board whose facilitators to read.
+    BoardsFacilitatorsList01Payload(boards::facilitators::list::v0_1::Payload);
+    /// `vtc/boards/facilitators/list/0.1#response` — each appointment, by entry.
+    BoardsFacilitatorsList01Response(boards::facilitators::list::v0_1::Response);
     /// `vtc/boards/list/0.1` payload — the boards the caller may see.
     BoardsList01Payload(boards::list::v0_1::Payload);
     /// `vtc/boards/list/0.1#response` — the boards.
@@ -936,6 +948,12 @@ mod tests {
         check::<BoardsUpdate01Response>();
         check::<BoardsDelete01Payload>();
         check::<BoardsDelete01Response>();
+        check::<BoardsFacilitatorsAdd01Payload>();
+        check::<BoardsFacilitatorsAdd01Response>();
+        check::<BoardsFacilitatorsRemove01Payload>();
+        check::<BoardsFacilitatorsRemove01Response>();
+        check::<BoardsFacilitatorsList01Payload>();
+        check::<BoardsFacilitatorsList01Response>();
         check::<BoardsList01Payload>();
         check::<BoardsList01Response>();
         check::<BoardsShow01Payload>();

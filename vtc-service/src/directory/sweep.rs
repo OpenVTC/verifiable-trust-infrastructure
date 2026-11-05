@@ -78,6 +78,10 @@ pub async fn settle(state: &AppState) -> Result<(usize, usize, usize), AppError>
     if let Err(e) = crate::groups::managers::sweep(state).await {
         warn!(error = %e, "could not review group manager appointments; the next pass will");
     }
+    // So do board facilitators' (VTI-BRD-092).
+    if let Err(e) = crate::boards::facilitators::sweep(state).await {
+        warn!(error = %e, "could not review board facilitator appointments; the next pass will");
+    }
     let erased = super::images::collect(state.directory.ks(), Utc::now()).await?
         + super::notes::sweep_departed(state.directory.ks(), Utc::now()).await?;
     let withdrawn = super::external::reconcile_all(state).await?;

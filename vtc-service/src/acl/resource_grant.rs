@@ -205,6 +205,8 @@ impl ResourceGrant {
             (Capability::GitCommitSign, _) => inside && cap == Capability::GitCommitSign,
             // A group manager's appointment: that group, nothing else.
             (Capability::GroupsManage, _) => exact && cap == Capability::GroupsManage,
+            // A board facilitator's appointment: that board, nothing else (VTI-BRD-090).
+            (Capability::BoardsManage, _) => exact && cap == Capability::BoardsManage,
             _ => false,
         }
     }

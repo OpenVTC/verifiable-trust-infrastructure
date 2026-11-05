@@ -1714,6 +1714,42 @@ fn witnesses() -> Vec<Witness> {
             "vti_brd_009_a_tombstone_is_read_by_members_until_it_is_removed"
         ),
         witness!(
+            s::boards::facilitators::add::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::board_tasks::FACILITATORS_ADD_ERR_NOT_FOUND,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::add::v0_1::error_codes::ENTRY_NOT_FOUND,
+            crate::trust_tasks::board_tasks::FACILITATORS_ADD_ERR_ENTRY_NOT_FOUND,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::add::v0_1::error_codes::ALREADY_FACILITATOR,
+            crate::trust_tasks::board_tasks::FACILITATORS_ADD_ERR_ALREADY_FACILITATOR,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::remove::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::board_tasks::FACILITATORS_REMOVE_ERR_NOT_FOUND,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::remove::v0_1::error_codes::NOT_FACILITATOR,
+            crate::trust_tasks::board_tasks::FACILITATORS_REMOVE_ERR_NOT_FACILITATOR,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::list::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::board_tasks::FACILITATORS_LIST_ERR_NOT_FOUND,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
             s::boards::delete::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::board_tasks::DELETE_ERR_NOT_FOUND,
             "board_tasks.rs",

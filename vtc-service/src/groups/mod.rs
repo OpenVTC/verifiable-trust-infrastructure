@@ -632,21 +632,12 @@ impl Standing {
 /// The entries holding `vtc.groups.manage` qualified to `group_id`, by entry:
 /// informational, read from the access-control list (`Group.managers`).
 pub async fn managers(state: &AppState, group_id: &str) -> Result<Vec<String>, AppError> {
-    let wanted = ResourceQualifier::Group(group_id.to_string());
-    let now = Utc::now();
-    let mut out = BTreeSet::new();
-    for entry in crate::acl::list_acl_entries(&state.acl_ks).await? {
-        let appointed = entry.resource_grants.iter().any(|g| {
-            g.capability == Capability::GroupsManage && g.resource == wanted && g.is_live(now)
-        });
-        if appointed
-            && let Some(e) =
-                crate::directory::cards::entry_of(state.directory.ks(), &entry.did).await?
-        {
-            out.insert(e);
-        }
-    }
-    Ok(out.into_iter().collect())
+    crate::acl::appointment::holder_entries(
+        state,
+        crate::acl::appointment::Kind::GroupManager,
+        group_id,
+    )
+    .await
 }
 
 /// `m` as `GroupMember` for `standing`: `credentialId` and
