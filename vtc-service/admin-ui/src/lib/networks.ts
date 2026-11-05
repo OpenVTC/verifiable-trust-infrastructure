@@ -20,6 +20,7 @@ import type {
   NetworkJoinResponse,
   NetworkLeaveResponse,
   NetworkMembership,
+  NetworkPreviewResponse,
   NetworkRepudiateResponse,
   NetworkRoleAssignment,
   NetworksListResponse,
@@ -28,6 +29,7 @@ import type {
 
 export const NETWORKS_LIST_TASK = "https://trusttasks.org/spec/vtc/networks/list/0.2";
 export const NETWORKS_SHOW_TASK = "https://trusttasks.org/spec/vtc/networks/show/0.2";
+export const NETWORKS_PREVIEW_TASK = "https://trusttasks.org/spec/vtc/networks/preview/0.1";
 export const NETWORKS_JOIN_TASK = "https://trusttasks.org/spec/vtc/networks/join/0.2";
 export const NETWORKS_LEAVE_TASK = "https://trusttasks.org/spec/vtc/networks/leave/0.2";
 export const NETWORKS_REPUDIATE_TASK = "https://trusttasks.org/spec/vtc/networks/repudiate/0.2";
@@ -40,6 +42,7 @@ export const networkKeys = {
   all: ["networks"] as const,
   list: ["networks", "list"] as const,
   show: (did: string) => ["networks", "show", did] as const,
+  preview: (url: string, network: string) => ["networks", "preview", url, network] as const,
 };
 
 /** `list`'s largest page. */
@@ -65,6 +68,37 @@ export async function listNetworks(): Promise<NetworkMembership[]> {
 
 export async function showNetwork(network: string): Promise<NetworkMembership> {
   return (await postSignedRead<NetworksShowResponse>(NETWORKS_SHOW_TASK, { network })).membership;
+}
+
+/** `vtc/networks/preview`: the network at `url`, read by the community (the console's own
+ *  policy keeps this page from fetching it), and where the community stands with it. A
+ *  read: no step-up. `network`, when given, must be the DID the network answers as. */
+export async function previewNetwork(url: string, network: string): Promise<NetworkPreviewResponse> {
+  const payload = {
+    url: url.trim().replace(/\/+$/, ""),
+    ...(DID.test(network.trim()) ? { network: network.trim() } : {}),
+  };
+  return postSignedRead<NetworkPreviewResponse>(NETWORKS_PREVIEW_TASK, payload);
+}
+
+/** Whether `url` is worth previewing: an absolute https URL. */
+export function previewable(url: string): boolean {
+  try {
+    return new URL(url.trim()).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** Rows for every role the network requires that `rows` leaves out, appended. */
+export function withRequiredRoles(
+  rows: RoleRow[],
+  roles: { name: string; required: boolean }[],
+): RoleRow[] {
+  const missing = roles
+    .filter((r) => r.required && !rows.some((row) => row.role.trim() === r.name))
+    .map((r) => ({ role: r.name, groupId: "" }));
+  return missing.length ? [...rows, ...missing] : rows;
 }
 
 export async function joinNetwork(
@@ -167,6 +201,8 @@ export function networkRefusal(err: unknown): string | null {
       return "That network does not list this community yet. Ask its administrators to list (invite) it first.";
     case "networkMismatch":
       return "The network at that URL answers as a different DID. Check both against the invitation.";
+    case "networkUnreachable":
+      return "Nothing at that URL answered as a network. Check the URL against the invitation.";
     case "unknownGroup":
       return "A group picked has no identity of its own yet. Pick a group with a DID.";
     case "networkRefused":

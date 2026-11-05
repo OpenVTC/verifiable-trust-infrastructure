@@ -374,6 +374,16 @@ async fn own_listing(
     community: &Community,
     resolver: &VmKeyResolver,
 ) -> Result<Value, NetError> {
+    Ok(own_entry(client, network, community, resolver).await?["listing"].clone())
+}
+
+/// [`own_listing`], with the rest of the entry the network answered.
+async fn own_entry(
+    client: &VtnClient,
+    network: &str,
+    community: &Community,
+    resolver: &VmKeyResolver,
+) -> Result<Value, NetError> {
     // A party always reads its own entry; any refusal means it has none there. An answer
     // that is not the network's says nothing about the entry.
     let answer =
@@ -399,7 +409,64 @@ async fn own_listing(
             "the network's listing does not list this party as a community".into(),
         ));
     }
-    Ok(listing)
+    Ok(answer["entry"].clone())
+}
+
+/// What [`preview`] found at a network.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Preview {
+    pub network: String,
+    pub url: String,
+    /// The network's `/.well-known/vtn` profile, as it answered.
+    pub profile: Value,
+    /// `Ok(entry state)` when the network verifiably lists this community; `Err(why)` when
+    /// it does not.
+    pub listing: Result<String, String>,
+    /// The community's own record of the membership, if it holds one.
+    pub membership: Option<State>,
+}
+
+/// Read a network before joining it (`vtc/networks/preview`): its profile, and whether it
+/// lists this community, with the same check [`join`] makes. Signs nothing but the
+/// community's own read of its entry, and changes nothing here or there.
+pub async fn preview(
+    state: &AppState,
+    url: &str,
+    expected: Option<&str>,
+) -> Result<Preview, NetError> {
+    let url = url.trim_end_matches('/');
+    let client = client(state, url)?;
+    let profile = client.profile().await.map_err(|e| match refused(e) {
+        NetError::Mismatch(m) => NetError::Mismatch(m),
+        other => NetError::Unavailable(format!("{url} did not answer as a network: {other}")),
+    })?;
+    let network = profile["did"]
+        .as_str()
+        .filter(|d| d.starts_with("did:"))
+        .ok_or_else(|| NetError::Unavailable(format!("{url} names no network DID")))?
+        .to_string();
+    if let Some(expected) = expected
+        && expected != network
+    {
+        return Err(NetError::Mismatch(format!(
+            "the network at {url} answers as {network}, not {expected}"
+        )));
+    }
+    let community = community(state).await?;
+    let listing = match own_entry(&client, &network, &community, &resolver(state)).await {
+        Ok(entry) => Ok(entry["state"].as_str().unwrap_or("listed").to_string()),
+        Err(NetError::NotListed(why)) => Err(why),
+        Err(NetError::Mismatch(m)) => return Err(NetError::Mismatch(m)),
+        Err(other) => Err(other.to_string()),
+    };
+    let membership = load(state, &network).await?.map(|m| m.state);
+    Ok(Preview {
+        network,
+        url: url.to_string(),
+        profile,
+        listing,
+        membership,
+    })
 }
 
 /// Register `group` for `role` with the network, and verify the network's acceptance.

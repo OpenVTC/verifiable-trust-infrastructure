@@ -1229,6 +1229,16 @@ fn table() -> Vec<Conformance> {
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
+            s::networks::preview::v0_1::Payload,
+            s::networks::preview::v0_1::Response,
+            json!({ "url": "https://whn.example.org", "network": "did:example:whn" }),
+            json!({ "network": "did:example:whn", "url": "https://whn.example.org",
+                    "name": "World Health Network", "owner": "WHN Foundation",
+                    "framework": { "iri": "https://whn.example.org/governance", "version": "1.0" },
+                    "roles": [{ "name": "admins", "required": true }],
+                    "listed": true, "entryState": "listed" })
+        ),
+        checked!(
             s::networks::join::v0_2::Payload,
             s::networks::join::v0_2::Response,
             json!({ "url": "https://whn.example.org", "network": "did:example:whn",

@@ -1035,6 +1035,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // memberships, and joining, leaving or rejecting a network (`trust_tasks::network_tasks`).
     "https://trusttasks.org/spec/vtc/networks/list/0.2",
     "https://trusttasks.org/spec/vtc/networks/show/0.2",
+    "https://trusttasks.org/spec/vtc/networks/preview/0.1",
     "https://trusttasks.org/spec/vtc/networks/join/0.2",
     "https://trusttasks.org/spec/vtc/networks/leave/0.2",
     "https://trusttasks.org/spec/vtc/networks/repudiate/0.2",

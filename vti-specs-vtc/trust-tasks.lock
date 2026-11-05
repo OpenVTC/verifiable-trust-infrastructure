@@ -975,6 +975,12 @@ type_uri = "https://trusttasks.org/spec/vtc/networks/notice/0.1"
 digest = "sha256:b80bec4a28f6b324f1c655e8618216ee8accea6eeeb3812770667ef5a9255a7d"
 
 [[task]]
+slug = "vtc/networks/preview"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/networks/preview/0.1"
+digest = "sha256:ffe03761c1c376fca9b3aae89e1a5806d8c332bc613b6f21b2eb7b259d3e4945"
+
+[[task]]
 slug = "vtc/networks/repudiate"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vtc/networks/repudiate/0.2"

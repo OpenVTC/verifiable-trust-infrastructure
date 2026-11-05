@@ -4,11 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
   NETWORKS_JOIN_TASK,
   NETWORKS_LIST_TASK,
+  NETWORKS_PREVIEW_TASK,
   NETWORKS_SHOW_TASK,
   invitationOf,
   joinDraftErrors,
   joinPayload,
   unassignedRoleOf,
+  withRequiredRoles,
 } from "@/lib/networks";
 import { Networks } from "@/plugins/networks";
 import type { NetworkMembership } from "@/lib/wire-types";
@@ -95,6 +97,16 @@ describe("the join form's helpers", () => {
     expect(joinPayload(NETWORK_URL, NETWORK_DID, [])).toEqual({ url: NETWORK_URL, network: NETWORK_DID });
   });
 
+  it("adds a row for each required role not yet assigned", () => {
+    const roles = [
+      { name: "admins", required: true },
+      { name: "news", required: false },
+    ];
+    expect(withRequiredRoles([], roles)).toEqual([{ role: "admins", groupId: "" }]);
+    const assigned = [{ role: "admins", groupId: "g" }];
+    expect(withRequiredRoles(assigned, roles)).toBe(assigned);
+  });
+
   it("reads the role a roleUnassigned refusal names", () => {
     expect(
       unassignedRoleOf({ code: "vtc/networks/join:roleUnassigned", details: { role: "admins" } }),
@@ -163,5 +175,58 @@ describe("Networks", () => {
       network: NETWORK_DID,
       groups: [{ role: "admins", groupId: "g_admins" }],
     });
+  });
+
+  const previewed = {
+    network: NETWORK_DID,
+    url: NETWORK_URL,
+    name: "First Network",
+    owner: "Glenn Gore (Affinidi)",
+    framework: { iri: "https://vtn.example/governance", version: "1.0" },
+    roles: [
+      { name: "admins", required: true },
+      { name: "news", required: false },
+    ],
+    listed: true,
+    entryState: "listed",
+  };
+
+  it("shows the network before joining, and adds a row for its required role", async () => {
+    const requests = mockFetch([
+      taskRoute(NETWORKS_LIST_TASK, { items: [] }),
+      taskRoute(GROUPS_LIST, { items: [group("g_admins", "Admins", "did:webvh:QmG:group.example")] }),
+      taskRoute(NETWORKS_PREVIEW_TASK, previewed),
+    ]);
+    // An invitation carrying only the URL: the DID comes from the network.
+    mount(`/networks?join=${encodeURIComponent(NETWORK_URL)}`);
+
+    expect(await screen.findByRole("heading", { name: "First Network" })).toBeTruthy();
+    expect(screen.getByText("Glenn Gore (Affinidi)")).toBeTruthy();
+    expect(screen.getByText("admins (required), news")).toBeTruthy();
+    expect(screen.getByText(/Listed, waiting for this community to accept/)).toBeTruthy();
+    await waitFor(() =>
+      expect((screen.getByLabelText("Network DID") as HTMLInputElement).value).toBe(NETWORK_DID),
+    );
+    expect((screen.getByLabelText("Role") as HTMLInputElement).value).toBe("admins");
+    expect(sentPayloads(requests, NETWORKS_PREVIEW_TASK)[0]).toEqual({ url: NETWORK_URL });
+  });
+
+  it("says so, and offers no join, when the network does not list the community", async () => {
+    mockFetch([
+      taskRoute(NETWORKS_LIST_TASK, { items: [] }),
+      taskRoute(GROUPS_LIST, { items: [] }),
+      taskRoute(NETWORKS_PREVIEW_TASK, {
+        ...previewed,
+        roles: [],
+        listed: false,
+        entryState: undefined,
+        notListedReason: "The network holds no entry for this community.",
+      }),
+    ]);
+    mount(
+      `/networks?join=${encodeURIComponent(NETWORK_URL)}&network=${encodeURIComponent(NETWORK_DID)}`,
+    );
+    expect(await screen.findByText(/does not list this community yet/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Join network" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
