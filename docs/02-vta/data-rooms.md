@@ -1734,6 +1734,26 @@ mediator the VTA receives at; a VTA whose mediator serves only its own
 principal identifies the member by it, and should not be asked to watch a
 `private` room.
 
+What the parties need of the deployment (`tests/e2e/tests/room_key_watch.rs` runs
+the whole loop through a real mediator):
+
+- **The host is reached over HTTPS** to arm a watch. The `rooms/watch` the VTA
+  sends is issued by your member, and DIDComm and TSP would authenticate the VTA
+  as its sender instead, which the bindings refuse (`identityMismatch`); so the
+  host's DID document advertises a `TrustTaskHTTPS` endpoint. It signals the
+  address over its mediator session.
+- **The host signs its answers** as its own DID, refusals included: the VTA
+  believes nothing a host it addressed did not sign. `room-host` does so once it
+  has an identity (`--mediator-did`, or one its VTA holds for it).
+- **The VTA's mediator lets a DID it has never seen receive DIDComm.** Nothing
+  registers a watch address or widens its account, so it gets the mediator's
+  `global_acl_default`, and must be able to connect (`LOCAL`) and take the host's
+  signal — which arrives as a forward — from a sender it has never named: an
+  open access list (`explicit_deny`) and `RECEIVE_FORWARDED`. The `mediator.toml`
+  default, `DENY_ALL,LOCAL,SEND_MESSAGES,RECEIVE_MESSAGES`, grants neither, and no
+  self-change bit to widen it, so on that mediator the watch arms, the address
+  connects, and the host's signal is refused (`e.p.delivery.refused`).
+
 **With an address of your own.** A client that receives Trust Task documents at
 a DID of its own — a command line, a desktop agent — can arm the host's watch
 itself with `--via-host`: your VTA completes the `rooms/watch` as the member

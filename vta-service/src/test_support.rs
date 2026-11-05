@@ -2200,6 +2200,12 @@ struct MockVtaTransports {
     /// alongside the ATM. Held so a test can reach the VTA-side relationship
     /// store (see [`MockVta::forget_tsp_relationship`]).
     profile: Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    /// The room watches' address supervisor
+    /// ([`crate::messaging::watch_addresses::run`]), once
+    /// [`MockVta::start_watch_addresses`] has started it. Stopped by `shutdown`
+    /// (the cancel above) and awaited, so every address's socket is closed
+    /// before the mediator goes.
+    watch_addresses: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// A candidate mediator configured for migration-handshake tests.
@@ -2367,6 +2373,19 @@ impl MockVta {
     /// ```
     #[cfg(feature = "transport-harness")]
     pub async fn start_with_transports() -> MockVta {
+        Self::start_with_transports_using(|b| b).await
+    }
+
+    /// [`start_with_transports`](Self::start_with_transports), with the
+    /// embedded mediator's builder passed through `customize` first — for a
+    /// test that needs the mediator configured as a deployment configures it
+    /// (its `global_acl_default`, say) rather than as the fixture defaults it.
+    #[cfg(feature = "transport-harness")]
+    pub async fn start_with_transports_using(
+        customize: impl FnOnce(
+            affinidi_messaging_test_mediator::TestMediatorBuilder,
+        ) -> affinidi_messaging_test_mediator::TestMediatorBuilder,
+    ) -> MockVta {
         use affinidi_messaging_test_mediator::TestMediator;
         use affinidi_tdk::dids::{
             OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
@@ -2385,14 +2404,16 @@ impl MockVta {
         // VTA now requires before it will admit any application message — and
         // §7.2.2 says *drop*, so the symptom is a harness that times out with
         // nothing explaining it.
-        let mediator = TestMediator::builder()
-            .local_direct_delivery(true, false)
-            .enable_forwarding(true)
-            .enable_external_forwarding(true)
-            .enable_inter_mediator_relay(true)
-            .spawn()
-            .await
-            .expect("spawn test mediator");
+        let mediator = customize(
+            TestMediator::builder()
+                .local_direct_delivery(true, false)
+                .enable_forwarding(true)
+                .enable_external_forwarding(true)
+                .enable_inter_mediator_relay(true),
+        )
+        .spawn()
+        .await
+        .expect("spawn test mediator");
         let mediator_did = mediator.did().to_string();
 
         // The `accept` list is deliberately empty — see MAX_DID_BYTES below. It
@@ -2550,8 +2571,69 @@ impl MockVta {
             messaging,
             atm,
             profile: messaging_profile,
+            watch_addresses: None,
         });
         mock
+    }
+
+    /// Give the VTA the `[messaging]` section a deployed VTA on this mediator
+    /// has: what a room watch mints its address at, and the route a push to a
+    /// `did:key` client takes. Not done by
+    /// [`start_with_transports`](Self::start_with_transports) itself, because
+    /// with it every push to a `did:key` finds a route, which tests written
+    /// against the mock without one do not expect.
+    #[cfg(feature = "transport-harness")]
+    pub async fn configure_messaging(&self) {
+        let t = self
+            .transports
+            .as_ref()
+            .expect("configure_messaging() requires start_with_transports()");
+        self.ctx.state.config.write().await.messaging = Some(vti_common::config::MessagingConfig {
+            mediator_url: t.mediator.endpoint().to_string(),
+            mediator_did: t.mediator_did.clone(),
+            mediator_host: None,
+            setup_acl: false,
+            drain_inbox_on_start: false,
+        });
+    }
+
+    /// Start the room watches' address supervisor, as `server.rs` does at boot:
+    /// one mediator connection per watch's address. Separate from
+    /// [`configure_messaging`](Self::configure_messaging) so a test can arm a
+    /// watch, let its host signal, and only then open the address's connection.
+    #[cfg(feature = "transport-harness")]
+    pub fn start_watch_addresses(&mut self) {
+        let state = self.ctx.state.clone();
+        let t = self
+            .transports
+            .as_mut()
+            .expect("start_watch_addresses() requires start_with_transports()");
+        assert!(
+            t.watch_addresses.is_none(),
+            "the address supervisor is already running"
+        );
+        t.watch_addresses = Some(tokio::spawn(crate::messaging::watch_addresses::run(
+            state,
+            t.shutdown.clone(),
+        )));
+    }
+
+    /// How many messages the embedded mediator holds for `did`, waiting for it
+    /// to collect them.
+    #[cfg(feature = "transport-harness")]
+    pub async fn mediator_inbox_count(&self, did: &str) -> u64 {
+        use sha2::{Digest, Sha256};
+
+        let t = self
+            .transports
+            .as_ref()
+            .expect("mediator_inbox_count() requires start_with_transports()");
+        t.mediator
+            .store()
+            .inbox_status(&hex::encode(Sha256::digest(did.as_bytes())))
+            .await
+            .map(|s| s.message_count)
+            .unwrap_or(0)
     }
 
     /// Test seam: make the VTA **forget** its TSP relationship with `peer_did`,
@@ -2822,6 +2904,9 @@ impl MockVta {
             if let Some(handle) = transports.loop_handle.take() {
                 let _ = handle.await;
             }
+            if let Some(handle) = transports.watch_addresses.take() {
+                let _ = handle.await;
+            }
             transports.atm.graceful_shutdown().await;
             transports.mediator.shutdown();
         }
@@ -2846,6 +2931,9 @@ impl Drop for MockVta {
             // Prefer `shutdown().await`, which does stop it properly.
             transports.shutdown.cancel();
             if let Some(handle) = transports.loop_handle.take() {
+                handle.abort();
+            }
+            if let Some(handle) = transports.watch_addresses.take() {
                 handle.abort();
             }
             transports.mediator.shutdown();
@@ -4299,4 +4387,79 @@ pub async fn seed_holder_key(
         .await
         .expect("store the holder key record");
     did
+}
+
+/// Make `member` (a holder key this VTA manages — [`seed_holder_key`]) a member
+/// of the room `room_did`: an authority credential conferring `actions` and a
+/// membership credential, both issued and signed by the room with
+/// `room_secret`, put in this VTA's vault where the room oracle looks for them.
+/// Valid from a minute ago for 30 days.
+pub async fn seed_room_membership(
+    state: &crate::server::AppState,
+    room_did: &str,
+    room_secret: &affinidi_tdk::secrets_resolver::secrets::Secret,
+    member: &str,
+    actions: &[&str],
+) {
+    use chrono::{Duration, Utc};
+    use dtg_credentials::DTGCredential;
+
+    let now = Utc::now();
+    let mut vac = DTGCredential::new_vac(
+        room_did.to_string(),
+        dtg_credentials::IssuerScope::Public,
+        member.to_string(),
+        room_did.to_string(),
+        actions.iter().map(|a| a.to_string()).collect(),
+        now - Duration::minutes(1),
+        now + Duration::days(30),
+    )
+    .expect("an authority credential")
+    .with_id(format!("urn:example:vac:{member}"));
+    vac.sign(room_secret, None)
+        .await
+        .expect("the room signs the authority credential");
+    let mut vmc = DTGCredential::new_vmc(
+        room_did.to_string(),
+        member.to_string(),
+        now - Duration::minutes(1),
+        Some(now + Duration::days(30)),
+        false,
+    );
+    vmc.sign(room_secret, None)
+        .await
+        .expect("the room signs the membership credential");
+    for (type_tag, cred) in [
+        (crate::operations::room_oracle::AUTHORITY_TYPE, &vac),
+        (crate::operations::room_oracle::MEMBERSHIP_TYPE, &vmc),
+    ] {
+        use crate::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
+        crate::vault::storage::put(
+            &state.vault_ks,
+            &StoredCredential {
+                id: format!("{type_tag}-{room_did}-{member}"),
+                format: CredentialFormat::EddsaJcs2022,
+                types: vec![type_tag.into()],
+                schema_id: None,
+                community_did: None,
+                context_id: None,
+                subject_did: None,
+                issuer_did: Some(room_did.to_string()),
+                purpose: None,
+                status: CredentialStatus::Unknown,
+                valid_from: None,
+                valid_until: None,
+                received_at: now.to_rfc3339(),
+                source: None,
+                tags: Default::default(),
+                body: serde_json::to_vec(cred).expect("serialize the credential"),
+                lifecycle: vti_common::vault::VaultStatus::Active,
+                archived_at: None,
+                deleted_at: None,
+                grace_until: None,
+            },
+        )
+        .await
+        .expect("put the room credential in the vault");
+    }
 }

@@ -35,6 +35,11 @@ vti-common = { path = "../../vti-common" }
 vti-voting = { path = "../../vti-voting" }
 vti-voting-service = { path = "../../vti-voting-service" }
 vta-cli-common = { path = "../../vta-cli-common" }
+# Room watches through a real mediator, for `room_key_watch`: a room host reachable at the
+# mediator (`didcomm`), the room's storage it is seeded through, and a room's own identity.
+room-host = { path = "../../room-host", features = ["didcomm"] }
+vti-rooms = { path = "../../vti-rooms" }
+vti-rooms-dtg = { path = "../../vti-rooms-dtg", features = ["test-support"] }
 axum = { workspace = true }
 serde_json_canonicalizer = { workspace = true }
 

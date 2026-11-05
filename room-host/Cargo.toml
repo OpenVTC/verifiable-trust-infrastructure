@@ -155,6 +155,9 @@ didcomm = [
     "dep:vta-sdk",
     "vta-sdk/tsp",
     "vti-common/tsp",
+    # Signing this host's answers as its DID (`didcomm::AnswerSigner`): the workspace's
+    # Trust Task signer, `vta_sdk::trust_task_sign`.
+    "vta-sdk/client",
 ]
 
 [dev-dependencies]

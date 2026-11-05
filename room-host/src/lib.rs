@@ -135,9 +135,24 @@ pub struct HostState {
     /// original author (`rooms/records/put/0.5` Host item 15, a MAY). On unless the operator
     /// turns it off ([`HostState::set_refuse_rewrites_by_others`]).
     refuse_rewrites_by_others: Arc<std::sync::atomic::AtomicBool>,
+    /// What signs every answer [`dispatch`] gives, once this host has a key to sign with
+    /// ([`HostState::set_answer_signer`]). A party acting on an answer — a member's VTA
+    /// arming a watch or advancing a room's group — believes only one signed by the host
+    /// it addressed (SPEC §7.3 item 7, VTI-KEY-106), so without this every success this
+    /// host returned was refused at the caller as unsigned.
+    answer_signer: Arc<std::sync::OnceLock<Arc<dyn vti_trust_task_server::ResponseSigner>>>,
 }
 
 impl HostState {
+    /// Sign every answer from here on with `signer`, which signs as this host's DID. First
+    /// call wins, as [`Self::set_host_did`]'s does: a host answers as one identity.
+    ///
+    /// An HTTP-only host with no identity has no key, and answers unsigned — exactly as a
+    /// service before provisioning does (`vti_trust_task_server::sign_response`).
+    pub fn set_answer_signer(&self, signer: Arc<dyn vti_trust_task_server::ResponseSigner>) {
+        let _ = self.answer_signer.set(signer);
+    }
+
     /// Whether this host refuses, on an `open` room, a new version of a `message` or a
     /// `reaction` by anyone but its original author (`rooms/records/put/0.5` Host item 15).
     ///
@@ -479,9 +494,25 @@ pub async fn dispatch(state: &Arc<HostState>, body: &[u8]) -> Answer {
     // It parsed as a Trust Task below, so it parses as JSON; `Null` only if it did not, in
     // which case the typed parse refuses it first.
     let received = Arc::new(serde_json::from_slice::<Value>(body).unwrap_or(Value::Null));
-    RECEIVED
+    let mut answer = RECEIVED
         .scope(received, dispatch_received(state, body))
-        .await
+        .await;
+    // Signed here, once, so no handler and no carrier can forget to: HTTP, DIDComm and TSP
+    // all answer with what this returns. Refusals too, so a caller can attribute one.
+    sign_answer(state, &mut answer.document).await;
+    answer
+}
+
+/// Sign `doc` as this host, when it has a signer ([`HostState::set_answer_signer`]) and the
+/// document carries no proof yet. A signing failure leaves it unsigned and logs.
+pub(crate) async fn sign_answer(state: &HostState, doc: &mut Value) {
+    if let Some(signer) = state.answer_signer.get()
+        && doc.is_object()
+        && doc.get("proof").is_none()
+        && let Err(e) = signer.sign_response_document(doc).await
+    {
+        tracing::error!(error = %e, "could not sign an answer; returning it unsigned");
+    }
 }
 
 /// [`dispatch`], inside the scope that records the received document.
@@ -1889,6 +1920,7 @@ pub fn open_state_with_files(
         resolver,
         host_did: Arc::new(std::sync::OnceLock::new()),
         refuse_rewrites_by_others: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        answer_signer: Arc::new(std::sync::OnceLock::new()),
     }))
 }
 

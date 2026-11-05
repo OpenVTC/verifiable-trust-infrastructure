@@ -230,6 +230,66 @@ impl HostIdentity {
     }
 }
 
+/// Signs this host's answers as its DID: `eddsa-jcs-2022`, `proofPurpose: authentication`
+/// for a response (the purpose follows the document's type —
+/// `vta_sdk::trust_task_sign::sign_in_place_with`), with the Ed25519 key the identity
+/// publishes under its own DID.
+///
+/// `Debug` is hand-written, as [`HostIdentity`]'s is: the key is a private key.
+struct AnswerSigner {
+    key: vta_sdk::trust_task_sign::HolderKey,
+}
+
+impl std::fmt::Debug for AnswerSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnswerSigner")
+            .field("verification_method", &self.key.verification_method())
+            .finish()
+    }
+}
+
+impl AnswerSigner {
+    /// The identity's Ed25519 key published under its own DID, or `None` if it holds none.
+    fn from_identity(identity: &HostIdentity) -> Option<Self> {
+        let own = format!("{}#", identity.did);
+        identity
+            .secrets
+            .iter()
+            .filter(|s| s.id.starts_with(&own))
+            .filter(|s| {
+                matches!(
+                    s.get_key_type(),
+                    affinidi_secrets_resolver::secrets::KeyType::Ed25519
+                )
+            })
+            .find_map(|s| {
+                let private = s.get_private_keymultibase().ok()?;
+                vta_sdk::trust_task_sign::HolderKey::new(s.id.clone(), private).ok()
+            })
+            .map(|key| Self { key })
+    }
+}
+
+#[async_trait::async_trait]
+impl vti_trust_task_server::ResponseSigner for AnswerSigner {
+    async fn sign_response_document(
+        &self,
+        doc: &mut serde_json::Value,
+    ) -> Result<(), vti_common::error::AppError> {
+        use vti_common::error::AppError;
+        // A document that is not a Trust Task (an unrouted refusal of an unreadable body)
+        // has no shape to sign; it goes unsigned, as it has no one to be attributed to.
+        let mut typed: TrustTask<serde_json::Value> = serde_json::from_value(doc.clone())
+            .map_err(|e| AppError::Internal(format!("not a Trust Task document: {e}")))?;
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut typed, &self.key)
+            .await
+            .map_err(|e| AppError::Internal(format!("sign the answer: {e}")))?;
+        *doc = serde_json::to_value(typed)
+            .map_err(|e| AppError::Internal(format!("serialise the signed answer: {e}")))?;
+        Ok(())
+    }
+}
+
 /// The services this host advertises: reach me here, over either of these.
 ///
 /// Both, because a member must not have to guess. A mediator carries TSP and DIDComm on the
@@ -274,6 +334,16 @@ pub async fn serve(
     // Reachable by DID from here on, so a document must be addressed to this DID
     // (framework SPEC §7.2 item 5) — over this socket and over HTTP alike.
     state.set_host_did(&identity.did)?;
+    // And every answer is signed as it, over this socket and over HTTP alike: a caller acts
+    // only on an answer signed by the host it addressed (SPEC §7.3 item 7, VTI-KEY-106).
+    match AnswerSigner::from_identity(&identity) {
+        Some(signer) => state.set_answer_signer(Arc::new(signer)),
+        None => tracing::warn!(
+            host_did = %identity.did,
+            "this host's identity holds no Ed25519 key of its own DID, so its answers go \
+             unsigned — and a caller that acts only on signed answers will refuse them"
+        ),
+    }
 
     let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
     for secret in &identity.secrets {
@@ -345,7 +415,10 @@ pub async fn serve(
             // authenticated is refused here, and never reaches `dispatch`.
             let reply =
                 match identity_refusal(frame.message.protocol, &identity.did, &sender, &envelope) {
-                    Some(refusal) => refusal,
+                    Some(mut refusal) => {
+                        crate::sign_answer(&state, &mut refusal).await;
+                        refusal
+                    }
                     // The document is the answer, and it is self-describing. The status
                     // `dispatch` derived is HTTP's way of saying the same thing and is dropped
                     // here.
@@ -673,6 +746,50 @@ mod tests {
             "issuedAt": "2026-09-09T00:00:00Z",
             "payload": { "roomId": "did:key:zRoom" },
         })
+    }
+
+    /// Every answer [`crate::dispatch`] gives is signed as the host's DID once it has an
+    /// identity — a refusal as much as a result (SPEC §7.3 item 7, VTI-KEY-106). A member's
+    /// VTA believes only an answer the host it addressed signed, so a host that answered
+    /// unsigned had every success refused at the VTA as "bytes, not evidence".
+    #[tokio::test]
+    async fn every_answer_is_signed_as_the_host_once_it_has_an_identity() {
+        let (did, secrets) = DID::generate_did_peer_with_services(
+            vec![
+                (PeerKeyRole::Verification, KeyType::Ed25519),
+                (PeerKeyRole::Encryption, KeyType::X25519),
+            ],
+            Some(services("did:webvh:QmScid:webvh.example:mediator")),
+        )
+        .expect("mint a host identity");
+        let identity = HostIdentity::from_vta(did.clone(), secrets);
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::open_state(dir.path()).expect("a host");
+        let body = serde_json::to_vec(&document()).unwrap();
+
+        let unsigned = crate::dispatch(&state, &body).await.document;
+        assert!(
+            unsigned.get("proof").is_none(),
+            "a host with no identity has nothing to sign with: {unsigned}"
+        );
+
+        state.set_answer_signer(Arc::new(
+            AnswerSigner::from_identity(&identity).expect("the identity holds an Ed25519 key"),
+        ));
+        let answer = crate::dispatch(&state, &body).await.document;
+        assert!(answer.get("proof").is_some(), "signed: {answer}");
+        let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .unwrap();
+        let signer = vti_common::auth::verify_trust_task_proof_value(
+            &answer,
+            &vti_common::auth::TrustTaskVmResolver::from_optional(Some(resolver)),
+        )
+        .await
+        .expect("the proof verifies against the host's own DID document");
+        assert_eq!(signer, did, "signed by the host, as itself");
     }
 
     /// **The regression.** Over TSP the thread must be the document's own `id`.
