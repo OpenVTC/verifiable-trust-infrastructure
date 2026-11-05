@@ -945,8 +945,10 @@ When adding a flow, add it here and a line to the root index.
   re-send of an accepted push). Removal: fired, cancelled, lapsed (≤ 30 days, ≤ host's
   `expiresAt`), caller lost standing, member's credentials gone (`room_key_watch::sweep`,
   every 30 s with the address supervisor). Own bounds 64/member, 64/caller, 256 total →
-  `limitReached`; no mediator → `limitReached`. `act/0.12` refuses (malformed) a watch
-  address equal to the caller's, the VTA's or the member's DID (Producer item 6).
+  `limitReached`; no mediator → `limitReached`. `act/0.12` relays `rooms/watch` without
+  reading, checking or changing `address`, `sinceVersion` or `leaseSeconds` (Recipient
+  item 6) — never add a recipient-side address check; Producer item 6 binds the client,
+  and `pnm rooms watch --via-host` enforces it before sending.
 - **Code**: `vta-service/src/operations/room_key_watch.rs`,
   `vta-service/src/trust_tasks/{room_key_watch,room_key_watch_tests,room_changed,room_act}.rs`,
   `vta-service/src/messaging/watch_addresses.rs`, `vta_sdk::client` (`room_watch`,

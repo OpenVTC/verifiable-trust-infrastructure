@@ -1740,8 +1740,10 @@ itself with `--via-host`: your VTA completes the `rooms/watch` as the member
 with `rooms/keys/act/0.12`, which adds it to the table (`read`), and pnm sends it
 to the host. The address must be a DID you receive at and use for watches only:
 never the DID you authenticate to your VTA with, the VTA's own or the member's
-(Producer item 6 — your VTA refuses those as malformed before it signs). On a
-`private` room use one for that one watch:
+(Producer item 6). That rule is the client's: your VTA completes the request
+without reading, checking or changing the address (Recipient item 6), so pnm
+refuses those three before anything reaches the host. On a `private` room use
+one for that one watch:
 
 ```bash
 pnm rooms watch --via-host --room <room-did> --host <url> --host-did <host-did> \
@@ -2157,7 +2159,7 @@ and `vtc-service`:
 | `rooms/keys/open/0.2` | `roomOpen` capability |
 | `rooms/keys/file-key/0.2` | `roomOpen` capability |
 | `rooms/keys/seal/0.2`, `0.3` | `roomOpen` capability; `signAsPrincipal` refused to a delegate. 0.3 accepts `kind`, `inReplyTo`, `writtenAt`, `editedAt` and a file's `width`, `height` and `preview`, which 0.2 refuses `bodyInvalid` |
-| `rooms/keys/act/0.8`, `0.9`, `0.10`, `0.11`, `0.12` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.11 adds `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3`; 0.12 adds `rooms/watch/0.1` (`read`), refusing as malformed an `address` that is the caller's DID, the VTA's or the member's |
+| `rooms/keys/act/0.8`, `0.9`, `0.10`, `0.11`, `0.12` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.11 adds `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3`; 0.12 adds `rooms/watch/0.1` (`read`), its `address`, `sinceVersion` and `leaseSeconds` passed through unread |
 | `rooms/keys/watch/0.1` | `roomPresent` capability + acting as `member` (`memberNotPrincipal` otherwise); refused to a delegate. Up to 64 rooms at one host, one outcome each; each armed with its own `rooms/watch/0.1`, presentation and `did:peer` address; bounds 64 per member, 64 per client, 256 in all |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |

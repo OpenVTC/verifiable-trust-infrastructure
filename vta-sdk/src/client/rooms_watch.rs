@@ -10,7 +10,7 @@
 //! A VTA that predates the task answers [`VtaError::UnsupportedTaskType`]. There is nothing
 //! to fall back to without an address of the client's own: such a client polls the room,
 //! or arms the host's `rooms/watch` itself through [`VtaClient::room_act_v0_12`] with an
-//! address it receives at (`rooms/keys/act/0.12` Producer item 6 says which it may be).
+//! address it receives at (`rooms/keys/act/0.12` Producer item 6 says which it may be, and binds the client).
 
 use serde_json::{Value, json};
 
@@ -108,7 +108,9 @@ impl VtaClient {
     /// `rooms/watch/0.1` (`read`). Build `document` with [`unsigned_room_request_v0_12`]. A
     /// watch's `address` must be a DID this client receives at and uses for watches only —
     /// never the identifier it authenticates to the VTA with, the VTA's DID or the
-    /// member's, which the VTA refuses (Producer item 6). A VTA that does not serve 0.12
+    /// member's (Producer item 6). That rule is the caller's to keep: the VTA completes the
+    /// request without reading, checking or changing the address (Recipient item 6). A VTA
+    /// that does not serve 0.12
     /// answers [`VtaError::UnsupportedTaskType`].
     pub async fn room_act_v0_12(
         &self,

@@ -211,20 +211,16 @@ pub fn actable_0_11(type_uri: &str) -> Option<Option<&'static str>> {
 
 /// The row `rooms/keys/act/0.12` adds to 0.11's table (trust-tasks-tf #1040):
 /// `rooms/watch/0.1`, `read`, with a presentation, for a client that receives at an address
-/// of its own. The recipient completes it as it completes a listing; the address is the
-/// producer's, and its Producer item 6 says which DID it may be (checked in the handler
-/// against the identifiers this VTA knows: its own, the caller's and the member's).
+/// of its own. The recipient completes it as it completes a listing, and does not read,
+/// check or change `address`, `sinceVersion` or `leaseSeconds` (Recipient item 6): the
+/// address is the producer's, and Producer item 6, which says which DID it may be, binds
+/// the producer alone.
 pub const ACT_TABLE_0_12_ADDS: &[ActRow] = &[(spec::watch::v0_1::Payload::TYPE_URI, Some("read"))];
 
 /// The row of `rooms/keys/act/0.12`'s table for `type_uri`: 0.11's, and
 /// [`ACT_TABLE_0_12_ADDS`]. The community types are 0.10's unchanged.
 pub fn actable_0_12(type_uri: &str) -> Option<Option<&'static str>> {
     row(ACT_TABLE_0_12_ADDS, type_uri).or_else(|| actable_0_11(type_uri))
-}
-
-/// Whether `type_uri` is `rooms/watch/0.1`, the one type whose `address` is the producer's.
-pub fn is_watch(type_uri: &str) -> bool {
-    bare_type(type_uri) == spec::watch::v0_1::Payload::TYPE_URI
 }
 
 fn row(table: &[ActRow], type_uri: &str) -> Option<Option<&'static str>> {
@@ -532,7 +528,6 @@ mod tests {
             actable_0_12(&format!("{watch}#request")),
             Some(Some("read"))
         );
-        assert!(is_watch(&format!("{watch}#request")));
         for (t, action) in ACT_TABLE_0_8
             .iter()
             .chain(ACT_TABLE_0_9_ADDS)

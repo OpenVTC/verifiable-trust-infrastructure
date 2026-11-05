@@ -1837,13 +1837,15 @@ fn vta_watch_refused(e: VtaError, req: &WatchThroughVta<'_>, member: &str) -> St
 /// Completed **as the member** by the VTA with `rooms/keys/act/0.12`, whose table lists
 /// `rooms/watch` (`read`), and sent to the host by this client. The address must be a DID
 /// you receive at and use for watches only — never this client's own DID, the VTA's or the
-/// member's (Producer item 6, refused before anything is sent where this client can tell);
+/// member's (Producer item 6, which binds this client: the VTA completes the request without
+/// reading the address, so they are refused here, before anything is sent to the host);
 /// on a `private` room, one you use for that one watch. A VTA that predates act/0.12 is
 /// asked the way #2457 did: it presents for this client (`read`) and this client signs.
 pub async fn cmd_rooms_watch_via_host(
     client: &VtaClient,
     target: RoomTarget<'_>,
     signer: RoomSigner<'_>,
+    vta_did: Option<&str>,
     address: &str,
     since: Option<u64>,
     lease_secs: Option<u64>,
@@ -1852,14 +1854,11 @@ pub async fn cmd_rooms_watch_via_host(
     if !address.starts_with("did:") {
         return Err(format!("--address {address}: a watch's address is a DID").into());
     }
-    let own = |d: &str| d.split('#').next().unwrap_or(d).to_string();
-    if own(address) == own(signer.did) {
-        return Err(format!(
-            "--address {address} is this client's own DID, which a host must not learn \
-             (rooms/keys/act/0.12 Producer item 6): name a DID you receive at and use for \
-             watches only, or let your VTA watch for you (omit --via-host)"
-        )
-        .into());
+    // Producer item 6 is the producer's to keep: the VTA completes the request without
+    // reading the address (Recipient item 6), so these are refused here or nowhere.
+    let vta_did = vta_did.or(client.vta_did());
+    if let Some(whose) = forbidden_watch_address(address, signer.did, vta_did, None) {
+        return Err(watch_address_refused(address, whose).into());
     }
     let mut payload = serde_json::json!({ "roomId": target.room_id, "address": address });
     if cancel {
@@ -1882,13 +1881,13 @@ pub async fn cmd_rooms_watch_via_host(
     let answer: vti_specs::rooms::watch::v0_1::Response =
         match client.room_act_v0_12(&document).await {
             Ok(completed) => {
+                // The member is known once the VTA has resolved it; the completed document
+                // has not been sent.
                 let member = wire_str(&completed.principal);
-                if own(address) == own(&member) {
-                    return Err(format!(
-                        "--address {address} is the member's own DID (rooms/keys/act/0.12 \
-                     Producer item 6): name a DID you use for watches only"
-                    )
-                    .into());
+                if let Some(whose) =
+                    forbidden_watch_address(address, signer.did, vta_did, Some(&member))
+                {
+                    return Err(watch_address_refused(address, whose).into());
                 }
                 let document = serde_json::to_value(&completed.document)?;
                 let reply = target
@@ -1943,6 +1942,36 @@ pub async fn cmd_rooms_watch_via_host(
         ),
     }
     Ok(())
+}
+
+/// Whose DID `address` is, where `rooms/keys/act/0.12` Producer item 6 forbids it as a
+/// watch's address: the identifier this client authenticates to its VTA with, the VTA's own
+/// DID, or the member's. `None` where it is none of them (or the party is not known).
+pub fn forbidden_watch_address(
+    address: &str,
+    client_did: &str,
+    vta_did: Option<&str>,
+    member: Option<&str>,
+) -> Option<&'static str> {
+    let party = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+    let address = party(address);
+    if address == party(client_did) {
+        Some("this client's own DID")
+    } else if vta_did.is_some_and(|v| address == party(v)) {
+        Some("your VTA's DID")
+    } else if member.is_some_and(|m| address == party(m)) {
+        Some("the member's own DID")
+    } else {
+        None
+    }
+}
+
+fn watch_address_refused(address: &str, whose: &str) -> String {
+    format!(
+        "--address {address} is {whose}, which a watch's address may not be \
+         (rooms/keys/act/0.12 Producer item 6): name a DID you receive at and use for watches \
+         only, or let your VTA watch for you (omit --via-host)"
+    )
 }
 
 /// A `rooms/watch` refusal, with what the operator can do about it.
@@ -5221,6 +5250,29 @@ mod tests {
         assert_eq!(local_name("term sheet.pdf"), "term sheet.pdf");
         assert_eq!(local_name("../"), "room-file");
         assert_eq!(local_name("a\nb.txt"), "a b.txt");
+    }
+
+    /// `rooms/keys/act/0.12` Producer item 6 is kept by the producer: the client's own DID,
+    /// the VTA's and the member's are refused as a watch's address, fragment or not.
+    #[test]
+    fn a_watch_address_may_not_be_the_clients_the_vtas_or_the_members() {
+        let (me, vta, m) = ("did:key:zMe", "did:webvh:Qm:vta.example", "did:key:zMember");
+        assert_eq!(
+            forbidden_watch_address("did:key:zMe#zMe", me, Some(vta), None),
+            Some("this client's own DID")
+        );
+        assert_eq!(
+            forbidden_watch_address(vta, me, Some(vta), Some(m)),
+            Some("your VTA's DID")
+        );
+        assert_eq!(
+            forbidden_watch_address(m, me, Some(vta), Some(m)),
+            Some("the member's own DID")
+        );
+        assert_eq!(
+            forbidden_watch_address("did:key:zWatches", me, Some(vta), Some(m)),
+            None
+        );
     }
 
     /// `MemberProfileRecord`, *Near the room's head* (trust-tasks-tf #1038): a writer writes

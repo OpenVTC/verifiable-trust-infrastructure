@@ -707,6 +707,7 @@ pub(crate) async fn run(
                     room_id,
                 },
                 signer,
+                session.vta_did.as_deref(),
                 &address,
                 since,
                 lease_secs,

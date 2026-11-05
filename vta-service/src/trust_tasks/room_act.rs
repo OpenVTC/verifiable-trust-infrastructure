@@ -239,11 +239,10 @@ pub(super) async fn handle_act_v0_11(
 }
 
 /// `rooms/keys/act/0.12`: 0.11, with `rooms/watch/0.1` (`read`) in the table, for a client
-/// that receives at an address of its own (trust-tasks-tf #1040). The address is the one
-/// member of the document that is the producer's; this VTA refuses, as a malformed request,
-/// a watch whose address is an identifier the completed document must not carry — its own
-/// DID, the caller's, or the member's (Producer item 6, and Recipient item 6: the recipient
-/// adds neither its own identifier nor its caller's to what it signs).
+/// that receives at an address of its own (trust-tasks-tf #1040). Completed as a listing is:
+/// the recipient does not read, check or change `address`, `sinceVersion` or `leaseSeconds`
+/// (Recipient item 6). Which DID the address may be binds the producer alone (Producer
+/// item 6), and is checked by the client (`pnm rooms watch --via-host`).
 pub(super) async fn handle_act_v0_12(
     state: &AppState,
     auth: &AuthClaims,
@@ -257,50 +256,6 @@ pub(super) async fn handle_act_v0_12(
         room_act::is_community_type_0_10,
     )
     .await
-}
-
-/// `rooms/keys/act/0.12` Producer item 6, where this VTA can tell: a watch's `address` is
-/// not this VTA's DID, the caller's identifier or the member's. `Err` is the refusal.
-async fn check_watch_address(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: &TrustTask<Value>,
-    document: &Value,
-    member: &str,
-) -> Result<(), TrustTaskOutcome> {
-    let party = |did: &str| vta_sdk::notifications::identity(did.split('#').next().unwrap_or(did));
-    let Some(address) = document
-        .get("payload")
-        .and_then(|p| p.get("address"))
-        .and_then(Value::as_str)
-    else {
-        // The schema check refuses a watch with no address.
-        return Ok(());
-    };
-    let address = party(address);
-    let vta_did = state.config.read().await.vta_did.clone();
-    let whose = if address == party(&auth.did) {
-        Some("the identifier you authenticate to this VTA with")
-    } else if vta_did.as_deref().is_some_and(|v| address == party(v)) {
-        Some("this VTA's own DID")
-    } else if address == party(member) {
-        Some("the member's own DID")
-    } else {
-        None
-    };
-    match whose {
-        None => Ok(()),
-        Some(whose) => Err(reject_with(
-            doc,
-            trust_tasks_rs::RejectReason::MalformedRequest {
-                reason: format!(
-                    "a rooms/watch address may not be {whose} (rooms/keys/act/0.12 Producer \
-                     item 6): name a DID you receive at and use for watches only, or ask \
-                     this VTA to watch for you with rooms/keys/watch"
-                ),
-            },
-        )),
-    }
 }
 
 /// One `rooms/keys/act` request, against the closed table of the version it names
@@ -462,15 +417,6 @@ async fn handle_act(
                     );
                 }
             };
-
-            // 0.12 Producer item 6: the address of a watch is the producer's, and never an
-            // identifier this VTA would be adding to what it signs.
-            if room_act::is_watch(type_uri)
-                && let Err(r) =
-                    check_watch_address(state, auth, &doc, &document, &principal.did).await
-            {
-                return r;
-            }
 
             // Item 4: exactly the table's action, and only if the member holds it.
             if let Some(action) = action {

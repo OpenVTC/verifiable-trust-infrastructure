@@ -439,10 +439,12 @@ async fn the_sweep_forgets_lapsed_watches_and_those_whose_caller_lost_standing()
 }
 
 /// `rooms/keys/act/0.12` adds `rooms/watch/0.1` (`read`, presentation inserted), which 0.11
-/// refuses; Producer item 6 — the address is never the caller's identifier, this VTA's DID
-/// or the member's — is refused here as malformed before anything is signed.
+/// refuses. The recipient does not read, check or change `address`, `sinceVersion` or
+/// `leaseSeconds` (Recipient item 6): Producer item 6 binds the producer alone, so whatever
+/// address the client names — even one item 6 forbids it to name — is passed through
+/// unaltered and signed.
 #[tokio::test]
-async fn act_0_12_completes_a_watch_and_refuses_an_address_item_6_forbids() {
+async fn act_0_12_completes_a_watch_passing_its_address_through_unaltered() {
     let (host, room, member) = watched_open_room().await;
     let vta_did = member.state.config.read().await.vta_did.clone().unwrap();
     let act = |address: &str, uri: &'static str| {
@@ -452,7 +454,10 @@ async fn act_0_12_completes_a_watch_and_refuses_an_address_item_6_forbids() {
             "type": vti_rooms::watch::WATCH_TYPE,
             "recipient": host.did,
             "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": { "roomId": room.did, "address": address },
+            "payload": {
+                "roomId": room.did, "address": address,
+                "sinceVersion": 7, "leaseSeconds": 3600,
+            },
         });
         async move {
             let doc = request(uri, json!({ "document": document }));
@@ -472,10 +477,17 @@ async fn act_0_12_completes_a_watch_and_refuses_an_address_item_6_forbids() {
         "rooms/keys/act:typeNotActable",
         "0.11's table does not list rooms/watch"
     );
-    for forbidden in [admin().did, vta_did.clone(), member.persona.clone()] {
-        let out = act(&forbidden, v0_12).await;
-        assert_eq!(code(&out), "malformedRequest", "{forbidden}: {out}");
-        assert!(out.to_string().contains("Producer"), "{out}");
+    for address in [admin().did, vta_did.clone(), member.persona.clone()] {
+        let out = act(&address, v0_12).await;
+        let completed = &out["payload"]["document"];
+        assert_eq!(
+            completed["payload"]["address"],
+            address.as_str(),
+            "the recipient does not check the address: {out}"
+        );
+        assert_eq!(completed["payload"]["sinceVersion"], 7, "{out}");
+        assert_eq!(completed["payload"]["leaseSeconds"], 3600, "{out}");
+        assert_eq!(completed["issuer"], member.persona.as_str(), "{out}");
     }
     let out = act(own, v0_12).await;
     let completed = &out["payload"]["document"];
