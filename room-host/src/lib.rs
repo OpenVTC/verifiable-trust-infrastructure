@@ -209,6 +209,7 @@ impl HostState {
     /// Signal a fired watch after a delay drawn from `from..=to` milliseconds rather than
     /// the default 2–6 s (`rooms/changed/0.1` Producer item 4). For a test driving a watch
     /// end to end; a host serving members keeps the default.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_watch_signal_delay_ms(&self, from: u64, to: u64) {
         self.watches.set_signal_delay_ms(from, to);
     }
