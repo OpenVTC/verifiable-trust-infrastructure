@@ -18,8 +18,8 @@ use vta_sdk::session::TransportChoice;
 use vtc_client::git_ns::task_error;
 use vtc_client::{HolderKey, VtcClient, VtcError};
 use vti_specs::vtc::networks::{
-    join::v0_2 as join, leave::v0_2 as leave, list::v0_2 as list, repudiate::v0_2 as repudiate,
-    show::v0_2 as show,
+    join::v0_2 as join, leave::v0_2 as leave, list::v0_2 as list, preview::v0_1 as preview,
+    repudiate::v0_2 as repudiate, show::v0_2 as show,
 };
 
 use crate::git::{send_change, signing_key, terminal_safe};
@@ -29,6 +29,7 @@ type CliResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const LIST: &str = <list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const SHOW: &str = <show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const PREVIEW: &str = <preview::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const JOIN: &str = <join::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const LEAVE: &str = <leave::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const REPUDIATE: &str = <repudiate::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -42,6 +43,15 @@ pub enum NetworksCommands {
     Show {
         /// The network's DID.
         network: String,
+    },
+    /// Read a network before joining it: what it says about itself, the roles it requires a
+    /// group for, and whether it lists this community.
+    Preview {
+        /// The network's URL, as its invitation gives it.
+        url: String,
+        /// The DID the invitation names: the network must answer as it.
+        #[arg(long)]
+        network: Option<String>,
     },
     /// Accept a network's listing of this community and become a member.
     Join {
@@ -89,6 +99,64 @@ pub async fn run(
 }
 
 /// What a refusal means, and what to do about it.
+/// A `vtc/networks/preview` answer, for a terminal.
+fn print_preview(v: &Value) {
+    let s = |k: &str| terminal_safe(v[k].as_str().unwrap_or_default());
+    println!("{} ({})", s("name"), s("network"));
+    println!("  url:        {}", s("url"));
+    if let Some(owner) = v["owner"].as_str() {
+        println!("  owner:      {}", terminal_safe(owner));
+    }
+    if let (Some(iri), Some(version)) = (
+        v["framework"]["iri"].as_str(),
+        v["framework"]["version"].as_str(),
+    ) {
+        println!(
+            "  governance: {} v{}",
+            terminal_safe(iri),
+            terminal_safe(version)
+        );
+    }
+    let roles: Vec<String> = v["roles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let name = terminal_safe(r["name"].as_str()?);
+            Some(if r["required"] == true {
+                format!("{name} (required)")
+            } else {
+                name
+            })
+        })
+        .collect();
+    println!(
+        "  roles:      {}",
+        if roles.is_empty() {
+            "none".to_string()
+        } else {
+            roles.join(", ")
+        }
+    );
+    if v["listed"] == true {
+        println!(
+            "  this community: listed ({})",
+            terminal_safe(v["entryState"].as_str().unwrap_or("listed"))
+        );
+    } else {
+        println!(
+            "  this community: not listed{}",
+            v["notListedReason"]
+                .as_str()
+                .map(|r| format!(" ({})", terminal_safe(r)))
+                .unwrap_or_default()
+        );
+    }
+    if let Some(m) = v["membershipState"].as_str() {
+        println!("  membership here: {}", terminal_safe(m));
+    }
+}
+
 fn hint(code: &str) -> &'static str {
     match code.rsplit(':').next().unwrap_or_default() {
         "notListed" => {
@@ -97,6 +165,9 @@ fn hint(code: &str) -> &'static str {
         }
         "networkMismatch" => {
             "\nThe network at that URL answers as another DID: check both against the invitation."
+        }
+        "networkUnreachable" => {
+            "\nNothing at that URL answered as a network: check it against the invitation."
         }
         "roleUnassigned" => {
             "\nThe network requires a group for that role: add `--group <role>=<groupId>`, \
@@ -219,6 +290,18 @@ async fn run_task(
             let v = read(client, SHOW, json!({ "network": network }), &key).await?;
             if !is_json_output() {
                 print_membership(&v["membership"], true);
+                return Ok(());
+            }
+            v
+        }
+        NetworksCommands::Preview { url, network } => {
+            let mut payload = json!({ "url": url.trim_end_matches('/') });
+            if let Some(n) = network {
+                payload["network"] = json!(n);
+            }
+            let v = read(client, PREVIEW, payload, &key).await?;
+            if !is_json_output() {
+                print_preview(&v);
                 return Ok(());
             }
             v

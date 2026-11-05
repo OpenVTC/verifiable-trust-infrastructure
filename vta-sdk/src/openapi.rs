@@ -354,6 +354,10 @@ spec_types! {
     NetworksShow02Payload(networks::show::v0_2::Payload);
     /// `vtc/networks/show/0.2#response` — the membership and its credentials.
     NetworksShow02Response(networks::show::v0_2::Response);
+    /// `vtc/networks/preview/0.1` payload — the network to read before joining.
+    NetworksPreview01Payload(networks::preview::v0_1::Payload);
+    /// `vtc/networks/preview/0.1#response` — the network, and where the community stands.
+    NetworksPreview01Response(networks::preview::v0_1::Response);
     /// `vtc/networks/join/0.2` payload — accept a network's listing.
     NetworksJoin02Payload(networks::join::v0_2::Payload);
     /// `vtc/networks/join/0.2#response` — the membership as it now stands.

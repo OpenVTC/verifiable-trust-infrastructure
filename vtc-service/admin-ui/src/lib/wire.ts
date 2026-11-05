@@ -8478,6 +8478,69 @@ export interface components {
             nextCursor?: string;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksPreviewV0_1Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksPreviewV0_1Framework: {
+            /** @description The network's governance framework. */
+            iri: string;
+            /** @description The framework version the network operates under. */
+            version: string;
+        };
+        /** @description Read a network before joining it: what it says about itself, the roles it requires a group for, and whether it lists the community. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksPreviewV0_1Payload: {
+            ext?: components["schemas"]["VtcNetworksPreviewV0_1Ext"];
+            /** @description The DID the administrator expects at `url`. When present, the community refuses if the network found there answers as another DID. */
+            network?: string;
+            /**
+             * Format: uri
+             * @description The network's API base, as the network's administrators gave it.
+             */
+            url: string;
+        };
+        /** @description The network, as the community found it at `url`, and where the community stands with it. */
+        VtcNetworksPreviewV0_1Response: {
+            /** @description The network's description, from its profile. */
+            description?: string;
+            /**
+             * @description The network's state for the community's entry, when it holds a published one: `listed` (not yet acknowledged), `acknowledged` (a member), `repudiated` (the community rejected the listing) or `suspended`.
+             * @enum {string}
+             */
+            entryState?: "listed" | "acknowledged" | "repudiated" | "suspended";
+            ext?: components["schemas"]["VtcNetworksPreviewV0_1Ext"];
+            framework?: components["schemas"]["VtcNetworksPreviewV0_1Framework"];
+            /** @description `true` only when the network holds an entry for the community whose listing verifies as the network's and lists the community as a community. */
+            listed: boolean;
+            /**
+             * @description The community's own record of the membership, when it holds one (`vtc/networks/show`).
+             * @enum {string}
+             */
+            membershipState?: "acknowledged" | "repudiated" | "departed";
+            /** @description The network's name, from its profile. */
+            name: string;
+            /** @description The DID the network at `url` answers as. */
+            network: string;
+            /** @description Why `listed` is `false`, in words for an administrator. */
+            notListedReason?: string;
+            /** @description The network's identified owner (VTI-VTN-002), from its profile. */
+            owner?: string;
+            /** @description The roles the network asks members to register a group for. `vtc/networks/join` must assign a group to each one marked `required`. */
+            roles: components["schemas"]["VtcNetworksPreviewV0_1Role"][];
+            /**
+             * Format: uri
+             * @description The URL the network was read at.
+             */
+            url: string;
+        };
+        VtcNetworksPreviewV0_1Role: {
+            /** @description What the network uses the role for. */
+            description?: string;
+            /** @description The role's name, as `vtc/networks/join` assigns a group to it. */
+            name: string;
+            /** @description Whether the network admits a member only once a group is registered for this role. */
+            required: boolean;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcNetworksRepudiateV0_2Ext: {
             [key: string]: unknown;
         };

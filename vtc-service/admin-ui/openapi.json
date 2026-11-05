@@ -20375,6 +20375,165 @@
         },
         "additionalProperties": false
       },
+      "VtcNetworksPreviewV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcNetworksPreviewV0_1Framework": {
+        "type": "object",
+        "required": [
+          "iri",
+          "version"
+        ],
+        "properties": {
+          "iri": {
+            "type": "string",
+            "description": "The network's governance framework.",
+            "maxLength": 2048
+          },
+          "version": {
+            "type": "string",
+            "description": "The framework version the network operates under.",
+            "maxLength": 64
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksPreviewV0_1Payload": {
+        "type": "object",
+        "description": "Read a network before joining it: what it says about itself, the roles it requires a group for, and whether it lists the community. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksPreviewV0_1Ext"
+          },
+          "network": {
+            "type": "string",
+            "description": "The DID the administrator expects at `url`. When present, the community refuses if the network found there answers as another DID.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The network's API base, as the network's administrators gave it.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksPreviewV0_1Response": {
+        "type": "object",
+        "description": "The network, as the community found it at `url`, and where the community stands with it.",
+        "required": [
+          "network",
+          "url",
+          "name",
+          "roles",
+          "listed"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "The network's description, from its profile.",
+            "maxLength": 4096
+          },
+          "entryState": {
+            "type": "string",
+            "description": "The network's state for the community's entry, when it holds a published one: `listed` (not yet acknowledged), `acknowledged` (a member), `repudiated` (the community rejected the listing) or `suspended`.",
+            "enum": [
+              "listed",
+              "acknowledged",
+              "repudiated",
+              "suspended"
+            ]
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcNetworksPreviewV0_1Ext"
+          },
+          "framework": {
+            "$ref": "#/components/schemas/VtcNetworksPreviewV0_1Framework"
+          },
+          "listed": {
+            "type": "boolean",
+            "description": "`true` only when the network holds an entry for the community whose listing verifies as the network's and lists the community as a community."
+          },
+          "membershipState": {
+            "type": "string",
+            "description": "The community's own record of the membership, when it holds one (`vtc/networks/show`).",
+            "enum": [
+              "acknowledged",
+              "repudiated",
+              "departed"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "The network's name, from its profile.",
+            "maxLength": 256
+          },
+          "network": {
+            "type": "string",
+            "description": "The DID the network at `url` answers as.",
+            "maxLength": 2048,
+            "pattern": "^did:[a-z0-9]+:.+$"
+          },
+          "notListedReason": {
+            "type": "string",
+            "description": "Why `listed` is `false`, in words for an administrator.",
+            "maxLength": 1024
+          },
+          "owner": {
+            "type": "string",
+            "description": "The network's identified owner (VTI-VTN-002), from its profile.",
+            "maxLength": 512
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcNetworksPreviewV0_1Role"
+            },
+            "description": "The roles the network asks members to register a group for. `vtc/networks/join` must assign a group to each one marked `required`.",
+            "maxItems": 64
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The URL the network was read at.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcNetworksPreviewV0_1Role": {
+        "type": "object",
+        "required": [
+          "name",
+          "required"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What the network uses the role for.",
+            "maxLength": 1024
+          },
+          "name": {
+            "type": "string",
+            "description": "The role's name, as `vtc/networks/join` assigns a group to it.",
+            "maxLength": 64,
+            "minLength": 1
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether the network admits a member only once a group is registered for this role."
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcNetworksRepudiateV0_2Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",

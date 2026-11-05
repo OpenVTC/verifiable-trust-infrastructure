@@ -2786,6 +2786,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     notification_tasks::RELAY_TYPE,
     network_tasks::LIST_TYPE,
     network_tasks::SHOW_TYPE,
+    network_tasks::PREVIEW_TYPE,
     network_tasks::JOIN_TYPE,
     network_tasks::REPUDIATE_TYPE,
     network_tasks::LEAVE_TYPE,

@@ -8,6 +8,7 @@ This page covers the community's side, `vtc/networks/*` (`vtc-service/src/networ
 
 | Task | Effect |
 |---|---|
+| `vtc/networks/preview/0.1` `{ url, network? }` | Read a network before joining it. The community fetches the profile at `url` (DID, name, owner, governance framework, roles), checks it answers as `network` when one is given, and reads its own entry there with `vtn/entries/show`, verifying the listing as `join` does. It answers with what it found: `listed`, the network's `entryState`, a `notListedReason`, and its own `membershipState`. Not listed is an answer, not a refusal; `networkMismatch` and `networkUnreachable` are. A read: no step-up, and nothing is signed to the network but that one read. |
 | `vtc/networks/join/0.2` `{ url, network, groups }` | Accept a listing. The community checks that the network at `url` answers as `network`, then verifies its listing of the community. It registers each group in `groups` for its role (every role the network marks required must be assigned), signs the acknowledgement, and verifies the grant. |
 | `vtc/networks/repudiate/0.2` `{ url, network, reason? }` | Reject a listing. The network must publish the repudiation beside it (VTI-VTN-012). |
 | `vtc/networks/leave/0.2` `{ network, reason? }` | Depart by repudiating the network's grant. The network revokes what it issued for the community (VTI-VTN-053). |
@@ -15,7 +16,7 @@ This page covers the community's side, `vtc/networks/*` (`vtc-service/src/networ
 | `vtc/networks/list`, `show` | The memberships, and the credentials that evidence each one. |
 
 **Gating:**
-- Every task needs `vtc.config.admin`.
+- Every task needs `vtc.config.admin` (`preview`, `list` and `show` need nothing more).
 - Every write also needs the administrator's step-up, bound to the document. Each one makes the community sign a statement to a third party.
 - The step-up is asked for only after every check that would refuse the write: for `join`, that the network at `url` answers as `network`, lists this community, and has a group assigned to each role it requires; for `repudiate`, the first two; for `leave`, that the community is a member. A write that would fail costs no gesture.
 - Every statement is signed **as the community**. A community holding a post-quantum key therefore signs with a proof set, which `vti-vtn` verifies.
@@ -27,7 +28,9 @@ This page covers the community's side, `vtc/networks/*` (`vtc-service/src/networ
 - reject a listing;
 - leave a network.
 
-A network's invitation can link straight to the join form, `<public_url>/admin/networks?join=<network URL>&network=<network DID>`, both percent-encoded. When the network requires a group for a role that the form leaves out, the refusal names the role, and the form adds a row to pick a group for it. Only groups with a DID of their own are offered.
+A network's invitation can link straight to the join form, `<public_url>/admin/networks?join=<network URL>&network=<network DID>`, both percent-encoded. As soon as the form has an `https` URL, it previews the network (`vtc/networks/preview`): its name, owner, governance framework, DID and roles, and whether it lists this community. The DID it answers as fills an empty DID field, and each role it requires gets a row to pick a group for. When the network does not list the community, or the community is already a member, the form says so and offers no join. Only groups with a DID of their own are offered. A network that adds a required role between the preview and the join is still caught: the refusal names the role, and the form adds a row for it.
+
+From a terminal, `cnm networks preview <url> [--network <did>]` reads the same answer.
 
 A group needs a DID of its own (minted by the community's VTA) to be registered. The network learns the group's DID, never its members.
 

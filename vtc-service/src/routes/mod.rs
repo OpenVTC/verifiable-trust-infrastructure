@@ -176,6 +176,8 @@ use crate::server::AppState;
         vta_sdk::openapi::NetworksList02Response,
         vta_sdk::openapi::NetworksShow02Payload,
         vta_sdk::openapi::NetworksShow02Response,
+        vta_sdk::openapi::NetworksPreview01Payload,
+        vta_sdk::openapi::NetworksPreview01Response,
         vta_sdk::openapi::NetworksJoin02Payload,
         vta_sdk::openapi::NetworksJoin02Response,
         vta_sdk::openapi::NetworksLeave02Payload,

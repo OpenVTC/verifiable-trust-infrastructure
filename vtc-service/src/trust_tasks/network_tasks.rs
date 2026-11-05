@@ -4,7 +4,7 @@
 //!
 //! | task | signed by | authority (read now) |
 //! |---|---|---|
-//! | `list`, `show` | an administrator | `vtc.config.admin` |
+//! | `list`, `show`, `preview` | an administrator | `vtc.config.admin` |
 //! | `join`, `repudiate`, `leave`, `groups/register` | an administrator | `vtc.config.admin`, plus the requester's step-up bound to the document |
 //! | `evidence` | anyone verified | answers only for groups the signer is an active member of |
 //! | `deliver` | a network | the signer is a network this community acknowledged, delivering for a role it registered a group for |
@@ -26,8 +26,8 @@ use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::error::AppError;
 use vti_specs::vtc::networks::{
     deliver::v0_1 as deliver, evidence::v0_2 as evidence, groups::register::v0_2 as register,
-    join::v0_2 as join, leave::v0_2 as leave, list::v0_2 as list, repudiate::v0_2 as repudiate,
-    show::v0_2 as show,
+    join::v0_2 as join, leave::v0_2 as leave, list::v0_2 as list, preview::v0_1 as preview,
+    repudiate::v0_2 as repudiate, show::v0_2 as show,
 };
 
 use super::helpers::{
@@ -41,6 +41,7 @@ use crate::server::AppState;
 
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
 pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
+pub(crate) const PREVIEW_TYPE: &str = <preview::Payload as Payload>::TYPE_URI;
 pub(crate) const JOIN_TYPE: &str = <join::Payload as Payload>::TYPE_URI;
 pub(crate) const REPUDIATE_TYPE: &str = <repudiate::Payload as Payload>::TYPE_URI;
 pub(crate) const LEAVE_TYPE: &str = <leave::Payload as Payload>::TYPE_URI;
@@ -53,6 +54,7 @@ pub(crate) const DELIVER_TYPE: &str = <deliver::Payload as Payload>::TYPE_URI;
 pub(crate) const URIS: &[&str] = &[
     LIST_TYPE,
     SHOW_TYPE,
+    PREVIEW_TYPE,
     JOIN_TYPE,
     REPUDIATE_TYPE,
     LEAVE_TYPE,
@@ -80,6 +82,8 @@ pub(crate) const REGISTER_ERR_NETWORK_REFUSED: &str = "vtc/networks/groups/regis
 pub(crate) const DELIVER_ERR_NOT_MEMBER: &str = "vtc/networks/deliver:notMember";
 pub(crate) const DELIVER_ERR_ROLE_UNREGISTERED: &str = "vtc/networks/deliver:roleUnregistered";
 pub(crate) const DELIVER_ERR_ENVELOPE_INVALID: &str = "vtc/networks/deliver:envelopeInvalid";
+pub(crate) const PREVIEW_ERR_NETWORK_UNREACHABLE: &str = "vtc/networks/preview:networkUnreachable";
+pub(crate) const PREVIEW_ERR_NETWORK_MISMATCH: &str = "vtc/networks/preview:networkMismatch";
 
 const DECLARED: &[&str] = &[
     JOIN_ERR_NOT_LISTED,
@@ -99,6 +103,8 @@ const DECLARED: &[&str] = &[
     DELIVER_ERR_NOT_MEMBER,
     DELIVER_ERR_ROLE_UNREGISTERED,
     DELIVER_ERR_ENVELOPE_INVALID,
+    PREVIEW_ERR_NETWORK_UNREACHABLE,
+    PREVIEW_ERR_NETWORK_MISMATCH,
 ];
 
 const DEFAULT_LIMIT: usize = 50;
@@ -114,6 +120,7 @@ pub(super) async fn dispatch(
     Some(match type_uri {
         LIST_TYPE => handle_list(state, ctx, doc).await,
         SHOW_TYPE => handle_show(state, ctx, doc).await,
+        PREVIEW_TYPE => handle_preview(state, ctx, doc).await,
         JOIN_TYPE => handle_join(state, ctx, doc).await,
         REPUDIATE_TYPE => handle_repudiate(state, ctx, doc).await,
         LEAVE_TYPE => handle_leave(state, ctx, doc).await,
@@ -277,6 +284,85 @@ async fn handle_show(
         Ok(None) => refuse(&doc, "vtc/networks/show", NetError::NotFound),
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// `vtc/networks/preview`: the network at `url`, and where the community stands with it,
+/// for the console to show before a join. A read: no step-up, and nothing is signed to the
+/// network but the community's own read of its entry.
+async fn handle_preview(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) = capable_signer(state, ctx, &doc, Capability::ConfigAdmin, None).await {
+        return reject;
+    }
+    let checked: preview::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let expected = checked.network.as_ref().map(|n| n.to_string());
+    match networks::preview(state, checked.url.as_str(), expected.as_deref()).await {
+        Ok(found) => respond::<preview::Response>(&doc, preview_json(&found)),
+        Err(NetError::Mismatch(m)) => {
+            reject_with_code(&doc, extended_code(PREVIEW_ERR_NETWORK_MISMATCH), m, None)
+        }
+        Err(NetError::Unavailable(m) | NetError::Refused(m)) => reject_with_code(
+            &doc,
+            extended_code(PREVIEW_ERR_NETWORK_UNREACHABLE),
+            m.clone(),
+            Some(json!({ "message": m })),
+        ),
+        Err(e) => refuse(&doc, "vtc/networks/preview", e),
+    }
+}
+
+/// The `vtc/networks/preview` answer: the network's own profile, then where the community
+/// stands. An entry state outside the published ones is not reported.
+fn preview_json(found: &networks::Preview) -> Value {
+    let profile = &found.profile["profile"];
+    let mut out = json!({
+        "network": found.network,
+        "url": found.url,
+        "name": profile["name"].as_str().unwrap_or_default(),
+        "roles": found.profile["roles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                let name = r["name"].as_str()?;
+                let mut role = json!({ "name": name, "required": r["required"] == true });
+                if let Some(d) = r["description"].as_str() {
+                    role["description"] = json!(d);
+                }
+                Some(role)
+            })
+            .collect::<Vec<_>>(),
+        "listed": found.listing.is_ok(),
+    });
+    for key in ["description", "owner"] {
+        if let Some(v) = profile[key].as_str() {
+            out[key] = json!(v);
+        }
+    }
+    let fw = &profile["framework"];
+    if let (Some(iri), Some(version)) = (fw["iri"].as_str(), fw["version"].as_str()) {
+        out["framework"] = json!({ "iri": iri, "version": version });
+    }
+    match &found.listing {
+        Ok(entry_state)
+            if ["listed", "acknowledged", "repudiated", "suspended"]
+                .contains(&entry_state.as_str()) =>
+        {
+            out["entryState"] = json!(entry_state);
+        }
+        Ok(_) => {}
+        Err(why) => out["notListedReason"] = json!(why.chars().take(1024).collect::<String>()),
+    }
+    if let Some(m) = found.membership {
+        out["membershipState"] = serde_json::to_value(m).unwrap_or(Value::Null);
+    }
+    out
 }
 
 // ─── writes ───────────────────────────────────────────────────────────────

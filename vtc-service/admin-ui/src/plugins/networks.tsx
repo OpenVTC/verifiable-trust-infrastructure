@@ -35,14 +35,17 @@ import {
   listNetworks,
   networkKeys,
   networkRefusal,
+  previewable,
+  previewNetwork,
   repudiateNetwork,
   showNetwork,
   unassignedRoleOf,
+  withRequiredRoles,
   type RoleRow,
 } from "@/lib/networks";
 import { gestureFromConfirm, GestureDeclinedError, parkedOf } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
-import type { NetworkMembership } from "@/lib/wire-types";
+import type { NetworkMembership, NetworkPreviewResponse } from "@/lib/wire-types";
 
 const STATE_CHIP: Record<NetworkMembership["state"], string> = {
   acknowledged: "chip success",
@@ -56,6 +59,81 @@ function refusalText(err: unknown): string {
   const message = (err as { message?: unknown } | null)?.message;
   const said = typeof message === "string" && message ? message : String(err);
   return meaning ? `${meaning} (${said})` : said;
+}
+
+const ENTRY_STATE_LABEL: Record<string, string> = {
+  listed: "Listed, waiting for this community to accept",
+  acknowledged: "Member",
+  repudiated: "This community rejected the listing",
+  suspended: "Membership suspended by the network",
+};
+
+/** What the network says about itself, and where this community stands with it, from
+ *  `vtc/networks/preview`. */
+export function NetworkPreviewCard({ found }: { found: NetworkPreviewResponse }) {
+  const required = found.roles.filter((r) => r.required);
+  return (
+    <section className="card" aria-label="The network">
+      <h3>{found.name || "Unnamed network"}</h3>
+      {found.description && <p className="muted">{found.description}</p>}
+      <dl className="verifier-fields">
+        <dt>DID</dt>
+        <dd>
+          <DidText did={found.network} />
+        </dd>
+        {found.owner && (
+          <>
+            <dt>Owner</dt>
+            <dd>{found.owner}</dd>
+          </>
+        )}
+        {found.framework && (
+          <>
+            <dt>Governance</dt>
+            <dd>
+              {/^https?:\/\//.test(found.framework.iri) ? (
+                <a href={found.framework.iri} target="_blank" rel="noopener noreferrer">
+                  {found.framework.iri}
+                </a>
+              ) : (
+                found.framework.iri
+              )}{" "}
+              v{found.framework.version}
+            </dd>
+          </>
+        )}
+        <dt>Roles</dt>
+        <dd>
+          {found.roles.length === 0
+            ? "None"
+            : found.roles.map((r) => `${r.name}${r.required ? " (required)" : ""}`).join(", ")}
+        </dd>
+        <dt>This community</dt>
+        <dd>
+          {found.listed ? (
+            <span className={found.entryState === "acknowledged" ? "chip success" : "chip"}>
+              {ENTRY_STATE_LABEL[found.entryState ?? "listed"] ?? found.entryState}
+            </span>
+          ) : (
+            <span className="chip warning">Not listed</span>
+          )}
+        </dd>
+      </dl>
+      {!found.listed && (
+        <p className="warning" role="status">
+          This network does not list this community yet, so there is nothing to accept. Ask its
+          administrators to invite it first.
+          {found.notListedReason ? ` (${found.notListedReason})` : ""}
+        </p>
+      )}
+      {found.listed && required.length > 0 && found.entryState !== "acknowledged" && (
+        <p className="muted">
+          Assign a group to {required.length === 1 ? "the required role" : "each required role"}{" "}
+          below: {required.map((r) => r.name).join(", ")}.
+        </p>
+      )}
+    </section>
+  );
 }
 
 function Credential({ label, value }: { label: string; value: unknown }) {
@@ -211,8 +289,31 @@ function JoinForm({
     }
   }, [initial?.url, initial?.network]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Read the network as soon as there is a URL to read, a moment after typing stops.
+  const [debounced, setDebounced] = useState({ url: url.trim(), network: network.trim() });
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebounced({ url: url.trim(), network: network.trim() }), 400);
+    return () => window.clearTimeout(t);
+  }, [url, network]);
+  const preview = useQuery({
+    queryKey: networkKeys.preview(debounced.url, debounced.network),
+    queryFn: () => previewNetwork(debounced.url, debounced.network),
+    enabled: previewable(debounced.url),
+    retry: false,
+    staleTime: 30_000,
+  });
+  const found = preview.data;
+  // The DID the network answers as fills an empty field; the roles it requires get a row.
+  useEffect(() => {
+    if (!found) return;
+    if (!network.trim()) setNetwork(found.network);
+    setRows((rs) => withRequiredRoles(rs, found.roles));
+  }, [found]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const errors = joinDraftErrors(url, network, rows);
-  const sendable = Object.keys(errors).length === 0;
+  const notListed = found !== undefined && !found.listed;
+  const alreadyMember = found?.membershipState === "acknowledged";
+  const sendable = Object.keys(errors).length === 0 && !notListed && !alreadyMember;
 
   const onRefused = (err: unknown) => {
     if (err instanceof GestureDeclinedError) return;
@@ -302,6 +403,19 @@ function JoinForm({
             onChange={(e) => setNetwork(e.target.value)}
           />
         </Field>
+
+        {preview.isFetching && !found && <p className="muted">Reading the network…</p>}
+        {preview.isError && (
+          <p className="error" role="alert">
+            {refusalText(preview.error)}
+          </p>
+        )}
+        {found && <NetworkPreviewCard found={found} />}
+        {alreadyMember && (
+          <p className="muted" role="status">
+            This community is already a member of this network.
+          </p>
+        )}
 
         <fieldset>
           <legend>Groups for the network's roles</legend>

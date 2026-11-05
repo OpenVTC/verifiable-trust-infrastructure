@@ -137,6 +137,18 @@ fn witnesses() -> Vec<Witness> {
         ),
         // `vtc/networks/*` (`crate::networks`), against a fake network.
         witness!(
+            s::networks::preview::v0_1::error_codes::NETWORK_UNREACHABLE,
+            crate::trust_tasks::network_tasks::PREVIEW_ERR_NETWORK_UNREACHABLE,
+            "networks.rs",
+            "a_preview_reads_the_network_and_where_the_community_stands"
+        ),
+        witness!(
+            s::networks::preview::v0_1::error_codes::NETWORK_MISMATCH,
+            crate::trust_tasks::network_tasks::PREVIEW_ERR_NETWORK_MISMATCH,
+            "networks.rs",
+            "a_preview_reads_the_network_and_where_the_community_stands"
+        ),
+        witness!(
             s::networks::join::v0_2::error_codes::NOT_LISTED,
             crate::trust_tasks::network_tasks::JOIN_ERR_NOT_LISTED,
             "networks.rs",
