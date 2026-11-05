@@ -1050,6 +1050,21 @@ pub(super) async fn push_to_device(
     document: &Value,
     deliver_by: Duration,
 ) -> DevicePush {
+    push_to_device_with(state, recipient, document, deliver_by, true).await
+}
+
+/// [`push_to_device`], ringing the doorbell only when `wake`. A document whose
+/// specification asks the sender not to wake the device itself
+/// (`rooms/keys/changed/0.1` Producer item 5: the waiting document is what the
+/// recipient's mediator wakes it for) is pushed the same way, without one.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(super) async fn push_to_device_with(
+    state: &AppState,
+    recipient: &str,
+    document: &Value,
+    deliver_by: Duration,
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))] wake: bool,
+) -> DevicePush {
     // Cloned out so the config read-lock is released before the route decision:
     // resolving a routable recipient's DID document is network I/O, and holding
     // the lock across it stalls every config writer for that long.
@@ -1091,7 +1106,9 @@ pub(super) async fn push_to_device(
     // next voluntary pickup. Contentless by design — the wake says only "you
     // have mail", never what the task is or who is asking.
     #[cfg(feature = "didcomm")]
-    trigger_gateway_wake(state, recipient, &mediator).await;
+    if wake {
+        trigger_gateway_wake(state, recipient, &mediator).await;
+    }
     DevicePush::Queued { push, mediator }
 }
 

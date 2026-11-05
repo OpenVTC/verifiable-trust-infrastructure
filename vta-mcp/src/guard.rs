@@ -297,7 +297,8 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
 
 /// Final-segment verbs that only ever read.
 const READ_VERBS: &[&str] = &[
-    // `rooms/changed`: a host's one-way signal, which the VTA only logs.
+    // `rooms/changed`: a host's one-way signal; `rooms/keys/changed`: the VTA passing one
+    // on to the client that watched. Neither changes anything a client could ask for.
     "changed",
     "list",
     "get",
@@ -714,6 +715,9 @@ mod tests {
         // curation as readily as a read. It changes nothing here itself, but what it signs
         // can change a room, so it is never a read.
         "act",
+        // `rooms/keys/watch`: arms (or cancels) watches at a room's host as the member and
+        // keeps one record per watch until it fires. Removes nothing a client holds.
+        "watch",
         // `persona/profile/compose`: makes a face, may pool a value and bind
         // it. Creates; removes nothing.
         "compose",

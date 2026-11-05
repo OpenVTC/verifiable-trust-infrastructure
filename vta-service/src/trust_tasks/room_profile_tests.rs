@@ -1814,3 +1814,9 @@ async fn messages_replies_and_reactions_round_trip_through_a_batch_read() {
     );
     assert_eq!(results[2]["cleartext"]["body"], "👍", "{got}");
 }
+
+/// `rooms/keys/watch`, `rooms/keys/changed` and `rooms/keys/act/0.12`, on these fixtures.
+/// The pass-on rides the push path, which a build without DIDComm has no route for.
+#[cfg(feature = "didcomm")]
+#[path = "room_key_watch_tests.rs"]
+mod watch;

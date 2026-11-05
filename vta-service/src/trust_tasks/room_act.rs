@@ -1,5 +1,6 @@
-//! Acting **as** the member — `rooms/keys/act` 0.8 to 0.11, and `rooms/keys/seal` 0.2 and
-//! 0.3. No earlier `act` is served. Every client in this workspace sends act 0.10 and seal
+//! Acting **as** the member — `rooms/keys/act` 0.8 to 0.12, and `rooms/keys/seal` 0.2 and
+//! 0.3. No earlier `act` is served. Act 0.12 (trust-tasks-tf #1040) adds `rooms/watch/0.1`
+//! for a client with an address of its own. Every client in this workspace sends act 0.10 and seal
 //! 0.2; `pnm-browser-plugin` sends act 0.8, which keeps its own table until the plugin moves,
 //! and 0.9 stays served for a client not yet moved. Act 0.11 and seal 0.3 (trust-tasks-tf
 //! #1027) are served for a client writing messages, replies and reactions.
@@ -237,6 +238,26 @@ pub(super) async fn handle_act_v0_11(
     .await
 }
 
+/// `rooms/keys/act/0.12`: 0.11, with `rooms/watch/0.1` (`read`) in the table, for a client
+/// that receives at an address of its own (trust-tasks-tf #1040). Completed as a listing is:
+/// the recipient does not read, check or change `address`, `sinceVersion` or `leaseSeconds`
+/// (Recipient item 6). Which DID the address may be binds the producer alone (Producer
+/// item 6), and is checked by the client (`pnm rooms watch --via-host`).
+pub(super) async fn handle_act_v0_12(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_act(
+        state,
+        auth,
+        doc,
+        room_act::actable_0_12,
+        room_act::is_community_type_0_10,
+    )
+    .await
+}
+
 /// One `rooms/keys/act` request, against the closed table of the version it names
 /// (Recipient item 1). 0.11 extends 0.10, which extends 0.9 and 0.8 — the same request,
 /// response and error codes — so all are read and answered as 0.11's types; only the tables
@@ -248,7 +269,7 @@ async fn handle_act(
     actable: fn(&str) -> Option<Option<&'static str>>,
     community: fn(&str) -> bool,
 ) -> TrustTaskOutcome {
-    use vti_specs::rooms::keys::act::v0_11 as spec;
+    use vti_specs::rooms::keys::act::v0_12 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -529,7 +550,7 @@ async fn complete_offer(
     room_id: Option<&str>,
     document: Value,
 ) -> Result<room_act::Completed, TrustTaskOutcome> {
-    use vti_specs::rooms::keys::act::v0_11::error_codes as codes;
+    use vti_specs::rooms::keys::act::v0_12::error_codes as codes;
 
     // Item 2b: the named `issuer`, never one picked for the caller — not the only persona
     // held, not one inferred from the offer.
@@ -1205,7 +1226,7 @@ mod tests {
                 "{out}"
             );
             assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_11::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_12::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.3 response");
@@ -1281,7 +1302,7 @@ mod tests {
                 completed["proof"]["proofPurpose"], "authentication",
                 "{out}"
             );
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_11::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_12::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.8 response");
@@ -1431,7 +1452,7 @@ mod tests {
             "{out}"
         );
         assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_11::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_12::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.4 response");
@@ -1509,7 +1530,7 @@ mod tests {
             out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_8)),
             "{out}"
         );
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_11::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_12::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.2 response");

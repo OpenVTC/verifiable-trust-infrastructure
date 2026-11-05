@@ -3018,6 +3018,39 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        (
+            uris::TASK_ROOMS_KEYS_WATCH_0_1,
+            checked!(
+                specs::rooms::keys::watch::v0_1::Payload,
+                specs::rooms::keys::watch::v0_1::Response,
+                json!({
+                    "member": "did:webvh:example.com:people:alice",
+                    "host": "did:web:rooms.example.com",
+                    "rooms": [
+                        { "roomId": "did:webvh:example.com:rooms:deal", "sinceVersion": 412 },
+                        { "roomId": "did:webvh:example.com:rooms:board" }
+                    ],
+                    "leaseSeconds": 604800
+                }),
+                json!({
+                    "member": "did:webvh:example.com:people:alice",
+                    "host": "did:web:rooms.example.com",
+                    "watches": [
+                        {
+                            "roomId": "did:webvh:example.com:rooms:deal",
+                            "armed": true,
+                            "expiresAt": "2026-01-08T00:00:00Z"
+                        },
+                        {
+                            "roomId": "did:webvh:example.com:rooms:board",
+                            "armed": false,
+                            "refused": "hostRefused",
+                            "hostCode": "rooms/watch:limitReached"
+                        }
+                    ]
+                })
+            ),
+        ),
         // ─── rooms/changed: a watch's signal ─────────────────────
         // One-way: the specification declares no response and this VTA answers
         // nothing, so the response side is the empty acknowledgement.
@@ -3900,6 +3933,43 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         "recipient": "did:webvh:example.com:northwind-community",
                         "issuedAt": "2026-01-01T00:13:00Z",
                         "payload": { "roomId": "did:webvh:example.com:rooms:northwind" },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_12,
+            checked!(
+                specs::rooms::keys::act::v0_12::Payload,
+                specs::rooms::keys::act::v0_12::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a9",
+                        "type": "https://trusttasks.org/spec/rooms/watch/0.1#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:web:rooms.example.com",
+                        "issuedAt": "2026-01-01T00:14:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "address": "did:webvh:example.com:people:alice-watches",
+                            "sinceVersion": 41
+                        }
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a9",
+                        "type": "https://trusttasks.org/spec/rooms/watch/0.1#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:web:rooms.example.com",
+                        "issuedAt": "2026-01-01T00:14:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "address": "did:webvh:example.com:people:alice-watches",
+                            "sinceVersion": 41
+                        },
                         "proof": { "type": "DataIntegrityProof" }
                     }
                 })

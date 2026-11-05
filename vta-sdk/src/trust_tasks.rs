@@ -987,8 +987,32 @@ pub const TASK_ROOMS_KEYS_ACT_0_10: &str =
 /// `rooms/records/put/0.5` (`write`), `rooms/records/list/0.6` and `rooms/records/get/0.3`
 /// (`read`) in its table, so a member writes a message, a reply or a reaction to an open
 /// room. A VTA serves it beside 0.10, which this SDK still sends.
+#[allow(deprecated)] // superseded by 0.12, and still served and sent
 pub const TASK_ROOMS_KEYS_ACT_0_11: &str =
     <vti_specs::rooms::keys::act::v0_11::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/act/0.12` — [`TASK_ROOMS_KEYS_ACT_0_11`], with `rooms/watch/0.1`
+/// (`read`) in its table, for a client that receives Trust Task documents at an address of
+/// its own; that address may not be the client's own identifier, the VTA's or the
+/// member's (Producer item 6). A client with no such address asks its VTA to watch for it
+/// with [`TASK_ROOMS_KEYS_WATCH_0_1`].
+pub const TASK_ROOMS_KEYS_ACT_0_12: &str =
+    <vti_specs::rooms::keys::act::v0_12::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/watch/0.1` — a member's own client asks its VTA to watch up to 64 rooms
+/// at one host for it: the VTA arms `rooms/watch/0.1` at the host for each room as the
+/// member, at an address of its own used for that one watch, and passes each signal on to
+/// the client with [`TASK_ROOMS_KEYS_CHANGED_0_1`]. One outcome per room.
+pub const TASK_ROOMS_KEYS_WATCH_0_1: &str =
+    <vti_specs::rooms::keys::watch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/changed/0.1` — the VTA passes a room host's signal on to the client that
+/// armed the watch with [`TASK_ROOMS_KEYS_WATCH_0_1`]: the room, the member, the host and the
+/// room's latest version, nothing else, and no response. Sent once per arming, the way
+/// `task-consent/granted` is. Not in [`ALL_URIS`]: a VTA sends it and serves nothing under
+/// it.
+pub const TASK_ROOMS_KEYS_CHANGED_0_1: &str =
+    <vti_specs::rooms::keys::changed::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `rooms/changed/0.1` — a room's host tells a watch's address that the room moved past
 /// the version its member had read to: the room and its latest version, nothing about what
@@ -2733,6 +2757,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_ACT_0_9,
     TASK_ROOMS_KEYS_ACT_0_10,
     TASK_ROOMS_KEYS_ACT_0_11,
+    TASK_ROOMS_KEYS_ACT_0_12,
+    TASK_ROOMS_KEYS_WATCH_0_1,
     TASK_ROOMS_CHANGED_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_2,

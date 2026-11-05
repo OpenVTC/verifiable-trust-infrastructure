@@ -188,6 +188,7 @@ async fn act_and_send_as(
 /// request using what only the newer type carries — either is an error that says which
 /// party to upgrade. Returns the member, the host's response payload, and whether the
 /// newer type was the one answered.
+#[allow(deprecated)] // act/0.11: still served and sent; 0.12 adds only rooms/watch
 async fn act_and_send_newest(
     client: &VtaClient,
     target: &RoomTarget<'_>,
@@ -463,7 +464,13 @@ pub async fn cmd_rooms_list(
             .or_else(|| r.get("updatedAt"))
             .and_then(Value::as_str);
         let author = r.get("author").and_then(Value::as_str).unwrap_or(by);
-        names.offer(author, Some(by), &cleartext, stored, true);
+        names.offer(
+            author,
+            &cleartext,
+            stored,
+            r.get("version").and_then(Value::as_u64),
+            true,
+        );
     }
 
     if records.is_empty() {
@@ -809,7 +816,7 @@ pub async fn cmd_rooms_read(
                     .get("bodyStoredAt")
                     .or_else(|| r.get("updatedAt"))
                     .and_then(Value::as_str);
-                names.offer(author, r["createdBy"].as_str(), obj, stored, open_tier);
+                names.offer(author, obj, stored, r["version"].as_u64(), open_tier);
             }
         }
         opened.push(shown);
@@ -933,6 +940,7 @@ pub async fn cmd_rooms_put(
         .await?;
         let put: vti_rooms::wire::PutRecordResponse = parse_reply("rooms/records/put", reply)?;
         println!("Wrote {} at version {} as {member}", put.key, put.version);
+        keep_name_near_head(client, &target, put.version).await;
         return Ok(());
     }
 
@@ -958,6 +966,7 @@ pub async fn cmd_rooms_put(
         .map(str::to_string);
     let version = write_sealed(client, &target, content, expected_version).await?;
     println!("Wrote {key} at version {version}, sealed and signed by {member}");
+    keep_name_near_head(client, &target, version).await;
     Ok(())
 }
 
@@ -1073,17 +1082,30 @@ pub async fn cmd_rooms_name_set(
 /// The `memberProfile` record `member` already holds in the room, as `(key, version)` —
 /// the one a new name is written over. On `open` the listing says each record's kind and
 /// who created it; on a sealed tier the records `member` may have written (all of them where
-/// the host records no author) are opened through the VTA. The most recently stored wins.
+/// the host records no author) are opened through the VTA. The most recently stored wins,
+/// and of two stored at the same time the one with the greater `version` (rule 2).
 async fn own_name_record(
     client: &VtaClient,
     target: &RoomTarget<'_>,
     sealed_tier: bool,
     member: &str,
 ) -> Result<Option<(String, u64)>, Box<dyn std::error::Error>> {
-    let mut listing = list_page(client, target, None, None, None).await?;
+    own_name_record_since(client, target, sealed_tier, member, None).await
+}
+
+/// [`own_name_record`], among the records above `since_version` only — `None` reads the
+/// whole room.
+async fn own_name_record_since(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    sealed_tier: bool,
+    member: &str,
+    since_version: Option<u64>,
+) -> Result<Option<(String, u64)>, Box<dyn std::error::Error>> {
+    let mut listing = list_page(client, target, None, since_version, None).await?;
     let mut cursor = listing.cursor.clone();
     while let Some(c) = cursor {
-        let next = list_page(client, target, None, None, Some(&c)).await?;
+        let next = list_page(client, target, None, since_version, Some(&c)).await?;
         cursor = next.cursor.clone();
         listing.records.extend(next.records);
     }
@@ -1100,13 +1122,18 @@ async fn own_name_record(
             .and_then(Value::as_str)
             .map(str::to_string)
     };
+    // Rule 2: the most recently stored, and of two stored at the same time the greater
+    // `version` — so the pick never depends on the order the rows came in.
+    let version_of = |r: &Value| r.get("version").and_then(Value::as_u64);
     let pick = |rows: Vec<&Value>| {
-        rows.into_iter().max_by_key(|r| stamp(r)).and_then(|r| {
-            Some((
-                r.get("key")?.as_str()?.to_string(),
-                r.get("version")?.as_u64()?,
-            ))
-        })
+        rows.into_iter()
+            .max_by_key(|r| (stamp(r), version_of(r)))
+            .and_then(|r| {
+                Some((
+                    r.get("key")?.as_str()?.to_string(),
+                    r.get("version")?.as_u64()?,
+                ))
+            })
     };
     if !sealed_tier {
         let rows: Vec<&Value> = listing
@@ -1173,6 +1200,164 @@ async fn own_name_record(
             })
             .collect(),
     ))
+}
+
+/// How far, in versions, a member's name record may fall behind a record it writes before it
+/// writes the name again (`MemberProfileRecord`, *Near the room's head*): the largest page
+/// `rooms/records/list/0.6` returns.
+pub const NAME_HEAD_DISTANCE: u64 = 500;
+
+/// Whether a write assigned `written` leaves a name record at `name_version` more than
+/// [`NAME_HEAD_DISTANCE`] versions behind — when the writer writes its name again.
+pub fn name_needs_rewrite(written: u64, name_version: u64) -> bool {
+    written > name_version.saturating_add(NAME_HEAD_DISTANCE)
+}
+
+/// The current version of the member's name record `key`: its name (`None` where it is
+/// withdrawn or not a name) and the `writtenAt` and `editedAt` it carries.
+async fn name_record_content(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    sealed_tier: bool,
+    key: &str,
+) -> Result<(Option<String>, Option<String>, Option<String>), Box<dyn std::error::Error>> {
+    let object = if sealed_tier {
+        let host_did = target
+            .host_did
+            .ok_or("reading a sealed record takes the host's DID")?;
+        let answer = serde_json::to_value(
+            client
+                .room_read_batch(target.room_id, host_did, &[key], None)
+                .await?,
+        )?;
+        let plaintext = answer["results"]
+            .as_array()
+            .and_then(|r| r.first())
+            .and_then(|r| r["plaintext"].as_str())
+            .ok_or("the VTA could not open the name record")?
+            .to_string();
+        let bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, plaintext)?;
+        serde_json::from_slice::<Value>(&bytes)?
+    } else {
+        let payload = serde_json::json!({ "roomId": target.room_id, "key": key });
+        let (_, record, _) = act_and_send_newest(
+            client,
+            target,
+            (vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE, payload),
+            None,
+        )
+        .await?;
+        record.get("cleartext").cloned().unwrap_or(Value::Null)
+    };
+    let Value::Object(obj) = object else {
+        return Ok((None, None, None));
+    };
+    let field = |k: &str| obj.get(k).and_then(Value::as_str).map(str::to_string);
+    let name = vti_rooms::member_profile::check(&obj, !sealed_tier)
+        .ok()
+        .and_then(|()| vti_rooms::member_profile::name_of(&obj, !sealed_tier))
+        .map(str::to_string);
+    Ok((name, field("writtenAt"), field("editedAt")))
+}
+
+/// After a write the host assigned `written`: write the member's name again, over the same
+/// record, when it is more than [`NAME_HEAD_DISTANCE`] versions behind — keeping its
+/// `writtenAt`, setting no new `editedAt` (an earlier one stays as it is), and writing
+/// nothing for a withdrawn name or a member with none (`MemberProfileRecord`, *Near the
+/// room's head* and *Writing it again*). Best effort: the write it follows has landed, so a
+/// failure here is reported and nothing more.
+async fn keep_name_near_head(client: &VtaClient, target: &RoomTarget<'_>, written: u64) {
+    if let Err(e) = keep_name_near_head_inner(client, target, written).await {
+        eprintln!(
+            "Note: your name in room {} could not be written again near the room's head: {e}",
+            target.room_id
+        );
+    }
+}
+
+async fn keep_name_near_head_inner(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    written: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vti_rooms::member_profile;
+    // A name record at version 1 or later is at most `written - 1` behind.
+    if written <= NAME_HEAD_DISTANCE + 1 {
+        return Ok(());
+    }
+    let (sealed_tier, member) = room_tier(client, target).await?;
+    // One page back first: a name record there is near enough, and the room's whole
+    // history need not be read.
+    let floor = written - NAME_HEAD_DISTANCE - 1;
+    if own_name_record_since(client, target, sealed_tier, &member, Some(floor))
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let Some((key, version)) = own_name_record(client, target, sealed_tier, &member).await? else {
+        return Ok(());
+    };
+    if !name_needs_rewrite(written, version) {
+        return Ok(());
+    }
+    let (name, written_at, edited_at) =
+        name_record_content(client, target, sealed_tier, &key).await?;
+    // A withdrawn name is not written again.
+    let Some(name) = name.filter(|n| !member_profile::is_withdrawal(n)) else {
+        return Ok(());
+    };
+    // Still a write of a `memberProfile` record: only where the profile lists it.
+    if writer_members(client, target, member_profile::sealed_members(&name)?)
+        .await
+        .is_err()
+    {
+        return Ok(());
+    }
+    let new_version = if !sealed_tier {
+        let mut cleartext = member_profile::cleartext(&name)?;
+        if let Some(w) = &written_at {
+            cleartext.insert("writtenAt".into(), serde_json::json!(w));
+        }
+        if let Some(e) = &edited_at {
+            cleartext.insert("editedAt".into(), serde_json::json!(e));
+        }
+        let payload = serde_json::json!({
+            "roomId": target.room_id,
+            "key": key,
+            "cleartext": cleartext,
+            "expectedVersion": version,
+        });
+        let (_, reply, _) = act_and_send_newest(
+            client,
+            target,
+            (vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE, payload),
+            None,
+        )
+        .await?;
+        parse_reply::<vti_rooms::wire::PutRecordResponse>("rooms/records/put", reply)?.version
+    } else {
+        let mut content = SealedRecordBody::new(
+            RecordLocation {
+                room_id: target.room_id,
+                key: &key,
+                version: 1,
+            },
+            &member,
+        );
+        content.title = Some(name);
+        content.kind = Some(member_profile::KIND.to_string());
+        content.written_at = written_at;
+        content.edited_at = edited_at;
+        write_sealed(client, target, content, Some(version)).await?
+    };
+    eprintln!(
+        "Wrote your name in room {} again (record {key}, version {new_version}), so readers \
+         of the room's recent records find it.",
+        target.room_id
+    );
+    Ok(())
 }
 
 /// A `memberProfile` record shown as what it is — its author's name in this room — and
@@ -1439,18 +1624,228 @@ pub async fn cmd_rooms_renew(
     Ok(())
 }
 
-/// `rooms watch` — ask the room's host for one content-free signal (`rooms/changed/0.1`) at
-/// `address` the first time the room moves past `since` (`rooms/watch/0.1`), or cancel
-/// that watch.
+/// What `rooms watch` asks for when the VTA watches (`rooms/keys/watch/0.1`).
+#[derive(Debug, Clone)]
+pub struct WatchThroughVta<'a> {
+    /// The host's DID.
+    pub host_did: &'a str,
+    /// The rooms to watch there, each at most once (at most 64).
+    pub room_ids: &'a [String],
+    /// The member to watch as; `None` takes the one `rooms/keys/list` names for the rooms.
+    pub member: Option<&'a str>,
+    /// The host's URL, used only to find the member of an `open` room, which
+    /// `rooms/keys/list` does not list.
+    pub host_url: Option<&'a str>,
+    /// The highest version read, for a single room.
+    pub since: Option<u64>,
+    /// How long each watch lasts if it does not fire, in seconds.
+    pub lease_secs: Option<u64>,
+    /// End the watches instead.
+    pub cancel: bool,
+}
+
+/// `rooms watch` — ask your VTA to watch rooms at one host for you (`rooms/keys/watch/0.1`):
+/// it arms the host's `rooms/watch` for each room as your member, at an address of its own
+/// used for that one watch, and passes the host's one signal on to this client as
+/// `rooms/keys/changed/0.1` — the way it sends a `task-consent/granted`. This client needs
+/// no address a host can reach, and the host never learns it, or the VTA.
 ///
-/// Moves the way `prune` does: the VTA presents for this client (`read`, as a listing) and
-/// this client signs, because `rooms/keys/act/0.11`'s table — closed — does not list
-/// `rooms/watch`, so the VTA cannot complete it as the member. One signal per arming: arm
-/// again after reading the room, with the version read to.
+/// One signal per arming: read the room, then watch it again with `--since` the version
+/// read to. A VTA that does not serve `rooms/keys/watch/0.1` is refused with what to do
+/// instead: `--via-host` with an address of your own ([`cmd_rooms_watch_via_host`]), or
+/// polling.
 pub async fn cmd_rooms_watch(
+    client: &VtaClient,
+    req: WatchThroughVta<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if req.room_ids.is_empty() || req.room_ids.len() > vta_sdk::client::ROOM_WATCH_MAX_ROOMS {
+        return Err(format!(
+            "name 1 to {} rooms (--room) at one host",
+            vta_sdk::client::ROOM_WATCH_MAX_ROOMS
+        )
+        .into());
+    }
+    if req.since.is_some() && req.room_ids.len() > 1 {
+        return Err(
+            "--since is the version one room was read to: watch one room with it, or \
+                    watch several without it"
+                .into(),
+        );
+    }
+    let member = match req.member {
+        Some(m) => m.to_string(),
+        None => watch_member(client, &req).await?,
+    };
+    let host = req.host_did;
+    let answer = if req.cancel {
+        let rooms: Vec<&str> = req.room_ids.iter().map(String::as_str).collect();
+        client.room_watch_cancel(&member, host, &rooms).await
+    } else {
+        let rooms: Vec<vta_sdk::client::RoomWatch> = req
+            .room_ids
+            .iter()
+            .map(|r| vta_sdk::client::RoomWatch {
+                room_id: r.clone(),
+                since_version: req.since,
+            })
+            .collect();
+        client
+            .room_watch(&member, host, &rooms, req.lease_secs)
+            .await
+    }
+    .map_err(|e| vta_watch_refused(e, &req, &member))?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&answer)?;
+        return Ok(());
+    }
+    for w in &answer.watches {
+        let room = wire_str(&w.room_id);
+        match (w.armed, &w.expires_at, &w.refused) {
+            (true, Some(until), _) => println!(
+                "Watching room {room} as {member} until {}: your VTA passes on the host's one \
+                 signal (rooms/keys/changed) when the room moves past {}, then nothing until \
+                 you watch again.",
+                wire_str(until),
+                req.since.map_or_else(
+                    || "its current version".to_string(),
+                    |v| format!("version {v}")
+                ),
+            ),
+            (true, None, _) => println!("Watching room {room} as {member}."),
+            (false, _, Some(reason)) => {
+                let reason = wire_str(reason);
+                let host_code = w.host_code.as_ref().map(wire_str);
+                println!(
+                    "Not watching room {room}: {}",
+                    watch_reason(&reason, host_code.as_deref())
+                );
+            }
+            (false, _, None) => println!("No watch on room {room} any more."),
+        }
+    }
+    Ok(())
+}
+
+/// The member to watch as, where none was named: the one `rooms/keys/list` names for every
+/// room, else — for an `open` room, which it does not list — the one the VTA completes the
+/// room's requests as.
+async fn watch_member(
+    client: &VtaClient,
+    req: &WatchThroughVta<'_>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let listed = client
+        .room_list(false)
+        .await
+        .map_err(|e| format!("could not list the rooms your VTA holds: {e}"))?;
+    let mut members = std::collections::BTreeSet::new();
+    let mut unlisted = Vec::new();
+    for room in req.room_ids {
+        let held: Vec<String> = listed
+            .rooms
+            .iter()
+            .filter(|e| wire_str(&e.room_id) == *room)
+            .map(|e| wire_str(&e.member))
+            .collect();
+        if held.is_empty() {
+            unlisted.push(room.clone());
+        }
+        members.extend(held);
+    }
+    if !unlisted.is_empty()
+        && let Some(url) = req.host_url
+    {
+        for room in &unlisted {
+            let (_, member) = room_tier(
+                client,
+                &RoomTarget {
+                    host_url: url,
+                    host_did: Some(req.host_did),
+                    room_id: room,
+                },
+            )
+            .await?;
+            members.insert(member);
+        }
+        unlisted.clear();
+    }
+    match (members.len(), unlisted.is_empty()) {
+        (1, true) => Ok(members.into_iter().next().expect("one member")),
+        (0, _) | (1, false) => Err(format!(
+            "your VTA lists no member for {}: name it with --member, or pass the host's URL \
+             with --host so an open room's member can be found",
+            unlisted.join(", ")
+        )
+        .into()),
+        _ => Err(format!(
+            "you read these rooms as more than one member ({}): watch as one with --member",
+            members.into_iter().collect::<Vec<_>>().join(", ")
+        )
+        .into()),
+    }
+}
+
+/// What a room's `refused` means, and what to do about it.
+fn watch_reason(reason: &str, host_code: Option<&str>) -> String {
+    match reason {
+        "notAMember" => {
+            "your VTA holds no credential this room issued to the member: poll it, or ask \
+             the owner for one"
+                .into()
+        }
+        "actionNotHeld" => "the member's credentials for this room do not confer `read`".into(),
+        "limitReached" => {
+            "your VTA holds as many watches as it allows; cancel one you no longer need \
+             (--cancel), or poll this room with `pnm rooms list --since-version`"
+                .into()
+        }
+        "hostUnreachable" => {
+            "the host could not be reached, or advertises no transport your VTA speaks; try \
+             again later"
+                .into()
+        }
+        "hostRefused" => format!(
+            "the host refused ({}); poll this room with `pnm rooms list --since-version`",
+            host_code.unwrap_or("no code")
+        ),
+        other => other.to_string(),
+    }
+}
+
+/// A `rooms/keys/watch` refusal of the whole request, with what the operator can do.
+fn vta_watch_refused(e: VtaError, req: &WatchThroughVta<'_>, member: &str) -> String {
+    match &e {
+        VtaError::UnsupportedTaskType { .. } => format!(
+            "{e}\n\nYour VTA does not serve `rooms/keys/watch/0.1`, so it cannot watch for \
+             you. Arm the host's watch with an address you receive at yourself:\n\n  pnm rooms \
+             watch --via-host --room {} --host <URL> --host-did {} --address <DID>\n\nor poll \
+             the room with `pnm rooms list --since-version`.",
+            req.room_ids.first().map(String::as_str).unwrap_or("<ROOM>"),
+            req.host_did
+        ),
+        _ if e.to_string().contains("memberNotPrincipal") => format!(
+            "{e}\n\n{member} is not a member your VTA holds keys for that you may act as. \
+             `pnm rooms keys list` names the members you read rooms as; pass one with --member."
+        ),
+        _ => e.to_string(),
+    }
+}
+
+/// `rooms watch --via-host` — ask the room's host for one content-free signal
+/// (`rooms/changed/0.1`) at `address`, a DID this client receives at, the first time the room
+/// moves past `since` (`rooms/watch/0.1`), or cancel that watch.
+///
+/// Completed **as the member** by the VTA with `rooms/keys/act/0.12`, whose table lists
+/// `rooms/watch` (`read`), and sent to the host by this client. The address must be a DID
+/// you receive at and use for watches only — never this client's own DID, the VTA's or the
+/// member's (Producer item 6, which binds this client: the VTA completes the request without
+/// reading the address, so they are refused here, before anything is sent to the host);
+/// on a `private` room, one you use for that one watch. A VTA that predates act/0.12 is
+/// asked the way #2457 did: it presents for this client (`read`) and this client signs.
+pub async fn cmd_rooms_watch_via_host(
     client: &VtaClient,
     target: RoomTarget<'_>,
     signer: RoomSigner<'_>,
+    vta_did: Option<&str>,
     address: &str,
     since: Option<u64>,
     lease_secs: Option<u64>,
@@ -1459,23 +1854,72 @@ pub async fn cmd_rooms_watch(
     if !address.starts_with("did:") {
         return Err(format!("--address {address}: a watch's address is a DID").into());
     }
-    let session = present(client, &target, "read").await?;
-    let host = target.client();
-    let answer = if cancel {
-        host.cancel_watch(&session, address, signer.did, signer.key_multibase)
-            .await
-    } else {
-        host.watch(
-            &session,
-            address,
-            since,
-            lease_secs,
-            signer.did,
-            signer.key_multibase,
-        )
-        .await
+    // Producer item 6 is the producer's to keep: the VTA completes the request without
+    // reading the address (Recipient item 6), so these are refused here or nowhere.
+    let vta_did = vta_did.or(client.vta_did());
+    if let Some(whose) = forbidden_watch_address(address, signer.did, vta_did, None) {
+        return Err(watch_address_refused(address, whose).into());
     }
-    .map_err(|e| watch_refused(e, &target, address))?;
+    let mut payload = serde_json::json!({ "roomId": target.room_id, "address": address });
+    if cancel {
+        payload["cancel"] = serde_json::json!(true);
+    } else {
+        if let Some(v) = since {
+            payload["sinceVersion"] = serde_json::json!(v);
+        }
+        if let Some(l) = lease_secs {
+            payload["leaseSeconds"] = serde_json::json!(l);
+        }
+    }
+    let host_did = target.host_did.unwrap_or("did:key:zHost");
+    let document = vta_sdk::client::unsigned_room_request_v0_12(
+        vti_rooms::watch::WATCH_TYPE,
+        host_did,
+        None,
+        payload,
+    )?;
+    let answer: vti_specs::rooms::watch::v0_1::Response =
+        match client.room_act_v0_12(&document).await {
+            Ok(completed) => {
+                // The member is known once the VTA has resolved it; the completed document
+                // has not been sent.
+                let member = wire_str(&completed.principal);
+                if let Some(whose) =
+                    forbidden_watch_address(address, signer.did, vta_did, Some(&member))
+                {
+                    return Err(watch_address_refused(address, whose).into());
+                }
+                let document = serde_json::to_value(&completed.document)?;
+                let reply = target
+                    .client()
+                    .send_signed_room_document(&document)
+                    .await
+                    .map_err(|e| watch_refused(e, &target, address))?;
+                parse_reply("rooms/watch", reply)?
+            }
+            // A VTA from before act/0.12 completes no watch as the member: it presents for this
+            // client, which signs — the host then sees this client as the presenter.
+            Err(VtaError::UnsupportedTaskType { .. }) => {
+                let session = present(client, &target, "read").await?;
+                let host = target.client();
+                if cancel {
+                    host.cancel_watch(&session, address, signer.did, signer.key_multibase)
+                        .await
+                } else {
+                    host.watch(
+                        &session,
+                        address,
+                        since,
+                        lease_secs,
+                        signer.did,
+                        signer.key_multibase,
+                    )
+                    .await
+                }
+                .map_err(|e| watch_refused(e, &target, address))?
+            }
+            Err(e) => return Err(act_refusal(e).into()),
+        };
     if crate::render::is_json_output() {
         crate::render::print_json(&answer)?;
         return Ok(());
@@ -1500,6 +1944,36 @@ pub async fn cmd_rooms_watch(
     Ok(())
 }
 
+/// Whose DID `address` is, where `rooms/keys/act/0.12` Producer item 6 forbids it as a
+/// watch's address: the identifier this client authenticates to its VTA with, the VTA's own
+/// DID, or the member's. `None` where it is none of them (or the party is not known).
+pub fn forbidden_watch_address(
+    address: &str,
+    client_did: &str,
+    vta_did: Option<&str>,
+    member: Option<&str>,
+) -> Option<&'static str> {
+    let party = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+    let address = party(address);
+    if address == party(client_did) {
+        Some("this client's own DID")
+    } else if vta_did.is_some_and(|v| address == party(v)) {
+        Some("your VTA's DID")
+    } else if member.is_some_and(|m| address == party(m)) {
+        Some("the member's own DID")
+    } else {
+        None
+    }
+}
+
+fn watch_address_refused(address: &str, whose: &str) -> String {
+    format!(
+        "--address {address} is {whose}, which a watch's address may not be \
+         (rooms/keys/act/0.12 Producer item 6): name a DID you receive at and use for watches \
+         only, or let your VTA watch for you (omit --via-host)"
+    )
+}
+
 /// A `rooms/watch` refusal, with what the operator can do about it.
 fn watch_refused(
     e: vtc_client::VtcError,
@@ -1515,7 +1989,7 @@ fn watch_refused(
         ),
         Some(c) if c.ends_with("limitReached") => format!(
             "\n\nThe host holds as many watches as it allows. Cancel one you no longer need:\n\n  \
-             pnm rooms watch --room {} --host {} --host-did {} --address <DID> --cancel",
+             pnm rooms watch --via-host --room {} --host {} --host-did {} --address <DID> --cancel",
             target.room_id,
             target.host_url,
             target.host_did.unwrap_or("<host-did>")
@@ -2919,6 +3393,7 @@ pub async fn cmd_rooms_file_put(
         .map_err(|e| put_refused(e, &target))?;
         parse_reply::<vti_rooms::wire::PutRecordResponse>("rooms/records/put", reply)?.version
     };
+    keep_name_near_head(client, &target, version).await;
 
     if crate::render::is_json_output() {
         crate::render::print_json(&serde_json::json!({
@@ -4777,6 +5252,69 @@ mod tests {
         assert_eq!(local_name("a\nb.txt"), "a b.txt");
     }
 
+    /// `rooms/keys/act/0.12` Producer item 6 is kept by the producer: the client's own DID,
+    /// the VTA's and the member's are refused as a watch's address, fragment or not.
+    #[test]
+    fn a_watch_address_may_not_be_the_clients_the_vtas_or_the_members() {
+        let (me, vta, m) = ("did:key:zMe", "did:webvh:Qm:vta.example", "did:key:zMember");
+        assert_eq!(
+            forbidden_watch_address("did:key:zMe#zMe", me, Some(vta), None),
+            Some("this client's own DID")
+        );
+        assert_eq!(
+            forbidden_watch_address(vta, me, Some(vta), Some(m)),
+            Some("your VTA's DID")
+        );
+        assert_eq!(
+            forbidden_watch_address(m, me, Some(vta), Some(m)),
+            Some("the member's own DID")
+        );
+        assert_eq!(
+            forbidden_watch_address("did:key:zWatches", me, Some(vta), Some(m)),
+            None
+        );
+    }
+
+    /// `MemberProfileRecord`, *Near the room's head* (trust-tasks-tf #1038): a writer writes
+    /// its name again only when the version its write was assigned exceeds the name
+    /// record's by **more than** 500 — the largest page `rooms/records/list/0.6` returns.
+    #[test]
+    fn a_name_is_written_again_only_past_500_versions_behind() {
+        assert_eq!(NAME_HEAD_DISTANCE, 500);
+        assert!(
+            !name_needs_rewrite(501, 1),
+            "exactly 500 behind is near enough"
+        );
+        assert!(name_needs_rewrite(502, 1));
+        assert!(!name_needs_rewrite(10, 9));
+        assert!(
+            !name_needs_rewrite(3, 7),
+            "a name record ahead of the write"
+        );
+        assert!(!name_needs_rewrite(u64::MAX, u64::MAX - 500));
+    }
+
+    /// The tie-break rule 2 gained: of a member's name records stored at the same time,
+    /// the greater `version` is the one written over, whatever order the listing gave.
+    #[test]
+    fn a_reader_names_by_the_greater_version_on_a_tie() {
+        let named = |n: &str| {
+            json!({ "kind": "memberProfile", "title": n, "body": "" })
+                .as_object()
+                .unwrap()
+                .clone()
+        };
+        let at = Some("2026-01-01T00:00:00Z");
+        let mut names = vti_rooms::member_profile::Names::default();
+        names.offer("did:key:zA", &named("Seven"), at, Some(7), true);
+        names.offer("did:key:zA", &named("Three"), at, Some(3), true);
+        assert_eq!(names.name("did:key:zA"), Some("Seven"));
+        assert_eq!(
+            author_line("did:key:zA", &names),
+            "did:key:zA (calls themselves \"Seven\")"
+        );
+    }
+
     /// Record keys on a sealed tier say nothing, and do not repeat.
     #[test]
     fn opaque_keys_are_fresh_and_uninformative() {
@@ -4874,7 +5412,7 @@ mod tests {
         assert!(name_record_line(&bad, "did:key:zA", false).contains("refused as a name"));
 
         let mut names = vti_rooms::member_profile::Names::default();
-        names.offer("did:key:zA", Some("did:key:zA"), &named, None, false);
+        names.offer("did:key:zA", &named, None, None, false);
         assert_eq!(
             author_line("did:key:zA", &names),
             "did:key:zA (calls themselves \"Alice\")"

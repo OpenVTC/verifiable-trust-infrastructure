@@ -885,25 +885,38 @@ pub(crate) enum RoomCommands {
         command: RoomNameCommands,
     },
 
-    /// Watch a room: the host sends one content-free signal (`rooms/changed`) to
-    /// `--address` the first time the room moves past `--since`, then nothing until you
-    /// watch again — so a wallet learns a room changed without polling. Needs `read`.
+    /// Watch rooms: your VTA asks the host for one content-free signal the first time each
+    /// room moves past `--since`, at an address of its own, and passes it on to this
+    /// client (`rooms/keys/changed`), then nothing until you watch again — so a wallet
+    /// learns a room changed without polling, and needs no address of its own. Needs
+    /// `read`.
     ///
-    /// The signal says only that the room moved; read the room to learn what. On a
-    /// `private` room, use an address you use for nothing else.
+    /// The signal says only that the room moved; read the room to learn what. With
+    /// `--via-host`, the host signals `--address` instead — a DID you receive at — and your
+    /// VTA only completes the request as the member (`rooms/keys/act/0.12`).
     Watch {
-        #[arg(long = "room")]
-        room_id: String,
-        /// Base URL of the host storing the room.
-        #[arg(long)]
-        host: String,
+        /// A room to watch; repeat for up to 64 rooms at one host.
+        #[arg(long = "room", required = true)]
+        room_ids: Vec<String>,
+        /// Base URL of the host storing the room. Needed with `--via-host`; otherwise used
+        /// only to find your member in an `open` room.
+        #[arg(long, required_if_eq("via_host", "true"))]
+        host: Option<String>,
         /// The host's DID: the request's recipient, and who the signal comes from.
         #[arg(long)]
         host_did: String,
-        /// The DID the signal is sent to — one whose keys you or your agent hold, reached
-        /// through its mediator.
-        #[arg(long)]
-        address: String,
+        /// The member to watch as. Omitted, the one your VTA lists for the rooms.
+        #[arg(long, conflicts_with = "via_host")]
+        member: Option<String>,
+        /// Arm the host's watch yourself, at `--address`, instead of asking your VTA to
+        /// watch for you.
+        #[arg(long, requires = "address")]
+        via_host: bool,
+        /// With `--via-host`: the DID the signal is sent to — one you receive at, reached
+        /// through its mediator, and use for watches only; never your own DID, your VTA's
+        /// or the member's. On a `private` room, one you use for that one watch.
+        #[arg(long, requires = "via_host")]
+        address: Option<String>,
         /// The highest version of the room you have read to. Omitted, the host takes the
         /// room's latest, and a change made since your last read is not signalled.
         #[arg(long, conflicts_with = "cancel")]
@@ -912,7 +925,7 @@ pub(crate) enum RoomCommands {
         /// 60 seconds, at most 30 days). The host may grant less.
         #[arg(long, conflicts_with = "cancel")]
         lease: Option<String>,
-        /// End the watch on this room and address instead.
+        /// End the watches on these rooms instead.
         #[arg(long)]
         cancel: bool,
     },

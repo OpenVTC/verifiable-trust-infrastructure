@@ -431,6 +431,7 @@ mod persona;
 mod policy;
 mod rooms;
 mod rooms_records;
+mod rooms_watch;
 mod witness;
 pub use rooms::{
     RoomAction, RoomLabelEdit, RoomRegistration, RoomRetentionPolicy, RoomVisibility,
@@ -441,6 +442,9 @@ pub use rooms_records::{
     MEMBER_PROFILE_KIND, RECORD_BODY_MEMBERS, RECORD_FILE_MEMBERS, RECORD_KIND_VALUES,
     ROOM_READ_MAX_KEYS, RoomBrowse, check_record_members, record_members_permitted,
     record_members_used, unsigned_room_request_v0_11,
+};
+pub use rooms_watch::{
+    ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal, unsigned_room_request_v0_12,
 };
 mod secrets;
 mod vault;
