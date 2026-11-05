@@ -2859,9 +2859,9 @@ dispatch_table! {
     // exactly as a direct delivery would be.
     vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1 => notifications::handle_deposit
         [ Mutating None false ],
-    // ─── Collection (`vta/collection/*`, VTI-NTF-080 – 093) ────────
+    // ─── Collection (`vta/collection/*`, VTI-NTF-080 – 098) ────────
     // Who holds each persona DID's one mediator connection. Served whether or
-    // not collection by default is on (VTI-NTF-093); the listing discloses
+    // not collection by default is on (VTI-NTF-097); the listing discloses
     // which client collects for which persona — metadata.
     vta_sdk::trust_tasks::TASK_VTA_COLLECTION_CLAIM_0_1 => collection::handle_claim
         [ Mutating None false ],
@@ -2869,6 +2869,13 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_COLLECTION_LIST_0_1 => collection::handle_list
         [ None Metadata false ],
+    // Each context's collection-by-default setting (VTI-NTF-094 – 096): read
+    // with standing, changed with administrative authority over the context.
+    // Both disclose who last changed it — metadata.
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1 => collection::handle_settings_show
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SET_0_1 => collection::handle_settings_set
+        [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list

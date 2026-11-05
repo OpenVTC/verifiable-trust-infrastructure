@@ -63,8 +63,10 @@ pub struct Keyspaces<'a> {
     pub external_accounts: &'a KeyspaceHandle,
     /// The wrapped secrets of external accounts ([`EXTERNAL_SECRETS`]).
     pub external_secrets: &'a KeyspaceHandle,
-    /// Collection claims and conflicts ([`COLLECTION`]). Here so a context
-    /// deletion ends every claim for its identifiers (VTI-NTF-090).
+    /// Collection claims, conflicts and settings ([`COLLECTION`]). Here so a
+    /// context deletion ends every claim for its identifiers (VTI-NTF-090) and
+    /// drops its setting, so a context created again under the id starts
+    /// enabled (VTI-NTF-094).
     pub collection: &'a KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh: &'a KeyspaceHandle,
@@ -392,13 +394,15 @@ pub const WITNESS_SESSIONS: &str = "witness_sessions";
 pub const NOTIFICATIONS: &str = "notifications";
 
 /// **Collection** of the principal's identifiers (`vta/collection/*`,
-/// VTI-NTF-080 – 093): the collection claims — `claim:<contextId>\0<did>`, a
+/// VTI-NTF-080 – 098): the collection claims — `claim:<contextId>\0<did>`, a
 /// client's lease on being a persona DID's one collector at its mediator — the
 /// identifiers the VTA stopped collecting for after another connection kept
 /// closing its own (`conflict:<contextId>\0<did>`), the identities provisioned
 /// for another party, which their holders collect for (`provisioned:<did>`),
-/// and the last applied value of the operator's "collection by default" setting
-/// (`setting`), so a change is audited once (VTI-NTF-093).
+/// each context's collection-by-default setting once changed
+/// (`context-setting:<contextId>`, VTI-NTF-094), the operator's suspension as
+/// last applied at boot (`suspension`, VTI-NTF-098), and the record that the
+/// upgrade backfill of `provisioned:` has run (`backfill:provisioned`).
 ///
 /// In [`BACKED_UP`]: a claim names a client that is connected for the
 /// identifier until the claim ends. A restore without it would make the
@@ -815,7 +819,9 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // A collection claim, conflict or provisioned marker names the DID. Not
         // reached by the cascade; the collector's sweep drops claims and
         // conflicts on an identifier that is no longer collectable within one
-        // pass, and such a claim is not in force meanwhile (VTI-NTF-090).
+        // pass, and such a claim is not in force meanwhile (VTI-NTF-090). A
+        // context's setting, the suspension and the backfill record name no
+        // DID as their subject.
         b"collection" => Orphaned,
         // A watch names its member and its caller. Not reached by the cascade; the
         // watch sweep forgets a watch whose caller may no longer act as the member
@@ -971,7 +977,8 @@ pub const fn context_delete_effect(keyspace: &str) -> Option<ContextDeleteEffect
         // see `Retained` below for why that is not a resurrection.
         b"external_accounts" | b"external_secrets" => Purged,
         // Collection claims and conflicts on the context's identifiers end with
-        // it (VTI-NTF-090).
+        // it (VTI-NTF-090), and so does its setting, so a context created again
+        // under the id starts enabled (VTI-NTF-094).
         b"collection" => Purged,
 
         // ---- Kept on purpose --------------------------------------------

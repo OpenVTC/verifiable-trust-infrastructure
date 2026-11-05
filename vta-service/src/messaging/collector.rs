@@ -1,12 +1,12 @@
 //! The **collector**: the connections the VTA holds for the principal's persona
-//! DIDs (VTI-NTF-080 – 093). Who collects for which identifier is decided in
+//! DIDs (VTI-NTF-080 – 098). Who collects for which identifier is decided in
 //! [`crate::operations::collection`]; this module only acts on it.
 //!
 //! # Shape
 //!
 //! One supervisor ([`run`]) reconciles the connections it holds with the plan
-//! every [`RECONCILE_INTERVAL`] and whenever a claim, a release or the setting
-//! asks it to. For each identifier the plan gives the VTA it opens **one**
+//! every [`RECONCILE_INTERVAL`] and whenever a claim, a release or a change of
+//! a context's setting asks it to. For each identifier the plan gives the VTA it opens **one**
 //! session: its own TDK and ATM, holding only that identifier's keys, one
 //! profile, one websocket at the mediator the identifier's document names, and
 //! the delivery layer over it, which carries DIDComm and TSP on that one socket.
@@ -105,17 +105,31 @@ impl CollectingSession for PersonaSession {
 }
 
 /// Run the collector until `shutdown`, then close every connection it holds.
+///
+/// Before its first pass it records integrations provisioned before this
+/// release ([`engine::backfill_provisioned`]), and opens nothing until that has
+/// succeeded: collection is on by default (VTI-NTF-094), and an integration's
+/// DID not yet recorded would be one the VTA connects for beside its holder.
 pub async fn run(state: AppState, shutdown: CancellationToken) {
-    if let Err(e) = engine::record_setting(&state).await {
-        warn!(error = %e, "could not record the collection setting");
+    if let Err(e) = engine::record_suspension(&state).await {
+        warn!(error = %e, "could not record the operator's suspension of collection");
     }
     info!(
-        enabled = state.collection.enabled(),
-        "collector started (VTI-NTF-080 – 093)"
+        suspended = state.collection.suspended(),
+        "collector started (VTI-NTF-080 – 098)"
     );
+    let mut backfilled = false;
     let mut retry: HashMap<String, (Instant, u32)> = HashMap::new();
     loop {
-        if let Err(e) = reconcile(&state, &shutdown, &mut retry).await {
+        if !backfilled {
+            match engine::backfill_provisioned(&state).await {
+                Ok(_) => backfilled = true,
+                Err(e) => warn!(error = %e,
+                    "could not record integrations provisioned before this release; collecting \
+                     for nothing until it succeeds"),
+            }
+        }
+        if backfilled && let Err(e) = reconcile(&state, &shutdown, &mut retry).await {
             warn!(error = %e, "collection pass failed; trying again on the next");
         }
         tokio::select! {
@@ -218,7 +232,12 @@ async fn reconcile(
 /// Whether the VTA may open its connection for `cand` now, read under the
 /// identifier's lock.
 async fn may_open(state: &AppState, cand: &Candidate) -> Result<bool, vti_common::error::AppError> {
-    if !state.collection.enabled() {
+    // The operator's suspension, then the context's own setting, re-read under
+    // the lock a `settings/set` that disables it closes connections under
+    // (VTI-NTF-095, VTI-NTF-098).
+    if state.collection.suspended()
+        || !engine::context_collects_by_default(&state.collection_ks, &cand.context_id).await?
+    {
         return Ok(false);
     }
     let skew =

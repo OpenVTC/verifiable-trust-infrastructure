@@ -771,7 +771,7 @@ pub async fn build_app_state(
         notifications_ks,
         collection_ks,
         collection: Arc::new(crate::operations::collection::CollectionControl::new(
-            config.collection.collect_by_default,
+            config.collection.suspend,
         )),
         room_key_watches: Arc::new(crate::operations::room_key_watch::RoomKeyWatches::new(
             room_key_watches_ks,
@@ -1696,9 +1696,11 @@ pub async fn run(
         }
 
         // The collector: the connections the VTA holds for the principal's
-        // persona DIDs (VTI-NTF-080 – 093). It runs whether or not collection
-        // by default is on, so a change of the setting is audited and, when
-        // off, nothing is opened.
+        // persona DIDs (VTI-NTF-080 – 098). It runs whether or not the
+        // operator has suspended collection, so engaging or lifting the
+        // suspension is audited at this boot, and integrations provisioned
+        // before `provisioned:` records existed are recorded before anything is
+        // opened.
         #[cfg(any(feature = "didcomm", feature = "tsp"))]
         let collector_handle = tokio::spawn(crate::messaging::collector::run(
             app_state.clone(),

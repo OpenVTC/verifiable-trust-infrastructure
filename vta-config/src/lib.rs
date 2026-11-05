@@ -65,22 +65,30 @@ impl Default for NotificationsConfig {
 }
 
 /// **Collection** of the principal's identifiers (`vta/collection/*`,
-/// VTI-NTF-080 – 093): the VTA holding the one mediator connection of each
+/// VTI-NTF-080 – 098): the VTA holding the one mediator connection of each
 /// persona DID whose keys it holds and that no client has claimed.
 ///
-/// `collect_by_default` is the operator setting of VTI-NTF-093 and is **off**
-/// by default: a client that predates collection claims connects for the
-/// principal's personas without claiming them, and a VTA collecting beside it
-/// would be the second connection to every persona — each would evict the
-/// other. Turn it on once every client in use claims first. Claims are granted,
-/// renewed, released and listed whether it is on or off. A change is recorded
-/// in the audit trail at the boot that applies it.
+/// Whether the VTA collects by default is **not** set here: it is a stored
+/// setting of each trust context, enabled unless a party with administrative
+/// authority over the context disables it with
+/// `vta/collection/settings/set/0.1` (VTI-NTF-094, VTI-NTF-095). The one switch
+/// the operator keeps is [`suspend`](Self::suspend), which can only stop
+/// collection (VTI-NTF-098).
+///
+/// The retired `collect_by_default` key (VTI-NTF-093, withdrawn) is no longer
+/// read: [`AppConfig::validate`] warns that it is ignored, whatever its value.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct CollectionConfig {
-    /// Collect for every unclaimed persona DID (VTI-NTF-080). Off by default.
+    /// The operator's suspension of collection by default (VTI-NTF-098):
+    /// while `true` the VTA collects for no unclaimed persona DID in any
+    /// context, whatever each context's setting says, and changes no context's
+    /// setting. It can only stop collection — there is no operator key that
+    /// enables it for a context whose setting disables it. Read at boot;
+    /// engaging or lifting it is audited at the boot that applies it. Default
+    /// `false`.
     #[serde(default)]
-    pub collect_by_default: bool,
+    pub suspend: bool,
     /// The most identifiers the VTA collects for at once (VTI-NTF-088; default
     /// 64). One beyond it is listed as collected by nobody, reason `limit`.
     #[serde(default = "default_collection_max_identifiers")]
@@ -106,6 +114,11 @@ pub struct CollectionConfig {
     pub exclude: Vec<String>,
 }
 
+/// The configuration key VTI-NTF-093's operator setting was read from. It is
+/// retired: [`AppConfig::validate`] names it in a warning of its own, and it
+/// has no effect whatever its value.
+pub const RETIRED_COLLECT_BY_DEFAULT_KEY: &str = "collection.collect_by_default";
+
 /// Thirty days: the ceiling VTI-NTF-082 puts on the maximum a VTA states.
 pub const COLLECTION_MAX_CLAIM_SECS_CEILING: u64 = 30 * 24 * 3600;
 
@@ -128,7 +141,7 @@ fn default_collection_clock_skew_secs() -> u64 {
 impl Default for CollectionConfig {
     fn default() -> Self {
         Self {
-            collect_by_default: false,
+            suspend: false,
             max_identifiers: default_collection_max_identifiers(),
             max_claim_secs: default_collection_max_claim_secs(),
             default_claim_secs: default_collection_default_claim_secs(),
@@ -1709,6 +1722,18 @@ impl AppConfig {
         // worth flagging, but never a reason to refuse a config that otherwise
         // boots (P0.9b — softer than `deny_unknown_fields`).
         for key in &self.unknown_keys {
+            if key == RETIRED_COLLECT_BY_DEFAULT_KEY {
+                tracing::warn!(
+                    "`[collection] collect_by_default` in {} is retired and ignored, whatever \
+                     its value (VTI-NTF-093 is withdrawn). Collection by default is now a \
+                     setting of each trust context, on unless a context administrator turns it \
+                     off (`pnm collection disable --context <id>`, VTI-NTF-094 – 095). To stop \
+                     collection on this whole VTA, set `[collection] suspend = true` \
+                     (VTI-NTF-098). Remove the key to silence this warning.",
+                    self.config_path.display()
+                );
+                continue;
+            }
             tracing::warn!(
                 "unknown configuration key `{key}` in {} — ignored. Check for a typo, \
                  a removed/renamed setting, or a key placed in the wrong [section].",
@@ -2213,6 +2238,37 @@ mod validate_tests {
         let (config, dir) = load("");
         std::fs::write(dir.path().join("config.toml"), "this is not = = toml").expect("write");
         assert!(config.to_runtime_toml().is_err());
+    }
+
+    /// VTI-NTF-093 is withdrawn: its key still loads (a deployed config keeps
+    /// booting) and is recorded as the retired key, which `validate` names in
+    /// its own warning; it sets nothing. `suspend` (VTI-NTF-098) is off unless
+    /// set.
+    #[test]
+    fn vti_ntf_098_the_retired_collect_by_default_key_loads_and_sets_nothing() {
+        for value in ["true", "false"] {
+            let (config, _dir) = load(&format!("[collection]\ncollect_by_default = {value}\n"));
+            assert!(
+                config
+                    .unknown_keys
+                    .iter()
+                    .any(|k| k == RETIRED_COLLECT_BY_DEFAULT_KEY),
+                "{:?}",
+                config.unknown_keys
+            );
+            assert!(!config.collection.suspend, "the retired key never suspends");
+            config
+                .validate()
+                .expect("a retired key is a warning, not an error");
+        }
+        let (config, _dir) = load("[collection]\nsuspend = true\n");
+        assert!(config.collection.suspend);
+        assert!(config.unknown_keys.is_empty(), "{:?}", config.unknown_keys);
+        let (config, _dir) = load("");
+        assert!(
+            !config.collection.suspend,
+            "not suspended unless the operator suspends"
+        );
     }
 
     #[test]

@@ -11,6 +11,15 @@ pub(crate) async fn run(
     command: CollectionCommands,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
+        CollectionCommands::Status { context } => {
+            collection::cmd_collection_status(client, &context).await
+        }
+        CollectionCommands::Enable { context } => {
+            collection::cmd_collection_set(client, &context, true).await
+        }
+        CollectionCommands::Disable { context } => {
+            collection::cmd_collection_set(client, &context, false).await
+        }
         CollectionCommands::Claim {
             context,
             identifier,

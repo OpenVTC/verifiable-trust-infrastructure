@@ -3213,6 +3213,39 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        (
+            uris::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1,
+            checked!(
+                specs::vta::collection::settings::show::v0_1::Payload,
+                specs::vta::collection::settings::show::v0_1::Response,
+                json!({ "contextId": "personal" }),
+                json!({
+                    "setting": {
+                        "contextId": "personal",
+                        "collectByDefault": true,
+                        "suspendedByOperator": false
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_COLLECTION_SETTINGS_SET_0_1,
+            checked!(
+                specs::vta::collection::settings::set::v0_1::Payload,
+                specs::vta::collection::settings::set::v0_1::Response,
+                json!({ "contextId": "personal", "collectByDefault": false }),
+                json!({
+                    "setting": {
+                        "contextId": "personal",
+                        "collectByDefault": false,
+                        "suspendedByOperator": false,
+                        "changedBy": "did:key:z6MkDesktopClient",
+                        "changedAt": TS
+                    },
+                    "changed": true
+                })
+            ),
+        ),
         // ─── vta/memory ──────────────────────────────────────────
         (
             uris::TASK_VTA_MEMORY_PUT_0_1,

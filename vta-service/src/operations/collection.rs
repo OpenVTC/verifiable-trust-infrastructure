@@ -1,5 +1,6 @@
-//! **Collection** of the principal's identifiers (VTI-NTF-080 – 093,
-//! `vta/collection/{claim,release,list}/0.1`).
+//! **Collection** of the principal's identifiers (VTI-NTF-080 – 098,
+//! `vta/collection/{claim,release,list}/0.1`,
+//! `vta/collection/settings/{show,set}/0.1`).
 //!
 //! A message addressed to a persona DID waits at the mediator its document
 //! advertises until some party collects it, and the mediator permits one
@@ -18,8 +19,11 @@
 //! - The claims ([`ClaimRecord`]), their grant, renewal and release
 //!   ([`claim`], [`release`]), and the listing ([`list`]).
 //! - The plan the collector follows ([`plan`]): a pure function of the
-//!   candidates, the claims, the conflicts, the setting and the bound, so the
-//!   listing and the collector can never disagree about who collects.
+//!   candidates, the claims, the conflicts, each context's setting, the
+//!   operator's suspension and the bound, so the listing and the collector can
+//!   never disagree about who collects.
+//! - Each context's setting ([`ContextSetting`], [`show_setting`],
+//!   [`set_setting`]) and the operator's suspension ([`record_suspension`]).
 //! - [`CollectionControl`]: the handle the claim path and the collector share.
 //!   A grant stops collection **under the identifier's lock** before it is
 //!   answered (VTI-NTF-082), and the collector re-reads the claim under the
@@ -28,20 +32,38 @@
 //!
 //! The connections themselves are `crate::messaging::collector`'s.
 //!
-//! # The setting (VTI-NTF-093)
+//! # The setting (VTI-NTF-094 – 098)
 //!
-//! `[collection] collect_by_default` is **off** unless the operator enables it.
-//! While off the VTA collects for nothing, and still grants, renews, releases
-//! and lists claims, listing every unclaimed identifier as collected by nobody
-//! because collection is disabled. A change is audited by [`record_setting`] at
-//! the boot that applies it.
+//! Collection by default is a **stored setting of each trust context**,
+//! enabled for a context unless a party with administrative authority over it
+//! (VTI-ACL-022) has disabled it there (VTI-NTF-094, VTI-NTF-095). A context
+//! with no record is enabled; the setting is not inherited by descendants.
+//! [`set_setting`] applies a change before it answers: disabling writes the
+//! record and then closes every connection the VTA holds for the context's
+//! identifiers, each under the identifier's lock (the collector re-reads the
+//! setting under the same lock before it opens one); enabling clears the
+//! context's conflicts (VTI-NTF-085) and asks the collector to begin. While
+//! disabled the VTA collects for nothing unclaimed there, and still grants,
+//! renews, releases and lists claims (VTI-NTF-097).
+//!
+//! The operator keeps one off-only switch, `[collection] suspend`
+//! (VTI-NTF-098): while it is in force every context is treated as disabled,
+//! and no context's setting changes. It is read at boot and audited by
+//! [`record_suspension`] at the boot that engages or lifts it.
 //!
 //! # Store layout ([`crate::keyspaces::COLLECTION`])
 //!
 //! - `claim:<contextId>\0<logDid>` → [`ClaimRecord`]
 //! - `conflict:<contextId>\0<logDid>` → [`ConflictRecord`]
+//! - `context-setting:<contextId>` → [`ContextSetting`], once the context's
+//!   setting has been changed; absent means enabled (VTI-NTF-094)
 //! - `provisioned:<did>` → `true`
-//! - `setting` → the last applied value of `collect_by_default`
+//! - `suspension` → the operator's suspension as last applied at boot
+//! - `backfill:provisioned` → [`BackfillRecord`], once [`backfill_provisioned`]
+//!   has run
+//!
+//! The retired `setting` row (the last applied value of VTI-NTF-093's
+//! `collect_by_default`) is removed at boot.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -66,7 +88,11 @@ pub const LIST_MAX_PAGE: usize = 200;
 const CLAIM_PREFIX: &str = "claim:";
 const CONFLICT_PREFIX: &str = "conflict:";
 const PROVISIONED_PREFIX: &str = "provisioned:";
-const SETTING_KEY: &str = "setting";
+const CONTEXT_SETTING_PREFIX: &str = "context-setting:";
+const SUSPENSION_KEY: &str = "suspension";
+const BACKFILL_KEY: &str = "backfill:provisioned";
+/// The row VTI-NTF-093's operator setting was recorded under; retired.
+const RETIRED_SETTING_KEY: &str = "setting";
 
 fn claim_key(context: &str, log_did: &str) -> String {
     format!("{CLAIM_PREFIX}{context}\0{log_did}")
@@ -74,6 +100,16 @@ fn claim_key(context: &str, log_did: &str) -> String {
 
 fn conflict_key(context: &str, log_did: &str) -> String {
     format!("{CONFLICT_PREFIX}{context}\0{log_did}")
+}
+
+fn context_setting_key(context: &str) -> String {
+    format!("{CONTEXT_SETTING_PREFIX}{context}")
+}
+
+/// The lock key a context's setting changes are serialised under. Disjoint from
+/// every identifier's key: a DID's identity never starts with a NUL.
+fn setting_lock_key(context: &str) -> String {
+    format!("\0setting\0{context}")
 }
 
 fn provisioned_key(did: &str) -> String {
@@ -140,7 +176,8 @@ impl ClaimRecord {
 /// An identifier the VTA stopped collecting for after another connection kept
 /// closing its own (VTI-NTF-085). Cleared when a client claims it — the way the
 /// principal settles the conflict — and then the VTA tries again once the claim
-/// has ended.
+/// has ended; and cleared when collection by default is enabled for its context
+/// (VTI-NTF-095) or the operator's suspension is lifted (VTI-NTF-098).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConflictRecord {
@@ -149,6 +186,28 @@ pub struct ConflictRecord {
     pub since: DateTime<Utc>,
     /// How many times another connection closed the VTA's before it stopped.
     pub closures: u32,
+}
+
+/// A trust context's collection-by-default setting, as stored once a party with
+/// administrative authority over the context has changed it (VTI-NTF-094 –
+/// 096). A context with no record is enabled and has never been changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSetting {
+    pub context_id: String,
+    pub collect_by_default: bool,
+    /// The subject of the ACL entry that last changed it.
+    pub changed_by: String,
+    pub changed_at: DateTime<Utc>,
+}
+
+/// What [`backfill_provisioned`] did, kept so it runs once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackfillRecord {
+    pub ran_at: DateTime<Utc>,
+    /// The identifiers it recorded as provisioned for another party.
+    pub recorded: Vec<String>,
 }
 
 /// An identifier VTI-NTF-080 names: one the VTA would collect for unless a
@@ -212,7 +271,7 @@ pub enum InsertRefused {
 /// docs). Not feature-gated: a build without a messaging transport still
 /// grants and lists claims, it simply never holds a session.
 pub struct CollectionControl {
-    enabled: AtomicBool,
+    suspended: AtomicBool,
     locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     sessions: std::sync::Mutex<HashMap<String, Arc<dyn CollectingSession>>>,
     kick: tokio::sync::Notify,
@@ -221,35 +280,54 @@ pub struct CollectionControl {
 impl std::fmt::Debug for CollectionControl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CollectionControl")
-            .field("enabled", &self.enabled())
+            .field("suspended", &self.suspended())
             .field("collecting", &self.collecting().len())
             .finish()
     }
 }
 
 impl CollectionControl {
+    /// `suspended` is the operator's suspension as read at boot
+    /// (`[collection] suspend`, VTI-NTF-098).
     #[must_use]
-    pub fn new(enabled: bool) -> Self {
+    pub fn new(suspended: bool) -> Self {
         Self {
-            enabled: AtomicBool::new(enabled),
+            suspended: AtomicBool::new(suspended),
             locks: std::sync::Mutex::new(HashMap::new()),
             sessions: std::sync::Mutex::new(HashMap::new()),
             kick: tokio::sync::Notify::new(),
         }
     }
 
-    /// The operator's "collection by default" setting as this process applies
-    /// it (VTI-NTF-093).
+    /// Whether the operator's suspension of collection by default is in force
+    /// (VTI-NTF-098). Fixed at boot: there is no run-time way to lift it, and
+    /// nothing anywhere enables collection for a context whose setting
+    /// disables it.
     #[must_use]
-    pub fn enabled(&self) -> bool {
-        self.enabled.load(Ordering::SeqCst)
+    pub fn suspended(&self) -> bool {
+        self.suspended.load(Ordering::SeqCst)
     }
 
-    /// Change the setting for this process. Turning it off makes the next pass
-    /// of the collector close every connection it holds (VTI-NTF-093).
-    pub fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::SeqCst);
+    /// Change the suspension for this process — tests only; an operator
+    /// changes it in configuration, read at boot.
+    #[cfg(test)]
+    pub(crate) fn set_suspended(&self, suspended: bool) {
+        self.suspended.store(suspended, Ordering::SeqCst);
         self.kick();
+    }
+
+    /// The lock a change of `context`'s setting is made under, so two changes
+    /// of one context apply in the order they are recorded.
+    pub async fn lock_setting(&self, context: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(
+                locks
+                    .entry(setting_lock_key(context))
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+            )
+        };
+        lock.lock_owned().await
     }
 
     /// The identifier's lock. Held by a grant across "record the claim, stop
@@ -331,7 +409,7 @@ impl CollectionControl {
         }
     }
 
-    /// Stop every session (shutdown, or the setting turned off).
+    /// Stop every session (shutdown).
     pub async fn stop_all(&self) {
         for did in self.collecting() {
             let _guard = self.lock_identifier(&did).await;
@@ -565,7 +643,8 @@ pub enum NotCollected {
     Limit,
     /// Another connection kept closing the VTA's (VTI-NTF-085).
     Conflict,
-    /// Collection by default is off (VTI-NTF-093).
+    /// Collection by default is disabled for the identifier's context, or the
+    /// operator has suspended it everywhere (VTI-NTF-097, VTI-NTF-098).
     Disabled,
 }
 
@@ -600,7 +679,11 @@ pub enum Assignment {
 pub struct PlanInputs<'a> {
     pub claims: &'a HashMap<String, ClaimRecord>,
     pub conflicts: &'a HashMap<String, ConflictRecord>,
-    pub enabled: bool,
+    /// The contexts whose setting disables collection by default
+    /// (VTI-NTF-094); every other context is enabled.
+    pub disabled_contexts: &'a HashSet<String>,
+    /// The operator's suspension (VTI-NTF-098): every context disabled.
+    pub suspended: bool,
     pub max_identifiers: usize,
     pub skew: Duration,
     pub now: DateTime<Utc>,
@@ -625,7 +708,7 @@ pub fn plan(candidates: &[Candidate], inputs: &PlanInputs<'_>) -> Vec<Assignment
             {
                 return Assignment::Client(cl.clone());
             }
-            if !inputs.enabled {
+            if inputs.suspended || inputs.disabled_contexts.contains(&c.context_id) {
                 return Assignment::Nobody(NotCollected::Disabled);
             }
             if inputs.conflicts.contains_key(&key) {
@@ -649,6 +732,7 @@ pub async fn current_plan(
     let candidates = candidates(state, None).await?;
     let claims = all_claims(&state.collection_ks).await?;
     let conflicts = all_conflicts(&state.collection_ks).await?;
+    let disabled_contexts = disabled_contexts(&state.collection_ks).await?;
     let (max_identifiers, skew) = {
         let config = state.config.read().await;
         (
@@ -661,7 +745,8 @@ pub async fn current_plan(
         &PlanInputs {
             claims: &claims,
             conflicts: &conflicts,
-            enabled: state.collection.enabled(),
+            disabled_contexts: &disabled_contexts,
+            suspended: state.collection.suspended(),
             max_identifiers,
             skew,
             now,
@@ -936,8 +1021,8 @@ pub struct Page {
 }
 
 /// `vta/collection/list/0.1` (VTI-NTF-091): every identifier of `context`
-/// VTI-NTF-080 names, whether or not collection by default is enabled, with
-/// who collects for it.
+/// VTI-NTF-080 names, whether or not collection by default is enabled for it,
+/// with who collects for it.
 pub async fn list(
     state: &AppState,
     auth: &AuthClaims,
@@ -1022,9 +1107,14 @@ pub async fn list(
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 
 /// Remove every claim and conflict of `context` (a context deletion,
-/// VTI-NTF-090). Returns how many records went.
+/// VTI-NTF-090), and its setting, so a context created again under the same id
+/// starts enabled (VTI-NTF-094). Returns how many records went.
 pub async fn purge_context(ks: &KeyspaceHandle, context: &str) -> Result<usize, AppError> {
     let mut n = 0;
+    if ks.get_raw(context_setting_key(context)).await?.is_some() {
+        ks.remove(context_setting_key(context)).await?;
+        n += 1;
+    }
     for prefix in [CLAIM_PREFIX, CONFLICT_PREFIX] {
         for key in ks.prefix_keys(format!("{prefix}{context}\0")).await? {
             ks.remove(key).await?;
@@ -1103,40 +1193,473 @@ pub async fn sweep(
     Ok(n)
 }
 
-/// Audit a change of the "collection by default" setting, once, at the boot
-/// that applies it (VTI-NTF-093). The first boot audits only an enabled
-/// setting: off is where every VTA starts.
-pub async fn record_setting(state: &AppState) -> Result<(), AppError> {
-    let enabled = state.collection.enabled();
-    let previous: Option<bool> = state.collection_ks.get(SETTING_KEY).await?;
-    if previous == Some(enabled) || (previous.is_none() && !enabled) {
+// ── The setting of each context (VTI-NTF-094 – 097) ───────────────────────
+
+/// `context`'s stored setting, or `None` while it has never been changed — and
+/// so is enabled (VTI-NTF-094).
+pub async fn get_setting(
+    ks: &KeyspaceHandle,
+    context: &str,
+) -> Result<Option<ContextSetting>, AppError> {
+    ks.get(context_setting_key(context)).await
+}
+
+/// Whether collection by default is enabled for `context` by its own setting —
+/// not its ancestors' or descendants' (VTI-NTF-094). The operator's suspension
+/// is separate: [`CollectionControl::suspended`].
+pub async fn context_collects_by_default(
+    ks: &KeyspaceHandle,
+    context: &str,
+) -> Result<bool, AppError> {
+    Ok(get_setting(ks, context)
+        .await?
+        .is_none_or(|s| s.collect_by_default))
+}
+
+/// Every context whose setting disables collection by default.
+pub async fn disabled_contexts(ks: &KeyspaceHandle) -> Result<HashSet<String>, AppError> {
+    Ok(read_all::<ContextSetting>(ks, CONTEXT_SETTING_PREFIX)
+        .await?
+        .into_iter()
+        .filter(|s| !s.collect_by_default)
+        .map(|s| s.context_id)
+        .collect())
+}
+
+/// A context's setting as `vta/collection/settings/{show,set}/0.1` answer it
+/// (the shared `CollectionSetting`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingView {
+    pub context_id: String,
+    pub collect_by_default: bool,
+    pub suspended_by_operator: bool,
+    /// Who last changed it and when; `None` while it never has been.
+    pub changed: Option<(String, DateTime<Utc>)>,
+}
+
+impl SettingView {
+    fn of(context: &str, record: Option<&ContextSetting>, suspended: bool) -> Self {
+        Self {
+            context_id: context.to_string(),
+            collect_by_default: record.is_none_or(|r| r.collect_by_default),
+            suspended_by_operator: suspended,
+            changed: record.map(|r| (r.changed_by.clone(), r.changed_at)),
+        }
+    }
+
+    /// The wire `CollectionSetting`: `changedBy` and `changedAt` together, or
+    /// neither.
+    #[must_use]
+    pub fn to_wire(&self) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "contextId": self.context_id,
+            "collectByDefault": self.collect_by_default,
+            "suspendedByOperator": self.suspended_by_operator,
+        });
+        if let Some((by, at)) = &self.changed {
+            v["changedBy"] = serde_json::json!(by);
+            v["changedAt"] =
+                serde_json::json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        }
+        v
+    }
+}
+
+/// The outcome of [`set_setting`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingChange {
+    pub setting: SettingView,
+    /// False when the context already held the value asked for (VTI-NTF-095).
+    pub changed: bool,
+    /// For a change that disabled it: how many connections were closed first.
+    pub closed: usize,
+    /// For a change that enabled it: how many conflicts it cleared.
+    pub conflicts_cleared: usize,
+}
+
+async fn require_context_exists(state: &AppState, context: &str) -> Result<(), CollectionError> {
+    if crate::contexts::get_context(&state.contexts_ks, context)
+        .await?
+        .is_none()
+    {
+        return Err(CollectionError::App(AppError::NotFound(format!(
+            "context not found: {context}"
+        ))));
+    }
+    Ok(())
+}
+
+/// `vta/collection/settings/show/0.1` (VTI-NTF-096): `context`'s setting, who
+/// last changed it and when, and whether the operator's suspension is in force.
+/// Needs standing in the context (an act scope covering it).
+pub async fn show_setting(
+    state: &AppState,
+    auth: &AuthClaims,
+    context: &str,
+) -> Result<SettingView, CollectionError> {
+    if !auth.has_context_access(context) {
+        return Err(CollectionError::PermissionDenied);
+    }
+    require_context_exists(state, context).await?;
+    let record = get_setting(&state.collection_ks, context).await?;
+    Ok(SettingView::of(
+        context,
+        record.as_ref(),
+        state.collection.suspended(),
+    ))
+}
+
+/// Administrative authority over `context` (VTI-ACL-022, VTI-NTF-095): an
+/// administrative role whose act scope covers it — a context administrator of
+/// it or of an ancestor, or a super-administrator. Standing alone is not.
+fn administers(auth: &AuthClaims, context: &str) -> bool {
+    auth.role == crate::acl::Role::Admin && auth.has_context_access(context)
+}
+
+/// `vta/collection/settings/set/0.1` (VTI-NTF-095, VTI-NTF-096): change
+/// `context`'s setting, applying it before this returns.
+///
+/// - Disabling: the record first, so the collector's re-read under each
+///   identifier's lock sees it, then every connection the VTA holds for the
+///   context's identifiers closed, each under its identifier's lock.
+/// - Enabling: the record, the context's conflicts cleared (VTI-NTF-085 is
+///   settled by the principal's decision to collect), and the collector asked
+///   to begin. It does not wait for connections to open (Consumer item 4).
+/// - The value already held: nothing changes and `changed` is false.
+///
+/// The change is recorded in the audit trail **before** it is applied, and
+/// refused if it cannot be: an unrecorded change is not permitted
+/// (VTI-NTF-096). A change made while the operator's suspension is in force is
+/// stored and answered, and collects nothing until it is lifted (Consumer
+/// item 7).
+pub async fn set_setting(
+    state: &AppState,
+    auth: &AuthClaims,
+    context: &str,
+    collect_by_default: bool,
+    now: DateTime<Utc>,
+) -> Result<SettingChange, CollectionError> {
+    if !administers(auth, context) {
+        return Err(CollectionError::PermissionDenied);
+    }
+    require_context_exists(state, context).await?;
+    let suspended = state.collection.suspended();
+    let _setting_guard = state.collection.lock_setting(context).await;
+    let previous = get_setting(&state.collection_ks, context).await?;
+    if previous.as_ref().is_none_or(|r| r.collect_by_default) == collect_by_default {
+        return Ok(SettingChange {
+            setting: SettingView::of(context, previous.as_ref(), suspended),
+            changed: false,
+            closed: 0,
+            conflicts_cleared: 0,
+        });
+    }
+    let record = ContextSetting {
+        context_id: context.to_string(),
+        collect_by_default,
+        changed_by: auth.did.clone(),
+        changed_at: whole_seconds(now),
+    };
+    vta_audit::record_with_detail(
+        &state.audit_sink,
+        if collect_by_default {
+            "collection.setting.enabled"
+        } else {
+            "collection.setting.disabled"
+        },
+        &auth.did,
+        None,
+        "success",
+        Some("trust-task"),
+        Some(context),
+        Some(&format!(
+            "collection by default {} for context {context}{}",
+            if collect_by_default {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            if suspended {
+                "; the operator's suspension is in force, so nothing is collected until it is lifted"
+            } else {
+                ""
+            }
+        )),
+    )
+    .await
+    .map_err(|e| {
+        CollectionError::App(AppError::Internal(format!(
+            "the change was not made: it could not be recorded in the audit trail, and an \
+             unrecorded change is not permitted (VTI-NTF-096): {e}"
+        )))
+    })?;
+    state
+        .collection_ks
+        .insert(context_setting_key(context), &record)
+        .await?;
+
+    let mut closed = 0;
+    let mut conflicts_cleared = 0;
+    if collect_by_default {
+        conflicts_cleared = clear_conflicts(&state.collection_ks, context).await?;
+        state.collection.kick();
+    } else {
+        // Every identifier of the context, whatever the plan said about it: a
+        // session may be held for one the plan has since moved elsewhere.
+        for cand in candidates(state, Some(context)).await? {
+            let _guard = state.collection.lock_identifier(&cand.log_did).await;
+            if state.collection.is_collecting(&cand.log_did) {
+                state.collection.stop(&cand.log_did).await;
+                closed += 1;
+            }
+            debug_assert!(!state.collection.is_collecting(&cand.log_did));
+        }
+        state.collection.kick();
+    }
+    tracing::info!(
+        context,
+        collect_by_default,
+        changed_by = %auth.did,
+        closed,
+        conflicts_cleared,
+        "collection by default changed for a context (VTI-NTF-095)"
+    );
+    Ok(SettingChange {
+        setting: SettingView::of(context, Some(&record), suspended),
+        changed: true,
+        closed,
+        conflicts_cleared,
+    })
+}
+
+/// Remove `context`'s conflict records (VTI-NTF-085), so the VTA tries those
+/// identifiers again. Returns how many went.
+async fn clear_conflicts(ks: &KeyspaceHandle, context: &str) -> Result<usize, AppError> {
+    let mut n = 0;
+    for key in ks
+        .prefix_keys(format!("{CONFLICT_PREFIX}{context}\0"))
+        .await?
+    {
+        ks.remove(key).await?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+// ── The operator's suspension (VTI-NTF-098) ───────────────────────────────
+
+/// Audit the operator's suspension once, at the boot that engages or lifts it
+/// (VTI-NTF-098), and remove the retired VTI-NTF-093 row. A first boot audits
+/// only a suspension: not suspended is where every VTA starts. Lifting it
+/// resumes collection as a change that enables it does — the conflicts of every
+/// context whose setting enables it are cleared — and changes no context's
+/// setting.
+pub async fn record_suspension(state: &AppState) -> Result<(), AppError> {
+    if state
+        .collection_ks
+        .get_raw(RETIRED_SETTING_KEY)
+        .await?
+        .is_some()
+    {
+        state.collection_ks.remove(RETIRED_SETTING_KEY).await?;
+    }
+    let suspended = state.collection.suspended();
+    let previous: Option<bool> = state.collection_ks.get(SUSPENSION_KEY).await?;
+    if previous.unwrap_or(false) == suspended {
         if previous.is_none() {
-            state.collection_ks.insert(SETTING_KEY, &enabled).await?;
+            state
+                .collection_ks
+                .insert(SUSPENSION_KEY, &suspended)
+                .await?;
         }
         return Ok(());
     }
-    let action = if enabled {
-        "collection.enabled"
-    } else {
-        "collection.disabled"
-    };
-    vta_audit::record_with_detail_best_effort(
+    let mut cleared = 0;
+    if !suspended {
+        let disabled = disabled_contexts(&state.collection_ks).await?;
+        for (key, value) in state
+            .collection_ks
+            .prefix_iter_raw(CONFLICT_PREFIX.to_string())
+            .await?
+        {
+            let Ok(c) = serde_json::from_slice::<ConflictRecord>(&value) else {
+                continue;
+            };
+            if !disabled.contains(&c.context_id) {
+                state.collection_ks.remove(key).await?;
+                cleared += 1;
+            }
+        }
+    }
+    vta_audit::record_with_detail(
         &state.audit_sink,
-        action,
+        if suspended {
+            "collection.suspended"
+        } else {
+            "collection.suspension_lifted"
+        },
         "operator:config",
         None,
         "success",
         Some("config"),
         None,
-        Some(if enabled {
-            "collection by default enabled: the VTA collects for every unclaimed persona"
+        Some(if suspended {
+            "the operator suspended collection by default: the VTA collects for no unclaimed \
+             persona in any context, and no context's setting is changed"
         } else {
-            "collection by default disabled: the VTA collects for no unclaimed persona"
+            "the operator lifted the suspension of collection by default: each context's own \
+             setting applies again"
         }),
     )
+    .await?;
+    tracing::info!(
+        suspended,
+        conflicts_cleared = cleared,
+        "the operator's suspension of collection by default changed (VTI-NTF-098)"
+    );
+    state.collection_ks.insert(SUSPENSION_KEY, &suspended).await
+}
+
+// ── Upgrade: integrations provisioned before `provisioned:` existed ───────
+
+/// Whether a key record's label is the one `provision/integration` gives the
+/// keys of a `did:webvh` it mints for another party: the holder's `did:key`,
+/// then ` signing key` or ` key-agreement key` (`did_webvh::create_did_webvh`
+/// with `label: Some(client_did)`).
+fn provisioned_key_label(label: &str) -> bool {
+    [" signing key", " key-agreement key"].iter().any(|suffix| {
+        label.strip_suffix(suffix).is_some_and(|holder| {
+            holder.starts_with("did:key:z") && !holder.contains(char::is_whitespace)
+        })
+    })
+}
+
+/// Record as provisioned for another party (VTI-NTF-080 item 2) every
+/// `did:webvh` this VTA holds that its own records show `provision/integration`
+/// minted before it began recording that — so that collection, enabled by
+/// default (VTI-NTF-094), never becomes the second connection to an
+/// integration's DID. Runs once: a `backfill:provisioned` row marks it done,
+/// and a second call changes nothing. The evidence, either of which suffices:
+///
+/// - a `key.secret_export` audit row on the `provision-integration` channel —
+///   the export of one of the DID's keys into a provisioning bundle;
+/// - a key record of the DID labelled as provisioning labels them (the
+///   holder's `did:key` and the key's role).
+///
+/// An identifier neither shows (audit rows pruned, an external audit sink, a
+/// key relabelled) stays a candidate; `[collection] exclude` is the operator's
+/// remedy, and `docs/02-vta/collection.md` says so. The VTA's own DID is never
+/// recorded.
+pub async fn backfill_provisioned(state: &AppState) -> Result<Option<BackfillRecord>, AppError> {
+    if state.collection_ks.get_raw(BACKFILL_KEY).await?.is_some() {
+        return Ok(None);
+    }
+    let own = state.config.read().await.vta_did.as_deref().map(identity);
+    let mut found: Vec<(String, &'static str)> = Vec::new();
+
+    let mut exported: HashSet<String> = HashSet::new();
+    for row in crate::operations::audit::successful_rows_on_channel(
+        &state.audit_ks,
+        "key.secret_export",
+        "provision-integration",
+    )
+    .await?
+    {
+        if let Some(key_id) = row.resource.as_deref() {
+            let did = key_id.split('#').next().unwrap_or(key_id);
+            if did.starts_with("did:") {
+                exported.insert(identity(did));
+            }
+        }
+    }
+
+    #[cfg(feature = "webvh")]
+    for rec in crate::webvh_store::list_dids(&state.webvh_ks).await? {
+        let did = identity(&rec.did);
+        if own.as_deref() == Some(did.as_str()) {
+            continue;
+        }
+        if exported.contains(&did) {
+            found.push((rec.did.clone(), "audit"));
+            continue;
+        }
+        let Some(log) = crate::webvh_store::get_did_log(&state.webvh_ks, &rec.did).await? else {
+            continue;
+        };
+        let Ok(document) = crate::operations::protocol::document::current_document_from_log(&log)
+        else {
+            continue;
+        };
+        let mut labelled = false;
+        for vm in document["verificationMethod"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+        {
+            let Some(id) = vm["id"].as_str() else {
+                continue;
+            };
+            let vm_id = if id.starts_with('#') {
+                format!("{}{id}", rec.did)
+            } else {
+                id.to_string()
+            };
+            let record: Option<vta_sdk::keys::KeyRecord> =
+                state.keys_ks.get(crate::keys::store_key(&vm_id)).await?;
+            if record
+                .and_then(|r| r.label)
+                .is_some_and(|l| provisioned_key_label(&l))
+            {
+                labelled = true;
+                break;
+            }
+        }
+        if labelled {
+            found.push((rec.did.clone(), "key-label"));
+        }
+    }
+    #[cfg(not(feature = "webvh"))]
+    let _ = (&own, &exported);
+
+    let mut recorded = Vec::new();
+    for (did, evidence) in found {
+        if state
+            .collection_ks
+            .get_raw(provisioned_key(&did))
+            .await?
+            .is_some()
+        {
+            continue;
+        }
+        mark_provisioned(&state.collection_ks, &did).await?;
+        tracing::info!(identifier = %did, evidence,
+            "recorded an identifier provision-integration minted before this release as \
+             provisioned for another party; the VTA does not collect for it (VTI-NTF-080)");
+        recorded.push(did);
+    }
+    let record = BackfillRecord {
+        ran_at: whole_seconds(Utc::now()),
+        recorded,
+    };
+    vta_audit::record_with_detail_best_effort(
+        &state.audit_sink,
+        "collection.provisioned_backfilled",
+        "operator:upgrade",
+        None,
+        "success",
+        Some("boot"),
+        None,
+        Some(&format!(
+            "recorded {} identifier(s) provision-integration minted before this release as \
+             provisioned for another party{}{}",
+            record.recorded.len(),
+            if record.recorded.is_empty() { "" } else { ": " },
+            record.recorded.join(", ")
+        )),
+    )
     .await;
-    tracing::info!(enabled, "collection by default changed (VTI-NTF-093)");
-    state.collection_ks.insert(SETTING_KEY, &enabled).await
+    state.collection_ks.insert(BACKFILL_KEY, &record).await?;
+    Ok(Some(record))
 }
 
 // ── Keys to collect with ───────────────────────────────────────────────────

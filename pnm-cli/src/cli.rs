@@ -343,9 +343,11 @@ pub(crate) enum Commands {
     /// Who collects your personas' messages at their mediator — this VTA, one of your
     /// clients under a claim, or nobody and why.
     ///
-    /// Backed by the `vta/collection/{claim,release,list}/0.1` Trust Tasks (VTI-NTF-080 –
-    /// 093). A mediator permits one connection per DID, so a client that collects for a
-    /// persona itself claims it first and connects only once the claim is granted.
+    /// Backed by the `vta/collection/{claim,release,list}/0.1` and
+    /// `vta/collection/settings/{show,set}/0.1` Trust Tasks (VTI-NTF-080 – 098). A mediator
+    /// permits one connection per DID, so a client that collects for a persona itself claims
+    /// it first and connects only once the claim is granted. The VTA collects for every
+    /// unclaimed persona of a context unless collection by default is disabled there.
     #[command(name = "collection")]
     Collection {
         #[command(subcommand)]
@@ -1984,6 +1986,31 @@ pub(crate) enum RoomFileCommands {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CollectionCommands {
+    /// Show a context's collection-by-default setting — who last changed it and when, and
+    /// whether the operator has suspended collection — with a count of its personas by who
+    /// collects for them.
+    Status {
+        /// TARGET SCOPE: the context to show.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Enable collection by default for a context: the VTA collects for every persona there
+    /// no client has claimed, including any it had stopped for a conflict. Needs
+    /// administrative authority over the context.
+    Enable {
+        /// TARGET SCOPE: the context to change (not its ancestors or descendants).
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Disable collection by default for a context: the VTA stops collecting for every
+    /// unclaimed persona there and closes those connections before it answers. Do this
+    /// while a client that collects without claiming is in use. Claims still work. Needs
+    /// administrative authority over the context.
+    Disable {
+        /// TARGET SCOPE: the context to change (not its ancestors or descendants).
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
     /// Claim a persona DID — or renew your claim — so that you, not the VTA, collect for it
     /// until the granted end. Connect only after this succeeds.
     Claim {
