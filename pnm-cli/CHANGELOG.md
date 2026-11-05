@@ -2,6 +2,14 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.57.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.56.0...pnm-cli-v0.57.0) — 2026-11-05
+
+
+### Added
+
+- **collection**: Collection by default is a stored setting of each trust context, with an off-only operator suspension (VTI-NTF-094 – 098) ([#2467](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2467))
+
+
 ## [0.56.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.55.0...pnm-cli-v0.56.0) — 2026-11-05
 
 
