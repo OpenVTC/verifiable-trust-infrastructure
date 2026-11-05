@@ -714,6 +714,7 @@ async fn handle_didcomm(frame: &Inbound, live: &Live, identity: &dyn Responder, 
 
 /// Why a [`Requester::request`] did not return an answer.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum RequestError {
     /// The identity has no live session right now.
     #[error("not connected to the mediator")]
