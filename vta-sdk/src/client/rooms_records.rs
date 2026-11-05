@@ -33,7 +33,9 @@ use super::VtaClient;
 use crate::error::VtaError;
 use crate::trust_tasks;
 
-use vti_specs::rooms::keys::{act::v0_11 as act, browse::v0_4 as browse, read::v0_2 as read};
+#[allow(deprecated)] // act/0.11: still served and sent; 0.12 adds only rooms/watch
+use vti_specs::rooms::keys::act::v0_11 as act;
+use vti_specs::rooms::keys::{browse::v0_4 as browse, read::v0_2 as read};
 
 /// Round-trip timeout (seconds) for one record or a listing: one host request at the VTA, a
 /// trace to check, possibly a repair.
@@ -472,6 +474,7 @@ impl VtaClient {
     /// `document` with [`unsigned_room_request_v0_11`]. A VTA that does not serve 0.11
     /// answers [`VtaError::UnsupportedTaskType`]; ask it [`VtaClient::room_act`] with a type
     /// its table holds.
+    #[allow(deprecated)] // act/0.11: still served and sent; 0.12 adds only rooms/watch
     pub async fn room_act_v0_11(
         &self,
         document: &act::UnsignedRoomRequest,
@@ -488,6 +491,7 @@ impl VtaClient {
 }
 
 /// [`super::unsigned_room_request`], as `rooms/keys/act/0.11` takes it.
+#[allow(deprecated)] // act/0.11: still served and sent; 0.12 adds only rooms/watch
 pub fn unsigned_room_request_v0_11(
     type_uri: &str,
     host: &str,

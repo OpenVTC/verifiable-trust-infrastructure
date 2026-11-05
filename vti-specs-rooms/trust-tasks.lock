@@ -108,25 +108,31 @@ digest = "sha256:576083d47c1cc049040ab9352653cc0793a7ccc43774817d91ce198c6be1923
 slug = "rooms/keys/act"
 version = "0.8"
 type_uri = "https://trusttasks.org/spec/rooms/keys/act/0.8"
-digest = "sha256:c9221b67155a79faca7573a1dffe49c19f587eab2592fafc73828c4cc1ad3d95"
+digest = "sha256:ec19900dcf600a4ece1a1f1b34ba758bcc7f6657022a27685e32259755552802"
 
 [[task]]
 slug = "rooms/keys/act"
 version = "0.9"
 type_uri = "https://trusttasks.org/spec/rooms/keys/act/0.9"
-digest = "sha256:418627b4d7ed93886a511a000a23e8ecb375d3810a378c71d853c3ff1e0dac10"
+digest = "sha256:5519ac80a1e3039ee6c4b0ea1d338eaadb04bf2085ec0b2fa2f91944cd9cebb2"
 
 [[task]]
 slug = "rooms/keys/act"
 version = "0.10"
 type_uri = "https://trusttasks.org/spec/rooms/keys/act/0.10"
-digest = "sha256:1b42585175384decd24ab0e9a9cc53414afa7b3e098c43eacc4de60f5f35bc3e"
+digest = "sha256:d52ccda6dfa60124e1385f288b26063df43a20f7fb8cd6fab0de6268a9fb8366"
 
 [[task]]
 slug = "rooms/keys/act"
 version = "0.11"
 type_uri = "https://trusttasks.org/spec/rooms/keys/act/0.11"
-digest = "sha256:c811729ef4381ae7cf61a54e9821cb580a245feaa4f845426211c61bcf6aff34"
+digest = "sha256:133bd5ea9afe43f8b951668625b48ea5c1631ac0ee4dfa22287107476af99f6b"
+
+[[task]]
+slug = "rooms/keys/act"
+version = "0.12"
+type_uri = "https://trusttasks.org/spec/rooms/keys/act/0.12"
+digest = "sha256:141ebd143b837a6855974f4bb1b8bbfaf0148c1423c5e406a55f8bf5f02578f3"
 
 [[task]]
 slug = "rooms/keys/backfill"
@@ -151,6 +157,12 @@ slug = "rooms/keys/chain"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/rooms/keys/chain/0.2"
 digest = "sha256:9dfdfccd20513f25de448dc363e3edb4eda035d6e854015fb472c90ec664695d"
+
+[[task]]
+slug = "rooms/keys/changed"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/rooms/keys/changed/0.1"
+digest = "sha256:24741473019bbc75007f2581a0ed4e349b5574728d85b11e20207e6799483f51"
 
 [[task]]
 slug = "rooms/keys/commit"
@@ -229,6 +241,12 @@ slug = "rooms/keys/seal"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/rooms/keys/seal/0.3"
 digest = "sha256:51c040522e644204b435e52a30e3e6f44444103b9cccaf695ca975c4ab2edd34"
+
+[[task]]
+slug = "rooms/keys/watch"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/rooms/keys/watch/0.1"
+digest = "sha256:035ac34e7bc81e665c540a8a1594eb61ddba5e5ac8c3f4fbf4b68cc97547f38b"
 
 [[task]]
 slug = "rooms/keys/welcome"

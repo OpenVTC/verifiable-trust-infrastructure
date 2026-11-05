@@ -102,6 +102,7 @@ mod room_act;
 mod room_catch_up;
 pub(crate) mod room_changed;
 mod room_group;
+pub(crate) mod room_key_watch;
 mod room_keys;
 mod room_label;
 pub(crate) mod room_list_delivery;
@@ -2828,10 +2829,18 @@ dispatch_table! {
     // reads disclose who originated and relayed each notification — metadata.
     // ─── Rooms: a watch's signal (`rooms/changed/0.1`) ────────────
     // A counterparty task (`room_changed::is_counterparty_task`): a room's host signals
-    // the address a member armed a watch with. One-way and content-free; accepted,
-    // logged at debug and answered with nothing, since nothing here reads a room on it.
+    // the address a member armed a watch with. One-way and content-free. A watch this
+    // VTA arms names an address of its own and is signalled there
+    // (`messaging::watch_addresses`); one addressed to this VTA's DID matches no watch and
+    // is dropped, answered with nothing.
     vta_sdk::trust_tasks::TASK_ROOMS_CHANGED_0_1 => room_changed::handle_changed
         [ None None false ],
+    // ─── Rooms: watching for a client (`rooms/keys/watch/0.1`) ────
+    // `actsAsSubject`: arms `rooms/watch` at the host as the member, presenting the
+    // member's own `read`. Mutating: keeps one record per armed watch until it fires, is
+    // cancelled or lapses. Discloses nothing: whether each watch is armed and until when.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1 => room_key_watch::handle_watch
+        [ Mutating None true ],
     vta_sdk::trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1 => notifications::handle_notify
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_NOTIFICATIONS_RELAY_0_1 => notifications::handle_relay
@@ -2938,6 +2947,9 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_10 => room_act::handle_act_v0_10
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_11 => room_act::handle_act_v0_11
+        [ None Metadata true ],
+    // 0.12: 0.11, with `rooms/watch/0.1` (`read`) in the table.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_12 => room_act::handle_act_v0_12
         [ None Metadata true ],
     // 0.2: each entry names its member; `includePersonal` adds the member's own label.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2 => room_label::handle_list_v0_2

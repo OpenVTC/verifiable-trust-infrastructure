@@ -209,6 +209,24 @@ pub fn actable_0_11(type_uri: &str) -> Option<Option<&'static str>> {
     row(ACT_TABLE_0_11_ADDS, type_uri).or_else(|| actable_0_10(type_uri))
 }
 
+/// The row `rooms/keys/act/0.12` adds to 0.11's table (trust-tasks-tf #1040):
+/// `rooms/watch/0.1`, `read`, with a presentation, for a client that receives at an address
+/// of its own. The recipient completes it as it completes a listing; the address is the
+/// producer's, and its Producer item 6 says which DID it may be (checked in the handler
+/// against the identifiers this VTA knows: its own, the caller's and the member's).
+pub const ACT_TABLE_0_12_ADDS: &[ActRow] = &[(spec::watch::v0_1::Payload::TYPE_URI, Some("read"))];
+
+/// The row of `rooms/keys/act/0.12`'s table for `type_uri`: 0.11's, and
+/// [`ACT_TABLE_0_12_ADDS`]. The community types are 0.10's unchanged.
+pub fn actable_0_12(type_uri: &str) -> Option<Option<&'static str>> {
+    row(ACT_TABLE_0_12_ADDS, type_uri).or_else(|| actable_0_11(type_uri))
+}
+
+/// Whether `type_uri` is `rooms/watch/0.1`, the one type whose `address` is the producer's.
+pub fn is_watch(type_uri: &str) -> bool {
+    bare_type(type_uri) == spec::watch::v0_1::Payload::TYPE_URI
+}
+
 fn row(table: &[ActRow], type_uri: &str) -> Option<Option<&'static str>> {
     let bare = bare_type(type_uri);
     table
@@ -501,6 +519,28 @@ mod tests {
             assert_eq!(actable_0_11(t), Some(*action), "{t}");
         }
         assert_eq!(actable_0_11(MEMBERSHIPS_LIST_0_2), None);
+    }
+
+    /// 0.12 adds `rooms/watch/0.1` (`read`); 0.11 does not name it, and every type 0.11
+    /// completes 0.12 completes on the same terms.
+    #[test]
+    fn act_0_12_adds_rooms_watch() {
+        let watch = spec::watch::v0_1::Payload::TYPE_URI;
+        assert_eq!(actable_0_11(watch), None, "0.11's table is closed to it");
+        assert_eq!(actable_0_12(watch), Some(Some("read")));
+        assert_eq!(
+            actable_0_12(&format!("{watch}#request")),
+            Some(Some("read"))
+        );
+        assert!(is_watch(&format!("{watch}#request")));
+        for (t, action) in ACT_TABLE_0_8
+            .iter()
+            .chain(ACT_TABLE_0_9_ADDS)
+            .chain(ACT_TABLE_0_11_ADDS)
+        {
+            assert_eq!(actable_0_12(t), Some(*action), "{t}");
+        }
+        assert_eq!(actable_0_12(MEMBERSHIPS_LIST_0_2), None);
     }
 
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),

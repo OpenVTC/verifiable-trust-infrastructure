@@ -117,12 +117,16 @@ async fn task_subject(
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_9
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_10
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_11
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_12
     {
         return super::room_act::act_subject(state, auth, payload).await;
     }
     // `rooms/keys/label/0.1`'s `subjectPath` is `/member`: the member whose label it is,
     // never the room, and never a detail of the label.
-    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1 {
+    // `rooms/keys/watch/0.1`'s `subjectPath` is `/member` too: the member watched as.
+    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1
+    {
         return payload
             .get("member")
             .and_then(Value::as_str)

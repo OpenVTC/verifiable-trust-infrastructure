@@ -926,6 +926,33 @@ When adding a flow, add it here and a line to the root index.
   `pnm rooms records {prune,retention}`, `pnm rooms prune`.
 - **Docs**: `docs/02-vta/data-rooms.md` (§9, §10.4, §10.5).
 
+### Watching rooms for a client (`rooms/keys/watch/0.1`, `rooms/keys/changed/0.1`)
+- **What**: a wallet with no member keys and no address asks its VTA to watch up to 64
+  rooms at one host (trust-tasks-tf #1040). The VTA arms `rooms/watch/0.1` at the host per
+  room as the member (presentation narrowed to `read`, member-signed, as `act/0.12`
+  completes one) with a fresh `did:peer:2` address of its own (DIDComm at the VTA's
+  mediator), receives the host's `rooms/changed` at that address over a connection of its
+  own (`messaging::watch_addresses`), and passes one `rooms/keys/changed` on to the caller
+  through `step_up::push_to_device_with(.., wake: false)`.
+- **Invariants to preserve**: the record is exactly Recipient item 6's list — never a
+  watermark, a signalled version or a signal time (`operations::room_key_watch`, keyspace
+  `room_key_watches`, encrypted, not backed up, no derived `Debug` over its keys). The
+  address is never the VTA's, member's or caller's DID and never reused, except a re-arm of
+  an unfired watch, which keeps it. A signal is passed on only when the transport proved the
+  watch's host, for the watch's room, while armed; the watch is forgotten **before** the
+  pass-on is sent (one per arming). The pass-on carries `roomId`, `member`, `host`,
+  `latestVersion` only, never the address, no doorbell, deadline = one attempt window (no
+  re-send of an accepted push). Removal: fired, cancelled, lapsed (≤ 30 days, ≤ host's
+  `expiresAt`), caller lost standing, member's credentials gone (`room_key_watch::sweep`,
+  every 30 s with the address supervisor). Own bounds 64/member, 64/caller, 256 total →
+  `limitReached`; no mediator → `limitReached`. `act/0.12` refuses (malformed) a watch
+  address equal to the caller's, the VTA's or the member's DID (Producer item 6).
+- **Code**: `vta-service/src/operations/room_key_watch.rs`,
+  `vta-service/src/trust_tasks/{room_key_watch,room_key_watch_tests,room_changed,room_act}.rs`,
+  `vta-service/src/messaging/watch_addresses.rs`, `vta_sdk::client` (`room_watch`,
+  `room_act_v0_12`, `room_changed_signal`), `pnm rooms watch [--via-host]`.
+- **Docs**: `docs/02-vta/data-rooms.md` (*Watching instead of polling*).
+
 ### Held notifications (`notifications/*`, `vta/notifications/*/0.1`)
 - **What**: The VTA as **recipient** of `notifications/notify/0.1` and `notifications/relay/0.1`
   (VTI-NTF-001 – 053): every layer verified, held by the stated acceptance policy in the

@@ -148,44 +148,58 @@ pub fn cleartext(name: &str) -> Result<Map<String, Value>, String> {
     Ok(m)
 }
 
+/// When a version was stored and its `version`, the order rule 2 weighs versions in: the
+/// most recently stored, and of two stored at the same time the greater `version`. A
+/// version with no stored time sorts before every one with a time.
+type Weight = (Option<chrono::DateTime<chrono::Utc>>, Option<u64>);
+
 /// The names a reader has learned in one room, from the `memberProfile` records it read
 /// (`MemberProfileRecord`, *Reading one*): per author, the name of the version the host
-/// stored most recently — by `bodyStoredAt`, else `updatedAt` — and none where that version
-/// withdraws it or is not a name at all.
+/// stored most recently — by `bodyStoredAt`, else `updatedAt`, and of two stored at the
+/// same time the one with the greater `version` — and none where that version withdraws it
+/// or is not a name at all.
+///
+/// *Several records by one author*: every record whose current version is by an author is
+/// weighed, whatever its key, by that rule alone. The answer never depends on the order the
+/// records were offered in, and a record is never set aside because another of the same
+/// author's was met first. A version another member rewrote is that member's claim, weighed
+/// for them, never for the record's original author (rule 3) — it is offered under its own
+/// author.
 ///
 /// Only for one room: a reader never applies a name to the same DID in another room.
 #[derive(Debug, Clone, Default)]
 pub struct Names {
-    by_author:
-        std::collections::HashMap<String, (Option<chrono::DateTime<chrono::Utc>>, Option<String>)>,
+    by_author: std::collections::HashMap<String, (Weight, Option<String>)>,
 }
 
 impl Names {
-    /// Offer one record a reader read: `author` as verified (the body's signer on a sealed
-    /// tier, the author the host recorded on an open room), `created_by` the record's
-    /// `createdBy` where the host gave one, `object` the body or cleartext, `stored_at` its
-    /// `bodyStoredAt` (else `updatedAt`). A record that is not `kind: memberProfile` is
-    /// ignored; one whose author is not its original author names nobody (rule 3).
+    /// Offer the current version of one record a reader read: `author` the version's author
+    /// as verified (the body's signer on a sealed tier, the author the host recorded on an
+    /// open room), `object` the body or cleartext, `stored_at` its `bodyStoredAt` (else
+    /// `updatedAt`), `version` its `version`. A record that is not `kind: memberProfile` is
+    /// ignored.
     pub fn offer(
         &mut self,
         author: &str,
-        created_by: Option<&str>,
         object: &Map<String, Value>,
         stored_at: Option<&str>,
+        version: Option<u64>,
         open: bool,
     ) {
-        if !is_member_profile(object) || created_by.is_some_and(|c| c != author) {
+        if !is_member_profile(object) {
             return;
         }
         let at = stored_at
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|d| d.with_timezone(&chrono::Utc));
+        let weight = (at, version);
         let name = name_of(object, open).map(str::to_string);
         match self.by_author.get(author) {
-            // A version stored earlier than the one already taken does not replace it.
-            Some((held, _)) if held.is_some() && (at.is_none() || at < *held) => {}
+            // Rule 2: only a version weighed above the one already taken replaces it. Equal
+            // weights are the same version offered twice.
+            Some((held, _)) if *held >= weight => {}
             _ => {
-                self.by_author.insert(author.to_string(), (at, name));
+                self.by_author.insert(author.to_string(), (weight, name));
             }
         }
     }
@@ -298,40 +312,48 @@ mod tests {
     }
 
     #[test]
-    fn a_reader_takes_the_latest_stored_name_of_the_original_author() {
+    fn a_reader_takes_the_latest_stored_name_of_each_author() {
         let named = |n: &str| obj(json!({ "kind": "memberProfile", "title": n, "author": "a" }));
         let mut names = Names::default();
         names.offer(
             "did:a",
-            Some("did:a"),
             &named("Old"),
             Some("2026-01-01T00:00:00Z"),
+            Some(3),
             false,
         );
         names.offer(
             "did:a",
-            Some("did:a"),
             &named("New"),
             Some("2026-01-02T00:00:00Z"),
+            Some(9),
             false,
         );
         names.offer(
             "did:a",
-            None,
             &named("Stale"),
             Some("2025-12-31T00:00:00Z"),
+            Some(12),
             false,
         );
         assert_eq!(names.name("did:a"), Some("New"));
 
-        // A rewrite by another member names nobody.
-        names.offer("did:b", Some("did:a"), &named("Impostor"), None, false);
-        assert_eq!(names.name("did:b"), None);
+        // A version another member wrote is that member's claim, never the original
+        // author's (rule 3): offered under its own author, it names only them.
+        names.offer(
+            "did:b",
+            &named("Bea"),
+            Some("2026-01-05T00:00:00Z"),
+            Some(20),
+            false,
+        );
+        assert_eq!(names.name("did:b"), Some("Bea"));
+        assert_eq!(names.name("did:a"), Some("New"));
         // A note is not a name.
         names.offer(
             "did:c",
-            None,
             &obj(json!({ "kind": "note", "title": "C" })),
+            None,
             None,
             false,
         );
@@ -339,13 +361,39 @@ mod tests {
         // A later withdrawal leaves no name.
         names.offer(
             "did:a",
-            Some("did:a"),
             &named(""),
             Some("2026-01-03T00:00:00Z"),
+            Some(10),
             false,
         );
         assert_eq!(names.name("did:a"), None);
-        assert_eq!(names.iter().count(), 0);
+        assert_eq!(names.iter().count(), 1);
+    }
+
+    /// Rule 2's tie-break (trust-tasks-tf #1038): of two versions stored at the same time,
+    /// the greater `version` gives the name — whichever the reader met first.
+    #[test]
+    fn of_two_stored_at_once_the_greater_version_wins_in_any_order() {
+        let named = |n: &str| obj(json!({ "kind": "memberProfile", "title": n, "body": "" }));
+        let at = Some("2026-01-01T00:00:00Z");
+        for order in [[("Low", 4), ("High", 7)], [("High", 7), ("Low", 4)]] {
+            let mut names = Names::default();
+            for (n, v) in order {
+                names.offer("did:a", &named(n), at, Some(v), true);
+            }
+            assert_eq!(names.name("did:a"), Some("High"), "{order:?}");
+        }
+        // A stored time outweighs a version: a later write is the more recent claim.
+        let mut names = Names::default();
+        names.offer(
+            "did:a",
+            &named("Later"),
+            Some("2026-01-02T00:00:00Z"),
+            Some(1),
+            true,
+        );
+        names.offer("did:a", &named("Earlier"), at, Some(99), true);
+        assert_eq!(names.name("did:a"), Some("Later"));
     }
 
     #[test]

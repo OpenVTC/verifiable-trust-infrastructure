@@ -86,6 +86,9 @@ pub mod room_groups;
 pub mod room_host;
 pub mod room_invitation;
 pub mod room_issuance;
+/// The watches this VTA holds for its principal's clients (`rooms/keys/watch/0.1`): the
+/// minimal record, the bounds, and the per-watch addresses.
+pub mod room_key_watch;
 pub mod room_member;
 pub mod room_oracle;
 /// A room's own profile (`rooms/keys/profile/{read,write}`): the statement a member holding

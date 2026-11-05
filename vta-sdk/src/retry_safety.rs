@@ -710,8 +710,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_9, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_10, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_11, RetrySafe),
-    // A one-way signal this VTA only logs: nothing is stored or changed on it.
-    (trust_tasks::TASK_ROOMS_CHANGED_0_1, ReadOnly),
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_12, RetrySafe),
+    // `rooms/keys/watch/0.1` *A repeated request*: it sets a state. Re-arming a watch already
+    // armed at the same watermark keeps its address and answers the same; cancelling one
+    // the VTA does not hold answers `armed: false` (VTI-OPS-060's second class).
+    (trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1, RetrySafe),
+    // A one-way signal: the VTA passes it on once to the client that armed the watch and
+    // forgets the watch, which a repeat finds gone and drops.
+    (trust_tasks::TASK_ROOMS_CHANGED_0_1, RetrySafe),
     // A read: names each entry's member and can carry the member's own labels.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),
     // Idempotent by specification (`rooms/keys/label/0.1` *Retry safety*): each detail is

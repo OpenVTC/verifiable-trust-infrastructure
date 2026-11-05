@@ -287,6 +287,10 @@ pub struct AppState {
     /// Who collects for each persona DID: the handle the `vta/collection/*`
     /// handlers and the collector share (`operations::collection`).
     pub collection: Arc<crate::operations::collection::CollectionControl>,
+    /// The watches armed for the principal's clients (`rooms/keys/watch/0.1`) and the
+    /// connections receiving at their addresses — see
+    /// [`crate::keyspaces::ROOM_KEY_WATCHES`].
+    pub room_key_watches: Arc<crate::operations::room_key_watch::RoomKeyWatches>,
     /// A member's MLS group for each room they belong to. Group secrets — see
     /// [`crate::keyspaces::ROOM_GROUPS`].
     pub room_groups_ks: KeyspaceHandle,
@@ -639,6 +643,8 @@ pub async fn build_app_state(
     // encrypted at rest like the vault.
     let notifications_ks = apply_encryption(store.keyspace(crate::keyspaces::NOTIFICATIONS)?);
     let collection_ks = apply_encryption(store.keyspace(crate::keyspaces::COLLECTION)?);
+    // Watches: each record holds its address's private keys.
+    let room_key_watches_ks = apply_encryption(store.keyspace(crate::keyspaces::ROOM_KEY_WATCHES)?);
     // Encrypted alongside the key store where a TEE deployment provides a storage key: a
     // group snapshot decrypts every record its room holds, which is the same class of
     // material as a derived key and deserves the same treatment.
@@ -766,6 +772,9 @@ pub async fn build_app_state(
         collection_ks,
         collection: Arc::new(crate::operations::collection::CollectionControl::new(
             config.collection.collect_by_default,
+        )),
+        room_key_watches: Arc::new(crate::operations::room_key_watch::RoomKeyWatches::new(
+            room_key_watches_ks,
         )),
         room_groups_ks,
         room_invitations_ks,
@@ -1695,6 +1704,14 @@ pub async fn run(
             app_state.clone(),
             didcomm_shutdown.clone(),
         ));
+        // The room watches' addresses (`rooms/keys/watch/0.1`): one connection per watch
+        // held, and the sweep that forgets lapsed watches and those whose caller lost
+        // standing.
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        let watch_addresses_handle = tokio::spawn(crate::messaging::watch_addresses::run(
+            app_state.clone(),
+            didcomm_shutdown.clone(),
+        ));
 
         // TSP inbound is no longer a standalone websocket. The delivery-layer
         // `DidCommTransport` built above multiplexes TSP frames off its single
@@ -1849,6 +1866,12 @@ pub async fn run(
                 .is_err()
             {
                 warn!("the collector did not close its connections within 30s");
+            }
+            if tokio::time::timeout(std::time::Duration::from_secs(30), watch_addresses_handle)
+                .await
+                .is_err()
+            {
+                warn!("the room watch addresses did not close their connections within 30s");
             }
         }
 

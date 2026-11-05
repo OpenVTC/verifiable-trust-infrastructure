@@ -72,7 +72,8 @@ use governor::{Quota, RateLimiter};
 use metrics::counter;
 use vta_config::ServerConfig;
 use vta_sdk::trust_tasks::{
-    TASK_VAULT_RELEASE_0_2, TASK_WEBVH_DIDS_CREATE_1_2, TASK_WEBVH_DIDS_DELETE_1_0,
+    TASK_ROOMS_KEYS_WATCH_0_1, TASK_VAULT_RELEASE_0_2, TASK_WEBVH_DIDS_CREATE_1_2,
+    TASK_WEBVH_DIDS_DELETE_1_0,
 };
 
 /// The heaviest weight in [`weight`]. No burst is below it, or that task could
@@ -144,6 +145,10 @@ pub(crate) fn weight(type_uri: &str) -> u32 {
     match bare {
         TASK_VAULT_RELEASE_0_2 => 2,
         TASK_WEBVH_DIDS_CREATE_1_2 | TASK_WEBVH_DIDS_DELETE_1_0 => MAX_WEIGHT,
+        // Up to 64 rooms, each a presentation minted and signed as the member, a host
+        // request and an address minted: not measured, and charged as the heaviest task
+        // so one request cannot spend 64 signs for the price of one.
+        TASK_ROOMS_KEYS_WATCH_0_1 => MAX_WEIGHT,
         _ => 1,
     }
 }

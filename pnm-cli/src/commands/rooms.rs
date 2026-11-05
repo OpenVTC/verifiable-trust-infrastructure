@@ -664,9 +664,11 @@ pub(crate) async fn run(
             .await
         }
         RoomCommands::Watch {
-            room_id,
+            room_ids,
             host,
             host_did,
+            member,
+            via_host,
             address,
             since,
             lease,
@@ -676,12 +678,33 @@ pub(crate) async fn run(
                 .as_deref()
                 .map(vta_cli_common::duration::parse_duration_secs)
                 .transpose()?;
-            rooms::cmd_rooms_watch(
+            if !via_host {
+                return rooms::cmd_rooms_watch(
+                    client,
+                    rooms::WatchThroughVta {
+                        host_did: &host_did,
+                        room_ids: &room_ids,
+                        member: member.as_deref(),
+                        host_url: host.as_deref(),
+                        since,
+                        lease_secs,
+                        cancel,
+                    },
+                )
+                .await;
+            }
+            let [room_id] = room_ids.as_slice() else {
+                return Err("--via-host watches one room: name one --room".into());
+            };
+            let (Some(host), Some(address)) = (host, address) else {
+                return Err("--via-host needs --host and --address".into());
+            };
+            rooms::cmd_rooms_watch_via_host(
                 client,
                 RoomTarget {
                     host_url: &host,
                     host_did: Some(&host_did),
-                    room_id: &room_id,
+                    room_id,
                 },
                 signer,
                 &address,

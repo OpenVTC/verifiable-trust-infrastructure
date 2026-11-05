@@ -1634,8 +1634,8 @@ pnm rooms profile set --room <room-did> --host-did <host-did> --no-record-member
 ```
 
 The list is checked by the writer, not by your VTA: `rooms/keys/seal/0.3` and
-`rooms/keys/act/0.11` sign what they are given without reading it against the
-profile, as their specifications say. Every re-write after an advance carries
+`rooms/keys/act/0.11` (and 0.12) sign what they are given without reading it
+against the profile, as their specifications say. Every re-write after an advance carries
 `recordMembers` through unchanged.
 
 **Names.** Listing `memberProfile` (with `kind`) lets members tell the room
@@ -1655,29 +1655,104 @@ reading the room's records, which on a sealed tier means opening them through
 your VTA — or your first one, create-only, so a retry leaves one record. A name
 is your claim, not a verified one: `pnm rooms list`, `get` and `read` show it
 beside your DID ("calls themselves …"), never as a note and never instead of the
-DID. After the room's epoch advances, members who join later read only what was
-sealed after they joined: write your name again then.
+DID — so two members who chose the same name, or names that look alike, are
+always told apart by the DID beside it. Where no name has been found for an
+author (on a sealed tier it may sit in pages not opened), the DID alone is
+shown; pnm never guesses one from another room, a directory or what the author
+wrote. After the room's epoch advances, members who join later read only what
+was sealed after they joined: write your name again then.
 
-**Watching instead of polling.** `pnm rooms watch` asks the host for one signal
-(`rooms/changed/0.1`) at an address of yours the first time the room moves past
-the version you have read to, and nothing more until you watch again:
+**Which name is an author's.** Of every `memberProfile` record whose current
+version is by an author — whatever its key — the one the host stored most
+recently (`bodyStoredAt`, else `updatedAt`) gives the name, and of two stored at
+the same time the one with the greater `version` (trust-tasks-tf #1038). The
+answer never depends on the order the records were read in. A version another
+member rewrote is that member's claim about themselves, never the original
+author's.
+
+**Near the room's head.** A reader that opens only recent records sees no name
+written long before them. So after `pnm rooms put` and `pnm rooms file put`, when
+the version the host assigned the write is **more than 500** past your name
+record's current version (500 is the largest page `rooms/records/list/0.6`
+returns), pnm writes your name again over the same record: the same name, the
+`writtenAt` it had, no new `editedAt` (one the earlier version carried stays). A
+withdrawn name is not written again, and a room whose profile no longer lists
+`memberProfile` gets nothing. It looks one page back first, so the room's whole
+history is read only when the name record is not there; a failure is reported
+and never fails the write it followed.
+
+**Watching instead of polling.** `pnm rooms watch` asks your VTA to watch rooms
+at one host for you (`rooms/keys/watch/0.1`, trust-tasks-tf #1040). For each
+room the VTA arms the host's `rooms/watch` **as your member** — its own
+presentation narrowed to `read`, its own signature — with an **address of its
+own**: a `did:peer:2` minted for that one watch, whose only service is
+`DIDCommMessaging` at the VTA's mediator. When the room moves past the version
+you read to, the host signals that address once (`rooms/changed/0.1`), and the
+VTA passes the signal on to this client as `rooms/keys/changed/0.1` — the room,
+the member, the host and the latest version, nothing else — then forgets the
+watch:
 
 ```bash
-pnm rooms watch --room <room-did> --host <url> --host-did <host-did> \
-                --address <your-did> --since 412 --lease 7d
-pnm rooms watch --room <room-did> --host <url> --host-did <host-did> \
-                --address <your-did> --cancel
+pnm rooms watch --room <room-did> --host-did <host-did> --since 412 --lease 7d
+pnm rooms watch --room <deal> --room <board> --room <social> --host-did <host-did>
+pnm rooms watch --room <room-did> --host-did <host-did> --cancel
 ```
 
+Up to 64 rooms at one host per request, one outcome each: `armed` with
+`expiresAt`, or `refused` — `notAMember`, `actionNotHeld`, `limitReached` (your
+VTA's own bound), `hostUnreachable`, or `hostRefused` with the host's code. The
+member is the one `rooms/keys/list` names for the rooms; name it with `--member`
+when you read them as several, and pass `--host <url>` to find it for an `open`
+room, which that list leaves out. A member your VTA holds no keys for, or that
+you may not act as, is refused whole (`memberNotPrincipal`).
+
 The signal names the room and its latest version, nothing about what changed:
-read the room to learn that, then watch again with the version you read to. It
-is presented for this client and signed by it, as `prune` is —
-`rooms/keys/act/0.11` does not list `rooms/watch`. On a `private` room use an
-address you use for nothing else. A host keeps a watch at most 30 days, never
-past the first credential of the presentation lapsing, and forgets it once it
-fires; it is host state only, never consulted to authorize anything. A VTA whose
-own DID is the address accepts the signal, logs it at `debug` and answers
-nothing: no consumer on the VTA reads a room on one yet.
+read the room to learn that, then watch again with the version you read to. One
+signal per arming, end to end. This client needs no address a host can reach,
+and the host learns neither it nor the VTA — only the member and an address used
+for that one watch and never shown to you. The pass-on reaches you the way a
+`task-consent/granted` does: queued at your mediator, and a sleeping phone woken
+by its mediator for it, never by a doorbell of the VTA's own.
+
+What your VTA keeps, per armed watch, is exactly what the specification lets it
+(Recipient item 6): the caller, the member, the room, the host, the address and
+its two private keys, and when the watch lapses — never the watermark, the
+signalled version or when a signal came, in the `room_key_watches` keyspace,
+encrypted at rest and **not backed up**. A watch is forgotten, and its address
+retired, when it fires, when you cancel it, when it lapses (30 days at most,
+never later than the host's `expiresAt`), when your client's standing to act as
+the member is withdrawn, and when the VTA no longer holds the member's
+credentials for the room; a sweep checks the last three every 30 seconds. The
+audit row says that watches were armed or cancelled at a host, and how many —
+never which rooms or which address.
+
+The VTA receives at each address over a mediator connection of its own, one per
+watch, so its bounds are its own: 64 watches per member, 64 per client and 256
+in all. A VTA with no mediator answers every room `limitReached`; poll instead.
+On a `private` room, the mediator named in each address tells the host which
+mediator the VTA receives at; a VTA whose mediator serves only its own
+principal identifies the member by it, and should not be asked to watch a
+`private` room.
+
+**With an address of your own.** A client that receives Trust Task documents at
+a DID of its own — a command line, a desktop agent — can arm the host's watch
+itself with `--via-host`: your VTA completes the `rooms/watch` as the member
+with `rooms/keys/act/0.12`, which adds it to the table (`read`), and pnm sends it
+to the host. The address must be a DID you receive at and use for watches only:
+never the DID you authenticate to your VTA with, the VTA's own or the member's
+(Producer item 6 — your VTA refuses those as malformed before it signs). On a
+`private` room use one for that one watch:
+
+```bash
+pnm rooms watch --via-host --room <room-did> --host <url> --host-did <host-did> \
+                --address <your-watch-did> --since 412
+```
+
+A VTA from before `act/0.12` is asked the way earlier builds did: it presents
+for this client and this client signs, so the host sees the client as the
+presenter. A VTA that does not serve `rooms/keys/watch` is refused with this
+command to use instead. A signal addressed to the VTA's own DID matches no watch
+and is dropped.
 
 `rooms/keys/read` of the profile's key does not open it (its answer says
 `ext["org.openvtc.rooms"].roomProfile`), and `rooms/keys/browse` leaves it out of
@@ -2082,7 +2157,8 @@ and `vtc-service`:
 | `rooms/keys/open/0.2` | `roomOpen` capability |
 | `rooms/keys/file-key/0.2` | `roomOpen` capability |
 | `rooms/keys/seal/0.2`, `0.3` | `roomOpen` capability; `signAsPrincipal` refused to a delegate. 0.3 accepts `kind`, `inReplyTo`, `writtenAt`, `editedAt` and a file's `width`, `height` and `preview`, which 0.2 refuses `bodyInvalid` |
-| `rooms/keys/act/0.8`, `0.9`, `0.10`, `0.11` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.11 adds `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3` |
+| `rooms/keys/act/0.8`, `0.9`, `0.10`, `0.11`, `0.12` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.11 adds `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3`; 0.12 adds `rooms/watch/0.1` (`read`), refusing as malformed an `address` that is the caller's DID, the VTA's or the member's |
+| `rooms/keys/watch/0.1` | `roomPresent` capability + acting as `member` (`memberNotPrincipal` otherwise); refused to a delegate. Up to 64 rooms at one host, one outcome each; each armed with its own `rooms/watch/0.1`, presentation and `did:peer` address; bounds 64 per member, 64 per client, 256 in all |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
 | `rooms/keys/browse/0.3`, `0.4` | `roomOpen` capability; passes the host's `lastPrune` through. 0.4 lists with `rooms/records/list/0.6` (else 0.5) and passes its `RecordMetadataV3` rows through as served: `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`), `kind` (`open`) |
@@ -2090,7 +2166,7 @@ and `vtc-service`:
 | `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
 | `rooms/keys/backfill/0.2` | `roomOpen` capability; fetches with `rooms/epoch/chain/0.2`, applies and reports the floor |
 | `rooms/keys/present/0.2` | `roomPresent` capability + acting in the persona's context |
-| `rooms/changed/0.1` | none — a host's one-way signal to a watch's address, accepted from a sender with no ACL entry, logged at `debug`, answered with nothing |
+| `rooms/changed/0.1` | none — a host's one-way signal to a watch's address, from a sender with no ACL entry. At a `rooms/keys/watch` address, passed on once as `rooms/keys/changed/0.1` when the transport proved the watch's host and it names the watch's room; anything else, and anything at the VTA's own DID, dropped and answered with nothing |
 
 **Owner tasks** (`https://trusttasks.org/spec/rooms/owner/…`), served by
 `vta-service` — the room's own key, used without it leaving the VTA. The family

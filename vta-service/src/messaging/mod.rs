@@ -52,3 +52,6 @@ pub mod tsp_reach;
 pub mod tsp_relationship_store;
 #[cfg(feature = "tsp")]
 pub mod tsp_transport;
+/// The connections the VTA receives at for the room watches it holds
+/// (`rooms/keys/watch/0.1`): one per watch's address.
+pub mod watch_addresses;

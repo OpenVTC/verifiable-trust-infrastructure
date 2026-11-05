@@ -191,6 +191,13 @@ impl HostState {
         self.watches.set_signals(signals);
     }
 
+    /// Signal a fired watch after a delay drawn from `from..=to` milliseconds rather than
+    /// the default 2–6 s (`rooms/changed/0.1` Producer item 4). For a test driving a watch
+    /// end to end; a host serving members keeps the default.
+    pub fn set_watch_signal_delay_ms(&self, from: u64, to: u64) {
+        self.watches.set_signal_delay_ms(from, to);
+    }
+
     /// Forget the watches whose lease ran out, returning how many. Run on a timer beside
     /// [`Self::sweep_accepted_ids`]; a room's own watches are also swept when it moves.
     pub async fn sweep_watches(&self) -> Result<usize, AppError> {

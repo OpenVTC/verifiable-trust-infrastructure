@@ -1525,6 +1525,11 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         collection: std::sync::Arc::new(crate::operations::collection::CollectionControl::new(
             config.read().await.collection.collect_by_default,
         )),
+        room_key_watches: std::sync::Arc::new(
+            crate::operations::room_key_watch::RoomKeyWatches::new(
+                store.keyspace(crate::keyspaces::ROOM_KEY_WATCHES).unwrap(),
+            ),
+        ),
         room_groups_ks: store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap(),
         room_invitations_ks: store.keyspace(crate::keyspaces::ROOM_INVITATIONS).unwrap(),
         app_state_ks: store.keyspace(crate::keyspaces::APP_STATE).unwrap(),
