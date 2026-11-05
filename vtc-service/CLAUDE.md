@@ -459,7 +459,8 @@ When adding a flow, add it here and a line to the root index.
   manager's appointment is a resource grant written under the git-ns write lock
   (so `acl/*` writes keep it); a granter who departs or no longer covers it
   sends it to an `acl.grants.review` item (`groupGrants`), withdrawn on decline
-  or at the deadline (`groups::managers::sweep`).
+  or at the deadline (`groups::managers::sweep`). The grant/review/withdraw machinery is
+  `acl::appointment`, shared with board facilitators; keep both kinds on it.
 - **Code**: `vtc-service/src/groups/` (`mod`, `identity`, `policy`),
   `vtc-service/src/trust_tasks/group_tasks.rs`,
   `vtc-service/policies/default/groups.rego`, `vta-sdk/templates/vtc-group.json`.
@@ -921,6 +922,14 @@ When adding a flow, add it here and a line to the root index.
   closed/archived board with no election running; audited before anything goes; each election
   leaves only a `Tombstone` (id, manifest digest, kept heads — never title, roll or tickets) for
   `[boards] tombstone_retention` (days, `0` = none, `"forever"`), removed by the sweeper.
+  **Facilitators by appointment** (`vtc/boards/facilitators/*`, VTI-BRD-090 – 093,
+  `boards::facilitators` over `acl::appointment`, shared with group managers): a resource grant
+  `vtc.boards.manage` at `board:<id>` on the appointee's entry, delegated by a signer who
+  facilitates the board, written under the git-ns write lock. Peers never remove one another
+  (only the appointee or an unqualified holder). A granter who departs or stops facilitating
+  sends it to `acl.grants.review` (`boardGrants`), withdrawn on decline or at the deadline
+  (`boards::facilitators::sweep`, run by the directory sweep, audited `facilitatorWithdrawn`);
+  deleting the board withdraws them all. Never record facilitators on the board itself.
 - **Code**: `vtc-service/src/boards/{mod,ops}.rs`, `vtc-service/src/trust_tasks/board_tasks.rs`,
   `vtc-service/tests/it/board_tasks.rs`.
 - **Docs**: `docs/03-vtc/boards.md`, `docs/05-design-notes/vtc-boards.md`.

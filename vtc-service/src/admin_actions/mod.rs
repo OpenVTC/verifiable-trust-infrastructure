@@ -2447,8 +2447,20 @@ pub(crate) async fn decide(
                 warn!(action = %rec.id, error = %e, "a declined review's group manager appointments could not be withdrawn now; the sweep will at the deadline");
             }
             if rec.act == Act::GrantsReview
+                && let Some(items) = board_review_items(&rec)
+                && let Err(e) = crate::boards::facilitators::withdraw_reviewed(
+                    state,
+                    rec.payload["granter"].as_str().unwrap_or_default(),
+                    &items,
+                )
+                .await
+            {
+                warn!(action = %rec.id, error = %e, "a declined review's board facilitator appointments could not be withdrawn now; the sweep will at the deadline");
+            }
+            if rec.act == Act::GrantsReview
                 && git_review_items(&rec).is_none()
                 && group_review_items(&rec).is_none()
+                && board_review_items(&rec).is_none()
                 && let Err(e) = crate::acl::delegation::withdraw_reviewed(
                     state,
                     rec.payload["granter"].as_str().unwrap_or_default(),
@@ -3792,6 +3804,31 @@ pub(crate) async fn raise_group_grants_review(
     .await
 }
 
+/// [`raise_grants_review`] for the **board facilitator appointments** a departed
+/// granter made (each a resource grant `vtc.boards.manage` qualified
+/// `board:<boardId>`, VTI-BRD-092). The same item kind, approver set and outcome as
+/// a group grants review; the payload lists them under `boardGrants`.
+pub(crate) async fn raise_board_grants_review(
+    state: &AppState,
+    granter: &str,
+    items: &[crate::boards::facilitators::ReviewItem],
+    deadline: u64,
+) -> Result<Option<String>, AppError> {
+    let mut subjects: Vec<String> = items.iter().map(|i| i.subject.clone()).collect();
+    subjects.sort();
+    subjects.dedup();
+    let boards = serde_json::to_value(items)
+        .map_err(|e| AppError::Internal(format!("board grants review: {e}")))?;
+    raise_review_item(
+        state,
+        granter,
+        &subjects,
+        Some(("boardGrants", boards)),
+        deadline,
+    )
+    .await
+}
+
 async fn raise_review_item(
     state: &AppState,
     granter: &str,
@@ -3939,14 +3976,21 @@ async fn execute_grants_review(
     approvers.reverse();
     // Git rights (phase C3) are re-affirmed grant by grant; an item lists
     // either kind, never both.
-    let outcome = match (git_review_items(rec), group_review_items(rec)) {
-        (Some(items), _) => {
+    let outcome = match (
+        git_review_items(rec),
+        group_review_items(rec),
+        board_review_items(rec),
+    ) {
+        (Some(items), _, _) => {
             crate::git_ns::lifecycle::reaffirm(state, granter, &items, &approvers).await
         }
-        (None, Some(items)) => {
+        (None, Some(items), _) => {
             crate::groups::managers::reaffirm(state, granter, &items, &approvers).await
         }
-        (None, None) => {
+        (None, None, Some(items)) => {
+            crate::boards::facilitators::reaffirm(state, granter, &items, &approvers).await
+        }
+        (None, None, None) => {
             crate::acl::delegation::reaffirm(state, granter, &subjects, &approvers).await
         }
     };
@@ -3972,6 +4016,13 @@ async fn execute_grants_review(
 fn group_review_items(rec: &ActionRecord) -> Option<Vec<crate::groups::managers::ReviewItem>> {
     rec.payload
         .get("groupGrants")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// The board facilitator appointments a review item lists, when it is one for them.
+fn board_review_items(rec: &ActionRecord) -> Option<Vec<crate::boards::facilitators::ReviewItem>> {
+    rec.payload
+        .get("boardGrants")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 

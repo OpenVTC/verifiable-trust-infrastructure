@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod admin_consent;
+pub mod appointment;
 pub mod approver;
 pub mod bound_step_up;
 pub mod capability;

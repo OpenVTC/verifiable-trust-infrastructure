@@ -17,12 +17,14 @@ import { Check, EyeOff, GitMerge, Pencil, Plus, RotateCcw, SquareKanban, Trash2,
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
+import { EntryName, useEntryFaces } from "@/components/EntryName";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
 import {
   BOARDS_KEY,
   BOARDS_MANAGE,
   ELECTIONS_MANAGE,
+  appointFacilitator,
   createBoard,
   decideIdea,
   deleteBoard,
@@ -31,7 +33,9 @@ import {
   hideNote,
   listAllNotes,
   listBoards,
+  listFacilitators,
   pendingOf,
+  removeFacilitator,
   scheduleProblem,
   selectIdea,
   showBoard,
@@ -820,7 +824,111 @@ function BoardDetail() {
       </section>
 
       <NotesModeration notes={notes.data ?? []} titleOf={titleOf} error={notes.error} onChanged={() => void qc.invalidateQueries({ queryKey: [...key, "notes"] })} />
+
+      {board.facilitator && <BoardFacilitators board={board} mayRemoveOthers={mayDelete} />}
     </>
+  );
+}
+
+// ── Facilitators (VTI-BRD-090 – 093) ────────────────────────────────────────
+
+/** Who facilitates this board by appointment, and appointing or removing them. Any facilitator
+ *  of the board appoints; only a holder of vtc.boards.manage for every board ends someone
+ *  else's appointment (VTI-BRD-091). Holders for every board facilitate it without being listed. */
+export function BoardFacilitators({ board, mayRemoveOthers }: { board: Board; mayRemoveOthers: boolean }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const faces = useEntryFaces();
+  const [adding, setAdding] = useState("");
+  const [reason, setReason] = useState("");
+  const key = ["board", board.boardId, "facilitators"];
+  const list = useQuery({ queryKey: key, queryFn: () => listFacilitators(board.boardId) });
+  const appointed = list.data ?? [];
+  const refresh = () => void qc.invalidateQueries({ queryKey: key });
+  const add = useMutation({
+    mutationFn: () => appointFacilitator(board.boardId, adding, reason.trim() || undefined),
+    onSuccess: () => {
+      setAdding("");
+      setReason("");
+      refresh();
+      toast.push("success", "Appointed. They can now decide, select and moderate on this board.");
+    },
+    onError: (err) => toast.pushFromError(err, "Not appointed"),
+  });
+  const remove = useMutation({
+    mutationFn: (entryId: string) => removeFacilitator(board.boardId, entryId),
+    onSuccess: () => {
+      refresh();
+      toast.push("success", "Appointment ended.");
+    },
+    onError: (err) => toast.pushFromError(err, "Not changed"),
+  });
+  const nameOf = (e: string) => faces.get(e)?.name ?? e;
+  return (
+    <section className="card" aria-labelledby="board-facilitators-title">
+      <h3 id="board-facilitators-title">Facilitators</h3>
+      <p className="muted">
+        A facilitator decides, selects and moderates on this board, and nothing else in the community: a member with
+        no administrative role can be one. Administrators who run every board are not listed.
+      </p>
+      {list.isError ? (
+        <p className="error">Failed to read the facilitators: {(list.error as Error).message}</p>
+      ) : appointed.length === 0 ? (
+        <EmptyState compact title={list.isPending ? "Loading…" : "Nobody is appointed to this board."} />
+      ) : (
+        <ul className="group-list">
+          {appointed.map((a) => (
+            <li key={a.entryId}>
+              <EntryName entryId={a.entryId} faces={faces} />
+              <span className="muted">
+                since {when(a.appointedAt)}
+                {a.appointedBy ? ` · appointed by ${nameOf(a.appointedBy)}` : ""}
+              </span>
+              {a.reviewEndsAt && (
+                <span className="chip warning" title="Whoever appointed them no longer stands behind it. An administrator who runs this board can re-affirm it from the action list.">
+                  Under review until {when(a.reviewEndsAt)}
+                </span>
+              )}
+              {mayRemoveOthers && (
+                <div className="row-actions">
+                  <button type="button" className="secondary" onClick={() => remove.mutate(a.entryId)} disabled={remove.isPending}>
+                    End appointment
+                  </button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {board.status !== "archived" && (
+        <form
+          className="toolbar"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (adding) add.mutate();
+          }}
+        >
+          <Field label="Appoint a facilitator" inline>
+            <select aria-label="Member to appoint" value={adding} onChange={(e) => setAdding(e.target.value)}>
+              <option value="">Choose a member…</option>
+              {[...faces.entries()]
+                .filter(([e]) => !appointed.some((a) => a.entryId === e))
+                .map(([entryId, f]) => (
+                  <option key={entryId} value={entryId}>
+                    {f.name ?? entryId}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <Field label="Why (optional)" inline>
+            <input value={reason} maxLength={1024} onChange={(e) => setReason(e.target.value)} placeholder="Convenes the security track" />
+          </Field>
+          <button type="submit" className="secondary" disabled={!adding || add.isPending}>
+            Appoint
+          </button>
+        </form>
+      )}
+    </section>
   );
 }
 

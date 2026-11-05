@@ -22,6 +22,12 @@ const SELECT = `${S}/ideas/select/0.1`;
 const NOTES = `${S}/notes/list/0.1`;
 const UPDATE = `${S}/update/0.1`;
 const DELETE = `${S}/delete/0.1`;
+const FAC_LIST = `${S}/facilitators/list/0.1`;
+const FAC_ADD = `${S}/facilitators/add/0.1`;
+const FAC_REMOVE = `${S}/facilitators/remove/0.1`;
+const ENTRIES = "https://trusttasks.org/spec/vtc/directory/entries/list/0.2";
+const CAROL = "dir_Q7m2K9xVb4Tz8LpRAAAAAA";
+const DAN = "dir_T4v9L3xZd6Sq2NpWAAAAAA";
 const BOARD_ID = "brd_Uc7N2qLm4Rt8Vx1ZAAAAAA";
 const DAY = 86_400_000;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -252,3 +258,54 @@ describe("closing and deleting a board", () => {
   });
 });
 
+
+describe("a board's facilitators (VTI-BRD-090 – 093)", () => {
+  const entries = taskRoute(ENTRIES, {
+    items: [
+      { entryId: CAROL, fields: { displayName: "Carol Ng" } },
+      { entryId: DAN, fields: { displayName: "Dan Ortiz" } },
+    ],
+  });
+
+  it("appoints a member by entry, and shows an appointment under review", async () => {
+    const requests = mockFetch([
+      taskRoute(SHOW, { board: board(), ideas: [] }),
+      taskRoute(NOTES, { notes: [] }),
+      entries,
+      taskRoute(FAC_LIST, {
+        boardId: BOARD_ID,
+        facilitators: [{ entryId: CAROL, appointedAt: iso(Date.now() - DAY), reviewEndsAt: iso(Date.now() + 6 * DAY) }],
+      }),
+      taskRoute(FAC_ADD, { boardId: BOARD_ID, facilitators: [CAROL, DAN] }),
+    ]);
+    renderWithProviders(<Boards />, {
+      route: `/boards/${BOARD_ID}`,
+      path: "/boards/*",
+      whoami: whoamiWith([`vtc.boards.manage:board:${BOARD_ID}`]),
+    });
+    expect(await screen.findByText(/Under review until/)).toBeTruthy();
+    // A facilitator of this one board appoints, but never ends another's appointment.
+    expect(screen.queryByRole("button", { name: /End appointment/ })).toBeNull();
+    await screen.findByRole("option", { name: "Dan Ortiz" });
+    fireEvent.change(screen.getByLabelText("Member to appoint"), { target: { value: DAN } });
+    fireEvent.click(screen.getByRole("button", { name: "Appoint" }));
+    await waitFor(() => expect(sentPayloads(requests, FAC_ADD)).toEqual([{ boardId: BOARD_ID, entryId: DAN }]));
+  });
+
+  it("lets a holder for every board end an appointment", async () => {
+    const requests = mockFetch([
+      taskRoute(SHOW, { board: board(), ideas: [] }),
+      taskRoute(NOTES, { notes: [] }),
+      entries,
+      taskRoute(FAC_LIST, { boardId: BOARD_ID, facilitators: [{ entryId: CAROL, appointedAt: iso(Date.now() - DAY) }] }),
+      taskRoute(FAC_REMOVE, { boardId: BOARD_ID, facilitators: [] }),
+    ]);
+    renderWithProviders(<Boards />, {
+      route: `/boards/${BOARD_ID}`,
+      path: "/boards/*",
+      whoami: whoamiWith(["vtc.boards.manage"]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /End appointment/ }));
+    await waitFor(() => expect(sentPayloads(requests, FAC_REMOVE)).toEqual([{ boardId: BOARD_ID, entryId: CAROL }]));
+  });
+});

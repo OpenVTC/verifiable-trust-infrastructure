@@ -26,6 +26,7 @@
 //! never created — read as `proposed`, accepted again by the next `accept` — never an election
 //! no idea names. The election module's sweeper is the one retry owner of its registration.
 
+pub mod facilitators;
 #[cfg(feature = "voting")]
 pub mod ops;
 
@@ -958,6 +959,53 @@ pub async fn note_wire(
         out["hiddenReason"] = json!(r);
     }
     out
+}
+
+// ─── facilitators ────────────────────────────────────────────────────────
+
+/// Audit a change to a board's appointed facilitators by reference (VTI-BRD-080): the
+/// board and the facilitator's entry, never a DID. `actor` is who acted — for a
+/// withdrawal at a review's deadline, the community itself.
+///
+/// # Errors
+/// No audit writer: an appointment is never changed unaudited.
+pub async fn audit_facilitator(
+    state: &AppState,
+    actor: &str,
+    board_id: &str,
+    entry_id: &str,
+    change: &str,
+    reason: Option<&str>,
+) -> Result<(), AppError> {
+    let writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::ServiceError {
+            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            message: "audit writer not configured: facilitator changes are refused rather than \
+                      made unaudited"
+                .into(),
+        })?;
+    let mut fields = vec![format!("entry:{entry_id}")];
+    if let Some(r) = reason {
+        fields.push(format!("reason:{r}"));
+    }
+    writer
+        .write(
+            actor,
+            None,
+            vti_common::audit::AuditEvent::BoardChanged(vti_common::audit::BoardChangedData {
+                board_id: board_id.to_string(),
+                idea_id: None,
+                note_id: None,
+                change: change.to_string(),
+                election_id: None,
+                fields,
+                own_idea: false,
+            }),
+        )
+        .await
+        .map(drop)
 }
 
 // ─── departure ───────────────────────────────────────────────────────────
