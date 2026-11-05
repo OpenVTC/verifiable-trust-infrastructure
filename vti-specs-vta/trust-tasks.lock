@@ -132,19 +132,31 @@ digest = "sha256:c5030179ff573e3d429b8fa5edb1e68e039ef3493c62e42014e354ab47222e6
 slug = "vta/collection/claim"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/collection/claim/0.1"
-digest = "sha256:b79968857a988de3e0893addf6dc7381c091936f572dfcfe4444ee528f73a516"
+digest = "sha256:9b12d0e2872db327831c8263c4349c5685fa3c84f982842de131b2fcfe0f2e70"
 
 [[task]]
 slug = "vta/collection/list"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/collection/list/0.1"
-digest = "sha256:a78c9e7b4d3060906506f029c19314947c051ee7789f1ddbfa31ca1981267933"
+digest = "sha256:4e6c5dd9e3995ce043f8f4beaac1280dca619bfae397c81bd7a082e070790989"
 
 [[task]]
 slug = "vta/collection/release"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/collection/release/0.1"
 digest = "sha256:ef81e9945d6ae82477f55206ad357f96d9b5d541bc06d689d1ca694915957294"
+
+[[task]]
+slug = "vta/collection/settings/set"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/collection/settings/set/0.1"
+digest = "sha256:b82e008a55976de8d853d8946b0386a10b60dd237b7e590a841bf4871792830e"
+
+[[task]]
+slug = "vta/collection/settings/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/collection/settings/show/0.1"
+digest = "sha256:397bac3d9c1548f75630303d285e7b5865506f4a99e221c126d7055d6fa6b26e"
 
 [[task]]
 slug = "vta/contexts/create"

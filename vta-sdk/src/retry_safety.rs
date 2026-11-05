@@ -579,6 +579,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_COLLECTION_CLAIM_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_COLLECTION_RELEASE_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_COLLECTION_LIST_0_1, ReadOnly),
+    // Retry class 1 and 2 by specification (#1049): `show` reads; `set` sets a
+    // state, so a repeat of the same value answers `changed: false` and does
+    // nothing (VTI-NTF-095).
+    (trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SET_0_1, RetrySafe),
     // ── External accounts (`external/*`) ────────────────────────────────
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_2, ReadOnly),
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_2, ReadOnly),

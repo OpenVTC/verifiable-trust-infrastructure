@@ -1523,7 +1523,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         notifications_ks: store.keyspace(crate::keyspaces::NOTIFICATIONS).unwrap(),
         collection_ks: store.keyspace(crate::keyspaces::COLLECTION).unwrap(),
         collection: std::sync::Arc::new(crate::operations::collection::CollectionControl::new(
-            config.read().await.collection.collect_by_default,
+            config.read().await.collection.suspend,
         )),
         room_key_watches: std::sync::Arc::new(
             crate::operations::room_key_watch::RoomKeyWatches::new(

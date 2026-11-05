@@ -132,6 +132,6 @@ administrators' view and the relay decision are described in
 
 ## Collected by the VTA
 
-When collection by default is on, the VTA itself holds the mediator connection of every persona
+Unless collection by default is disabled for its context (it is on by default), the VTA itself holds the mediator connection of every persona
 DID no client has claimed, and takes what it collects there exactly as a deposit
 (VTI-NTF-086). See [Collection](collection.md).

@@ -338,6 +338,36 @@ fn flatten(env: &vti_common::audit::AuditEnvelope) -> AuditLogEntry {
 /// matches, handing back a cursor whose next page may be empty — the reading
 /// as results-withheld this ordering exists to prevent. Revisit the budget
 /// and the guarantee together, or not at all.
+/// Every successful row of `action` recorded on `channel` still in the audit
+/// keyspace, oldest first. For the VTA's own boot-time reconstruction of
+/// facts it once recorded only here (`operations::collection::
+/// backfill_provisioned`); no caller-facing path reads through it. Rows pruned
+/// by retention, or written only to an external sink, are not seen.
+pub(crate) async fn successful_rows_on_channel(
+    audit_ks: &KeyspaceHandle,
+    action: &str,
+    channel: &str,
+) -> Result<Vec<AuditLogEntry>, AppError> {
+    let mut out = Vec::new();
+    let mut pages = audit_ks.scan_pager(ScanOpts::new("log:", MAX_LIMIT));
+    loop {
+        let pairs = pages.next_page().await?;
+        if pairs.is_empty() {
+            break;
+        }
+        for (_, value) in &pairs {
+            if let Some(row) = read_row(value)
+                && row.action == action
+                && row.outcome == "success"
+                && row.channel.as_deref() == Some(channel)
+            {
+                out.push(row);
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub async fn list_audit_logs(
     audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,

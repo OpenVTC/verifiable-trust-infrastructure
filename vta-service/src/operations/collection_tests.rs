@@ -1,4 +1,5 @@
-//! Collection claims, the listing and the plan (VTI-NTF-080 – 093), against a
+//! Collection claims, the listing, the plan and each context's setting
+//! (VTI-NTF-080 – 098), against a
 //! real store. Personas are seeded as `did:webvh` records with a log whose
 //! document advertises a mediator; no socket is opened — [`FakeSession`]
 //! stands in for one and records whether it was closed.
@@ -155,10 +156,51 @@ async fn vti_ntf_080_candidates_are_the_mediated_personas_less_the_excluded() {
 }
 
 #[tokio::test]
-async fn vti_ntf_093_off_by_default_and_listed_as_disabled_while_claims_still_work() {
+async fn vti_ntf_094_on_by_default_with_no_record_and_listed_as_collected_by_the_vta() {
     let (state, _dir) = state().await;
-    assert!(!state.collection.enabled(), "collection by default is off");
+    assert!(
+        !state.collection.suspended(),
+        "not suspended unless suspended"
+    );
+    assert!(
+        get_setting(&state.collection_ks, CTX)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        context_collects_by_default(&state.collection_ks, CTX)
+            .await
+            .unwrap()
+    );
     let auth = client("did:key:z6MkClientA", CTX);
+    let view = show_setting(&state, &auth, CTX).await.unwrap();
+    assert!(view.collect_by_default);
+    assert!(!view.suspended_by_operator);
+    assert_eq!(view.changed, None, "never changed");
+    let wire = view.to_wire();
+    assert!(wire.get("changedBy").is_none() && wire.get("changedAt").is_none());
+    let page = list(
+        &state,
+        &auth,
+        CTX,
+        &ListFilter::default(),
+        None,
+        None,
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.items[0].to_wire()["collector"], "vta");
+}
+
+#[tokio::test]
+async fn vti_ntf_097_disabled_is_listed_as_disabled_while_claims_still_work() {
+    let (state, _dir) = state().await;
+    let auth = client("did:key:z6MkClientA", CTX);
+    set_setting(&state, &auth, CTX, false, Utc::now())
+        .await
+        .unwrap();
     let page = list(
         &state,
         &auth,
@@ -199,27 +241,423 @@ async fn vti_ntf_093_off_by_default_and_listed_as_disabled_while_claims_still_wo
 }
 
 #[tokio::test]
-async fn vti_ntf_093_the_setting_is_audited_once_when_it_changes() {
+async fn vti_ntf_095_disabling_closes_the_contexts_connections_before_it_answers() {
     let (state, _dir) = state().await;
-    record_setting(&state).await.unwrap();
+    // A persona of another context is left alone: the setting is per context.
+    seed_persona(&state, OTHER, PERSONA2, Some(MEDIATOR)).await;
+    let (mine, mine_closed) = fake();
+    let (theirs, theirs_closed) = fake();
+    state.collection.insert(PERSONA, mine).unwrap();
+    state.collection.insert(PERSONA2, theirs).unwrap();
+
+    let admin = client("did:key:z6MkAdminA", CTX);
+    let now = Utc::now();
+    let change = set_setting(&state, &admin, CTX, false, now).await.unwrap();
+    assert!(change.changed);
+    assert_eq!(change.closed, 1);
     assert_eq!(
-        state.collection_ks.get::<bool>(SETTING_KEY).await.unwrap(),
+        mine_closed.load(Ordering::SeqCst),
+        1,
+        "closed before the answer"
+    );
+    assert!(!state.collection.is_collecting(PERSONA));
+    assert_eq!(theirs_closed.load(Ordering::SeqCst), 0);
+    assert!(state.collection.is_collecting(PERSONA2));
+    assert!(!change.setting.collect_by_default);
+    assert_eq!(
+        change.setting.changed,
+        Some(("did:key:z6MkAdminA".to_string(), whole_seconds(now)))
+    );
+
+    // The plan now gives nobody the context's persona; the other context's is
+    // still the VTA's.
+    let plan = current_plan(&state, Utc::now()).await.unwrap();
+    for (c, a) in &plan {
+        if c.context_id == CTX {
+            assert_eq!(*a, Assignment::Nobody(NotCollected::Disabled));
+        } else {
+            assert!(matches!(a, Assignment::Vta { .. }), "{a:?}");
+        }
+    }
+    // Audited with who and what.
+    let rows = crate::operations::audit::successful_rows_on_channel(
+        &state.audit_ks,
+        "collection.setting.disabled",
+        "trust-task",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].actor, "did:key:z6MkAdminA");
+    assert_eq!(rows[0].context_id.as_deref(), Some(CTX));
+}
+
+#[tokio::test]
+async fn vti_ntf_095_the_same_value_changes_nothing() {
+    let (state, _dir) = state().await;
+    let admin = client("did:key:z6MkAdminA", CTX);
+    // Enabling a context that was never changed: already enabled.
+    let change = set_setting(&state, &admin, CTX, true, Utc::now())
+        .await
+        .unwrap();
+    assert!(!change.changed);
+    assert_eq!(change.setting.changed, None, "still never changed");
+    assert!(
+        get_setting(&state.collection_ks, CTX)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let first = set_setting(&state, &admin, CTX, false, Utc::now())
+        .await
+        .unwrap();
+    let other = client("did:key:z6MkAdminB", CTX);
+    let again = set_setting(&state, &other, CTX, false, Utc::now() + Duration::hours(1))
+        .await
+        .unwrap();
+    assert!(!again.changed);
+    assert_eq!(
+        again.setting, first.setting,
+        "who last changed it is not moved by a request that changed nothing"
+    );
+    let rows = crate::operations::audit::successful_rows_on_channel(
+        &state.audit_ks,
+        "collection.setting.disabled",
+        "trust-task",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "one change, one row");
+}
+
+#[tokio::test]
+async fn vti_ntf_095_enabling_resumes_including_after_a_conflict() {
+    let (state, _dir) = state().await;
+    let admin = client("did:key:z6MkAdminA", CTX);
+    set_setting(&state, &admin, CTX, false, Utc::now())
+        .await
+        .unwrap();
+    record_conflict(
+        &state.collection_ks,
+        &ConflictRecord {
+            context_id: CTX.into(),
+            log_did: PERSONA.into(),
+            since: Utc::now(),
+            closures: 5,
+        },
+    )
+    .await
+    .unwrap();
+    let change = set_setting(&state, &admin, CTX, true, Utc::now())
+        .await
+        .unwrap();
+    assert!(change.changed);
+    assert_eq!(change.conflicts_cleared, 1, "VTI-NTF-085 cleared");
+    assert!(
+        get_conflict(&state.collection_ks, CTX, PERSONA)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let plan = current_plan(&state, Utc::now()).await.unwrap();
+    assert_eq!(plan[0].1, Assignment::Vta { open_now: true });
+}
+
+#[tokio::test]
+async fn vti_ntf_095_only_administrative_authority_over_the_context_may_change_it() {
+    let (state, _dir) = state().await;
+    // A child of CTX, so an admin of CTX is an ancestor's admin.
+    let mut child = crate::contexts::create_context(&state.contexts_ks, "tmp-child", "Sub")
+        .await
+        .unwrap();
+    child.id = format!("{CTX}/sub");
+    crate::contexts::store_context(&state.contexts_ks, &child)
+        .await
+        .unwrap();
+    let sub = format!("{CTX}/sub");
+
+    // Standing without an administrative role: may read, may not change.
+    let mut reader = client("did:key:z6MkReader", CTX);
+    reader.role = crate::acl::Role::Application;
+    assert!(show_setting(&state, &reader, CTX).await.is_ok());
+    assert!(matches!(
+        set_setting(&state, &reader, CTX, false, Utc::now()).await,
+        Err(CollectionError::PermissionDenied)
+    ));
+    // Another context's admin: neither.
+    let other_admin = client("did:key:z6MkOtherAdmin", OTHER);
+    assert!(matches!(
+        show_setting(&state, &other_admin, CTX).await,
+        Err(CollectionError::PermissionDenied)
+    ));
+    assert!(matches!(
+        set_setting(&state, &other_admin, CTX, false, Utc::now()).await,
+        Err(CollectionError::PermissionDenied)
+    ));
+    // An ancestor's admin may change a descendant's setting, which is that
+    // context's alone: neither the ancestor nor anything else changes.
+    let ancestor_admin = client("did:key:z6MkAncestor", CTX);
+    assert!(
+        set_setting(&state, &ancestor_admin, &sub, false, Utc::now())
+            .await
+            .unwrap()
+            .changed
+    );
+    assert!(
+        context_collects_by_default(&state.collection_ks, CTX)
+            .await
+            .unwrap(),
+        "not inherited upward"
+    );
+    // And the descendant's setting is not inherited from the ancestor's.
+    set_setting(&state, &ancestor_admin, &sub, true, Utc::now())
+        .await
+        .unwrap();
+    set_setting(&state, &ancestor_admin, CTX, false, Utc::now())
+        .await
+        .unwrap();
+    assert!(
+        context_collects_by_default(&state.collection_ks, &sub)
+            .await
+            .unwrap(),
+        "not inherited downward"
+    );
+    // A super-administrator may change any context's.
+    let root = crate::test_support::super_admin_claims();
+    assert!(
+        set_setting(&state, &root, OTHER, false, Utc::now())
+            .await
+            .unwrap()
+            .changed
+    );
+    // A context that does not exist is not found, not created.
+    assert!(matches!(
+        set_setting(&state, &root, "nowhere", false, Utc::now()).await,
+        Err(CollectionError::App(AppError::NotFound(_)))
+    ));
+    assert!(
+        get_setting(&state.collection_ks, "nowhere")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn vti_ntf_098_suspension_disables_everything_and_changes_no_setting() {
+    let (state, _dir) = state().await;
+    seed_persona(&state, OTHER, PERSONA2, Some(MEDIATOR)).await;
+    let admin = client("did:key:z6MkAdminA", CTX);
+    set_setting(&state, &admin, CTX, false, Utc::now())
+        .await
+        .unwrap();
+    state.collection.set_suspended(true);
+    record_suspension(&state).await.unwrap();
+    let plan = current_plan(&state, Utc::now()).await.unwrap();
+    assert!(
+        plan.iter()
+            .all(|(_, a)| *a == Assignment::Nobody(NotCollected::Disabled)),
+        "{plan:?}"
+    );
+    // Shown, and no context's setting moved.
+    let view = show_setting(&state, &client("did:key:z6MkB", OTHER), OTHER)
+        .await
+        .unwrap();
+    assert!(view.suspended_by_operator);
+    assert!(view.collect_by_default, "the suspension changes no setting");
+    assert!(
+        !show_setting(&state, &admin, CTX)
+            .await
+            .unwrap()
+            .collect_by_default
+    );
+    // A change made while suspended is stored and answered, and collects
+    // nothing (Consumer item 7).
+    let change = set_setting(&state, &admin, CTX, true, Utc::now())
+        .await
+        .unwrap();
+    assert!(change.changed && change.setting.suspended_by_operator);
+    let plan = current_plan(&state, Utc::now()).await.unwrap();
+    assert!(
+        plan.iter()
+            .all(|(_, a)| *a == Assignment::Nobody(NotCollected::Disabled))
+    );
+    // Lifting it never enables a context its setting disables.
+    set_setting(&state, &admin, CTX, false, Utc::now())
+        .await
+        .unwrap();
+    state.collection.set_suspended(false);
+    record_suspension(&state).await.unwrap();
+    for (c, a) in current_plan(&state, Utc::now()).await.unwrap() {
+        if c.context_id == CTX {
+            assert_eq!(a, Assignment::Nobody(NotCollected::Disabled));
+        } else {
+            assert!(matches!(a, Assignment::Vta { .. }));
+        }
+    }
+    // Engaging and lifting are each audited once.
+    for action in ["collection.suspended", "collection.suspension_lifted"] {
+        let rows =
+            crate::operations::audit::successful_rows_on_channel(&state.audit_ks, action, "config")
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 1, "{action}");
+    }
+    record_suspension(&state).await.unwrap();
+    let rows = crate::operations::audit::successful_rows_on_channel(
+        &state.audit_ks,
+        "collection.suspension_lifted",
+        "config",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "an unchanged boot audits nothing");
+}
+
+#[tokio::test]
+async fn vti_ntf_098_a_first_boot_unsuspended_audits_nothing_and_drops_the_retired_row() {
+    let (state, _dir) = state().await;
+    state
+        .collection_ks
+        .insert(RETIRED_SETTING_KEY, &false)
+        .await
+        .unwrap();
+    record_suspension(&state).await.unwrap();
+    assert!(
+        state
+            .collection_ks
+            .get_raw(RETIRED_SETTING_KEY)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        state
+            .collection_ks
+            .get::<bool>(SUSPENSION_KEY)
+            .await
+            .unwrap(),
         Some(false)
     );
-    state.collection.set_enabled(true);
-    record_setting(&state).await.unwrap();
+}
+
+#[tokio::test]
+async fn vti_ntf_094_the_setting_survives_a_restart() {
+    let (state, dir) = state().await;
+    let admin = client("did:key:z6MkAdminA", CTX);
+    set_setting(&state, &admin, CTX, false, Utc::now())
+        .await
+        .unwrap();
+    state.store.persist().await.unwrap();
+    let data_dir = state.config.read().await.store.data_dir.clone();
+    drop(state);
+    // The store opened again, as the next boot opens it: the setting is what
+    // was stored, not anything the first process held.
+    let store = crate::store::Store::open(&vti_common::config::StoreConfig { data_dir })
+        .expect("reopen store");
+    let ks = store.keyspace(crate::keyspaces::COLLECTION).unwrap();
+    assert!(!context_collects_by_default(&ks, CTX).await.unwrap());
+    assert!(context_collects_by_default(&ks, OTHER).await.unwrap());
+    drop(dir);
+}
+
+/// A provisioned integration's `did:webvh`, as provision-integration left one
+/// before it recorded `provisioned:` — the evidence `backfill_provisioned`
+/// reads: its key labelled with the holder's `did:key`, or an export audited on
+/// the `provision-integration` channel.
+async fn seed_old_integration(state: &AppState, did: &str, labelled: bool) {
+    seed_persona(state, CTX, did, Some(MEDIATOR)).await;
+    if labelled {
+        crate::keys::save_key_record(
+            &state.keys_ks,
+            &format!("{did}#key-0"),
+            "m/26'/2'/0'/9'",
+            vta_sdk::keys::KeyType::Ed25519,
+            "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "did:key:z6MkHolderEphemeral signing key",
+            Some(CTX),
+            Some(0),
+        )
+        .await
+        .unwrap();
+    } else {
+        vta_audit::record(
+            &state.audit_sink,
+            "key.secret_export",
+            "did:key:z6MkRelayer",
+            Some(&format!("{did}#key-0")),
+            "success",
+            Some("provision-integration"),
+            Some(CTX),
+        )
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn vti_ntf_080_the_upgrade_backfill_records_earlier_integrations_once() {
+    let (state, _dir) = state().await;
+    const BY_LABEL: &str = "did:webvh:QmOldLabel:old.example";
+    const BY_AUDIT: &str = "did:webvh:QmOldAudit:old.example";
+    seed_old_integration(&state, BY_LABEL, true).await;
+    seed_old_integration(&state, BY_AUDIT, false).await;
+    // A persona with an ordinary label is not an integration.
+    crate::keys::save_key_record(
+        &state.keys_ks,
+        &format!("{PERSONA}#key-0"),
+        "m/26'/2'/0'/1'",
+        vta_sdk::keys::KeyType::Ed25519,
+        "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        "alice signing key",
+        Some(CTX),
+        Some(0),
+    )
+    .await
+    .unwrap();
+
+    let record = backfill_provisioned(&state).await.unwrap().expect("ran");
+    let mut recorded = record.recorded.clone();
+    recorded.sort();
+    assert_eq!(recorded, vec![BY_AUDIT.to_string(), BY_LABEL.to_string()]);
+    let found: Vec<String> = candidates(&state, Some(CTX))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.identifier)
+        .collect();
     assert_eq!(
-        state.collection_ks.get::<bool>(SETTING_KEY).await.unwrap(),
-        Some(true)
+        found,
+        vec![PERSONA.to_string()],
+        "only the persona is collected for"
     );
-    // Applying the same value again changes nothing.
-    record_setting(&state).await.unwrap();
+
+    // Once: a second run changes nothing and reports nothing.
+    assert!(backfill_provisioned(&state).await.unwrap().is_none());
+    let rows = crate::operations::audit::successful_rows_on_channel(
+        &state.audit_ks,
+        "collection.provisioned_backfilled",
+        "boot",
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn provisioned_key_labels_are_recognised_exactly() {
+    assert!(provisioned_key_label("did:key:z6MkAbc signing key"));
+    assert!(provisioned_key_label("did:key:z6MkAbc key-agreement key"));
+    assert!(!provisioned_key_label("alice signing key"));
+    assert!(!provisioned_key_label("did:key:z6MkAbc signing key #2"));
+    assert!(!provisioned_key_label("my did:key:z6MkAbc signing key"));
+    assert!(!provisioned_key_label("genesis pre-rotation #0"));
 }
 
 #[tokio::test]
 async fn vti_ntf_082_a_grant_closes_the_vtas_connection_before_it_answers() {
     let (state, _dir) = state().await;
-    state.collection.set_enabled(true);
     let (session, closed) = fake();
     state.collection.insert(PERSONA, session).unwrap();
     assert!(state.collection.is_collecting(PERSONA));
@@ -234,7 +672,7 @@ async fn vti_ntf_082_a_grant_closes_the_vtas_connection_before_it_answers() {
 
 #[tokio::test]
 async fn one_socket_per_did_a_second_session_is_refused() {
-    let control = CollectionControl::new(true);
+    let control = CollectionControl::new(false);
     let (a, _) = fake();
     let (b, _) = fake();
     control.insert(PERSONA, a).unwrap();
@@ -414,7 +852,8 @@ fn vti_ntf_088_the_plan_applies_the_bound_conflicts_and_claims() {
     let inputs = PlanInputs {
         claims: &claims,
         conflicts: &conflicts,
-        enabled: true,
+        disabled_contexts: &HashSet::new(),
+        suspended: false,
         max_identifiers: 1,
         skew: Duration::seconds(60),
         now,
@@ -429,18 +868,33 @@ fn vti_ntf_088_the_plan_applies_the_bound_conflicts_and_claims() {
         "the bound spans contexts"
     );
 
-    let off = plan(
+    let suspended = plan(
         &cands,
         &PlanInputs {
-            enabled: false,
+            suspended: true,
             ..inputs
         },
     );
     assert!(
-        matches!(off[0], Assignment::Client(_)),
-        "a claim is shown while off"
+        matches!(suspended[0], Assignment::Client(_)),
+        "a claim is shown while suspended"
     );
+    assert_eq!(suspended[2], Assignment::Nobody(NotCollected::Disabled));
+    assert_eq!(suspended[3], Assignment::Nobody(NotCollected::Disabled));
+
+    // A context's own setting disables that context alone, and frees the bound
+    // for the others (VTI-NTF-094).
+    let mine_off: HashSet<String> = [CTX.to_string()].into();
+    let off = plan(
+        &cands,
+        &PlanInputs {
+            disabled_contexts: &mine_off,
+            ..inputs
+        },
+    );
+    assert!(matches!(off[0], Assignment::Client(_)));
     assert_eq!(off[2], Assignment::Nobody(NotCollected::Disabled));
+    assert_eq!(off[3], Assignment::Vta { open_now: true });
 }
 
 #[test]
@@ -467,7 +921,8 @@ fn vti_ntf_084_the_vta_waits_out_its_skew_after_a_claim_ends() {
         &PlanInputs {
             claims: &claims,
             conflicts: &HashMap::new(),
-            enabled: true,
+            disabled_contexts: &HashSet::new(),
+            suspended: false,
             max_identifiers: 10,
             skew: Duration::seconds(60),
             now,
@@ -519,6 +974,18 @@ async fn vti_ntf_090_a_deleted_context_ends_its_claims() {
         .await
         .unwrap();
     assert_eq!(sweep(&state, &[], Utc::now()).await.unwrap(), 1);
+    // And its setting: a context created again under the id starts enabled
+    // (VTI-NTF-094).
+    set_setting(&state, &a, CTX, false, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(purge_context(&state.collection_ks, CTX).await.unwrap(), 1);
+    assert!(
+        get_setting(&state.collection_ks, CTX)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -529,11 +996,11 @@ async fn vti_ntf_091_listing_filters_and_pages() {
     claim(&state, &a, CTX, PERSONA, None, Utc::now())
         .await
         .unwrap();
-    let only_none = ListFilter {
-        collector: Some("none".into()),
+    let only_vta = ListFilter {
+        collector: Some("vta".into()),
         ..Default::default()
     };
-    let page = list(&state, &a, CTX, &only_none, None, None, Utc::now())
+    let page = list(&state, &a, CTX, &only_vta, None, None, Utc::now())
         .await
         .unwrap();
     assert_eq!(page.items.len(), 1);
@@ -568,7 +1035,7 @@ async fn vti_ntf_091_listing_filters_and_pages() {
     assert!(second.next_cursor.is_none());
     // A cursor for other filters is refused.
     assert!(matches!(
-        list(&state, &a, CTX, &only_none, Some(&cursor), None, Utc::now()).await,
+        list(&state, &a, CTX, &only_vta, Some(&cursor), None, Utc::now()).await,
         Err(CollectionError::CursorInvalid)
     ));
 }

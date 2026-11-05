@@ -1,10 +1,13 @@
 //! `pnm collection …` — which party collects a persona DID's messages at its mediator
-//! (`vta/collection/{claim,release,list}/0.1`, VTI-NTF-080 – 093).
+//! (`vta/collection/{claim,release,list}/0.1`, `vta/collection/settings/{show,set}/0.1`,
+//! VTI-NTF-080 – 098).
 //!
 //! The mediator permits one connection per DID, so the VTA and a client agree which of them
-//! holds it: the VTA collects for every persona no client has claimed (when its operator has
-//! enabled collection by default), and a client that holds the connection itself claims the
-//! persona first, under a lease. These commands make, renew, release and list those claims.
+//! holds it: the VTA collects for every persona no client has claimed (unless collection by
+//! default is disabled for the persona's context, or the operator has suspended it), and a
+//! client that holds the connection itself claims the persona first, under a lease. These
+//! commands make, renew, release and list those claims, and show and change each context's
+//! setting.
 
 use serde_json::{Value, json};
 use vta_sdk::prelude::*;
@@ -142,7 +145,8 @@ fn line(item: &Value) -> String {
         Some("none") => format!(
             "{CYAN}{id}{RESET}  {YELLOW}nobody{RESET}  {DIM}({}){RESET}",
             match item["notCollectedReason"].as_str() {
-                Some("disabled") => "collection by default is not enabled on this VTA",
+                Some("disabled") =>
+                    "collection by default is disabled for this context, or suspended by the operator",
                 Some("limit") => "the VTA is at its bound on collected identifiers",
                 Some("conflict") =>
                     "another connection kept evicting the VTA's; claim it from that client",
@@ -193,6 +197,148 @@ pub async fn cmd_collection_list(
     }
     if let Some(c) = resp["nextCursor"].as_str() {
         println!("{DIM}More remain: pass --cursor {c}{RESET}");
+    }
+    Ok(())
+}
+
+/// `status` → `vta/collection/settings/show/0.1`, then `vta/collection/list/0.1` (every page)
+/// for the counts by collector and reason.
+pub async fn cmd_collection_status(
+    client: &VtaClient,
+    context: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let shown = client
+        .collection_settings_show_json(json!({ "contextId": context }))
+        .await?;
+    let mut items: Vec<Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut req = json!({ "contextId": context, "limit": 200 });
+        if let Some(c) = &cursor {
+            req["cursor"] = json!(c);
+        }
+        let page = client.collection_list_json(req).await?;
+        items.extend(page["items"].as_array().cloned().unwrap_or_default());
+        match page["nextCursor"].as_str() {
+            Some(c) => cursor = Some(c.to_string()),
+            None => break,
+        }
+    }
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    for item in &items {
+        let key = match item["collector"].as_str() {
+            Some("none") => format!(
+                "none ({})",
+                item["notCollectedReason"].as_str().unwrap_or("?")
+            ),
+            Some(c) => c.to_string(),
+            None => "?".into(),
+        };
+        *counts.entry(key).or_default() += 1;
+    }
+    if is_json_output() {
+        print_json(&json!({
+            "setting": shown["setting"],
+            "identifiers": items.len(),
+            "byCollector": counts,
+        }))?;
+        return Ok(());
+    }
+    let setting = &shown["setting"];
+    let on = setting["collectByDefault"].as_bool() == Some(true);
+    let suspended = setting["suspendedByOperator"].as_bool() == Some(true);
+    println!();
+    println!("{BOLD}Collection in context '{context}'{RESET}");
+    println!();
+    println!(
+        "  Collection by default: {}",
+        if on {
+            format!("{GREEN}enabled{RESET}")
+        } else {
+            format!("{YELLOW}disabled{RESET}")
+        }
+    );
+    match (setting["changedBy"].as_str(), setting["changedAt"].as_str()) {
+        (Some(by), Some(at)) => println!("  Last changed:          {at} by {by}"),
+        _ => println!("  Last changed:          {DIM}never (enabled by default){RESET}"),
+    }
+    if suspended {
+        println!(
+            "  {YELLOW}Suspended by the operator:{RESET} the VTA collects for no unclaimed \
+             persona in any context until the operator lifts it; this context's setting \
+             applies again then."
+        );
+    }
+    println!();
+    if items.is_empty() {
+        println!("  No identifiers in this context that this VTA would collect for.");
+    } else {
+        println!("  {} identifier(s):", items.len());
+        for (k, n) in &counts {
+            println!("    {k:<20} {n}");
+        }
+    }
+    println!();
+    println!("{DIM}`pnm collection list --context {context}` shows each one.{RESET}");
+    Ok(())
+}
+
+/// `enable` / `disable` → `vta/collection/settings/set/0.1`.
+pub async fn cmd_collection_set(
+    client: &VtaClient,
+    context: &str,
+    collect_by_default: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client
+        .collection_settings_set_json(
+            json!({ "contextId": context, "collectByDefault": collect_by_default }),
+        )
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error> {
+            if matches!(e, VtaError::Forbidden(_))
+                || e.rejection_code()
+                    .is_some_and(|c| c.ends_with("permissionDenied"))
+            {
+                format!(
+                    "{e}\n\nChanging collection by default for '{context}' needs administrative \
+                     authority over it: an admin entry whose contexts include '{context}' or an \
+                     ancestor of it, or a super-admin. Anyone with standing there can read it:\n  \
+                     pnm collection status --context {context}"
+                )
+                .into()
+            } else {
+                Box::new(e)
+            }
+        })?;
+    if is_json_output() {
+        print_json(&resp)?;
+        return Ok(());
+    }
+    let word = if collect_by_default {
+        "enabled"
+    } else {
+        "disabled"
+    };
+    if resp["changed"].as_bool() == Some(true) {
+        println!(
+            "{GREEN}\u{2713}{RESET} Collection by default {word} for context '{context}'.{}",
+            if collect_by_default {
+                " The VTA is starting to collect for its unclaimed personas."
+            } else {
+                " The VTA has stopped collecting for its unclaimed personas and closed those \
+                 connections."
+            }
+        );
+    } else {
+        println!(
+            "Collection by default was already {word} for context '{context}'; nothing changed."
+        );
+    }
+    if resp["setting"]["suspendedByOperator"].as_bool() == Some(true) {
+        println!(
+            "{YELLOW}Note:{RESET} the operator has suspended collection on this VTA; nothing is \
+             collected until it is lifted."
+        );
     }
     Ok(())
 }

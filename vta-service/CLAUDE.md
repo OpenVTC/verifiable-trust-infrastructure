@@ -992,12 +992,24 @@ When adding a flow, add it here and a line to the root index.
 - **Docs**: `docs/02-vta/notifications.md`.
 
 ### Collection for the principal's identifiers (`vta/collection/*/0.1`)
-- **What**: Who holds each persona DID's one mediator connection (VTI-NTF-080 – 093): the VTA,
+- **What**: Who holds each persona DID's one mediator connection (VTI-NTF-080 – 098): the VTA,
   or one client under a **collection claim** (a lease), or nobody and why. `pnm collection
-  claim|release|list`. The VTA collects only when `[collection] collect_by_default` is on — **off
-  by default** (VTI-NTF-093), audited at the boot that changes it, tenant-overlay settable, never a
-  `config/patch` key. Claims are served either way.
-- **Invariants to preserve**: one session (TDK + ATM + one websocket) per collected DID —
+  claim|release|list|status|enable|disable`. Collection by default is a **stored setting of each
+  trust context**, **on unless disabled there** (VTI-NTF-094), read with standing and changed with
+  administrative authority over the context (`vta/collection/settings/{show,set}/0.1`, VTI-NTF-095 –
+  096) — never inherited by descendants, never from config. The operator's only switch is the
+  off-only `[collection] suspend` (VTI-NTF-098; tenant overlay can only engage it), read at boot and
+  audited at the boot that engages or lifts it. Claims are served whatever the setting.
+- **Invariants to preserve**: `settings/set` audits **before** applying (refuses if it cannot),
+  writes the record, then — disabling — closes each of the context's sessions under its identifier's
+  lock **before answering**; the collector's `may_open` re-reads the suspension and the context's
+  setting under that same lock. Enabling clears the context's `conflict:` rows (VTI-NTF-085) and
+  kicks; the same value is `changed: false` and touches nothing (not `changedBy`). Nothing enables a
+  context whose setting disables it — never add an operator "enable" key or a run-time way to lift
+  the suspension. The first boot of the release runs `backfill_provisioned` (audit rows of
+  `key.secret_export` on `provision-integration`, or provisioning's key labels) before the collector
+  opens anything, once (`backfill:provisioned`). A retired `collect_by_default` key is warned about
+  and ignored, never refused. One session (TDK + ATM + one websocket) per collected DID —
   `CollectionControl::insert` refuses a second, and never the VTA's own DID. A grant writes the
   claim and closes the VTA's connection **under the identifier's lock** before it answers; the
   collector re-reads the claim under the same lock before opening one. Release by the claimant
@@ -1010,8 +1022,8 @@ When adding a flow, add it here and a line to the root index.
   persona — never dispatched to the spine, never naming the VTA. Budget: no standing → the
   unauthenticated bound; never per identifier. Conflicts: 5 short-lived connections in 15 min →
   stop, `conflict:` record, `collection.conflict` audit, cleared by a claim. Rollover / swap-key
-  carry claims (`carry_claims`); context deletion purges them; sweeps drop claims on DIDs no
-  longer collectable. Keyspace `collection` is backed up.
+  carry claims (`carry_claims`); context deletion purges them and the context's setting; sweeps
+  drop claims on DIDs no longer collectable. Keyspace `collection` is backed up (settings included).
 - **Code**: `vta-service/src/operations/collection.rs` (+ `_tests.rs`),
   `vta-service/src/messaging/collector.rs`, `vta-service/src/trust_tasks/collection.rs`
   (+ `_tests.rs`), `vta_sdk::client` (`collection_*`), `vta-cli-common/src/commands/collection.rs`.
