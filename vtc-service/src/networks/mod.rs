@@ -438,6 +438,76 @@ async fn register_with(
     })
 }
 
+/// What [`join`] checks before it signs anything: not already a member, every assigned
+/// group exists with a DID, the network at `url` answers as `network`, every role it
+/// requires is assigned, and it lists this community. Run before the administrator's
+/// step-up, so a join that would fail does not cost them a gesture; [`join`] checks it all
+/// again, since any of it can change between the two.
+pub async fn join_preflight(
+    state: &AppState,
+    url: &str,
+    network: &str,
+    assignments: &[(String, String)],
+) -> Result<(), NetError> {
+    let community = community(state).await?;
+    if load(state, network)
+        .await?
+        .is_some_and(|m| m.state == State::Acknowledged)
+    {
+        return Err(NetError::AlreadyMember);
+    }
+    for (_, group_id) in assignments {
+        group(state, group_id).await?;
+    }
+    let (client, profile) = session(state, url.trim_end_matches('/'), network).await?;
+    if let Some(required) = unassigned_role(&profile, assignments) {
+        return Err(NetError::RoleUnassigned(required));
+    }
+    own_listing(&client, network, &community, &resolver(state)).await?;
+    Ok(())
+}
+
+/// What [`repudiate`] checks before it signs anything: not a member, the network at `url`
+/// answers as `network` and lists this community. Run before the step-up, as
+/// [`join_preflight`].
+pub async fn repudiate_preflight(
+    state: &AppState,
+    url: &str,
+    network: &str,
+) -> Result<(), NetError> {
+    let community = community(state).await?;
+    if load(state, network)
+        .await?
+        .is_some_and(|m| m.state == State::Acknowledged)
+    {
+        return Err(NetError::IsMember);
+    }
+    let (client, _) = session(state, url.trim_end_matches('/'), network).await?;
+    own_listing(&client, network, &community, &resolver(state)).await?;
+    Ok(())
+}
+
+/// What [`leave`] checks before it signs anything: the community is a member.
+pub async fn leave_preflight(state: &AppState, network: &str) -> Result<(), NetError> {
+    load(state, network)
+        .await?
+        .filter(|m| m.state == State::Acknowledged && m.grant.is_some())
+        .map(|_| ())
+        .ok_or(NetError::NotMember)
+}
+
+/// The first role the network's profile marks required that `assignments` leaves out.
+fn unassigned_role(profile: &Value, assignments: &[(String, String)]) -> Option<String> {
+    profile["roles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["required"] == true)
+        .filter_map(|r| r["name"].as_str())
+        .find(|required| !assignments.iter().any(|(role, _)| role == required))
+        .map(str::to_string)
+}
+
 /// Accept a network's listing: register the assigned groups, acknowledge, verify the grant.
 pub async fn join(
     state: &AppState,
@@ -460,16 +530,8 @@ pub async fn join(
     }
     let url = url.trim_end_matches('/');
     let (client, profile) = session(state, url, network).await?;
-    for required in profile["roles"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|r| r["required"] == true)
-        .filter_map(|r| r["name"].as_str())
-    {
-        if !assignments.iter().any(|(role, _)| role == required) {
-            return Err(NetError::RoleUnassigned(required.to_string()));
-        }
+    if let Some(required) = unassigned_role(&profile, assignments) {
+        return Err(NetError::RoleUnassigned(required));
     }
     let resolver = resolver(state);
     let listing = own_listing(&client, network, &community, &resolver).await?;

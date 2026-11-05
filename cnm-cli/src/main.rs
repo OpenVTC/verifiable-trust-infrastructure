@@ -12,6 +12,7 @@ mod elections;
 mod git;
 mod member;
 mod members;
+mod networks;
 mod onboard;
 mod pnm_profile;
 mod rooms;
@@ -308,6 +309,13 @@ enum Commands {
     Rooms {
         #[command(subcommand)]
         command: rooms::RoomsCommands,
+    },
+
+    /// The Verifiable Trust Networks this community belongs to: list them, join from a
+    /// network's invitation, leave, or reject a listing (`vtc/networks/*`).
+    Networks {
+        #[command(subcommand)]
+        command: networks::NetworksCommands,
     },
 
     /// Where the community keeps its rooms' files: its storage configs, and a `sealed`
@@ -1094,6 +1102,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Git { .. }
             | Commands::Rooms { .. }
             | Commands::Storage { .. }
+            | Commands::Networks { .. }
             | Commands::Elections { .. }
             | Commands::Boards { .. }
             | Commands::Consent { .. }
@@ -1751,6 +1760,14 @@ async fn main() {
         Commands::Rooms { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => rooms::run(command, &key, &target, cli.transport.into()).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Networks { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    networks::run(command, &key, &target, cli.transport.into()).await
+                }
                 Err(e) => Err(e),
             }
         }

@@ -24,6 +24,7 @@ import {
   LayoutDashboard,
   ListChecks,
   Network,
+  Waypoints,
   PenLine,
   ScanLine,
   Share2,
@@ -55,6 +56,7 @@ import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
 import { MyPasskeys } from "@/plugins/myPasskeys";
+import { Networks } from "@/plugins/networks";
 import { Notifications } from "@/plugins/notifications";
 import { Profile } from "@/plugins/profile";
 import { Recognition } from "@/plugins/recognition";
@@ -278,6 +280,19 @@ export function registerBuiltinPlugins(): void {
     iconComponent: Network,
     reactComponent: Recognition,
     capabilities: ["vtc.registry.admin"],
+  });
+
+  // The Verifiable Trust Networks this community belongs to (`vtc/networks/*`,
+  // docs/03-vtc/networks.md): join from a network's invitation
+  // (`/admin/networks?join=<url>&network=<did>`), leave, or reject a listing.
+  registerPlugin({
+    id: "networks",
+    group: "community",
+    label: "Networks",
+    path: "/networks",
+    iconComponent: Waypoints,
+    reactComponent: Networks,
+    capabilities: ["vtc.config.admin"],
   });
 
   registerPlugin({

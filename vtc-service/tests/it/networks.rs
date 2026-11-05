@@ -382,6 +382,49 @@ async fn join_refusals_say_why() {
     assert_eq!(r["payload"]["membership"]["groups"][0]["role"], "admins");
 }
 
+/// A join that would be refused is refused before the administrator's step-up is asked
+/// for (VTI-APV-015's gesture is for the act on screen, not for a refusal): the console
+/// shows what is wrong and costs no gesture. One that would succeed asks for it.
+#[tokio::test]
+async fn a_join_that_would_fail_asks_for_no_step_up() {
+    let f = fixture().await;
+    let (url, network, net) = fake_network(&f.did, true).await;
+    let send = |payload: Value| {
+        let (vtc, requester, did) = (&f.vtc, &f.admin.requester, f.did.clone());
+        async move {
+            let doc = crate::common::signed::signed_to(requester, &did, JOIN, payload).await;
+            crate::common::signed::post(vtc, &doc).await.1
+        }
+    };
+
+    let r = send(json!({ "url": url, "network": network })).await;
+    assert_eq!(tt_error_code(&r), JOIN_ERR_ROLE_UNASSIGNED, "{r}");
+    assert!(
+        crate::common::second_party::step_up_request(&r).is_none(),
+        "{r}"
+    );
+    let r = send(json!({ "url": url, "network": "did:key:z6MkOther", "groups": admins() })).await;
+    assert_eq!(tt_error_code(&r), JOIN_ERR_NETWORK_MISMATCH, "{r}");
+    assert!(
+        crate::common::second_party::step_up_request(&r).is_none(),
+        "{r}"
+    );
+    net.lock().await.refuse.session = true;
+    let r = send(json!({ "url": url, "network": network, "groups": admins() })).await;
+    assert_eq!(tt_error_code(&r), JOIN_ERR_NOT_LISTED, "{r}");
+    assert!(
+        crate::common::second_party::step_up_request(&r).is_none(),
+        "{r}"
+    );
+
+    net.lock().await.refuse = Refuse::default();
+    let r = send(json!({ "url": url, "network": network, "groups": admins() })).await;
+    assert!(
+        crate::common::second_party::step_up_request(&r).is_some(),
+        "{r}"
+    );
+}
+
 #[tokio::test]
 async fn repudiate_refusals_say_why() {
     let f = fixture().await;

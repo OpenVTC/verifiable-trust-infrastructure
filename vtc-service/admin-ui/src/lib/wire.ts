@@ -8186,6 +8186,350 @@ export interface components {
             roleCredential?: Record<string, never>;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksJoinV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksJoinV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksJoinV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description Accept a network's listing of the community: register groups for the network's roles, then acknowledge its membership offer. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksJoinV0_2Payload: {
+            ext?: components["schemas"]["VtcNetworksJoinV0_2Ext"];
+            /** @description The community's groups to serve the network's roles. Every role the network requires must be assigned. */
+            groups?: components["schemas"]["VtcNetworksJoinV0_2RoleAssignment"][];
+            /** @description The network's DID. For a request naming a `url`, the community refuses if the network found there answers as another DID. */
+            network: string;
+            /**
+             * Format: uri
+             * @description The network's API base, as the network's administrators gave it.
+             */
+            url: string;
+        };
+        VtcNetworksJoinV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The membership as it now stands. */
+        VtcNetworksJoinV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksJoinV0_2Ext"];
+            membership: components["schemas"]["VtcNetworksJoinV0_2NetworkMembership"];
+        };
+        VtcNetworksJoinV0_2RoleAssignment: {
+            /** @description The community group to serve the role. */
+            groupId: string;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksLeaveV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksLeaveV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksLeaveV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description Withdraw from a network the community is a member of. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksLeaveV0_2Payload: {
+            ext?: components["schemas"]["VtcNetworksLeaveV0_2Ext"];
+            /** @description The network's DID. */
+            network: string;
+            /** @description Kept in the community's audit trail. Not sent to the network. */
+            reason?: string;
+        };
+        VtcNetworksLeaveV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The membership, in state `departed`. */
+        VtcNetworksLeaveV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksLeaveV0_2Ext"];
+            membership: components["schemas"]["VtcNetworksLeaveV0_2NetworkMembership"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksListV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksListV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksListV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description List the community's network memberships, optionally in one state. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksListV0_2Payload: {
+            cursor?: string;
+            ext?: components["schemas"]["VtcNetworksListV0_2Ext"];
+            /** @description Page size; clamped to 1..=100 (default 50). */
+            limit?: number;
+            /**
+             * @description Only memberships in this state.
+             * @enum {string}
+             */
+            state?: "acknowledged" | "repudiated" | "departed";
+        };
+        VtcNetworksListV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The community's network memberships, by network DID. */
+        VtcNetworksListV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksListV0_2Ext"];
+            items: components["schemas"]["VtcNetworksListV0_2NetworkMembership"][];
+            nextCursor?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksRepudiateV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksRepudiateV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksRepudiateV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description Reject a network's listing of the community. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksRepudiateV0_2Payload: {
+            ext?: components["schemas"]["VtcNetworksRepudiateV0_2Ext"];
+            /** @description The network's DID. For a request naming a `url`, the community refuses if the network found there answers as another DID. */
+            network: string;
+            /** @description Kept in the community's audit trail. Not sent to the network. */
+            reason?: string;
+            /**
+             * Format: uri
+             * @description The network's API base, as the network's administrators gave it.
+             */
+            url: string;
+        };
+        VtcNetworksRepudiateV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The membership record, in state `repudiated`. */
+        VtcNetworksRepudiateV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksRepudiateV0_2Ext"];
+            membership: components["schemas"]["VtcNetworksRepudiateV0_2NetworkMembership"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksShowV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksShowV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksShowV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description One network membership, by the network's DID. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksShowV0_2Payload: {
+            ext?: components["schemas"]["VtcNetworksShowV0_2Ext"];
+            /** @description The network's DID. */
+            network: string;
+        };
+        VtcNetworksShowV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The membership. */
+        VtcNetworksShowV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksShowV0_2Ext"];
+            membership: components["schemas"]["VtcNetworksShowV0_2NetworkMembership"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcRegistryRecordsListV0_2Ext: {
             [key: string]: unknown;
         };

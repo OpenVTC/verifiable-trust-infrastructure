@@ -303,6 +303,12 @@ async fn handle_join(
         .iter()
         .map(|g| (g.role.to_string(), g.group_id.to_string()))
         .collect();
+    // Everything that would refuse the join, before the gesture (`networks::join_preflight`).
+    if let Err(e) =
+        networks::join_preflight(state, &checked.url, &checked.network, &assignments).await
+    {
+        return refuse(&doc, SLUG, e);
+    }
     if let Err(reject) = bound_step_up(
         state,
         &actor.did,
@@ -344,6 +350,9 @@ async fn handle_repudiate(
     if let Err(reject) = require_audit(state, &doc) {
         return reject;
     }
+    if let Err(e) = networks::repudiate_preflight(state, &checked.url, &checked.network).await {
+        return refuse(&doc, SLUG, e);
+    }
     if let Err(reject) = bound_step_up(
         state,
         &actor.did,
@@ -380,6 +389,9 @@ async fn handle_leave(
     };
     if let Err(reject) = require_audit(state, &doc) {
         return reject;
+    }
+    if let Err(e) = networks::leave_preflight(state, &checked.network).await {
+        return refuse(&doc, SLUG, e);
     }
     if let Err(reject) = bound_step_up(
         state,

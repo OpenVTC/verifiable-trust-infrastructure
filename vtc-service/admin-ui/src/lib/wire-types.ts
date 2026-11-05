@@ -352,6 +352,20 @@ export type DirectoryNotesListResponse = Schemas["VtcDirectoryNotesListV0_2Respo
 export type DirectoryNotesExportResponse = Schemas["VtcDirectoryNotesExportV0_1Response"];
 export type DirectoryExportResponse = Schemas["VtcDirectoryExportV0_2Response"];
 
+// ── Network memberships (`vtc/networks/*`) ───────────────────────────────
+export type NetworkMembership = Schemas["VtcNetworksListV0_2NetworkMembership"];
+export type NetworkRegisteredGroup = Schemas["VtcNetworksListV0_2RegisteredGroup"];
+export type NetworksListPayload = Schemas["VtcNetworksListV0_2Payload"];
+export type NetworksListResponse = Schemas["VtcNetworksListV0_2Response"];
+export type NetworksShowResponse = Schemas["VtcNetworksShowV0_2Response"];
+export type NetworkJoinPayload = Schemas["VtcNetworksJoinV0_2Payload"];
+export type NetworkRoleAssignment = Schemas["VtcNetworksJoinV0_2RoleAssignment"];
+export type NetworkJoinResponse = Schemas["VtcNetworksJoinV0_2Response"];
+export type NetworkLeavePayload = Schemas["VtcNetworksLeaveV0_2Payload"];
+export type NetworkLeaveResponse = Schemas["VtcNetworksLeaveV0_2Response"];
+export type NetworkRepudiatePayload = Schemas["VtcNetworksRepudiateV0_2Payload"];
+export type NetworkRepudiateResponse = Schemas["VtcNetworksRepudiateV0_2Response"];
+
 // ── Community groups (`vtc/groups/*`) ────────────────────────────────────
 export type Group = Schemas["VtcGroupsListV0_2Group"];
 export type GroupMember = Schemas["VtcGroupsMembersAddV0_1GroupMember"];

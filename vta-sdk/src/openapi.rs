@@ -59,6 +59,7 @@ use vti_specs::vtc::groups;
 use vti_specs::vtc::invitations::deliver as invitation_deliver;
 use vti_specs::vtc::join_requests::manifest;
 use vti_specs::vtc::members::credentials as member_credentials;
+use vti_specs::vtc::networks;
 use vti_specs::vtc::registry::{records, sync_jobs};
 use vti_specs::vtc::rooms::{
     community as rooms_community, get as rooms_get, limits::set as rooms_limits_set,
@@ -345,6 +346,26 @@ spec_types! {
     DirectoryCardPublic01Payload(directory::card::public::v0_1::Payload);
     /// `vtc/directory/card/public/0.1#response` — the card exactly as its member signed it.
     DirectoryCardPublic01Response(directory::card::public::v0_1::Response);
+    /// `vtc/networks/list/0.2` payload — which memberships to list.
+    NetworksList02Payload(networks::list::v0_2::Payload);
+    /// `vtc/networks/list/0.2#response` — the community's network memberships.
+    NetworksList02Response(networks::list::v0_2::Response);
+    /// `vtc/networks/show/0.2` payload — one membership, by network DID.
+    NetworksShow02Payload(networks::show::v0_2::Payload);
+    /// `vtc/networks/show/0.2#response` — the membership and its credentials.
+    NetworksShow02Response(networks::show::v0_2::Response);
+    /// `vtc/networks/join/0.2` payload — accept a network's listing.
+    NetworksJoin02Payload(networks::join::v0_2::Payload);
+    /// `vtc/networks/join/0.2#response` — the membership as it now stands.
+    NetworksJoin02Response(networks::join::v0_2::Response);
+    /// `vtc/networks/leave/0.2` payload — depart a network.
+    NetworksLeave02Payload(networks::leave::v0_2::Payload);
+    /// `vtc/networks/leave/0.2#response` — the membership as it now stands.
+    NetworksLeave02Response(networks::leave::v0_2::Response);
+    /// `vtc/networks/repudiate/0.2` payload — reject a network's listing.
+    NetworksRepudiate02Payload(networks::repudiate::v0_2::Payload);
+    /// `vtc/networks/repudiate/0.2#response` — the membership as it now stands.
+    NetworksRepudiate02Response(networks::repudiate::v0_2::Response);
     /// `vtc/groups/create/0.1` payload — a new static group.
     GroupsCreate01Payload(groups::create::v0_1::Payload);
     /// `vtc/groups/create/0.1#response` — the group as stored.
