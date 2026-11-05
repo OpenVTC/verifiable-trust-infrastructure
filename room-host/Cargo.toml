@@ -93,6 +93,9 @@ futures-util = { workspace = true, optional = true }
 
 [features]
 default = []
+## Test knobs a host's own and its consumers' tests need (`HostState::set_watch_signal_delay_ms`).
+## Never on in a served build: a host serving members keeps the spec's 2–6 s delay.
+test-support = ["vti-rooms/test-support"]
 keyring = ["vti-secrets/keyring"]
 config-secret = ["vti-secrets/config-seed"]
 aws-secrets = ["vti-secrets/aws-secrets"]
@@ -155,6 +158,9 @@ didcomm = [
     "dep:vta-sdk",
     "vta-sdk/tsp",
     "vti-common/tsp",
+    # Signing this host's answers as its DID (`didcomm::AnswerSigner`): the workspace's
+    # Trust Task signer, `vta_sdk::trust_task_sign`.
+    "vta-sdk/client",
 ]
 
 [dev-dependencies]

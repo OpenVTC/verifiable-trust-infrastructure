@@ -952,7 +952,9 @@ When adding a flow, add it here and a line to the root index.
 - **Code**: `vta-service/src/operations/room_key_watch.rs`,
   `vta-service/src/trust_tasks/{room_key_watch,room_key_watch_tests,room_changed,room_act}.rs`,
   `vta-service/src/messaging/watch_addresses.rs`, `vta_sdk::client` (`room_watch`,
-  `room_act_v0_12`, `room_changed_signal`), `pnm rooms watch [--via-host]`.
+  `room_act_v0_12`, `room_changed_signal`), `pnm rooms watch [--via-host]`. End to end
+  through a real mediator (address session, a signal queued before it opens, the pass-on
+  to the wallet): `tests/e2e/tests/room_key_watch.rs`.
 - **Docs**: `docs/02-vta/data-rooms.md` (*Watching instead of polling*).
 
 ### Held notifications (`notifications/*`, `vta/notifications/*/0.1`)

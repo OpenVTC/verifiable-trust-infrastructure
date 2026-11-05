@@ -434,7 +434,7 @@ vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.16", features = ["
 # member's own client writes through `rooms/keys/act` is recorded as the persona's.
 # Path-only (no version): `room-host` is `publish = false`, and a dev-dependency
 # without a version is dropped when this crate is packaged.
-room-host = { path = "../room-host" }
+room-host = { path = "../room-host", features = ["test-support"] }
 # A real witness, dispatched in process, for the end-to-end check of the
 # witnessed-party tasks (`vta/witness/*`): the test carries each document between
 # this VTA and `vti_witness::dispatch::answer`, as a client would. Path-only (no
