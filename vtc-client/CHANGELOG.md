@@ -2,6 +2,55 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.37.0...vtc-client-v0.38.0) — 2026-11-05
+
+
+### Added
+
+- **rooms**: Members' names in a room (memberProfile), and rooms/watch with its rooms/changed signal on both hosts ([#2457](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2457))
+
+A member's name in a room (trust-tasks-tf #1035, rooms/_shared/0.3
+  member-profile): a record of kind `memberProfile` whose `title` is the
+  name. `vti_rooms::member_profile` holds the writer's and reader's rules
+  (MemberName: one line, no controls, at most 64 code points after NFC;
+  empty or white space withdraws; MemberProfileRecord /
+  MemberProfileCleartext shapes; `Names`, which takes per author the most
+  recently stored version and refuses a rewrite by anyone but the original
+  author). `record_members::used` names `memberProfile` for a body of that
+  kind, so the writer's rule asks for `kind` and `memberProfile` listed;
+  the SDK's copy (`RECORD_KIND_VALUES`, `MEMBER_PROFILE_KIND`) is pinned
+  equal by the existing test. No host, seal or act change: a key holder
+  seals the body unchanged, as the schema says. `pnm rooms name set|clear`
+  writes the record (seal/0.3 + act/0.11 on sealed tiers, put/0.5 on open),
+  over the member's existing name record when it holds one; `pnm rooms
+  list|get|read` show a name record as a name, never a note, and an
+  author's name beside their DID.
+
+  rooms/watch/0.1 and rooms/changed/0.1 (trust-tasks-tf #1036), pinned in
+  vti-specs-rooms. `vti_rooms::watch` is the host-neutral half both hosts
+  call: authorized as a listing (`read`), with the task's chainTooDeep and
+  subjectBindingMissing; one watch per room and address in its own
+  keyspace (host state, never backed up, never consulted to authorize);
+  lease 7 days by default, 30 at most, never past the presentation's
+  first credential lapsing (`VerifiedChain::valid_until`, new);
+  addressUnreachable when the address offers no transport the host
+  speaks; limitReached past 1024 per room or 16 per member. After any
+  successful room task the room's watches past their watermark are
+  removed under one lock and signalled once, after a 2-6 s randomised
+  delay, with the room and its latest version only; a watch whose
+  presentation the held revocation list withdraws never fires. room-host
+  signals over its mediator session (TSP before DIDComm, by service type);
+  the VTC over `PeerTasks::send_one_way`, signed as the community. Neither
+  sends REST or retries.
+
+- **elections**: Read a deleted board's election tombstone (VTI-BRD-009) ([#2455](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2455))
+
+A deleted board's elections each keep a tombstone (VTI-BRD-007/008),
+  but nothing served it, so no voter could check a receipt against the
+  community's kept heads once the board was gone (VTI-VOT-053).
+
+
+
 ## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.36.0...vtc-client-v0.37.0) — 2026-11-04
 
 

@@ -2,6 +2,68 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.83.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.82.0...vta-sdk-v0.83.0) — 2026-11-05
+
+
+### Added
+
+- **vtc-service**: Join a network from the console's Networks page or cnm networks ([#2458](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2458))
+
+The community side of Verifiable Trust Network membership (vtc/networks/*/0.2) had no
+  caller: no console page and no cnm command sent join, leave or repudiate.
+
+  - Console: Community → Networks (/admin/networks, vtc.config.admin) lists the
+    memberships with their credentials (the network's listing and grant, the community's
+    acknowledgement or repudiation, the registered groups), and joins, leaves or rejects a
+    listing through the console's operation-bound step-up. A network's invitation links to
+    /admin/networks?join=<network url>&network=<network DID>. A roleUnassigned refusal adds
+    a row for the role; only groups with a DID of their own are offered.
+  - cnm networks list | show | join <url> --network <did> [--group role=groupId]... |
+    leave | repudiate, through cnm's step-up hand-off.
+  - join, repudiate and leave now run every check that would refuse them before asking for
+    the step-up (join_preflight, repudiate_preflight, leave_preflight), so a join that
+    cannot succeed costs the administrator no passkey gesture (VTI-APV-015).
+  - vta-sdk exposes the vtc/networks/{list,show,join,leave,repudiate}/0.2 schemas to the
+    OpenAPI document, so the console's wire types are generated, not written by hand.
+
+- **rooms**: Members' names in a room (memberProfile), and rooms/watch with its rooms/changed signal on both hosts ([#2457](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2457))
+
+A member's name in a room (trust-tasks-tf #1035, rooms/_shared/0.3
+  member-profile): a record of kind `memberProfile` whose `title` is the
+  name. `vti_rooms::member_profile` holds the writer's and reader's rules
+  (MemberName: one line, no controls, at most 64 code points after NFC;
+  empty or white space withdraws; MemberProfileRecord /
+  MemberProfileCleartext shapes; `Names`, which takes per author the most
+  recently stored version and refuses a rewrite by anyone but the original
+  author). `record_members::used` names `memberProfile` for a body of that
+  kind, so the writer's rule asks for `kind` and `memberProfile` listed;
+  the SDK's copy (`RECORD_KIND_VALUES`, `MEMBER_PROFILE_KIND`) is pinned
+  equal by the existing test. No host, seal or act change: a key holder
+  seals the body unchanged, as the schema says. `pnm rooms name set|clear`
+  writes the record (seal/0.3 + act/0.11 on sealed tiers, put/0.5 on open),
+  over the member's existing name record when it holds one; `pnm rooms
+  list|get|read` show a name record as a name, never a note, and an
+  author's name beside their DID.
+
+  rooms/watch/0.1 and rooms/changed/0.1 (trust-tasks-tf #1036), pinned in
+  vti-specs-rooms. `vti_rooms::watch` is the host-neutral half both hosts
+  call: authorized as a listing (`read`), with the task's chainTooDeep and
+  subjectBindingMissing; one watch per room and address in its own
+  keyspace (host state, never backed up, never consulted to authorize);
+  lease 7 days by default, 30 at most, never past the presentation's
+  first credential lapsing (`VerifiedChain::valid_until`, new);
+  addressUnreachable when the address offers no transport the host
+  speaks; limitReached past 1024 per room or 16 per member. After any
+  successful room task the room's watches past their watermark are
+  removed under one lock and signalled once, after a 2-6 s randomised
+  delay, with the room and its latest version only; a watch whose
+  presentation the held revocation list withdraws never fires. room-host
+  signals over its mediator session (TSP before DIDComm, by service type);
+  the VTC over `PeerTasks::send_one_way`, signed as the community. Neither
+  sends REST or retries.
+
+
+
 ## [0.82.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.81.0...vta-sdk-v0.82.0) — 2026-11-04
 
 
