@@ -130,7 +130,15 @@ pnm elections show agm-2027 --vtc https://vtc.example.com/v1 --vtc-did <communit
 pnm elections ticket agm-2027 --vtc … --vtc-did … --member … --context …
 # later — after voting opens, and not straight after the ticket
 pnm elections vote agm-2027 --answer chair=alice --vtc … --vtc-did … --member … --context …
+# after voting closes: is each of my casts in the board the community kept at close?
+pnm elections verify agm-2027 --vtc … --vtc-did … --member … --context …
 ```
+
+`verify` is VTI-VOT-053's check. The VTA keeps every receipt (`vta/pcs/voter/receipts/list`);
+`pnm` reads the head the community kept at close, fetches each cast's inclusion proof from the
+ballot box over its own connection, and the VTA answers `included` or `notIncluded`. A cast the
+head omits is printed in red and the command fails: the VTA keeps the receipt as the evidence to
+raise with the community. It works until the VTA sweeps the receipts, 30 days after close.
 
 Taking the ticket and voting are separate runs: the community knows when it issued a ticket and
 the ballot box when a cast arrived, so a cast sent straight after its ticket can be paired by
@@ -354,7 +362,9 @@ An election opened on a community board that is later deleted keeps only a tombs
 identifier, manifest digest, ballot box and the board heads the community kept
 ([boards.md](boards.md), VTI-BRD-007 – 009). `vtc/elections/show` no longer knows it; read the
 tombstone with `vtc/elections/tombstones/show` (`cnm elections tombstone <election-id>`) for as
-long as `[boards] tombstone_retention` keeps it.
+long as `[boards] tombstone_retention` keeps it. A member's `pnm elections verify` and the
+wallet's "Check my vote" fall back to the tombstone when `show` answers `electionUnknown`, so a
+voter can still check their receipts against the heads it keeps (VTI-VOT-053).
 
 ## Code
 

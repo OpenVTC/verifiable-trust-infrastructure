@@ -95,7 +95,7 @@ an engine in another context the caller can act in is refused
 |---|---|---|
 | `pcs-vetter` (`pcsVetter`) | `root-request`, `root-accept`, `tokens/*`, `attest`, `vetter/show`, `vetter/recover` | `admin`, `initiator` |
 | `pcs-applicant` (`pcsApplicant`) | `applications/*`, `verify-attestation`, `prove` | `admin`, `initiator` |
-| `pcs-voter` (`pcsVoter`) | `voter/register`, `voter/read`, `voter/accept`, `vote`, `vote-encrypted`, `voter/receipt` | `admin`, `initiator` |
+| `pcs-voter` (`pcsVoter`) | `voter/register`, `voter/read`, `voter/accept`, `vote`, `vote-encrypted`, `voter/receipt`, `voter/receipts/list` | `admin`, `initiator` |
 | `pcs-trustee` (`pcsTrustee`) | `trustee/enrol`, `trustee/deal`, `trustee/keys`, `trustee/justify`, `trustee/decrypt` | `admin`, `initiator` |
 
 None is `sign`, and `sign` confers none (VTI-VTA-007). `application`
@@ -119,24 +119,26 @@ The same engine votes in a community's elections (community voting, VTI-VOT-020 
 
 | Step | Who | Task |
 |---|---|---|
-| 0 | client → VTA → community | `vta/pcs/voter/read` — `vtc/elections/list` or `show` signed as the member (a persona this VTA holds), sent to the community unchanged: the manifest, parameters and disclosure the next steps need. The VTA signs only those two reads |
+| 0 | client → VTA → community | `vta/pcs/voter/read` — `vtc/elections/list` or `show` signed as the member (a persona this VTA holds), sent to the community unchanged: the manifest, parameters and disclosure the next steps need. The VTA signs only those reads, and `vtc/elections/tombstones/show` (step 7) |
 | 1 | client → VTA | `vta/pcs/voter/register` — a fresh key for this election and the blinded ticket request; a repeat before the ticket is held answers with the same request. With `member` (a persona this VTA holds), also `ticketDocument`: the request to the community already signed as that member, kept and returned unchanged on a repeat |
 | 2 | client → community | `vtc/elections/tickets/issue` — `ticketDocument` as it came (or the request signed by a member DID the client holds); the community signs the ticket blind, one per eligible member |
 | 3 | client → VTA | `vta/pcs/voter/accept` — unblinded and kept wrapped |
 | 4 | client → VTA | `vta/pcs/vote` — the ballot checked against the manifest, the cast built, and the `voting/ballot/cast` document returned **signed by a key made for that cast alone** and never kept |
 | 5 | client → ballot box | the cast document, from the client's own connection, after a pause; resent unchanged if the answer is lost |
 | 6 | client → VTA | `vta/pcs/voter/receipt` — the ballot box's signed receipt kept, and checked for inclusion in a head the community kept |
+| 7 | client → VTA → ballot box → VTA | after close (VTI-VOT-053): `vta/pcs/voter/receipts/list` returns the receipts kept and the ballot box; the client reads the head the community kept at close from `show` — or, once the election's board is deleted, from `vtc/elections/tombstones/show` (VTI-BRD-009) — fetches each cast's `voting/board/inclusion` from the ballot box over its own connection, unsigned, with the receipt's token, and hands both to `voter/receipt`, which answers `included` or `notIncluded`. A head smaller than the cast's leaf omits it, with no path to fetch |
 
 **Versions.** The voter and trustee tasks that carry the manifest take voting/_shared/0.4's,
 whose roll may be a **credential roll** (`roll.rule: credential`, `roll.memberOf` a DID;
 VTI-VOT-025) and whose `textReleaseThreshold` may be as low as 1 (VTI-VOT-065):
 `voter/register/0.5`, `vote/0.4`, `vote-encrypted/0.5`, `trustee/enrol/0.4` and
 `trustee/{deal,keys,justify}/0.5`. `voter/register/0.5`'s `ticketDocument` is a
-`vtc/elections/tickets/issue/0.3` request; `voter/read/0.6` signs `vtc/elections/list/0.5` or
-`vtc/elections/show/0.6`, and `trustee/read/0.4` signs `voting/election/show/0.4`. The previous
+`vtc/elections/tickets/issue/0.3` request; `voter/read/0.7` signs `vtc/elections/list/0.5`,
+`vtc/elections/show/0.6` or `vtc/elections/tombstones/show/0.1`, and `trustee/read/0.4` signs `voting/election/show/0.4`. The previous
 versions are still served, each held to its own schema and answering in its own shape:
 `voter/register/0.3` and `0.2` build a `tickets/issue/0.1` request (kept apart from 0.5's, so
-each version's repeat answers with its own document), `voter/read/0.3` signs `list/0.3` or
+each version's repeat answers with its own document), `voter/read/0.6` signs `list/0.5` or
+`show/0.6` and no tombstone, `voter/read/0.3` signs `list/0.3` or
 `show/0.3`, `0.2` `list/0.3` or `show/0.2`, and `trustee/read/0.3` and `0.2` the show they name.
 A client showing a member an election before the ticket says so when the threshold is below 10,
 and that a written answer may identify its author (VTI-VOT-090); it reads that from the manifest.

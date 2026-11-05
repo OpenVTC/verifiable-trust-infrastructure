@@ -255,16 +255,21 @@ impl VtaClient {
     /// [`Self::pcs_voter_read`], with the payload and the answer as JSON: the answer's
     /// `document` is the signed read to send to the community unchanged. See
     /// [`Self::pcs_voter_register_json`] for why.
+    ///
+    /// A `tombstone` read goes as `vta/pcs/voter/read/0.7`, the first version that signs one
+    /// (VTI-BRD-009); `list` and `show` still go as 0.6, so a VTA from before 0.7 keeps
+    /// answering them.
     pub async fn pcs_voter_read_json(
         &self,
         req: serde_json::Value,
     ) -> Result<serde_json::Value, VtaError> {
-        self.pcs_call_json(
-            trust_tasks::TASK_VTA_PCS_VOTER_READ_0_6,
-            req,
-            PCS_TT_TIMEOUT,
-        )
-        .await
+        let task = if req["read"] == "tombstone" {
+            trust_tasks::TASK_VTA_PCS_VOTER_READ_0_7
+        } else {
+            #[allow(deprecated)] // superseded by 0.7, which only a newer VTA serves
+            trust_tasks::TASK_VTA_PCS_VOTER_READ_0_6
+        };
+        self.pcs_call_json(task, req, PCS_TT_TIMEOUT).await
     }
 
     /// [`Self::pcs_voter_accept`], with the payload and the answer as JSON. See
@@ -320,6 +325,20 @@ impl VtaClient {
         .await
     }
 
+    /// [`Self::pcs_voter_receipts_list`], with the answer as JSON: each receipt exactly as the
+    /// ballot box signed it, to hand back to [`Self::pcs_voter_receipt_json`] unchanged.
+    pub async fn pcs_voter_receipts_list_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.pcs_call_json(
+            trust_tasks::TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
     /// `vta/pcs/voter/register/0.5` — this election's voter key and the blinded ticket request
     /// to carry to `vtc/elections/tickets/issue/0.3`; under a credential roll, with `member` and
     /// `membershipCredential`, the `ticketDocument` carries the member's presentation of that
@@ -347,6 +366,7 @@ impl VtaClient {
     ///
     /// Re-serialises timestamps; to carry signed documents byte for byte use
     /// [`Self::pcs_voter_read_json`].
+    #[allow(deprecated)] // superseded by 0.7, which only a newer VTA serves
     pub async fn pcs_voter_read(
         &self,
         req: &pcs::voter::read::v0_6::Payload,
@@ -399,6 +419,25 @@ impl VtaClient {
     ) -> Result<pcs::voter::receipt::v0_1::Response, VtaError> {
         self.pcs_call(
             trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/pcs/voter/receipts/list/0.1` — the ballot box and every receipt the VTA keeps for an
+    /// election, to check each after close: fetch its `voting/board/inclusion` from the ballot
+    /// box yourself, from your own connection, and pass it with the head the community kept to
+    /// [`Self::pcs_voter_receipt`] (VTI-VOT-053).
+    ///
+    /// Re-serialises the receipts; to hand them back byte for byte use
+    /// [`Self::pcs_voter_receipts_list_json`].
+    pub async fn pcs_voter_receipts_list(
+        &self,
+        req: &pcs::voter::receipts::list::v0_1::Payload,
+    ) -> Result<pcs::voter::receipts::list::v0_1::Response, VtaError> {
+        self.pcs_call(
+            trust_tasks::TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1,
             req,
             PCS_TT_TIMEOUT,
         )

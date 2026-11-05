@@ -228,6 +228,32 @@ describe("one election", () => {
     expect(screen.getByText(/same operator runs this community/)).toBeTruthy();
   });
 
+  it("vti_vot_053: after close the wallet checks the vote in its own window, offered to every member", async () => {
+    const closed = shown({ state: "tallied", votingOpensAt: iso(Date.now() - 2 * HOUR), votingClosesAt: iso(Date.now() - HOUR) });
+    const checkVote = vi.fn(async () => ({}));
+    withWallet({ show: vi.fn(async () => closed), checkVote });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Check my vote in my wallet" }));
+    await waitFor(() => expect(checkVote).toHaveBeenCalledWith({ hostDid: HOST, electionId: "agm-2027", member: ME }));
+    // VTI-VOT-001: the page learns nothing of the answer.
+    expect(screen.queryByText(/included|you have voted/i)).toBeNull();
+    expect(screen.queryByText(/Voting opens/)).toBeNull();
+  });
+
+  it("offers no check while voting is open, or from a wallet without one", async () => {
+    withWallet({ checkVote: vi.fn(async () => ({})) });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    await screen.findByText("Who chairs?");
+    expect(screen.queryByRole("button", { name: "Check my vote in my wallet" })).toBeNull();
+  });
+
+  it("an older wallet is offered no check after close", async () => {
+    withWallet({ show: vi.fn(async () => shown({ state: "closed" })) });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    await screen.findByText("Who chairs?");
+    expect(screen.queryByRole("button", { name: "Check my vote in my wallet" })).toBeNull();
+  });
+
   it("tells the member, before a ticket, when written answers come out below 10 (VTI-VOT-090)", async () => {
     withWallet({ show: vi.fn(async () => shown({ textReleaseThreshold: 3 })) });
     renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);

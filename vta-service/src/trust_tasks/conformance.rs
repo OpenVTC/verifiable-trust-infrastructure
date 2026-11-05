@@ -2669,6 +2669,23 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_VTA_PCS_VOTER_READ_0_7,
+            checked!(
+                specs::vta::pcs::voter::read::v0_7::Payload,
+                specs::vta::pcs::voter::read::v0_7::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "member": MEMBER_DID,
+                    "read": "tombstone", "payload": { "electionId": "agm-2027" } }),
+                json!({ "document": {
+                    "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f75",
+                    "type": "https://trusttasks.org/spec/vtc/elections/tombstones/show/0.1",
+                    "issuer": MEMBER_DID, "recipient": PCS_COMMUNITY, "issuedAt": TS,
+                    "payload": { "electionId": "agm-2027" },
+                    "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+                        "verificationMethod": "did:key:z6MkpVoteCastKey2222222222222222222222222222222#z6MkpVoteCastKey2222222222222222222222222222222",
+                        "proofPurpose": "authentication", "created": TS, "proofValue": PCS_B58 } } })
+            ),
+        ),
+        (
             uris::TASK_VTA_PCS_VOTER_ACCEPT_0_1,
             checked!(
                 specs::vta::pcs::voter::accept::v0_1::Payload,
@@ -2742,6 +2759,16 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "checkpoint": { "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": VOTING_BOX },
                     "inclusion": { "leafIndex": 41, "treeSize": 213, "entryHash": VOTING_DIGEST, "path": [VOTING_DIGEST] } }),
                 json!({ "electionId": "agm-2027", "status": "included", "leafIndex": 41 })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1,
+            checked!(
+                specs::vta::pcs::voter::receipts::list::v0_1::Payload,
+                specs::vta::pcs::voter::receipts::list::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "electionId": "agm-2027" }),
+                json!({ "electionId": "agm-2027", "ballotBox": VOTING_BOX,
+                    "receipts": [{ "type": "https://trusttasks.org/spec/voting/ballot/cast/0.1#response", "issuer": VOTING_BOX }] })
             ),
         ),
         // ─── vta/pcs — the encrypted levels ─────────────────────

@@ -2754,6 +2754,8 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_2 => pcs::handle_voter_register
         [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_7 => pcs::handle_voter_read
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_6 => pcs::handle_voter_read
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_3 => pcs::handle_voter_read
@@ -2770,6 +2772,8 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1 => pcs::handle_voter_receipt
         [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1 => pcs::handle_voter_receipts_list
+        [ None Metadata false ],
     // The encrypted levels (`vta/pcs/vote-encrypted`, `vta/pcs/trustee/*`,
     // trust-tasks-tf #845): each signs one document as the voter's one-time key or
     // the trustee persona.

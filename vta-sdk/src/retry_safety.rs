@@ -506,6 +506,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_PCS_VOTER_READ_0_2, RetrySafe),
     (trust_tasks::TASK_VTA_PCS_VOTER_READ_0_3, RetrySafe),
     (trust_tasks::TASK_VTA_PCS_VOTER_READ_0_6, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_VOTER_READ_0_7, RetrySafe),
     // A repeat finds no request in flight; keyed so it gets the original answer.
     (trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1, Keyed),
     // Each execution is a new cast, signed by a new one-time key: keyed so a
@@ -516,6 +517,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_PCS_VOTE_0_4, Keyed),
     // Keeping a receipt already kept stores nothing new.
     (trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1, RetrySafe),
+    // A read of what is kept: a repeat is the same answer.
+    (trust_tasks::TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1, RetrySafe),
     // As vote: a new encrypted cast under a new one-time key each time; keyed so a
     // retry is answered with the same document.
     (trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_3, Keyed),

@@ -576,25 +576,37 @@ digest = "sha256:ad9118f4f87571ac8c787e1fadda7c0e9b1e52157968bc2f5fe0b0509332738
 slug = "vta/pcs/voter/read"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vta/pcs/voter/read/0.2"
-digest = "sha256:5d81ec0c4cc67f1acb8f748c4985ace1e2a522a32eec02cb19ec43ffa3427423"
+digest = "sha256:5bb6159367a5777de8a8b93f6c58d0c413410c71cc27eb6379248eb6ae867d2d"
 
 [[task]]
 slug = "vta/pcs/voter/read"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vta/pcs/voter/read/0.3"
-digest = "sha256:76a5f3e31b4bdbe4cc9fcb6a05d8a221764de97cd3cc00c2bcd83da9573fbf88"
+digest = "sha256:fe86c457b1fd0d1abf300126fe6a110b6abee8e1ff364bdf2fdd409b24694f02"
 
 [[task]]
 slug = "vta/pcs/voter/read"
 version = "0.6"
 type_uri = "https://trusttasks.org/spec/vta/pcs/voter/read/0.6"
-digest = "sha256:80c1fa7199868b520fd3b28bd73cb29b2e0354b48fd0b6205c20e08943544619"
+digest = "sha256:d73164c42a153a7446f30b82c950b9289d63c1e5c5c219a9c22cf0f58e8bc64e"
+
+[[task]]
+slug = "vta/pcs/voter/read"
+version = "0.7"
+type_uri = "https://trusttasks.org/spec/vta/pcs/voter/read/0.7"
+digest = "sha256:67f1ff858c2c33631ebe48f22f39966cbb4980002b44d88e4b9b4b75bebef117"
 
 [[task]]
 slug = "vta/pcs/voter/receipt"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/pcs/voter/receipt/0.1"
 digest = "sha256:bdbc80094223dedc6267bf66c7485bd4e843c7599553f251a3a58b10e089a384"
+
+[[task]]
+slug = "vta/pcs/voter/receipts/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/pcs/voter/receipts/list/0.1"
+digest = "sha256:27412ad52233e564797935ff13d45b7ce63c4bfac2e8c661ba9a5150dba9a9b5"
 
 [[task]]
 slug = "vta/pcs/voter/register"
