@@ -725,11 +725,12 @@ pub async fn redeem_start(
     let user_uuid = existing.as_ref().map_or_else(Uuid::new_v4, |u| u.user_uuid);
     let held: Vec<Passkey> = existing.map(|u| u.credentials).unwrap_or_default();
     let exclude = held.iter().map(|p| p.cred_id().clone()).collect::<Vec<_>>();
+    let name = vti_common::auth::passkey::authenticator_name_for_did(&subject);
     let (ccr, reg_state) = crate::webauthn::start_passkey_registration(
         webauthn,
         user_uuid,
-        &subject,
-        &subject,
+        &name,
+        &name,
         Some(exclude),
     )?;
     let (uv_options, uv_state) = if held.is_empty() {
