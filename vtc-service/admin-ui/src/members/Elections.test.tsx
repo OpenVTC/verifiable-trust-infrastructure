@@ -20,11 +20,13 @@ import { BOARDS_LIST_TASK } from "./boards-api";
 import { ElectionPage, ElectionsPage } from "./Elections";
 import {
   actionableFirst,
+  declinedInWallet,
   electionListOf,
   memberOfFor,
   notifiedOnly,
   refusalKind,
   stageOf,
+  walletErrorCode,
   type PageElection,
   type PageElectionView,
   type PageNotifiedElection,
@@ -440,6 +442,58 @@ describe("the community's refusals, in words", () => {
     const wallet = withWallet({
       list: vi.fn(async () => ({ elections: [], notified: [notice()] })),
       show: vi.fn(async () => Promise.reject(new Error("You chose not to show your membership, so the election was not read."))),
+    });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="partner-poll" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Ask my wallet again" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(wallet.show).toHaveBeenCalledTimes(2));
+  });
+});
+
+/** A wallet error as a wallet with page-facing codes rejects it: the message, and `code`. */
+const coded = (message: string, code: string) => Object.assign(new Error(message), { code });
+
+describe("the wallet's error codes, before its words", () => {
+  it("reads a code only when the wallet put a non-empty string there", () => {
+    expect(walletErrorCode(coded("x", "electionUnknown"))).toBe("electionUnknown");
+    expect(walletErrorCode(new Error("x"))).toBeUndefined();
+    expect(walletErrorCode(coded("x", ""))).toBeUndefined();
+    expect(walletErrorCode(Object.assign(new Error("x"), { code: 7 }))).toBeUndefined();
+    expect(walletErrorCode("electionUnknown")).toBeUndefined();
+  });
+
+  it("decides the community's refusals by their Trust Task code, whatever the words say", () => {
+    expect(refusalKind(coded("Something went wrong.", "electionUnknown"))).toBe("electionUnknown");
+    expect(refusalKind(coded("Something went wrong.", "indeterminate"))).toBe("indeterminate");
+    // The code wins over words that would read as the other answer.
+    expect(refusalKind(coded("Acme could not check your membership just now.", "electionUnknown"))).toBe("electionUnknown");
+    expect(refusalKind(coded("Acme shows you no such election.", "indeterminate"))).toBe("indeterminate");
+  });
+
+  it("a wallet-local code is never a community refusal, nor a refusal a decline", () => {
+    expect(refusalKind(coded("Acme shows you no such election.", "declined"))).toBe("other");
+    expect(declinedInWallet(coded("You declined.", "declined"))).toBe(true);
+    expect(declinedInWallet(coded("You declined to be told.", "electionUnknown"))).toBe(false);
+    expect(declinedInWallet(coded("The wallet window closed.", "declined"))).toBe(true);
+  });
+
+  it("falls back to the words for an older wallet, or a code this page does not know", () => {
+    expect(refusalKind(coded("Acme refused (indeterminate).", "someFutureCode"))).toBe("indeterminate");
+    expect(declinedInWallet(coded("You did not take a ticket.", "someFutureCode"))).toBe(true);
+    expect(declinedInWallet(new Error("You did not take a ticket."))).toBe(true);
+    expect(refusalKind(coded("Something else.", "toString"))).toBe("other");
+  });
+
+  it("words a coded refusal on the page", async () => {
+    withWallet({ show: vi.fn(async () => Promise.reject(coded("Acme refused.", "indeterminate"))) });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    expect(await screen.findByText("The community couldn’t check your membership just now.")).toBeTruthy();
+  });
+
+  it("a coded decline in the wallet is not an error, and can be asked again", async () => {
+    const wallet = withWallet({
+      list: vi.fn(async () => ({ elections: [], notified: [notice()] })),
+      show: vi.fn(async () => Promise.reject(coded("Not shown.", "declined"))),
     });
     renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="partner-poll" />);
     fireEvent.click(await screen.findByRole("button", { name: "Ask my wallet again" }));

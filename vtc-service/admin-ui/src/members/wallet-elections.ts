@@ -199,12 +199,45 @@ export function memberOfFor(list: ElectionList | undefined, electionId: string):
   return list?.notified.find((n) => n.electionId === electionId && n.status === "available")?.audience;
 }
 
-/** Which of the community's answers a wallet refusal is. The wallet passes the page only its
- *  message, so this matches both its own wording and a bare code. */
+/** Which of the community's answers a wallet refusal is. */
 export type RefusalKind = "electionUnknown" | "indeterminate" | "other";
 
+/** What the member chose in the wallet's own window, rather than anything refused. */
+export type WalletOutcome = "declined";
+
+/** The machine-readable `code` a wallet puts on a page-facing error, when it does. A wallet
+ *  before codes passes only its message, so this is `undefined` and the text is read instead. */
+export function walletErrorCode(e: unknown): string | undefined {
+  const code = isRecord(e) ? e.code : undefined;
+  return typeof code === "string" && code.length > 0 ? code : undefined;
+}
+
+/** The Trust Task error codes the community (or the member's VTA) answers that this page words
+ *  itself, as the wallet passes them on verbatim. */
+const REFUSAL_BY_CODE: Readonly<Record<string, Exclude<RefusalKind, "other">>> = {
+  electionUnknown: "electionUnknown",
+  indeterminate: "indeterminate",
+};
+
+/** The wallet's own codes for what the member decided in its window. The wallet's names are not
+ *  settled yet: `declined` is the one its room offers already use. A new one is a row here. */
+const WALLET_OUTCOME_BY_CODE: Readonly<Record<string, WalletOutcome>> = {
+  declined: "declined",
+};
+
+/** Every code this page knows: a wallet error carrying one of these is decided by it alone. */
+const isKnownCode = (code: string) =>
+  Object.hasOwn(REFUSAL_BY_CODE, code) || Object.hasOwn(WALLET_OUTCOME_BY_CODE, code);
+
+const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Which of the community's answers a wallet refusal is: by its `code` when the wallet gives one
+ *  this page knows, else — an older wallet, or a code not in the tables — by its words, which
+ *  match both the wallet's wording and a bare code. */
 export function refusalKind(e: unknown): RefusalKind {
-  const text = e instanceof Error ? e.message : String(e);
+  const code = walletErrorCode(e);
+  if (code !== undefined && isKnownCode(code)) return REFUSAL_BY_CODE[code] ?? "other";
+  const text = messageOf(e);
   if (/\bindeterminate\b|could not check your membership/i.test(text)) return "indeterminate";
   if (/\belectionUnknown\b|shows you no such election|no such election is open to you/i.test(text)) return "electionUnknown";
   return "other";
@@ -249,8 +282,12 @@ export function actionableFirst(list: readonly PageElection[], now = Date.now())
   return [...list].sort((a, b) => rank(a) - rank(b) || Date.parse(a.votingClosesAt) - Date.parse(b.votingClosesAt));
 }
 
-/** A wallet answer the member chose, in the wallet's own window — not an error to show. */
+/** A wallet answer the member chose, in the wallet's own window — not an error to show. By its
+ *  `code` when the wallet gives one this page knows, else by its words. */
 export function declinedInWallet(e: unknown): boolean {
-  const text = e instanceof Error ? e.message : String(e);
-  return /did not take a ticket|did not take your tickets|declined|did not allow|chose not to show your membership/.test(text);
+  const code = walletErrorCode(e);
+  if (code !== undefined && isKnownCode(code)) return WALLET_OUTCOME_BY_CODE[code] === "declined";
+  return /did not take a ticket|did not take your tickets|declined|did not allow|chose not to show your membership/.test(
+    messageOf(e),
+  );
 }

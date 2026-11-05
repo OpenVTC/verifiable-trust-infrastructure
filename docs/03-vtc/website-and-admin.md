@@ -1222,7 +1222,10 @@ must be allowed to reach the ballot box's address from its popup. Elections
 the member was notified of are listed beside the community's own, showing only
 what the notification says (VTI-NTF-063), and are opened as a member of the
 party the notification names (`memberOf`), the wallet asking before it shows
-that membership. See
+that membership. The home page's *Needs your attention* lists those of them
+whose notice still stands and whose voting has not closed, by identifier,
+linked as the Elections page links them, so `memberOf` always comes from the
+standing notice and never from the link. See
 [Community elections](elections.md#voting-from-the-member-portal).
 
 **Routing.** The mount is fixed at `/members` and takes precedence

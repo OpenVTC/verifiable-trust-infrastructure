@@ -110,8 +110,15 @@ presents the membership credential that party issued, and presents no other (VTI
 page presents nothing itself. A withdrawn notice cannot be opened from the page. The community's
 `electionUnknown` (the same answer whether the election does not exist, is not open to the
 member, or is put to a party whose membership was not shown) and `indeterminate` (a check it
-could not complete, which records nothing) are shown in words. A wallet that predates
-notifications lists as before and is never sent `memberOf`.
+could not complete, which records nothing) are shown in words, read from the `code` on the
+wallet's error (the Trust Task error code, passed on verbatim) where the wallet gives one and from
+its wording where it does not. A decline in the wallet's own window is not an error and can be
+asked again. A wallet that predates notifications lists as before and is never sent `memberOf`.
+
+The portal's home page puts a notified election the community does not list in *Needs your
+attention* while its notice stands and its voting period, as the notice states it, has not
+closed — by identifier only, since that is all the page knows of it — and links it to the same
+election page, which takes `memberOf` from the notice.
 
 ### From the command line, as a member
 
