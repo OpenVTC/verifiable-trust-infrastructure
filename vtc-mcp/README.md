@@ -24,7 +24,28 @@ Design: `docs/05-design-notes/vtc-mcp.md`. Transport: stdio. `publish = false`.
 | `vtc_whoami` | What the community knows of this identity (`auth/whoami`), beside the configured identity |
 | `vtc_status` | What this bridge is: identity, community, transport, policy, counters, recent calls |
 
-Resources: `vtc://status`, `vtc://operations`, `vtc://calls/recent`.
+Resources: `vtc://status`, `vtc://operations`, `vtc://calls/recent`, and the
+community's own operator guides as `vtc://guide/{groups, boards, elections,
+rooms, rooms-quickstart, admission, lifecycle, vetting, directory,
+admin-access}` — the workspace's `docs/03-vtc/*.md`, embedded at build time so
+the assistant reads the guide this bridge's version was written against.
+
+## Prompts
+
+One per multi-step job, each an ordered brief: the preconditions to check,
+the tasks to send in order, which of them park on the community's action list
+for other administrators, what the member sees afterwards, and which guides to
+read first. Every task a prompt names is one `vtc_call` can send (a test holds
+each to the pinned specification index).
+
+| Prompt | Arguments (all optional) |
+|---|---|
+| `setup-group` | `name`, `purpose` |
+| `create-board` | `title`, `audience` |
+| `run-election` | `question`, `roll` |
+| `open-data-room` | `label`, `members` |
+| `admit-member` | `subject`, `role` |
+| `grant-administration` | `subject`, `role` |
 
 ## Identity
 
