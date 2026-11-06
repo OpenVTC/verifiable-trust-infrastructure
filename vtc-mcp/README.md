@@ -23,6 +23,10 @@ Design: `docs/05-design-notes/vtc-mcp.md`. Transport: stdio. `publish = false`.
 | `vtc_supported_tasks` | What the connected community serves (`trust-task-discovery/0.4`) |
 | `vtc_whoami` | What the community knows of this identity (`auth/whoami`), beside the configured identity |
 | `vtc_status` | What this bridge is: identity, community, transport, policy, counters, recent calls |
+| `group_setup`, `board_create`, `election_create`, `room_open`, `member_admit`, `admin_grant` | The six workflows as thin orchestrators: each sends its steps in order, every step through the bridge's policy under its own operation, stops at the first step that is refused or parked, and reports how far it got with each step's answer |
+| `vtc_actions_list` / `vtc_actions_show` | The community's action list as this identity sees it; an action's summary re-derived from the payload that would run and verified, with the match code |
+| `vtc_actions_decide` | Approve or deny a parked action as this identity. The operator is **always** asked, shown the verified summary and the match code to compare with the requester's, whatever `--confirm` says; a host that cannot ask gets a refusal |
+| `vtc_actions_cancel` | Cancel an action this identity requested |
 
 Resources: `vtc://status`, `vtc://operations`, `vtc://calls/recent`, and the
 community's own operator guides as `vtc://guide/{groups, boards, elections,

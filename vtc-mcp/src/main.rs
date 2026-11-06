@@ -35,6 +35,7 @@ use vti_mcp_common::observability::{self, LogFormat, Recorder};
 
 mod guides;
 mod server;
+mod workflows;
 
 use server::{BridgeIdentity, VtcMcp};
 

@@ -40,3 +40,17 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
   `every_slug_a_prompt_names_is_pinned`. A prompt is procedural and short —
   preconditions, ordered steps, which park and for whom, what the member sees
   — and links the guide rather than restating it.
+- **A workflow tool is a thin orchestrator** (`src/workflows.rs`): it sends
+  the steps of one workflow in order, each through `begin` under its own
+  Trust Task URI (so `--read-only`, `--deny` and `--confirm` apply per step),
+  stops at the first step that is refused, parked, refused locally or
+  declined, and returns how far it got. It takes a step's payload as the
+  task's own JSON and derives only the identifiers later steps need from the
+  answers; it never builds a payload the specification does not describe, and
+  never retries. `every_workflow_uri_is_pinned` holds its URIs.
+- **Deciding an action always asks the human.** `vtc_actions_decide` re-derives
+  the action's summary from the payload that would run (`verify_action`),
+  refuses on any mismatch, and puts the summary and match code in front of
+  the operator through the host whatever `--confirm` says; no host, no
+  decision. The decision is this identity vouching for someone else's
+  authority (`task-consent/decision` is `Sensitive` in the shared table).

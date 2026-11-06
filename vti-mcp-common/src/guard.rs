@@ -389,6 +389,11 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("rooms/blobs/chunk", Risk::ReadOnly),
     // A trustee authorised onto an election holds a share of its key.
     ("voting/trustees/authorize", Risk::Sensitive),
+    // An approver's decision on a parked action: the approval that lets an
+    // authority-conferring grant, a reduction or a referred admission run.
+    // The verb rule would read `decision` as an ordinary mutation; what it is
+    // is this identity vouching for someone else's authority.
+    ("task-consent/decision", Risk::Sensitive),
     // A member's own badge wall: declining an offer and hiding a badge are
     // theirs to undo and remove nothing from anyone else, so neither takes
     // the confirmation the verbs `decline` and `hide` carry elsewhere.
