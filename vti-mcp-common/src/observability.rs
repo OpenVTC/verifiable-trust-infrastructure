@@ -130,6 +130,26 @@ const SAFE_KEYS: &[&str] = &[
     "type",
     "uri",
     "vtaDid",
+    // The community's families: record identifiers, DIDs of subjects, the
+    // audience and policy words of a group or board, a catalog request's
+    // patterns. Each is an identifier or an enumerated word, never free text.
+    "actionId",
+    "boardId",
+    "capability",
+    "cursor",
+    "detail",
+    "electionId",
+    "groupId",
+    "ideaId",
+    "joinPolicy",
+    "memberDid",
+    "patterns",
+    "requestId",
+    "roomId",
+    "showMembers",
+    "subject",
+    "visibility",
+    "vtcDid",
 ];
 
 /// How deep [`redact_call`] walks before collapsing a subtree.

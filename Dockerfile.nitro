@@ -151,6 +151,7 @@ COPY vta-service/ vta-service/
 COPY vta-enclave/ vta-enclave/
 COPY vtc-client/ vtc-client/
 COPY vtc-service/ vtc-service/
+COPY vtc-mcp/ vtc-mcp/
 COPY vti-common/ vti-common/
 COPY vti-mcp-common/ vti-mcp-common/
 COPY vti-rooms/ vti-rooms/

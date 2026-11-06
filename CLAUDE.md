@@ -81,6 +81,7 @@ Layer 4 (the spine + consumers):
   cnm-cli         → vta-sdk, vta-cli-common
   vti-mcp-common  (no internal deps; vti-specs as a dev-dep for its census)
   vta-mcp         → vta-sdk, vti-mcp-common
+  vtc-mcp         → vtc-client, vta-sdk, vti-specs, vti-mcp-common
   vta-enclave     → vta-service (consumed as a library)
   vti-witness     → vti-common, vti-secrets, vta-sdk   (host service)
 ```
@@ -118,6 +119,7 @@ Layer 4 (the spine + consumers):
 | `cnm-cli` | Community Network Manager (multi-community operator) |
 | `vti-mcp-common` | What the MCP bridges share: the local per-operation guard (risk classifier, allow/deny globs, confirm levels) and the redacting call recorder, with a census holding every pinned request URI to a classified verb. `publish = false` (detail: `vti-mcp-common/CLAUDE.md`) |
 | `vta-mcp` | MCP server bridging a VTA's agent capabilities to MCP tools over stdio, through the guard in `vti-mcp-common` because a host approves a tool, not a call. `publish = false` (detail: `vta-mcp/CLAUDE.md`) |
+| `vtc-mcp` | MCP server bridging a VTC to MCP tools over stdio for a member's or an administrator's assistant: a native Trust Task client over TSP > DIDComm > HTTPS (`VtcClient::connect_resolved`), never a CLI subprocess; `vtc_call` by Type URI with a catalog read from the pinned specification bundles; the guard in `vti-mcp-common`. `publish = false` (detail: `vtc-mcp/CLAUDE.md`) |
 | `vti-witness` | **Witness host service** (`publish = false`): up to 10 `did:webvh` witness identities from the `dtg-witness` template, one mediator session each (detail: `vti-witness/CLAUDE.md`) |
 | `didcomm-test` | Standalone DIDComm connectivity harness (test tool, `publish = false`) |
 
@@ -555,8 +557,8 @@ Mechanics: [`RELEASING.md`](RELEASING.md).
   baseline resolves without a lockfile. Read what
   `scripts/semver-build-failure.py` attributes it to before blaming our crate
   (#1667).
-- **36 of 46 crates publish**; the ten that do not set `publish = false` with a
-  comment saying why. `vtc-service` publishes as a binary with pre-built web
+- **36 of 47 crates publish**; the eleven that do not set `publish = false`
+  with a comment saying why. `vtc-service` publishes as a binary with pre-built web
   bundles — a new `include_dir!` / `include_str!` outside tests must sit inside
   its `include` list. `vta-service` publishes because `openvtc-core`
   dev-depends on it (`MockVta`); a re-export makes the re-exported crate's

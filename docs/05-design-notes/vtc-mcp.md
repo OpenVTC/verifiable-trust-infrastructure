@@ -317,7 +317,7 @@ exists so that "always allow `vtc_call`" at the host does not make
 |---|---|---|
 | 1 | **Done.** `VtcClient::send_task`, `discover`, `transport`; no retry table (see D2: the VTC dedups every task by document id) | `vtc-client` |
 | 2 | **Done.** `vti-mcp-common` extracted from `vta-mcp` (guard, confirm levels, recorder), `vta-mcp` repointed; the one table now classifies every pinned request URI — the community's, rooms', networks', voting and witness families included — held by a census over `vti_specs::schema_index` | new crate, `vta-mcp` |
-| 3 | `vtc-mcp`: ladder, transport selection by DID-document service type, guard, recorder, `vtc_list_operations` from the bundles, `vtc_call` with schema checks, `vtc_supported_tasks`, `vtc_whoami`, `vtc_status`, the five resources | new crate |
+| 3 | **Done.** `vtc-mcp`: the two-rung ladder, transport selection by DID-document service type (`VtcClient::connect_resolved`, which never replaces an advertised session with HTTPS), guard, recorder, `vtc_list_operations` from the bundles (summary / full, slug globs, served-by-the-community once discovered), `vtc_call` with schema checks and the parked outcome, `vtc_supported_tasks`, `vtc_whoami`, `vtc_status`, the `vtc://status`, `vtc://operations` and `vtc://calls/recent` resources. The `cnm` login rung is not built | new crate, `vtc-client` |
 | 4 | The guide resources and the six prompts, with the pinned-slug test | `vtc-mcp` |
 | 5 | The six workflow tools; `vtc_actions_show` / `vtc_actions_decide` | `vtc-mcp` |
 | 6 | Operator page `docs/03-vtc/vtc-mcp.md`, a worked example, the skill | docs |
