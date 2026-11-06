@@ -962,8 +962,17 @@ When adding a flow, add it here and a line to the root index.
   the uploader's until a badge holds it. Kudos limits count every giving whatever its later
   state. Departure withdraws offers and preferences and keeps givings by reference
   (`badges::on_departure`, beside `groups::on_departure`). Audit `BadgeChanged` by reference.
+  **The pages**: the console plugin (`admin-ui/src/plugins/badges.tsx` over `lib/badges.ts`)
+  signs with the console key only, and reuses the groups' tasks for a badge's requests and
+  owners; the portal (`admin-ui/src/members/Badges.tsx` over `members/badges-api.ts`, the
+  `WallSection` on a member's card, the home tile) signs with `K_b` through `send` and never
+  offers an owner's act. The badge Type URIs are spelled out in full in both API modules (the
+  list-limit census matches the literal), and the console's wire types come from the
+  `Badges*01` wrappers in `vta_sdk::openapi` listed in `routes::openapi_spec` — a new badge
+  task needs both, then `UPDATE_OPENAPI=1` and `npm run wire:generate`.
 - **Code**: `vtc-service/src/badges/{mod,credential}.rs`,
-  `vtc-service/src/trust_tasks/badge_tasks.rs`, `vtc-service/tests/it/badges.rs`.
+  `vtc-service/src/trust_tasks/badge_tasks.rs`, `vtc-service/tests/it/badges.rs`,
+  `admin-ui/src/plugins/badges.tsx`, `admin-ui/src/members/Badges.tsx`.
 - **Docs**: `docs/03-vtc/badges.md`, `docs/05-design-notes/vtc-badges.md`.
 
 ### VTC notifications (`notifications/*`, VTI-NTF-040 – 063)

@@ -3241,6 +3241,2395 @@ export interface components {
             /** @description The statement's `id`. */
             statementId: string;
         };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. */
+        VtcBadgesAwardsListV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsListV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsListV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsListV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsListV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsListV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsListV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsListV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            state: components["schemas"]["VtcBadgesAwardsListV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsListV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsListV0_1AwardNote: string;
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsListV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsListV0_1BadgeId: string;
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesAwardsListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcBadgesAwardsListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcBadgesAwardsListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesAwardsListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcBadgesAwardsListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcBadgesAwardsListV0_1CardBlobRef"] | components["schemas"]["VtcBadgesAwardsListV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsListV0_1GroupCredentialId: string;
+        /** @description The owners' view of a badge: every award of it, a page at a time, each recipient projected as the directory projects them and marked where they hid the badge. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsListV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesAwardsListV0_1BadgeId"];
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller, the badge and the filters; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            entryId?: components["schemas"]["VtcBadgesAwardsListV0_1EntryId"];
+            ext?: components["schemas"]["VtcBadgesAwardsListV0_1Ext"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+            state?: components["schemas"]["VtcBadgesAwardsListV0_1AwardState"];
+        };
+        /** @description The success response to a vtc/badges/awards/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/list/0.1#response. */
+        VtcBadgesAwardsListV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesAwardsListV0_1Ext"];
+            /** @description Newest `offeredAt` first. */
+            items: {
+                award: components["schemas"]["VtcBadgesAwardsListV0_1Award"];
+                fields?: components["schemas"]["VtcBadgesAwardsListV0_1EntryFields"];
+                /** @description True where the recipient has hidden this badge (VTI-BDG-030): off their wall, out of the holder list and its count; the award, the membership and the credential stand. */
+                hidden: boolean;
+            }[];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcBadgesAwardsListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. */
+        VtcBadgesAwardsOfferV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsOfferV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsOfferV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsOfferV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsOfferV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsOfferV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsOfferV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsOfferV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            state: components["schemas"]["VtcBadgesAwardsOfferV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsOfferV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsOfferV0_1AwardNote: string;
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsOfferV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsOfferV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsOfferV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsOfferV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsOfferV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesAwardsOfferV0_1GroupId: string;
+        /** @description A badge's owner offers a community badge to one or more members, or to every member of a group. Each offer is an award in state `offered` that the member accepts or declines; nothing is admitted or issued until they accept. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsOfferV0_1Payload: unknown | unknown;
+        /** @description The success response to a vtc/badges/awards/offer/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/offer/0.1#response. */
+        VtcBadgesAwardsOfferV0_1Response: {
+            /** @description The offers recorded, each in state `offered`. */
+            awards: components["schemas"]["VtcBadgesAwardsOfferV0_1Award"][];
+            ext?: components["schemas"]["VtcBadgesAwardsOfferV0_1Ext"];
+            /** @description Members the badge was not offered to, and why. Never an error: the rest of the offers stand. */
+            skipped: {
+                entryId: components["schemas"]["VtcBadgesAwardsOfferV0_1EntryId"];
+                /**
+                 * @description `notActiveMember`: not an active member, or not one the signer may see. `alreadyOffered`: an open offer of this badge already names them. `alreadyHolder`: they hold the badge and it is not repeatable. `requestPending`: they have asked for the badge; the owners decide the request instead.
+                 * @enum {string}
+                 */
+                reason: "notActiveMember" | "alreadyOffered" | "alreadyHolder" | "requestPending";
+            }[];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. */
+        VtcBadgesAwardsRevokeV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsRevokeV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsRevokeV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsRevokeV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsRevokeV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsRevokeV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsRevokeV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsRevokeV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            state: components["schemas"]["VtcBadgesAwardsRevokeV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsRevokeV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsRevokeV0_1AwardNote: string;
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsRevokeV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsRevokeV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsRevokeV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsRevokeV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsRevokeV0_1GroupCredentialId: string;
+        /** @description Take an accepted award back: revoke or stop renewing the credential that evidences it, remove the holder from the badge group where it was their last award, and tell them. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsRevokeV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesAwardsRevokeV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesAwardsRevokeV0_1Ext"];
+            /** @description Why, kept with the audit of the change for the badge's owners and administrators. The holder is told the award was taken back, never the reason. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/badges/awards/revoke/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/revoke/0.1#response. */
+        VtcBadgesAwardsRevokeV0_1Response: {
+            award: components["schemas"]["VtcBadgesAwardsRevokeV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesAwardsRevokeV0_1Ext"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. */
+        VtcBadgesAwardsWithdrawV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            state: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsWithdrawV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsWithdrawV0_1AwardNote: string;
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsWithdrawV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsWithdrawV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsWithdrawV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsWithdrawV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsWithdrawV0_1GroupCredentialId: string;
+        /** @description Withdraw an open offer of a badge before its recipient decides. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsWithdrawV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Ext"];
+            /** @description Why, recorded with the change for the badge's owners and administrators. Not shown to the recipient. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/badges/awards/withdraw/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/withdraw/0.1#response. */
+        VtcBadgesAwardsWithdrawV0_1Response: {
+            award: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesCreateV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesCreateV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesCreateV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesCreateV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesCreateV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesCreateV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesCreateV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesCreateV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesCreateV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesCreateV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesCreateV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesCreateV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesCreateV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesCreateV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesCreateV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesCreateV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
+        VtcBadgesCreateV0_1DynamicRule: {
+            all: components["schemas"]["VtcBadgesCreateV0_1RuleCondition"][];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesCreateV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesCreateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesCreateV0_1FieldKey: string;
+        /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
+        VtcBadgesCreateV0_1Group: {
+            badgeId?: components["schemas"]["VtcBadgesCreateV0_1BadgeId"];
+            /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
+            carriesAuthority: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesCreateV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When the community's authorization credential to the group expires. The community renews it well before.
+             */
+            credentialAuthorityValidUntil?: string;
+            description?: components["schemas"]["VtcBadgesCreateV0_1GroupDescription"];
+            ext?: components["schemas"]["VtcBadgesCreateV0_1Ext"];
+            /** @description The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description. */
+            groupDid: string;
+            groupId: components["schemas"]["VtcBadgesCreateV0_1GroupId"];
+            /** @description Whether the group's DID issues its members a membership credential. Default true. */
+            issuesCredentials: boolean;
+            joinPolicy?: components["schemas"]["VtcBadgesCreateV0_1JoinPolicy"];
+            kind: components["schemas"]["VtcBadgesCreateV0_1GroupKind"];
+            /** @description Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record. */
+            managers?: components["schemas"]["VtcBadgesCreateV0_1EntryId"][];
+            /** @description Active members. Only to callers who may see the member list. */
+            memberCount?: number;
+            name: components["schemas"]["VtcBadgesCreateV0_1GroupName"];
+            rule?: components["schemas"]["VtcBadgesCreateV0_1DynamicRule"];
+            showMembers: components["schemas"]["VtcBadgesCreateV0_1GroupAudience"];
+            /** Format: date-time */
+            updatedAt?: string;
+            visibility: components["schemas"]["VtcBadgesCreateV0_1GroupAudience"];
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`. */
+        VtcBadgesCreateV0_1GroupDescription: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesCreateV0_1GroupId: string;
+        /**
+         * @description `static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1GroupKind: "static" | "dynamic";
+        /** @description The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text. */
+        VtcBadgesCreateV0_1GroupName: string;
+        /**
+         * @description How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1JoinPolicy: "closed" | "request" | "open";
+        /** @description Define a badge: a community badge, which creates the badge group that backs it, or a kudos badge a member makes. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesCreateV0_1Payload: {
+            /** @description Community badges only. Present: the badge is automatic, backed by a dynamic badge group computed from `rule`; nobody gives it by hand and `requestable` is refused. */
+            automatic?: {
+                rule: components["schemas"]["VtcBadgesCreateV0_1DynamicRule"];
+            };
+            criteria?: components["schemas"]["VtcBadgesCreateV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesCreateV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesCreateV0_1Ext"];
+            holdersVisibleTo?: components["schemas"]["VtcBadgesCreateV0_1GroupAudience"];
+            /** @description The picture, as the signer uploaded it with vtc/badges/images/upload. */
+            image: {
+                /** @description The digest vtc/badges/images/upload answered to this signer. */
+                sha256: string;
+            };
+            kind: components["schemas"]["VtcBadgesCreateV0_1BadgeKind"];
+            /** @description Whether members who do not hold it see it in the badge list. Absent: true. */
+            listed?: boolean;
+            name: components["schemas"]["VtcBadgesCreateV0_1BadgeName"];
+            /** @description Community badges only. Members to appoint as the badge's owners — the badge group's managers — as vtc/groups/managers/add appoints them, bounded by the signer's own holding. */
+            owners?: components["schemas"]["VtcBadgesCreateV0_1EntryId"][];
+            /** @description Why, recorded with the change. */
+            reason: string;
+            /** @description Whether one member may hold the badge more than once. Absent: false for a community badge; a kudos badge is always repeatable and refuses `false`. */
+            repeatable?: boolean;
+            /** @description Community badges only. Whether members may ask for it (a request to join the badge group). Absent: false. */
+            requestable?: boolean;
+            /** @description Community badges only. Whether holders may show it outside the community, which fixes the credential's regime. Absent: false. */
+            shareableOutside?: boolean;
+        };
+        /** @description The success response to a vtc/badges/create/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/create/0.1#response. */
+        VtcBadgesCreateV0_1Response: {
+            badge: components["schemas"]["VtcBadgesCreateV0_1Badge"];
+            ext?: components["schemas"]["VtcBadgesCreateV0_1Ext"];
+            group?: components["schemas"]["VtcBadgesCreateV0_1Group"];
+        };
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        VtcBadgesCreateV0_1RuleCondition: {
+            /** @enum {string} */
+            fact: "role" | "field" | "personhood" | "joinedAt";
+            field?: components["schemas"]["VtcBadgesCreateV0_1FieldKey"];
+            /**
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @enum {string}
+             */
+            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            value?: string | boolean;
+            values?: string[];
+        };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesHoldersListV0_1BadgeId: string;
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesHoldersListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcBadgesHoldersListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcBadgesHoldersListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesHoldersListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesHoldersListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesHoldersListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcBadgesHoldersListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcBadgesHoldersListV0_1CardBlobRef"] | components["schemas"]["VtcBadgesHoldersListV0_1VerifiedValue"];
+        /** @description Who holds a badge, a page at a time, each holder projected as the directory projects them to the caller, with hidden holders left out and the count stated over those shown. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesHoldersListV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesHoldersListV0_1BadgeId"];
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the badge; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcBadgesHoldersListV0_1Ext"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+        };
+        /** @description The success response to a vtc/badges/holders/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/holders/list/0.1#response. */
+        VtcBadgesHoldersListV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesHoldersListV0_1Ext"];
+            /** @description Newest `latestAt` first. */
+            items: {
+                /** @description Accepted awards of this badge the holder holds (VTI-BDG-022). */
+                count: number;
+                entryId: components["schemas"]["VtcBadgesHoldersListV0_1EntryId"];
+                fields?: components["schemas"]["VtcBadgesHoldersListV0_1EntryFields"];
+                /**
+                 * Format: date-time
+                 * @description When the holder last accepted an award of this badge.
+                 */
+                latestAt: string;
+                /**
+                 * Format: date-time
+                 * @description When the holder first accepted this badge.
+                 */
+                since: string;
+            }[];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+            /** @description Holders who show the badge — the number the whole list would have, over every page. Hidden holders are not counted (VTI-BDG-030, VTI-BDG-033). */
+            total: number;
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcBadgesHoldersListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesImagesGetV0_1BadgeId: string;
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesImagesGetV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesImagesGetV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Read the bytes of a badge's picture, where the caller is an active member who may see the badge. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesImagesGetV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesImagesGetV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesImagesGetV0_1Ext"];
+            /** @description The picture the caller expects, from the `CardBlobRef` it was shown on the badge. Where the badge now holds another, the answer is `notFound`, so a reader never shows a picture under a badge it did not come from. */
+            sha256?: string;
+        };
+        /** @description The success response to a vtc/badges/images/get/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/images/get/0.1#response. */
+        VtcBadgesImagesGetV0_1Response: {
+            /** @description The stored bytes, base64url without padding. Their SHA-256 is `image.sha256`. */
+            data: string;
+            ext?: components["schemas"]["VtcBadgesImagesGetV0_1Ext"];
+            image: components["schemas"]["VtcBadgesImagesGetV0_1CardBlobRef"];
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesImagesUploadV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesImagesUploadV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /**
+         * @description The media types a directory image may have — those a `CardBlobRef` admits.
+         * @enum {string}
+         */
+        VtcBadgesImagesUploadV0_1ImageMediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+        /** @description A badge administrator, owner or member hands the community the picture for a badge. The community re-encodes it and answers the reference a badge holds. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesImagesUploadV0_1Payload: {
+            /** @description The image, base64url without padding (RFC 4648 §5). At most 262144 bytes decoded. */
+            data: string;
+            ext?: components["schemas"]["VtcBadgesImagesUploadV0_1Ext"];
+            mediaType: components["schemas"]["VtcBadgesImagesUploadV0_1ImageMediaType"];
+        };
+        /** @description The success response to a vtc/badges/images/upload/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/images/upload/0.1#response. */
+        VtcBadgesImagesUploadV0_1Response: {
+            /**
+             * Format: date-time
+             * @description When the community erases the image if no badge holds it by then.
+             */
+            expiresAt: string;
+            ext?: components["schemas"]["VtcBadgesImagesUploadV0_1Ext"];
+            image: components["schemas"]["VtcBadgesImagesUploadV0_1CardBlobRef"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. */
+        VtcBadgesKudosGiveV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesKudosGiveV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesKudosGiveV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesKudosGiveV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesKudosGiveV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesKudosGiveV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesKudosGiveV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesKudosGiveV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            state: components["schemas"]["VtcBadgesKudosGiveV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesKudosGiveV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesKudosGiveV0_1AwardNote: string;
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesKudosGiveV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesKudosGiveV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesKudosGiveV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesKudosGiveV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesKudosGiveV0_1GroupCredentialId: string;
+        /** @description Give a kudos badge to another member: records an award offered to them, with the giver and a note, within the community's limits. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesKudosGiveV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesKudosGiveV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesKudosGiveV0_1Ext"];
+            note?: components["schemas"]["VtcBadgesKudosGiveV0_1AwardNote"];
+            to: components["schemas"]["VtcBadgesKudosGiveV0_1EntryId"];
+        };
+        /** @description The success response to a vtc/badges/kudos/give/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/kudos/give/0.1#response. */
+        VtcBadgesKudosGiveV0_1Response: {
+            award: components["schemas"]["VtcBadgesKudosGiveV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesKudosGiveV0_1Ext"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. */
+        VtcBadgesKudosListV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesKudosListV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesKudosListV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesKudosListV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesKudosListV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesKudosListV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesKudosListV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesKudosListV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            state: components["schemas"]["VtcBadgesKudosListV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesKudosListV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesKudosListV0_1AwardNote: string;
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesKudosListV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesKudosListV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesKudosListV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesKudosListV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesKudosListV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesKudosListV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesKudosListV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesKudosListV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesKudosListV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesKudosListV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesKudosListV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesKudosListV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesKudosListV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesKudosListV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesKudosListV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesKudosListV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesKudosListV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesKudosListV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesKudosListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcBadgesKudosListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcBadgesKudosListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesKudosListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesKudosListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesKudosListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcBadgesKudosListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcBadgesKudosListV0_1CardBlobRef"] | components["schemas"]["VtcBadgesKudosListV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesKudosListV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesKudosListV0_1GroupId: string;
+        /** @description One giving of a kudos badge: the award, its badge, and the other party as the directory projects them to the caller — `counterpart` for a member's own list, `giver` and `recipient` for an administrator's `all`. */
+        VtcBadgesKudosListV0_1Item: {
+            award: components["schemas"]["VtcBadgesKudosListV0_1Award"];
+            badge: components["schemas"]["VtcBadgesKudosListV0_1Badge"];
+            counterpart?: components["schemas"]["VtcBadgesKudosListV0_1EntryFields"];
+            giver?: components["schemas"]["VtcBadgesKudosListV0_1EntryFields"];
+            recipient?: components["schemas"]["VtcBadgesKudosListV0_1EntryFields"];
+        };
+        /** @description List the kudos the signer received or gave, a page at a time, each with its badge and the other party as the directory projects them; or, for a badge administrator, every giving of one kudos badge. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesKudosListV0_1Payload: {
+            /**
+             * @description Every giving of `badgeId`, giver and recipient both, to a holder of `vtc.badges.admin` (VTI-BDG-042). Sent only as `true`, with `badgeId`.
+             * @enum {boolean}
+             */
+            all?: true;
+            badgeId?: components["schemas"]["VtcBadgesKudosListV0_1BadgeId"];
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the filters; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            /**
+             * @description `received`: awards to the signer, with the giver as `counterpart`. `given`: awards by the signer, with the recipient as `counterpart`. Absent: `received`. Ignored with `all`.
+             * @enum {string}
+             */
+            direction?: "received" | "given";
+            ext?: components["schemas"]["VtcBadgesKudosListV0_1Ext"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+            state?: components["schemas"]["VtcBadgesKudosListV0_1AwardState"];
+        };
+        /** @description The success response to a vtc/badges/kudos/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/kudos/list/0.1#response. */
+        VtcBadgesKudosListV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesKudosListV0_1Ext"];
+            /** @description Newest first by `offeredAt`. */
+            items: components["schemas"]["VtcBadgesKudosListV0_1Item"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcBadgesKudosListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesListV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesListV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesListV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesListV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesListV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesListV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesListV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesListV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesListV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesListV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesListV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesListV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesListV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesListV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesListV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesListV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesListV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesListV0_1GroupId: string;
+        /**
+         * @description Where the caller stands with a badge. `holder`: at least one accepted award. `offered`: an open offer names them. `requested`: an undecided request to join its badge group. `none`: nothing.
+         * @enum {string}
+         */
+        VtcBadgesListV0_1MyState: "holder" | "offered" | "requested" | "none";
+        /** @description List the badges the caller may see — every listed active badge and the ones they hold, own or are offered; every badge for an administrator — with how many of each they hold and where they stand with it. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesListV0_1Payload: {
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the filters; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcBadgesListV0_1Ext"];
+            /** @description Administrators only (`vtc.badges.admin`): also the retired badges. A holder's retired badges are in vtc/badges/mine/list. */
+            includeRetired?: boolean;
+            /** @description Administrators only (`vtc.badges.admin`): also the badges that are not `listed`. A member sees the unlisted badges they hold, own or are offered without it. */
+            includeUnlisted?: boolean;
+            kind?: components["schemas"]["VtcBadgesListV0_1BadgeKind"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+            /** @description Only badges the caller holds — at least one accepted award. */
+            mine?: boolean;
+        };
+        /** @description The success response to a vtc/badges/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/list/0.1#response. */
+        VtcBadgesListV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesListV0_1Ext"];
+            /** @description In order of `name`, then `badgeId`. */
+            items: {
+                badge: components["schemas"]["VtcBadgesListV0_1Badge"];
+                /** @description Accepted awards of this badge the caller holds; 0 where none. */
+                myCount: number;
+                myState: components["schemas"]["VtcBadgesListV0_1MyState"];
+            }[];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. */
+        VtcBadgesMineAcceptV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesMineAcceptV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesMineAcceptV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesMineAcceptV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesMineAcceptV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesMineAcceptV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesMineAcceptV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            state: components["schemas"]["VtcBadgesMineAcceptV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesMineAcceptV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesMineAcceptV0_1AwardNote: string;
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesMineAcceptV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineAcceptV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineAcceptV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineAcceptV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineAcceptV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineAcceptV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineAcceptV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineAcceptV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineAcceptV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineAcceptV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineAcceptV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineAcceptV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineAcceptV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineAcceptV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineAcceptV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineAcceptV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineAcceptV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineAcceptV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineAcceptV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineAcceptV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description A member accepts a badge offered to them. For a community badge the badge group's DID issues their badge credential first and the membership is recorded after; for a kudos badge the giving is counted. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineAcceptV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesMineAcceptV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesMineAcceptV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/accept/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/accept/0.1#response. */
+        VtcBadgesMineAcceptV0_1Response: {
+            award: components["schemas"]["VtcBadgesMineAcceptV0_1Award"];
+            badge: components["schemas"]["VtcBadgesMineAcceptV0_1MyBadge"];
+            ext?: components["schemas"]["VtcBadgesMineAcceptV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineArrangeV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineArrangeV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineArrangeV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineArrangeV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineArrangeV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineArrangeV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineArrangeV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineArrangeV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineArrangeV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineArrangeV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineArrangeV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineArrangeV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineArrangeV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineArrangeV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineArrangeV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineArrangeV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineArrangeV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineArrangeV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineArrangeV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description Arrange the signer's wall: the order of their badges, which of them are pinned beside their name, and who may see the wall. Each member absent from the request is unchanged. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineArrangeV0_1Payload: unknown | unknown | unknown;
+        /** @description The success response to a vtc/badges/mine/arrange/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/arrange/0.1#response. */
+        VtcBadgesMineArrangeV0_1Response: {
+            /** @description Every badge the signer holds, hidden ones included, in the new order, lowest `position` first, with the new `pinned` marks — as vtc/badges/mine/list answers them. */
+            badges: components["schemas"]["VtcBadgesMineArrangeV0_1MyBadge"][];
+            ext?: components["schemas"]["VtcBadgesMineArrangeV0_1Ext"];
+            visibility: components["schemas"]["VtcBadgesMineArrangeV0_1WallVisibility"];
+        };
+        /**
+         * @description Who sees a member's badges, the member's own setting (VTI-BDG-031). `members`: every active member the directory shows their card to. `nobody`: no one but the member. Never wider than the directory shows the card.
+         * @enum {string}
+         */
+        VtcBadgesMineArrangeV0_1WallVisibility: "members" | "nobody";
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. */
+        VtcBadgesMineDeclineV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesMineDeclineV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesMineDeclineV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesMineDeclineV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesMineDeclineV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesMineDeclineV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesMineDeclineV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesMineDeclineV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            state: components["schemas"]["VtcBadgesMineDeclineV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesMineDeclineV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesMineDeclineV0_1AwardNote: string;
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesMineDeclineV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineDeclineV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineDeclineV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineDeclineV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineDeclineV0_1GroupCredentialId: string;
+        /** @description Decline a badge offered to the signer: the offer is closed, nothing is recorded in any group and nothing is issued. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineDeclineV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesMineDeclineV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesMineDeclineV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/decline/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/decline/0.1#response. */
+        VtcBadgesMineDeclineV0_1Response: {
+            award: components["schemas"]["VtcBadgesMineDeclineV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesMineDeclineV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineHideV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineHideV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineHideV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineHideV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineHideV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineHideV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineHideV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineHideV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineHideV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineHideV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineHideV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineHideV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineHideV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineHideV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineHideV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineHideV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineHideV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineHideV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineHideV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineHideV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineHideV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineHideV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineHideV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineHideV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineHideV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description Hide a badge the signer holds: off their wall, out of the badge's holder list and its count, out of their kudos total, while every award, the badge-group membership and the credential stand unchanged. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineHideV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesMineHideV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesMineHideV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/hide/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/hide/0.1#response. */
+        VtcBadgesMineHideV0_1Response: {
+            badge: components["schemas"]["VtcBadgesMineHideV0_1MyBadge"];
+            ext?: components["schemas"]["VtcBadgesMineHideV0_1Ext"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. */
+        VtcBadgesMineListV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesMineListV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesMineListV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesMineListV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesMineListV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesMineListV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesMineListV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesMineListV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            state: components["schemas"]["VtcBadgesMineListV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesMineListV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesMineListV0_1AwardNote: string;
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesMineListV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineListV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineListV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineListV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineListV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineListV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineListV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineListV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineListV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineListV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineListV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineListV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineListV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineListV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineListV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineListV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineListV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineListV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcBadgesMineListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcBadgesMineListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesMineListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcBadgesMineListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcBadgesMineListV0_1CardBlobRef"] | components["schemas"]["VtcBadgesMineListV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineListV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineListV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineListV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineListV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineListV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description An award waiting for the signer's decision, with the badge it offers and its giver as the directory projects them to the signer. */
+        VtcBadgesMineListV0_1Offer: {
+            award: components["schemas"]["VtcBadgesMineListV0_1Award"];
+            badge: components["schemas"]["VtcBadgesMineListV0_1Badge"];
+            givenBy?: components["schemas"]["VtcBadgesMineListV0_1EntryFields"];
+        };
+        /** @description A member's own badges: every badge they hold, hidden ones included, in their own order, with the offers waiting for their decision, their wall visibility and their kudos total. The signer is the subject; the payload names nothing. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineListV0_1Payload: {
+            ext?: components["schemas"]["VtcBadgesMineListV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/list/0.1#response. */
+        VtcBadgesMineListV0_1Response: {
+            /** @description Every badge the signer holds, hidden ones included (`hidden: true`), in the signer's own order, lowest `position` first. */
+            badges: components["schemas"]["VtcBadgesMineListV0_1MyBadge"][];
+            ext?: components["schemas"]["VtcBadgesMineListV0_1Ext"];
+            /** @description Kudos awards the signer accepted and did not hide. Present only where the community's badge settings show kudos totals (VTI-BDG-043). */
+            kudosTotal?: number;
+            /** @description Every award in state `offered` to the signer, newest first. */
+            offers: components["schemas"]["VtcBadgesMineListV0_1Offer"][];
+            visibility: components["schemas"]["VtcBadgesMineListV0_1WallVisibility"];
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcBadgesMineListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /**
+         * @description Who sees a member's badges, the member's own setting (VTI-BDG-031). `members`: every active member the directory shows their card to. `nobody`: no one but the member. Never wider than the directory shows the card.
+         * @enum {string}
+         */
+        VtcBadgesMineListV0_1WallVisibility: "members" | "nobody";
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineShowV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineShowV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineShowV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineShowV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineShowV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineShowV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineShowV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineShowV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineShowV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineShowV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineShowV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineShowV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineShowV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineShowV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineShowV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineShowV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineShowV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineShowV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineShowV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineShowV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineShowV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineShowV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineShowV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineShowV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description Show a badge the signer had hidden: back on their wall, back in the badge's holder list and its count, back in their kudos total. The reverse of vtc/badges/mine/hide. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineShowV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesMineShowV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesMineShowV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/show/0.1#response. */
+        VtcBadgesMineShowV0_1Response: {
+            badge: components["schemas"]["VtcBadgesMineShowV0_1MyBadge"];
+            ext?: components["schemas"]["VtcBadgesMineShowV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesPromoteV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesPromoteV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesPromoteV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesPromoteV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesPromoteV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesPromoteV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesPromoteV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesPromoteV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesPromoteV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesPromoteV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesPromoteV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesPromoteV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesPromoteV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesPromoteV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesPromoteV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesPromoteV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
+        VtcBadgesPromoteV0_1DynamicRule: {
+            all: components["schemas"]["VtcBadgesPromoteV0_1RuleCondition"][];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesPromoteV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesPromoteV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesPromoteV0_1FieldKey: string;
+        /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
+        VtcBadgesPromoteV0_1Group: {
+            badgeId?: components["schemas"]["VtcBadgesPromoteV0_1BadgeId"];
+            /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
+            carriesAuthority: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesPromoteV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When the community's authorization credential to the group expires. The community renews it well before.
+             */
+            credentialAuthorityValidUntil?: string;
+            description?: components["schemas"]["VtcBadgesPromoteV0_1GroupDescription"];
+            ext?: components["schemas"]["VtcBadgesPromoteV0_1Ext"];
+            /** @description The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description. */
+            groupDid: string;
+            groupId: components["schemas"]["VtcBadgesPromoteV0_1GroupId"];
+            /** @description Whether the group's DID issues its members a membership credential. Default true. */
+            issuesCredentials: boolean;
+            joinPolicy?: components["schemas"]["VtcBadgesPromoteV0_1JoinPolicy"];
+            kind: components["schemas"]["VtcBadgesPromoteV0_1GroupKind"];
+            /** @description Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record. */
+            managers?: components["schemas"]["VtcBadgesPromoteV0_1EntryId"][];
+            /** @description Active members. Only to callers who may see the member list. */
+            memberCount?: number;
+            name: components["schemas"]["VtcBadgesPromoteV0_1GroupName"];
+            rule?: components["schemas"]["VtcBadgesPromoteV0_1DynamicRule"];
+            showMembers: components["schemas"]["VtcBadgesPromoteV0_1GroupAudience"];
+            /** Format: date-time */
+            updatedAt?: string;
+            visibility: components["schemas"]["VtcBadgesPromoteV0_1GroupAudience"];
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`. */
+        VtcBadgesPromoteV0_1GroupDescription: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesPromoteV0_1GroupId: string;
+        /**
+         * @description `static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1GroupKind: "static" | "dynamic";
+        /** @description The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text. */
+        VtcBadgesPromoteV0_1GroupName: string;
+        /**
+         * @description How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1JoinPolicy: "closed" | "request" | "open";
+        /** @description Turn a kudos badge into a community badge: its badge group is created and its owners named, and every current holder is offered the badge so that each accepts before anything is issued or recorded. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesPromoteV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesPromoteV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesPromoteV0_1Ext"];
+            holdersVisibleTo?: components["schemas"]["VtcBadgesPromoteV0_1GroupAudience"];
+            /** @description Members to appoint as the badge's owners — the badge group's managers — as vtc/groups/managers/add appoints them, bounded by the signer's own holding. The badge's maker is an owner only if named here. */
+            owners?: components["schemas"]["VtcBadgesPromoteV0_1EntryId"][];
+            /** @description Why, recorded with the change. */
+            reason: string;
+            /** @description Whether members may ask for it (a request to join the badge group). Absent: false. */
+            requestable?: boolean;
+            /** @description Whether holders may show it outside the community, which fixes the credential's regime for the badge's life. Absent: false. */
+            shareableOutside?: boolean;
+        };
+        /** @description The success response to a vtc/badges/promote/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/promote/0.1#response. */
+        VtcBadgesPromoteV0_1Response: {
+            badge: components["schemas"]["VtcBadgesPromoteV0_1Badge"];
+            ext?: components["schemas"]["VtcBadgesPromoteV0_1Ext"];
+            group: components["schemas"]["VtcBadgesPromoteV0_1Group"];
+            /** @description How many current holders were offered the badge — one offer each, who they are never said here. */
+            holdersOffered?: number;
+        };
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        VtcBadgesPromoteV0_1RuleCondition: {
+            /** @enum {string} */
+            fact: "role" | "field" | "personhood" | "joinedAt";
+            field?: components["schemas"]["VtcBadgesPromoteV0_1FieldKey"];
+            /**
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @enum {string}
+             */
+            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            value?: string | boolean;
+            values?: string[];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesRetireV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesRetireV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesRetireV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesRetireV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesRetireV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesRetireV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesRetireV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesRetireV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesRetireV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesRetireV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesRetireV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesRetireV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesRetireV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesRetireV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesRetireV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesRetireV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesRetireV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesRetireV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesRetireV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesRetireV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesRetireV0_1GroupId: string;
+        /** @description Retire a badge: it is given to nobody again, its open offers are withdrawn, and for a community badge its status-bearing credentials are revoked and its badge group deleted; every award is kept for its holders' own history. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesRetireV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesRetireV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesRetireV0_1Ext"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/badges/retire/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/retire/0.1#response. */
+        VtcBadgesRetireV0_1Response: {
+            badge: components["schemas"]["VtcBadgesRetireV0_1Badge"];
+            ext?: components["schemas"]["VtcBadgesRetireV0_1Ext"];
+        };
+        /** @description The community's bounds (VTI-BDG-032, VTI-BDG-040). Each has a default a community that states none applies. */
+        VtcBadgesSettingsShowV0_1BadgeLimits: {
+            /** @description Kudos badges one member may make in a calendar month. Default 5. */
+            kudosBadgesPerMakerPerMonth?: number;
+            /** @description Kudos one member may give in a day. Default 10. */
+            kudosPerGiverPerDay?: number;
+            /** @description Badges a member may pin beside their name. Default 2. */
+            maxPinned?: number;
+            /** @description Days of membership before a member may give kudos or make a kudos badge. Default 7. */
+            minTenureDays?: number;
+            /** @description Days an unanswered offer stands before it expires. Absent: offers do not expire. */
+            offerExpiresAfterDays?: number;
+            /**
+             * @description How often the same member may give a kudos badge to the same member: at most once a day, once a week, or without bound. Default `day`.
+             * @enum {string}
+             */
+            sameGiverSameMember?: "day" | "week" | "unbounded";
+        };
+        /** @description The community's badge settings (VTI-BDG-004). `enabled` false hides every badge surface and keeps every record; nothing is given or issued while it is false. */
+        VtcBadgesSettingsShowV0_1BadgeSettings: {
+            /** @description Whether dynamic badge groups are computed (VTI-BDG-013). False: a community badge may not be created on a dynamic group, and existing ones are not recomputed. */
+            automaticBadges: boolean;
+            /** @description Validity of a badge credential its holders may show outside (VTI-BDG-062). Default 730. */
+            credentialValidDays?: number;
+            enabled: boolean;
+            ext?: components["schemas"]["VtcBadgesSettingsShowV0_1Ext"];
+            kudosMakers: components["schemas"]["VtcBadgesSettingsShowV0_1KudosMakers"];
+            limits?: components["schemas"]["VtcBadgesSettingsShowV0_1BadgeLimits"];
+            /** @description Whether any community badge may be marked `requestable`. False: every badge group is closed. */
+            membersMayRequest: boolean;
+            /** @description Whether a member's kudos total is shown on their card (VTI-BDG-043). */
+            showKudosTotals: boolean;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesSettingsShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesSettingsShowV0_1GroupId: string;
+        /** @description Who may make a kudos badge (VTI-BDG-004). `nobody`: no kudos badges. `roles`: holders of any of `roles`, or members of any of `groups`. `members`: every active member. */
+        VtcBadgesSettingsShowV0_1KudosMakers: {
+            /** @description Read exactly when `policy` is `roles`. */
+            groups?: components["schemas"]["VtcBadgesSettingsShowV0_1GroupId"][];
+            /** @enum {string} */
+            policy: "nobody" | "roles" | "members";
+            /** @description Community role names. Read exactly when `policy` is `roles`. */
+            roles?: string[];
+        };
+        /** @description Read the community's badge settings. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesSettingsShowV0_1Payload: {
+            ext?: components["schemas"]["VtcBadgesSettingsShowV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/settings/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/settings/show/0.1#response. */
+        VtcBadgesSettingsShowV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesSettingsShowV0_1Ext"];
+            settings: components["schemas"]["VtcBadgesSettingsShowV0_1BadgeSettings"];
+        };
+        /** @description The community's bounds (VTI-BDG-032, VTI-BDG-040). Each has a default a community that states none applies. */
+        VtcBadgesSettingsUpdateV0_1BadgeLimits: {
+            /** @description Kudos badges one member may make in a calendar month. Default 5. */
+            kudosBadgesPerMakerPerMonth?: number;
+            /** @description Kudos one member may give in a day. Default 10. */
+            kudosPerGiverPerDay?: number;
+            /** @description Badges a member may pin beside their name. Default 2. */
+            maxPinned?: number;
+            /** @description Days of membership before a member may give kudos or make a kudos badge. Default 7. */
+            minTenureDays?: number;
+            /** @description Days an unanswered offer stands before it expires. Absent: offers do not expire. */
+            offerExpiresAfterDays?: number;
+            /**
+             * @description How often the same member may give a kudos badge to the same member: at most once a day, once a week, or without bound. Default `day`.
+             * @enum {string}
+             */
+            sameGiverSameMember?: "day" | "week" | "unbounded";
+        };
+        /** @description The community's badge settings (VTI-BDG-004). `enabled` false hides every badge surface and keeps every record; nothing is given or issued while it is false. */
+        VtcBadgesSettingsUpdateV0_1BadgeSettings: {
+            /** @description Whether dynamic badge groups are computed (VTI-BDG-013). False: a community badge may not be created on a dynamic group, and existing ones are not recomputed. */
+            automaticBadges: boolean;
+            /** @description Validity of a badge credential its holders may show outside (VTI-BDG-062). Default 730. */
+            credentialValidDays?: number;
+            enabled: boolean;
+            ext?: components["schemas"]["VtcBadgesSettingsUpdateV0_1Ext"];
+            kudosMakers: components["schemas"]["VtcBadgesSettingsUpdateV0_1KudosMakers"];
+            limits?: components["schemas"]["VtcBadgesSettingsUpdateV0_1BadgeLimits"];
+            /** @description Whether any community badge may be marked `requestable`. False: every badge group is closed. */
+            membersMayRequest: boolean;
+            /** @description Whether a member's kudos total is shown on their card (VTI-BDG-043). */
+            showKudosTotals: boolean;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesSettingsUpdateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesSettingsUpdateV0_1GroupId: string;
+        /** @description Who may make a kudos badge (VTI-BDG-004). `nobody`: no kudos badges. `roles`: holders of any of `roles`, or members of any of `groups`. `members`: every active member. */
+        VtcBadgesSettingsUpdateV0_1KudosMakers: {
+            /** @description Read exactly when `policy` is `roles`. */
+            groups?: components["schemas"]["VtcBadgesSettingsUpdateV0_1GroupId"][];
+            /** @enum {string} */
+            policy: "nobody" | "roles" | "members";
+            /** @description Community role names. Read exactly when `policy` is `roles`. */
+            roles?: string[];
+        };
+        /** @description An administrator replaces the community's badge settings. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesSettingsUpdateV0_1Payload: {
+            ext?: components["schemas"]["VtcBadgesSettingsUpdateV0_1Ext"];
+            /** @description Why, recorded with the change. */
+            reason: string;
+            /** @description The settings to put in force, whole: BadgeSettings without `updatedAt`, which the community sets. An absent optional member takes the shared schema's default. */
+            settings: components["schemas"]["VtcBadgesSettingsUpdateV0_1BadgeSettings"] & {
+                updatedAt?: unknown;
+            };
+        };
+        /** @description The success response to a vtc/badges/settings/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/settings/update/0.1#response. */
+        VtcBadgesSettingsUpdateV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesSettingsUpdateV0_1Ext"];
+            settings: components["schemas"]["VtcBadgesSettingsUpdateV0_1BadgeSettings"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesShowV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesShowV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesShowV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesShowV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesShowV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesShowV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesShowV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesShowV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesShowV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesShowV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesShowV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesShowV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesShowV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesShowV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesShowV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesShowV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesShowV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesShowV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /**
+         * @description What a holder of the badge is issued, derived from its kind and `shareableOutside`. `none`: a kudos badge, no credential (VTI-BDG-041). `inside`: a community badge shown only within the community — short-lived, renewed, no status (VTI-BDG-061). `outside`: a community badge its holders may show outside — long-lived, with a status in the community's own status set (VTI-BDG-062).
+         * @enum {string}
+         */
+        VtcBadgesShowV0_1CredentialRegime: "none" | "inside" | "outside";
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesShowV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesShowV0_1GroupId: string;
+        /**
+         * @description Where the caller stands with the badge, as vtc/badges/list states it. `holder`: at least one accepted award. `offered`: an open offer names them. `requested`: an undecided request to join its badge group. `none`: nothing.
+         * @enum {string}
+         */
+        VtcBadgesShowV0_1MyState: "holder" | "offered" | "requested" | "none";
+        /** @description Read one badge the caller may see: the badge, how many of it the caller holds and where they stand with it, its owners or its maker, and the credential regime it carries. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesShowV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesShowV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesShowV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/show/0.1#response. */
+        VtcBadgesShowV0_1Response: {
+            badge: components["schemas"]["VtcBadgesShowV0_1Badge"];
+            credentialRegime: components["schemas"]["VtcBadgesShowV0_1CredentialRegime"];
+            ext?: components["schemas"]["VtcBadgesShowV0_1Ext"];
+            maker?: components["schemas"]["VtcBadgesShowV0_1EntryId"];
+            /** @description Accepted awards of this badge the caller holds; 0 where none. */
+            myCount: number;
+            myState: components["schemas"]["VtcBadgesShowV0_1MyState"];
+            /** @description Community badges only: the badge group's managers, whom a request for the badge goes to. Shown to every caller who may see the badge. */
+            owners?: components["schemas"]["VtcBadgesShowV0_1EntryId"][];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesUpdateV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesUpdateV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesUpdateV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesUpdateV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesUpdateV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesUpdateV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesUpdateV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesUpdateV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesUpdateV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesUpdateV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesUpdateV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesUpdateV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesUpdateV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesUpdateV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesUpdateV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesUpdateV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesUpdateV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesUpdateV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesUpdateV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesUpdateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcBadgesUpdateV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesUpdateV0_1GroupId: string;
+        /** @description Change a badge's name, description, criteria, picture, listing and, for a community badge, whether members may ask for it and who sees its holders. Its kind and credential regime are fixed at creation. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesUpdateV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesUpdateV0_1BadgeId"];
+            /** @description `null` clears it. */
+            criteria?: components["schemas"]["VtcBadgesUpdateV0_1BadgeCriteria"] | unknown;
+            description?: components["schemas"]["VtcBadgesUpdateV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesUpdateV0_1Ext"];
+            holdersVisibleTo?: components["schemas"]["VtcBadgesUpdateV0_1GroupAudience"];
+            /** @description A new picture, as the signer uploaded it with vtc/badges/images/upload. Re-issues no credential: the credential names its Achievement by a stable identifier. */
+            image?: {
+                /** @description The digest vtc/badges/images/upload answered to this signer. */
+                sha256: string;
+            };
+            /** @description Whether members who do not hold it see it in the badge list. */
+            listed?: boolean;
+            name?: components["schemas"]["VtcBadgesUpdateV0_1BadgeName"];
+            /** @description Why, recorded with the change. */
+            reason: string;
+            /** @description Community badges only. Whether members may ask for it: true sets the badge group's `joinPolicy` to `request`, false to `closed`. Refused while the community's `membersMayRequest` is off, and on an automatic badge. */
+            requestable?: boolean;
+        };
+        /** @description The success response to a vtc/badges/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/update/0.1#response. */
+        VtcBadgesUpdateV0_1Response: {
+            badge: components["schemas"]["VtcBadgesUpdateV0_1Badge"];
+            ext?: components["schemas"]["VtcBadgesUpdateV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesWallShowV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesWallShowV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesWallShowV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesWallShowV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesWallShowV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesWallShowV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesWallShowV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesWallShowV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesWallShowV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesWallShowV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesWallShowV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesWallShowV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesWallShowV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesWallShowV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesWallShowV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesWallShowV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesWallShowV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesWallShowV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesWallShowV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesWallShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesWallShowV0_1GroupId: string;
+        /** @description A member's badge wall as a viewer sees it, answered only where the directory shows the viewer that member's card and the member shows their badges. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesWallShowV0_1Payload: {
+            entryId: components["schemas"]["VtcBadgesWallShowV0_1EntryId"];
+            ext?: components["schemas"]["VtcBadgesWallShowV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/wall/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/wall/show/0.1#response. */
+        VtcBadgesWallShowV0_1Response: {
+            /** @description The badges the member holds and shows: pinned first, then in the member's own order (VTI-BDG-032). Hidden badges are never here (VTI-BDG-030). */
+            entries: components["schemas"]["VtcBadgesWallShowV0_1WallEntry"][];
+            ext?: components["schemas"]["VtcBadgesWallShowV0_1Ext"];
+            /** @description The member's kudos total: accepted, not hidden kudos awards (VTI-BDG-043). Present exactly when the community's badge settings have `showKudosTotals` true; absent otherwise, never zero in its place. */
+            kudosTotal?: number;
+            visibility: components["schemas"]["VtcBadgesWallShowV0_1WallVisibility"];
+        };
+        /** @description One badge on a member's wall as a viewer sees it: the badge, how many times the member holds it, since when, and whether the member pinned it. Hidden badges are never wall entries (VTI-BDG-030). */
+        VtcBadgesWallShowV0_1WallEntry: {
+            badge: components["schemas"]["VtcBadgesWallShowV0_1Badge"];
+            /** @description Accepted awards of this badge the member holds. */
+            count: number;
+            /**
+             * Format: date-time
+             * @description When the member last accepted an award of this badge.
+             */
+            latestAt?: string;
+            pinned: boolean;
+            /**
+             * Format: date-time
+             * @description When the member first accepted this badge.
+             */
+            since: string;
+        };
+        /**
+         * @description Who sees a member's badges, the member's own setting (VTI-BDG-031). `members`: every active member the directory shows their card to. `nobody`: no one but the member. Never wider than the directory shows the card.
+         * @enum {string}
+         */
+        VtcBadgesWallShowV0_1WallVisibility: "members" | "nobody";
         /** @description A board as one caller may see it. */
         VtcBoardsCreateV0_1Board: {
             audience: components["schemas"]["VtcBoardsCreateV0_1BoardAudience"];

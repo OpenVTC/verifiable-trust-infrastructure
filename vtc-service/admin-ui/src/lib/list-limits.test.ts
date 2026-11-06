@@ -58,6 +58,10 @@ const DIRECTORY_ENTRIES = `${T}/vtc/directory/entries/list/0.2`;
 const DIRECTORY_EXPORT = `${T}/vtc/directory/export/0.2`;
 const GROUPS_LIST = `${T}/vtc/groups/list/0.2`;
 const BOARDS_LIST = `${T}/vtc/boards/list/0.1`;
+const BADGES_LIST = `${T}/vtc/badges/list/0.1`;
+const BADGES_AWARDS = `${T}/vtc/badges/awards/list/0.1`;
+const BADGES_HOLDERS = `${T}/vtc/badges/holders/list/0.1`;
+const BADGES_KUDOS = `${T}/vtc/badges/kudos/list/0.1`;
 const NETWORKS_LIST = `${T}/vtc/networks/list/0.2`;
 const BOARDS_SHOW = `${T}/vtc/boards/show/0.1`;
 const BOARDS_NOTES = `${T}/vtc/boards/notes/list/0.1`;
@@ -114,6 +118,18 @@ const SITES: Site[] = [
   // The member portal's groups: one page of a hundred groups, and of a group's members.
   { file: "members/groups-api.ts", site: "(GROUPS_LIST_TASK, { limit: 100 })", uri: GROUPS_LIST, from: ["100"] },
   { file: "members/groups-api.ts", site: "{ groupId, limit: 100 }", uri: GROUPS_MEMBERS, from: ["100"] },
+  // The console's badges: every badge, a badge's awards, holders and kudos givings, to the end.
+  { file: "lib/badges.ts", site: "includeUnlisted: true,\n      limit: PAGE", uri: BADGES_LIST, from: ["PAGE"] },
+  { file: "lib/badges.ts", site: "...(state ? { state } : {}),\n      limit: PAGE", uri: BADGES_AWARDS, from: ["PAGE"] },
+  { file: "lib/badges.ts", site: "(HOLDERS_LIST, {\n      badgeId,\n      limit: PAGE", uri: BADGES_HOLDERS, from: ["PAGE"] },
+  { file: "lib/badges.ts", site: "all: true,\n      limit: PAGE", uri: BADGES_KUDOS, from: ["PAGE"] },
+  // The member portal's badges: one page of badges, of a badge's holders, and of the member's kudos.
+  { file: "members/badges-api.ts", site: "(BADGES_LIST_TASK, { limit: 200", uri: BADGES_LIST, from: ["200"] },
+  { file: "members/badges-api.ts", site: "{ badgeId, limit: 200 }", uri: BADGES_HOLDERS, from: ["200"] },
+  { file: "members/badges-api.ts", site: "{ direction, limit: 200 }", uri: BADGES_KUDOS, from: ["200"] },
+  // The badge pages name members through one page of directory entries.
+  { file: "members/Badges.tsx", site: "listEntries({ limit: 100 })", uri: DIRECTORY_ENTRIES, uriFile: "members/directory-api.ts", from: ["100"] },
+  { file: "members/Badges.tsx", site: "listEntries({ limit: 100, ...(query", uri: DIRECTORY_ENTRIES, uriFile: "members/directory-api.ts", from: ["100"] },
   // The Members list's directory faces: the largest page, followed to the end.
   { file: "lib/directory.ts", site: "limit: ENTRIES_PAGE", uri: DIRECTORY_ENTRIES, from: ["ENTRIES_PAGE"] },
   // The member portal's directory: one page of fifty.

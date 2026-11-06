@@ -35,6 +35,7 @@ import {
   updateCard,
   uploadImage,
 } from "./directory-api";
+import { WallSection } from "./Badges";
 import { PictureError, prepare, toBase64Url } from "./picture";
 import {
   Crumbs,
@@ -480,6 +481,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
               </ul>
             </section>
           )}
+          <WallSection entryId={entryId} name={name} own={own} />
           {(rest.length > 0 || text(f.did)) && (
             <section className="profile-section">
               <h2>Details</h2>

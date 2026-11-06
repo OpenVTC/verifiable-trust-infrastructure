@@ -413,6 +413,13 @@ describe("portal routes", () => {
     expect(routeOf("#/directory")).toEqual({ page: "directory" });
     expect(routeOf("#/card")).toEqual({ page: "card" });
     expect(routeOf("#/groups")).toEqual({ page: "groups" });
+    expect(routeOf("#/badges")).toEqual({ page: "badges" });
+    expect(routeOf("#/badges/new")).toEqual({ page: "make-badge" });
+    expect(routeOf("#/badges/bdg_W5k2N8xRb3Qz7TpLAAAAAA")).toEqual({
+      page: "badge",
+      badgeId: "bdg_W5k2N8xRb3Qz7TpLAAAAAA",
+    });
+    expect(routeOf("#/badges/not-a-badge")).toEqual({ page: "home" });
     expect(routeOf("#/repos")).toEqual({ page: "repos" });
     expect(routeOf("#/repos/github.com")).toEqual({ page: "home" });
     expect(routeOf("#/elections")).toEqual({ page: "elections" });
