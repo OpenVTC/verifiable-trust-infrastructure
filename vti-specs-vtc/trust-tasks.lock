@@ -93,6 +93,150 @@ type_uri = "https://trusttasks.org/spec/vtc/backup/import/0.1"
 digest = "sha256:0802d5681f03edace3e5754836cedca9ae6c1216e868fe1823cbdbf0c4dcc56e"
 
 [[task]]
+slug = "vtc/badges/awards/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/awards/list/0.1"
+digest = "sha256:f1a11c2042ea4cacdf82fcfaefea31dc7f31e892262ee186304910f1bdc63e63"
+
+[[task]]
+slug = "vtc/badges/awards/offer"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/awards/offer/0.1"
+digest = "sha256:f4d855a99b67c6f795ae37d582661721ca72ebf7e6e8e84881b086c2d9789b03"
+
+[[task]]
+slug = "vtc/badges/awards/revoke"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/awards/revoke/0.1"
+digest = "sha256:72398c8ae9b00723cc93799de6d83d8d960543b40ba449f4acc9c701d9528b99"
+
+[[task]]
+slug = "vtc/badges/awards/withdraw"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/awards/withdraw/0.1"
+digest = "sha256:5fb15fefddf4cfcbadb6f80d331f1c57826a36aa4f5764c30ac7426b6cadc981"
+
+[[task]]
+slug = "vtc/badges/create"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/create/0.1"
+digest = "sha256:cbdc10709d63a8c59b98b37ab8283231b674fb50d7c857c31e4251f15bf81f23"
+
+[[task]]
+slug = "vtc/badges/holders/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/holders/list/0.1"
+digest = "sha256:e106b163fff4fed40cbfedbef6fd17a9cb90a90dab94371768bcc198c1e5df57"
+
+[[task]]
+slug = "vtc/badges/images/get"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/images/get/0.1"
+digest = "sha256:1ef19a92ffe5b5a03b12f944274aa78f7139a6381f21f5a1f53eb01ceb66f86e"
+
+[[task]]
+slug = "vtc/badges/images/upload"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/images/upload/0.1"
+digest = "sha256:bd49b85d9e286465a5c5d90e7043ee5a8ccad3aeddd5329aa5cbd6ef12fdc27a"
+
+[[task]]
+slug = "vtc/badges/kudos/give"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/kudos/give/0.1"
+digest = "sha256:396631b5426d6edad755003977f06b9ef1e7535edae989984ce0e9a2335d8743"
+
+[[task]]
+slug = "vtc/badges/kudos/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/kudos/list/0.1"
+digest = "sha256:7f51c8eb48c7f24c6160714202bfcba0cb4adc073352cbf2c4b538e034666067"
+
+[[task]]
+slug = "vtc/badges/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/list/0.1"
+digest = "sha256:58eb1776246072c02bed6510f9dbc02094f2fa74a62f4324ea49f4b5d36a9187"
+
+[[task]]
+slug = "vtc/badges/mine/accept"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/mine/accept/0.1"
+digest = "sha256:4523edbd255b09580dfd51516f4d505afd44bd0bfbc21137226c855381358500"
+
+[[task]]
+slug = "vtc/badges/mine/arrange"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/mine/arrange/0.1"
+digest = "sha256:abae95b54f92d4e634ea6519569c427586e814bc813893254762a2edd2a6a468"
+
+[[task]]
+slug = "vtc/badges/mine/decline"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/mine/decline/0.1"
+digest = "sha256:c51c3c4a77fce814132bf538bb9c5d4eda023ed6fb45072c7d2285fb0008ca49"
+
+[[task]]
+slug = "vtc/badges/mine/hide"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/mine/hide/0.1"
+digest = "sha256:21683a1b056fa52be77647c6f8f58457f8483b6673a1ec4e77a3bd718873089c"
+
+[[task]]
+slug = "vtc/badges/mine/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/mine/list/0.1"
+digest = "sha256:54ee6562f47ae64ec7d8fa15c21fddbc628d597381ff6764b94a7ad0b9e1b12e"
+
+[[task]]
+slug = "vtc/badges/mine/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/mine/show/0.1"
+digest = "sha256:6dfd6279773a6c18c23dd9466faa5d1a653ff2bd32862b26bf8f890ac06c78ec"
+
+[[task]]
+slug = "vtc/badges/promote"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/promote/0.1"
+digest = "sha256:195e92211b7e5eff7a8dd7d16e145818df30b3a63efbbc3c2df340022be7253c"
+
+[[task]]
+slug = "vtc/badges/retire"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/retire/0.1"
+digest = "sha256:4252a9f73763d94f1cda15507d762b7e639bd3396fe9d26acc10b16092888407"
+
+[[task]]
+slug = "vtc/badges/settings/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/settings/show/0.1"
+digest = "sha256:09e7a777345f424ed41c0411e7da2bfb53054b45e06ef6baf68458ebb4fbe0a2"
+
+[[task]]
+slug = "vtc/badges/settings/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/settings/update/0.1"
+digest = "sha256:2af4176a429f11085f6b70e5781028208ab44bcfbd0aed2857a968b59b470267"
+
+[[task]]
+slug = "vtc/badges/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/show/0.1"
+digest = "sha256:570c77589253f584220eadd5ee81c5fbad4923db2151832de16491793b261996"
+
+[[task]]
+slug = "vtc/badges/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/update/0.1"
+digest = "sha256:9e45c50f957ea4b3bb2c8ec214912d5b4964c9372b98b718f2e67844909399f5"
+
+[[task]]
+slug = "vtc/badges/wall/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/badges/wall/show/0.1"
+digest = "sha256:1429244cff3b105b849f47ff45cf8ab137d20bd97eae146951e94618d0c03f29"
+
+[[task]]
 slug = "vtc/boards/create"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/boards/create/0.1"
