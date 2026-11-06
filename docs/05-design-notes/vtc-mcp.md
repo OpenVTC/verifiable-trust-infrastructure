@@ -74,8 +74,8 @@ vetting, endorsements, relationships and backup.
 
 Two gaps matter here:
 
-- **No generic sender.** The signed-document post is private
-  (`VtcClient::post_document`); only elections and rooms expose a raw
+- **No generic sender** (closed by phase 1, D2). The signed-document post was
+  private (`VtcClient::post_document`); only elections and rooms exposed a raw
   `send_signed_document`. A bridge that can send *any* task needs a public,
   holder-agnostic `send_task(type_uri, payload)` that goes over the session
   when there is one and otherwise signs with the configured key.
@@ -203,17 +203,25 @@ Rules for `vtc_call`:
 - **No retry in the bridge.** Over a session `VtaClient::idempotent` owns
   completion; over HTTPS the client's post is one attempt. The bridge is
   application code and holds no retry loop
-  (`docs/05-design-notes/retry-and-idempotency.md`). Classification of the
-  VTC families — which tasks are blind-retry-safe, which need a key — is the
-  SDK's job: `vta_sdk::retry_safety` has no `vtc/*` row today, and phase 1
-  adds them with a census test like the VTA's.
+  (`docs/05-design-notes/retry-and-idempotency.md`). No classification
+  table is needed on the VTC side, and `vta_sdk::retry_safety` is not the
+  place for one: that table is the VTA's dispatch-side dedup policy over the
+  tasks the VTA serves. The VTC's receive pipeline claims every document's
+  `id` before dispatching it and answers a redelivery with the recorded
+  response, uniformly for every task, so what keeps a retry safe is the
+  **same document** being resent — which is what the SDK's session retry
+  does — never a per-task verdict.
 
-Prerequisite in `vtc-client`: a public `send_task(&self, type_uri, payload)
--> Result<Value, VtcError>` that is the one sender both the typed methods and
-the bridge use — over the mediated session (TSP leg when enabled, else
-DIDComm) and only otherwise signed with the configured `HolderKey` and
-posted — plus a `discover()` for `trust-task-discovery/0.4` and a
-`transport()` accessor so `vtc_status` can report which leg a call took.
+**Landed (phase 1):** `VtcClient::send_task(type_uri, payload)` is the one
+sender behind every admin verb, named by Type URI — over the mediated session
+(TSP leg when enabled, else DIDComm) and only otherwise signed with the
+configured `HolderKey` and posted; an unpinned or `#response` URI is
+`VtcError::UnpinnedTask` and nothing is sent; the payload is checked against
+the pinned schema first; the declared error codes and response size bound
+come from the index. `VtcClient::discover(patterns)` asks
+`trust-task-discovery/0.4` and `vtc_client::supported_type_uris` flattens the
+answer; `VtcClient::transport()` reports the leg a call takes, for
+`vtc_status`.
 
 ### D3. One identity, chosen by a ladder
 
@@ -307,7 +315,7 @@ exists so that "always allow `vtc_call`" at the host does not make
 
 | Phase | Deliverable | Where |
 |---|---|---|
-| 1 | `VtcClient::send_task` and `discover`; retry classification for the VTC families with a census | `vtc-client`, `vta-sdk` |
+| 1 | **Done.** `VtcClient::send_task`, `discover`, `transport`; no retry table (see D2: the VTC dedups every task by document id) | `vtc-client` |
 | 2 | `vti-mcp-common` extracted from `vta-mcp` (guard, confirm levels, recorder, annotation test), `vta-mcp` repointed | new crate, `vta-mcp` |
 | 3 | `vtc-mcp`: ladder, transport selection by DID-document service type, guard, recorder, `vtc_list_operations` from the bundles, `vtc_call` with schema checks, `vtc_supported_tasks`, `vtc_whoami`, `vtc_status`, the five resources | new crate |
 | 4 | The guide resources and the six prompts, with the pinned-slug test | `vtc-mcp` |
