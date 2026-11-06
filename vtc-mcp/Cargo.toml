@@ -33,9 +33,9 @@ serde_json = { workspace = true }
 anyhow = "1"
 tracing = { workspace = true }
 clap = { workspace = true, features = ["env"] }
-
-[dev-dependencies]
+# `--mint-did-key`: the dedicated agent identity an administrator enrols.
 ed25519-dalek = { workspace = true }
+getrandom = "0.4"
 multibase = { workspace = true }
 
 [lints]

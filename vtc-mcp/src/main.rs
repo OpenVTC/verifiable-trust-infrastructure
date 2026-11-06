@@ -113,6 +113,32 @@ struct Args {
     /// Append a redacted JSONL record of every call to this file (0600).
     #[arg(long, env = "VTC_MCP_AUDIT_LOG")]
     audit_log: Option<PathBuf>,
+
+    /// Mint a fresh Ed25519 `did:key` for a dedicated agent entry and print
+    /// it as JSON (`did`, `privateKeyMultibase`) on stdout, then exit. Give
+    /// the DID to an administrator to enrol (`cnm access grant`), keep the key
+    /// for `VTC_MCP_AGENT_KEY`. Serves no MCP.
+    #[arg(long, exclusive = true)]
+    mint_did_key: bool,
+}
+
+/// A fresh Ed25519 `did:key` and its private key, multibase-encoded as the
+/// rest of the workspace encodes one (the raw 32-byte seed, base58btc).
+fn mint_did_key() -> anyhow::Result<serde_json::Value> {
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|e| anyhow::anyhow!("CSPRNG failed: {e}"))?;
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let did = format!(
+        "did:key:{}",
+        vta_sdk::did_key::ed25519_multibase_pubkey(&signing.verifying_key().to_bytes())
+    );
+    let private_key_multibase = multibase::encode(multibase::Base::Base58Btc, seed);
+    Ok(serde_json::json!({
+        "did": did,
+        "privateKeyMultibase": private_key_multibase,
+        "next": "give `did` to an administrator to enrol (cnm access grant <did> --admin-role …); \
+                 keep `privateKeyMultibase` as VTC_MCP_AGENT_KEY, never on the command line",
+    }))
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -206,6 +232,13 @@ fn warn_about_argv_secrets() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    if args.mint_did_key {
+        // The one thing this binary writes to stdout other than MCP: it is
+        // not serving, so the channel is free.
+        println!("{}", serde_json::to_string_pretty(&mint_did_key()?)?);
+        return Ok(());
+    }
 
     // stdout is the MCP JSON-RPC channel — logs go to stderr, and on by default.
     let log_format = LogFormat::parse(&args.log_format).map_err(|e| anyhow::anyhow!(e))?;
@@ -387,6 +420,26 @@ mod tests {
         assert_eq!(mode, "did:webvh-bundle");
         assert_eq!(identity.did(), "did:webvh:abc:example.com:p");
         assert!(load_bundle("not json and not a path").is_err());
+    }
+
+    #[test]
+    fn a_minted_did_key_signs_as_itself() {
+        let minted = mint_did_key().unwrap();
+        let did = minted["did"].as_str().unwrap();
+        let key = minted["privateKeyMultibase"].as_str().unwrap();
+        assert!(did.starts_with("did:key:z6Mk"), "{did}");
+        // The key the bridge would run with reconstructs the same DID.
+        let seed = vta_sdk::did_key::decode_private_key_multibase(key).unwrap();
+        let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+        assert_eq!(
+            did,
+            format!(
+                "did:key:{}",
+                vta_sdk::did_key::ed25519_multibase_pubkey(&signing.verifying_key().to_bytes())
+            )
+        );
+        assert_ne!(mint_did_key().unwrap()["did"], minted["did"]);
+        assert!(args(&["--mint-did-key"]).mint_did_key);
     }
 
     #[test]

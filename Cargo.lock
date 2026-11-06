@@ -12317,6 +12317,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
  "multibase",
  "rmcp",
  "schemars 1.2.3",

@@ -6,7 +6,7 @@ Crate guidance. The workspace `CLAUDE.md` applies too.
 
 (The crate's full entry from the workspace `CLAUDE.md` crate map.)
 
-MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a member's or an administrator's AI assistant. A native Trust Task client: every tool call is one signed document `vtc-client` sends in-process over the transport the community's DID document advertises (TSP > DIDComm > HTTPS, `VtcClient::connect_resolved`) — never a `cnm`/`pnm` subprocess, never a CLI's stored login. Two generic tools (`vtc_list_operations`, catalogued from the pinned specification bundles; `vtc_call`) plus discovery, whoami and status. Runs every call through the guard and recorder in `vti-mcp-common`. Design: `docs/05-design-notes/vtc-mcp.md`. `publish = false`
+MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a member's or an administrator's AI assistant. A native Trust Task client: every tool call is one signed document `vtc-client` sends in-process over the transport the community's DID document advertises (TSP > DIDComm > HTTPS, `VtcClient::connect_resolved`) — never a `cnm`/`pnm` subprocess, never a CLI's stored login. Two generic tools (`vtc_list_operations`, catalogued from the pinned specification bundles; `vtc_call`) plus discovery, whoami and status. Runs every call through the guard and recorder in `vti-mcp-common`. Docs: `docs/03-vtc/vtc-mcp.md` (operator page), `docs/05-design-notes/vtc-mcp.md` (design); the Claude Code skill is `skills/vtc-community/SKILL.md`. `publish = false`
 
 ## Rules
 

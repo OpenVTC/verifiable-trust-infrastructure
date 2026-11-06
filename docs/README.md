@@ -57,6 +57,7 @@ VTA via the `vtc-host` DID template.
 | Deploy a VTA inside a Nitro Enclave | [TEE architecture](02-vta/tee-architecture.md) |
 | Build an app that uses a VTA | [VTA integration guide](02-vta/integration-guide.md) |
 | Use a VTA from Claude Code / Claude Desktop | [vta-mcp](02-vta/vta-mcp.md) |
+| Run or take part in a community from Claude Code / Claude Desktop | [vtc-mcp](03-vtc/vtc-mcp.md) |
 | Provision a mediator / webvh-host / custom integration | [Provision-integration](02-vta/provision-integration.md) |
 | Require a second person to approve an operation | [Approvals](02-vta/approvals.md) |
 | Understand the consent ceremony (DTTE) end to end | [Task consent](02-vta/task-consent.md) |
@@ -180,6 +181,10 @@ How to operate and integrate against a VTC.
 - **[Credential delivery](03-vtc/credential-delivery.md)** — how an
   admitted member receives its credentials, and the Eucalyptus
   migration note for clients that read them from the verdict.
+- **[vtc-mcp](03-vtc/vtc-mcp.md)** — a community from an MCP host: an
+  administrator's or a member's AI assistant configuring and running it as
+  one identity over TSP, DIDComm or HTTPS, with the guides and workflows
+  shipped as prompts.
 - **[Trust-registry integration](03-vtc/trust-registry.md)** —
   registry publish, membership sync, cross-community recognition.
 - **[Trust-registry deployment](03-vtc/trust-registry-deployment.md)** —
