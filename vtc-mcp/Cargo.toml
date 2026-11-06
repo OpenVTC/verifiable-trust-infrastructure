@@ -1,0 +1,42 @@
+[package]
+name = "vtc-mcp"
+description = "Model Context Protocol (MCP) server exposing a Verifiable Trust Community (VTC) as tools, for a member's or an administrator's AI assistant"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+# A bridge an operator builds and runs beside their MCP host, like `vta-mcp`;
+# nothing depends on it as a library.
+publish = false
+
+[dependencies]
+# The community client: every tool call is one signed Trust Task it sends,
+# over the session it opened (`tsp` for the TSP leg) or signed over HTTPS.
+vtc-client = { path = "../vtc-client", version = "0.40", features = ["tsp"] }
+# `TransportChoice`, the secrets bundle, the DID resolver.
+vta-sdk = { path = "../vta-sdk", version = "0.85", features = ["session", "tsp"] }
+# The pinned Type URI index: the catalog `vtc_list_operations` is read from.
+vti-specs = { path = "../vti-specs", version = "0.10" }
+# The per-operation guard and the call recorder, shared with `vta-mcp`.
+vti-mcp-common = { path = "../vti-mcp-common", version = "0.1" }
+# `elicitation` is what lets the bridge put a risky operation back in front of
+# a human: an MCP host approves a *tool*, and once `vtc_call` is approved every
+# Trust Task rides that one approval.
+rmcp = { version = "3", features = ["server", "transport-io", "macros", "schemars", "elicitation"] }
+schemars = "1"
+trust-tasks-rs = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = "1"
+tracing = { workspace = true }
+clap = { workspace = true, features = ["env"] }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+multibase = { workspace = true }
+
+[lints]
+workspace = true

@@ -104,12 +104,14 @@ const SESSION_TIMEOUT_SECS: u64 = 60;
 pub mod acl;
 pub mod actions;
 pub mod boards;
+mod connect;
 pub mod elections;
 pub mod git_ns;
 pub mod members;
 pub mod rooms;
 mod send;
 
+pub use connect::SessionIdentity;
 pub use send::{VtcTransport, supported_type_uris};
 
 /// The Trust Task type URI of each admin verb this client sends as a signed
@@ -391,6 +393,17 @@ pub enum VtcError {
         type_uri: String,
         /// Why it is not sendable.
         reason: String,
+    },
+    /// [`VtcClient::connect_resolved`] found no transport it may use: the
+    /// community advertises none the choice permits, or advertises one that
+    /// could not be opened. A session the community advertises is never
+    /// silently replaced by HTTPS.
+    #[error("no usable transport to {vtc_did}: {detail}")]
+    NoTransport {
+        /// The community.
+        vtc_did: String,
+        /// What was advertised, what was tried, and what would permit HTTPS.
+        detail: String,
     },
     /// The VTC refused a Trust Task sent over a DIDComm or TSP session.
     ///

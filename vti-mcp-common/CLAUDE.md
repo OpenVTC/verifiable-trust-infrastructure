@@ -4,7 +4,7 @@ Crate guidance. The workspace `CLAUDE.md` applies too.
 
 ## What this crate is
 
-What the workspace's MCP bridges share — `vta-mcp` today, `vtc-mcp` next
+What the workspace's MCP bridges share — `vta-mcp` and `vtc-mcp`
 (`docs/05-design-notes/vtc-mcp.md`): the **local per-operation guard**
 (`guard.rs`: the risk classifier, allow/deny slug globs, `--read-only`, the
 confirm levels answered by MCP elicitation) and the **call recorder**

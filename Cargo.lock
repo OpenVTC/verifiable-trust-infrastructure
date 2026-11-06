@@ -12311,6 +12311,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "vtc-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ed25519-dalek 3.0.0",
+ "multibase",
+ "rmcp",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "trust-tasks-rs",
+ "vta-sdk",
+ "vtc-client",
+ "vti-mcp-common",
+ "vti-specs",
+]
+
+[[package]]
 name = "vtc-service"
 version = "0.26.0"
 dependencies = [
