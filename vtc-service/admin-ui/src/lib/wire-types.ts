@@ -400,6 +400,43 @@ export type BoardNotesListResponse = Schemas["VtcBoardsNotesListV0_1Response"];
 export type BoardNotesWithdrawResponse = Schemas["VtcBoardsNotesWithdrawV0_1Response"];
 export type BoardNotesHideResponse = Schemas["VtcBoardsNotesHideV0_1Response"];
 
+// ── Member badges (`vtc/badges/*`) ───────────────────────────────────────
+export type BadgeSettingsShowResponse = Schemas["VtcBadgesSettingsShowV0_1Response"];
+export type BadgeSettingsUpdatePayload = Schemas["VtcBadgesSettingsUpdateV0_1Payload"];
+export type BadgeSettingsUpdateResponse = Schemas["VtcBadgesSettingsUpdateV0_1Response"];
+export type BadgeCreatePayload = Schemas["VtcBadgesCreateV0_1Payload"];
+export type BadgeCreateResponse = Schemas["VtcBadgesCreateV0_1Response"];
+export type BadgeUpdatePayload = Schemas["VtcBadgesUpdateV0_1Payload"];
+export type BadgeUpdateResponse = Schemas["VtcBadgesUpdateV0_1Response"];
+export type BadgeRetireResponse = Schemas["VtcBadgesRetireV0_1Response"];
+export type BadgePromotePayload = Schemas["VtcBadgesPromoteV0_1Payload"];
+export type BadgePromoteResponse = Schemas["VtcBadgesPromoteV0_1Response"];
+export type BadgeListPayload = Schemas["VtcBadgesListV0_1Payload"];
+export type BadgeListResponse = Schemas["VtcBadgesListV0_1Response"];
+export type BadgeShowResponse = Schemas["VtcBadgesShowV0_1Response"];
+export type BadgeImagesUploadPayload = Schemas["VtcBadgesImagesUploadV0_1Payload"];
+export type BadgeImagesUploadResponse = Schemas["VtcBadgesImagesUploadV0_1Response"];
+export type BadgeImagesGetResponse = Schemas["VtcBadgesImagesGetV0_1Response"];
+export type BadgeAwardsOfferPayload = Schemas["VtcBadgesAwardsOfferV0_1Payload"];
+export type BadgeAwardsOfferResponse = Schemas["VtcBadgesAwardsOfferV0_1Response"];
+export type BadgeAwardsWithdrawResponse = Schemas["VtcBadgesAwardsWithdrawV0_1Response"];
+export type BadgeAwardsRevokeResponse = Schemas["VtcBadgesAwardsRevokeV0_1Response"];
+export type BadgeAwardsListPayload = Schemas["VtcBadgesAwardsListV0_1Payload"];
+export type BadgeAwardsListResponse = Schemas["VtcBadgesAwardsListV0_1Response"];
+export type BadgeHoldersListResponse = Schemas["VtcBadgesHoldersListV0_1Response"];
+export type BadgeWallShowResponse = Schemas["VtcBadgesWallShowV0_1Response"];
+export type BadgeMineListResponse = Schemas["VtcBadgesMineListV0_1Response"];
+export type BadgeMineAcceptResponse = Schemas["VtcBadgesMineAcceptV0_1Response"];
+export type BadgeMineDeclineResponse = Schemas["VtcBadgesMineDeclineV0_1Response"];
+export type BadgeMineHideResponse = Schemas["VtcBadgesMineHideV0_1Response"];
+export type BadgeMineShowResponse = Schemas["VtcBadgesMineShowV0_1Response"];
+export type BadgeMineArrangePayload = Schemas["VtcBadgesMineArrangeV0_1Payload"];
+export type BadgeMineArrangeResponse = Schemas["VtcBadgesMineArrangeV0_1Response"];
+export type BadgeKudosGivePayload = Schemas["VtcBadgesKudosGiveV0_1Payload"];
+export type BadgeKudosGiveResponse = Schemas["VtcBadgesKudosGiveV0_1Response"];
+export type BadgeKudosListPayload = Schemas["VtcBadgesKudosListV0_1Payload"];
+export type BadgeKudosListResponse = Schemas["VtcBadgesKudosListV0_1Response"];
+
 // ── Where identities are published (`vtc/config/did-hosting/list`) ──────
 export type DidHostingListResponse = Schemas["VtcConfigDidHostingListV0_1Response"];
 export type HostingServer = Schemas["VtcConfigDidHostingListV0_1HostingServer"];

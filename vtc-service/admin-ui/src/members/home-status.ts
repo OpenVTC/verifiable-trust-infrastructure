@@ -3,7 +3,7 @@
 // over the answers the pages themselves read, so the home page and the pages
 // share one query each and never disagree.
 
-import type { BoardListResponse, GroupListResponse } from "@/lib/wire-types";
+import type { BadgeMineListResponse, BoardListResponse, GroupListResponse } from "@/lib/wire-types";
 
 import { phaseOf, PHASE_LABEL } from "./boards-api";
 import { DirectoryError } from "./directory-api";
@@ -158,6 +158,30 @@ export function boardsAttention(
     if (p !== "proposals" && p !== "proposalsAndVoting" && p !== "voting") return [];
     return [{ key: `bd-${b.boardId}`, text: `${PHASE_LABEL[p]}: ${b.title}`, href: href(b.boardId) }];
   });
+}
+
+/** The member's badges: what they show, and the offers waiting for them. A community with
+ *  badges off answers `permissionDenied`, read here as nothing to show. */
+export function badgesStatus(q: Read<BadgeMineListResponse>): Status | "loading" {
+  if (q.isError && q.error instanceof DirectoryError && q.error.code === "permissionDenied") {
+    return muted("Not on in this community");
+  }
+  const u = unanswered(q);
+  if (u) return u;
+  const shown = q.data!.badges.filter((b) => !b.hidden).length;
+  const waiting = q.data!.offers.length;
+  if (shown === 0 && waiting === 0) return muted("No badges yet");
+  const parts: string[] = [];
+  if (shown > 0) parts.push(`${plural(shown, "badge")} on your card`);
+  if (waiting > 0) parts.push(`${plural(waiting, "offer")} waiting`);
+  return { text: parts.join(" · "), tone: waiting > 0 ? "attention" : "ok" };
+}
+
+export function badgesAttention(q: Read<BadgeMineListResponse>, href: string): Attention[] {
+  const waiting = q.data?.offers.length ?? 0;
+  return waiting > 0
+    ? [{ key: "badge-offers", text: `${plural(waiting, "badge")} offered to you: accept or decline`, href }]
+    : [];
 }
 
 /** The groups the member is in, and where they are waiting to be. */

@@ -1880,3 +1880,340 @@ textarea {
   margin: 0;
   padding-left: 1.1rem;
 }
+
+/* ── Badges ──────────────────────────────────────────────── */
+
+.btn-xs {
+  padding: 0.2rem 0.45rem;
+  font-size: 0.8rem;
+  min-height: 0;
+  line-height: 1.2;
+}
+.bw-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  align-items: center;
+}
+.bw-section {
+  margin: 1.5rem 0;
+}
+.bw-section h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+}
+.bw-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.bw-section-head h2 {
+  margin: 0;
+}
+.bw-visibility {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+.bw-visibility select {
+  font: inherit;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--text);
+}
+.bw-fine {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0.5rem 0 0;
+}
+
+/* A badge's picture keeps its own shape. */
+.bw-art {
+  display: block;
+  height: auto;
+  max-width: 100%;
+  border-radius: var(--radius-md);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+  background: var(--bg-subtle);
+}
+.bw-art-blank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 1.6rem;
+  box-shadow: none;
+  border: 1px dashed var(--border-strong);
+}
+
+/* A wall: tiles that wrap. */
+.bw-wall {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+.bw-pinned-row {
+  padding: 0.6rem;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--brand) 8%, transparent);
+  margin-bottom: 0.75rem;
+}
+.bw-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 0.5rem;
+  min-width: 0;
+}
+.bw-tile-pinned {
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--border));
+}
+.bw-tile-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--text);
+  text-decoration: none;
+  min-width: 0;
+}
+.bw-tile-link:hover .bw-tile-name,
+.bw-tile-link:focus-visible .bw-tile-name {
+  color: var(--brand);
+}
+.bw-tile-art {
+  position: relative;
+  display: block;
+}
+.bw-tile-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.bw-tile-sub {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.bw-vc {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--bg-elev);
+  color: var(--brand);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+}
+.bw-count {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--text);
+  color: var(--bg-elev);
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.bw-tile-tools {
+  display: flex;
+  gap: 0.15rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Offers: a surface of the member's own. */
+.bw-offers h2 {
+  margin: 0 0 0.25rem;
+}
+.bw-offer-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.bw-offer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.bw-offer-text {
+  flex: 1 1 16rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  font-size: 0.9rem;
+}
+.bw-offer-note {
+  font-style: italic;
+}
+.bw-offer-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+/* One badge. */
+.bw-detail {
+  display: grid;
+  grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+@media (max-width: 52rem) {
+  .bw-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.bw-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.75rem;
+}
+.bw-hero h1 {
+  margin: 0;
+  font-size: 1.6rem;
+}
+.bw-hero .lead {
+  margin: 0;
+}
+.bw-hero .pills {
+  justify-content: center;
+  margin-top: 0;
+}
+.bw-facts {
+  margin: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 0.9rem;
+  font-size: 0.85rem;
+  text-align: left;
+}
+.bw-facts dt {
+  color: var(--text-muted);
+}
+.bw-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.bw-criteria {
+  width: 100%;
+  text-align: left;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
+.bw-criteria p {
+  margin: 0.25rem 0 0;
+}
+.bw-ask {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  text-align: left;
+}
+.bw-ask .card-form {
+  margin: 0;
+}
+.bw-holders h2 {
+  margin: 0 0 0.25rem;
+}
+.bw-holder-grid {
+  margin-top: 0.75rem;
+}
+.bw-member-select {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.bw-member-select input,
+.bw-member-select select {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--text);
+}
+
+/* Making one. */
+.bw-make {
+  max-width: 40rem;
+}
+.bw-upload {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.bw-upload > div {
+  flex: 1 1 14rem;
+}
+
+/* On a member's card. */
+.bw-on-card .bw-section-head {
+  margin-bottom: 0.5rem;
+}
+.bw-give-card {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+}
+.bw-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100px;
+  padding: 0.4rem;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+.bw-pick:hover,
+.bw-pick:focus-visible {
+  border-color: var(--brand);
+}
+.bw-giving {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.bw-giving-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}

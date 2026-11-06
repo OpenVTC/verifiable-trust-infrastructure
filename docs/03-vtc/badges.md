@@ -91,7 +91,25 @@ changing, retiring and promoting a community badge, offering and taking back awa
 listing a badge's awards and changing the settings take the administrator's or owner's
 own key.
 
-The console and portal pages are the next phase; this build serves the tasks.
+**In the member portal** (`#/badges`): the offers waiting for the member, accepted or declined
+one by one; what shows on their card, in their order, pinned up to the community's limit,
+hidden or shown again, and who sees it (members who see their card, or nobody); every badge
+they may browse, each opening to the badge and who holds it; asking a community badge's
+owners for it, which is a request to join its badge group; giving a kudos badge from the
+badge's page or from another member's card; and making a kudos badge of their own
+(`#/badges/new`), with a picture uploaded from the browser. A member's card shows their
+wall, pinned badges first, with their kudos total where the community shows totals. The
+home page says how many badges show and how many offers wait.
+
+**In the console** (*Community → Badges*): every badge the administrator or owner may see;
+the settings (on or off, who may make a kudos badge, the limits; `vtc.config.admin` and a
+step-up with the administrator's passkey); defining a community badge (`vtc.badges.admin`):
+its picture, rules, who sees its holders, and its owners; and one badge's page: changing
+it, giving it to chosen members or to everyone in a group, deciding the requests for it,
+appointing and removing owners, every award given and taken back with a reason, a kudos
+badge's givings and its promotion to a community badge, and retiring it (a community
+badge's retirement takes the step-up too). The nav entry shows to holders of
+`vtc.badges.admin`, `vtc.groups.manage` (an owner's qualified grant) or `vtc.config.admin`.
 
 ## Pictures
 

@@ -1,6 +1,7 @@
 # VTC member badges: design
 
-Status: **phase 1 in progress** (backend served; console and portal pages next). Specification: VTI Community Badges chapter
+Status: **phase 1 complete** (backend served, #2477; console plugin and portal pages, this
+PR). Next: phase 3, the outside regime. Specification: VTI Community Badges chapter
 (VTI-BDG-001 – 095). Wire: trust-tasks-tf `specs/vtc/badges/*/0.1`, plus `badgeId` on the shared
 `Group` record. Mockups: the "VTC Member Badges" design canvas (seven screens: a member's page with
 the badge wall, one badge with its holders, the member's own badges, a member making a badge, and
@@ -139,8 +140,8 @@ Requests reuse `vtc/groups/join` and `vtc/groups/requests/{list,decide}`; owners
 | Phase | Delivers |
 |---|---|
 | 0 | This note; the VTI chapter (VTI-BDG-*); `vtc/badges/*` 0.1 and `Group.badgeId` upstream; the pins |
-| 1 | Settings; community badges on static groups; offers, accept, decline, hide; wall, holders, pictures; the inside-only credential; kudos; promote (backend served) — then console and portal pages |
-| 2 | Kudos badges, per-giving acceptance, totals, limits; pins and order; promotion |
+| 1 | Settings; community badges on static groups; offers, accept, decline, hide; wall, holders, pictures; the inside-only credential; kudos, per-giving acceptance, totals, limits; pins and order; promote — backend (#2477), then the console plugin (`admin-ui/src/plugins/badges.tsx`) and the portal pages (`admin-ui/src/members/Badges.tsx`, the wall on a member's card, the home tile) |
+| 2 | Folded into phase 1 |
 | 3 | Outside: the long-lived credential in the community's status set, the registry issuer projection, share links, the baked image, the public artefacts |
 | 4 | Dynamic badge groups with the new rule facts (elections voted in, ideas selected, kudos received); claim codes for events |
 
