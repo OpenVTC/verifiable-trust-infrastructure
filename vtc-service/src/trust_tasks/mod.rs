@@ -164,6 +164,9 @@ pub(crate) mod group_tasks;
 // The community's boards (`vtc/boards/*`, VTI-BRD-*): ideas, notes, and each accepted idea's
 // election through `crate::elections`.
 pub(crate) mod board_tasks;
+// Member badges (`vtc/badges/*`, VTI-BDG-*): badges backed by badge groups, awards accepted by
+// their holders, kudos between members, through `crate::badges`.
+pub(crate) mod badge_tasks;
 pub(crate) mod role_tasks;
 // `vtc/members/role/set/0.1` — the community-role move.
 pub mod member_role_tasks;
@@ -1017,6 +1020,13 @@ fn dispatch_typed<'a>(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("board_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if badge_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(badge_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("badge_tasks::URIS names {uri}, which it does not route"),
             }
         }),
         uri if community_room_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -2933,6 +2943,32 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     board_tasks::FACILITATORS_ADD_TYPE,
     board_tasks::FACILITATORS_REMOVE_TYPE,
     board_tasks::FACILITATORS_LIST_TYPE,
+    // Member badges (VTI-BDG-*): settings, definitions, pictures, awards, the holder's own,
+    // walls and kudos.
+    badge_tasks::SETTINGS_SHOW_TYPE,
+    badge_tasks::SETTINGS_UPDATE_TYPE,
+    badge_tasks::CREATE_TYPE,
+    badge_tasks::UPDATE_TYPE,
+    badge_tasks::RETIRE_TYPE,
+    badge_tasks::PROMOTE_TYPE,
+    badge_tasks::LIST_TYPE,
+    badge_tasks::SHOW_TYPE,
+    badge_tasks::IMAGES_UPLOAD_TYPE,
+    badge_tasks::IMAGES_GET_TYPE,
+    badge_tasks::AWARDS_OFFER_TYPE,
+    badge_tasks::AWARDS_WITHDRAW_TYPE,
+    badge_tasks::AWARDS_REVOKE_TYPE,
+    badge_tasks::AWARDS_LIST_TYPE,
+    badge_tasks::HOLDERS_LIST_TYPE,
+    badge_tasks::WALL_SHOW_TYPE,
+    badge_tasks::MINE_LIST_TYPE,
+    badge_tasks::MINE_ACCEPT_TYPE,
+    badge_tasks::MINE_DECLINE_TYPE,
+    badge_tasks::MINE_HIDE_TYPE,
+    badge_tasks::MINE_SHOW_TYPE,
+    badge_tasks::MINE_ARRANGE_TYPE,
+    badge_tasks::KUDOS_GIVE_TYPE,
+    badge_tasks::KUDOS_LIST_TYPE,
     // Credential-sourced fields, filled from a presentation.
     directory_tasks::CARD_PRESENT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,

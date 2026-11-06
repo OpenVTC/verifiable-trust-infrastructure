@@ -147,6 +147,20 @@ pub const NOTIFICATIONS: &str = "notifications";
 /// are the community's own records; a restore without them would orphan every board election.
 pub const BOARDS: &str = "boards";
 
+/// Member badges (`crate::badges`, VTI-BDG-*): the community's badge settings, each badge
+/// (`badge:<badgeId>`), each award (`award:<awardId>`, indexed by badge, recipient and
+/// giver) and each holder's own preferences (`prefs:<entryId>`). The badge group behind a
+/// community badge is the groups' (`DIRECTORY`).
+///
+/// **Backed up**: what members earned and gave is the community's own record; a restore
+/// without it would orphan every badge group.
+pub const BADGES: &str = "badges";
+
+/// Badge pictures, re-encoded by the community, keyed by digest as the directory keeps
+/// a card picture (`crate::directory::images` over this keyspace). **Backed up** with
+/// the badges they belong to.
+pub const BADGE_IMAGES: &str = "badge_images";
+
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
 /// host starts with none, and a client resumes from `begin`.
 pub use vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE as ROOM_BLOB_TRANSFERS;
@@ -324,6 +338,8 @@ pub const ALL: &[&str] = &[
     ELECTIONS,
     NOTIFICATIONS,
     BOARDS,
+    BADGES,
+    BADGE_IMAGES,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -394,6 +410,9 @@ pub const BACKED_UP: &[&str] = &[
     NOTIFICATIONS,
     // Ideas, notes and which election each idea is put to.
     BOARDS,
+    // Badges, awards and holders' preferences; the pictures with them.
+    BADGES,
+    BADGE_IMAGES,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -541,7 +560,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 46 top-level `*_ks` fields (the member portal's two, `notifications_ks` and `boards_ks`
+        // 48 top-level `*_ks` fields (the member portal's two, `notifications_ks`, `boards_ks`, `badges_ks` and `badge_images_ks`
         // among them) plus
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
@@ -552,7 +571,7 @@ mod tests {
         // `AppState::directory` holds (`DIRECTORY`), plus the one
         // `AppState::elections` holds (`ELECTIONS`), plus the one
         // `AppState::room_watches` holds (`ROOM_WATCHES`).
-        assert_eq!(ALL.len(), 59, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 61, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

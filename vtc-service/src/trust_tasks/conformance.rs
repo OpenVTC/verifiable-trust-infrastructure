@@ -3270,6 +3270,151 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z"}"#).unwrap(),
             serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": [{"entryId": "dir_Q7m2K9xVb4Tz8LpR", "appointedAt": "2026-11-01T10:00:00Z", "appointedBy": "dir_K3n8P2xWc5Rz9MqT"}, {"entryId": "dir_T4v9L3xZd6Sq2NpW", "appointedAt": "2026-11-02T14:30:00Z", "reviewEndsAt": "2026-11-12T14:30:00Z"}]}"#).unwrap()
         ),
+        // Member badges (VTI-BDG-*): each task's own request and response examples.
+        checked!(
+            s::badges::awards::list::v0_1::Payload,
+            s::badges::awards::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "state": "offered", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "note": "For the Saturday joinery workshop.", "state": "offered", "offeredAt": "2026-11-05T18:00:00Z", "expiresAt": "2026-12-05T18:00:00Z"}, "hidden": false, "fields": {"displayName": "Sam N."}}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::offer::v0_1::Payload,
+            s::badges::awards::offer::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "to": ["dir_NoorElSayed00000", "dir_LenaWirth0000000"], "note": "Resin pour workshop, 25 October 2026"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"awards": [{"awardId": "awd_Qz7TpLW5k2N8xRb3", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_NoorElSayed00000", "givenBy": "dir_Pr1yaNatarajan00", "note": "Resin pour workshop, 25 October 2026", "state": "offered", "offeredAt": "2026-11-06T18:00:01Z", "expiresAt": "2026-12-06T18:00:01Z"}], "skipped": [{"entryId": "dir_LenaWirth0000000", "reason": "alreadyOffered"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::revoke::v0_1::Payload,
+            s::badges::awards::revoke::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N", "reason": "The workshop was cancelled; nobody hosted it."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "note": "For the Saturday joinery workshop.", "state": "revoked", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-06T12:00:01Z", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::withdraw::v0_1::Payload,
+            s::badges::awards::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N", "reason": "Offered to the wrong Sam; the host was Sam Ortiz."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "note": "For the Saturday joinery workshop.", "state": "withdrawn", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-06T11:00:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::create::v0_1::Payload,
+            s::badges::create::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "holdersVisibleTo": "members", "owners": ["dir_Pr1yaNatarajan00", "dir_BenOkafor0000000"], "reason": "Workshops are the heart of the community; the hosts should wear it."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 0, "createdAt": "2026-11-06T09:00:02Z", "createdBy": "dir_AnnaReyes0000000"}, "group": {"groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "groupDid": "did:webvh:QmGroupScid:community.example:group-dids:grp_Hs7Qm2Lk9Tn4Bv1X", "name": "Workshop host", "kind": "static", "joinPolicy": "request", "visibility": "members", "showMembers": "members", "issuesCredentials": true, "carriesAuthority": false, "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "memberCount": 0, "managers": ["dir_Pr1yaNatarajan00", "dir_BenOkafor0000000"], "credentialAuthorityValidUntil": "2027-11-06T09:00:01Z", "createdAt": "2026-11-06T09:00:02Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::holders::list::v0_1::Payload,
+            s::badges::holders::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"total": 2, "items": [{"entryId": "dir_BenOkafor0000000", "count": 3, "since": "2026-03-14T19:30:00Z", "latestAt": "2026-10-31T20:10:00Z", "fields": {"displayName": "Ben", "avatar": {"sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", "mediaType": "image/webp", "size": 18342}}}, {"entryId": "dir_SamNguyen0000000", "count": 1, "since": "2026-09-02T17:45:00Z", "latestAt": "2026-09-02T17:45:00Z"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::images::get::v0_1::Payload,
+            s::badges::images::get::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "data": "iVBORw0KGgoAAAANSUhEUgAABAAAAAQA"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::images::upload::v0_1::Payload,
+            s::badges::images::upload::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"mediaType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/webp", "size": 18342}, "expiresAt": "2026-11-07T08:55:01Z"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::kudos::give::v0_1::Payload,
+            s::badges::kudos::give::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "to": "dir_B3nOk4f0rRq9Wz2X", "note": "Found the long sash clamps behind the bandsaw. Saved the glue-up."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3m8Qp2Vt7Xz4Ln9", "badgeId": "bdg_Kd0sCl4mpWh1sp3r", "entryId": "dir_B3nOk4f0rRq9Wz2X", "givenBy": "dir_Tm4sV3g4K9xQ2bLp", "note": "Found the long sash clamps behind the bandsaw. Saved the glue-up.", "state": "offered", "offeredAt": "2026-11-06T10:30:01Z", "expiresAt": "2026-12-06T10:30:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::kudos::list::v0_1::Payload,
+            s::badges::kudos::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"direction": "received", "limit": 20}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"award": {"awardId": "awd_K3m8Qp2Vt7Xz4Ln9", "badgeId": "bdg_Kd0sCl4mpWh1sp3r", "entryId": "dir_B3nOk4f0rRq9Wz2X", "givenBy": "dir_Tm4sV3g4K9xQ2bLp", "note": "Found the long sash clamps behind the bandsaw. Saved the glue-up.", "state": "offered", "offeredAt": "2026-11-06T10:30:01Z", "expiresAt": "2026-12-06T10:30:01Z"}, "badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "counterpart": {"displayName": "Tom\u00e1s"}}, {"award": {"awardId": "awd_P9r4Wn6Yc2Hs8Vq1", "badgeId": "bdg_Kd0sCl4mpWh1sp3r", "entryId": "dir_B3nOk4f0rRq9Wz2X", "givenBy": "dir_Pr1yaN4t7Rj2Qw8K", "state": "accepted", "offeredAt": "2026-10-28T19:00:00Z", "decidedAt": "2026-10-28T21:12:00Z"}, "badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "counterpart": {"displayName": "Priya"}}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::list::v0_1::Payload,
+            s::badges::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"kind": "community", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"badge": {"badgeId": "bdg_Nf2Rk7Lp9Xs3Qw5T", "kind": "community", "name": "One year aboard", "description": "A year in the community.", "criteria": "Twelve months of membership. Given by the community itself.", "image": {"sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "mediaType": "image/png", "size": 52200}, "repeatable": false, "requestable": false, "listed": true, "shareableOutside": false, "groupId": "grp_Lk8Tn2Vx4Rm9Qs7H", "state": "active", "holderCount": 213, "createdAt": "2026-03-01T08:00:00Z"}, "myCount": 1, "myState": "holder"}, {"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z"}, "myCount": 0, "myState": "requested"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::accept::v0_1::Payload,
+            s::badges::mine::accept::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_Qz7TpLW5k2N8xRb3"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_Qz7TpLW5k2N8xRb3", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_NoorElSayed00000", "givenBy": "dir_Pr1yaNatarajan00", "note": "Resin pour workshop, 25 October 2026", "state": "accepted", "offeredAt": "2026-11-06T18:00:01Z", "decidedAt": "2026-11-06T19:10:02Z", "credentialId": "urn:uuid:9c1d2e3f-4a5b-4c6d-8e7f-000000000777"}, "badge": {"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 10, "createdAt": "2026-11-06T09:00:02Z"}, "count": 1, "since": "2026-11-06T19:10:02Z", "latestAt": "2026-11-06T19:10:02Z", "pinned": false, "hidden": false, "position": 7, "credentialId": "urn:uuid:9c1d2e3f-4a5b-4c6d-8e7f-000000000777", "credentialValidUntil": "2028-11-06T19:10:02Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::arrange::v0_1::Payload,
+            s::badges::mine::arrange::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"order": ["bdg_Kd0sCl4mpWh1sp3r", "bdg_W5k2N8xRb3Qz7TpL"], "pinned": ["bdg_Kd0sCl4mpWh1sp3r", "bdg_W5k2N8xRb3Qz7TpL"]}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badges": [{"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": true, "hidden": false, "position": 0}, {"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "createdAt": "2026-09-01T09:00:02Z"}, "count": 2, "since": "2026-09-14T18:00:00Z", "latestAt": "2026-10-19T18:30:00Z", "pinned": true, "hidden": false, "position": 1, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2028-10-19T18:30:00Z"}], "visibility": "members"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::decline::v0_1::Payload,
+            s::badges::mine::decline::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_H7q2Lm9Xc4Vt1Bz8"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_H7q2Lm9Xc4Vt1Bz8", "badgeId": "bdg_Yr1Ab0ardTn2Qx7V", "entryId": "dir_Tm4sV3g4K9xQ2bLp", "givenBy": "dir_B3nOk4f0rRq9Wz2X", "note": "A year of Saturdays. Thank you.", "state": "declined", "offeredAt": "2026-11-05T20:00:00Z", "decidedAt": "2026-11-06T10:05:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::hide::v0_1::Payload,
+            s::badges::mine::hide::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd0sCl4mpWh1sp3r"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": false, "hidden": true, "position": 1}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::list::v0_1::Payload,
+            s::badges::mine::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badges": [{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "createdAt": "2026-09-01T09:00:02Z"}, "count": 2, "since": "2026-09-14T18:00:00Z", "latestAt": "2026-10-19T18:30:00Z", "pinned": true, "hidden": false, "position": 0, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2028-10-19T18:30:00Z"}, {"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": false, "hidden": true, "position": 1}], "offers": [{"award": {"awardId": "awd_H7q2Lm9Xc4Vt1Bz8", "badgeId": "bdg_Yr1Ab0ardTn2Qx7V", "entryId": "dir_Tm4sV3g4K9xQ2bLp", "givenBy": "dir_B3nOk4f0rRq9Wz2X", "note": "A year of Saturdays. Thank you.", "state": "offered", "offeredAt": "2026-11-05T20:00:00Z", "expiresAt": "2026-12-05T20:00:00Z"}, "badge": {"badgeId": "bdg_Yr1Ab0ardTn2Qx7V", "kind": "community", "name": "One year aboard", "description": "A year in the community.", "image": {"sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "mediaType": "image/png", "size": 30720}, "repeatable": false, "listed": true, "groupId": "grp_Yr1Ab0ardGr0upX2", "state": "active", "createdAt": "2026-09-01T09:10:00Z"}, "givenBy": {"displayName": "Ben"}}], "visibility": "members", "kudosTotal": 0}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::show::v0_1::Payload,
+            s::badges::mine::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd0sCl4mpWh1sp3r"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": false, "hidden": false, "position": 1}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::promote::v0_1::Payload,
+            s::badges::promote::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd3mR9vXs2Wq8LpN", "requestable": false, "shareableOutside": false, "holdersVisibleTo": "members", "owners": ["dir_Pr1yaNatarajan00", "dir_TomasVrba0000000"], "reason": "Given four hundred times this year; the community should stand behind it."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_Kd3mR9vXs2Wq8LpN", "kind": "community", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 48120}, "repeatable": true, "requestable": false, "listed": true, "shareableOutside": false, "groupId": "grp_Qm4Vx8Tk2Rn7Hs1L", "state": "active", "holderCount": 0, "createdAt": "2026-11-06T09:05:02Z", "createdBy": "dir_TomasVrba0000000", "updatedAt": "2026-11-06T09:40:03Z"}, "group": {"groupId": "grp_Qm4Vx8Tk2Rn7Hs1L", "groupDid": "did:webvh:QmGroupScid:community.example:group-dids:grp_Qm4Vx8Tk2Rn7Hs1L", "name": "Clamp whisperer", "kind": "static", "joinPolicy": "closed", "visibility": "members", "showMembers": "members", "issuesCredentials": true, "carriesAuthority": false, "badgeId": "bdg_Kd3mR9vXs2Wq8LpN", "memberCount": 0, "managers": ["dir_Pr1yaNatarajan00", "dir_TomasVrba0000000"], "credentialAuthorityValidUntil": "2027-11-06T09:40:02Z", "createdAt": "2026-11-06T09:40:03Z"}, "holdersOffered": 37}"#).unwrap()
+        ),
+        checked!(
+            s::badges::retire::v0_1::Payload,
+            s::badges::retire::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "reason": "The workshop programme ended with the season."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": false, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "retired", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z", "createdBy": "dir_AnnaReyes0000000", "retiredAt": "2026-11-06T09:30:03Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::settings::show::v0_1::Payload,
+            s::badges::settings::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"settings": {"enabled": true, "kudosMakers": {"policy": "roles", "roles": ["steward"], "groups": ["grp_Hs7Qm2Lk9Tn4Bv1X"]}, "limits": {"kudosPerGiverPerDay": 10, "sameGiverSameMember": "day", "minTenureDays": 7, "kudosBadgesPerMakerPerMonth": 5, "maxPinned": 2}, "showKudosTotals": true, "automaticBadges": true, "membersMayRequest": true, "credentialValidDays": 730, "updatedAt": "2026-11-01T10:00:00Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::settings::update::v0_1::Payload,
+            s::badges::settings::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"settings": {"enabled": true, "kudosMakers": {"policy": "roles", "roles": ["steward"], "groups": ["grp_Hs7Qm2Lk9Tn4Bv1X"]}, "limits": {"kudosPerGiverPerDay": 10, "sameGiverSameMember": "day", "minTenureDays": 7, "kudosBadgesPerMakerPerMonth": 5, "maxPinned": 2}, "showKudosTotals": true, "automaticBadges": true, "membersMayRequest": true, "credentialValidDays": 730}, "reason": "Stewards and the welcome team asked to make their own thank-you badges."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"settings": {"enabled": true, "kudosMakers": {"policy": "roles", "roles": ["steward"], "groups": ["grp_Hs7Qm2Lk9Tn4Bv1X"]}, "limits": {"kudosPerGiverPerDay": 10, "sameGiverSameMember": "day", "minTenureDays": 7, "kudosBadgesPerMakerPerMonth": 5, "maxPinned": 2}, "showKudosTotals": true, "automaticBadges": true, "membersMayRequest": true, "credentialValidDays": 730, "updatedAt": "2026-11-06T09:10:02Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::show::v0_1::Payload,
+            s::badges::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z"}, "myCount": 0, "myState": "requested", "owners": ["dir_Pr1yaNatarajan00", "dir_BenOkafor0000000"], "credentialRegime": "outside"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::update::v0_1::Payload,
+            s::badges::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "criteria": "Hosted a workshop on the community calendar this year. A badge owner gives it after the session.", "requestable": false, "holdersVisibleTo": "groupMembers", "reason": "Owners give it after each session now; nobody needs to ask."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted a workshop on the community calendar this year. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": false, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z", "createdBy": "dir_AnnaReyes0000000", "updatedAt": "2026-11-06T09:20:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::wall::show::v0_1::Payload,
+            s::badges::wall::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"entryId": "dir_BenOkafor0000000"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"visibility": "members", "kudosTotal": 14, "entries": [{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 2, "createdAt": "2026-03-01T09:00:02Z", "createdBy": "dir_AnnaReyes0000000"}, "count": 3, "since": "2026-03-14T19:30:00Z", "latestAt": "2026-10-31T20:10:00Z", "pinned": true}, {"badge": {"badgeId": "bdg_Kd8sPq2Vn4Xm7Rt1", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/webp", "size": 18342}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-11-06T09:05:01Z", "createdBy": "dir_TomasVega0000000"}, "count": 5, "since": "2026-11-06T12:00:00Z", "latestAt": "2026-11-06T14:30:00Z", "pinned": false}]}"#).unwrap()
+        ),
         checked!(
             s::boards::list::v0_1::Payload,
             s::boards::list::v0_1::Response,

@@ -690,6 +690,12 @@ pub enum AuditEvent {
     /// about an election's tickets or ballots (VTI-VOT-100).
     BoardChanged(BoardChangedData),
 
+    /// A badge was defined, changed, retired or promoted; an award was offered,
+    /// accepted, declined, withdrawn or taken back; a holder hid or showed a badge; the
+    /// badge settings changed (`vtc/badges/*`, VTI-BDG-091). By reference — the badge,
+    /// the award and the entries — never a note or a picture.
+    BadgeChanged(BadgeChangedData),
+
     /// A member joined or left a community group, or a request to join one was
     /// made or decided (`vtc/groups/*`). By reference: the group and the
     /// member's entry, never their DID or a request's message.
@@ -1309,6 +1315,7 @@ impl AuditEvent {
             Self::DirectoryExported(..) => "DirectoryExported",
             Self::GroupChanged(..) => "GroupChanged",
             Self::BoardChanged(..) => "BoardChanged",
+            Self::BadgeChanged(..) => "BadgeChanged",
             Self::GroupMembershipChanged(..) => "GroupMembershipChanged",
             Self::GroupGrantsChanged(..) => "GroupGrantsChanged",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
@@ -3074,6 +3081,29 @@ pub struct GroupChangedData {
     pub reason: Option<String>,
 }
 
+/// Payload for [`AuditEvent::BadgeChanged`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BadgeChangedData {
+    pub badge_id: String,
+    /// The award the change concerns, by identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub award_id: Option<String>,
+    /// The member the change concerns, by directory entry — never a DID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
+    /// `created`, `updated`, `retired`, `promoted`, `settingsChanged`, `offered`,
+    /// `accepted`, `declined`, `withdrawn`, `expired`, `revoked`, `kudosGiven`, `hidden`,
+    /// `shown`, `arranged` or `imageUploaded`.
+    pub change: String,
+    /// The settings a change named, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    /// The badge group behind a community badge, where the change made or removed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+}
+
 /// Payload for [`AuditEvent::BoardChanged`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -4734,6 +4764,17 @@ mod tests {
                     own_idea: false,
                 }),
                 "BoardChanged",
+            ),
+            (
+                AuditEvent::BadgeChanged(BadgeChangedData {
+                    badge_id: "bdg_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    award_id: Some("awd_AAAAAAAAAAAAAAAAAAAAAA".into()),
+                    entry_id: Some("dir_aaaaaaaaaaaaaaaa".into()),
+                    change: "accepted".into(),
+                    fields: Vec::new(),
+                    group_id: None,
+                }),
+                "BadgeChanged",
             ),
             (
                 AuditEvent::GroupMembershipChanged(GroupMembershipChangedData {
