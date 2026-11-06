@@ -746,6 +746,9 @@ async fn depart(
         // they gave stand by reference, and a purge erases the notes they wrote
         // (VTI-BDG-090).
         crate::badges::on_departure(&state.badges_ks, &entry_id).await?;
+        // A badge credential they may show outside is revoked in the community's status
+        // set (VTI-BDG-063); an inside-only one lapses with its renewal.
+        crate::badges::credential::revoke_departed(state, &entry_id).await?;
         if disposition == Disposition::Purge {
             crate::badges::erase_notes_by(&state.badges_ks, &entry_id).await?;
         }

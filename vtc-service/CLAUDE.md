@@ -949,9 +949,16 @@ When adding a flow, add it here and a line to the root index.
   (`badges::credential`, an Open Badges 3.0 `OpenBadgeCredential`, the community as the
   Achievement's `creator`, one `evidence` per award) through `keys/sign-document` **before**
   recording the membership; `groups::credential::issue` branches to it for any group with
-  `badge_id`, so admission by request, rule and renewal issue the same profile. Inside-only
-  regime in this build: short-lived, renewed, no status; `shareableOutside` is refused until
-  the outside regime (community-owned status set, VTI-BDG-062) is served. **Hidden is
+  `badge_id`, so admission by request, rule and renewal issue the same profile. Every badge
+  credential embeds the community's OB3 `EndorsementCredential` of the Achievement
+  (`credential::ensure_endorsement`: signed as the community once, kept on `Badge.endorsement`,
+  VTI-BDG-060). **Two regimes** by `shareableOutside`, fixed at create/promote: inside-only
+  (short-lived, renewed, no status) and outside (VTI-BDG-062: `settings.credentialValidDays`,
+  default 730, a slot in the **community's** revocation list, `bslot:<badge>:<entry>`, one per
+  badge and holder, reused by every re-issue; never a set of the badge's or the group's own —
+  the W3C list algorithm compares no issuers). `credential::{revoke_holder,
+  revoke_all_holders, revoke_departed}` flip it on take-back of the last award, retire and
+  departure (VTI-BDG-063); keep every path that ends a holding on one of them. **Hidden is
   portal-only** (`badges::Prefs`, VTI-BDG-030): walls, `holders/list` and counts leave a hidden
   holder out; `awards/list` shows owners `hidden: true`; memberships and credentials stand.
   Holder's tasks accept the portal's delegated key (`vtc/badges` in `PORTAL_SIGNING_SCOPE`);

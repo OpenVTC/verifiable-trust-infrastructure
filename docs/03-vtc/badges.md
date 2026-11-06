@@ -70,14 +70,28 @@ credential is re-issued with every accepted award as evidence.
 
 A badge group issues each holder an Open Badges 3.0 `OpenBadgeCredential` in place of a
 group membership credential: `issuer` the group's DID, `credentialSubject.id` the holder's
-membership DID, the badge as the `Achievement` with the community as its `creator`, and one
-`evidence` entry per accepted award.
+membership DID, the badge as the `Achievement` with the community as its `creator`, the
+community's own `EndorsementCredential` of the Achievement embedded on it (signed by the
+community's VTA as the community, once per badge, and kept), and one `evidence` entry per
+accepted award. An outside verifier sees who stands behind the issuer from the credential
+alone; the community's authority credential to the badge group says the same.
 
-This build serves the **inside-only** regime: short-lived (`[groups] credential_valid_days`,
-default 30) and renewed by the groups' renewal sweeper while the holder stays, with no
-status mechanism, as a group membership credential. A badge whose holders may show it
-outside the community (long-lived, with a status in the community's own status set) is
-not served yet: `create` refuses `shareableOutside` until it is.
+Two regimes, chosen per badge by `shareableOutside` when it is defined or promoted and fixed
+from then on:
+
+- **Inside only** (the default): short-lived (`[groups] credential_valid_days`, default 30)
+  and renewed by the groups' renewal sweeper while the holder stays, with no status
+  mechanism, as a group membership credential. Taking the badge back stops the renewal.
+- **May be shown outside**: long-lived (`settings.credentialValidDays`, default 730; 30 to
+  3650) with a `credentialStatus` slot in the **community's** revocation list, the one every
+  community credential uses, allocated at random: one slot per badge and holder, reused by
+  every re-issue and renewal. The community flips the bit when the badge is taken back,
+  retired or the holder departs. The status list credential is the community's while the
+  badge credential's issuer is the group; the W3C Bitstring Status List algorithm compares
+  no issuers and expects they may differ.
+
+Sharing an award outside (a public verification page and a baked image, per award and at
+the holder's choice) is the next phase; this build issues the credential such a badge needs.
 
 ## In the member portal and the console
 

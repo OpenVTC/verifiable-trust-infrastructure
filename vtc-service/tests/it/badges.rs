@@ -594,9 +594,14 @@ async fn an_award_is_an_offer_until_accepted_then_the_group_issues_the_credentia
     assert!(doc["payload"]["award"]["credentialId"].is_string());
     assert_eq!(doc["payload"]["badge"]["count"], 1);
     assert_eq!(doc["payload"]["badge"]["hidden"], false);
+    // The community's endorsement is signed first, once; then the credential as the group.
     let signed = fix.vta.calls_of(SIGN_DOCUMENT);
-    assert_eq!(signed.len(), signed_before + 1);
-    let vc = &signed[signed_before]["document"];
+    assert_eq!(signed.len(), signed_before + 2);
+    assert_eq!(
+        signed[signed_before]["document"]["type"][1],
+        "EndorsementCredential"
+    );
+    let vc = &signed[signed_before + 1]["document"];
     assert_eq!(
         vc["type"],
         json!(["VerifiableCredential", "OpenBadgeCredential"])
@@ -977,6 +982,159 @@ async fn retiring_keeps_the_record_and_deletes_the_group() {
     assert_eq!(tt_error_code(&doc), RETIRE_ERR_ALREADY_RETIRED, "{doc}");
 }
 
+/// The community's revocation list, as the badge credentials' status answers over it.
+async fn revocation_list(fix: &Fixture) -> vtc_service::status_list::StatusListState {
+    vtc_service::status_list::get_state(
+        &fix.vtc.state.status_lists_ks,
+        affinidi_status_list::StatusPurpose::Revocation,
+    )
+    .await
+    .unwrap()
+    .unwrap()
+}
+
+fn slot_of(vc: &Value) -> usize {
+    vc["credentialStatus"]["statusListIndex"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_badge_shown_outside_carries_a_status_in_the_communitys_list_and_is_revoked_with_the_award()
+ {
+    let fix = fixture().await;
+    set_settings(&fix, |s| s.credential_valid_days = Some(400)).await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["shareableOutside"] = json!(true);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let created = doc["payload"].clone();
+    let badge_id = created["badge"]["badgeId"].as_str().unwrap().to_string();
+    let group_did = created["group"]["groupDid"].as_str().unwrap().to_string();
+    assert_eq!(created["badge"]["shareableOutside"], true);
+    let (_, doc) = fix.as_member("show", json!({ "badgeId": badge_id })).await;
+    assert_eq!(doc["payload"]["credentialRegime"], "outside", "{doc}");
+
+    // Accepting signs twice: the community's endorsement of the Achievement, kept on the
+    // badge (VTI-BDG-060), then the group's credential embedding it, with a status slot in
+    // the community's revocation list (VTI-BDG-062).
+    let signed_before = fix.vta.calls_of(SIGN_DOCUMENT).len();
+    let first = fix.hold(&badge_id).await;
+    let signed = fix.vta.calls_of(SIGN_DOCUMENT);
+    assert_eq!(signed.len(), signed_before + 2);
+    let endorsement = &signed[signed_before];
+    assert_eq!(
+        endorsement["document"]["type"],
+        json!(["VerifiableCredential", "EndorsementCredential"])
+    );
+    assert_eq!(endorsement["document"]["issuer"]["id"], TEST_VTC_DID);
+    assert_ne!(
+        endorsement["keyId"],
+        json!(format!("{group_did}#key-1")),
+        "signed as the community, not the group"
+    );
+    let vc = &signed[signed_before + 1]["document"];
+    assert_eq!(vc["issuer"]["id"], group_did);
+    let embedded = &vc["credentialSubject"]["achievement"]["endorsement"][0];
+    assert_eq!(embedded["type"], endorsement["document"]["type"]);
+    assert!(
+        embedded["proof"].is_object(),
+        "the endorsement rides signed: {vc}"
+    );
+    assert_eq!(vc["credentialStatus"]["type"], "BitstringStatusListEntry");
+    assert_eq!(vc["credentialStatus"]["statusPurpose"], "revocation");
+    let slot = slot_of(vc);
+    let valid_until = chrono::DateTime::parse_from_rfc3339(vc["validUntil"].as_str().unwrap())
+        .unwrap()
+        .with_timezone(&Utc);
+    let days = (valid_until - Utc::now()).num_days();
+    assert!(
+        (398..=400).contains(&days),
+        "the community's own life: {days} days"
+    );
+    assert!(!revocation_list(&fix).await.is_set(slot));
+
+    // A repeat award re-issues in the same slot, with the endorsement already held: one
+    // signature, as the group.
+    let second = fix.offer(&badge_id, &fix.member_entry).await;
+    let (status, doc) = fix
+        .as_member("mine/accept", json!({ "awardId": second }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let signed = fix.vta.calls_of(SIGN_DOCUMENT);
+    assert_eq!(signed.len(), signed_before + 3);
+    assert_eq!(slot_of(&signed.last().unwrap()["document"]), slot);
+
+    // Taking one award back re-issues, the bit still clear; taking the last back flips it
+    // (VTI-BDG-063).
+    let (status, doc) = fix
+        .as_admin("awards/revoke", json!({ "awardId": first, "reason": "x" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(!revocation_list(&fix).await.is_set(slot));
+    assert_eq!(
+        slot_of(&fix.vta.calls_of(SIGN_DOCUMENT).last().unwrap()["document"]),
+        slot
+    );
+    let (status, doc) = fix
+        .as_admin("awards/revoke", json!({ "awardId": second, "reason": "x" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(revocation_list(&fix).await.is_set(slot));
+
+    // Retiring revokes every holder's credential.
+    let (other, other_entry) = fix.another_member().await;
+    let award = fix.offer(&badge_id, &other_entry).await;
+    let (status, doc) = fix
+        .as_party(&other, "mine/accept", json!({ "awardId": award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let other_slot = slot_of(&fix.vta.calls_of(SIGN_DOCUMENT).last().unwrap()["document"]);
+    assert_ne!(other_slot, slot);
+    assert!(!revocation_list(&fix).await.is_set(other_slot));
+    let chair = GatedAdmin::new(&fix.vtc).await;
+    let (status, doc) = chair
+        .call(
+            &fix.vtc,
+            &task("retire"),
+            json!({ "badgeId": badge_id, "reason": "season over" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(revocation_list(&fix).await.is_set(other_slot));
+
+    // A departure revokes what the member still holds outside.
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Year one", &sha, false);
+    body["shareableOutside"] = json!(true);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let year_one = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fix.hold(&year_one).await;
+    let held = slot_of(&fix.vta.calls_of(SIGN_DOCUMENT).last().unwrap()["document"]);
+    assert!(!revocation_list(&fix).await.is_set(held));
+    vtc_service::badges::credential::revoke_departed(&fix.vtc.state, &fix.member_entry)
+        .await
+        .unwrap();
+    assert!(revocation_list(&fix).await.is_set(held));
+    // An inside-only badge gets no slot and no status.
+    let inside = fix.community_badge("Inside", false).await["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fix.hold(&inside).await;
+    let signed = fix.vta.calls_of(SIGN_DOCUMENT);
+    let vc = &signed.last().unwrap()["document"];
+    assert!(vc.get("credentialStatus").is_none(), "{vc}");
+    assert!(vc["credentialSubject"]["achievement"]["endorsement"][0]["proof"].is_object());
+}
+
 #[tokio::test]
 async fn settings_change_takes_config_admin_and_a_bound_step_up() {
     let fix = fixture().await;
@@ -1053,12 +1211,7 @@ async fn create_refuses_what_its_specification_declares() {
         )
         .await;
     assert_eq!(tt_error_code(&doc), CREATE_ERR_IMAGE_NOT_FOUND, "{doc}");
-    // Settings that do not fit: showing outside is not served; a kudos badge takes no
-    // owners.
-    let mut body = fix.community_body("x", &sha, false);
-    body["shareableOutside"] = json!(true);
-    let (_, doc) = fix.as_admin("create", body).await;
-    assert_eq!(tt_error_code(&doc), CREATE_ERR_SETTINGS_INVALID, "{doc}");
+    // Settings that do not fit: a kudos badge takes no owners.
     let member_sha = fix.upload(&fix.member).await;
     let (_, doc) = fix
         .as_member(
@@ -1222,13 +1375,16 @@ async fn promote_refuses_what_its_specification_declares_then_offers_every_holde
         .as_member("mine/accept", json!({ "awardId": award }))
         .await;
     assert_eq!(status, StatusCode::OK);
+    // Asking for it while the community lets nobody ask.
+    set_settings(&fix, |s| s.members_may_request = false).await;
     let (_, doc) = fix
         .as_admin(
             "promote",
-            json!({ "badgeId": kudos, "shareableOutside": true, "reason": "x" }),
+            json!({ "badgeId": kudos, "requestable": true, "reason": "x" }),
         )
         .await;
     assert_eq!(tt_error_code(&doc), PROMOTE_ERR_SETTINGS_INVALID, "{doc}");
+    set_settings(&fix, |s| s.members_may_request = true).await;
     let (_, doc) = fix
         .as_admin(
             "promote",

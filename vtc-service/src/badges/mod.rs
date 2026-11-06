@@ -263,6 +263,11 @@ pub struct Badge {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<DateTime<Utc>>,
+    /// The community's Open Badges `EndorsementCredential` of the badge's Achievement,
+    /// signed as the community and embedded in every holder's credential (VTI-BDG-060).
+    /// Signed on first need and kept; never answered on the wire by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endorsement: Option<Value>,
 }
 
 fn yes() -> bool {
@@ -761,6 +766,67 @@ pub async fn kudos_total(
             a.is_accepted() && kudos.contains(a.badge_id.as_str()) && !p.is_hidden(&a.badge_id)
         })
         .count())
+}
+
+// ─── the outside regime: a holder's status slot ──────────────────────────
+
+/// A holder's slot in the community's revocation list, for a badge its holders may show
+/// outside (VTI-BDG-062): one per badge and holder, reused by every re-issue and renewal,
+/// flipped when the badge is taken back, retired or the holder departs (VTI-BDG-063).
+fn slot_key(badge_id: &str, entry_id: &str) -> Vec<u8> {
+    format!("bslot:{badge_id}:{entry_id}").into_bytes()
+}
+
+pub async fn holder_slot(
+    ks: &KeyspaceHandle,
+    badge_id: &str,
+    entry_id: &str,
+) -> Result<Option<u32>, AppError> {
+    ks.get(slot_key(badge_id, entry_id)).await
+}
+
+pub async fn put_holder_slot(
+    ks: &KeyspaceHandle,
+    badge_id: &str,
+    entry_id: &str,
+    slot: u32,
+) -> Result<(), AppError> {
+    ks.insert(slot_key(badge_id, entry_id), &slot).await
+}
+
+/// Every holder's slot of `badge_id`: `(entryId, slot)`.
+pub async fn holder_slots_of_badge(
+    ks: &KeyspaceHandle,
+    badge_id: &str,
+) -> Result<Vec<(String, u32)>, AppError> {
+    let prefix = format!("bslot:{badge_id}:").into_bytes();
+    let mut out = Vec::new();
+    for (key, raw) in ks.prefix_iter_raw(prefix.clone()).await? {
+        let entry = String::from_utf8_lossy(&key[prefix.len()..]).to_string();
+        if let Ok(slot) = serde_json::from_slice::<u32>(&raw) {
+            out.push((entry, slot));
+        }
+    }
+    Ok(out)
+}
+
+/// Every slot `entry_id` holds, across badges: `(badgeId, slot)`.
+pub async fn holder_slots_of_entry(
+    ks: &KeyspaceHandle,
+    entry_id: &str,
+) -> Result<Vec<(String, u32)>, AppError> {
+    let suffix = format!(":{entry_id}");
+    let mut out = Vec::new();
+    for (key, raw) in ks.prefix_iter_raw(b"bslot:".to_vec()).await? {
+        let key = String::from_utf8_lossy(&key).to_string();
+        if let Some(rest) = key.strip_prefix("bslot:")
+            && let Some(badge_id) = rest.strip_suffix(suffix.as_str())
+            && let Ok(slot) = serde_json::from_slice::<u32>(&raw)
+        {
+            out.push((badge_id.to_string(), slot));
+        }
+    }
+    Ok(out)
 }
 
 // ─── departure ───────────────────────────────────────────────────────────

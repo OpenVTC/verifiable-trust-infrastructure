@@ -412,6 +412,20 @@ function SettingsPage() {
               <Field label="Days an unanswered offer stands" hint="Empty: offers never expire.">
                 {number("offerExpiresAfterDays", 1, 365)}
               </Field>
+              <Field
+                label="Days a credential shown outside lasts"
+                hint="For badges marked shareable outside. Empty: two years. Renewed while held; revoked when taken back."
+              >
+                <input
+                  type="number"
+                  min={30}
+                  max={3650}
+                  value={current.credentialValidDays ?? ""}
+                  onChange={(e) =>
+                    set({ credentialValidDays: e.target.value === "" ? undefined : Number(e.target.value) })
+                  }
+                />
+              </Field>
             </div>
             <label className="checkbox">
               <input
@@ -515,6 +529,7 @@ function CreateBadgePage() {
   const [requestable, setRequestable] = useState(true);
   const [listed, setListed] = useState(true);
   const [holdersVisibleTo, setHoldersVisibleTo] = useState<"admins" | "groupMembers" | "members">("members");
+  const [shareableOutside, setShareableOutside] = useState(false);
   const [owners, setOwners] = useState<string[]>([]);
   const [automatic, setAutomatic] = useState(false);
   const [rule, setRule] = useState<DynamicRule>(emptyRule);
@@ -533,6 +548,7 @@ function CreateBadgePage() {
         requestable: automatic ? false : requestable && mayRequest,
         listed,
         holdersVisibleTo,
+        shareableOutside,
         ...(owners.length > 0 ? { owners } : {}),
         ...(automatic ? { automatic: { rule: wireRule(rule) } } : {}),
         reason: reason.trim(),
@@ -595,9 +611,25 @@ function CreateBadgePage() {
           <div className="span-2 badge-settings-section">
             <h4>Credential</h4>
             <p className="muted">
-              Inside the community: short-lived and renewed while the member holds the badge, with no status
-              list. A badge its holders may show outside the community comes in a later release.
+              Each holder gets an Open Badge credential issued by the badge&rsquo;s own group identity and endorsed
+              by the community. Inside the community it is short-lived and renewed while they hold the badge, with
+              no status list.
             </p>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={shareableOutside}
+                onChange={(e) => setShareableOutside(e.target.checked)}
+              />
+              <span className="checkbox-text">
+                May be shown outside the community
+                <br />
+                <span className="muted">
+                  Long-lived ({settings.data?.credentialValidDays ?? 730} days, set in the settings) with a
+                  revocation slot in the community&rsquo;s own status list. Fixed once created.
+                </span>
+              </span>
+            </label>
           </div>
           <div className="span-2 badge-settings-section">
             <h4>Rules</h4>
@@ -1318,6 +1350,7 @@ function PromoteForm({ badge }: { badge: Badge }) {
   const [open, setOpen] = useState(false);
   const [owners, setOwners] = useState<string[]>([]);
   const [requestable, setRequestable] = useState(true);
+  const [shareableOutside, setShareableOutside] = useState(false);
   const [reason, setReason] = useState("");
   const mayRequest = settings.data?.membersMayRequest ?? true;
   const promote = useMutation({
@@ -1326,6 +1359,7 @@ function PromoteForm({ badge }: { badge: Badge }) {
         badgeId: badge.badgeId,
         ...(owners.length > 0 ? { owners } : {}),
         requestable: requestable && mayRequest,
+        shareableOutside,
         reason: reason.trim(),
       }),
     onSuccess: (r) => {
@@ -1371,6 +1405,16 @@ function PromoteForm({ badge }: { badge: Badge }) {
                 onChange={(e) => setRequestable(e.target.checked)}
               />
               <span className="checkbox-text">Members may ask for it</span>
+            </label>
+            <label className="checkbox span-2">
+              <input
+                type="checkbox"
+                checked={shareableOutside}
+                onChange={(e) => setShareableOutside(e.target.checked)}
+              />
+              <span className="checkbox-text">
+                May be shown outside the community (a long-lived credential with a revocation slot)
+              </span>
             </label>
             <Field label="Why" className="span-2" hint="Recorded in the audit trail.">
               <input value={reason} maxLength={1024} onChange={(e) => setReason(e.target.value)} />
