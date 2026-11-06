@@ -28,6 +28,8 @@ members = [
   "vtc-client",
   "vtc-service",
   "vti-common",
+  # What the MCP bridges share (guard, recorder): `publish = false`.
+  "vti-mcp-common",
   # The generated Trust Task types (trust-tasks-build), one crate per spec
   # family group, and the facade that merges their Type URI indexes. See the
   # Trust Task wire types section of CLAUDE.md.
@@ -89,6 +91,7 @@ default-members = [
   "vtc-client",
   "vtc-service",
   "vti-common",
+  "vti-mcp-common",
   "vti-secrets",
   "vti-specs",
   "vti-specs-core",

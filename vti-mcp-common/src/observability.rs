@@ -62,16 +62,20 @@ impl LogFormat {
 /// Install the stderr subscriber.
 ///
 /// `RUST_LOG` still wins when set, so existing debugging habits keep working;
-/// otherwise the filter is `vta_mcp=<level>` plus a quieter floor for the SDK,
+/// otherwise the filter is `<bridge_target>=<level>` — the bridge crate's own
+/// tracing target, `vta_mcp` or `vtc_mcp` — plus a quieter floor for the SDKs,
 /// whose DIDComm layer is chatty at `debug` and would bury the bridge's own
 /// lines.
 ///
 /// stdout is the MCP JSON-RPC channel. Nothing may ever be written there —
 /// a single stray `println!` corrupts the stream and the host reports a broken
 /// server with no further explanation.
-pub fn init_tracing(level: &str, format: LogFormat) {
+pub fn init_tracing(bridge_target: &str, level: &str, format: LogFormat) {
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| {
-        format!("vta_mcp={level},vta_sdk=warn,affinidi_messaging_sdk=warn,rmcp=warn")
+        format!(
+            "{bridge_target}={level},vti_mcp_common={level},vta_sdk=warn,vtc_client=warn,\
+             affinidi_messaging_sdk=warn,rmcp=warn"
+        )
     });
     let filter = tracing_subscriber::EnvFilter::new(filter);
     let builder = tracing_subscriber::fmt()
@@ -87,8 +91,9 @@ pub fn init_tracing(level: &str, format: LogFormat) {
 /// Payload keys whose values are safe to record verbatim.
 ///
 /// An allowlist, not a denylist: a denylist has to predict every name a secret
-/// might arrive under, and `vta_call` takes arbitrary payloads for operations
-/// this build has never heard of. Anything not named here is elided.
+/// might arrive under, and the generic `vta_call` / `vtc_call` takes arbitrary
+/// payloads for operations this build has never heard of. Anything not named
+/// here is elided.
 const SAFE_KEYS: &[&str] = &[
     "algorithm",
     "alg",
@@ -229,12 +234,12 @@ impl CallRecord {
     }
 }
 
-/// Running totals, surfaced by the `vta_status` tool.
+/// Running totals, surfaced by the bridge's status tool.
 #[derive(Debug, Default)]
 pub struct Counters {
-    /// Calls that reached the VTA (or a local handler) and returned.
+    /// Calls that reached the node (or a local handler) and returned.
     pub ok: AtomicU64,
-    /// Calls that reached the VTA and failed.
+    /// Calls that reached the node and failed.
     pub errors: AtomicU64,
     /// Calls the local guard refused outright.
     pub denied: AtomicU64,
@@ -280,7 +285,7 @@ impl AuditLog {
     /// Open (or create) the audit file, owner-only.
     ///
     /// The records name operations, DIDs, context ids and key ids — not
-    /// secrets, but a map of what this VTA holds and who touches it. That is
+    /// secrets, but a map of what this node holds and who touches it. That is
     /// worth 0600 on its own.
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let mut options = std::fs::OpenOptions::new();
@@ -304,14 +309,14 @@ impl AuditLog {
         })
     }
 
-    /// Where this log is being written — reported by `vta_status` so an
-    /// operator does not have to remember the flag they passed.
+    /// Where this log is being written — reported by the bridge's status tool
+    /// so an operator does not have to remember the flag they passed.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Append one already-rendered record. A failed write is logged and
-    /// swallowed: losing an audit line is bad, but failing a VTA call because a
+    /// swallowed: losing an audit line is bad, but failing a call because a
     /// disk filled up is worse, and the stderr log still carries the same event.
     pub fn append(&self, line: &Value) {
         let Ok(mut file) = self.file.lock() else {
@@ -324,7 +329,7 @@ impl AuditLog {
     }
 }
 
-/// UTC timestamp in RFC 3339, the format the VTA's own audit rows use.
+/// UTC timestamp in RFC 3339, the format the nodes' own audit rows use.
 pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -340,7 +345,8 @@ impl CallSeq {
     }
 }
 
-/// How many recent calls stay in memory for the `vta://calls/recent` resource.
+/// How many recent calls stay in memory for the bridge's `calls/recent`
+/// resource (`vta://calls/recent`, `vtc://calls/recent`).
 const RING_CAPACITY: usize = 100;
 
 /// Everything that remembers what the bridge did: the call counter, the

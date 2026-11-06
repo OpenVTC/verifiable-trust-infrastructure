@@ -1,17 +1,23 @@
-//! What this bridge is *allowed* to do, independent of what its VTA identity
+//! What a bridge is *allowed* to do, independent of what its node identity
 //! could do.
 //!
-//! The VTA is the authority: every call is gated server-side on the bridge
-//! identity's role, ACL, context scope and — where enabled — the approvals /
-//! DTTE policy. This module is a **second, local** gate in front of it, and it
-//! exists because of a specific gap in how MCP hosts grant permission.
+//! The node — a VTA or a VTC — is the authority: every call is gated
+//! server-side on the bridge identity's role, ACL, scope or capabilities and
+//! — where enabled — the approvals policy. This module is a **second, local**
+//! gate in front of it, and it exists because of a specific gap in how MCP
+//! hosts grant permission.
 //!
 //! A host approves a *tool*, not a *call*. Once an operator answers "always
-//! allow" to `vta_call`, every Trust Task URI the VTA serves is reachable with
-//! no further prompt — `contexts/delete/1.1` on the same approval as
-//! `contexts/list/1.0`. The host cannot tell those apart; it sees one tool
-//! name. So the per-operation decision has to be made here, where the URI is
-//! known.
+//! allow" to the generic `vta_call` / `vtc_call`, every Trust Task URI the
+//! node serves is reachable with no further prompt — `contexts/delete/1.1` on
+//! the same approval as `contexts/list/1.0`. The host cannot tell those apart;
+//! it sees one tool name. So the per-operation decision has to be made here,
+//! where the URI is known.
+//!
+//! One table serves every bridge. A slug is a slug whichever node serves it,
+//! and a placement decided for one bridge (`acl/grant` moves authority) is
+//! the same decision for the other; the census tests hold every pinned
+//! request URI, and every URI a bridge can dispatch, to a classified verb.
 //!
 //! Three mechanisms, cheapest first:
 //!
@@ -72,12 +78,8 @@ impl Risk {
     /// What a tool wrapping an operation of this class must declare as its MCP
     /// `readOnlyHint` / `destructiveHint`. Hosts render both and some gate on
     /// them, so a tool whose annotation disagrees with its operation's class is
-    /// a security bug rather than a cosmetic one — which is what
-    /// `server::tests::tool_annotations_agree_with_the_risk_classifier` pins.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the annotation census test")
-    )]
+    /// a security bug rather than a cosmetic one — which is what each bridge's
+    /// `tool_annotations_agree_with_the_risk_classifier` test pins.
     pub fn hints(self) -> (bool, bool) {
         (self == Self::ReadOnly, self == Self::Destructive)
     }
@@ -293,6 +295,105 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // that `finalize-import` may later impose on the whole agent.
     ("vta/backup/get-chunk", Risk::Sensitive),
     ("vta/backup/put-chunk", Risk::Sensitive),
+    // ── The community's families (a `vtc-mcp` bridge reaches these) ──────
+    //
+    // The node-neutral `backup/*` family the VTC serves: the same full-state
+    // dump as `vta/backup/*`, classified the same way in both directions.
+    ("backup/initiate-export", Risk::Sensitive),
+    ("backup/complete-export", Risk::Sensitive),
+    ("backup/get-chunk", Risk::Sensitive),
+    ("backup/put-chunk", Risk::Sensitive),
+    // One signed document each, and what comes back is the community's
+    // whole configuration, its member directory, or the administrators'
+    // notes about a member (released only behind a `Critical` step-up).
+    ("vtc/backup/export", Risk::Sensitive),
+    ("vtc/config/export", Risk::Sensitive),
+    ("vtc/directory/export", Risk::Sensitive),
+    ("vtc/directory/notes/export", Risk::Sensitive),
+    // Authority, conferred. An admin invitation and the first-administrator
+    // bootstrap seat an administrator; a role change, a custom role and the
+    // record of an offline ACL write move what an entry may do; the join
+    // decision, direct admission and make-membership make a member and issue
+    // the membership credential; a vetter grant confers vetting authority;
+    // an endorsement is a credential the community signs about a member.
+    ("vtc/admin/invites/create", Risk::Sensitive),
+    ("vtc/admin/bootstrap", Risk::Sensitive),
+    ("vtc/members/role/set", Risk::Sensitive),
+    ("vtc/roles/define", Risk::Sensitive),
+    ("vtc/operator/offline-write", Risk::Sensitive),
+    ("vtc/join-requests/decide", Risk::Sensitive),
+    ("vtc/members/admit", Risk::Sensitive),
+    ("vtc/members/make-membership", Risk::Sensitive),
+    ("vtc/vetting/vetters/grant", Risk::Sensitive),
+    ("vtc/endorsements/issue", Risk::Sensitive),
+    // Groups and boards: an appointment is a resource grant on the
+    // appointee's entry; a binding provisions capabilities (or room
+    // admission) into every member's entry; adding or admitting a member
+    // issues the group's credential and may confer what the group's bindings
+    // carry. The verb rule reads each as an ordinary `add` / `decide`.
+    ("vtc/boards/facilitators/add", Risk::Sensitive),
+    ("vtc/groups/managers/add", Risk::Sensitive),
+    ("vtc/groups/bindings/add", Risk::Sensitive),
+    ("vtc/groups/members/add", Risk::Sensitive),
+    ("vtc/groups/requests/decide", Risk::Sensitive),
+    // Admission to a community room, decided by an administrator: the same
+    // decision `rooms/owner/issue-membership` makes.
+    ("vtc/rooms/community/members/add", Risk::Sensitive),
+    // A member presents a credential to the community, which keeps the
+    // disclosed claims: a disclosure on the principal's behalf, like
+    // `vault/credentials/present`.
+    ("vtc/directory/card/present", Risk::Sensitive),
+    // Networks: joining one as a community, and acknowledging a network's
+    // membership offer, each bind the community to a network's rules; a room
+    // pass is a credential minted to the caller on presented evidence.
+    ("vtc/networks/join", Risk::Sensitive),
+    ("vtn/memberships/join", Risk::Sensitive),
+    ("vtn/membership/acknowledge", Risk::Sensitive),
+    ("vtn/rooms/pass", Risk::Sensitive),
+    // A listed party asking about its own membership offer: a read whose
+    // verb would otherwise be taken as making one.
+    ("vtn/membership/offer", Risk::ReadOnly),
+    // Git namespaces: binding and reseating a namespace, adopting a repository
+    // (which names its owners), transferring one, the emergency self-grant and
+    // its ratification each move forge authority.
+    ("git-ns/namespace/bind", Risk::Sensitive),
+    ("git-ns/namespace/reseat", Risk::Sensitive),
+    ("git-ns/repo/adopt", Risk::Sensitive),
+    ("git-ns/repo/transfer", Risk::Sensitive),
+    ("git-ns/right/break-glass", Risk::Sensitive),
+    ("git-ns/right/ratify", Risk::Sensitive),
+    // Activating a policy changes what every later decision is judged by —
+    // the same tier as `policy/upsert`.
+    ("policy/activate", Risk::Sensitive),
+    // Sign-in and step-up factors. `respond` delivers the member's signed
+    // grant that binds a browser key to their identity; enrolling or
+    // authorising a signing key, or an approver or step-up passkey, adds a
+    // factor that will answer for the subject from then on.
+    ("auth/oob/respond", Risk::Sensitive),
+    ("auth/signing-key/authorize", Risk::Sensitive),
+    ("auth/signing-key/enroll", Risk::Sensitive),
+    ("auth/step-up/approver/enroll", Risk::Sensitive),
+    ("auth/step-up/approver/invite", Risk::Sensitive),
+    ("auth/passkey/enroll/invite", Risk::Sensitive),
+    // Credential exchange: an offer opens an issuance, approving a pending
+    // one issues, and `present` discloses a credential to a verifier.
+    ("credential-exchange/offer", Risk::Sensitive),
+    ("credential-exchange/pending/approve", Risk::Sensitive),
+    ("credential-exchange/present", Risk::Sensitive),
+    // Rooms, host side. Minting an epoch seals the room's history under the
+    // owner's authority; transferring the room moves that authority. A blob
+    // chunk is a fetch of ciphertext — a read the verb rule would take for the
+    // upload's `chunk`.
+    ("rooms/epoch/mint", Risk::Sensitive),
+    ("rooms/owner/transfer", Risk::Sensitive),
+    ("rooms/blobs/chunk", Risk::ReadOnly),
+    // A trustee authorised onto an election holds a share of its key.
+    ("voting/trustees/authorize", Risk::Sensitive),
+    // A member's own badge wall: declining an offer and hiding a badge are
+    // theirs to undo and remove nothing from anyone else, so neither takes
+    // the confirmation the verbs `decline` and `hide` carry elsewhere.
+    ("vtc/badges/mine/decline", Risk::Mutating),
+    ("vtc/badges/mine/hide", Risk::Mutating),
 ];
 
 /// Final-segment verbs that only ever read.
@@ -340,6 +441,51 @@ const READ_VERBS: &[&str] = &[
     // `persona/attribute/list` — which returns the values themselves — stays
     // ReadOnly would be incoherent.
     "analyze",
+    // ── The community's families ─────────────────────────────────────────
+    // `auth/passkey/admin-list`, `git-ns/account/link-status`,
+    // `git-ns/view`, `git-ns/right/issued-by-departed`: administrators' reads.
+    "admin-list",
+    "link-status",
+    "view",
+    "issued-by-departed",
+    // `policy/active`: which policy is in force.
+    "active",
+    // `vtc/admin/events/subscribe`: a stream of hints to re-read — never a
+    // record, never an id (the admin console live channel).
+    "subscribe",
+    // `vtc/directory/card/public`, `vtc/directory/disclosure`: what the
+    // directory shows, and the statement of what it discloses to whom.
+    "public",
+    "disclosure",
+    // `vtc/join-requests/manifest`: what a community asks of an applicant.
+    "manifest",
+    // `vtc/members/credentials`: the membership-pair credential bodies the
+    // community holds for a member — public credentials, no secret.
+    "credentials",
+    // `vtc/policies/test`: evaluates a policy against an input and keeps
+    // nothing.
+    "test",
+    // `vtc/registry/diagnostics`, `vtc/relationships/graph`,
+    // `vtc/networks/evidence` (the credentials linking a group to a network),
+    // `vtc/elections/tombstones`, `registry/recognition` (a TRQP query).
+    "diagnostics",
+    "graph",
+    "evidence",
+    "tombstones",
+    "recognition",
+    // `rooms/epoch/chain`, `rooms/epoch/commits`: the epoch chain and its
+    // commits, read. (`rooms/keys/chain` is an override above: it stores.)
+    "chain",
+    "commits",
+    // `voting/board/{consistency,head,inclusion}`: proofs over the board.
+    "consistency",
+    "head",
+    "inclusion",
+    // `vtn/directory/{federated,search,summary}`, `vtn/graph/member`.
+    "federated",
+    "search",
+    "summary",
+    "member",
 ];
 
 /// Final-segment verbs that remove state or access.
@@ -393,7 +539,341 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
     // enough others it decides what the election says — a trustee's word, like
     // `attest`.
     "decrypt",
+    // ── The community's families ─────────────────────────────────────────
+    // `withdraw`: a board idea or note, a join request, a published hidden
+    // vetting criterion — each taken back for good.
+    "withdraw",
+    // `credential-exchange/pending/deny`, `vetting/decline`: close a request
+    // against the asker.
+    "deny",
+    "decline",
+    // `git-ns/account/unlink`, `git-ns/namespace/unbind`: sever a forge
+    // account or a namespace from the community.
+    "unlink",
+    "unbind",
+    // `config/restart`: the service goes down to come back.
+    "restart",
+    // `voting/election/close`, `vtc/elections/close`: ends the voting;
+    // `vtc/elections/certify`: fixes the result for good.
+    "close",
+    "certify",
+    // `vtc/groups/leave`, `vtc/networks/leave`, `vtn/memberships/leave`: ends
+    // the caller's own membership.
+    "leave",
+    // `vtc/members/admin-remove`, `vtc/members/self-remove`.
+    "admin-remove",
+    "self-remove",
+    // `voting/ballot/cast`, `cast-encrypted`: the member's vote — confirmed
+    // every time, like `vta/pcs/vote`.
+    "cast",
+    "cast-encrypted",
+    // `vtc/boards/notes/hide`: moderation the board's audience sees.
+    "hide",
+    // `vtc/registry/sync-jobs/discard`: drops a pending projection.
+    "discard",
+    // `vtc/relationships/suspend`, `vtn/listings/suspend`: withdraws standing
+    // (reversibly, and a host should still confirm it — as `disable`).
+    "suspend",
+    // `vtc/networks/repudiate`, `vtn/membership/repudiate`,
+    // `vtn/memberships/repudiate`: disowns a membership or a listing.
+    "repudiate",
+    // `vtc/vetting/vetters/pcs-binding/reset`: discards a vetter's binding.
+    "reset",
+    // `vtc/vetting/revoke-statement`: withdraws a vetting statement.
+    "revoke-statement",
+    // `rooms/epoch/prune`, `rooms/records/prune`: the host drops records.
+    "prune",
 ];
+
+/// Final-segment verbs that are deliberately `Mutating`.
+///
+/// Only the census ([`unclassified_verbs`]) reads this — `classify` defaults
+/// to `Mutating` without consulting it, so a runtime miss is safe and a
+/// census miss is loud.
+const MUTATING_VERBS: &[&str] = &[
+    // `notifications/notify`, `notifications/relay`: a counterparty's delivery, which may
+    // be held — replacing a lower revision of the same notification, never anything else.
+    "notify",
+    "relay",
+    // `vta/notifications/dismiss`: hides a held notification from the default list; it
+    // stays readable and listable when asked for (VTI-NTF-052). Removes nothing.
+    "dismiss",
+    // `vta/notifications/deposit`: a client hands over a notification it received for a
+    // persona DID; the VTA holds it exactly as a direct delivery would (VTI-NTF-055).
+    "deposit",
+    // `vta/collection/claim`: records a lease naming the caller as a persona DID's one
+    // collector and closes the VTA's own connection for it (VTI-NTF-082). Removes nothing;
+    // `release` (below) ends it.
+    "claim",
+    // `rooms/keys/act`: signs a host-bound room request as the member — a write or a
+    // curation as readily as a read. It changes nothing here itself, but what it signs
+    // can change a room, so it is never a read.
+    "act",
+    // `rooms/keys/watch`: arms (or cancels) watches at a room's host as the member and
+    // keeps one record per watch until it fires. Removes nothing a client holds.
+    "watch",
+    // `persona/profile/compose`: makes a face, may pool a value and bind
+    // it. Creates; removes nothing.
+    "compose",
+    // `persona/attribute/promote`: widens a local value into the pool.
+    // One-way, but it removes no value and no access — the face and its
+    // wearers carry on presenting exactly what they did.
+    "promote",
+    // `persona/profile/reinstate`: makes a face wearable; binds nothing.
+    "reinstate",
+    // Mints a KeyPackage and retains its private half. Consequential, but
+    // what it emits is public by construction — hence Mutating rather than
+    // Sensitive, unlike its siblings `welcome` and `open`.
+    "key-package",
+    // Advances the group one epoch. No secret crosses in either direction.
+    "commit",
+    // `persona/disclosure/preview` reads like a read and is not one: it
+    // mints the single-use token `present` consumes, so a replayed preview
+    // hands out a second authorisation to disclose. `--read-only` must not
+    // permit it. Nothing leaves the agent, which is why it stops here and
+    // does not join `present` among the sensitive slugs.
+    "preview",
+    // `vta/pcs/*` (the hidden-vetting engine): each stores engine state —
+    // an attestation kept, an enrolment or a draw in flight, tokens or a
+    // class credential taken in — and none removes anything. `prove`
+    // stores nothing, but it exercises the applicant's key to build the
+    // proof a join is decided on, so `--read-only` must not permit it.
+    "verify-attestation",
+    "prove",
+    "root-request",
+    "root-accept",
+    // `vta/pcs/voter/receipt`: keeps a receipt and checks its inclusion;
+    // stores, removes nothing.
+    "receipt",
+    // `vta/pcs/voter/read`: stores nothing, but signs as the member's
+    // membership DID, so `--read-only` must not permit it — as `prove`.
+    "read",
+    // `vta/pcs/trustee/{enrol,deal,keys}`: the trustee's transport key, its
+    // dealing and its key share — each kept, each published or confirmed as
+    // the trustee persona.
+    "enrol",
+    "deal",
+    "keys",
+    "accept",
+    "create",
+    "update",
+    "update-did",
+    "update-retention",
+    "upsert",
+    "put",
+    "put-many",
+    "register",
+    "register-with-server",
+    "admin-register",
+    "enable",
+    "set",
+    "set-wake",
+    "set-default",
+    "assign",
+    "receive",
+    "archive",
+    "unarchive",
+    "restore",
+    "heartbeat",
+    "reconcile",
+    "publish",
+    "cancel",
+    "decision",
+    "request",
+    "approver-set",
+    "start",
+    "finish",
+    "approve-response",
+    "enroll-challenge",
+    "enroll-submit",
+    "issue",
+    "import",
+    "sign",
+    "sign-trust-task",
+    "derive-and-sign",
+    "derive-and-sign-document",
+    "release",
+    "proxy-login",
+    "grant",
+    "change-role",
+    "patch",
+    "integration",
+    "problem-report",
+    "stats-sync",
+    "refresh",
+    "authenticate",
+    "challenge",
+    "export-mnemonic",
+    "initiate-export",
+    "complete-export",
+    "rename",
+    // Renames a DID's key records onto the verification-method ids its
+    // published document declares. Beside `rename`, which is the same act
+    // one record at a time — and deliberately NOT `Sensitive`, despite
+    // touching key custody, which is the call worth explaining.
+    //
+    // `keys/set-exportability` is `Sensitive` because a caller chooses the
+    // direction and one of them lets a protected key out. Here the caller
+    // chooses nothing: the payload carries a DID and a boolean, and every
+    // target name is derived by the agent from that DID's own log. There is
+    // no argument that points it anywhere, so the worst a blanket
+    // `vta_call` approval can do is move records into agreement with the
+    // document they were always supposed to match.
+    //
+    // No secret is emitted either — the response carries verification-method
+    // ids and the *public* halves behind them, both already world-readable
+    // in the DID document.
+    "realign-keys",
+    // ── The community's families ─────────────────────────────────────────
+    // Wallet sign-in (`auth/oob/*`): `identify` claims a request, `redeem`
+    // turns an approved one into its outcome. (`respond` is an override.)
+    "identify",
+    "redeem",
+    // `auth/step-up/approve-request`, `consent/approve-request`: opens a
+    // request someone else answers. `approve` alone is
+    // `credential-exchange/pending/approve`, an override.
+    "approve-request",
+    "approve",
+    // `config/reload`: re-reads configuration.
+    "reload",
+    // Git namespaces: links an account, the bridge's event / job / result
+    // traffic, drift resolution, the break-glass notice, role projection.
+    "link",
+    "event",
+    "job",
+    "result",
+    "resolve",
+    "break-glass-notice",
+    "reproject",
+    // `push/provision`, `push/wake`: the push gateway's allowlist and a wake.
+    "provision",
+    "wake",
+    // Uploads (`vtc/website/upload/*`, `rooms/blobs/upload/*`,
+    // `vtc/directory/images/upload`), and a website deploy.
+    "begin",
+    "chunk",
+    "upload",
+    "deploy",
+    // `task-consent/granted`: a fire-and-forget notice to re-submit.
+    "granted",
+    // `vetting/session`, `witness/session`: opens a session with an
+    // applicant; `witness/session/submit`, `vtc/join-requests/submit`,
+    // `submit-receipt`, `supplement`: the applicant's side of a ceremony.
+    "session",
+    "submit",
+    "submit-receipt",
+    "supplement",
+    // `voting/trustees/confirm`: a trustee confirms the shares it was dealt.
+    "confirm",
+    // `vtc/admin/actions/acknowledge`: an administrator acknowledges an
+    // offline write. (`vtn/membership/acknowledge` is an override.)
+    "acknowledge",
+    // `vtc/auth/admin-session`, `vtc/auth/recognise`: session minting, as
+    // `authenticate`.
+    "admin-session",
+    "recognise",
+    // Boards: `propose` an idea, `decide` on it (`join-requests/decide` and
+    // `groups/requests/decide` are overrides), `select` among them, `add` a
+    // note (the authority-conferring `add`s are overrides).
+    "propose",
+    "decide",
+    "select",
+    "add",
+    // Directory: an administrator asserts a field, defines one, appends a
+    // note; a member asserts their personhood with evidence.
+    "assert",
+    "define",
+    "append",
+    // Groups and networks: `join` a group (joining a network is an
+    // override); deliveries and notices between parties.
+    "join",
+    "deliver",
+    "notice",
+    "send",
+    // Members: the notices the community sends, a renewal, the VMC exchange,
+    // the rotation challenge, the self-removal receipt.
+    "authority-reduced-notice",
+    "authority-reduction-pending-notice",
+    "removal-notice",
+    "step-up-passkey-notice",
+    "removed",
+    "renew",
+    "request-vmc",
+    "solicit-vmc",
+    "vmc",
+    "rotate-challenge",
+    "self-remove-receipt",
+    // `vtc/registry/sync-jobs/retry`, `vtn/outbox/retry`: re-queues.
+    "retry",
+    // `vtc/rooms/storage/migrate`: moves a room's blobs between stores.
+    "migrate",
+    // `vtc/storage/configs/probe`: writes and deletes a canary.
+    "probe",
+    // Hidden vetting: the challenge, a vetter's event mode, class credential,
+    // token draw, profile and resend.
+    "pcs-challenge",
+    "event-mode",
+    "pcs-root",
+    "pcs-tokens",
+    "profile",
+    "resend",
+    // `rooms/records/curate`: demotes, retracts, restores or pins a record.
+    "curate",
+    // Badges: an owner offers one (nothing is issued until the member
+    // accepts), a member gives kudos, a member arranges their own wall.
+    "offer",
+    "give",
+    "arrange",
+];
+
+/// The URIs among `uris` that classify off no override and no known verb,
+/// each with the verb `classify` would have defaulted on, and an empty verb
+/// for one that is not a versioned task URI at all.
+///
+/// Both censuses are built on this: this crate's, over every pinned request
+/// URI, and each bridge's, over every URI its generic tool can dispatch.
+pub fn unclassified_verbs<'a>(uris: impl IntoIterator<Item = &'a str>) -> Vec<(&'a str, &'a str)> {
+    let mut unknown = Vec::new();
+    for uri in uris {
+        let Some(slug) = slug_of(uri) else {
+            unknown.push((uri, ""));
+            continue;
+        };
+        if SLUG_OVERRIDES.iter().any(|(s, _)| *s == slug) {
+            continue;
+        }
+        let verb = slug.rsplit('/').next().unwrap_or(slug);
+        let known = READ_VERBS.contains(&verb)
+            || DESTRUCTIVE_VERBS.contains(&verb)
+            || MUTATING_VERBS.contains(&verb);
+        if !known {
+            unknown.push((uri, verb));
+        }
+    }
+    unknown
+}
+
+/// The census, as a test helper: panic naming every URI in `uris` whose verb
+/// no list classifies, with the lines ready to paste into whichever list is
+/// right.
+///
+/// # Panics
+///
+/// When any URI is unclassified.
+pub fn assert_every_verb_is_known<'a>(uris: impl IntoIterator<Item = &'a str>) {
+    let unknown = unclassified_verbs(uris);
+    let template: String = unknown
+        .iter()
+        .map(|(uri, verb)| format!("    \"{verb}\", // {uri}\n"))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "unclassified Trust Task verbs — decide whether each reads, destroys or merely \
+         mutates, then paste its line into READ_VERBS, DESTRUCTIVE_VERBS or MUTATING_VERBS \
+         in vti-mcp-common/src/guard.rs (shown here ready to paste into whichever list is \
+         right — `classify` would otherwise default it to Mutating silently):\n{template}"
+    );
+}
 
 /// The slug of a Trust Task URI — the part after [`SPEC_PREFIX`], with the
 /// trailing version segment removed. `…/spec/acl/grant/0.1` → `acl/grant`.
@@ -525,6 +1005,9 @@ pub struct Guard {
     pub deny: Vec<String>,
     /// How much of the risky tail needs a human.
     pub confirm: ConfirmLevel,
+    /// What the node is called in a confirmation prompt — `VTA`, `VTC` — so
+    /// the human asked knows which thing the operation is about to touch.
+    pub node: &'static str,
 }
 
 impl Guard {
@@ -553,7 +1036,12 @@ impl Guard {
             ));
         }
         if self.confirm.wants(risk) {
-            return Decision::Confirm(format!("Approve {risk} VTA operation '{slug}'?"));
+            let node = if self.node.is_empty() {
+                String::new()
+            } else {
+                format!("{} ", self.node)
+            };
+            return Decision::Confirm(format!("Approve {risk} {node}operation '{slug}'?"));
         }
         Decision::Allow
     }
@@ -658,179 +1146,42 @@ mod tests {
         assert!(matches!(guard.decide(unknown), Decision::Deny(_)));
     }
 
-    /// Census: every URI the generic `vta_call` gateway can reach must classify
-    /// off an override or a known verb. A new verb landing in the SDK catalog
-    /// fails here rather than quietly defaulting to `Mutating` forever.
+    /// Census: every pinned request Type URI — every version any VTI node
+    /// serves or sends, whichever bridge reaches it — must classify off an
+    /// override or a known verb. A new verb landing in a pinned specification
+    /// fails here rather than quietly defaulting to `Mutating` forever. Each
+    /// bridge runs the same census over what it can dispatch.
     #[test]
-    fn every_dispatchable_uri_has_a_known_verb() {
-        let mut unknown: Vec<(&str, &str)> = Vec::new(); // (uri, verb)
-        for uri in vta_sdk::trust_tasks::dispatch_routed_uris() {
-            let Some(slug) = slug_of(uri) else {
-                unknown.push((uri, uri));
-                continue;
-            };
-            if SLUG_OVERRIDES.iter().any(|(s, _)| *s == slug) {
-                continue;
-            }
-            let verb = slug.rsplit('/').next().unwrap_or(slug);
-            let known = READ_VERBS.contains(&verb)
-                || DESTRUCTIVE_VERBS.contains(&verb)
-                || MUTATING_VERBS.contains(&verb);
-            if !known {
-                unknown.push((uri, verb));
-            }
-        }
-        let template: String = unknown
-            .iter()
-            .map(|(uri, verb)| format!("    \"{verb}\", // {uri}\n"))
-            .collect();
-        assert!(
-            unknown.is_empty(),
-            "unclassified Trust Task verbs — decide whether each reads, destroys or merely \
-             mutates, then paste its line into READ_VERBS, DESTRUCTIVE_VERBS or MUTATING_VERBS \
-             in guard.rs (shown here ready to paste into whichever list is right — `classify` \
-             would otherwise default it to Mutating silently):\n{template}"
-        );
+    fn every_pinned_request_uri_has_a_known_verb() {
+        let request_uris = vti_specs::schema_index::type_uris().filter(|uri| !uri.contains('#'));
+        assert_every_verb_is_known(request_uris);
     }
 
-    /// The verbs that are deliberately `Mutating`. Only the census test reads
-    /// this — `classify` defaults to `Mutating` without consulting it, so a
-    /// runtime miss is safe and a compile-time miss is loud.
-    const MUTATING_VERBS: &[&str] = &[
-        // `notifications/notify`, `notifications/relay`: a counterparty's delivery, which may
-        // be held — replacing a lower revision of the same notification, never anything else.
-        "notify",
-        "relay",
-        // `vta/notifications/dismiss`: hides a held notification from the default list; it
-        // stays readable and listable when asked for (VTI-NTF-052). Removes nothing.
-        "dismiss",
-        // `vta/notifications/deposit`: a client hands over a notification it received for a
-        // persona DID; the VTA holds it exactly as a direct delivery would (VTI-NTF-055).
-        "deposit",
-        // `vta/collection/claim`: records a lease naming the caller as a persona DID's one
-        // collector and closes the VTA's own connection for it (VTI-NTF-082). Removes nothing;
-        // `release` (below) ends it.
-        "claim",
-        // `rooms/keys/act`: signs a host-bound room request as the member — a write or a
-        // curation as readily as a read. It changes nothing here itself, but what it signs
-        // can change a room, so it is never a read.
-        "act",
-        // `rooms/keys/watch`: arms (or cancels) watches at a room's host as the member and
-        // keeps one record per watch until it fires. Removes nothing a client holds.
-        "watch",
-        // `persona/profile/compose`: makes a face, may pool a value and bind
-        // it. Creates; removes nothing.
-        "compose",
-        // `persona/attribute/promote`: widens a local value into the pool.
-        // One-way, but it removes no value and no access — the face and its
-        // wearers carry on presenting exactly what they did.
-        "promote",
-        // `persona/profile/reinstate`: makes a face wearable; binds nothing.
-        "reinstate",
-        // Mints a KeyPackage and retains its private half. Consequential, but
-        // what it emits is public by construction — hence Mutating rather than
-        // Sensitive, unlike its siblings `welcome` and `open`.
-        "key-package",
-        // Advances the group one epoch. No secret crosses in either direction.
-        "commit",
-        // `persona/disclosure/preview` reads like a read and is not one: it
-        // mints the single-use token `present` consumes, so a replayed preview
-        // hands out a second authorisation to disclose. `--read-only` must not
-        // permit it. Nothing leaves the agent, which is why it stops here and
-        // does not join `present` among the sensitive slugs.
-        "preview",
-        // `vta/pcs/*` (the hidden-vetting engine): each stores engine state —
-        // an attestation kept, an enrolment or a draw in flight, tokens or a
-        // class credential taken in — and none removes anything. `prove`
-        // stores nothing, but it exercises the applicant's key to build the
-        // proof a join is decided on, so `--read-only` must not permit it.
-        "verify-attestation",
-        "prove",
-        "root-request",
-        "root-accept",
-        // `vta/pcs/voter/receipt`: keeps a receipt and checks its inclusion;
-        // stores, removes nothing.
-        "receipt",
-        // `vta/pcs/voter/read`: stores nothing, but signs as the member's
-        // membership DID, so `--read-only` must not permit it — as `prove`.
-        "read",
-        // `vta/pcs/trustee/{enrol,deal,keys}`: the trustee's transport key, its
-        // dealing and its key share — each kept, each published or confirmed as
-        // the trustee persona.
-        "enrol",
-        "deal",
-        "keys",
-        "accept",
-        "create",
-        "update",
-        "update-did",
-        "update-retention",
-        "upsert",
-        "put",
-        "put-many",
-        "register",
-        "register-with-server",
-        "admin-register",
-        "enable",
-        "set",
-        "set-wake",
-        "set-default",
-        "assign",
-        "receive",
-        "archive",
-        "unarchive",
-        "restore",
-        "heartbeat",
-        "reconcile",
-        "publish",
-        "cancel",
-        "decision",
-        "request",
-        "approver-set",
-        "start",
-        "finish",
-        "approve-response",
-        "enroll-challenge",
-        "enroll-submit",
-        "issue",
-        "import",
-        "sign",
-        "sign-trust-task",
-        "derive-and-sign",
-        "derive-and-sign-document",
-        "release",
-        "proxy-login",
-        "grant",
-        "change-role",
-        "patch",
-        "integration",
-        "problem-report",
-        "stats-sync",
-        "refresh",
-        "authenticate",
-        "challenge",
-        "export-mnemonic",
-        "initiate-export",
-        "complete-export",
-        "rename",
-        // Renames a DID's key records onto the verification-method ids its
-        // published document declares. Beside `rename`, which is the same act
-        // one record at a time — and deliberately NOT `Sensitive`, despite
-        // touching key custody, which is the call worth explaining.
-        //
-        // `keys/set-exportability` is `Sensitive` because a caller chooses the
-        // direction and one of them lets a protected key out. Here the caller
-        // chooses nothing: the payload carries a DID and a boolean, and every
-        // target name is derived by the agent from that DID's own log. There is
-        // no argument that points it anywhere, so the worst a blanket
-        // `vta_call` approval can do is move records into agreement with the
-        // document they were always supposed to match.
-        //
-        // No secret is emitted either — the response carries verification-method
-        // ids and the *public* halves behind them, both already world-readable
-        // in the DID document.
-        "realign-keys",
-    ];
+    #[test]
+    fn the_confirm_prompt_names_the_node() {
+        let guard = Guard {
+            node: "VTC",
+            ..Guard::default()
+        };
+        match guard.decide(CONTEXTS_DELETE) {
+            Decision::Confirm(prompt) => {
+                assert_eq!(
+                    prompt,
+                    "Approve destructive VTC operation 'vta/contexts/delete'?"
+                );
+            }
+            other => panic!("expected a confirmation, got {other:?}"),
+        }
+        match Guard::default().decide(CONTEXTS_DELETE) {
+            Decision::Confirm(prompt) => {
+                assert_eq!(
+                    prompt,
+                    "Approve destructive operation 'vta/contexts/delete'?"
+                );
+            }
+            other => panic!("expected a confirmation, got {other:?}"),
+        }
+    }
 
     #[test]
     fn deny_beats_allow() {

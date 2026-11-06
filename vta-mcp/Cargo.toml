@@ -32,11 +32,12 @@ vta-sdk = { path = "../vta-sdk", version = "0.85", features = ["client", "sessio
 # and `--confirm` could only ever deny.
 rmcp = { version = "3", features = ["server", "transport-io", "macros", "schemars", "elicitation"] }
 schemars = "1"
-chrono = { workspace = true }
+# The per-operation guard and the call recorder, shared with `vtc-mcp` so a
+# policy fix in one bridge reaches the other.
+vti-mcp-common = { path = "../vti-mcp-common", version = "0.1" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = "1"
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 clap = { workspace = true, features = ["env"] }
