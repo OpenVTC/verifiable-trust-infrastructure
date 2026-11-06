@@ -89,7 +89,7 @@ fn ok_json(value: impl serde::Serialize) -> Result<CallToolResult, McpError> {
 /// transport carried the task). A parked operation is **not** an error: it
 /// completes itself when enough administrators approve, so the result says
 /// so and names the action to follow.
-fn outcome(result: Result<Value, VtcError>) -> Result<Value, McpError> {
+pub(crate) fn outcome(result: Result<Value, VtcError>) -> Result<Value, McpError> {
     match result {
         Ok(value) => Ok(value),
         Err(VtcError::Parked { action_id, message }) => Ok(json!({
@@ -255,7 +255,7 @@ pub struct VtcMcp {
 /// One in-flight guarded call. Created by [`VtcMcp::begin`], consumed by
 /// [`CallGuard::finish`] — which writes the finish line and the audit record,
 /// so a tool cannot return without being recorded.
-struct CallGuard {
+pub(crate) struct CallGuard {
     seq: u64,
     tool: &'static str,
     operation: Option<String>,
@@ -267,7 +267,10 @@ struct CallGuard {
 }
 
 impl CallGuard {
-    fn finish(self, result: Result<Value, McpError>) -> Result<CallToolResult, McpError> {
+    pub(crate) fn finish(
+        self,
+        result: Result<Value, McpError>,
+    ) -> Result<CallToolResult, McpError> {
         let duration_ms = self.started.elapsed().as_millis();
         let (outcome, error) = match &result {
             Ok(_) => ("ok", None),
@@ -280,7 +283,11 @@ impl CallGuard {
         }
     }
 
-    fn refuse(self, outcome: &'static str, message: String) -> Result<CallToolResult, McpError> {
+    pub(crate) fn refuse(
+        self,
+        outcome: &'static str,
+        message: String,
+    ) -> Result<CallToolResult, McpError> {
         let duration_ms = self.started.elapsed().as_millis();
         self.emit(outcome, Some(message.clone()), duration_ms);
         Err(McpError::invalid_request(message, None))
@@ -387,7 +394,7 @@ impl VtcMcp {
         }
     }
 
-    fn client(&self) -> Result<&VtcClient, McpError> {
+    pub(crate) fn client(&self) -> Result<&VtcClient, McpError> {
         match &self.client {
             Some(client) => Ok(client),
             None => Err(McpError::internal_error(
@@ -404,12 +411,16 @@ impl VtcMcp {
 
     /// Gate, log and (where the policy asks) confirm one call. `operation` is
     /// the Trust Task URI the tool resolves to — `None` for the local tools.
-    async fn begin(
+    ///
+    /// `peer` is the host, for a confirmation; without one (a workflow step
+    /// exercised directly) a step that needs confirming is refused rather than
+    /// run unconfirmed.
+    pub(crate) async fn begin(
         &self,
         tool: &'static str,
         operation: Option<&str>,
         args: Value,
-        peer: &Peer<RoleServer>,
+        peer: Option<&Peer<RoleServer>>,
     ) -> Result<CallGuard, Box<Result<CallToolResult, McpError>>> {
         let seq = self.recorder.next_seq();
         let risk = operation.map_or(Risk::ReadOnly, classify);
@@ -439,19 +450,32 @@ impl VtcMcp {
                 tracing::warn!(seq, tool, reason = %reason, "call denied by local policy");
                 Err(Box::new(guard.refuse("denied", reason)))
             }
-            Decision::Confirm(prompt) => match self.confirm(peer, &prompt).await {
-                Ok(true) => Ok(guard),
-                Ok(false) => Err(Box::new(
-                    guard.refuse("declined", format!("{prompt} — declined by the operator.")),
-                )),
-                Err(reason) => Err(Box::new(guard.refuse("denied", reason))),
-            },
+            Decision::Confirm(prompt) => {
+                let answer = match peer {
+                    Some(peer) => self.confirm(peer, &prompt).await,
+                    None => Err(format!(
+                        "{prompt} — no MCP host to ask, so the bridge refused rather than \
+                         proceeding unconfirmed"
+                    )),
+                };
+                match answer {
+                    Ok(true) => Ok(guard),
+                    Ok(false) => Err(Box::new(
+                        guard.refuse("declined", format!("{prompt} — declined by the operator.")),
+                    )),
+                    Err(reason) => Err(Box::new(guard.refuse("denied", reason))),
+                }
+            }
         }
     }
 
     /// Ask the human. `Err` means no answer could be obtained at all, which is
     /// refused rather than waved through.
-    async fn confirm(&self, peer: &Peer<RoleServer>, prompt: &str) -> Result<bool, String> {
+    pub(crate) async fn confirm(
+        &self,
+        peer: &Peer<RoleServer>,
+        prompt: &str,
+    ) -> Result<bool, String> {
         match peer.elicit::<Approval>(prompt.to_string()).await {
             Ok(Some(approval)) => Ok(approval.approve),
             Ok(None) => Ok(false),
@@ -502,7 +526,7 @@ impl VtcMcp {
                 "vtc_list_operations",
                 None,
                 json!({ "patterns": p.patterns, "detail": p.detail }),
-                &peer,
+                Some(&peer),
             )
             .await
         {
@@ -583,7 +607,7 @@ impl VtcMcp {
                 "vtc_call",
                 Some(&p.operation),
                 json!({ "operation": p.operation, "payload": payload }),
-                &peer,
+                Some(&peer),
             )
             .await
         {
@@ -618,7 +642,7 @@ impl VtcMcp {
                 "vtc_supported_tasks",
                 Some(wire::DISCOVERY),
                 json!({ "patterns": p.patterns }),
-                &peer,
+                Some(&peer),
             )
             .await
         {
@@ -668,7 +692,7 @@ impl VtcMcp {
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let call = match self
-            .begin("vtc_whoami", Some(wire::WHOAMI), json!({}), &peer)
+            .begin("vtc_whoami", Some(wire::WHOAMI), json!({}), Some(&peer))
             .await
         {
             Ok(call) => call,
@@ -709,7 +733,7 @@ impl VtcMcp {
         Parameters(p): Parameters<StatusParams>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let call = match self.begin("vtc_status", None, json!({}), &peer).await {
+        let call = match self.begin("vtc_status", None, json!({}), Some(&peer)).await {
             Ok(call) => call,
             Err(refused) => return *refused,
         };
@@ -747,7 +771,7 @@ impl VtcMcp {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = (Self::tool_router() + Self::workflow_router()))]
 impl ServerHandler for VtcMcp {
     fn get_info(&self) -> ServerConfig {
         let mut server_info = Implementation::from_build_env();
@@ -1009,13 +1033,23 @@ mod tests {
 
     #[test]
     fn tool_router_exposes_the_expected_tools() {
-        let router = VtcMcp::tool_router();
+        let router = VtcMcp::tool_router() + VtcMcp::workflow_router();
         let expected = [
             "vtc_list_operations",
             "vtc_call",
             "vtc_supported_tasks",
             "vtc_whoami",
             "vtc_status",
+            "group_setup",
+            "board_create",
+            "election_create",
+            "room_open",
+            "member_admit",
+            "admin_grant",
+            "vtc_actions_list",
+            "vtc_actions_show",
+            "vtc_actions_decide",
+            "vtc_actions_cancel",
         ];
         let have: Vec<String> = router
             .list_all()
@@ -1037,14 +1071,41 @@ mod tests {
         ("vtc_supported_tasks", Some(wire::DISCOVERY)),
         ("vtc_whoami", Some(wire::WHOAMI)),
         ("vtc_status", None),
+        // The workflow tools: each step is classified under its own URI as it
+        // is sent, so the tool itself claims what its riskiest step is.
+        ("group_setup", None),
+        ("board_create", None),
+        ("election_create", None),
+        ("room_open", None),
+        ("member_admit", None),
+        ("admin_grant", None),
+        (
+            "vtc_actions_list",
+            Some(crate::workflows::wire::ACTIONS_LIST),
+        ),
+        (
+            "vtc_actions_show",
+            Some(crate::workflows::wire::ACTIONS_SHOW),
+        ),
+        (
+            "vtc_actions_decide",
+            Some(crate::workflows::wire::CONSENT_DECISION),
+        ),
+        (
+            "vtc_actions_cancel",
+            Some(crate::workflows::wire::ACTIONS_CANCEL),
+        ),
     ];
+
+    /// The tools that never leave the process and only read.
+    const LOCAL_READS: &[&str] = &["vtc_list_operations", "vtc_status"];
 
     /// Hosts render `readOnlyHint` and some gate on it, so each annotation is
     /// checked against the shared classifier's verdict on the URI the tool
     /// actually sends.
     #[test]
     fn tool_annotations_agree_with_the_risk_classifier() {
-        for tool in VtcMcp::tool_router().list_all() {
+        for tool in (VtcMcp::tool_router() + VtcMcp::workflow_router()).list_all() {
             let annotations = tool
                 .annotations
                 .as_ref()
@@ -1077,8 +1138,8 @@ mod tests {
                 }
                 None => assert_eq!(
                     claims_read_only,
-                    tool.name != "vtc_call",
-                    "tool {} readOnlyHint is wrong for a local-only tool",
+                    LOCAL_READS.contains(&&*tool.name),
+                    "tool {} readOnlyHint is wrong for a tool classified per step",
                     tool.name
                 ),
             }
