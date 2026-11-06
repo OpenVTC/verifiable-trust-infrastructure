@@ -316,7 +316,7 @@ exists so that "always allow `vtc_call`" at the host does not make
 | Phase | Deliverable | Where |
 |---|---|---|
 | 1 | **Done.** `VtcClient::send_task`, `discover`, `transport`; no retry table (see D2: the VTC dedups every task by document id) | `vtc-client` |
-| 2 | `vti-mcp-common` extracted from `vta-mcp` (guard, confirm levels, recorder, annotation test), `vta-mcp` repointed | new crate, `vta-mcp` |
+| 2 | **Done.** `vti-mcp-common` extracted from `vta-mcp` (guard, confirm levels, recorder), `vta-mcp` repointed; the one table now classifies every pinned request URI — the community's, rooms', networks', voting and witness families included — held by a census over `vti_specs::schema_index` | new crate, `vta-mcp` |
 | 3 | `vtc-mcp`: ladder, transport selection by DID-document service type, guard, recorder, `vtc_list_operations` from the bundles, `vtc_call` with schema checks, `vtc_supported_tasks`, `vtc_whoami`, `vtc_status`, the five resources | new crate |
 | 4 | The guide resources and the six prompts, with the pinned-slug test | `vtc-mcp` |
 | 5 | The six workflow tools; `vtc_actions_show` / `vtc_actions_decide` | `vtc-mcp` |

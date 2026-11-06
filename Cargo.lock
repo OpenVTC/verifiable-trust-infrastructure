@@ -11882,7 +11882,6 @@ name = "vta-mcp"
 version = "0.1.5"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
  "rmcp",
  "schemars 1.2.3",
@@ -11890,8 +11889,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "vta-sdk",
+ "vti-mcp-common",
 ]
 
 [[package]]
@@ -12526,6 +12525,17 @@ dependencies = [
  "vti-specs",
  "vti-voting",
  "vti-voting-service",
+]
+
+[[package]]
+name = "vti-mcp-common"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+ "vti-specs",
 ]
 
 [[package]]

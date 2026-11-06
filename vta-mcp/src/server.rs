@@ -14,7 +14,7 @@
 //!
 //! ## Three things every call goes through
 //!
-//! 1. **[`crate::guard`]** — the local per-operation gate, because an MCP host
+//! 1. **[`vti_mcp_common::guard`]** — the local per-operation gate, because an MCP host
 //!    approves a *tool* and this bridge's most useful tool is "invoke any
 //!    operation". Every convenience tool declares the Trust Task URI it wraps,
 //!    so `--read-only` cannot be side-stepped by calling `sign` instead of
@@ -31,8 +31,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::guard::{Decision, Guard, Risk, classify};
-use crate::observability::{CallRecord, Recorder, redact_call};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
@@ -49,6 +47,8 @@ use serde_json::{Value, json};
 use vta_sdk::agent_session::AgentSession;
 use vta_sdk::error::VtaError;
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
+use vti_mcp_common::guard::{Decision, Guard, Risk, classify};
+use vti_mcp_common::observability::{CallRecord, Recorder, redact_call};
 
 /// The Trust Task URI each convenience tool **actually sends**.
 ///
@@ -319,11 +319,12 @@ impl CallGuard {
     fn emit(&self, outcome: &'static str, error: Option<String>, duration_ms: u128) {
         // A refusal can quote the request back (a schema error names the offending value);
         // for a personal label that value is text no log may carry.
-        let error = if crate::observability::carries_personal_text(self.operation.as_deref()) {
-            error.map(|_| "<elided: personal label>".to_string())
-        } else {
-            error
-        };
+        let error =
+            if vti_mcp_common::observability::carries_personal_text(self.operation.as_deref()) {
+                error.map(|_| "<elided: personal label>".to_string())
+            } else {
+                error
+            };
         let record = CallRecord {
             seq: self.seq,
             tool: self.tool,
@@ -376,7 +377,7 @@ impl VtaMcp {
             holder,
             guard: Arc::new(guard),
             recorder,
-            started: crate::observability::now_rfc3339().into(),
+            started: vti_mcp_common::observability::now_rfc3339().into(),
         }
     }
 
@@ -402,7 +403,7 @@ impl VtaMcp {
             holder,
             guard: Arc::new(guard),
             recorder,
-            started: crate::observability::now_rfc3339().into(),
+            started: vti_mcp_common::observability::now_rfc3339().into(),
         }
     }
 
@@ -1146,7 +1147,7 @@ impl ServerHandler for VtaMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guard::ConfirmLevel;
+    use vti_mcp_common::guard::ConfirmLevel;
 
     fn bridge() -> VtaMcp {
         VtaMcp::degraded(
