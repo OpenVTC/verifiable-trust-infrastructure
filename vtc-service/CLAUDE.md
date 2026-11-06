@@ -934,6 +934,38 @@ When adding a flow, add it here and a line to the root index.
   `vtc-service/tests/it/board_tasks.rs`.
 - **Docs**: `docs/03-vtc/boards.md`, `docs/05-design-notes/vtc-boards.md`.
 
+### VTC member badges (`vtc/badges/*`, VTI-BDG-001 – 095)
+- **What**: Badges members earn, hold and show on their directory card: community badges
+  defined by `vtc.badges.admin` and given by their owners, kudos badges any member makes and
+  gives. Records in the `badges` keyspace (backed up), pictures in `badge_images`.
+- **Invariants to preserve**: **a community badge is a badge group** (`Group.badge_id`): its
+  owners are the group's managers (`vtc.groups.manage` qualified `group:<id>`, by appointment),
+  its holders the group's members, requests are `vtc/groups/join` + `requests/decide`, owners
+  `managers/{add,remove}`, retiring deletes the group (one revocation bit, VTI-DIR-083). A
+  badge group never carries authority (`bindings/add` refuses it), is left out of
+  `vtc/groups/list` and of `audience_groups`. **An award is an offer until accepted**
+  (`badges::Award`, VTI-BDG-020): `awards/offer` and `kudos/give` record `offered` and admit,
+  issue and show nothing; `mine/accept` issues the badge credential **as the group**
+  (`badges::credential`, an Open Badges 3.0 `OpenBadgeCredential`, the community as the
+  Achievement's `creator`, one `evidence` per award) through `keys/sign-document` **before**
+  recording the membership; `groups::credential::issue` branches to it for any group with
+  `badge_id`, so admission by request, rule and renewal issue the same profile. Inside-only
+  regime in this build: short-lived, renewed, no status; `shareableOutside` is refused until
+  the outside regime (community-owned status set, VTI-BDG-062) is served. **Hidden is
+  portal-only** (`badges::Prefs`, VTI-BDG-030): walls, `holders/list` and counts leave a hidden
+  holder out; `awards/list` shows owners `hidden: true`; memberships and credentials stand.
+  Holder's tasks accept the portal's delegated key (`vtc/badges` in `PORTAL_SIGNING_SCOPE`);
+  `settings/update`, `update`, `retire`, `promote`, `awards/*` go through `member_signer`
+  only (VTI-BDG-095). `settings/update` and a community badge's `retire` take a bound
+  step-up, never the action list (they confer nothing). Pictures reuse
+  `directory::images::{reencode,store,get,may_reference}` over `badge_images`; an upload is
+  the uploader's until a badge holds it. Kudos limits count every giving whatever its later
+  state. Departure withdraws offers and preferences and keeps givings by reference
+  (`badges::on_departure`, beside `groups::on_departure`). Audit `BadgeChanged` by reference.
+- **Code**: `vtc-service/src/badges/{mod,credential}.rs`,
+  `vtc-service/src/trust_tasks/badge_tasks.rs`, `vtc-service/tests/it/badges.rs`.
+- **Docs**: `docs/03-vtc/badges.md`, `docs/05-design-notes/vtc-badges.md`.
+
 ### VTC notifications (`notifications/*`, VTI-NTF-040 – 063)
 - **What**: The community as **originator** of the `election` kind — an election under a
   credential roll naming a member party is notified to that party once the ballot box has

@@ -659,6 +659,7 @@ async fn handle_create(
         authority,
         authority_credential,
         did_log_path: minted.did_log_path,
+        badge_id: None,
         created_at: now,
         created_by: who.entry_id.clone(),
         updated_at: now,
@@ -1024,6 +1025,8 @@ async fn handle_list(
     let all: Vec<Group> = match groups::all(state.directory.ks()).await {
         Ok(g) => g
             .into_iter()
+            // A badge group is the badge's (VTI-BDG-012): listed with the badges, never here.
+            .filter(|g| g.badge_id.is_none())
             .filter(|g| who.sees(g))
             .filter(|g| !mine || who.member_of.contains(&g.group_id))
             .filter(|g| {
@@ -2637,6 +2640,13 @@ async fn bindings_add_authority(
     use crate::groups::authority::{self, AuthorityBinding};
     use crate::groups::bindings::{self, Binding};
     // Item 3: a dynamic group never carries authority (VTI-DIR-103).
+    if group.badge_id.is_some() {
+        return declared(
+            doc,
+            BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE,
+            "A badge group never carries authority (VTI-BDG-012).",
+        );
+    }
     if group.kind == groups::GroupKind::Dynamic || group.join_policy != JoinPolicy::Closed {
         return declared(
             doc,

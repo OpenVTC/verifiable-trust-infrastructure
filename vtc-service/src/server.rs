@@ -156,6 +156,10 @@ pub struct AppState {
     pub notifications_ks: KeyspaceHandle,
     /// Community boards: boards, ideas and notes (`crate::boards`).
     pub boards_ks: KeyspaceHandle,
+    /// Member badges: settings, badges, awards and holders' preferences (`crate::badges`).
+    pub badges_ks: KeyspaceHandle,
+    /// Badge pictures, re-encoded (`crate::badges`, over `crate::directory::images`).
+    pub badge_images_ks: KeyspaceHandle,
     /// OpenID4VP verifier identities and their keys (`crate::oid4vp`).
     /// Encrypted at rest.
     pub oid4vp_keys_ks: KeyspaceHandle,
@@ -550,6 +554,8 @@ pub async fn run(
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
     let notifications_ks = store.keyspace(keyspaces::NOTIFICATIONS)?;
     let boards_ks = store.keyspace(keyspaces::BOARDS)?;
+    let badges_ks = store.keyspace(keyspaces::BADGES)?;
+    let badge_images_ks = store.keyspace(keyspaces::BADGE_IMAGES)?;
     let oid4vp_keys_ks = store.keyspace(keyspaces::OID4VP_KEYS)?;
     let oid4vp_sessions_ks = store.keyspace(keyspaces::OID4VP_SESSIONS)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
@@ -1108,6 +1114,8 @@ pub async fn run(
         member_pushes_ks,
         notifications_ks,
         boards_ks,
+        badges_ks,
+        badge_images_ks,
         oid4vp_keys_ks,
         oid4vp_signers,
         oid4vp_sessions_ks,

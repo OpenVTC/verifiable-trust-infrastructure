@@ -21,6 +21,7 @@ pub mod admin_ui;
 pub mod audit_checkpoint;
 pub mod auth;
 pub mod backup;
+pub mod badges;
 pub mod boards;
 pub mod capability_modules;
 pub mod ceremony;

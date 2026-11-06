@@ -742,6 +742,13 @@ async fn depart(
         // Their ideas still proposed are withdrawn; an erasure removes what they wrote
         // that no election carries (VTI-BRD-060).
         crate::boards::on_departure(state, &entry_id, disposition == Disposition::Purge).await?;
+        // Their open badge offers are withdrawn and their wall preferences go; the awards
+        // they gave stand by reference, and a purge erases the notes they wrote
+        // (VTI-BDG-090).
+        crate::badges::on_departure(&state.badges_ks, &entry_id).await?;
+        if disposition == Disposition::Purge {
+            crate::badges::erase_notes_by(&state.badges_ks, &entry_id).await?;
+        }
         crate::directory::notes::on_departure(
             state.directory.ks(),
             &entry_id,
