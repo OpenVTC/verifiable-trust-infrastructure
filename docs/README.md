@@ -219,6 +219,13 @@ How to operate and integrate against a VTC.
 In-flight or historical design documents kept for context. These
 are implementer-facing rather than operator-facing.
 
+- **[vtc-mcp](05-design-notes/vtc-mcp.md)** — proposed: a VTC twin of
+  `vta-mcp`. A native Trust Task client over TSP, then DIDComm (never a
+  `cnm` subprocess), one generic `vtc_call` catalogued from the pinned
+  specification bundles, an identity ladder (member persona, dedicated agent
+  entry), the shared local guard, and VTC knowledge shipped as MCP resources
+  and prompts for groups, boards, elections, data rooms, admission and
+  administration.
 - **[TSP Rev 3 migration](05-design-notes/tsp-rev3-migration.md)** — the
   inventory of what this repository has to change for Trust Spanning Protocol
   Rev 3, which is a flag day rather than a migration: nothing a Rev 2 peer packs
