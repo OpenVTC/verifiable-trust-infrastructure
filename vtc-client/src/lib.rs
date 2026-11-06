@@ -108,6 +108,9 @@ pub mod elections;
 pub mod git_ns;
 pub mod members;
 pub mod rooms;
+mod send;
+
+pub use send::{VtcTransport, supported_type_uris};
 
 /// The Trust Task type URI of each admin verb this client sends as a signed
 /// document.
@@ -378,6 +381,17 @@ pub enum VtcError {
     /// bound, …). Caught before anything is sent.
     #[error("invalid request payload: {0}")]
     InvalidPayload(String),
+    /// [`VtcClient::send_task`] was asked for a Type URI it will not send: a
+    /// version this client does not pin, or a `#response` URI. Nothing was
+    /// sent — an unpinned version has no schema to check a payload against,
+    /// and "nothing to check" is not a reason to send it.
+    #[error("will not send {type_uri}: {reason}")]
+    UnpinnedTask {
+        /// The Type URI as the caller gave it.
+        type_uri: String,
+        /// Why it is not sendable.
+        reason: String,
+    },
     /// The VTC refused a Trust Task sent over a DIDComm or TSP session.
     ///
     /// Carries the `trust-task-error` document as the VTC wrote it — the
