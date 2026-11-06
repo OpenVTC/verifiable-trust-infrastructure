@@ -12,7 +12,8 @@ community's DID document advertises — TSP first, then DIDComm, then signed
 documents over HTTPS when the community advertises neither. It never runs
 `cnm` or `pnm`, and it never takes a CLI's stored login as its identity.
 
-Design: `docs/05-design-notes/vtc-mcp.md`. Transport: stdio. `publish = false`.
+Operator page: `docs/03-vtc/vtc-mcp.md`. Design:
+`docs/05-design-notes/vtc-mcp.md`. Transport: stdio. `publish = false`.
 
 ## Tools
 
@@ -62,6 +63,13 @@ Exactly one, chosen by what is configured and never by falling through:
 
 Both given is an error; half of rung 2 is an error naming the missing field;
 neither serves in degraded mode so `vtc_status` can say what is wrong.
+
+`vtc-mcp --mint-did-key` mints rung 2's identity on the machine that will run
+the bridge and prints the DID to hand to an administrator (`cnm access grant`)
+and the key to keep as `VTC_MCP_AGENT_KEY`.
+
+A Claude Code skill that teaches an assistant to work through this bridge is
+at `skills/vtc-community/SKILL.md`.
 
 ## Policy
 

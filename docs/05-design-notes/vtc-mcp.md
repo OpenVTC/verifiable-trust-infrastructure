@@ -1,8 +1,9 @@
 # vtc-mcp — driving a VTC from an MCP host
 
-Status: **proposed** (2026-11-06). Companion to the VTA bridge, `vta-mcp`
+Status: **implemented** (proposed and built 2026-11-06; the phase table in §3
+names each PR's deliverable). Companion to the VTA bridge, `vta-mcp`
 (`docs/02-vta/vta-mcp.md`), whose shape this note deliberately reuses. The
-tracking issue is linked from the PR that lands this note.
+operator page is `docs/03-vtc/vtc-mcp.md`; the tracking issue is #2470.
 
 ## 0. Summary
 
@@ -320,7 +321,7 @@ exists so that "always allow `vtc_call`" at the host does not make
 | 3 | **Done.** `vtc-mcp`: the two-rung ladder, transport selection by DID-document service type (`VtcClient::connect_resolved`, which never replaces an advertised session with HTTPS), guard, recorder, `vtc_list_operations` from the bundles (summary / full, slug globs, served-by-the-community once discovered), `vtc_call` with schema checks and the parked outcome, `vtc_supported_tasks`, `vtc_whoami`, `vtc_status`, the `vtc://status`, `vtc://operations` and `vtc://calls/recent` resources. The `cnm` login rung is not built | new crate, `vtc-client` |
 | 4 | **Done.** Ten guide resources (`vtc://guide/*`, the `docs/03-vtc` guides embedded at build) and the six workflow prompts (`setup-group`, `create-board`, `run-election`, `open-data-room`, `admit-member`, `grant-administration`), each an ordered brief that marks the steps that park; `every_slug_a_prompt_names_is_pinned` holds every task a prompt names to the index | `vtc-mcp` |
 | 5 | **Done.** The six workflow tools (`group_setup`, `board_create`, `election_create`, `room_open`, `member_admit`, `admin_grant`): thin orchestrators, one guarded step at a time under each step's own URI, stopping at the first refused or parked step and reporting how far they got; `vtc_actions_list` / `show` / `decide` / `cancel`, with `decide` always confirmed by the human against the verified summary and match code | `vtc-mcp` |
-| 6 | Operator page `docs/03-vtc/vtc-mcp.md`, a worked example, the skill | docs |
+| 6 | **Done.** Operator page `docs/03-vtc/vtc-mcp.md` with a worked example; the Claude Code skill `vtc-mcp/skills/vtc-community/SKILL.md`; `vtc-mcp --mint-did-key` for the dedicated-agent rung | docs, `vtc-mcp` |
 
 Phase 3 is usable on its own: a member or an administrator can drive every
 pinned task from an assistant with nothing but the catalog. Phases 4 and 5
