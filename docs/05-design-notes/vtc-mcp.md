@@ -13,24 +13,30 @@ community, run its ceremonies or read its state except the console, `cnm`, or
 hand-written code over `vtc-client`.
 
 This note proposes `vtc-mcp`: a stdio MCP server, `publish = false`, that is
-to a VTC what `vta-mcp` is to a VTA. It makes four decisions:
+to a VTC what `vta-mcp` is to a VTA. It makes five decisions:
 
-1. **One generic tool reaches the whole surface.** `vtc_call` sends any pinned
+1. **The bridge is a native Trust Task client, over TSP first.** Every tool
+   call becomes a signed Trust Task sent in-process through `vtc-client` on
+   a mediated session — TSP where both DID documents advertise it, DIDComm
+   otherwise, HTTPS only when the community advertises neither. It never
+   runs a `cnm` or `pnm` command, and it never reads a CLI's stored login
+   as its default identity.
+2. **One generic tool reaches the whole surface.** `vtc_call` sends any pinned
    Trust Task by Type URI; `vtc_list_operations` is the catalog. The catalog is
    read from the vendored specification bundles in `vti-specs-vtc` and
    `vti-specs-rooms` — description, payload schema, error codes, document
    policy — not from hand-written strings, and every payload is checked
    against the pinned schema before it is sent.
-2. **The bridge runs as exactly one identity, chosen by a ladder** — a member
-   persona over DIDComm / TSP, a dedicated agent entry at the VTC (an
-   administrative role or a listed capability set), or a replayed `cnm`
-   session — and never falls through from a half-configured rung to operator
-   authority.
-3. **The VTC stays the authority; the bridge adds a local per-operation
+3. **The bridge runs as exactly one identity, chosen by a ladder** — a member
+   persona, or a dedicated agent entry at the VTC (an administrative role or
+   a listed capability set), each on its own mediated session; a replayed
+   `cnm` login over HTTPS exists only as a declared last resort — and never
+   falls through from a half-configured rung to operator authority.
+4. **The VTC stays the authority; the bridge adds a local per-operation
    guard**, the same one `vta-mcp` has, because an MCP host approves a tool
    and not a call. The guard and the call recorder move into a crate the two
    bridges share rather than being copied.
-4. **VTC knowledge ships with the bridge** as MCP resources and prompts —
+5. **VTC knowledge ships with the bridge** as MCP resources and prompts —
    the operator guides for groups, boards, elections, data rooms, vetting and
    admission, and one prompt per multi-step workflow — so an assistant knows
    the order of operations, which steps park on the action list, and what a
@@ -85,8 +91,9 @@ Two gaps matter here:
 
 `cnm` is the operator's map of the surface — community, members, member,
 vetting, access, consent, actions, git, boards, elections, rooms, networks,
-storage, did-log, backup, audit, acl, did-templates — and the session store
-the bridge's lowest rung replays. It is not a dependency of the bridge.
+storage, did-log, backup, audit, acl, did-templates. It is a reference for
+what the surface is, not a dependency of the bridge and not something the
+bridge runs: the bridge speaks Trust Tasks itself.
 
 ### 1.4 The specification bundles
 
@@ -120,6 +127,33 @@ A bridge has to present "parked, awaiting approval" as an outcome, not a
 failure.
 
 ## 2. Decisions
+
+### D0. Native Trust Tasks, over TSP, then DIDComm, then HTTPS
+
+The bridge is a Trust Task client. Every tool call — generic, convenience or
+workflow — becomes one signed Trust Task document sent in-process by
+`vtc-client`; there is no other kind of call. Three consequences:
+
+- **No CLI underneath.** The bridge never spawns `cnm` or `pnm`, never
+  parses their output, and does not take a CLI's stored login as its
+  identity by default. A CLI is a different client of the same surface, not
+  a layer the bridge sits on.
+- **Transport follows the workspace rule** (TSP > DIDComm > REST). On
+  connect the bridge reads the community's DID document and its own, and
+  uses the highest-preference transport whose service `type` appears in
+  both — `TSPTransport`, then `DIDCommMessaging`, then `VTARest`. The TSP leg
+  rides the one mediator socket the DIDComm session already holds
+  (`VtcClient::connect_tsp`); it is never a second socket. When the
+  intersection is empty the bridge refuses with `NoMatchingProtocol`; it
+  never downgrades past what the community advertises. `--transport
+  auto|tsp|didcomm|rest` (`vta_sdk::TransportChoice`) pins one for
+  diagnosis, and `vtc_status` reports which is in use.
+- **HTTPS is the declared last resort**, for a community whose DID document
+  advertises no messaging transport and for the one rung that has nothing
+  else (D3, rung 3). Over HTTPS the document is still a signed Trust Task
+  posted to the single document endpoint — never a bearer route, which the
+  VTC does not serve behind any admin verb (#1641) — and `backup/*` is
+  refused by the VTC there, so the catalog marks it session-only.
 
 ### D1. A separate crate, the same shape
 
@@ -176,24 +210,35 @@ Rules for `vtc_call`:
 
 Prerequisite in `vtc-client`: a public `send_task(&self, type_uri, payload)
 -> Result<Value, VtcError>` that is the one sender both the typed methods and
-the bridge use (session when present, else the configured `HolderKey`), and a
-`discover()` for `trust-task-discovery/0.4`.
+the bridge use — over the mediated session (TSP leg when enabled, else
+DIDComm) and only otherwise signed with the configured `HolderKey` and
+posted — plus a `discover()` for `trust-task-discovery/0.4` and a
+`transport()` accessor so `vtc_status` can report which leg a call took.
 
 ### D3. One identity, chosen by a ladder
 
-| # | Mode | Flags | Authority |
-|---|---|---|---|
-| 1 | Member persona, `did:webvh` bundle | `--agent-secrets` + `--vtc-did` + `--mediator-did` | **The member** (what a VTA-minted persona has). Session over DIDComm, TSP when both ends advertise it (`connect_tsp`) |
-| 2 | Dedicated agent entry, `did:key` | `--agent-did` + `--agent-key` + `--vtc-url` + `--vtc-did` | **The entry's role or listed capabilities.** Enrolled by an administrator with `acl/grant/0.2`, bounded by the granter's own holdings (§6.3 of the roles note); an `approver`-ceiling entry can approve, nothing more |
-| 3 | `cnm` session | `--community <slug>` | **The operator.** Replays the keyring entry `cnm` stored, auto-refreshing |
+| # | Mode | Flags | Transport | Authority |
+|---|---|---|---|---|
+| 1 | Member persona, `did:webvh` bundle | `--agent-secrets` + `--vtc-did` + `--mediator-did` | Mediated session: TSP, else DIDComm (D0) | **The member** (what a VTA-minted persona has) |
+| 2 | Dedicated agent entry, `did:key` | `--agent-did` + `--agent-key` + `--vtc-did` + `--mediator-did` | Mediated session: TSP, else DIDComm (D0) | **The entry's role or listed capabilities.** Enrolled by an administrator with `acl/grant/0.2`, bounded by the granter's own holdings (§6.3 of the roles note); an `approver`-ceiling entry can approve, nothing more |
+| 3 | Replayed `cnm` login | `--community <slug>` + `--allow-rest-session` | HTTPS, signed documents | **The operator.** Last resort for a community that advertises no messaging transport; `--confirm sensitive` is forced, the catalog hides `backup/*`, and `vtc_status` says so on every call |
+
+Rungs 1 and 2 are the bridge. Rung 1 is what a person's own AI runs as: the
+persona the VTA minted for them, holding its keys, on the mediator that
+persona already uses. Rung 2 is what an administrator enrols for an
+assistant they want bounded. Both are Trust Tasks over a mediated session,
+the same as any other member of the community, so the VTC sees a sender it
+can authenticate intrinsically and never a bearer. Rung 3 requires an
+explicit opt-in flag precisely so that a bridge is never silently the
+operator over REST; it is kept for the HTTPS-only community, not as a
+convenience.
 
 Rules carried over from `vta-mcp`, unchanged: the identity modes are mutually
 exclusive; a half-configured rung fails naming the missing field and never
-falls through to session mode; `--confirm sensitive` is the documented
-default for rung 3. The ladder is a VTC-side twin of `AgentConnect`
+falls through to rung 3. The ladder is a VTC-side twin of `AgentConnect`
 (`vtc_client::agent_connect`) rather than a parameterisation of it, because
-the rungs differ (no bearer token: the VTC has no token route behind any
-admin verb, #1641).
+the rungs differ: the two dedicated-identity rungs both ride the mediator,
+and there is no bearer-token rung at all.
 
 The bridge does not know whether it is "an admin bridge" or "a member
 bridge". The entry it runs as decides; `vtc_whoami` reports it; the catalog
@@ -264,7 +309,7 @@ exists so that "always allow `vtc_call`" at the host does not make
 |---|---|---|
 | 1 | `VtcClient::send_task` and `discover`; retry classification for the VTC families with a census | `vtc-client`, `vta-sdk` |
 | 2 | `vti-mcp-common` extracted from `vta-mcp` (guard, confirm levels, recorder, annotation test), `vta-mcp` repointed | new crate, `vta-mcp` |
-| 3 | `vtc-mcp`: ladder, guard, recorder, `vtc_list_operations` from the bundles, `vtc_call` with schema checks, `vtc_supported_tasks`, `vtc_whoami`, `vtc_status`, the five resources | new crate |
+| 3 | `vtc-mcp`: ladder, transport selection by DID-document service type, guard, recorder, `vtc_list_operations` from the bundles, `vtc_call` with schema checks, `vtc_supported_tasks`, `vtc_whoami`, `vtc_status`, the five resources | new crate |
 | 4 | The guide resources and the six prompts, with the pinned-slug test | `vtc-mcp` |
 | 5 | The six workflow tools; `vtc_actions_show` / `vtc_actions_decide` | `vtc-mcp` |
 | 6 | Operator page `docs/03-vtc/vtc-mcp.md`, a worked example, the skill | docs |
@@ -280,10 +325,11 @@ are what make the assistant good at it.
   enrolling a bridge one command. The roles note's custom roles (§6.2) can
   express it today; whether it is common enough to build in is a maintainer
   call.
-- **Member mode over HTTPS.** A member whose key is at hand (`did:key`) can
-  use rung 2 against a community that serves HTTPS; a persona behind a
-  mediator needs rung 1. Whether to admit a member `did:key` without a
-  mediator is a question for each community's join criteria, not the bridge.
+- **Is rung 3 worth keeping?** It exists for a community that advertises no
+  messaging transport. If every community this workspace deploys advertises
+  TSP or DIDComm, the rung is dead weight and a standing temptation to run
+  as the operator; dropping it leaves the bridge with no REST path at all,
+  which is the cleaner statement of D0.
 - **Catalog size.** 294 pinned versions is a large tool description. The
   catalog tool takes a glob and a `summary` flag (slug, version, description,
   risk only) so an assistant can page it; the resource carries the full form.
