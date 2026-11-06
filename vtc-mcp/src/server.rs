@@ -37,9 +37,10 @@ use std::time::Instant;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ServerCapabilities, ServerConfig,
+    CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
+    Implementation, ListPromptsResult, ListResourcesResult, PaginatedRequestParams, Prompt,
+    PromptArgument, PromptMessage, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{
@@ -51,6 +52,8 @@ use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use vtc_client::{VtcClient, VtcError};
 use vti_mcp_common::guard::{Decision, Guard, Risk, classify, glob_match, slug_of};
+
+use crate::guides;
 use vti_mcp_common::observability::{CallRecord, Recorder, redact_call};
 
 /// The Trust Task URI each convenience tool **actually sends**.
@@ -754,6 +757,7 @@ impl ServerHandler for VtcMcp {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_prompts()
                 .build(),
         )
         .with_server_info(server_info)
@@ -767,10 +771,65 @@ impl ServerHandler for VtcMcp {
              vtc_whoami what it knows of this identity; vtc_status what this bridge is — ask it \
              first when anything fails. A vtc_call result with status 'parked' is not a failure: \
              the community is waiting for other administrators to approve; follow the named \
-             action and do not resend. All access is bounded by this identity's standing at the \
-             community, and by this bridge's local policy: some operations are refused outright \
-             and some ask the operator to approve them first.",
+             action and do not resend. For a multi-step job — set up a group, create a board, \
+             run an election or poll, open a data room, admit a member, grant administration — \
+             use the prompt of that name: it gives the steps in order, which of them park, and \
+             what the member sees. The community's own operator guides are the vtc://guide/* \
+             resources. All access is bounded by this identity's standing at the community, \
+             and by this bridge's local policy: some operations are refused outright and some \
+             ask the operator to approve them first.",
         )
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        let prompts = guides::WORKFLOWS
+            .iter()
+            .map(|w| {
+                let arguments: Vec<PromptArgument> = w
+                    .arguments
+                    .iter()
+                    .map(|a| {
+                        let mut arg = PromptArgument::new(a.name);
+                        arg.description = Some(a.description.to_string());
+                        arg.required = Some(false);
+                        arg
+                    })
+                    .collect();
+                let mut prompt = Prompt::new(w.name, Some(w.description), Some(arguments));
+                prompt.title = Some(w.title.to_string());
+                prompt
+            })
+            .collect();
+        Ok(ListPromptsResult::with_all_items(prompts))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, McpError> {
+        let Some(workflow) = guides::workflow(&request.name) else {
+            return Err(McpError::invalid_params(
+                format!(
+                    "unknown prompt '{}'; the prompts are {}",
+                    request.name,
+                    guides::WORKFLOWS
+                        .iter()
+                        .map(|w| w.name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                None,
+            ));
+        };
+        let text = guides::render(workflow, request.arguments.as_ref());
+        let mut result = GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]);
+        result.description = Some(workflow.description.to_string());
+        Ok(result.into())
     }
 
     async fn list_resources(
@@ -778,7 +837,7 @@ impl ServerHandler for VtcMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        Ok(ListResourcesResult::with_all_items(vec![
+        let mut resources = vec![
             Resource::new(RESOURCE_STATUS, "Community bridge status")
                 .with_description(
                     "Identity, transport, local policy, call counters and recent calls.",
@@ -795,7 +854,17 @@ impl ServerHandler for VtcMcp {
                     "The last 100 calls this bridge served, redacted — what it has been doing.",
                 )
                 .with_mime_type("application/json"),
-        ]))
+        ];
+        resources.extend(guides::GUIDES.iter().map(|g| {
+            Resource::new(guides::guide_uri(g.topic), g.title)
+                .with_description(format!(
+                    "The community's operator guide ({}), as this bridge's version of it was \
+                     written.",
+                    g.source
+                ))
+                .with_mime_type("text/markdown")
+        }));
+        Ok(ListResourcesResult::with_all_items(resources))
     }
 
     async fn read_resource(
@@ -803,6 +872,17 @@ impl ServerHandler for VtcMcp {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
+        if let Some(guide) = guides::guide_at(&request.uri) {
+            return Ok(
+                ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+                    uri: request.uri,
+                    mime_type: Some("text/markdown".into()),
+                    text: guide.text.to_string(),
+                    meta: None,
+                }])
+                .into(),
+            );
+        }
         let body = match request.uri.as_str() {
             RESOURCE_STATUS => self.status(10).await,
             RESOURCE_OPERATIONS => self.operations_catalog(&[], false).await,

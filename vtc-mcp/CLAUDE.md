@@ -31,3 +31,12 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
 - **Placement decisions live in `vti-mcp-common`.** This crate keeps what is
   the community bridge's alone: its tools, their annotations (asserted
   against the shared classifier), the ladder, the catalog.
+- **The guides are the docs, embedded** (`src/guides.rs`, `include_str!` of
+  `docs/03-vtc/*.md`): never a second description of the community. Editing
+  a guide changes what this bridge serves at its next build; a guide moved or
+  renamed breaks the build, which is the point.
+- **A prompt names only pinned tasks.** Every slug in a workflow's steps or
+  in backticks in its text is held to `vti_specs::schema_index` by
+  `every_slug_a_prompt_names_is_pinned`. A prompt is procedural and short —
+  preconditions, ordered steps, which park and for whom, what the member sees
+  — and links the guide rather than restating it.

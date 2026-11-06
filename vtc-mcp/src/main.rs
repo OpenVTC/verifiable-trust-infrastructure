@@ -33,6 +33,7 @@ use vtc_client::{SessionIdentity, VtcClient};
 use vti_mcp_common::guard::{ConfirmLevel, Guard};
 use vti_mcp_common::observability::{self, LogFormat, Recorder};
 
+mod guides;
 mod server;
 
 use server::{BridgeIdentity, VtcMcp};
