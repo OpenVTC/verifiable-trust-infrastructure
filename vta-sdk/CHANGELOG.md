@@ -2,6 +2,41 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.85.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.85.0...vta-sdk-v0.85.1) — 2026-11-07
+
+
+### Added
+
+- **vtc**: Member badges in the console and the member portal (VTI-BDG-001 – 095) ([#2479](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2479))
+
+The pages over the vtc/badges/* 0.1 family #2477 serves.
+
+  Console (Community → Badges, `plugins/badges.tsx` over `lib/badges.ts`):
+  every badge the administrator or owner may see; the settings — on or off,
+  who may make a kudos badge (nobody, chosen roles and groups, every member),
+  the limits — behind vtc.config.admin and a bound step-up; defining a
+  community badge (vtc.badges.admin) with its picture, credential regime,
+  rules, who sees its holders, an automatic rule where the settings allow it,
+  and its owners; and one badge's page: edit, give to chosen members or to a
+  group, decide requests for it and appoint its owners (the badge group's
+  requests and managers, through the groups' tasks), every award given and
+  taken back with a reason, a kudos badge's givings and its promotion, and
+  retiring it (step-up for a community badge). Every act is signed by the
+  console key (VTI-BDG-095).
+
+  Portal (`#/badges`, `members/Badges.tsx` over `members/badges-api.ts`):
+  offers accepted or declined one by one (a decision surface drawn out of the
+  community theme's reach); the wall — order, pins within the limit, hide and
+  show again, who sees it; every badge to browse; one badge with its holders,
+  asking its owners for it (vtc/groups/join on the badge group), giving a
+  kudos badge; making a kudos badge with a picture uploaded from the browser.
+  A member's directory card shows their wall, pinned first, with the kudos
+  total where the community shows it, and lets another member give them a
+  kudos badge from there. The home page gets a Badges tile and an attention
+  line for offers waiting. Every act is signed by the portal's delegated key.
+
+
+
 ## [0.85.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.84.0...vta-sdk-v0.85.0) — 2026-11-05
 
 

@@ -2,6 +2,46 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.61.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.61.0...vti-common-v0.61.1) — 2026-11-07
+
+
+### Added
+
+- **vtc**: Member badges — the vtc/badges/* 0.1 family, badges backed by badge groups, awards accepted by the member, kudos (VTI-BDG-001 – 095) ([#2477](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2477))
+
+The backend of member badges (phase 1 of docs/05-design-notes/vtc-badges.md):
+  the 24 pinned `vtc/badges/*` tasks served on the dispatch spine.
+
+  - A community badge is a badge group: `create` mints the group as
+    `vtc/groups/create` does and records `badge_id` on it; its managers are the
+    badge's owners, its members the holders; requests and owners reuse the groups'
+    own tasks; retiring deletes the group. A badge group never carries authority
+    and is not listed among the community's groups (VTI-BDG-010 – 014).
+  - An award is an offer until accepted: `awards/offer` and `kudos/give` record
+    `offered` and admit, issue and show nothing; `mine/accept` has the VTA sign
+    an Open Badges 3.0 `OpenBadgeCredential` as the group's DID, with the
+    community as the Achievement's creator and one evidence entry per award,
+    before the membership is recorded (VTI-BDG-020 – 024, 060). The groups'
+    credential issuer branches to it for any badge group, so admission by
+    request, by rule and renewal issue the same profile.
+  - Hidden is portal-only (VTI-BDG-030): walls, holder lists and counts leave a
+    hidden holder out while owners see the mark and nothing is revoked.
+  - Kudos: any active member gives a kudos badge to any other within the
+    community's limits, each giving counted (VTI-BDG-040 – 044); `promote`
+    turns one into a community badge, offering every holder.
+  - Settings (`settings/show`, `settings/update`: `vtc.config.admin` + a bound
+    step-up); a community badge's `retire` takes the step-up too.
+  - Pictures reuse the directory's picture pipeline over a `badge_images`
+    keyspace. New keyspaces `badges` and `badge_images` (backed up), capability
+    `vtc.badges.admin`, audit event `BadgeChanged`, `vtc/badges` in the portal
+    signing scope, departure and sweep hooks.
+
+  Inside-only credential regime only: `shareableOutside` is refused until the
+  community-owned status set is served (VTI-BDG-062). Console and portal pages
+  follow in the next PR.
+
+
+
 ## [0.61.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.60.0...vti-common-v0.61.0) — 2026-11-05
 
 

@@ -2,6 +2,21 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.40.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.40.0...vtc-client-v0.40.1) — 2026-11-07
+
+
+### Added
+
+- **vtc-mcp**: A VTC as MCP tools, over the transport its DID document advertises ([#2476](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2476))
+
+Phase 3 of docs/05-design-notes/vtc-mcp.md ([#2470](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2470)). vtc-client gains VtcClient::connect_resolved: connect as a did:webvh secrets bundle (a member's persona) or a did:key over TSP, else DIDComm, else signed documents over the advertised VTCRest endpoint — a session the community advertises is never silently replaced by HTTPS (VtcError::NoTransport; TransportChoice::Rest is the explicit diagnosis path). vtc-mcp (publish = false) is a stdio MCP server that is a native Trust Task client: vtc_list_operations catalogues every pinned request Type URI from vti_specs::schema_index with risk, policy and served-by-the-community; vtc_call sends any pinned operation through send_task and returns a parked write as a status: parked outcome; vtc_supported_tasks, vtc_whoami, vtc_status; three resources; a two-rung identity ladder with no fall-through and no operator-login rung; every call through the shared guard (node VTC) and recorder, with community record identifiers added to the redactor's safe keys. Never runs cnm or pnm.
+
+- **vtc-client**: Send any pinned Trust Task by Type URI, report the transport, and discover what a community serves ([#2472](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2472))
+
+* feat(vtc-client): send any pinned Trust Task by Type URI, report the transport, and discover what a community serves
+
+
+
 ## [0.40.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.39.0...vtc-client-v0.40.0) — 2026-11-05
 
 

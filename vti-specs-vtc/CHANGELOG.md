@@ -2,6 +2,27 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.6.2...vti-specs-vtc-v0.6.3) — 2026-11-07
+
+
+### Added
+
+- **vti-specs-vtc**: Pin vtc/badges/* 0.1 (member badges, 24 tasks) ([#2473](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2473))
+
+Pins the Trust Task family the Community Badges chapter (VTI-BDG-001 – 095)
+  binds to, as trustoverip/dtgwg-trust-tasks-tf#1052 published it: settings
+  (show, update), definitions (create, update, retire, promote, list, show),
+  pictures (images/upload, images/get), awards (offer, withdraw, revoke, list),
+  the holder's own (mine/list, accept, decline, hide, show, arrange), walls
+  (wall/show, holders/list) and kudos (give, list).
+
+  Nothing serves them yet: this is the pin phase 1 builds on
+  (docs/05-design-notes/vtc-badges.md). The groups bundles are left at their
+  pinned digests; the shared Group record's new optional `badgeId` arrives with
+  their next update.
+
+
+
 ## [0.6.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.6.1...vti-specs-vtc-v0.6.2) — 2026-11-05
 
 
