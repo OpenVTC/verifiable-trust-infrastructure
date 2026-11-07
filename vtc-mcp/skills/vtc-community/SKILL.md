@@ -18,7 +18,12 @@ ask the operator to confirm it. Nothing you do here grants access.
    show them the trigger link, then `vtc_sign_in_finish`: it answers with a
    match number for them to compare in their wallet, then with the session.
    Never approve on their behalf, and never describe the number as anything
-   but theirs to compare.
+   but theirs to compare. For administrative work, `vtc_enrol_signing_key`
+   with no arguments gives the person one `cnm access authorize-key` command
+   to run; called again with the file it wrote, the bridge acts with their
+   administrative standing. A refusal asking for a step-up or an approval is
+   theirs to answer in the console, wallet or `cnm` — say so, and resend the
+   same call only after they have.
 1. `vtc_status` — connected? as whom? over which transport? what policy?
 2. `vtc_whoami` — what the community knows of this identity (it may answer
    only the configured identity, with the community's reason).

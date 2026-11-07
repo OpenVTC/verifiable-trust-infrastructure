@@ -187,12 +187,36 @@ What you then hold, and nothing more:
   grant's expiry. The delegation confers nothing of its own: every document is
   read with your standing at that moment, and it never covers `auth`, `acl`,
   `consent`, `task-consent` or `confirm`.
-- **As an administrator**, the bridge's key holds your console session, so
-  `vtc_whoami` answers for it. Signed administrative writes additionally need a
-  **signing-key delegation** of your DID — the console enrols one with your
-  passkey or your wallet's signature — and the bridge cannot obtain that
-  signature yet (see §11). A console session also idles out (15 minutes by
-  default) and a signed document does not refresh it.
+- **As an administrator**, give the bridge's key a **signing-key delegation** of
+  your identity — the same delegation the console's key holds. The wallet
+  sign-in is not needed for this:
+
+  1. `vtc_enrol_signing_key` with no arguments answers with the bridge's DID
+     and the command to run.
+  2. Run it as the administrator — `cnm` signs the authorization with your
+     administrative identity's key, offline:
+
+     ```bash
+     cnm access authorize-key did:key:z6Mk… --label "vtc-mcp" --expires 30d \
+         --out ~/.config/vtc-mcp/authorization.json
+     ```
+
+  3. `vtc_enrol_signing_key` with `authorization_file` set to that file. The
+     bridge sends `auth/signing-key/enroll/0.2`, signed by its own key, with
+     your authorization inside.
+
+  From then on every document the bridge signs is authorized by your
+  administrative standing, read at every call. The delegation creates no
+  access-control entry, expires within 30 days, appears in the console's list
+  of your signing keys, and is revoked on its own. It can never approve an
+  action or answer a step-up: those stay with your own factor (§11). The
+  authorization is single-use, usable only by the key it names, and lapses an
+  hour after `cnm` signs it unless sent.
+
+  An `admin` wallet sign-in still works, and gives the bridge's key your
+  console session so `vtc_whoami` answers for it; it confers no
+  administrative writes on its own, and a console session idles out (15
+  minutes by default) because a signed document does not refresh it.
 
 The request presents the community portal's own origin and names the bridge
 as its user agent; the protection the origin check gives — another website
@@ -423,14 +447,19 @@ An administrator's assistant, enrolled as in §3.1 with `vtc.groups.manage`.
 
 ## 11. Not built yet
 
-- **An administrator's delegation through the wallet.** After an `admin`
-  sign-in, the bridge needs a signing-key delegation of your DID before the
-  community accepts its administrative documents. The console gets the
-  identity's signature on the enrolment terms from the wallet inside the page,
-  or a passkey gesture; neither reaches a process outside the browser. Closing
-  this changes how a console key is enrolled, so it starts in the
-  specification.
-- **Step-up through the wallet.** An authority-changing act takes your own
-  factor bound to that one operation. The bridge reports it; finishing it in
-  the console works today. Handing the step-up request to your wallet is the
-  same kind of change as the one above.
+- **An administrator whose identity lives in a wallet.** `cnm access
+  authorize-key` signs with the key `cnm` holds for the community. An
+  administrator whose identity is a persona their VTA holds, and who has no
+  `cnm` profile for it, has no tool yet that signs the authorization outside
+  the console's own page, which signs it through the wallet for the console's
+  key. The fix is a console action that signs the same authorization for a
+  key you name.
+- **Step-up through the wallet.** An authority-changing act — a grant, a role
+  change, a join criterion — takes your own factor bound to that one
+  operation, and a delegated key can never make that gesture. The bridge
+  reports the refusal; finishing the act in the console works today. Handing
+  the step-up request to your wallet out of band changes the step-up
+  ceremony, so it starts in the specification.
+- **Approving someone else's action** is a decision signed by your own DID,
+  which a delegated key may not sign: use the console, your wallet or
+  `cnm consent approve`.

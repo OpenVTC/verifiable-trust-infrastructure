@@ -243,7 +243,7 @@ pub struct VtcMcp {
     client: Option<Arc<VtcClient>>,
     /// Why the connect failed, in degraded mode.
     connect_error: Option<Arc<str>>,
-    identity: Arc<BridgeIdentity>,
+    pub(crate) identity: Arc<BridgeIdentity>,
     guard: Arc<Guard>,
     recorder: Arc<Recorder>,
     started: Arc<str>,
@@ -760,6 +760,7 @@ impl VtcMcp {
             "version": env!("CARGO_PKG_VERSION"),
             "identity": self.identity.to_json(),
             "signedInAs": self.sign_in.read().await.signed_in.as_ref().map(|s| s.to_json()),
+            "delegationOf": self.sign_in.read().await.delegation_of,
             "transport": transport,
             "servedKnown": self.served.read().await.is_some(),
             "policy": {
@@ -1043,6 +1044,7 @@ mod tests {
             "vtc_sign_in",
             "vtc_sign_in_finish",
             "vtc_sign_in_cancel",
+            "vtc_enrol_signing_key",
             "vtc_list_operations",
             "vtc_call",
             "vtc_supported_tasks",
@@ -1106,6 +1108,7 @@ mod tests {
         ("vtc_sign_in", Some(vtc_client::signin::task::REQUEST)),
         ("vtc_sign_in_finish", Some(vtc_client::signin::task::REDEEM)),
         ("vtc_sign_in_cancel", Some(vtc_client::signin::task::CANCEL)),
+        ("vtc_enrol_signing_key", Some(crate::signin::ENROLL)),
     ];
 
     /// The tools that never leave the process and only read.

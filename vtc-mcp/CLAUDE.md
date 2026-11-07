@@ -56,8 +56,15 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
   The bridge never approves, never shows a number as anything but the
   person's to compare, and holds no session beyond what `redeem` armed for its
   key. A member sign-in delegates the portal families; an admin sign-in is a
-  console session only — administrative writes need a signing-key delegation
-  the bridge cannot obtain yet (operator page §11).
+  console session only.
+- **An administrator's standing is a signing-key delegation**
+  (`vtc_enrol_signing_key`): the bridge sends `auth/signing-key/enroll/0.2`
+  signed by its own key, carrying the identity's signed
+  `auth/signing-key/authorize/0.1` (`cnm access authorize-key`) whose payload
+  is exactly the enrolment's terms. It refuses an authorization naming another
+  key before sending, never builds or alters the terms, and holds no
+  authorization after use. The delegation never answers a step-up or signs a
+  `task-consent/decision` — those stay with the person's own factor.
 - **Deciding an action always asks the human.** `vtc_actions_decide` re-derives
   the action's summary from the payload that would run (`verify_action`),
   refuses on any mismatch, and puts the summary and match code in front of

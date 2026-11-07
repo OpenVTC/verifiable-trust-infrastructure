@@ -91,6 +91,8 @@ impl SignedInAs {
 pub(crate) struct SignInState {
     pub pending: Option<PendingSignIn>,
     pub signed_in: Option<SignedInAs>,
+    /// The identity this bridge's key was enrolled to act for, this run.
+    pub delegation_of: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -433,6 +435,155 @@ impl VtcMcp {
         let result = self.cancel_sign_in(p.request_id.as_deref()).await;
         call.finish(result)
     }
+
+    #[tool(
+        description = "Give this bridge YOUR administrative standing, as a signing-key \
+                       delegation of your identity — the same delegation the operator console's \
+                       key holds. Call it first with no authorization: it answers with this \
+                       bridge's DID and the one command (`cnm access authorize-key …`) that signs \
+                       the authorization as you. Then call it with that authorization (the JSON, \
+                       or the file it was written to): the bridge enrols its own key with it. \
+                       Creates no access-control entry; the key acts with your standing read at \
+                       every call, never approves or answers a step-up, and expires within 30 \
+                       days.",
+        annotations(
+            title = "Act with your administrative standing",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn vtc_enrol_signing_key(
+        &self,
+        Parameters(p): Parameters<EnrolParams>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let call = match self
+            .begin(
+                "vtc_enrol_signing_key",
+                Some(ENROLL),
+                json!({ "authorizationFile": p.authorization_file, "given": p.authorization.is_some() }),
+                Some(&peer),
+            )
+            .await
+        {
+            Ok(call) => call,
+            Err(refused) => return *refused,
+        };
+        let result = self.enrol_signing_key(p).await;
+        call.finish(result)
+    }
+}
+
+/// `auth/signing-key/enroll/0.2`.
+pub(crate) const ENROLL: &str = "https://trusttasks.org/spec/auth/signing-key/enroll/0.2";
+/// `auth/signing-key/authorize/0.1`.
+const AUTHORIZE: &str = "https://trusttasks.org/spec/auth/signing-key/authorize/0.1";
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EnrolParams {
+    /// The signed `auth/signing-key/authorize/0.1` document `cnm access
+    /// authorize-key` printed. Omit both this and `authorization_file` to be
+    /// told the command to run.
+    #[serde(default)]
+    pub authorization: Option<Value>,
+    /// The file `cnm access authorize-key --out` wrote it to.
+    #[serde(default)]
+    pub authorization_file: Option<String>,
+}
+
+impl VtcMcp {
+    /// Enrol this bridge's key with the identity's authorization, or say how
+    /// to get one. The body of `vtc_enrol_signing_key`.
+    pub(crate) async fn enrol_signing_key(&self, p: EnrolParams) -> Result<Value, McpError> {
+        let own_did = self.identity.agent_did.clone().ok_or_else(|| {
+            McpError::internal_error(
+                "this bridge has no key of its own to enrol; start it with --agent-did and \
+                 --agent-key (a key from --mint-did-key)"
+                    .to_string(),
+                None,
+            )
+        })?;
+        if !own_did.starts_with("did:key:") {
+            return Err(McpError::invalid_request(
+                format!(
+                    "this bridge speaks as {own_did}, a persona, not a key of its own: a \
+                     signing-key delegation is for a did:key (start the bridge with \
+                     --mint-did-key's key instead)"
+                ),
+                None,
+            ));
+        }
+        let authorization = match (p.authorization, p.authorization_file) {
+            (Some(doc), _) => doc,
+            (None, Some(path)) => {
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| McpError::invalid_params(format!("reading {path}: {e}"), None))?;
+                serde_json::from_str(&text).map_err(|e| {
+                    McpError::invalid_params(format!("{path} is not a JSON document: {e}"), None)
+                })?
+            }
+            (None, None) => {
+                let vtc = self.identity.vtc_did.clone().unwrap_or_default();
+                return Ok(json!({
+                    "status": "needsAuthorization",
+                    "signingKeyDid": own_did,
+                    "command": format!(
+                        "cnm --vtc-did {vtc} access authorize-key {own_did} --label \"vtc-mcp\" \
+                         --expires 30d --out ~/.config/vtc-mcp/authorization.json"
+                    ),
+                    "next": "Run the command as the administrator whose standing this bridge \
+                             should carry: cnm signs the authorization with that identity's key \
+                             and nothing else. Then call vtc_enrol_signing_key with \
+                             authorization_file set to the file it wrote. The authorization is \
+                             single-use, only this bridge's key can use it, and it lapses in an \
+                             hour unless sent.",
+                }));
+            }
+        };
+        if authorization["type"] != AUTHORIZE {
+            return Err(McpError::invalid_params(
+                format!(
+                    "that is not an auth/signing-key/authorize/0.1 document (type {})",
+                    authorization["type"]
+                ),
+                None,
+            ));
+        }
+        let terms = authorization["payload"].clone();
+        if terms["signingKeyDid"].as_str() != Some(own_did.as_str()) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "that authorization is for {}, not this bridge's key {own_did}",
+                    terms["signingKeyDid"]
+                ),
+                None,
+            ));
+        }
+        let identity_did = terms["identityDid"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        // The enrolment's payload is exactly the authorized terms, with the
+        // authorization beside them; the community compares the two.
+        let mut payload = terms;
+        payload["authorization"] = authorization;
+        let client = self.client()?;
+        let answer = crate::server::outcome(client.send_task(ENROLL, payload).await)?;
+        self.sign_in.write().await.delegation_of = Some(identity_did.clone());
+        tracing::info!(identity = %identity_did, "enrolled as a signing-key delegation");
+        Ok(json!({
+            "status": "enrolled",
+            "actsAs": identity_did,
+            "signingKey": answer["signingKey"],
+            "next": "This bridge's documents are now authorized by that identity's standing, \
+                     read at every call. Acts that need your own factor — a step-up, approving \
+                     an action — still go to the console or cnm. Revoke the key from the \
+                     console's list of your signing keys, or with \
+                     auth/signing-key/revoke.",
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -547,7 +698,7 @@ mod tests {
             Arc::new(VtcClient::with_key(base, VTC_DID, holder())),
             BridgeIdentity {
                 mode: "did:key".into(),
-                agent_did: Some("did:key:zBridge".into()),
+                agent_did: Some(holder().holder_did().to_string()),
                 vtc_did: Some(VTC_DID.into()),
                 transport_choice: "rest".into(),
             },
@@ -650,6 +801,93 @@ mod tests {
             "admin"
         );
         assert!(request["proof"].is_object());
+    }
+
+    #[tokio::test]
+    async fn enrolling_names_the_command_refuses_another_keys_authorization_and_sends_the_terms() {
+        let bridge_did = holder().holder_did().to_string();
+        let authorization = |key_did: &str| {
+            json!({
+                "id": "urn:uuid:11111111-2222-4333-8444-555555555555",
+                "type": AUTHORIZE,
+                "issuer": "did:key:zAdmin",
+                "recipient": VTC_DID,
+                "issuedAt": "2026-11-07T00:00:00Z",
+                "expiresAt": "2026-11-07T01:00:00Z",
+                "payload": {
+                    "identityDid": "did:key:zAdmin",
+                    "signingKeyDid": key_did,
+                    "scope": "console",
+                    "deviceLabel": "vtc-mcp",
+                },
+                "proof": { "type": "DataIntegrityProof" },
+            })
+        };
+
+        // No authorization: the bridge says what to run, naming its own key.
+        let idle = bridge_at("http://192.0.2.1:9/v1");
+        let told = idle
+            .enrol_signing_key(EnrolParams {
+                authorization: None,
+                authorization_file: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(told["status"], "needsAuthorization");
+        assert_eq!(told["signingKeyDid"], bridge_did);
+        let command = told["command"].as_str().unwrap();
+        assert!(
+            command.contains(&format!("authorize-key {bridge_did}")),
+            "{command}"
+        );
+        assert!(command.contains(VTC_DID), "{command}");
+
+        // Another key's authorization is refused before anything is sent (the
+        // base is unroutable: a send would fail differently).
+        let err = idle
+            .enrol_signing_key(EnrolParams {
+                authorization: Some(authorization("did:key:zSomeoneElse")),
+                authorization_file: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("not this bridge's key"),
+            "{}",
+            err.message
+        );
+
+        // Its own: the enrolment is the terms with the authorization beside them.
+        let (base, served) = scripted_vtc(vec![(
+            "200 OK",
+            reply_doc(
+                &format!("{ENROLL}#response"),
+                json!({ "signingKey": { "signingKeyDid": bridge_did, "identityDid": "did:key:zAdmin",
+                        "scope": "console", "active": true, "createdAt": "2026-11-07T00:00:00Z",
+                        "expiresAt": "2026-12-07T00:00:00Z" } }),
+            ),
+        )])
+        .await;
+        let bridge = bridge_at(&base);
+        let given = authorization(&bridge_did);
+        let enrolled = bridge
+            .enrol_signing_key(EnrolParams {
+                authorization: Some(given.clone()),
+                authorization_file: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(enrolled["status"], "enrolled", "{enrolled}");
+        assert_eq!(enrolled["actsAs"], "did:key:zAdmin");
+        assert_eq!(bridge.status(0).await["delegationOf"], "did:key:zAdmin");
+        let received = served.await.unwrap();
+        let doc: Value = serde_json::from_slice(&received[0].1).unwrap();
+        assert_eq!(doc["type"], ENROLL);
+        assert_eq!(doc["issuer"], bridge_did);
+        let mut expected = given["payload"].clone();
+        expected["authorization"] = given;
+        assert_eq!(doc["payload"], expected);
+        assert!(doc["proof"].is_object());
     }
 
     #[tokio::test]
