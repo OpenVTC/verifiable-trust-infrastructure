@@ -284,8 +284,9 @@ pub(crate) async fn register_start(
         .map(|p| p.cred_id().clone())
         .collect();
     let user_uuid = pk_user.user_uuid;
+    let name = vti_common::auth::passkey::authenticator_name_for_did(did);
     let (register_options, reg_state) =
-        start_passkey_registration(webauthn, user_uuid, did, did, Some(exclude))?;
+        start_passkey_registration(webauthn, user_uuid, &name, &name, Some(exclude))?;
 
     let registration_id = Uuid::new_v4().to_string();
     store_registration_state(&state.passkey_ks, &registration_id, &reg_state).await?;

@@ -156,42 +156,29 @@ fn user_handle_for_did(did: &str) -> Vec<u8> {
 
 /// The WebAuthn `user.name` / `user.displayName` for an enrolment.
 ///
-/// **Not the DID.** This is the string an authenticator shows in the credential
-/// picker, and WebAuthn L2 §5.4.3 lets an authenticator truncate it to 64
+/// **Not the raw DID.** This is the string an authenticator shows in the
+/// credential picker, and it is held to
+/// [`MAX_AUTHENTICATOR_NAME_BYTES`](vti_common::auth::passkey::MAX_AUTHENTICATOR_NAME_BYTES)
 /// bytes — which the registry's `maxLength: 64` on `userName` /
-/// `userDisplayName` mirrors. A `did:webvh` is routinely longer than that: the
-/// SCID alone is ~46 characters before the host and path. Sending the raw DID
-/// produced a response the 0.17 schema rejects outright, and before that a
-/// picker entry truncated mid-SCID — unreadable, and identical between two DIDs
-/// on the same host.
+/// `userDisplayName` mirrors, and past which a YubiKey 5 refuses the
+/// registration outright. A `did:webvh` is routinely longer than that: the
+/// SCID alone is ~46 characters before the host and path.
 ///
 /// Nothing is lost by not sending it. `userHandle` is the DID-derived binding
 /// (see [`user_handle_for_did`]) and is unbounded; `user.name` is a label for a
 /// human, so it gets one:
 ///
 /// * the operator's `label` when the enrolment supplied one, else
-/// * the DID with its `did:<method>:<scid>:` prefix dropped — the host and path
-///   are the part a person recognises, the SCID is the part they cannot.
+/// * [`authenticator_name_for_did`](vti_common::auth::passkey::authenticator_name_for_did):
+///   the host and path of a `did:webvh`, the part a person recognises.
 ///
-/// Clamped on a `char` boundary so a multi-byte label cannot split.
+/// The VTC names its passkeys with the same helpers.
 fn display_name_for(did: &str, label: Option<&str>) -> String {
-    const MAX: usize = 64;
-    let base = match label {
-        Some(l) if !l.trim().is_empty() => l.trim().to_string(),
-        _ => did
-            .strip_prefix("did:")
-            .and_then(|rest| rest.split_once(':'))
-            .and_then(|(_method, rest)| rest.split_once(':'))
-            .map(|(_scid, tail)| tail.to_string())
-            .unwrap_or_else(|| did.to_string()),
-    };
-    if base.chars().count() <= MAX {
-        return base;
+    use vti_common::auth::passkey::{authenticator_name_for_did, clamp_authenticator_name};
+    match label.map(str::trim) {
+        Some(l) if !l.is_empty() => clamp_authenticator_name(l),
+        _ => authenticator_name_for_did(did),
     }
-    // Keep the tail: for a path-shaped identifier the distinguishing part is at
-    // the end (`…:dids:persona`), not the start.
-    let skip = base.chars().count() - MAX + 1;
-    format!("…{}", base.chars().skip(skip).collect::<String>())
 }
 
 /// VM fragment derivation: `passkey-<base64url(sha256(credential_id))>`.
@@ -1069,7 +1056,7 @@ mod display_name_tests {
         );
         let got = display_name_for(did, None);
         assert_eq!(got, "webvh-host.test:dids:persona");
-        assert!(got.chars().count() <= 64);
+        assert!(got.len() <= 64);
     }
 
     /// An operator-supplied label wins — it is the whole reason `label` is on
@@ -1104,8 +1091,17 @@ mod display_name_tests {
     fn an_over_long_label_is_clamped_without_splitting_a_char() {
         let label = "é".repeat(200);
         let got = display_name_for("did:key:z6Mk", Some(&label));
-        assert_eq!(got.chars().count(), 64, "clamped to the bound");
+        assert!(got.len() <= 64, "clamped to the bound in bytes");
         assert!(got.starts_with('…'));
-        assert!(got.is_char_boundary(got.len()));
+    }
+
+    /// The bug a YubiKey 5 showed: the old clamp counted characters, and its
+    /// long branch emitted `…` plus 63 of them — 66 bytes even for ASCII.
+    #[test]
+    fn a_long_webvh_path_fits_in_64_bytes() {
+        let did = format!("did:webvh:QmScid:example.com:{}:persona", "a".repeat(80));
+        let got = display_name_for(&did, None);
+        assert!(got.len() <= 64, "{} bytes: {got}", got.len());
+        assert!(got.ends_with(":persona"));
     }
 }

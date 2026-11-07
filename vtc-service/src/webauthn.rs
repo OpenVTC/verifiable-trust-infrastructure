@@ -47,6 +47,8 @@ use webauthn_rs::prelude::{
 };
 use webauthn_rs_proto::PubKeyCredParams;
 
+use vti_common::auth::passkey::clamp_authenticator_name;
+
 use crate::error::AppError;
 
 /// COSE algorithm identifier for EdDSA. Pinned in code so the
@@ -61,6 +63,14 @@ pub const EDDSA_ALG: i64 = -8;
 /// the install token, so the algorithm of the credential the
 /// authenticator produces is purely an auth-factor choice — not an
 /// identity input.
+///
+/// `user_name` and `user_display_name` are what the authenticator shows the
+/// passkey as, and both are held to
+/// [`MAX_AUTHENTICATOR_NAME_BYTES`](vti_common::auth::passkey::MAX_AUTHENTICATOR_NAME_BYTES)
+/// here, because some authenticators refuse a longer `user.name` outright. For
+/// a passkey named by a DID, pass
+/// [`authenticator_name_for_did`](vti_common::auth::passkey::authenticator_name_for_did)
+/// rather than the DID itself.
 pub fn start_passkey_registration(
     webauthn: &Webauthn,
     user_unique_id: uuid::Uuid,
@@ -71,8 +81,8 @@ pub fn start_passkey_registration(
     let (mut ccr, reg_state) = webauthn
         .start_passkey_registration(
             user_unique_id,
-            user_name,
-            user_display_name,
+            &clamp_authenticator_name(user_name),
+            &clamp_authenticator_name(user_display_name),
             exclude_credentials,
         )
         .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
@@ -337,6 +347,27 @@ mod tests {
 
     fn webauthn() -> Webauthn {
         build_webauthn("https://vtc.example.com").expect("webauthn builder")
+    }
+
+    /// The wrapper holds whatever it is given to the authenticator limit, so a
+    /// caller that passes a long name cannot reproduce the YubiKey refusal.
+    #[test]
+    fn registration_names_never_exceed_the_authenticator_limit() {
+        use vti_common::auth::passkey::MAX_AUTHENTICATOR_NAME_BYTES;
+        let long = "did:webvh:QmSyntheticExampleScid000000000000000000000000:dids.example.org:example-member-000001";
+        let (ccr, _) =
+            start_passkey_registration(&webauthn(), Uuid::new_v4(), long, long, None).unwrap();
+        let user = &ccr.public_key.user;
+        assert!(
+            user.name.len() <= MAX_AUTHENTICATOR_NAME_BYTES,
+            "{}",
+            user.name
+        );
+        assert!(
+            user.display_name.len() <= MAX_AUTHENTICATOR_NAME_BYTES,
+            "{}",
+            user.display_name
+        );
     }
 
     #[test]
