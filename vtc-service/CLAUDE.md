@@ -958,7 +958,12 @@ When adding a flow, add it here and a line to the root index.
   badge and holder, reused by every re-issue; never a set of the badge's or the group's own —
   the W3C list algorithm compares no issuers). `credential::{revoke_holder,
   revoke_all_holders, revoke_departed}` flip it on take-back of the last award, retire and
-  departure (VTI-BDG-063); keep every path that ends a holding on one of them. **Hidden is
+  departure (VTI-BDG-063); keep every path that ends a holding on one of them. A shareable
+  badge's **public artefacts** (`badges::public`, VTI-BDG-051): `GET /badges/<id>` (the
+  Achievement document) and `/badges/<id>/image` (the re-encoded picture), parent-root routes
+  beside the identity logs, let through the host-surface gate (`is_badge_artefact_path`),
+  unauthenticated, naming no holder or count (VTI-BDG-071); an inside-only or unknown badge is
+  the same `404` — never serve an inside badge's picture there (VTI-BDG-050). **Hidden is
   portal-only** (`badges::Prefs`, VTI-BDG-030): walls, `holders/list` and counts leave a hidden
   holder out; `awards/list` shows owners `hidden: true`; memberships and credentials stand.
   Holder's tasks accept the portal's delegated key (`vtc/badges` in `PORTAL_SIGNING_SCOPE`);
@@ -977,7 +982,7 @@ When adding a flow, add it here and a line to the root index.
   list-limit census matches the literal), and the console's wire types come from the
   `Badges*01` wrappers in `vta_sdk::openapi` listed in `routes::openapi_spec` — a new badge
   task needs both, then `UPDATE_OPENAPI=1` and `npm run wire:generate`.
-- **Code**: `vtc-service/src/badges/{mod,credential}.rs`,
+- **Code**: `vtc-service/src/badges/{mod,credential,public}.rs`,
   `vtc-service/src/trust_tasks/badge_tasks.rs`, `vtc-service/tests/it/badges.rs`,
   `admin-ui/src/plugins/badges.tsx`, `admin-ui/src/members/Badges.tsx`.
 - **Docs**: `docs/03-vtc/badges.md`, `docs/05-design-notes/vtc-badges.md`.

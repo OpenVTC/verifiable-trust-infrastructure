@@ -1281,6 +1281,17 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
             "/group-dids/{id}/did.jsonl",
             get(crate::groups::identity::serve_group_did_log),
         )
+        // The public artefacts of a badge its holders may show outside (VTI-BDG-051):
+        // the Achievement document and the picture its credentials name. Public, like
+        // the identity logs above; a badge kept inside answers 404.
+        .route(
+            "/badges/{id}",
+            get(crate::badges::public::serve_achievement),
+        )
+        .route(
+            "/badges/{id}/image",
+            get(crate::badges::public::serve_image),
+        )
         // API surface — existing TrustTaskRouter result nested at
         // the configured mount.
         .nest(&routing.api.mount, api);
@@ -1396,6 +1407,17 @@ pub fn assemble_with_website(
         .route(
             "/group-dids/{id}/did.jsonl",
             get(crate::groups::identity::serve_group_did_log),
+        )
+        // The public artefacts of a badge its holders may show outside (VTI-BDG-051):
+        // the Achievement document and the picture its credentials name. Public, like
+        // the identity logs above; a badge kept inside answers 404.
+        .route(
+            "/badges/{id}",
+            get(crate::badges::public::serve_achievement),
+        )
+        .route(
+            "/badges/{id}/image",
+            get(crate::badges::public::serve_image),
         )
         .nest(&routing.api.mount, api);
     app = app.nest(&routing.admin_ui.mount, admin);

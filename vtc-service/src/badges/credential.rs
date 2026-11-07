@@ -61,9 +61,24 @@ pub fn achievement_id(badge: &Badge, public_url: Option<&str>) -> String {
     }
 }
 
+/// The public location of a shareable badge's picture (VTI-BDG-051), where the community
+/// has a public origin.
+pub fn public_image_url(badge: &Badge, public_url: Option<&str>) -> Option<String> {
+    match public_url {
+        Some(u) if badge.shareable_outside => Some(format!(
+            "{}/{}/{}/image",
+            u.trim_end_matches('/'),
+            super::public::BADGE_PATH,
+            badge.badge_id
+        )),
+        _ => None,
+    }
+}
+
 /// The badge's Achievement, as the credential names it (VTI-BDG-060), with the
-/// community's endorsement of it where one is held.
-fn achievement(
+/// community's endorsement of it where one is held. Its picture is named by its public
+/// location for a badge its holders may show outside, else by digest.
+pub fn achievement(
     state_did: &str,
     badge: &Badge,
     public_url: Option<&str>,
@@ -90,7 +105,7 @@ fn achievement(
             .and_then(Value::as_str)
             .unwrap_or("image/png");
         a["image"] = json!({
-            "id": format!("urn:sha256:{sha}"),
+            "id": public_image_url(badge, public_url).unwrap_or_else(|| format!("urn:sha256:{sha}")),
             "type": "Image",
             "caption": badge.name,
             "mediaType": media,

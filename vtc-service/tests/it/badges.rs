@@ -1829,3 +1829,89 @@ async fn kudos_give_refuses_a_member_too_new_to_give() {
         .await;
     assert_eq!(tt_error_code(&doc), KUDOS_ERR_KIND_MISMATCH, "{doc}");
 }
+
+#[tokio::test]
+async fn the_public_artefacts_of_a_badge_shown_outside_are_served_and_an_inside_badge_is_not() {
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, false);
+    body["shareableOutside"] = json!(true);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let outside = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let inside = fix.community_badge("Inside", false).await["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let get = |path: String| {
+        let router = fix.vtc.router.clone();
+        async move {
+            let res = router
+                .oneshot(axum::http::Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = res.status();
+            let media = res
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            (status, media, bytes)
+        }
+    };
+    // The Achievement document, at the location the credential names (VTI-BDG-051).
+    let (status, media, bytes) = get(format!("/badges/{outside}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(media.starts_with("application/ld+json"), "{media}");
+    let achievement: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        achievement["id"],
+        format!("https://vtc.example.com/badges/{outside}")
+    );
+    assert_eq!(achievement["name"], "Workshop host");
+    assert_eq!(achievement["creator"]["id"], TEST_VTC_DID);
+    assert_eq!(
+        achievement["image"]["id"],
+        format!("https://vtc.example.com/badges/{outside}/image")
+    );
+    assert!(achievement.get("holders").is_none() && achievement.get("holderCount").is_none());
+    // The picture, the community's own re-encoding.
+    let (status, media, bytes) = get(format!("/badges/{outside}/image")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(media, "image/jpeg");
+    assert!(!bytes.is_empty());
+    // A badge kept inside answers as one that does not exist (VTI-BDG-050).
+    let (status, _, _) = get(format!("/badges/{inside}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = get(format!("/badges/{inside}/image")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = get("/badges/bdg_NoSuchBadge0000000000".to_string()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // The credential of the badge shown outside names the public picture; an inside
+    // badge's names it by digest.
+    fix.hold(&outside).await;
+    let signed = fix.vta.calls_of(SIGN_DOCUMENT);
+    let vc = &signed.last().unwrap()["document"];
+    assert_eq!(
+        vc["credentialSubject"]["achievement"]["image"]["id"],
+        format!("https://vtc.example.com/badges/{outside}/image")
+    );
+    fix.hold(&inside).await;
+    let signed = fix.vta.calls_of(SIGN_DOCUMENT);
+    let vc = &signed.last().unwrap()["document"];
+    assert!(
+        vc["credentialSubject"]["achievement"]["image"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("urn:sha256:"),
+        "{vc}"
+    );
+}
