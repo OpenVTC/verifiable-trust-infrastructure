@@ -1,9 +1,10 @@
 # VTC member badges: design
 
-Status: **phase 1 complete** (backend #2477, console plugin and portal pages #2479); **phase 3a**
-(the outside credential regime and the embedded community endorsement) in this PR. Next: phase 3b,
-sharing an award outside (`awards/share|unshare` in the Trust Task family first), then the
-registry issuer projection. Specification: VTI Community Badges chapter
+Status: **phase 1 complete** (backend #2477, console plugin and portal pages #2479); **phase 3a
+complete** (#2482: the outside credential regime and the embedded community endorsement);
+**phase 3b** in progress: the badge's public artefacts (this PR), `awards/share|unshare` specified
+upstream (trust-tasks-tf #1054), then served here with the verification page and baked image, then
+the registry issuer projection. Specification: VTI Community Badges chapter
 (VTI-BDG-001 – 095). Wire: trust-tasks-tf `specs/vtc/badges/*/0.1`, plus `badgeId` on the shared
 `Group` record. Mockups: the "VTC Member Badges" design canvas (seven screens: a member's page with
 the badge wall, one badge with its holders, the member's own badges, a member making a badge, and
@@ -145,7 +146,7 @@ Requests reuse `vtc/groups/join` and `vtc/groups/requests/{list,decide}`; owners
 | 1 | Settings; community badges on static groups; offers, accept, decline, hide; wall, holders, pictures; the inside-only credential; kudos, per-giving acceptance, totals, limits; pins and order; promote — backend (#2477), then the console plugin (`admin-ui/src/plugins/badges.tsx`) and the portal pages (`admin-ui/src/members/Badges.tsx`, the wall on a member's card, the home tile) |
 | 2 | Folded into phase 1 |
 | 3a | Outside, the credential: the long-lived credential in the community's status set (`bslot:` per badge and holder, revoked on take-back, retire and departure), the community's `EndorsementCredential` embedded in every badge credential, `shareableOutside` on `create` and `promote` and in the console |
-| 3b | Outside, sharing: `awards/share|unshare` (spec first), the public verification page and baked image (declared REST exceptions, VTI-BDG-050/051/070), the registry issuer projection |
+| 3b | Outside, sharing: the badge's public Achievement document and picture (VTI-BDG-051, `badges::public`); `awards/share|unshare` (spec first, trust-tasks-tf #1054), the public verification page and baked image (VTI-BDG-070); the registry issuer projection |
 | 4 | Dynamic badge groups with the new rule facts (elections voted in, ideas selected, kudos received); claim codes for events |
 
 ## Open
