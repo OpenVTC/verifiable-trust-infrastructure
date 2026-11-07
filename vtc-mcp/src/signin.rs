@@ -493,7 +493,51 @@ pub struct EnrolParams {
     pub authorization_file: Option<String>,
 }
 
+/// `~` or `~/…` as the home directory; anything else unchanged.
+fn expand_home(path: &str) -> String {
+    let home = || std::env::var("HOME").ok().filter(|h| !h.is_empty());
+    match path.strip_prefix("~") {
+        Some("") => home().unwrap_or_else(|| path.to_string()),
+        Some(rest) if rest.starts_with('/') => match home() {
+            Some(h) => format!("{h}{rest}"),
+            None => path.to_string(),
+        },
+        _ => path.to_string(),
+    }
+}
+
+/// `auth/signing-key/list/0.1`.
+const SIGNING_KEY_LIST: &str = "https://trusttasks.org/spec/auth/signing-key/list/0.1";
+
 impl VtcMcp {
+    /// Learn, at start-up, whether this bridge's key is already an active
+    /// signing-key delegation, and of whom — so `vtc_status` reports the
+    /// standing the bridge actually has, not only what this run enrolled.
+    ///
+    /// The community answers `auth/signing-key/list` only for a signer it
+    /// resolves to an identity (its own entry, or the identity an active
+    /// delegation names), so an unenrolled key is refused and nothing is
+    /// recorded. Best effort, never fatal.
+    pub(crate) async fn learn_delegation(&self) {
+        let Some(own) = self.identity.agent_did.clone() else {
+            return;
+        };
+        let Ok(client) = self.client() else { return };
+        let Ok(answer) = client.send_task(SIGNING_KEY_LIST, json!({})).await else {
+            return;
+        };
+        let identity = answer["signingKeys"].as_array().and_then(|keys| {
+            keys.iter()
+                .find(|k| k["signingKeyDid"] == own.as_str() && k["active"] == true)
+                .and_then(|k| k["identityDid"].as_str())
+                .map(str::to_string)
+        });
+        if let Some(identity) = identity {
+            tracing::info!(identity = %identity, "this key is a signing-key delegation");
+            self.sign_in.write().await.delegation_of = Some(identity);
+        }
+    }
+
     /// Enrol this bridge's key with the identity's authorization, or say how
     /// to get one. The body of `vtc_enrol_signing_key`.
     pub(crate) async fn enrol_signing_key(&self, p: EnrolParams) -> Result<Value, McpError> {
@@ -518,6 +562,9 @@ impl VtcMcp {
         let authorization = match (p.authorization, p.authorization_file) {
             (Some(doc), _) => doc,
             (None, Some(path)) => {
+                // The command this tool suggests writes under `~/`, and an
+                // assistant passes that path back as written.
+                let path = expand_home(&path);
                 let text = std::fs::read_to_string(&path)
                     .map_err(|e| McpError::invalid_params(format!("reading {path}: {e}"), None))?;
                 serde_json::from_str(&text).map_err(|e| {
@@ -888,6 +935,53 @@ mod tests {
         expected["authorization"] = given;
         assert_eq!(doc["payload"], expected);
         assert!(doc["proof"].is_object());
+    }
+
+    #[test]
+    fn a_home_relative_path_is_expanded() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_home("~/x/y.json"), format!("{home}/x/y.json"));
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(expand_home("/abs/y.json"), "/abs/y.json");
+        assert_eq!(expand_home("~other/y.json"), "~other/y.json");
+    }
+
+    #[tokio::test]
+    async fn a_delegation_made_in_an_earlier_run_is_learnt_at_start() {
+        let bridge_did = holder().holder_did().to_string();
+        let list = |key: &str, active: bool| {
+            reply_doc(
+                &format!("{SIGNING_KEY_LIST}#response"),
+                json!({ "signingKeys": [{ "signingKeyDid": key, "identityDid": "did:key:zAdmin",
+                        "scope": "console", "active": active, "createdAt": "2026-11-07T00:00:00Z",
+                        "expiresAt": "2026-12-07T00:00:00Z" }] }),
+            )
+        };
+        let (base, _s) = scripted_vtc(vec![("200 OK", list(&bridge_did, true))]).await;
+        let bridge = bridge_at(&base);
+        bridge.learn_delegation().await;
+        assert_eq!(bridge.status(0).await["delegationOf"], "did:key:zAdmin");
+
+        // Another key's, or a revoked one, is not this bridge's standing.
+        for reply in [list("did:key:zOther", true), list(&bridge_did, false)] {
+            let (base, _s) = scripted_vtc(vec![("200 OK", reply)]).await;
+            let bridge = bridge_at(&base);
+            bridge.learn_delegation().await;
+            assert_eq!(bridge.status(0).await["delegationOf"], Value::Null);
+        }
+
+        // An unenrolled key is refused by the community: nothing recorded.
+        let (base, _s) = scripted_vtc(vec![(
+            "403 Forbidden",
+            reply_doc(
+                "https://trusttasks.org/spec/trust-task-error/0.3",
+                json!({ "code": "permissionDenied", "message": "not an identity" }),
+            ),
+        )])
+        .await;
+        let bridge = bridge_at(&base);
+        bridge.learn_delegation().await;
+        assert_eq!(bridge.status(0).await["delegationOf"], Value::Null);
     }
 
     #[tokio::test]

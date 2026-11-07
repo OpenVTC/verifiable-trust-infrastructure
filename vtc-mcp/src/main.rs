@@ -338,6 +338,7 @@ async fn main() -> anyhow::Result<()> {
             );
             let bridge = VtcMcp::new(client.clone(), identity, guard, recorder);
             bridge.learn_served().await;
+            bridge.learn_delegation().await;
             serve(bridge, Some(client)).await
         }
         Err(e) => {
