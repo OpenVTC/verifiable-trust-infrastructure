@@ -839,6 +839,23 @@ async fn handle_update(
     }
 }
 
+/// Whether `rec` has finished ending, for a deletion (item 3): cancelled, or closed with its
+/// close settled and its final board head kept. A board's closing records the election
+/// closed before the ballot box's final head is read (`elections::ops::close` item 5), and
+/// that head is the one a voter checks a receipt against once only the tombstone is left
+/// (VTI-BRD-008) — so until it is kept, the election has not closed for this purpose.
+#[cfg(feature = "voting")]
+fn ended(
+    rec: &crate::elections::store::ElectionRecord,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    match rec.state(now) {
+        "cancelled" => true,
+        "closed" | "tallied" => rec.pending_end.is_none() && rec.final_checkpoint,
+        _ => false,
+    }
+}
+
 // Without voting a board opens no election, so none can still be running at a deletion.
 #[cfg(not(feature = "voting"))]
 const _: &str = DELETE_ERR_ELECTIONS_RUNNING;
@@ -903,7 +920,7 @@ async fn handle_delete(
             };
             match crate::elections::store::get(state.elections.ks(), id).await {
                 Ok(Some(rec)) => {
-                    if !matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
+                    if !ended(&rec, now) {
                         running.push(idea.idea_id.clone());
                     }
                     records.push(rec);

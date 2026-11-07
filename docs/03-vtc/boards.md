@@ -125,7 +125,9 @@ member's wallet, as for every election.
    answer doesn't wait for the ballot box. Facilitators still decide and select afterwards.
 8. **Archive.** `archived` takes no change at all, and hides the board from members.
 9. **Delete.** A board manager deletes a closed or archived board once every election on it has
-   closed or been cancelled (`vtc/boards/delete`, VTI-BRD-007), with a passkey gesture bound to
+   closed or been cancelled (`vtc/boards/delete`, VTI-BRD-007) — a closed one counts once its
+   final board head is kept, which the elections sweeper reads just after the close, so a
+   deletion right after closing the board may answer `electionsRunning` for a moment — with a passkey gesture bound to
    the deletion. It removes the board, its ideas, its notes and each election's title,
    description, roll and ticket records. Each election keeps a **tombstone** — identifier,
    manifest digest and the board heads the community kept — for `[boards] tombstone_retention`

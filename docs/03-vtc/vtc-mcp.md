@@ -159,6 +159,70 @@ Exactly one, chosen by what is configured and never by falling through: both
 given is an error, half of rung 2 is an error naming the missing field, and
 neither serves in degraded mode (§6) so `vtc_status` can say what is wrong.
 
+### 3.0 Your own assistant: sign in as yourself
+
+For your own assistant, do not enrol anything. Give the bridge a key of its own
+and sign it in through your wallet, exactly as the member portal and the
+operator console sign you in:
+
+```bash
+vtc-mcp --mint-did-key            # keep privateKeyMultibase; enrol nothing
+VTC_MCP_AGENT_KEY=z3u2… vtc-mcp --agent-did did:key:z6Mk… --vtc-did did:webvh:…
+```
+
+Then, in the session:
+
+1. `vtc_sign_in` (with `audience: "admin"` for the operator console) opens a
+   sign-in request signed by the bridge's key and returns the **trigger link**.
+2. Open the link in the browser that holds your wallet, or scan it from a
+   phone wallet. The wallet shows the community, the bridge as the starter
+   (`vtc-mcp/<version>`), and a match number.
+3. `vtc_sign_in_finish` answers with the same **match number**; approve in the
+   wallet only if the two agree, then call it again for the session.
+
+What you then hold, and nothing more:
+
+- **As a member**, the bridge's key is delegated to sign the member portal's
+  task families — the directory, boards, badges, … — as you, until the
+  grant's expiry. The delegation confers nothing of its own: every document is
+  read with your standing at that moment, and it never covers `auth`, `acl`,
+  `consent`, `task-consent` or `confirm`.
+- **As an administrator**, give the bridge's key a **signing-key delegation** of
+  your identity — the same delegation the console's key holds. The wallet
+  sign-in is not needed for this:
+
+  1. `vtc_enrol_signing_key` with no arguments answers with the bridge's DID
+     and the command to run.
+  2. Run it as the administrator — `cnm` signs the authorization with your
+     administrative identity's key, offline:
+
+     ```bash
+     cnm access authorize-key did:key:z6Mk… --label "vtc-mcp" --expires 30d \
+         --out ~/.config/vtc-mcp/authorization.json
+     ```
+
+  3. `vtc_enrol_signing_key` with `authorization_file` set to that file. The
+     bridge sends `auth/signing-key/enroll/0.2`, signed by its own key, with
+     your authorization inside.
+
+  From then on every document the bridge signs is authorized by your
+  administrative standing, read at every call. The delegation creates no
+  access-control entry, expires within 30 days, appears in the console's list
+  of your signing keys, and is revoked on its own. It can never approve an
+  action or answer a step-up: those stay with your own factor (§11). The
+  authorization is single-use, usable only by the key it names, and lapses an
+  hour after `cnm` signs it unless sent.
+
+  An `admin` wallet sign-in still works, and gives the bridge's key your
+  console session so `vtc_whoami` answers for it; it confers no
+  administrative writes on its own, and a console session idles out (15
+  minutes by default) because a signed document does not refresh it.
+
+The request presents the community portal's own origin and names the bridge
+as its user agent; the protection the origin check gives — another website
+cannot start a sign-in through your browser — is unaffected, and the wallet's
+match number is what binds the approval to this bridge.
+
 ### 3.1 Rung 2 — a dedicated agent entry (an administrator's assistant)
 
 The bridge speaks as an Ed25519 `did:key` an administrator enrolled, bounded
@@ -378,3 +442,24 @@ An administrator's assistant, enrolled as in §3.1 with `vtc.groups.manage`.
   never deciding for them.
 - **Not a wrapper around `cnm`.** It speaks Trust Tasks itself, over the
   transport the community advertises, as one identity it holds.
+
+---
+
+## 11. Not built yet
+
+- **An administrator whose identity lives in a wallet.** `cnm access
+  authorize-key` signs with the key `cnm` holds for the community. An
+  administrator whose identity is a persona their VTA holds, and who has no
+  `cnm` profile for it, has no tool yet that signs the authorization outside
+  the console's own page, which signs it through the wallet for the console's
+  key. The fix is a console action that signs the same authorization for a
+  key you name.
+- **Step-up through the wallet.** An authority-changing act — a grant, a role
+  change, a join criterion — takes your own factor bound to that one
+  operation, and a delegated key can never make that gesture. The bridge
+  reports the refusal; finishing the act in the console works today. Handing
+  the step-up request to your wallet out of band changes the step-up
+  ceremony, so it starts in the specification.
+- **Approving someone else's action** is a decision signed by your own DID,
+  which a delegated key may not sign: use the console, your wallet or
+  `cnm consent approve`.

@@ -52,6 +52,31 @@ each to the pinned specification index).
 | `admit-member` | `subject`, `role` |
 | `grant-administration` | `subject`, `role` |
 
+## Signing in as yourself
+
+The usual way to run the bridge for **your own** assistant: give it a key of
+its own (`vtc-mcp --mint-did-key`, nothing enrolled), start it as rung 2 with
+that key, and sign in through your wallet, the way the member portal and the
+operator console do. No entry, no role, no duplicate member:
+
+| Tool | What it does |
+|---|---|
+| `vtc_sign_in` | Opens a wallet sign-in request (`auth/oob/request`) with the bridge's key, for `member` (default) or `admin`, and returns the trigger link to open in the browser holding your wallet, or to scan |
+| `vtc_sign_in_finish` | Waits for your wallet: answers with the **match number** to confirm there, then with the session once you approve |
+| `vtc_sign_in_cancel` | Withdraws an open request |
+
+As a **member**, the bridge's key is then delegated to sign the member
+portal's task families (directory, boards, badges, …) as you, for the
+session your wallet granted.
+
+As an **administrator**, enrol the bridge's key as a signing-key delegation of
+your identity, the delegation the console's key holds: `vtc_enrol_signing_key`
+names the command, `cnm access authorize-key <bridge-did>` signs the
+authorization with your administrative key, and `vtc_enrol_signing_key`
+with that file enrols it. The bridge then acts with your full administrative
+standing, read at every call, until the delegation expires (at most 30 days)
+or you revoke it. Step-ups and approvals stay with your own factor.
+
 ## Identity
 
 Exactly one, chosen by what is configured and never by falling through:

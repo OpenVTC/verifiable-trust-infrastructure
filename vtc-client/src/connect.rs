@@ -227,6 +227,7 @@ impl VtcClient {
         let mut failed: Vec<String> = Vec::new();
         if try_tsp && let Some(tsp) = &advertised.tsp_mediator {
             match Self::session_tsp(
+                &signer,
                 &identity,
                 vtc_did,
                 tsp,
@@ -240,7 +241,8 @@ impl VtcClient {
             }
         }
         if try_didcomm && let Some(didcomm) = &advertised.didcomm_mediator {
-            match Self::session_didcomm(&identity, vtc_did, didcomm, rest.as_deref()).await {
+            match Self::session_didcomm(&signer, &identity, vtc_did, didcomm, rest.as_deref()).await
+            {
                 Ok(client) => return Ok(client),
                 Err(e) => failed.push(format!("DIDComm via {didcomm}: {e}")),
             }
@@ -277,6 +279,7 @@ impl VtcClient {
     /// mediator where the community names one and on the TSP mediator
     /// otherwise — either way one mediator socket per DID.
     async fn session_tsp(
+        signer: &HolderKey,
         identity: &SessionIdentity,
         vtc_did: &str,
         tsp_mediator: &str,
@@ -285,7 +288,14 @@ impl VtcClient {
     ) -> Result<Self, VtcError> {
         #[cfg(not(feature = "tsp"))]
         {
-            let _ = (identity, vtc_did, tsp_mediator, didcomm_mediator, rest);
+            let _ = (
+                signer,
+                identity,
+                vtc_did,
+                tsp_mediator,
+                didcomm_mediator,
+                rest,
+            );
             Err(VtcError::Unsupported(
                 "this build has no TSP transport (feature `tsp`)",
             ))
@@ -314,7 +324,13 @@ impl VtcClient {
                         documents.shutdown().await;
                         return Err(session(e));
                     }
-                    Ok(Self::over_session(documents, &bundle.did, vtc_did, rest))
+                    Ok(Self::over_session(
+                        documents,
+                        &bundle.did,
+                        vtc_did,
+                        rest,
+                        Some(signer.clone()),
+                    ))
                 }
             }
         }
@@ -322,6 +338,7 @@ impl VtcClient {
 
     /// A DIDComm session as `identity`.
     async fn session_didcomm(
+        signer: &HolderKey,
         identity: &SessionIdentity,
         vtc_did: &str,
         mediator: &str,
@@ -341,7 +358,13 @@ impl VtcClient {
                 )
                 .await
                 .map_err(|e| VtcError::Session(e.to_string()))?;
-                Ok(Self::over_session(documents, &bundle.did, vtc_did, rest))
+                Ok(Self::over_session(
+                    documents,
+                    &bundle.did,
+                    vtc_did,
+                    rest,
+                    Some(signer.clone()),
+                ))
             }
         }
     }

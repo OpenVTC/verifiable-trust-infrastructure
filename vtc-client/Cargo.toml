@@ -65,6 +65,8 @@ multibase = { workspace = true }
 ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
 thiserror = { workspace = true }
+# The portal origin a wallet sign-in request presents (`signin`).
+url = { workspace = true }
 chrono = { workspace = true }
 # A room read waits out a short `Retry-After` before asking again (`rooms::room_task`).
 tokio = { workspace = true }
