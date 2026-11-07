@@ -2,6 +2,104 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.26.0...vtc-service-v0.26.1) — 2026-11-07
+
+
+### Added
+
+- **vtc**: Badges shown outside — the long-lived credential in the community's status set, and the community's endorsement embedded (VTI-BDG-060 – 063) ([#2482](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2482))
+
+The outside credential regime for member badges, and the one piece of
+  VTI-BDG-060 the first build left out.
+
+  - `shareableOutside` is accepted on `create` and `promote` for a community
+    badge (refused on a kudos badge as before) and fixed from then on. Such a
+    badge's credential is long-lived (`settings.credentialValidDays`, default
+    730) and carries a `credentialStatus` slot in the **community's** own
+    revocation list — the set every community credential uses, allocated at
+    random — one slot per badge and holder (`bslot:<badge>:<entry>`), reused by
+    every re-issue and renewal. Never a set of the badge's or the group's own
+    (VTI-BDG-062, VTI-CRD-014). The list's credential is the community's while
+    the badge credential's issuer is the group: the W3C Bitstring Status List
+    Recommendation compares no issuers and says the two "might differ".
+  - The bit is flipped when the holder's last award is taken back, when the
+    badge is retired, and when the holder departs (VTI-BDG-063:
+    `credential::{revoke_holder, revoke_all_holders, revoke_departed}`); an
+    inside-only credential still lapses with its renewal.
+  - Every badge credential now embeds the community's Open Badges 3.0
+    `EndorsementCredential` of the Achievement, signed by the VTA as the
+    community on first need and kept on the badge (VTI-BDG-060), so an outside
+    verifier sees who stands behind the issuer from the credential alone.
+  - Console: "May be shown outside" on the new-badge form and on promotion;
+    the credential's life in the settings.
+
+  Sharing an award outside (`awards/share|unshare`, the public verification
+  page and the baked image) is the next phase and needs the Trust Task family
+  first; this build issues the credential such a badge needs.
+
+- **vtc**: Member badges in the console and the member portal (VTI-BDG-001 – 095) ([#2479](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2479))
+
+The pages over the vtc/badges/* 0.1 family #2477 serves.
+
+  Console (Community → Badges, `plugins/badges.tsx` over `lib/badges.ts`):
+  every badge the administrator or owner may see; the settings — on or off,
+  who may make a kudos badge (nobody, chosen roles and groups, every member),
+  the limits — behind vtc.config.admin and a bound step-up; defining a
+  community badge (vtc.badges.admin) with its picture, credential regime,
+  rules, who sees its holders, an automatic rule where the settings allow it,
+  and its owners; and one badge's page: edit, give to chosen members or to a
+  group, decide requests for it and appoint its owners (the badge group's
+  requests and managers, through the groups' tasks), every award given and
+  taken back with a reason, a kudos badge's givings and its promotion, and
+  retiring it (step-up for a community badge). Every act is signed by the
+  console key (VTI-BDG-095).
+
+  Portal (`#/badges`, `members/Badges.tsx` over `members/badges-api.ts`):
+  offers accepted or declined one by one (a decision surface drawn out of the
+  community theme's reach); the wall — order, pins within the limit, hide and
+  show again, who sees it; every badge to browse; one badge with its holders,
+  asking its owners for it (vtc/groups/join on the badge group), giving a
+  kudos badge; making a kudos badge with a picture uploaded from the browser.
+  A member's directory card shows their wall, pinned first, with the kudos
+  total where the community shows it, and lets another member give them a
+  kudos badge from there. The home page gets a Badges tile and an attention
+  line for offers waiting. Every act is signed by the portal's delegated key.
+
+- **vtc**: Member badges — the vtc/badges/* 0.1 family, badges backed by badge groups, awards accepted by the member, kudos (VTI-BDG-001 – 095) ([#2477](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2477))
+
+The backend of member badges (phase 1 of docs/05-design-notes/vtc-badges.md):
+  the 24 pinned `vtc/badges/*` tasks served on the dispatch spine.
+
+  - A community badge is a badge group: `create` mints the group as
+    `vtc/groups/create` does and records `badge_id` on it; its managers are the
+    badge's owners, its members the holders; requests and owners reuse the groups'
+    own tasks; retiring deletes the group. A badge group never carries authority
+    and is not listed among the community's groups (VTI-BDG-010 – 014).
+  - An award is an offer until accepted: `awards/offer` and `kudos/give` record
+    `offered` and admit, issue and show nothing; `mine/accept` has the VTA sign
+    an Open Badges 3.0 `OpenBadgeCredential` as the group's DID, with the
+    community as the Achievement's creator and one evidence entry per award,
+    before the membership is recorded (VTI-BDG-020 – 024, 060). The groups'
+    credential issuer branches to it for any badge group, so admission by
+    request, by rule and renewal issue the same profile.
+  - Hidden is portal-only (VTI-BDG-030): walls, holder lists and counts leave a
+    hidden holder out while owners see the mark and nothing is revoked.
+  - Kudos: any active member gives a kudos badge to any other within the
+    community's limits, each giving counted (VTI-BDG-040 – 044); `promote`
+    turns one into a community badge, offering every holder.
+  - Settings (`settings/show`, `settings/update`: `vtc.config.admin` + a bound
+    step-up); a community badge's `retire` takes the step-up too.
+  - Pictures reuse the directory's picture pipeline over a `badge_images`
+    keyspace. New keyspaces `badges` and `badge_images` (backed up), capability
+    `vtc.badges.admin`, audit event `BadgeChanged`, `vtc/badges` in the portal
+    signing scope, departure and sweep hooks.
+
+  Inside-only credential regime only: `shareableOutside` is refused until the
+  community-owned status set is served (VTI-BDG-062). Console and portal pages
+  follow in the next PR.
+
+
+
 ## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.25.0...vtc-service-v0.26.0) — 2026-11-05
 
 
