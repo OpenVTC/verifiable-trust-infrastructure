@@ -1453,7 +1453,19 @@ async fn final_head_kept(tv: &TestVtc, election_id: &str) {
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    panic!("the final head of {election_id} was never kept");
+    let rec = vtc_service::elections::store::get(ks, election_id)
+        .await
+        .unwrap()
+        .expect("the election");
+    panic!(
+        "the final head of {election_id} was never kept: state {}, standing {:?}, \
+         final_checkpoint {}, checkpoints {}, pending_end {:?}",
+        rec.state(Utc::now()),
+        rec.standing,
+        rec.final_checkpoint,
+        rec.checkpoints.len(),
+        rec.pending_end
+    );
 }
 
 async fn accepted(tv: &TestVtc, chair: &Party, idea: &str) -> String {
