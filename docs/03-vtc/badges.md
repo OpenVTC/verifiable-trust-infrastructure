@@ -90,8 +90,23 @@ from then on:
   badge credential's issuer is the group; the W3C Bitstring Status List algorithm compares
   no issuers and expects they may differ.
 
+A badge that may be shown outside also has two **public artefacts** at stable locations its
+credentials name (VTI-BDG-051), served without authentication to any Open Badges verifier:
+
+| Location | What |
+|---|---|
+| `<public_url>/badges/<badgeId>` | The badge's Achievement document (`application/ld+json`), with the community as its creator and the community's endorsement |
+| `<public_url>/badges/<badgeId>/image` | The badge's picture, the community's own re-encoding |
+
+Neither names a holder or a count (VTI-BDG-071). A badge kept inside the community answers
+`404` at both, as an unknown one does: its picture is shown to active members only, through
+`vtc/badges/images/get` (VTI-BDG-050). The routes sit at the parent root beside the identity
+logs and pass the host-surface gate on every host. Without `public_url` the credential names
+the Achievement and picture by URN and digest instead.
+
 Sharing an award outside (a public verification page and a baked image, per award and at
-the holder's choice) is the next phase; this build issues the credential such a badge needs.
+the holder's choice, `vtc/badges/awards/share|unshare`) follows once those tasks are
+published; this build serves the badge's own artefacts.
 
 ## In the member portal and the console
 

@@ -140,17 +140,17 @@ async fn settle(
             let (answer, refused) = match ops::deliver_registration(state, rec, now).await? {
                 Delivered::Registered(_) => ("success".to_string(), false),
                 Delivered::Pending(_) => return Ok(()),
-                Delivered::Refused {
-                    mut rec,
-                    code,
-                    message,
-                } => {
-                    rec.standing = Standing::RegistrationRefused;
-                    rec.refusal = Some(store::BoxRefusal {
+                Delivered::Refused { rec, code, message } => {
+                    let refusal = store::BoxRefusal {
                         code: code.clone(),
                         message,
-                    });
-                    store::put(ks, &rec).await?;
+                    };
+                    store::update(ks, &rec.election_id, |cur| {
+                        cur.standing = Standing::RegistrationRefused;
+                        cur.refusal = Some(refusal);
+                        cur.delivery = None;
+                    })
+                    .await?;
                     (code, true)
                 }
             };

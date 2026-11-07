@@ -27,6 +27,7 @@
 //! groups subsystem's.
 
 pub mod credential;
+pub mod public;
 
 use std::collections::{BTreeMap, BTreeSet};
 
