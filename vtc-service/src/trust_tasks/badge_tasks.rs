@@ -1161,13 +1161,6 @@ async fn handle_create(
             "This community has automatic badges turned off.",
         );
     }
-    if bool_of(&p, "shareableOutside") == Some(true) {
-        return invalid(
-            &doc,
-            "shareableOutside",
-            "Showing a badge outside the community is not served yet by this community.",
-        );
-    }
     if let Some(rule) = &automatic {
         let schema = match crate::directory::fields::schema(state.directory.ks()).await {
             Ok(s) => s,
@@ -1232,13 +1225,16 @@ async fn handle_create(
         repeatable: kind == BadgeKind::Kudos || bool_of(&p, "repeatable").unwrap_or(false),
         requestable,
         listed: bool_of(&p, "listed").unwrap_or(true),
-        shareable_outside: false,
+        // The outside regime (VTI-BDG-062): a long-lived credential with a status in the
+        // community's own set. A kudos badge was refused the setting above.
+        shareable_outside: bool_of(&p, "shareableOutside").unwrap_or(false),
         group_id: None,
         state: BadgeState::Active,
         created_at: now,
         created_by: Some(entry_id),
         updated_at: now,
         retired_at: None,
+        endorsement: None,
     };
     // Item 6: the group first, remote steps before the one local write.
     let group = if kind == BadgeKind::Community {
@@ -1568,6 +1564,11 @@ async fn handle_retire(
             e => app_error_to_reject(&doc, &e),
         };
     }
+    // Every holder's credential that carries a status is revoked with the badge
+    // (VTI-BDG-063); the group's one bit already covers what chains to its authority.
+    if let Err(e) = badges::credential::revoke_all_holders(state, &badge.badge_id).await {
+        return app_error_to_reject(&doc, &e);
+    }
     let _ = RETIRE_ERR_KEY_HOLDER_REFUSED;
     match view.badge_wire(state, &badge).await {
         Ok(b) => success_response(&doc, json!({ "badge": b })),
@@ -1623,14 +1624,6 @@ async fn handle_promote(
             PROMOTE_ERR_SETTINGS_INVALID,
             "This community does not let members ask for badges.",
             json!({ "field": "requestable" }),
-        );
-    }
-    if bool_of(&p, "shareableOutside") == Some(true) {
-        return declared_with(
-            &doc,
-            PROMOTE_ERR_SETTINGS_INVALID,
-            "Showing a badge outside the community is not served yet by this community.",
-            json!({ "field": "shareableOutside" }),
         );
     }
     let owners = string_list(&p, "owners").unwrap_or_default();
@@ -1689,6 +1682,7 @@ async fn handle_promote(
     badge.kind = BadgeKind::Community;
     badge.group_id = Some(group.group_id.clone());
     badge.requestable = requestable;
+    badge.shareable_outside = bool_of(&p, "shareableOutside").unwrap_or(false);
     badge.updated_at = now;
     if let Err(e) = badges::put_badge(&state.badges_ks, &badge).await {
         return app_error_to_reject(&doc, &e);
@@ -2369,14 +2363,17 @@ async fn settle_after_revoke(
     };
     let remaining = badges::accepted_of(&state.badges_ks, &badge.badge_id, entry_id).await?;
     let Some(did) = active_entry(state, entry_id).await? else {
+        // Their last credential is revoked where it carries a status (VTI-BDG-063).
+        badges::credential::revoke_holder(state, &badge.badge_id, entry_id).await?;
         groups::remove_membership(state.directory.ks(), gid, entry_id).await?;
         return Ok(Ok(()));
     };
     if remaining.is_empty() {
+        badges::credential::revoke_holder(state, &badge.badge_id, entry_id).await?;
         groups::remove_membership(state.directory.ks(), gid, entry_id).await?;
         return Ok(Ok(()));
     }
-    match badges::credential::issue(state, &group, badge, &did, &remaining).await {
+    match badges::credential::issue(state, &group, badge, &did, Some(entry_id), &remaining).await {
         Ok(issued) => {
             badges::credential::offer(state, &group, &did, &issued).await;
             if let Some(mut m) = groups::membership(state.directory.ks(), gid, entry_id).await? {
@@ -2911,7 +2908,16 @@ async fn handle_accept(
                 Err(e) => return app_error_to_reject(&doc, &e),
             };
         evidence.push(accepted.clone());
-        match badges::credential::issue(state, group, &badge, &view.who.did, &evidence).await {
+        match badges::credential::issue(
+            state,
+            group,
+            &badge,
+            &view.who.did,
+            Some(&entry_id),
+            &evidence,
+        )
+        .await
+        {
             Ok(i) => {
                 badges::credential::offer(state, group, &view.who.did, &i).await;
                 Some(i)

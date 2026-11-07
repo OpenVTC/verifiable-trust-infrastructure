@@ -1,7 +1,9 @@
 # VTC member badges: design
 
-Status: **phase 1 complete** (backend served, #2477; console plugin and portal pages, this
-PR). Next: phase 3, the outside regime. Specification: VTI Community Badges chapter
+Status: **phase 1 complete** (backend #2477, console plugin and portal pages #2479); **phase 3a**
+(the outside credential regime and the embedded community endorsement) in this PR. Next: phase 3b,
+sharing an award outside (`awards/share|unshare` in the Trust Task family first), then the
+registry issuer projection. Specification: VTI Community Badges chapter
 (VTI-BDG-001 – 095). Wire: trust-tasks-tf `specs/vtc/badges/*/0.1`, plus `badgeId` on the shared
 `Group` record. Mockups: the "VTC Member Badges" design canvas (seven screens: a member's page with
 the badge wall, one badge with its holders, the member's own badges, a member making a badge, and
@@ -142,15 +144,16 @@ Requests reuse `vtc/groups/join` and `vtc/groups/requests/{list,decide}`; owners
 | 0 | This note; the VTI chapter (VTI-BDG-*); `vtc/badges/*` 0.1 and `Group.badgeId` upstream; the pins |
 | 1 | Settings; community badges on static groups; offers, accept, decline, hide; wall, holders, pictures; the inside-only credential; kudos, per-giving acceptance, totals, limits; pins and order; promote — backend (#2477), then the console plugin (`admin-ui/src/plugins/badges.tsx`) and the portal pages (`admin-ui/src/members/Badges.tsx`, the wall on a member's card, the home tile) |
 | 2 | Folded into phase 1 |
-| 3 | Outside: the long-lived credential in the community's status set, the registry issuer projection, share links, the baked image, the public artefacts |
+| 3a | Outside, the credential: the long-lived credential in the community's status set (`bslot:` per badge and holder, revoked on take-back, retire and departure), the community's `EndorsementCredential` embedded in every badge credential, `shareableOutside` on `create` and `promote` and in the console |
+| 3b | Outside, sharing: `awards/share|unshare` (spec first), the public verification page and baked image (declared REST exceptions, VTI-BDG-050/051/070), the registry issuer projection |
 | 4 | Dynamic badge groups with the new rule facts (elections voted in, ideas selected, kudos received); claim codes for events |
 
 ## Open
 
-- **The status list credential's issuer.** The community issues the list; the badge credential's
-  issuer is the group. Whether the W3C Bitstring Status List validation algorithm requires the two
-  to match is to be confirmed; if it does, the community still owns and flips the list and the VTA
-  signs the list credential as the group through the same signing path.
+- **The status list credential's issuer** — settled. The community issues the list; the badge
+  credential's issuer is the group. The W3C Bitstring Status List v1.0 Recommendation (May 2025)
+  compares no issuers in its validate algorithm and says the two "might differ" (§2.2, and the
+  note after §3.2), so the community signs the list and the group signs the credential.
 - **New rule facts** (`electionsVotedIn`, `ideasSelected`, `kudosReceived`) extend `RuleCondition`
   in the groups family; they are phase 4 and not in the 0.1 badges family.
 - **A leaderboard** is a setting that is off by default and that members join themselves; not in
