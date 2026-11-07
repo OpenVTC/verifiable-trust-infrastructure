@@ -250,6 +250,8 @@ pub struct VtcMcp {
     /// What the community said it serves, once asked (`vtc_supported_tasks`
     /// with no narrowing, or at connect). `None` until then.
     served: Arc<RwLock<Option<Vec<String>>>>,
+    /// The wallet sign-in this bridge has open, and who it is signed in as.
+    pub(crate) sign_in: Arc<RwLock<crate::signin::SignInState>>,
 }
 
 /// One in-flight guarded call. Created by [`VtcMcp::begin`], consumed by
@@ -352,6 +354,7 @@ impl VtcMcp {
             recorder,
             started: vti_mcp_common::observability::now_rfc3339().into(),
             served: Arc::new(RwLock::new(None)),
+            sign_in: Arc::new(RwLock::new(crate::signin::SignInState::default())),
         }
     }
 
@@ -372,6 +375,7 @@ impl VtcMcp {
             recorder,
             started: vti_mcp_common::observability::now_rfc3339().into(),
             served: Arc::new(RwLock::new(None)),
+            sign_in: Arc::new(RwLock::new(crate::signin::SignInState::default())),
         }
     }
 
@@ -743,7 +747,7 @@ impl VtcMcp {
     }
 
     /// The status document, shared by the tool and the `vtc://status` resource.
-    async fn status(&self, recent: usize) -> Value {
+    pub(crate) async fn status(&self, recent: usize) -> Value {
         let transport = self
             .client
             .as_ref()
@@ -755,6 +759,7 @@ impl VtcMcp {
             "startedAt": &*self.started,
             "version": env!("CARGO_PKG_VERSION"),
             "identity": self.identity.to_json(),
+            "signedInAs": self.sign_in.read().await.signed_in.as_ref().map(|s| s.to_json()),
             "transport": transport,
             "servedKnown": self.served.read().await.is_some(),
             "policy": {
@@ -771,7 +776,7 @@ impl VtcMcp {
     }
 }
 
-#[tool_handler(router = (Self::tool_router() + Self::workflow_router()))]
+#[tool_handler(router = (Self::tool_router() + Self::workflow_router() + Self::signin_router()))]
 impl ServerHandler for VtcMcp {
     fn get_info(&self) -> ServerConfig {
         let mut server_info = Implementation::from_build_env();
@@ -1033,8 +1038,11 @@ mod tests {
 
     #[test]
     fn tool_router_exposes_the_expected_tools() {
-        let router = VtcMcp::tool_router() + VtcMcp::workflow_router();
+        let router = VtcMcp::tool_router() + VtcMcp::workflow_router() + VtcMcp::signin_router();
         let expected = [
+            "vtc_sign_in",
+            "vtc_sign_in_finish",
+            "vtc_sign_in_cancel",
             "vtc_list_operations",
             "vtc_call",
             "vtc_supported_tasks",
@@ -1095,6 +1103,9 @@ mod tests {
             "vtc_actions_cancel",
             Some(crate::workflows::wire::ACTIONS_CANCEL),
         ),
+        ("vtc_sign_in", Some(vtc_client::signin::task::REQUEST)),
+        ("vtc_sign_in_finish", Some(vtc_client::signin::task::REDEEM)),
+        ("vtc_sign_in_cancel", Some(vtc_client::signin::task::CANCEL)),
     ];
 
     /// The tools that never leave the process and only read.
@@ -1105,7 +1116,9 @@ mod tests {
     /// actually sends.
     #[test]
     fn tool_annotations_agree_with_the_risk_classifier() {
-        for tool in (VtcMcp::tool_router() + VtcMcp::workflow_router()).list_all() {
+        for tool in
+            (VtcMcp::tool_router() + VtcMcp::workflow_router() + VtcMcp::signin_router()).list_all()
+        {
             let annotations = tool
                 .annotations
                 .as_ref()

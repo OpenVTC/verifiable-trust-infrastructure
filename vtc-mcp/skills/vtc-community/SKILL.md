@@ -13,6 +13,12 @@ ask the operator to confirm it. Nothing you do here grants access.
 
 ## Start every session the same way
 
+0. If `vtc_status` shows no `signedInAs` and the person wants to act as
+   themselves, `vtc_sign_in` (audience `member`, or `admin` for the console),
+   show them the trigger link, then `vtc_sign_in_finish`: it answers with a
+   match number for them to compare in their wallet, then with the session.
+   Never approve on their behalf, and never describe the number as anything
+   but theirs to compare.
 1. `vtc_status` — connected? as whom? over which transport? what policy?
 2. `vtc_whoami` — what the community knows of this identity (it may answer
    only the configured identity, with the community's reason).

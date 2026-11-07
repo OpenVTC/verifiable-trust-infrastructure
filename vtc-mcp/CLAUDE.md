@@ -48,6 +48,16 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
   task's own JSON and derives only the identifiers later steps need from the
   answers; it never builds a payload the specification does not describe, and
   never retries. `every_workflow_uri_is_pinned` holds its URIs.
+- **Signing in is the person's act.** `vtc_sign_in` / `_finish` / `_cancel`
+  (`src/signin.rs` over `vtc_client::signin`) are the starter's half of
+  `auth/oob/*`: the bridge's own key opens the request over the HTTPS door,
+  presenting the portal's origin and naming itself as `vtc-mcp/<version>`,
+  and the person approves in their wallet after comparing the match number.
+  The bridge never approves, never shows a number as anything but the
+  person's to compare, and holds no session beyond what `redeem` armed for its
+  key. A member sign-in delegates the portal families; an admin sign-in is a
+  console session only — administrative writes need a signing-key delegation
+  the bridge cannot obtain yet (operator page §11).
 - **Deciding an action always asks the human.** `vtc_actions_decide` re-derives
   the action's summary from the payload that would run (`verify_action`),
   refuses on any mismatch, and puts the summary and match code in front of

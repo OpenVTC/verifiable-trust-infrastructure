@@ -394,6 +394,15 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // The verb rule would read `decision` as an ordinary mutation; what it is
     // is this identity vouching for someone else's authority.
     ("task-consent/decision", Risk::Sensitive),
+    // The starter's half of a wallet sign-in: opening a request, polling for
+    // the person's approval, withdrawing it. Nothing happens without the
+    // person approving in their wallet, and a `--read-only` bridge still has
+    // to sign in to read as them — so the starter's three steps are the one
+    // class that mode permits. The approver's steps (`identify`, `respond`)
+    // stay where they were.
+    ("auth/oob/request", Risk::ReadOnly),
+    ("auth/oob/redeem", Risk::ReadOnly),
+    ("auth/oob/cancel", Risk::ReadOnly),
     // A member's own badge wall: declining an offer and hiding a badge are
     // theirs to undo and remove nothing from anyone else, so neither takes
     // the confirmation the verbs `decline` and `hide` carry elsewhere.

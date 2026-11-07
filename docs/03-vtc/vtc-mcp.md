@@ -159,6 +159,46 @@ Exactly one, chosen by what is configured and never by falling through: both
 given is an error, half of rung 2 is an error naming the missing field, and
 neither serves in degraded mode (§6) so `vtc_status` can say what is wrong.
 
+### 3.0 Your own assistant: sign in as yourself
+
+For your own assistant, do not enrol anything. Give the bridge a key of its own
+and sign it in through your wallet, exactly as the member portal and the
+operator console sign you in:
+
+```bash
+vtc-mcp --mint-did-key            # keep privateKeyMultibase; enrol nothing
+VTC_MCP_AGENT_KEY=z3u2… vtc-mcp --agent-did did:key:z6Mk… --vtc-did did:webvh:…
+```
+
+Then, in the session:
+
+1. `vtc_sign_in` (with `audience: "admin"` for the operator console) opens a
+   sign-in request signed by the bridge's key and returns the **trigger link**.
+2. Open the link in the browser that holds your wallet, or scan it from a
+   phone wallet. The wallet shows the community, the bridge as the starter
+   (`vtc-mcp/<version>`), and a match number.
+3. `vtc_sign_in_finish` answers with the same **match number**; approve in the
+   wallet only if the two agree, then call it again for the session.
+
+What you then hold, and nothing more:
+
+- **As a member**, the bridge's key is delegated to sign the member portal's
+  task families — the directory, boards, badges, … — as you, until the
+  grant's expiry. The delegation confers nothing of its own: every document is
+  read with your standing at that moment, and it never covers `auth`, `acl`,
+  `consent`, `task-consent` or `confirm`.
+- **As an administrator**, the bridge's key holds your console session, so
+  `vtc_whoami` answers for it. Signed administrative writes additionally need a
+  **signing-key delegation** of your DID — the console enrols one with your
+  passkey or your wallet's signature — and the bridge cannot obtain that
+  signature yet (see §11). A console session also idles out (15 minutes by
+  default) and a signed document does not refresh it.
+
+The request presents the community portal's own origin and names the bridge
+as its user agent; the protection the origin check gives — another website
+cannot start a sign-in through your browser — is unaffected, and the wallet's
+match number is what binds the approval to this bridge.
+
 ### 3.1 Rung 2 — a dedicated agent entry (an administrator's assistant)
 
 The bridge speaks as an Ed25519 `did:key` an administrator enrolled, bounded
@@ -378,3 +418,19 @@ An administrator's assistant, enrolled as in §3.1 with `vtc.groups.manage`.
   never deciding for them.
 - **Not a wrapper around `cnm`.** It speaks Trust Tasks itself, over the
   transport the community advertises, as one identity it holds.
+
+---
+
+## 11. Not built yet
+
+- **An administrator's delegation through the wallet.** After an `admin`
+  sign-in, the bridge needs a signing-key delegation of your DID before the
+  community accepts its administrative documents. The console gets the
+  identity's signature on the enrolment terms from the wallet inside the page,
+  or a passkey gesture; neither reaches a process outside the browser. Closing
+  this changes how a console key is enrolled, so it starts in the
+  specification.
+- **Step-up through the wallet.** An authority-changing act takes your own
+  factor bound to that one operation. The bridge reports it; finishing it in
+  the console works today. Handing the step-up request to your wallet is the
+  same kind of change as the one above.
