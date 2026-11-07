@@ -1435,6 +1435,27 @@ async fn settled(tv: &TestVtc, election_id: &str) -> String {
     election_state(tv, election_id).await
 }
 
+/// Run the elections sweeper until `election_id`'s close is settled and its final head kept,
+/// as the sweeper does on its own tick: a board's closing ends its elections in the
+/// background, and a deletion waits for the final head (VTI-BRD-008).
+async fn final_head_kept(tv: &TestVtc, election_id: &str) {
+    let ks = tv.state.elections.ks();
+    for _ in 0..50 {
+        vtc_service::elections::sweeper::pass(&tv.state, Utc::now())
+            .await
+            .unwrap();
+        let rec = vtc_service::elections::store::get(ks, election_id)
+            .await
+            .unwrap()
+            .expect("the election");
+        if rec.final_checkpoint && rec.pending_end.is_none() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the final head of {election_id} was never kept");
+}
+
 async fn accepted(tv: &TestVtc, chair: &Party, idea: &str) -> String {
     let (status, doc) = decide(tv, chair, idea, json!({ "decision": "accept" })).await;
     assert_eq!(status, StatusCode::OK, "{doc}");
@@ -1702,6 +1723,52 @@ async fn vti_brd_007_deleting_a_closed_board_keeps_only_tombstones() {
     );
 }
 
+/// VTI-BRD-008: a board is not deleted while one of its closed elections has no final head
+/// kept — that head is what a voter checks a receipt against once only the tombstone is left
+/// — and is deleted once the sweeper keeps it.
+#[tokio::test]
+async fn vti_brd_008_a_deletion_waits_for_the_final_head() {
+    let bx = InProcessBox::new();
+    let tv = community(bx.clone()).await;
+    let chair = GatedAdmin::new(&tv).await;
+    let alice = member(&tv).await;
+    let board = create_board(&tv, &chair.requester, board_body()).await;
+    let idea = propose(&tv, &alice, &board, "Wait for the head").await;
+    let e = accepted(&tv, &chair.requester, &idea).await;
+    call(
+        &tv,
+        &chair.requester,
+        &uri("update"),
+        json!({ "boardId": board, "status": "closed" }),
+    )
+    .await;
+    final_head_kept(&tv, &e).await;
+    // As a deletion finds it in the moment between the close and the final head.
+    let ks = tv.state.elections.ks();
+    let mut rec = vtc_service::elections::store::get(ks, &e)
+        .await
+        .unwrap()
+        .unwrap();
+    rec.final_checkpoint = false;
+    rec.checkpoints.clear();
+    vtc_service::elections::store::put(ks, &rec).await.unwrap();
+    let del = json!({ "boardId": board, "reason": "Too soon." });
+    let (_, doc) = chair.call(&tv, &uri("delete"), del.clone()).await;
+    assert_eq!(tt_error_code(&doc), DELETE_ERR_ELECTIONS_RUNNING, "{doc}");
+
+    final_head_kept(&tv, &e).await;
+    let (status, doc) = chair.call(&tv, &uri("delete"), del).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let t = vtc_service::elections::store::tombstone(ks, &e)
+        .await
+        .unwrap()
+        .expect("kept");
+    assert!(
+        !t.checkpoints.is_empty(),
+        "the final head is in the tombstone"
+    );
+}
+
 /// VTI-BRD-008: a retention of zero keeps no tombstone at all.
 #[tokio::test]
 async fn vti_brd_008_a_zero_retention_keeps_nothing() {
@@ -1722,6 +1789,7 @@ async fn vti_brd_008_a_zero_retention_keeps_nothing() {
     )
     .await;
     assert_eq!(settled(&tv, &e).await, "closed");
+    final_head_kept(&tv, &e).await;
     let (status, doc) = chair
         .call(
             &tv,
@@ -1767,9 +1835,7 @@ async fn vti_brd_009_a_tombstone_is_read_by_members_until_it_is_removed() {
     .await;
     assert_eq!(settled(&tv, &e).await, "closed");
     // The final head is kept once voting has closed.
-    vtc_service::elections::sweeper::pass(&tv.state, Utc::now())
-        .await
-        .unwrap();
+    final_head_kept(&tv, &e).await;
     let (status, doc) = chair
         .call(
             &tv,
