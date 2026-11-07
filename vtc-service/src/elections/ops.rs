@@ -478,7 +478,13 @@ pub async fn deliver_registration(
     };
     match &out {
         Delivered::Registered(r) | Delivered::Pending(r) => {
-            store::put(state.elections.ks(), r).await?
+            let (standing, refusal, delivery) = (r.standing, r.refusal.clone(), r.delivery.clone());
+            store::update(state.elections.ks(), &r.election_id, move |cur| {
+                cur.standing = standing;
+                cur.refusal = refusal;
+                cur.delivery = delivery;
+            })
+            .await?;
         }
         // The caller decides: discard on the first delivery, keep as refused on a later one.
         Delivered::Refused { .. } => {}
@@ -736,7 +742,10 @@ pub async fn issue_ticket(
         return Err(IssueError::AlreadyIssued);
     }
     rec.tickets_issued = rec.tickets_issued.saturating_add(1);
-    store::put(ks, &rec).await?;
+    store::update(ks, &rec.election_id, |cur| {
+        cur.tickets_issued = cur.tickets_issued.saturating_add(1);
+    })
+    .await?;
     Ok(Issued {
         pre_credential: pre,
         resend: false,
@@ -774,7 +783,7 @@ pub async fn close(
     now: DateTime<Utc>,
 ) -> Result<String, EndError> {
     let ks = state.elections.ks();
-    let Some(mut rec) = store::get(ks, election_id).await? else {
+    let Some(rec) = store::get(ks, election_id).await? else {
         return Err(EndError::ElectionUnknown);
     };
     if rec.state(now) != "voting" {
@@ -784,19 +793,22 @@ pub async fn close(
         return Err(EndError::EarlyCloseNotAllowed);
     }
     // Item 4: no ticket while the close is in flight.
-    rec.close_in_flight = true;
-    store::put(ks, &rec).await?;
+    store::update(ks, election_id, |cur| cur.close_in_flight = true).await?;
     let mut payload = json!({ "community": community_did(state).await, "electionId": election_id });
     if let Some(r) = reason {
         payload["reason"] = json!(r);
     }
     let answer = exchange(state, &rec.ballot_box, "voting/election/close", &payload).await;
-    let mut rec = store::get(ks, election_id).await?.unwrap_or(rec);
-    rec.close_in_flight = false;
+    let closed = matches!(answer, Ok(BoxAnswer::Success { .. }));
+    store::update(ks, election_id, |cur| {
+        cur.close_in_flight = false;
+        if closed {
+            cur.standing = Standing::Closed;
+        }
+    })
+    .await?;
     match answer {
         Ok(BoxAnswer::Success { payload, .. }) => {
-            rec.standing = Standing::Closed;
-            store::put(ks, &rec).await?;
             // Item 5: keep the final head.
             checkpoint(state, election_id, true).await;
             Ok(payload["election"]["state"]
@@ -805,13 +817,9 @@ pub async fn close(
                 .to_string())
         }
         Ok(BoxAnswer::Refused { code, message }) => {
-            store::put(ks, &rec).await?;
             Err(EndError::BallotBoxRefused { code, message })
         }
-        Err(e) => {
-            store::put(ks, &rec).await?;
-            Err(EndError::BallotBoxUnavailable(e.to_string()))
-        }
+        Err(e) => Err(EndError::BallotBoxUnavailable(e.to_string())),
     }
 }
 
@@ -826,7 +834,7 @@ pub async fn cancel(
     now: DateTime<Utc>,
 ) -> Result<String, EndError> {
     let ks = state.elections.ks();
-    let Some(mut rec) = store::get(ks, election_id).await? else {
+    let Some(rec) = store::get(ks, election_id).await? else {
         return Err(EndError::ElectionUnknown);
     };
     if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
@@ -834,9 +842,11 @@ pub async fn cancel(
     }
     // Item 3: stop issuing, durably, before anything else; item 5: stop delivering.
     let unregistered = !rec.is_registered();
-    rec.issuance_stopped = true;
-    rec.delivery = None;
-    store::put(ks, &rec).await?;
+    store::update(ks, election_id, |cur| {
+        cur.issuance_stopped = true;
+        cur.delivery = None;
+    })
+    .await?;
     let payload = json!({
         "community": community_did(state).await,
         "electionId": election_id,
@@ -844,8 +854,7 @@ pub async fn cancel(
     });
     match exchange(state, &rec.ballot_box, "voting/election/cancel", &payload).await {
         Ok(BoxAnswer::Success { payload, .. }) => {
-            rec.standing = Standing::Cancelled;
-            store::put(ks, &rec).await?;
+            store::update(ks, election_id, |cur| cur.standing = Standing::Cancelled).await?;
             Ok(payload["election"]["state"]
                 .as_str()
                 .unwrap_or("cancelled")
@@ -855,8 +864,7 @@ pub async fn cancel(
         Ok(BoxAnswer::Refused { code, .. })
             if unregistered && code.ends_with(":electionUnknown") =>
         {
-            rec.standing = Standing::Cancelled;
-            store::put(ks, &rec).await?;
+            store::update(ks, election_id, |cur| cur.standing = Standing::Cancelled).await?;
             Ok("cancelled".to_string())
         }
         Ok(BoxAnswer::Refused { code, message }) => {
@@ -892,23 +900,25 @@ pub async fn record_end(
     now: DateTime<Utc>,
 ) -> Result<bool, AppError> {
     let ks = state.elections.ks();
-    let Some(mut rec) = store::get(ks, election_id).await? else {
-        return Ok(false);
-    };
-    if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
-        return Ok(false);
-    }
-    if rec.pending_end.is_none() {
-        rec.pending_end = Some(store::PendingEnd {
-            kind,
-            reason: reason.to_string(),
-            attempts: 0,
-            next_at: now,
-            last_error: None,
-        });
-        store::put(ks, &rec).await?;
-    }
-    Ok(true)
+    let recorded = store::update(ks, election_id, |rec| {
+        if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
+            return false;
+        }
+        if rec.pending_end.is_none() {
+            rec.pending_end = Some(store::PendingEnd {
+                kind,
+                reason: reason.to_string(),
+                attempts: 0,
+                // The caller's own attempt follows at once and holds it until then: the sweeper
+                // retries only an attempt that never answered (a process that died mid-way).
+                next_at: now + delivery_backoff(0),
+                last_error: None,
+            });
+        }
+        true
+    })
+    .await?;
+    Ok(recorded.unwrap_or(false))
 }
 
 /// Ask for `kind` on `election_id` on behalf of its board's closing (VTI-BRD-006), recording it
@@ -925,56 +935,57 @@ pub async fn request_end(
     now: DateTime<Utc>,
 ) -> Result<EndAttempt, AppError> {
     let ks = state.elections.ks();
-    let Some(mut rec) = store::get(ks, election_id).await? else {
+    let started = store::update(ks, election_id, |rec| {
+        if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
+            rec.pending_end = None;
+            return None;
+        }
+        let attempts = rec.pending_end.as_ref().map_or(0, |p| p.attempts);
+        // This attempt holds the end while it asks: a sweeper pass meanwhile does not ask again,
+        // so one election is never ended twice at once (two closes reading and writing its
+        // record over each other lose what the other kept — the final head among it).
+        rec.pending_end = Some(store::PendingEnd {
+            kind,
+            reason: reason.to_string(),
+            attempts,
+            next_at: now + delivery_backoff(attempts),
+            last_error: None,
+        });
+        Some(attempts)
+    })
+    .await?;
+    let Some(Some(attempts)) = started else {
         return Ok(EndAttempt::Settled);
     };
-    if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
-        if rec.pending_end.take().is_some() {
-            store::put(ks, &rec).await?;
-        }
-        return Ok(EndAttempt::Settled);
-    }
-    let attempts = rec.pending_end.as_ref().map_or(0, |p| p.attempts);
-    rec.pending_end = Some(store::PendingEnd {
-        kind,
-        reason: reason.to_string(),
-        attempts,
-        next_at: now,
-        last_error: None,
-    });
-    store::put(ks, &rec).await?;
     let outcome = match kind {
         store::EndKind::Close => close(state, election_id, Some(reason), now)
             .await
             .map(|_| ()),
         store::EndKind::Cancel => cancel(state, election_id, reason, now).await.map(|_| ()),
     };
-    let mut rec = store::get(ks, election_id).await?.unwrap_or(rec);
-    let attempt = match outcome {
-        Ok(()) => {
-            rec.pending_end = None;
-            EndAttempt::Done
-        }
+    let (attempt, pending) = match outcome {
+        Ok(()) => (EndAttempt::Done, None),
         Err(EndError::BallotBoxUnavailable(e)) => {
             let attempts = attempts.saturating_add(1);
             tracing::warn!(election = %election_id, attempts, error = %e, "the ballot box did not answer ending this election; retrying");
-            rec.pending_end = Some(store::PendingEnd {
-                kind,
-                reason: reason.to_string(),
-                attempts,
-                next_at: now + delivery_backoff(attempts),
-                last_error: Some(e),
-            });
-            EndAttempt::Pending
+            (
+                EndAttempt::Pending,
+                Some(store::PendingEnd {
+                    kind,
+                    reason: reason.to_string(),
+                    attempts,
+                    next_at: now + delivery_backoff(attempts),
+                    last_error: Some(e),
+                }),
+            )
         }
         Err(EndError::App(e)) => return Err(e),
         Err(other) => {
             tracing::warn!(election = %election_id, outcome = ?other, "ending this election was refused; not retried");
-            rec.pending_end = None;
-            EndAttempt::Settled
+            (EndAttempt::Settled, None)
         }
     };
-    store::put(ks, &rec).await?;
+    store::update(ks, election_id, |rec| rec.pending_end = pending).await?;
     Ok(attempt)
 }
 
@@ -994,26 +1005,26 @@ pub async fn checkpoint(state: &AppState, election_id: &str, final_head: bool) {
         return;
     };
     let head = payload["head"].clone();
-    // Re-read: a close or a certify may have written meanwhile.
-    let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
-        return;
-    };
-    // Paced by this clock: a box that dates its heads ahead cannot put the next one off.
-    rec.checkpoint_asked_at = Some(asked);
-    let repeat = rec.checkpoints.last().is_some_and(|c| c["head"] == head);
-    if !repeat {
-        // At most 256 kept; the final head always is, in place of the oldest after the first
-        // if need be — it is the one certification ends at.
-        if rec.checkpoints.len() >= 256 && final_head {
-            rec.checkpoints.remove(1);
+    // Applied to the record as it is now: a close or a certify may have written meanwhile.
+    let kept = store::update(ks, election_id, |rec| {
+        // Paced by this clock: a box that dates its heads ahead cannot put the next one off.
+        rec.checkpoint_asked_at = Some(asked);
+        let repeat = rec.checkpoints.last().is_some_and(|c| c["head"] == head);
+        if !repeat {
+            // At most 256 kept; the final head always is, in place of the oldest after the
+            // first if need be — it is the one certification ends at.
+            if rec.checkpoints.len() >= 256 && final_head {
+                rec.checkpoints.remove(1);
+            }
+            if rec.checkpoints.len() < 256 {
+                rec.checkpoints
+                    .push(json!({ "head": head, "document": document }));
+            }
         }
-        if rec.checkpoints.len() < 256 {
-            rec.checkpoints
-                .push(json!({ "head": head, "document": document }));
-        }
-    }
-    rec.final_checkpoint |= final_head;
-    if let Err(e) = store::put(ks, &rec).await {
+        rec.final_checkpoint |= final_head;
+    })
+    .await;
+    if let Err(e) = kept {
         tracing::warn!(election = election_id, error = %e, "could not keep a board checkpoint");
     }
 }
@@ -1053,13 +1064,13 @@ pub async fn read_election_key(state: &AppState, election_id: &str) {
         .filter(|e| e["kind"] == vti_voting::steps::KIND)
         .map(|e| e["request"].clone())
         .collect();
-    // Re-read: a close or a certify may have written meanwhile.
-    let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
-        return;
-    };
-    rec.election_key = Some(key);
-    rec.ceremony = Some(Value::Array(ceremony));
-    if let Err(e) = store::put(ks, &rec).await {
+    // Applied to the record as it is now: a close or a certify may have written meanwhile.
+    let kept = store::update(ks, election_id, |rec| {
+        rec.election_key = Some(key);
+        rec.ceremony = Some(Value::Array(ceremony));
+    })
+    .await;
+    if let Err(e) = kept {
         tracing::warn!(election = election_id, error = %e, "could not keep the election key");
     }
 }
@@ -1143,11 +1154,8 @@ pub async fn authorize_decryption(state: &AppState, election_id: &str) {
             return;
         }
     }
-    let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
-        return;
-    };
-    rec.decryption_authorized = true;
-    if let Err(e) = store::put(ks, &rec).await {
+    let kept = store::update(ks, election_id, |rec| rec.decryption_authorized = true).await;
+    if let Err(e) = kept {
         tracing::warn!(election = election_id, error = %e, "could not record the decryption authorization");
     }
 }
@@ -1359,18 +1367,18 @@ pub async fn verify_and_keep(
     }
     let community = community_did(state).await;
     let Verified { result } = verify(state, &rec, &community).await?;
-    // Re-read: the sweeper or a certification may have written meanwhile.
-    let mut rec = store::get(ks, election_id)
-        .await?
-        .ok_or(CertifyError::ElectionUnknown)?;
-    if rec.certified.is_none() && rec.verified.is_none() {
-        rec.verified = Some(json!({
-            "result": result,
-            "head": result["head"],
-            "verifiedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        }));
-        store::put(ks, &rec).await?;
-    }
+    // Applied to the record as it is now: the sweeper or a certification may have written.
+    store::update(ks, election_id, |rec| {
+        if rec.certified.is_none() && rec.verified.is_none() {
+            rec.verified = Some(json!({
+                "result": result,
+                "head": result["head"],
+                "verifiedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            }));
+        }
+    })
+    .await?
+    .ok_or(CertifyError::ElectionUnknown)?;
     Ok(result)
 }
 
@@ -1439,19 +1447,23 @@ pub async fn certify(
     }
 
     // Item 11: record, then answer.
-    let mut rec = store::get(ks, election_id)
-        .await?
-        .ok_or(CertifyError::ElectionUnknown)?;
-    if rec.certified.is_some() {
+    let recorded = store::update(ks, election_id, |rec| {
+        if rec.certified.is_some() {
+            return false;
+        }
+        rec.certified = Some(json!({
+            "result": result,
+            "certifiedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "auditAttestations": attestations,
+        }));
+        rec.standing = Standing::Tallied;
+        true
+    })
+    .await?
+    .ok_or(CertifyError::ElectionUnknown)?;
+    if !recorded {
         return Err(CertifyError::AlreadyCertified);
     }
-    rec.certified = Some(json!({
-        "result": result,
-        "certifiedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "auditAttestations": attestations,
-    }));
-    rec.standing = Standing::Tallied;
-    store::put(ks, &rec).await?;
     Ok(Certified {
         result,
         head: counted_head,
