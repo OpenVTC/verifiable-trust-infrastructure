@@ -29,6 +29,14 @@ vi.mock("@/lib/api", async (original) => ({
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
 }));
 
+// jsdom draws nothing on a canvas: the builder's drawing answers four PNG bytes.
+vi.mock("@/components/BadgeBuilder", async (original) => {
+  const m = await original<typeof import("@/components/BadgeBuilder")>();
+  const { createElement } = await import("react");
+  const draw = async () => new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+  return { ...m, BadgeBuilder: (p: Parameters<typeof m.BadgeBuilder>[0]) => createElement(m.BadgeBuilder, { ...p, draw }) };
+});
+
 const ENTRIES = "https://trusttasks.org/spec/vtc/directory/entries/list/0.2";
 const BADGE_ID = "bdg_W5k2N8xRb3Qz7TpLAAAAAA";
 const GROUP_ID = "grp_W5k2N8xRb3Qz7TpLAAAAAA";
@@ -140,6 +148,37 @@ describe("the Badges page", () => {
           reason: "the regulars",
         }),
       ]),
+    );
+  });
+
+  it("defines a badge with a picture built from a colour and an icon", async () => {
+    const UPLOAD = "https://trusttasks.org/spec/vtc/badges/images/upload/0.1";
+    const requests = mockFetch([
+      ...ROUTES,
+      taskRoute(UPLOAD, { image: { sha256: SHA, mediaType: "image/png", size: 4 }, expiresAt: "2026-11-02T09:00:00Z" }),
+      taskRoute(CREATE, { badge: badge({ name: "Meetup regular" }), group: {} }),
+      taskRoute(SHOW, { badge: badge({ name: "Meetup regular" }), myState: "none", myCount: 0, credentialRegime: "inside", owners: [] }),
+      taskRoute(LIST, { items: [] }),
+    ]);
+    vi.stubGlobal("URL", { ...URL, createObjectURL: () => "blob:x", revokeObjectURL: () => undefined });
+    renderWithProviders(<Badges />, {
+      route: "/badges/new",
+      path: "/badges/*",
+      whoami: whoamiWith(["vtc.badges.admin"]),
+    });
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "Meetup regular" } });
+    fireEvent.change(screen.getByLabelText("What it is for"), { target: { value: "Came to five meetups." } });
+    fireEvent.change(screen.getByLabelText("Why"), { target: { value: "the regulars" } });
+    fireEvent.click(screen.getByRole("button", { name: /Build one from a colour and an icon/ }));
+    expect(screen.getByRole("img", { name: "Preview: Meetup regular" })).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Green"));
+    fireEvent.click(screen.getByRole("button", { name: "Use this picture" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, UPLOAD)).toEqual([{ mediaType: "image/png", data: "iVBORw" }]),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Create badge" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, CREATE)).toEqual([expect.objectContaining({ image: { sha256: SHA } })]),
     );
   });
 

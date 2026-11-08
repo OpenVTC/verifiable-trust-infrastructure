@@ -148,3 +148,8 @@
   flex-direction: column;
   gap: 0.2rem;
 }
+
+/* The builder opens below the picture and its buttons. */
+.badge-picture-field > .badge-builder {
+  flex-basis: 100%;
+}

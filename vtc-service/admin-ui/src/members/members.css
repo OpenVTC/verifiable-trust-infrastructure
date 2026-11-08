@@ -2258,3 +2258,20 @@ textarea {
   flex: 1 1 16rem;
   min-width: 0;
 }
+
+/* Make a badge: upload a picture, or build one. */
+.bw-picture-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+.bw-picture-mode label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+.bw-upload[hidden] {
+  display: none;
+}

@@ -1,0 +1,89 @@
+/* The badge picture builder: shared by the console and the member portal, so
+   it reads only the tokens both define. */
+
+.badge-builder {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  max-width: 34rem;
+}
+.badge-builder-preview .badge-builder-art {
+  display: block;
+  width: 100%;
+  max-width: 18rem;
+  height: auto;
+}
+.badge-builder-group {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.badge-builder-group legend {
+  padding: 0;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+.badge-builder-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.badge-builder-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+.badge-builder-swatch,
+.badge-builder-icon {
+  position: relative;
+  cursor: pointer;
+}
+.badge-builder-swatch input,
+.badge-builder-icon input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.badge-builder-swatch span,
+.badge-builder-icon span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: var(--radius-md, 8px);
+  border: 2px solid transparent;
+  box-sizing: border-box;
+}
+.badge-builder-swatch span {
+  box-shadow: inset 0 0 0 3px var(--bg, #fff);
+}
+.badge-builder-icon span {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+.badge-builder-swatch input:checked + span,
+.badge-builder-icon input:checked + span {
+  border-color: var(--text, currentColor);
+  color: var(--text, currentColor);
+}
+.badge-builder-swatch input:focus-visible + span,
+.badge-builder-icon input:focus-visible + span {
+  outline: 2px solid var(--focus-ring, currentColor);
+  outline-offset: 2px;
+}
+.badge-builder-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.badge-builder .muted {
+  margin: 0;
+}
