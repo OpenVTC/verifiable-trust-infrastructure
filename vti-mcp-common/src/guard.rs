@@ -691,6 +691,11 @@ const MUTATING_VERBS: &[&str] = &[
     "heartbeat",
     "reconcile",
     "publish",
+    // `vtc/badges/awards/share|unshare`: the holder starts or stops the community serving
+    // their own badge credential at a public location, as `publish` does their external
+    // card. Reversible by the holder; stopping revokes nothing (VTI-BDG-070).
+    "share",
+    "unshare",
     "cancel",
     "decision",
     "request",
