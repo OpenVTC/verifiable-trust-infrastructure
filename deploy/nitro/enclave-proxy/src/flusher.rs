@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fjall::{Database, KeyspaceCreateOptions};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Unflushed-bytes limit used when `fjall.write_buffer` is not configured.
 /// Small enough to sit comfortably inside a 64 MiB pod alongside the
@@ -28,6 +28,11 @@ pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
 /// small the backlog is. Keeps a quiet service's journal short, so a
 /// restart replays little.
 pub const DEFAULT_MAX_IDLE: Duration = Duration::from_secs(300);
+
+/// Longest [`Flusher`]'s `Drop` waits for the thread to stop. A seal only
+/// queues work for fjall's own flush workers, so the thread normally stops
+/// at once; this bounds shutdown if a disk stalls mid-call.
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// When the [`Flusher`] seals the database's memtables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,12 +74,24 @@ impl FlushPolicy {
     }
 }
 
+/// What one [`flush_all`] pass did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FlushPass {
+    /// Keyspaces sealed and queued for flushing.
+    pub sealed: usize,
+    /// Keyspaces that could not be sealed. Each is logged at `error`.
+    pub failed: usize,
+}
+
 /// Seal every keyspace that holds unflushed writes, queueing each for
-/// fjall's flush workers. Returns how many keyspaces were sealed. Empty
-/// keyspaces are skipped by fjall itself, so this is safe to call at any
-/// time.
-pub fn flush_all(db: &Database) -> usize {
-    let mut sealed = 0;
+/// fjall's flush workers. Empty keyspaces are skipped by fjall itself, so
+/// this is safe to call at any time.
+///
+/// The loop is over the database's own keyspaces, whose names are fixed by
+/// the enclave's store code, not by callers.
+pub fn flush_all(db: &Database) -> FlushPass {
+    let mut pass = FlushPass::default();
     for name in db.list_keyspace_names() {
         let name: &str = &name;
         // Opening an existing keyspace returns the live handle; the create
@@ -85,20 +102,25 @@ pub fn flush_all(db: &Database) -> usize {
             .keyspace(name, KeyspaceCreateOptions::default)
             .and_then(|ks| ks.rotate_memtable())
         {
-            Ok(true) => sealed += 1,
+            Ok(true) => pass.sealed += 1,
             Ok(false) => {}
             Err(e) => {
-                warn!(keyspace = name, error = %e, "[storage] flusher: could not seal memtable")
+                pass.failed += 1;
+                error!(keyspace = name, error = %e, "[storage] flusher: could not seal memtable; its writes stay in memory");
             }
         }
     }
-    sealed
+    pass
 }
 
 /// A running background flusher. Stops, and releases its handle on the
 /// database, when dropped.
 pub struct Flusher {
     stop: Option<mpsc::Sender<()>>,
+    /// Disconnects when the thread exits, so `Drop` can wait with a bound.
+    /// In a `Mutex` only to make `Flusher` `Sync`; `Drop` reaches it
+    /// through `get_mut`, without locking.
+    stopped: std::sync::Mutex<mpsc::Receiver<()>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -111,13 +133,23 @@ impl std::fmt::Debug for Flusher {
 impl Flusher {
     /// Start flushing `db` according to `policy`. Fails only if the OS
     /// refuses to start a thread.
+    ///
+    /// Callers fail store startup on that error rather than run without a
+    /// flusher: a store that never flushes grows until it is OOM-killed, so a
+    /// refusal at startup is the safer and more visible failure.
     pub fn spawn(db: Database, policy: FlushPolicy) -> std::io::Result<Self> {
-        let (stop, stopped) = mpsc::channel::<()>();
+        let (stop, stop_rx) = mpsc::channel::<()>();
+        let (exited, stopped) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("fjall-flusher".into())
-            .spawn(move || run(&db, policy, &stopped))?;
+            .spawn(move || {
+                // Dropped when the thread returns, however it returns.
+                let _exited = exited;
+                run(&db, policy, &stop_rx);
+            })?;
         Ok(Self {
             stop: Some(stop),
+            stopped: std::sync::Mutex::new(stopped),
             thread: Some(thread),
         })
     }
@@ -126,12 +158,29 @@ impl Flusher {
 impl Drop for Flusher {
     fn drop(&mut self) {
         // Dropping the sender wakes the thread at once (Disconnected).
-        // Joining guarantees its clone of the database is gone before we
-        // return, so a caller that drops the store and reopens the same
-        // directory never finds it still locked.
+        // Waiting for it guarantees its clone of the database is gone before
+        // we return, so a caller that drops the store and reopens the same
+        // directory never finds it still locked. The wait is bounded: if the
+        // thread is stuck in a stalled disk call, shutdown goes on without it
+        // and the thread finishes (and releases the database) on its own.
         drop(self.stop.take());
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let stopped = self
+            .stopped
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match stopped.recv_timeout(STOP_TIMEOUT) {
+            Err(mpsc::RecvTimeoutError::Disconnected) | Ok(()) => {
+                let _ = thread.join();
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                error!(
+                    timeout_secs = STOP_TIMEOUT.as_secs(),
+                    "[storage] flusher: thread did not stop in time; leaving it to finish on its own"
+                );
+            }
         }
     }
 }
@@ -139,13 +188,15 @@ impl Drop for Flusher {
 fn run(db: &Database, policy: FlushPolicy, stopped: &mpsc::Receiver<()>) {
     // Startup: whatever the journal replay put back in memory goes to disk.
     let replayed = db.write_buffer_size();
+    let mut failing_passes: u64 = 0;
     if replayed > 0 {
-        let sealed = flush_all(db);
+        let pass = flush_all(db);
         info!(
             unflushed_bytes = replayed,
-            keyspaces = sealed,
+            keyspaces = pass.sealed,
             "[storage] flusher: flushing writes replayed from the journal"
         );
+        note_failures(pass, &mut failing_passes);
     }
 
     let mut dirty_since: Option<Instant> = None;
@@ -165,10 +216,10 @@ fn run(db: &Database, policy: FlushPolicy, stopped: &mpsc::Receiver<()>) {
 
         let over_limit = unflushed >= policy.write_buffer_limit;
         if over_limit || since.elapsed() >= policy.max_idle {
-            let sealed = flush_all(db);
+            let pass = flush_all(db);
             debug!(
                 unflushed_bytes = unflushed,
-                keyspaces = sealed,
+                keyspaces = pass.sealed,
                 reason = if over_limit {
                     "write buffer limit"
                 } else {
@@ -176,9 +227,31 @@ fn run(db: &Database, policy: FlushPolicy, stopped: &mpsc::Receiver<()>) {
                 },
                 "[storage] flusher: sealed memtables"
             );
+            note_failures(pass, &mut failing_passes);
             dirty_since = None;
         }
     }
+}
+
+/// Track passes in a row that failed to seal some keyspace, so a persistent
+/// failure reads as one in the logs instead of as isolated errors.
+fn note_failures(pass: FlushPass, failing_passes: &mut u64) {
+    if pass.failed == 0 {
+        if *failing_passes > 0 {
+            warn!(
+                after_failing_passes = *failing_passes,
+                "[storage] flusher: sealing memtables recovered"
+            );
+        }
+        *failing_passes = 0;
+        return;
+    }
+    *failing_passes += 1;
+    error!(
+        failed_keyspaces = pass.failed,
+        consecutive_failing_passes = *failing_passes,
+        "[storage] flusher: memtables could not be sealed; memory will keep growing until this clears"
+    );
 }
 
 #[cfg(test)]
