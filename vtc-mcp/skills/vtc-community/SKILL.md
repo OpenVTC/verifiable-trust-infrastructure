@@ -21,9 +21,13 @@ ask the operator to confirm it. Nothing you do here grants access.
    but theirs to compare. For administrative work, `vtc_enrol_signing_key`
    with no arguments gives the person one `cnm access authorize-key` command
    to run; called again with the file it wrote, the bridge acts with their
-   administrative standing. A refusal asking for a step-up or an approval is
-   theirs to answer in the console, wallet or `cnm` — say so, and resend the
-   same call only after they have.
+   administrative standing. A result with `status: "stepUpRequired"` carries
+   a `link`: show it to the person (a QR code is fine), tell them it expires
+   at `linkExpiresAt` and that their wallet will show exactly what will be
+   done, and resend the identical call only after they say they approved.
+   Never call it approved yourself. A refusal asking for a step-up with no
+   link, or for an approval, is theirs to answer in the console, wallet or
+   `cnm` — say so, and resend the same call only after they have.
 1. `vtc_status` — connected? as whom? over which transport? what policy?
 2. `vtc_whoami` — what the community knows of this identity (it may answer
    only the configured identity, with the community's reason).

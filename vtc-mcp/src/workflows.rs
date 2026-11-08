@@ -167,6 +167,12 @@ impl VtcMcp {
                 progress.record(slug, "parked", value.clone());
                 StepEnd::Parked(value.clone())
             }
+            // The person's own step-up is owed; the link is in the record, and
+            // the workflow stops here like any other step that did not run.
+            Ok(value) if value["status"] == "stepUpRequired" => {
+                progress.record(slug, "stepUpRequired", value.clone());
+                StepEnd::Stopped
+            }
             Ok(value) => {
                 progress.record(slug, "ok", value.clone());
                 StepEnd::Done(value.clone())

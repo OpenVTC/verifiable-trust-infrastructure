@@ -151,6 +151,9 @@ pub(crate) mod step_up_passkey_tasks;
 // enroll,list,revoke}/0.1`. The operations are `crate::step_up_approver`'s;
 // this is their only door.
 pub(crate) mod step_up_approver_tasks;
+// The step-up hand-off: `auth/step-up/requests/show/0.1` (VTI-LNK-125 – 131).
+// The pending step-ups are `crate::acl::bound_step_up`'s.
+pub(crate) mod step_up_handoff_tasks;
 
 // Custom administrative roles: `vtc/roles/{define,list,show,delete}/0.1`
 // (`vtc-admin-roles.md` §6.2). The records are `crate::acl::roles`'s; this is
@@ -1067,6 +1070,14 @@ fn dispatch_typed<'a>(
                 // `URIS` is exactly what `dispatch` routes.
                 None => {
                     unreachable!("step_up_passkey_tasks::URIS names {uri}, which it does not route")
+                }
+            }
+        }),
+        uri if step_up_handoff_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match step_up_handoff_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                None => {
+                    unreachable!("step_up_handoff_tasks::URIS names {uri}, which it does not route")
                 }
             }
         }),

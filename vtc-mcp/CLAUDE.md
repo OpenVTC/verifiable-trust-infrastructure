@@ -65,6 +65,13 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
   key before sending, never builds or alters the terms, and holds no
   authorization after use. The delegation never answers a step-up or signs a
   `task-consent/decision` — those stay with the person's own factor.
+- **A step-up is handed to the person, never answered.** A refusal carrying
+  `details.stepUpHandoff` becomes a successful result with `status:
+  "stepUpRequired"` and the `step-up` link (`vtc_client::step_up`,
+  VTI-LNK-127), its contact the community that issued the refusal. The result
+  carries the link, the subject and the community's reason — never the
+  inline request's challenge or binding as something to approve. A workflow
+  stops at that step. The bridge never reads the handle itself.
 - **Deciding an action always asks the human.** `vtc_actions_decide` re-derives
   the action's summary from the payload that would run (`verify_action`),
   refuses on any mismatch, and puts the summary and match code in front of

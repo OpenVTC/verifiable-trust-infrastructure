@@ -89,7 +89,22 @@ fn ok_json(value: impl serde::Serialize) -> Result<CallToolResult, McpError> {
 /// transport carried the task). A parked operation is **not** an error: it
 /// completes itself when enough administrators approve, so the result says
 /// so and names the action to follow.
+///
+/// A step-up the community offered to hand to the person's wallet is not an
+/// error either: the result says `"status": "stepUpRequired"` and carries the
+/// `step-up` link (VTI-LNK-127) for the person to open, and nothing else —
+/// never the inline request as something to approve. The bridge holds no
+/// factor and never answers it; once the person has, the identical call goes
+/// through.
 pub(crate) fn outcome(result: Result<Value, VtcError>) -> Result<Value, McpError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    outcome_at(result, now)
+}
+
+/// [`outcome`] at `now` (epoch seconds), for tests.
+pub(crate) fn outcome_at(result: Result<Value, VtcError>, now: i64) -> Result<Value, McpError> {
     match result {
         Ok(value) => Ok(value),
         Err(VtcError::Parked { action_id, message }) => Ok(json!({
@@ -100,12 +115,42 @@ pub(crate) fn outcome(result: Result<Value, VtcError>) -> Result<Value, McpError
                      itself when enough of them approve. Follow it with \
                      vtc/admin/actions/show, and do not send it again.",
         })),
+        Err(VtcError::Refused { document }) if step_up_link(&parsed(&document), now).is_some() => {
+            let document = parsed(&document);
+            let link = step_up_link(&document, now).expect("checked above");
+            let inline = vtc_client::step_up::inline_request(&document);
+            Ok(json!({
+                "status": "stepUpRequired",
+                "subject": inline.and_then(|r| r.get("subject")),
+                "reason": inline.and_then(|r| r.get("reason")),
+                "link": link.link,
+                "linkExpiresAt": link.expires_at,
+                "next": "the community needs the person's own step-up for this one call. Show \
+                         them the link (or a QR code of it) and ask them to open it in their \
+                         wallet, which shows exactly what will be done; it expires at \
+                         linkExpiresAt. Once they have approved, send the identical call \
+                         again. Never approve it yourself or describe it as approved.",
+            }))
+        }
         Err(VtcError::Refused { document }) => Err(McpError::internal_error(
             format!("the community refused the request: {document}"),
             None,
         )),
         Err(e) => Err(McpError::internal_error(e.to_string(), None)),
     }
+}
+
+/// A refusal document as JSON; `Null` when it does not parse.
+fn parsed(document: &str) -> Value {
+    serde_json::from_str(document).unwrap_or(Value::Null)
+}
+
+/// The `step-up` link a refusal's hand-off makes, its contact the community
+/// that issued the refusal.
+fn step_up_link(document: &Value, now: i64) -> Option<vtc_client::step_up::StepUpLink> {
+    let handoff = vtc_client::step_up::handoff_of(document)?;
+    let community = document["issuer"].as_str()?;
+    vtc_client::step_up::link(community, handoff, now)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1310,5 +1355,55 @@ mod tests {
         .unwrap();
         assert_eq!(value["status"], "parked");
         assert_eq!(value["actionId"], "act_1");
+    }
+
+    /// VTI-LNK-127: a refusal with a hand-off becomes the `step-up` link for
+    /// the person, never the inline request to approve; one without stays an
+    /// error.
+    #[test]
+    fn vti_lnk_127_a_hand_off_becomes_the_persons_step_up_link() {
+        let now = 1_791_460_800; // 2026-10-08T12:00:00Z
+        let refusal = |handoff: Option<Value>| {
+            let mut details = json!({
+                "stepUpRequest": {
+                    "subject": "did:key:z6Mkadmin",
+                    "reason": "Invite an approver",
+                    "challenge": "c",
+                    "boundTo": "b",
+                },
+            });
+            if let Some(h) = handoff {
+                details["stepUpHandoff"] = h;
+            }
+            VtcError::Refused {
+                document: json!({
+                    "type": "https://trusttasks.org/spec/trust-task-error/0.3",
+                    "issuer": VTC_DID,
+                    "payload": { "code": "permissionDenied", "details": details },
+                })
+                .to_string(),
+            }
+        };
+        let value = outcome_at(
+            Err(refusal(Some(json!({
+                "handle": "Hk2pQ9xV4mT7rW1sZ8yN3A",
+                "expiresAt": "2026-10-08T12:04:00Z",
+                "show": vtc_client::step_up::REQUESTS_SHOW,
+            })))),
+            now,
+        )
+        .unwrap();
+        assert_eq!(value["status"], "stepUpRequired");
+        assert_eq!(value["subject"], "did:key:z6Mkadmin");
+        assert_eq!(value["linkExpiresAt"], now + 240);
+        let link = value["link"].as_str().unwrap();
+        assert!(
+            link.starts_with("https://link.trustoverip.org/t#_from="),
+            "{link}"
+        );
+        assert!(link.ends_with("&_type=/vti/flow/step-up/0.1"), "{link}");
+        assert!(value.get("challenge").is_none() && value.get("boundTo").is_none());
+
+        assert!(outcome_at(Err(refusal(None)), now).is_err());
     }
 }

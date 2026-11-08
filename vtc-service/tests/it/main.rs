@@ -119,6 +119,7 @@ mod signed_step_up;
 mod single_admin_mode;
 mod status_lists;
 mod step_up_approvers;
+mod step_up_handoff;
 mod step_up_passkey_notice_didcomm;
 mod step_up_passkey_priority;
 mod step_up_passkeys;
