@@ -19,9 +19,11 @@ ask the operator to confirm it. Nothing you do here grants access.
    match number for them to compare in their wallet, then with the session.
    Never approve on their behalf, and never describe the number as anything
    but theirs to compare. For administrative work, `vtc_enrol_signing_key`
-   with no arguments gives the person one `cnm access authorize-key` command
-   to run; called again with the file it wrote, the bridge acts with their
-   administrative standing. A result with `status: "stepUpRequired"` carries
+   with no arguments names the bridge's key; the person signs the
+   authorization in the console (*Console signing keys → Authorize another
+   key*, through their wallet) or with `cnm access authorize-key`. Called again
+   with the JSON or the saved file, the bridge acts with their administrative
+   standing. A result with `status: "stepUpRequired"` carries
    a `link`: show it to the person (a QR code is fine), tell them it expires
    at `linkExpiresAt` and that their wallet will show exactly what will be
    done, and resend the identical call only after they say they approved.

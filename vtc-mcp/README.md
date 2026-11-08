@@ -71,9 +71,10 @@ session your wallet granted.
 
 As an **administrator**, enrol the bridge's key as a signing-key delegation of
 your identity, the delegation the console's key holds: `vtc_enrol_signing_key`
-names the command, `cnm access authorize-key <bridge-did>` signs the
-authorization with your administrative key, and `vtc_enrol_signing_key`
-with that file enrols it. The bridge then acts with your full administrative
+names its DID; you sign the authorization as your identity — in the
+community console (*Console signing keys → Authorize another key*, through your
+wallet) or with `cnm access authorize-key <bridge-did>` — and
+`vtc_enrol_signing_key` with it enrols the key. The bridge then acts with your full administrative
 standing, read at every call, until the delegation expires (at most 30 days)
 or you revoke it. Step-ups and approvals stay with your own factor.
 

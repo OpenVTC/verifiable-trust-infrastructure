@@ -60,7 +60,8 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
 - **An administrator's standing is a signing-key delegation**
   (`vtc_enrol_signing_key`): the bridge sends `auth/signing-key/enroll/0.2`
   signed by its own key, carrying the identity's signed
-  `auth/signing-key/authorize/0.1` (`cnm access authorize-key`) whose payload
+  `auth/signing-key/authorize/0.1` (the console's *Authorize another key*, signed through the wallet, or
+  `cnm access authorize-key`) whose payload
   is exactly the enrolment's terms. It refuses an authorization naming another
   key before sending, never builds or alters the terms, and holds no
   authorization after use. The delegation never answers a step-up or signs a

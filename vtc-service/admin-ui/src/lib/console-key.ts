@@ -92,7 +92,7 @@ const CREATED_BACKDATE_MS = 60_000;
  * Truncating to seconds makes the round trip an identity for every value: the
  * VTC's freshness window is ten minutes, so the lost precision is free.
  */
-function isoSeconds(at: Date): string {
+export function isoSeconds(at: Date): string {
   return `${at.toISOString().slice(0, 19)}Z`;
 }
 

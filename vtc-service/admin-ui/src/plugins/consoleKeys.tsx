@@ -42,6 +42,7 @@ import { Field } from "@/components/Field";
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
+import { AuthorizeAnotherKey } from "./AuthorizeKey";
 
 /** What this browser holds, and whether it could hold one at all. */
 interface LocalState {
@@ -355,6 +356,8 @@ export function ConsoleKeys() {
           ))}
         </DataTable>
       </section>
+
+      <AuthorizeAnotherKey />
     </section>
   );
 }
