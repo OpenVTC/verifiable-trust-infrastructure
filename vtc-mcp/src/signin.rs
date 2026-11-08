@@ -440,9 +440,10 @@ impl VtcMcp {
         description = "Give this bridge YOUR administrative standing, as a signing-key \
                        delegation of your identity — the same delegation the operator console's \
                        key holds. Call it first with no authorization: it answers with this \
-                       bridge's DID and the one command (`cnm access authorize-key …`) that signs \
-                       the authorization as you. Then call it with that authorization (the JSON, \
-                       or the file it was written to): the bridge enrols its own key with it. \
+                       bridge's DID and how to sign the authorization as you: the console's \
+                       Signing keys page (Authorize another key, through your wallet) or \
+                       `cnm access authorize-key …`. Then call it with that authorization (the \
+                       JSON, or the file it was saved to): the bridge enrols its own key with it. \
                        Creates no access-control entry; the key acts with your standing read at \
                        every call, never approves or answers a step-up, and expires within 30 \
                        days.",
@@ -483,12 +484,13 @@ const AUTHORIZE: &str = "https://trusttasks.org/spec/auth/signing-key/authorize/
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EnrolParams {
-    /// The signed `auth/signing-key/authorize/0.1` document `cnm access
-    /// authorize-key` printed. Omit both this and `authorization_file` to be
-    /// told the command to run.
+    /// The signed `auth/signing-key/authorize/0.1` document — from the
+    /// console's *Authorize another key* or `cnm access authorize-key`. Omit
+    /// both this and `authorization_file` to be told how to get one.
     #[serde(default)]
     pub authorization: Option<Value>,
-    /// The file `cnm access authorize-key --out` wrote it to.
+    /// The file it was saved to (the console's download, or `cnm access
+    /// authorize-key --out`).
     #[serde(default)]
     pub authorization_file: Option<String>,
 }
@@ -580,10 +582,15 @@ impl VtcMcp {
                         "cnm --vtc-did {vtc} access authorize-key {own_did} --label \"vtc-mcp\" \
                          --expires 30d --out ~/.config/vtc-mcp/authorization.json"
                     ),
-                    "next": "Run the command as the administrator whose standing this bridge \
-                             should carry: cnm signs the authorization with that identity's key \
-                             and nothing else. Then call vtc_enrol_signing_key with \
-                             authorization_file set to the file it wrote. The authorization is \
+                    "console": "In the community's console, signed in with your wallet: \
+                                Console signing keys → Authorize another key, with this \
+                                bridge's signingKeyDid. Your wallet signs the authorization as \
+                                you; copy it, or download authorization.json.",
+                    "next": "Sign the authorization as the administrator whose standing this \
+                             bridge should carry — in the console through your wallet, or with \
+                             the command if cnm holds that identity. Then call \
+                             vtc_enrol_signing_key with authorization (the JSON) or \
+                             authorization_file (the saved file). The authorization is \
                              single-use, only this bridge's key can use it, and it lapses in an \
                              hour unless sent.",
                 }));

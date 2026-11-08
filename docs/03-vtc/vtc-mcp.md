@@ -237,18 +237,23 @@ What you then hold, and nothing more:
   sign-in is not needed for this:
 
   1. `vtc_enrol_signing_key` with no arguments answers with the bridge's DID
-     and the command to run.
-  2. Run it as the administrator — `cnm` signs the authorization with your
-     administrative identity's key, offline:
+     and how to sign the authorization.
+  2. Sign it as the administrator. If your identity lives in your wallet,
+     sign in to the console with the wallet and open **Console signing keys →
+     Authorize another key**: give it the bridge's DID, a label and how many
+     days (at most 30), and your wallet signs the authorization as you. Copy
+     it, or download `authorization.json`. If `cnm` holds your
+     administrative identity, it signs the same document offline:
 
      ```bash
      cnm access authorize-key did:key:z6Mk… --label "vtc-mcp" --expires 30d \
          --out ~/.config/vtc-mcp/authorization.json
      ```
 
-  3. `vtc_enrol_signing_key` with `authorization_file` set to that file. The
-     bridge sends `auth/signing-key/enroll/0.2`, signed by its own key, with
-     your authorization inside.
+  3. `vtc_enrol_signing_key` with `authorization` set to the JSON, or
+     `authorization_file` set to the saved file. The bridge sends
+     `auth/signing-key/enroll/0.2`, signed by its own key, with your
+     authorization inside.
 
   From then on every document the bridge signs is authorized by your
   administrative standing, read at every call. The delegation creates no
@@ -256,7 +261,7 @@ What you then hold, and nothing more:
   of your signing keys, and is revoked on its own. It can never approve an
   action or answer a step-up: those stay with your own factor (§2.3a). The
   authorization is single-use, usable only by the key it names, and lapses an
-  hour after `cnm` signs it unless sent.
+  hour after it is signed unless sent.
 
   An `admin` wallet sign-in still works, and gives the bridge's key your
   console session so `vtc_whoami` answers for it; it confers no
@@ -493,16 +498,6 @@ An administrator's assistant, enrolled as in §3.1 with `vtc.groups.manage`.
 
 ## 11. Not built yet
 
-- **An administrator whose identity lives in a wallet.** `cnm access
-  authorize-key` signs with the key `cnm` holds for the community. An
-  administrator whose identity is a persona their VTA holds, and who has no
-  `cnm` profile for it, has no tool yet that signs the authorization outside
-  the console's own page, which signs it through the wallet for the console's
-  key. The fix is a console action that signs the same authorization for a
-  key you name.
-- **Step-up through the wallet, in the wallet.** The community and the bridge
-  carry the `step-up` link (§2.3a); the browser plugin's reader for it is not
-  released yet. Until it is, finish the act in the console.
 - **Approving someone else's action** is a decision signed by your own DID,
   which a delegated key may not sign: use the console, your wallet or
   `cnm consent approve`.

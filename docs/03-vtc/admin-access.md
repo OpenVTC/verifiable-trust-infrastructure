@@ -218,6 +218,13 @@ after sign-in), approved in your wallet or with your passkey:
 A console key proves only that you have the browser. The protections in §3
 never accept it as a second factor or as an approval.
 
+The same delegation can go to a key you hold elsewhere, such as your
+assistant's (`vtc-mcp`, `docs/03-vtc/vtc-mcp.md` §3.0): **Console signing keys →
+Authorize another key** has your wallet sign the authorization as you for the
+`did:key` you name, and you hand it to that key's holder, which enrols itself
+with it. Nothing is sent from the console. It is listed and revoked with your
+other signing keys, and is held to the same limits.
+
 ### 1.4 Rolling your own entry to a new key
 
 `acl/swap-key/0.1` moves **your own** entry to a new key, with its authority
