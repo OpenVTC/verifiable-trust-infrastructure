@@ -226,8 +226,9 @@ other badge holds, and an upload no badge takes up within 24 hours is erased.
 
 Someone without artwork can **build** a picture instead: *Build one from a colour and an
 icon* beside the upload, in the console's badge form and the portal's *Make a badge*. They
-choose a banner (with the badge's name on it) or a square, one of eight colours and one of
-sixteen icons. The browser draws it as a PNG and sends it as an ordinary upload, so the
+choose a banner (with the badge's name on it) or a square, one of eight colours and an
+icon: sixteen are offered first, and *Find an icon* searches lucide's whole set (about 1,500)
+by name, loaded only when someone searches. The browser draws it as a PNG and sends it as an ordinary upload, so the
 community treats it like any other picture and never learns how it was made.
 
 ## The trust registry
