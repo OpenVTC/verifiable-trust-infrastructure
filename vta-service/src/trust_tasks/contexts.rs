@@ -258,39 +258,7 @@ pub(super) async fn handle_update(
             did: req.did,
             description: req.description,
             context_policy: req.context_policy,
-            issuer_key_id: None,
         },
-        TRANSPORT_TRUST_TASK,
-    )
-    .await
-    {
-        Ok(body) => success_response(&doc, body),
-        Err(e) => reject_context_error(&doc, e),
-    }
-}
-
-/// Handler for `spec/vta/contexts/set-issuer-key/0.1`.
-///
-/// The gate lives in the operation, not here: super-admin **or** a provisioner
-/// filling a designation that is unset. Pre-gating on super-admin would make
-/// the provisioning path unreachable through this surface.
-pub(super) async fn handle_set_issuer_key(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let req: vta_sdk::protocols::context_management::set_issuer_key::SetContextIssuerKeyBody =
-        match parse_payload(&doc) {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        };
-    match operations::contexts::set_context_issuer_key(
-        &state.contexts_ks,
-        &state.keys_ks,
-        &state.acl_ks,
-        auth,
-        &req.id,
-        req.key_id,
         TRANSPORT_TRUST_TASK,
     )
     .await

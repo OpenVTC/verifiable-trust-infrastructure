@@ -24,10 +24,6 @@ pub struct UpdateContextParams {
     /// Super-admin only (via [`update_context`]). Widening is impossible
     /// regardless: enforcement resolves the full ancestor chain.
     pub context_policy: Option<vta_sdk::context_policy::ContextPolicy>,
-    /// Designate this context's credential-issuing key. `None` leaves the
-    /// designation unchanged. Super-admin only (via [`update_context`]), and
-    /// the key must already live in this context.
-    pub issuer_key_id: Option<String>,
 }
 
 fn to_result_body(r: &ContextRecord) -> CreateContextResultBody {
@@ -40,8 +36,6 @@ fn to_result_body(r: &ContextRecord) -> CreateContextResultBody {
         base_path: r.base_path.clone(),
         created_at: r.created_at,
         updated_at: r.updated_at,
-        issuer_key_id: r.issuer_key_id.clone(),
-        proof_key_ids: r.proof_key_ids.clone(),
     }
 }
 
@@ -180,8 +174,6 @@ pub async fn create_context(
         created_at: now,
         updated_at: now,
         context_policy: None,
-        issuer_key_id: None,
-        proof_key_ids: Default::default(),
     };
 
     // Atomic claim: the early exists-check above is the friendly fast
@@ -251,153 +243,11 @@ pub async fn update_context(
     if let Some(context_policy) = params.context_policy {
         record.context_policy = Some(context_policy);
     }
-    if let Some(issuer_key_id) = params.issuer_key_id {
-        // Residency is *not* checked here. Issuance re-derives the key from
-        // the context and refuses one that does not live in it, so that check
-        // is the boundary and it holds however the designation was written —
-        // including a record restored from a backup or edited out of band.
-        // Checking here as well would need the key keyspace threaded through
-        // every caller of this function to re-state a guarantee issuance
-        // already makes unconditionally.
-        record.issuer_key_id = Some(issuer_key_id);
-    }
     record.updated_at = Utc::now();
 
     store_context(contexts_ks, &record).await?;
 
     info!(channel, id = %id, "context updated");
-    Ok(to_result_body(&record))
-}
-
-/// The `proofPurpose` values a context may designate a key for, and that
-/// `proofs/attach` will sign under.
-///
-/// An allow-list rather than any string — the DI analogue of the `typ`
-/// allow-list on `keys/sign-jws`. A proof purpose is a *claim about what the
-/// signature means*, so an unrecognised one would let a caller mint a signature
-/// whose meaning the VTA never agreed to.
-pub const ALLOWED_PROOF_PURPOSES: &[&str] = &["authentication", "assertionMethod"];
-
-/// Resolve the key a context signs with for `proof_purpose`.
-///
-/// `assertionMethod` falls back to the context's issuer key when no explicit
-/// proof key is designated: that *is* the context's assertion key, and
-/// requiring it to be named twice would let the two disagree.
-///
-/// Returns `None` when the context has designated nothing for this purpose —
-/// callers must fail closed rather than reach for any other key.
-pub fn resolve_proof_key<'a>(
-    context: &'a vta_sdk::contexts::ContextRecord,
-    proof_purpose: &str,
-) -> Option<&'a str> {
-    context
-        .proof_key_ids
-        .get(proof_purpose)
-        .map(String::as_str)
-        .or_else(|| {
-            (proof_purpose == "assertionMethod")
-                .then_some(context.issuer_key_id.as_deref())
-                .flatten()
-        })
-}
-
-/// Designate (or clear) the key that signs credentials issued as `id`'s DID.
-///
-/// Super-admin, like every other context mutation: the designation decides
-/// which key a *context-scoped* caller can reach through
-/// `credentials/issue-in-context`, so a caller who could set it could widen
-/// their own authority.
-///
-/// The key must live in this context. Issuance re-checks that and refuses
-/// regardless of how the designation was written, so this check exists to fail
-/// the operator's mistake at the point they make it rather than at the first
-/// issuance.
-///
-/// `proof_purpose` selects which designation is written: `None` sets the
-/// credential issuer key, `Some(purpose)` sets the Data-Integrity proof key for
-/// that purpose.
-pub async fn set_context_issuer_key(
-    contexts_ks: &KeyspaceHandle,
-    keys_ks: &KeyspaceHandle,
-    acl_ks: &KeyspaceHandle,
-    auth: &AuthClaims,
-    id: &str,
-    key_id: Option<String>,
-    proof_purpose: Option<&str>,
-    channel: &str,
-) -> Result<CreateContextResultBody, ContextError> {
-    // Provisioning may fill a designation that is unset; changing an
-    // established one stays super-admin. The super-admin gate is checked
-    // first, so an administrator is never held to the write-once bound.
-    let provisioning =
-        auth.require_super_admin().is_err() && may_configure_unset(acl_ks, auth, id).await;
-    if !provisioning {
-        auth.require_super_admin()?;
-    }
-
-    if let Some(purpose) = proof_purpose
-        && !ALLOWED_PROOF_PURPOSES.contains(&purpose)
-    {
-        return Err(ContextError::Other(AppError::Validation(format!(
-            "proof purpose `{purpose}` is not one of {ALLOWED_PROOF_PURPOSES:?}"
-        ))));
-    }
-
-    let mut record = reach_context(contexts_ks, auth, id).await?;
-
-    // The write-once bound for a provisioning caller: it may name a key for a
-    // purpose that has none, never re-point one already designated.
-    if provisioning {
-        let already = match proof_purpose {
-            Some(purpose) => record.proof_key_ids.contains_key(purpose),
-            None => record.issuer_key_id.is_some(),
-        };
-        if already {
-            return Err(ContextError::Other(AppError::Forbidden(format!(
-                "context `{id}` already designates a signing key for this purpose; changing it \
-                 is an administrator's act, not a provisioning one"
-            ))));
-        }
-        if key_id.is_none() {
-            return Err(ContextError::Other(AppError::Forbidden(format!(
-                "clearing a signing-key designation on context `{id}` is an administrator's act"
-            ))));
-        }
-    }
-
-    if let Some(ref key_id) = key_id {
-        let key: vta_sdk::keys::KeyRecord = keys_ks
-            .get(crate::keys::store_key(key_id))
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("key `{key_id}` not found")))?;
-        if key.context_id.as_deref() != Some(id) {
-            return Err(ContextError::Other(AppError::Validation(format!(
-                "key `{key_id}` does not belong to context `{id}`, so it cannot be its signing key"
-            ))));
-        }
-    }
-
-    match proof_purpose {
-        Some(purpose) => match key_id {
-            Some(key_id) => {
-                record.proof_key_ids.insert(purpose.to_string(), key_id);
-            }
-            None => {
-                record.proof_key_ids.remove(purpose);
-            }
-        },
-        None => record.issuer_key_id = key_id,
-    }
-    record.updated_at = Utc::now();
-    store_context(contexts_ks, &record).await?;
-
-    info!(
-        channel,
-        id = %id,
-        proof_purpose = ?proof_purpose,
-        issuer_key_id = ?record.issuer_key_id,
-        "context signing key designated"
-    );
     Ok(to_result_body(&record))
 }
 
@@ -1336,7 +1186,6 @@ mod tests {
                     signable_keys: Some(["a".into(), "b".into()].into_iter().collect()),
                     ..ContextPolicy::unrestricted()
                 }),
-                issuer_key_id: None,
             },
             "t",
         )
@@ -1355,7 +1204,6 @@ mod tests {
                     export_allowed: false,
                     ..ContextPolicy::unrestricted()
                 }),
-                issuer_key_id: None,
             },
             "t",
         )

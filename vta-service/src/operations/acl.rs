@@ -1811,7 +1811,6 @@ mod tests {
                     created_at: now,
                     updated_at: now,
                     context_policy: None,
-                    issuer_key_id: None,
                 },
             )
             .await
