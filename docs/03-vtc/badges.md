@@ -174,6 +174,27 @@ holds it; `create` and `update` accept a digest only from the signer's own uploa
 other badge holds, and an upload no badge takes up within 24 hours is erased.
 `images/get` answers the picture of a badge the caller may see.
 
+## The trust registry
+
+Where the community publishes to a trust registry, each active community badge's group is
+published there as an issuer the community recognises (VTI-BDG-080): one authorization
+record under the community's authority, `{entity: the group's DID, action: issue, resource:
+the badge's Achievement id}` — the identifier every credential of the badge names — with a
+`context` of `{kind: "vtcBadgeIssuer", badgeId}`. The record never carries the badge's name
+or picture. Kudos badges have no group and are not published.
+
+An outside verifier asks the registry whether the community stands behind the issuer of a
+badge, and the community's status set whether the award still stands: the two answer
+different questions, and neither replaces the other.
+
+The community's own records stay the source of truth. A projector publishes what is
+missing, removes a retired badge's record, and retries anything the registry refused, on a
+one-minute tick and at once after a badge is defined, promoted or retired. Every fifteen
+minutes it checks itself against the badge records the registry holds, where the registry
+can list them. It runs only when a registry and the community's DID are both configured,
+and needs the registry reachable over TSP or DIDComm (REST has no write surface). It never
+touches the community's other `issue` records.
+
 ## Departure and audit
 
 A member's departure ends their badge-group memberships, withdraws their open offers, stops
@@ -186,5 +207,6 @@ reference — the badge, the award, the entries — never a note or a picture.
 The `badges` keyspace (backed up): the settings, each badge, each award (indexed by badge,
 recipient and giver, with its share where there is one), each holder's preferences, each
 holder's status slot for a badge shown outside (`bslot:`), the credential last issued to them
-in that regime (`bcred:`), and each share token (`bshare:`). Pictures in `badge_images` (backed up).
+in that regime (`bcred:`), each share token (`bshare:`), and the badge issuer records the
+trust registry accepted (`breg:`). Pictures in `badge_images` (backed up).
 The badge group, its DID, its authority credential and its memberships are the groups'.

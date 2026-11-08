@@ -2,10 +2,10 @@
 
 Status: **phase 1 complete** (backend #2477, console plugin and portal pages #2479); **phase 3a
 complete** (#2482: the outside credential regime and the embedded community endorsement);
-**phase 3b** in progress: the badge's public artefacts (#2484, pinned #2487), and sharing
-(this PR: `awards/share|unshare` from trust-tasks-tf #1054, the verification location, the
-baked PNG, and the holder's own awards on `show` from trust-tasks-tf #1057); then the registry
-issuer projection. Specification: VTI Community Badges chapter
+**phase 3b complete**: the badge's public artefacts (#2484, pinned #2487), sharing (#2489:
+`awards/share|unshare` from trust-tasks-tf #1054, the verification location, the baked PNG,
+and the holder's own awards on `show` from trust-tasks-tf #1057), and the badge groups
+projected to the trust registry as recognised issuers (this PR, `badges::registry`). Specification: VTI Community Badges chapter
 (VTI-BDG-001 – 095). Wire: trust-tasks-tf `specs/vtc/badges/*/0.1`, plus `badgeId` on the shared
 `Group` record. Mockups: the "VTC Member Badges" design canvas (seven screens: a member's page with
 the badge wall, one badge with its holders, the member's own badges, a member making a badge, and

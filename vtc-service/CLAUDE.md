@@ -987,7 +987,14 @@ When adding a flow, add it here and a line to the root index.
   award, the token and the badge on every request, and every path that ends a holding
   (`unshare`, take-back, retire, `badges::on_departure`) clears the share: a stopped share
   answers the same `404` as a token never issued. `show` answers the holder's own awards
-  as `myAwards`; never another member's. **Hidden is
+  as `myAwards`; never another member's. **The registry** (`badges::registry`,
+  VTI-BDG-080): each active community badge's group is one TRQP record `{group DID,
+  issue, the Achievement id}` under the community's authority, `context.kind =
+  "vtcBadgeIssuer"` and the badge id only — never its name. The `Projector` (spawned with
+  a registry and the community DID) is the one retry owner: `reconcile` against a `breg:`
+  mirror of what the registry accepted, `verify` against the registry's own marked records
+  every 15 minutes; create, promote and retire `kick` it. Never touch an `issue` record
+  without the marker. **Hidden is
   portal-only** (`badges::Prefs`, VTI-BDG-030): walls, `holders/list` and counts leave a hidden
   holder out; `awards/list` shows owners `hidden: true`; memberships and credentials stand.
   Holder's tasks accept the portal's delegated key (`vtc/badges` in `PORTAL_SIGNING_SCOPE`);

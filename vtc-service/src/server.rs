@@ -1644,6 +1644,39 @@ pub async fn run(
         });
     }
 
+    // Badge groups as issuers the community recognises (VTI-BDG-080), projected to the
+    // trust registry when a registry and this community's DID are both configured.
+    // Supervised like the projectors above.
+    if let (Some(client), Some(did)) = (state.registry_client.clone(), boot_cfg.vtc_did.clone()) {
+        let projector_state = state.clone();
+        let mut supervisor_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if *supervisor_shutdown.borrow() {
+                    break;
+                }
+                let projector = crate::badges::registry::Projector::new(
+                    projector_state.clone(),
+                    client.clone(),
+                    did.clone(),
+                );
+                let run_shutdown = supervisor_shutdown.clone();
+                let child = tokio::spawn(async move { projector.run(run_shutdown).await });
+                match child.await {
+                    Ok(()) => break,
+                    Err(join_err) if join_err.is_panic() => {
+                        error!(error = %join_err, "badge issuer registry projector panicked — restarting after backoff");
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                            _ = supervisor_shutdown.changed() => break,
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     // P0.6: spawn the retention sweeper. It was defined but never spawned, so
     // terminal join requests (PII in the submitted VP), expired
     // present-challenge / credx-pending rows, and `Failed` registry sync jobs

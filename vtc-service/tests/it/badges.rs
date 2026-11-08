@@ -2235,3 +2235,102 @@ async fn share_and_unshare_refuse_what_their_specifications_declare() {
         .await;
     assert_eq!(tt_error_code(&doc), UNSHARE_ERR_BADGES_OFF, "{doc}");
 }
+
+/// VTI-BDG-080: every active community badge's group is published to the trust registry
+/// as an issuer the community recognises — under the community's authority, for the
+/// badge's Achievement, naming the badge by identifier only — and its record goes when the
+/// badge is retired. The projection is the one retry owner and checks itself against what
+/// the registry holds.
+#[tokio::test]
+async fn badge_groups_are_published_to_the_registry_as_recognised_issuers_and_withdrawn_on_retirement()
+ {
+    use vtc_service::badges::registry::{ACTION, KIND, reconcile, verify};
+    use vtc_service::registry::{MockRegistryClient, RegistryError};
+    let fix = fixture().await;
+    let registry = MockRegistryClient::new();
+    let state = &fix.vtc.state;
+
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["shareableOutside"] = json!(true);
+    let (_, doc) = fix.as_admin("create", body).await;
+    let outside = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let outside_did = doc["payload"]["group"]["groupDid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let created = fix.community_badge("Inside", false).await;
+    let inside = created["badge"]["badgeId"].as_str().unwrap().to_string();
+    let _kudos = fix.kudos_badge(&fix.member, "Clamp whisperer").await;
+
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.deleted, r.failed), (2, 0, 0));
+    let records = registry.trust_records().await;
+    assert_eq!(records.len(), 2, "community badges only: {records:?}");
+    let key = format!("{outside_did}|{ACTION}|https://vtc.example.com/badges/{outside}");
+    let rec = records.get(&key).expect("the outside badge's group");
+    assert_eq!(rec["authority_id"], TEST_VTC_DID);
+    assert_eq!(rec["authorized"], true);
+    assert_eq!(rec["context"], json!({ "kind": KIND, "badgeId": outside }));
+    assert!(
+        !serde_json::to_string(&records).unwrap().contains("Inside"),
+        "a badge's name is never published"
+    );
+    // Nothing changed: nothing is written again.
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.deleted), (0, 0));
+
+    // Retiring the badge removes its record.
+    let chair = GatedAdmin::new(&fix.vtc).await;
+    let (status, doc) = chair
+        .call(
+            &fix.vtc,
+            &task("retire"),
+            json!({ "badgeId": inside, "reason": "season over" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.deleted), (0, 1));
+    assert_eq!(registry.trust_records().await.len(), 1);
+
+    // A refused write is retried on the next pass.
+    let sha = fix.upload(&fix.admin).await;
+    fix.as_admin("create", fix.community_body("Mentor", &sha, true))
+        .await;
+    registry
+        .fail_next_trust_record(RegistryError::Transient("down".into()))
+        .await;
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.failed), (0, 1));
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.failed), (1, 0));
+    assert_eq!(registry.trust_records().await.len(), 2);
+
+    // Verify: a record the registry lost is published again; a stray badge record it holds
+    // is deleted; another `issue` record of the community's is never touched.
+    registry.forget_trust_record(&key).await;
+    registry
+        .plant_trust_record(json!({
+            "entity_id": "did:example:stray", "authority_id": TEST_VTC_DID, "action": ACTION,
+            "resource": "https://vtc.example.com/badges/bdg_Gone0000000000000000",
+            "context": { "kind": KIND, "badgeId": "bdg_Gone0000000000000000" },
+        }))
+        .await;
+    registry
+        .plant_trust_record(json!({
+            "entity_id": "did:example:other", "authority_id": TEST_VTC_DID, "action": ACTION,
+            "resource": "something-else", "context": {},
+        }))
+        .await;
+    assert!(verify(state, &registry).await.unwrap());
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.deleted, r.failed), (1, 1, 0));
+    let records = registry.trust_records().await;
+    assert!(records.contains_key(&key));
+    assert!(records.keys().any(|k| k.starts_with("did:example:other|")));
+    assert!(!records.keys().any(|k| k.starts_with("did:example:stray|")));
+}

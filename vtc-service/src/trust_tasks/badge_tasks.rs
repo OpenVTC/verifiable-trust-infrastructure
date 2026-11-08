@@ -1317,6 +1317,8 @@ async fn handle_create(
             Err(e) => return app_error_to_reject(&doc, &e),
         }
     }
+    // Its group is published as an issuer the community recognises (VTI-BDG-080).
+    badges::registry::kick();
     success_response(&doc, body)
 }
 
@@ -1586,6 +1588,8 @@ async fn handle_retire(
     if let Err(e) = badges::credential::revoke_all_holders(state, &badge.badge_id).await {
         return app_error_to_reject(&doc, &e);
     }
+    // Its record goes from the trust registry (VTI-BDG-080).
+    badges::registry::kick();
     let _ = RETIRE_ERR_KEY_HOLDER_REFUSED;
     match view.badge_wire(state, &badge).await {
         Ok(b) => success_response(&doc, json!({ "badge": b })),
@@ -1749,6 +1753,8 @@ async fn handle_promote(
         Ok(w) => body["group"] = w,
         Err(e) => return app_error_to_reject(&doc, &e),
     }
+    // Its group is published as an issuer the community recognises (VTI-BDG-080).
+    badges::registry::kick();
     success_response(&doc, body)
 }
 
