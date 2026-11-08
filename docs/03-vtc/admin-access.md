@@ -513,7 +513,7 @@ records. The VTA browser plugin already mints a fresh approver key for each
 community and refuses to reuse one, and a passkey is bound to one site. The
 risk is a key carried by hand: a `did:key` used as an administrator, an
 approver device enrolled with `enrol-approver --did`, or a `vtc-mcp` agent key
-at more than one community. Give each community its own (VTI-KEY-246); a VTA
+at more than one community. Give each community its own (VTI-KEY-005, VTI-KEY-006); a VTA
 persona per community does that for the identity itself.
 
 Every administrator made by a completed action (§3.2: an `acl/grant`,

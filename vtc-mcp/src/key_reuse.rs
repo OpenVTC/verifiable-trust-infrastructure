@@ -5,8 +5,9 @@
 //! trail, its list of the administrator's signing keys, its delegations. Two
 //! communities that hold the same agent DID can tell that the same assistant,
 //! and so the same person, stands behind both; neither can see that from its
-//! own records (VTI-KEY-246: a node does not use one identifier where
-//! correlation of the parties is not intended). Only the machine that holds
+//! own records (VTI-KEY-005, VTI-KEY-006: a distinct identifier
+//! for each relationship, and a client identifier never reused across trust
+//! contexts). Only the machine that holds
 //! the key can notice the reuse, so the bridge does.
 //!
 //! The note warns and never refuses: an operator may mean to use one key at
