@@ -855,9 +855,9 @@ pub struct TestAppContext {
     /// inbound loop against the very state the HTTP router serves — the same
     /// reason `vtc-service`'s `TestVtc` exposes its own.
     pub state: crate::server::AppState,
-    /// Owns the on-disk fjall data dir. When this drops, files are
-    /// removed; the caller MUST keep it alive for the duration of the
-    /// test (`TestAppContext` is normally bound to a `let _ctx = …`).
+    /// The temporary directory holding the fjall data dir. Dropping this does
+    /// **not** delete it: the app's store does, once the database has closed,
+    /// so a test may drop the context and keep using the router.
     pub _dir: tempfile::TempDir,
 }
 
@@ -1257,6 +1257,17 @@ impl affinidi_did_resolver_cache_sdk::Resolver for PreseededDidResolver {
     }
 }
 
+/// Deletes a test's temporary directory when dropped. Handed to the store
+/// ([`vti_common::store::Store::holding`]) so the directory goes only after
+/// the database using it has closed.
+struct RemoveDirOnDrop(std::path::PathBuf);
+
+impl Drop for RemoveDirOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Backing builder for [`build_test_app`] / [`build_provisionable_test_app`].
 pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestAppContext) {
     use base64::Engine;
@@ -1265,7 +1276,14 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
 
     init_jwt_provider();
 
-    let dir = tempfile::tempdir().expect("temp dir");
+    // Not deleted when `TestAppContext` drops: many tests keep the router (and
+    // with it the store) but drop the context, and a data directory removed
+    // under a live store makes fjall's next compaction fail and poison it. The
+    // store deletes it instead, once the database has closed (below).
+    let dir = tempfile::Builder::new()
+        .disable_cleanup(true)
+        .tempdir()
+        .expect("temp dir");
     let data_dir = opts
         .data_dir
         .clone()
@@ -1280,6 +1298,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         vti_common::store::test_fixture::open_with_keyspaces(&data_dir, crate::keyspaces::ALL)
             .expect("open store")
     };
+    let store = store.holding(RemoveDirOnDrop(dir.path().to_path_buf()));
 
     let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
     let sessions_ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();

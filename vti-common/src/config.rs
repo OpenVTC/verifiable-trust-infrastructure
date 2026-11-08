@@ -71,11 +71,12 @@ pub struct FjallTuning {
         deserialize_with = "deserialize_block_cache"
     )]
     pub block_cache: Option<u64>,
-    /// Maximum size of all active memtables across every keyspace this
-    /// process opens, in bytes
-    /// (`fjall::Database::builder(..).max_write_buffer_size(Some(..))`).
-    /// fjall's own default is unbounded. Env override:
-    /// `STORAGE_FJALL_WRITE_BUFFER`.
+    /// Maximum unflushed bytes held in memory across every keyspace this
+    /// process opens. fjall 3.1 stores but does not enforce its own
+    /// `max_write_buffer_size`, so the store's background flusher
+    /// ([`crate::store::flusher`]) enforces this value; unset, it uses
+    /// [`crate::store::flusher::DEFAULT_WRITE_BUFFER_LIMIT`] (8 MiB).
+    /// Env override: `STORAGE_FJALL_WRITE_BUFFER`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -85,7 +86,9 @@ pub struct FjallTuning {
     /// Maximum size of all journals — the write-ahead log fjall replays
     /// on startup — in bytes
     /// (`fjall::Database::builder(..).max_journaling_size(..)`). fjall's
-    /// own default is 512 MiB. Env override: `STORAGE_FJALL_MAX_JOURNAL`.
+    /// own default is 512 MiB. fjall only checks it while flushing, which
+    /// the store's background flusher now makes happen regularly. Env
+    /// override: `STORAGE_FJALL_MAX_JOURNAL`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

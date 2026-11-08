@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use tracing::info;
 
 pub mod counter;
+pub mod flusher;
 
 #[cfg(feature = "encryption")]
 pub(crate) mod encryption;
@@ -392,6 +393,24 @@ impl Store {
     #[cfg(feature = "vsock-store")]
     pub async fn connect_vsock(port: Option<u32>) -> Result<Self, AppError> {
         Ok(Store::Vsock(vsock::VsockStore::connect(port).await?))
+    }
+
+    /// Test fixtures only: keep `guard` alive until the database has closed,
+    /// that is until this store and every keyspace handle opened from it
+    /// **after** this call have dropped. Used to delete a test's data
+    /// directory only once nothing can still write to it: a directory removed
+    /// under a live database makes fjall's next flush or compaction fail and
+    /// poison the store.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn holding<T: Send + Sync + 'static>(self, guard: T) -> Self {
+        match self {
+            Store::Local(mut s) => {
+                s.keep_alive = Some(std::sync::Arc::new(guard));
+                Store::Local(s)
+            }
+            #[cfg(feature = "vsock-store")]
+            other => other,
+        }
     }
 
     pub fn keyspace(&self, name: &str) -> Result<KeyspaceHandle, AppError> {
@@ -1011,6 +1030,15 @@ pub struct LocalStore {
     db: fjall::Database,
     write_locks: WriteLocks,
     writes: generation::Generations,
+    /// Keeps fjall's memtables flushed (see [`flusher`]). Shared with every
+    /// keyspace handle, so it runs as long as anything can still write.
+    _flusher: std::sync::Arc<flusher::Flusher>,
+    /// Test fixtures only: something that must outlive the database, such as
+    /// the guard that deletes a test's data directory ([`Store::holding`]).
+    /// Declared after `_flusher`, so when the last holder drops, the
+    /// database closes first and this drops after it.
+    #[cfg(any(test, feature = "test-support"))]
+    keep_alive: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 #[derive(Clone)]
@@ -1041,6 +1069,11 @@ pub struct LocalKeyspaceHandle {
     writes: std::sync::Arc<generation::KeyspaceWrites>,
     #[cfg(feature = "encryption")]
     encryption_key: Option<std::sync::Arc<zeroize::Zeroizing<[u8; 32]>>>,
+    /// See [`LocalStore`]'s field of the same name.
+    _flusher: std::sync::Arc<flusher::Flusher>,
+    /// See `LocalStore`'s `keep_alive`. Only held, never read.
+    #[cfg(any(test, feature = "test-support"))]
+    _keep_alive: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// Acquire a write lock inside a blocking closure, recovering from
@@ -1117,13 +1150,11 @@ impl LocalStore {
         }
         if let Some(bytes) = tuning.write_buffer {
             // `Builder::max_write_buffer_size` is `#[doc(hidden)]` and
-            // `#[deprecated = "todo"]` upstream (fjall 3.1) — it is still
-            // the only way to cap the total memtable budget across every
-            // keyspace a process opens (see `KeyspaceCreateOptions::
-            // max_memtable_size`'s own doc, which points back at it), and
-            // it remains fully wired (`WriteBufferManager`, checked on
-            // every insert/remove). Re-check this note against fjall's
-            // changelog when bumping past 3.1 in case a replacement lands.
+            // `#[deprecated = "todo"]` upstream, and in fjall 3.1.12/3.1.13
+            // the value is stored but never read: nothing enforces it.
+            // The limit is enforced by [`flusher`] instead (same value);
+            // it is still passed through here so a fjall release that
+            // starts honouring it picks it up.
             #[allow(deprecated)]
             {
                 builder = builder.max_write_buffer_size(Some(bytes));
@@ -1139,10 +1170,21 @@ impl LocalStore {
         );
 
         let db = builder.open()?;
+        // fjall 3.1 never flushes keyspaces below 64 MiB each and ignores
+        // its write-buffer limit, so without this every write stays in
+        // memory for the life of the process (see [`flusher`]).
+        let flusher = flusher::Flusher::spawn(
+            db.clone(),
+            flusher::FlushPolicy::from_write_buffer(tuning.write_buffer),
+        )
+        .map_err(AppError::Io)?;
         Ok(Self {
             db,
             write_locks: WriteLocks::default(),
             writes: generation::Generations::default(),
+            _flusher: std::sync::Arc::new(flusher),
+            #[cfg(any(test, feature = "test-support"))]
+            keep_alive: None,
         })
     }
 
@@ -1164,6 +1206,9 @@ impl LocalStore {
             writes: self.writes.for_keyspace(name),
             #[cfg(feature = "encryption")]
             encryption_key: None,
+            _flusher: self._flusher.clone(),
+            #[cfg(any(test, feature = "test-support"))]
+            _keep_alive: self.keep_alive.clone(),
         })
     }
 
@@ -1922,6 +1967,40 @@ mod tests {
             local_store_exists(dir.path()),
             "opening a store must make the probe report it"
         );
+    }
+
+    /// A guard handed to `holding` outlives the store and every keyspace
+    /// handle opened after it, and drops only once the database has closed —
+    /// what lets a test fixture delete its data directory safely.
+    #[tokio::test]
+    async fn holding_keeps_the_guard_until_the_database_closes() {
+        struct Flag(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Flag {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dir = tempfile::tempdir().unwrap();
+        let config = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+
+        let store = Store::open(&config).unwrap().holding(Flag(dropped.clone()));
+        let ks = store.keyspace("held").unwrap();
+        drop(store);
+        ks.insert("k", &"v").await.unwrap();
+        assert!(
+            !dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "a live keyspace handle must keep the guard"
+        );
+
+        drop(ks);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        // The database closed before the guard dropped, so it reopens cleanly.
+        let reopened = Store::open(&config).unwrap();
+        let v: Option<String> = reopened.keyspace("held").unwrap().get("k").await.unwrap();
+        assert_eq!(v.as_deref(), Some("v"));
     }
 
     #[tokio::test]

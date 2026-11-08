@@ -39,7 +39,7 @@ cli-synthesis = []
 # emit. Also `store::test_fixture`, which opens test stores from a pre-built
 # template instead of creating (and fsyncing) every keyspace. NEVER enable in a
 # production build.
-test-support = []
+test-support = ["dep:log"]
 # Shared WebAuthn / passkey infrastructure (types + storage). Services
 # (VTA, VTC) implement the `auth::passkey::PasskeyState` trait on their
 # `AppState` and gain reusable enrolment + login storage primitives. The
@@ -191,7 +191,13 @@ object_store = { version = "0.14", default-features = false, optional = true }
 # `object_store`.
 quick-xml = { version = "0.42", features = ["serialize"], optional = true }
 
+# Only for `store::test_fixture`'s stderr logger (feature `test-support`):
+# fjall reports why it poisoned a database through `log`, which tests
+# otherwise never print.
+log = { version = "0.4", optional = true }
+
 [dev-dependencies]
+log = "0.4"
 # `blob_store::presigned` also compiles for this crate's own tests without the
 # `blob-presigned` feature, and reads S3's XML answers.
 quick-xml = { version = "0.42", features = ["serialize"] }

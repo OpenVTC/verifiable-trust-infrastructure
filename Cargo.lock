@@ -12481,6 +12481,7 @@ dependencies = [
  "ipnetwork",
  "jsonwebtoken 11.1.0",
  "libc",
+ "log",
  "metrics",
  "metrics-util",
  "multibase",
