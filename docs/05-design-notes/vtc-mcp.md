@@ -322,6 +322,7 @@ exists so that "always allow `vtc_call`" at the host does not make
 | 4 | **Done.** Ten guide resources (`vtc://guide/*`, the `docs/03-vtc` guides embedded at build) and the six workflow prompts (`setup-group`, `create-board`, `run-election`, `open-data-room`, `admit-member`, `grant-administration`), each an ordered brief that marks the steps that park; `every_slug_a_prompt_names_is_pinned` holds every task a prompt names to the index | `vtc-mcp` |
 | 5 | **Done.** The six workflow tools (`group_setup`, `board_create`, `election_create`, `room_open`, `member_admit`, `admin_grant`): thin orchestrators, one guarded step at a time under each step's own URI, stopping at the first refused or parked step and reporting how far they got; `vtc_actions_list` / `show` / `decide` / `cancel`, with `decide` always confirmed by the human against the verified summary and match code | `vtc-mcp` |
 | 6 | **Done.** Operator page `docs/03-vtc/vtc-mcp.md` with a worked example; the Claude Code skill `vtc-mcp/skills/vtc-community/SKILL.md`; `vtc-mcp --mint-did-key` for the dedicated-agent rung | docs, `vtc-mcp` |
+| 7 | **Done.** Member badges: the `badges` guide resource, the `create-badge` and `my-badges` prompts, and `badge_create` (upload the picture → create naming the uploaded digest → offer → claim code → read back), each step guarded under its own URI | `vtc-mcp` |
 
 Phase 3 is usable on its own: a member or an administrator can drive every
 pinned task from an assistant with nothing but the catalog. Phases 4 and 5

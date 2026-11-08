@@ -1101,6 +1101,7 @@ mod tests {
             "room_open",
             "member_admit",
             "admin_grant",
+            "badge_create",
             "vtc_actions_list",
             "vtc_actions_show",
             "vtc_actions_decide",
@@ -1134,6 +1135,7 @@ mod tests {
         ("room_open", None),
         ("member_admit", None),
         ("admin_grant", None),
+        ("badge_create", None),
         (
             "vtc_actions_list",
             Some(crate::workflows::wire::ACTIONS_LIST),

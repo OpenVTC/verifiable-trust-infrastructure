@@ -53,6 +53,8 @@ ask the operator to confirm it. Nothing you do here grants access.
 | Open a data room | `open-data-room` | `room_open` |
 | Admit a member | `admit-member` | `member_admit` |
 | Grant administration | `grant-administration` | `admin_grant` |
+| Create a member badge | `create-badge` | `badge_create` |
+| A member's own badges | `my-badges` | — (`vtc_call`, signed in as the member) |
 
 A workflow tool stops at the first step that is refused or parked and
 reports how far it got; continue from there with `vtc_call`.
@@ -70,7 +72,7 @@ response says so.
 
 The community's own operator guides are resources: `vtc://guide/groups`,
 `boards`, `elections`, `rooms`, `rooms-quickstart`, `admission`, `lifecycle`,
-`vetting`, `directory`, `admin-access`. Read the one for the job before the
+`vetting`, `directory`, `admin-access`, `badges`. Read the one for the job before the
 first write; the prompts name which.
 
 ## Rules
