@@ -564,7 +564,6 @@ mod tests {
                 updated_at: chrono::Utc::now(),
                 context_policy: None,
                 issuer_key_id: None,
-                proof_key_ids: Default::default(),
             },
         )
         .await
@@ -626,7 +625,6 @@ mod tests {
             &super_admin_claims(),
             context,
             Some(key_id.to_string()),
-            None,
             "test",
         )
         .await
@@ -963,7 +961,6 @@ mod tests {
             &super_admin_claims(),
             CTX,
             Some(foreign_key_id.clone()),
-            None,
             "test",
         )
         .await
