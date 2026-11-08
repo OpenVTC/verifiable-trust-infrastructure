@@ -1101,14 +1101,14 @@ export function WallSection({ entryId, name, own }: { entryId: string; name: str
       {pinned.length > 0 && (
         <div className="bw-wall bw-pinned-row">
           {pinned.map((e) => (
-            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} pinned width={130} />
+            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} since={e.since} latestAt={e.latestAt} pinned width={130} />
           ))}
         </div>
       )}
       {rest.length > 0 && (
         <div className="bw-wall">
           {rest.map((e) => (
-            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} width={110} />
+            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} since={e.since} latestAt={e.latestAt} width={110} />
           ))}
         </div>
       )}
