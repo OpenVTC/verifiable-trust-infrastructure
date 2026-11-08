@@ -87,19 +87,11 @@ pub async fn serve_achievement(State(state): State<AppState>, Path(id): Path<Str
         Ok(None) => return not_found(),
         Err(()) => return unavailable(),
     };
-    let (community_did, public_url) = {
-        let config = state.config.read().await;
-        (
-            config.vtc_did.clone().unwrap_or_default(),
-            config.public_url.clone(),
-        )
+    let public_url = state.config.read().await.public_url.clone();
+    let Ok(creator) = super::credential::load_community_profile(&state).await else {
+        return unavailable();
     };
-    let mut doc = super::credential::achievement(
-        &community_did,
-        &badge,
-        public_url.as_deref(),
-        badge.endorsement.as_ref(),
-    );
+    let mut doc = super::credential::achievement(&creator, &badge, public_url.as_deref());
     doc["@context"] = json!(super::credential::OB_CONTEXT);
     (
         StatusCode::OK,

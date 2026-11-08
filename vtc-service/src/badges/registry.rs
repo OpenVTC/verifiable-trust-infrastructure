@@ -1,12 +1,14 @@
-//! The badge groups as issuers the community recognises, projected to its trust registry
+//! The community badges, as ones the community issues, projected to its trust registry
 //! (VTI-BDG-080).
 //!
-//! Each active community badge's group is published as one TRQP authorization record under
-//! the community's authority: `{entity: the group's DID, authority: the community's DID,
+//! Each active community badge is published as one TRQP authorization record under the
+//! community's authority: `{entity: the community's DID, authority: the community's DID,
 //! action: "issue", resource: the badge's Achievement id}` — the very identifier the badge
 //! credential's achievement carries, so an outside verifier asks the registry whether the
-//! community stands behind the issuer of that badge, and asks the community's status set
-//! whether the award still stands. The record's `context` marks it as a badge record and
+//! community issues that badge, and asks the community's status set whether the award
+//! still stands. The community is the credential's issuer (VTI-BDG-060), so the record
+//! names it; a record naming a badge group's DID, from before, is withdrawn as one no
+//! longer wanted. The record's `context` marks it as a badge record and
 //! names the badge by identifier only, never by name: a badge kept inside the community is
 //! not described to the world (VTI-BDG-050).
 //!
@@ -34,7 +36,7 @@ use super::{BadgeKind, BadgeState};
 use crate::registry::{RegistryError, TrustRegistryClient};
 use crate::server::AppState;
 
-/// The TRQP action a badge group is recognised for.
+/// The TRQP action the community publishes for each of its badges.
 pub const ACTION: &str = "issue";
 /// The `context.kind` that marks a record as this projection's, so it never touches the
 /// community's other `issue` records.
@@ -105,7 +107,13 @@ impl IssuerRecord {
 /// What the registry should hold now: one record per active community badge whose group
 /// exists, keyed as the registry keys it.
 pub async fn desired(state: &AppState) -> Result<BTreeMap<String, IssuerRecord>, AppError> {
-    let public_url = state.config.read().await.public_url.clone();
+    let (public_url, community_did) = {
+        let config = state.config.read().await;
+        (config.public_url.clone(), config.vtc_did.clone())
+    };
+    let Some(community_did) = community_did else {
+        return Ok(BTreeMap::new());
+    };
     let mut out = BTreeMap::new();
     for badge in super::all_badges(&state.badges_ks).await? {
         if badge.kind != BadgeKind::Community || badge.state != BadgeState::Active {
@@ -114,11 +122,14 @@ pub async fn desired(state: &AppState) -> Result<BTreeMap<String, IssuerRecord>,
         let Some(gid) = &badge.group_id else {
             continue;
         };
-        let Some(group) = crate::groups::get(state.directory.ks(), gid).await? else {
+        if crate::groups::get(state.directory.ks(), gid)
+            .await?
+            .is_none()
+        {
             continue;
-        };
+        }
         let r = IssuerRecord {
-            entity: group.group_did.clone(),
+            entity: community_did.clone(),
             resource: super::credential::achievement_id(&badge, public_url.as_deref()),
             badge_id: badge.badge_id.clone(),
         };

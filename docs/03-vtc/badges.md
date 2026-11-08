@@ -55,8 +55,8 @@ section, since the badge group's DID is minted there.
 Giving a community badge (`vtc/badges/awards/offer`, by an owner) or a kudos badge
 (`vtc/badges/kudos/give`, by any member) records an **award** in state `offered`. Nothing
 is admitted to the badge group, issued or shown until the recipient accepts it
-(`vtc/badges/mine/accept`). Then, for a community badge, the group's DID signs the badge
-credential through the community's VTA and offers it to the member's wallet, and only
+(`vtc/badges/mine/accept`). Then, for a community badge, the community signs the badge
+credential through its VTA and offers it to the member's wallet, and only
 after that is the membership recorded. Declining (`mine/decline`) records nothing in any
 group; the owners see the offer closed, and the badge can be offered again. An owner may
 withdraw an open offer (`awards/withdraw`) or take an accepted award back
@@ -118,13 +118,21 @@ page; in the portal: *Have a code?* on the badges page.
 
 ## The credential
 
-A badge group issues each holder an Open Badges 3.0 `OpenBadgeCredential` in place of a
-group membership credential: `issuer` the group's DID, `credentialSubject.id` the holder's
-membership DID, the badge as the `Achievement` with the community as its `creator`, the
-community's own `EndorsementCredential` of the Achievement embedded on it (signed by the
-community's VTA as the community, once per badge, and kept), and one `evidence` entry per
-accepted award. An outside verifier sees who stands behind the issuer from the credential
-alone; the community's authority credential to the badge group says the same.
+The community issues each holder an Open Badges 3.0 `OpenBadgeCredential` in place of a
+group membership credential (VTI-BDG-060):
+
+- `issuer` the community, as a `Profile` with its DID, its name and, where it has one, its
+  public URL, so a wallet shows the community's name rather than a DID;
+- `credentialSubject.id` the holder's membership DID;
+- the badge as the `Achievement`, with the same community `Profile` as its `creator`;
+- `credentialSchema` the Open Badges 3.0 JSON Schema, so the standard validators check it;
+- one `evidence` entry per accepted award: its note, and the date it was accepted.
+
+The issuer is the community, not the badge group: a verifier outside the community knows
+the community and nothing of a group's DID, so the credential alone says who stands behind
+it (VTI-BDG-064). The badge group holds the badge's owners, holders, requests and rules,
+and issues nothing. A credential issued before this change named the group; it stands until
+its renewal or re-issue replaces it.
 
 Two regimes, chosen per badge by `shareableOutside` when it is defined or promoted and fixed
 from then on:
@@ -145,7 +153,7 @@ credentials name (VTI-BDG-051), served without authentication to any Open Badges
 
 | Location | What |
 |---|---|
-| `<public_url>/badges/<badgeId>` | The badge's Achievement document (`application/ld+json`), with the community as its creator and the community's endorsement |
+| `<public_url>/badges/<badgeId>` | The badge's Achievement document (`application/ld+json`), with the community as its creator |
 | `<public_url>/badges/<badgeId>/image` | The badge's picture, the community's own re-encoding |
 
 Neither names a holder or a count (VTI-BDG-071). A badge kept inside the community answers
@@ -233,15 +241,14 @@ community treats it like any other picture and never learns how it was made.
 
 ## The trust registry
 
-Where the community publishes to a trust registry, each active community badge's group is
-published there as an issuer the community recognises (VTI-BDG-080): one authorization
-record under the community's authority, `{entity: the group's DID, action: issue, resource:
-the badge's Achievement id}` — the identifier every credential of the badge names — with a
+Where the community publishes to a trust registry, each active community badge is
+published there as one the community issues (VTI-BDG-080): one authorization record under
+the community's authority, `{entity: the community's DID, action: issue, resource: the
+badge's Achievement id}` — the identifier every credential of the badge names — with a
 `context` of `{kind: "vtcBadgeIssuer", badgeId}`. The record never carries the badge's name
 or picture. Kudos badges have no group and are not published.
 
-An outside verifier asks the registry whether the community stands behind the issuer of a
-badge, and the community's status set whether the award still stands: the two answer
+An outside verifier asks the registry whether the community issues a badge, and the community's status set whether the award still stands: the two answer
 different questions, and neither replaces the other.
 
 The community's own records stay the source of truth. A projector publishes what is

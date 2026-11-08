@@ -52,13 +52,16 @@ Two kinds:
    request the member made is their consent, so an approved request admits at once. A dynamic
    badge group admits by rule, and its credential offer reaches the member's wallet as any group
    credential does; opting out (`vtc/groups/leave`) is the decline.
-3. **The credential.** A badge group issues its members an **Open Badges 3.0**
+3. **The credential.** The community issues a badge group's members an **Open Badges 3.0**
    `OpenBadgeCredential` (a W3C VC 2.0 profile) **in place of** a DTG group membership credential:
-   `issuer` the group's DID, the `Achievement`'s `creator` the community's DID, the community's
-   `EndorsementCredential` of the Achievement embedded, `credentialSubject.id` the member's
+   `issuer` the community's `Profile` (DID, name, public URL), the `Achievement`'s `creator` the
+   same `Profile`, `credentialSchema` the OB3 JSON Schema, `credentialSubject.id` the member's
    membership DID, the badge's picture and criteria on the Achievement, and one `evidence` entry
-   per award. Signed as the group through `keys/sign-document`, exactly as a group membership
-   credential is (VTI-DIR-080). Two regimes, chosen per badge by `shareableOutside`:
+   per award. Signed as the community through `keys/sign-document` (VTI-DIR-080). It was issued
+   by the group, with the community's endorsement of the Achievement embedded, until
+   dtgwg-vti-spec #110: the endorsement never named the group's DID, so an outside verifier could
+   tie the group to the community only through the registry or the group's authority credential,
+   neither of which travels with the badge. Two regimes, chosen per badge by `shareableOutside`:
    - **Inside only**: short-lived and renewed, no status mechanism, as VTI-DIR-085 requires of a
      group credential and for the same reason (a per-group status set singles out a small group's
      members, VTI-CRD-014).
@@ -89,10 +92,10 @@ Two kinds:
    scaled, re-encoded, no metadata, stored as the community's own bytes under its own digest, read
    through `vtc/badges/images/get` by members only. A badge that may be shown outside publishes its
    picture, and an Achievement document, at the public URLs its credential names.
-8. **Registry.** A badge group is projected to the trust registry as a recognised issuer under the
-   community, exactly as capability modules are projected: the VTC is the source of truth, the
+8. **Registry.** Each community badge is projected to the trust registry as one the community
+   issues (entity and authority the community, resource the Achievement id), exactly as capability modules are projected: the VTC is the source of truth, the
    registry a projection, the projector the one retry owner; retiring the badge removes the record.
-   An outside verifier asks the registry about the issuer and the status set about the award.
+   An outside verifier asks the registry about the badge and the status set about the award.
 9. **Settings** (`vtc/badges/settings/*`) are the community's: badges on or off (off hides every
    surface and keeps every record; nothing is revoked), who may make kudos badges (administrators
    only, chosen roles and groups, every active member), the limits, whether kudos totals show, and
