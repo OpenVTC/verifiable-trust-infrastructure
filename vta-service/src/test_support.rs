@@ -1280,7 +1280,6 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
                 created_at: now,
                 updated_at: now,
                 context_policy: None,
-                issuer_key_id: None,
             },
         )
         .await

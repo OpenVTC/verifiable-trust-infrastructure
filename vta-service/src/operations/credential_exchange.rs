@@ -1754,7 +1754,6 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 context_policy: None,
-                issuer_key_id: None,
             },
         )
         .await
@@ -1818,7 +1817,6 @@ mod tests {
                     ),
                     ..vta_sdk::context_policy::ContextPolicy::unrestricted()
                 }),
-                issuer_key_id: None,
             },
         )
         .await

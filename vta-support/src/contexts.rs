@@ -224,7 +224,6 @@ pub async fn create_context(
         created_at: now,
         updated_at: now,
         context_policy: None,
-        issuer_key_id: None,
     };
     if !store_new_context(contexts_ks, &record)
         .await
