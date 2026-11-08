@@ -19,7 +19,7 @@ use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, BadgeChangedData};
+use vti_common::audit::BadgeChangedData;
 use vti_common::error::AppError;
 use vti_specs::vtc::badges::{
     awards::{
@@ -335,19 +335,7 @@ async fn signer(
 
 /// A badge change is never unaudited (VTI-BDG-091).
 async fn audit(state: &AppState, actor: &str, data: BadgeChangedData) -> Result<(), AppError> {
-    let writer = state
-        .audit_writer
-        .as_ref()
-        .ok_or_else(|| AppError::ServiceError {
-            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            message: "audit writer not configured: badge changes are refused rather than made \
-                      unaudited"
-                .into(),
-        })?;
-    writer
-        .write(actor, None, AuditEvent::BadgeChanged(data))
-        .await
-        .map(drop)
+    badges::audit(state, actor, data).await
 }
 
 fn changed(badge_id: &str, change: &str) -> BadgeChangedData {

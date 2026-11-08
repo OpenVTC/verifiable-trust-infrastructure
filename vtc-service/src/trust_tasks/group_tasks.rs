@@ -1196,9 +1196,10 @@ async fn admit(
     did: &str,
     entry_id: &str,
     source: &str,
+    given_by: Option<&str>,
 ) -> Result<Membership, Failure> {
     let issued = if group.issues_credentials {
-        Some(groups::credential::issue(state, group, did).await?)
+        Some(groups::credential::issue_admitting(state, group, did, entry_id, given_by).await?)
     } else {
         None
     };
@@ -1268,6 +1269,15 @@ async fn handle_members_add(
             "This group is dynamic: its rule decides who is in it.",
         );
     }
+    // A badge is given by an offer the member accepts, never by adding them to its group
+    // (VTI-BDG-020).
+    if group.badge_id.is_some() {
+        return denied(
+            &doc,
+            "this group backs a badge: give the badge with vtc/badges/awards/offer, which the \
+             member accepts",
+        );
+    }
     // Item 2.
     let did = match active_entry(state, entry_id).await {
         Ok(Some(d)) => d,
@@ -1296,7 +1306,7 @@ async fn handle_members_add(
     if let Err(reject) = authority_admission_gate(state, &who, &did, &group, &doc).await {
         return reject;
     }
-    let m = match admit(state, &group, &did, entry_id, "added").await {
+    let m = match admit(state, &group, &did, entry_id, "added", None).await {
         Ok(m) => m,
         Err(f) => {
             return admit_refusal(
@@ -1590,6 +1600,23 @@ async fn end_membership(
         entry_id,
         change,
         reason_of(doc),
+    )
+    .await
+    {
+        return app_error_to_reject(doc, &e);
+    }
+    // A badge group's holding ends with the membership: leaving declines the badge, a
+    // removal takes it back (VTI-BDG-013, 023, 063).
+    if let Err(e) = crate::badges::on_group_exit(
+        state,
+        group,
+        entry_id,
+        &who.did,
+        if change == "left" {
+            crate::badges::GroupExit::Left
+        } else {
+            crate::badges::GroupExit::Removed
+        },
     )
     .await
     {
@@ -1892,7 +1919,7 @@ async fn handle_join(
         );
     }
     // Item 4.
-    let m = match admit(state, &group, &who.did, &entry_id, "joined").await {
+    let m = match admit(state, &group, &who.did, &entry_id, "joined", None).await {
         Ok(m) => m,
         Err(f) => {
             return admit_refusal(
@@ -2060,6 +2087,19 @@ async fn leave_dynamic(
     };
     if let Err(e) =
         audit_membership(state, &who.did, &group.group_id, entry_id, "optedOut", None).await
+    {
+        return app_error_to_reject(doc, &e);
+    }
+    // Opting out of an automatic badge's group is declining the badge (VTI-BDG-013).
+    if held.is_some()
+        && let Err(e) = crate::badges::on_group_exit(
+            state,
+            group,
+            entry_id,
+            &who.did,
+            crate::badges::GroupExit::Left,
+        )
+        .await
     {
         return app_error_to_reject(doc, &e);
     }
@@ -2310,7 +2350,16 @@ async fn handle_requests_decide(
         };
         match did {
             Some(did) if group.join_policy == JoinPolicy::Request => {
-                match admit(state, &group, &did, &r.entry_id, "requestApproved").await {
+                match admit(
+                    state,
+                    &group,
+                    &did,
+                    &r.entry_id,
+                    "requestApproved",
+                    who.entry_id.as_deref(),
+                )
+                .await
+                {
                     Ok(m) => member = Some(m),
                     Err(f) => {
                         return admit_refusal(

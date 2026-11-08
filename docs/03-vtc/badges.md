@@ -66,6 +66,19 @@ badge.
 A repeatable badge accepted again appends an award: the holder's count rises and the
 credential is re-issued with every accepted award as evidence.
 
+The badge group's own paths give and end the badge the same way:
+
+| Path | What it does to the badge |
+|---|---|
+| A member asks (`vtc/groups/join`) and an owner approves (`requests/decide`) | The approved request is the member's consent (VTI-BDG-024): an accepted award is recorded, given by the approving owner, as the evidence of the credential issued on admission |
+| An automatic badge's rule admits a member | An accepted award the rule made (no giver), likewise (VTI-BDG-013) |
+| An owner adds a member (`vtc/groups/members/add`) | Refused: a badge is given by an offer the member accepts (VTI-BDG-020) |
+| The holder leaves, or opts out of an automatic badge (`vtc/groups/leave`) | Their awards of it are closed as declined |
+| An owner removes the holder (`members/remove`), or the rule stops admitting them | Their awards of it are taken back |
+
+Whenever the holding ends, any share of it stops and the credential's status is revoked
+where it carries one (VTI-BDG-063), as a take-back does.
+
 ## The credential
 
 A badge group issues each holder an Open Badges 3.0 `OpenBadgeCredential` in place of a

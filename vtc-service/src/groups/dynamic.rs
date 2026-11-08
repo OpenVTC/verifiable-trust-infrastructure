@@ -368,6 +368,26 @@ pub async fn recompute(
             report.ended.push(entry_id.clone());
         }
     }
+    // An automatic badge's holding ends with the rule's admission (VTI-BDG-013, 063).
+    if group.badge_id.is_some() {
+        let actor = state
+            .config
+            .read()
+            .await
+            .vtc_did
+            .clone()
+            .unwrap_or_default();
+        for entry_id in &report.ended {
+            crate::badges::on_group_exit(
+                state,
+                group,
+                entry_id,
+                &actor,
+                crate::badges::GroupExit::Removed,
+            )
+            .await?;
+        }
+    }
     if !report.admitted.is_empty() || !report.ended.is_empty() {
         audit(state, group, &report).await;
         super::bindings::kick();
@@ -386,7 +406,7 @@ pub async fn admit(
     now: DateTime<Utc>,
 ) -> Result<bool, AppError> {
     let issued = if group.issues_credentials {
-        let issued = super::credential::issue(state, group, did)
+        let issued = super::credential::issue_admitting(state, group, did, entry_id, None)
             .await
             .map_err(|f| match f {
                 super::identity::Failure::Local(e) => e,

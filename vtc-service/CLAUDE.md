@@ -994,7 +994,13 @@ When adding a flow, add it here and a line to the root index.
   a registry and the community DID) is the one retry owner: `reconcile` against a `breg:`
   mirror of what the registry accepted, `verify` against the registry's own marked records
   every 15 minutes; create, promote and retire `kick` it. Never touch an `issue` record
-  without the marker. **Hidden is
+  without the marker. **The group's own paths** (VTI-BDG-013, 020, 024): admission through
+  them goes through `groups::credential::issue_admitting`, which for a badge group records
+  an accepted award (giver = the approving owner, none for a rule) as the credential's
+  evidence — never `issue`, which is renewal; `members/add` on a badge group is refused
+  (`awards/offer`); and every membership end outside a badge task (`leave`, opt-out,
+  `members/remove`, the rule) calls `badges::on_group_exit`, closing the awards (declined
+  or taken back), stopping shares and revoking the slot. **Hidden is
   portal-only** (`badges::Prefs`, VTI-BDG-030): walls, `holders/list` and counts leave a hidden
   holder out; `awards/list` shows owners `hidden: true`; memberships and credentials stand.
   Holder's tasks accept the portal's delegated key (`vtc/badges` in `PORTAL_SIGNING_SCOPE`);
