@@ -35,6 +35,7 @@ import {
   X,
 } from "lucide-react";
 
+import { BadgeBuilder } from "@/components/BadgeBuilder";
 import { Protected } from "@/components/Protected";
 
 import {
@@ -935,8 +936,9 @@ export function MakeBadgePage() {
   const [description, setDescription] = useState("");
   const [image, setImage] = useState<{ sha256: string; preview: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"upload" | "build">("upload");
   const upload = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async (file: Blob) => {
       const { mediaType, bytes } = await prepare(file);
       const answer = await uploadBadgeImage(mediaType, toBase64Url(bytes));
       return { sha256: answer.image.sha256, preview: URL.createObjectURL(file) };
@@ -993,7 +995,29 @@ export function MakeBadgePage() {
         </label>
         <div className="card-field">
           <span>Picture</span>
-          <div className="bw-upload">
+          <div className="bw-picture-mode" role="radiogroup" aria-label="How to make the picture">
+            <label>
+              <input type="radio" name="bw-picture-mode" checked={mode === "upload"} onChange={() => setMode("upload")} />{" "}
+              Upload my own picture
+            </label>
+            <label>
+              <input type="radio" name="bw-picture-mode" checked={mode === "build"} onChange={() => setMode("build")} />{" "}
+              Build one from a colour and an icon
+            </label>
+          </div>
+          {mode === "build" && (
+            <BadgeBuilder
+              name={name}
+              busy={upload.isPending}
+              buttons={{ primary: "btn btn-primary btn-sm", secondary: "btn btn-ghost btn-sm" }}
+              onUse={(png) => {
+                upload.mutate(png);
+                setMode("upload");
+              }}
+              onCancel={() => setMode("upload")}
+            />
+          )}
+          <div className="bw-upload" hidden={mode === "build"}>
             {image ? (
               <img className="bw-art" src={image.preview} alt="" style={{ width: 160 }} />
             ) : (

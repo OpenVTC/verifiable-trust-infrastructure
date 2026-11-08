@@ -609,7 +609,7 @@ function CreateBadgePage() {
             <textarea className="prose" rows={2} value={criteria} maxLength={1000} onChange={(e) => setCriteria(e.target.value)} />
           </Field>
           <Field label="Picture" className="span-2">
-            <BadgePictureField value={image} onChange={setImage} />
+            <BadgePictureField name={name} value={image} onChange={setImage} />
           </Field>
           <div className="span-2 badge-settings-section">
             <h4>Credential</h4>
@@ -888,7 +888,7 @@ function EditBadgeForm({ badge, onDone }: { badge: Badge; onDone: () => void }) 
           <textarea className="prose" rows={2} value={criteria} maxLength={1000} onChange={(e) => setCriteria(e.target.value)} />
         </Field>
         <Field label="Picture" className="span-2" hint="A new picture re-issues no credential.">
-          <BadgePictureField badgeId={badge.badgeId} current={badge.image} value={image} onChange={setImage} />
+          <BadgePictureField badgeId={badge.badgeId} name={name} current={badge.image} value={image} onChange={setImage} />
         </Field>
         {badge.kind === "community" && (
           <label className="checkbox span-2">

@@ -224,6 +224,12 @@ holds it; `create` and `update` accept a digest only from the signer's own uploa
 other badge holds, and an upload no badge takes up within 24 hours is erased.
 `images/get` answers the picture of a badge the caller may see.
 
+Someone without artwork can **build** a picture instead: *Build one from a colour and an
+icon* beside the upload, in the console's badge form and the portal's *Make a badge*. They
+choose a banner (with the badge's name on it) or a square, one of eight colours and one of
+sixteen icons. The browser draws it as a PNG and sends it as an ordinary upload, so the
+community treats it like any other picture and never learns how it was made.
+
 ## The trust registry
 
 Where the community publishes to a trust registry, each active community badge's group is

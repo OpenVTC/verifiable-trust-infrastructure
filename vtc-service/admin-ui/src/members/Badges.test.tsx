@@ -12,10 +12,20 @@ vi.mock("./directory-api", async (orig) => ({
   send: (...a: unknown[]) => send(...a),
 }));
 
-import { BadgePage, BadgesPage } from "./Badges";
+// jsdom draws nothing on a canvas: the builder's drawing answers four PNG bytes.
+vi.mock("@/components/BadgeBuilder", async (original) => {
+  const m = await original<typeof import("@/components/BadgeBuilder")>();
+  const { createElement } = await import("react");
+  const draw = async () => new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+  return { ...m, BadgeBuilder: (p: Parameters<typeof m.BadgeBuilder>[0]) => createElement(m.BadgeBuilder, { ...p, draw }) };
+});
+
+import { BadgePage, BadgesPage, MakeBadgePage } from "./Badges";
 import {
   AWARDS_SHARE_TASK,
   AWARDS_UNSHARE_TASK,
+  BADGES_CREATE_TASK,
+  BADGES_IMAGES_UPLOAD_TASK,
   BADGES_HOLDERS_TASK,
   BADGES_IMAGES_GET_TASK,
   BADGES_LIST_TASK,
@@ -193,6 +203,34 @@ describe("the portal's badges page", () => {
     renderPage(<BadgesPage />);
     expect(await screen.findByText("This community has badges turned off for now.")).toBeTruthy();
     expect(screen.queryByText("Waiting for you")).toBeNull();
+  });
+});
+
+describe("making a badge in the portal", () => {
+  it("builds the picture from a colour and an icon, and makes a kudos badge with it", async () => {
+    answer({
+      ...BASE,
+      [BADGES_IMAGES_UPLOAD_TASK]: { image: { sha256: SHA, mediaType: "image/png", size: 4 }, expiresAt: "2026-11-09T09:00:00Z" },
+      [BADGES_CREATE_TASK]: { badge: KUDOS },
+    });
+    vi.stubGlobal("URL", { ...URL, createObjectURL: () => "blob:x", revokeObjectURL: () => undefined });
+    renderPage(<MakeBadgePage />);
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "Clamp whisperer" } });
+    fireEvent.change(screen.getByLabelText("What it is for"), { target: { value: "Fixed the clamps." } });
+    fireEvent.click(screen.getByLabelText("Build one from a colour and an icon"));
+    expect(screen.getByRole("img", { name: "Preview: Clamp whisperer" })).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Tools"));
+    fireEvent.click(screen.getByRole("button", { name: "Use this picture" }));
+    await waitFor(() => expect(sent(BADGES_IMAGES_UPLOAD_TASK)).toEqual([{ mediaType: "image/png", data: "iVBORw" }]));
+    // Back on the upload view, with the built picture shown and the builder closed.
+    expect(screen.getByLabelText("Upload my own picture")).toHaveProperty("checked", true);
+    fireEvent.click(screen.getByRole("button", { name: "Create badge" }));
+    await waitFor(() =>
+      expect(sent(BADGES_CREATE_TASK)).toEqual([
+        { kind: "kudos", name: "Clamp whisperer", description: "Fixed the clamps.", image: { sha256: SHA }, reason: "made in the portal" },
+      ]),
+    );
+    vi.unstubAllGlobals();
   });
 });
 
