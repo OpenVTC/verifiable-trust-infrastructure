@@ -89,6 +89,7 @@ pub async fn run_acl_create(
         .with_capabilities(capabilities);
 
     store_acl_entry(&acl_ks, &entry).await?;
+    cs.audit_break_glass("acl.create", &did, None).await?;
     cs.persist().await?;
 
     eprintln!("ACL entry created:\n");
@@ -311,6 +312,7 @@ pub async fn run_acl_update(
     }
 
     store_acl_entry(&acl_ks, &entry).await?;
+    cs.audit_break_glass("acl.update", &did, None).await?;
     cs.persist().await?;
 
     eprintln!("ACL entry updated:\n");
@@ -345,6 +347,7 @@ pub async fn run_acl_delete(
     }
 
     delete_acl_entry(&acl_ks, &did).await?;
+    cs.audit_break_glass("acl.delete", &did, None).await?;
     cs.persist().await?;
 
     eprintln!("ACL entry deleted: {did}");

@@ -41,6 +41,12 @@ pub async fn load_storage_key_for_cli(
     Ok(Some(key))
 }
 
+/// Actor recorded for a write made through the offline CLI.
+pub const BREAK_GLASS_ACTOR: &str = "vta-cli (break-glass)";
+
+/// Channel recorded for a write made through the offline CLI.
+pub const BREAK_GLASS_CHANNEL: &str = "vta-cli";
+
 /// A thin store wrapper for offline CLI commands.
 ///
 /// Holds an open `Store` and an optional storage-encryption key derived from
@@ -118,6 +124,33 @@ impl CliStore {
     /// let ks = store.keyspace(name)?;
     /// let ks = if let Some(key) = enc_key { ks.with_encryption(key) } else { ks };
     /// ```
+    /// Record an offline, break-glass write in the audit log.
+    ///
+    /// The offline CLI has no authenticated caller and makes no authorization
+    /// decision, so what it writes is made visible rather than prevented
+    /// (VTI-AUD-001). The write is propagated: a recovery path that changed
+    /// authority and left no row would be the silent case the log exists to
+    /// expose. Call it before [`persist`](Self::persist).
+    pub async fn audit_break_glass(
+        &self,
+        action: &str,
+        resource: &str,
+        context_id: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let sink = vta_audit::shared_keyspace_sink(self.keyspace(crate::keyspaces::AUDIT)?);
+        vta_audit::record(
+            &sink,
+            action,
+            BREAK_GLASS_ACTOR,
+            Some(resource),
+            "success",
+            Some(BREAK_GLASS_CHANNEL),
+            context_id,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub fn keyspace(&self, name: &str) -> Result<KeyspaceHandle, vti_common::error::AppError> {
         let ks = self.store.keyspace(name)?;
         Ok(match self.enc_key {

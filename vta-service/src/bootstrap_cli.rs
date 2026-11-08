@@ -943,12 +943,16 @@ pub async fn run_context_create(
             entry
         };
         crate::acl::store_acl_entry(&acl_ks, &entry).await?;
+        cs.audit_break_glass("acl.create", &did, Some(&record.id))
+            .await?;
         eprintln!(
             "Admin ACL entry created for {did} (context: {}).",
             record.id
         );
     }
 
+    cs.audit_break_glass("context.create", &record.id, Some(&record.id))
+        .await?;
     cs.persist().await?;
 
     println!("Context created:");
