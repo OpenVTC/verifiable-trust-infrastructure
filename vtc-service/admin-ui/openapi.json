@@ -6710,6 +6710,560 @@
         },
         "additionalProperties": false
       },
+      "VtcBadgesClaimsCreateV0_1BadgeId": {
+        "type": "string",
+        "description": "Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001).",
+        "pattern": "^bdg_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsCreateV0_1ClaimCode": {
+        "type": "object",
+        "description": "A claim code's record, as the badge's owners and administrators see it: never the code (VTI-BDG-027).",
+        "required": [
+          "claimId",
+          "badgeId",
+          "label",
+          "validUntil",
+          "limit",
+          "claims",
+          "state",
+          "createdAt"
+        ],
+        "properties": {
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsCreateV0_1BadgeId"
+          },
+          "claimId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsCreateV0_1ClaimId"
+          },
+          "claims": {
+            "type": "integer",
+            "description": "How many members have redeemed it.",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsCreateV0_1EntryId"
+          },
+          "label": {
+            "type": "string",
+            "description": "What the code is for — the event, say — shown to the badge's owners. Never shown to whoever redeems it.",
+            "maxLength": 120,
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many claims the code admits.",
+            "maximum": 10000,
+            "minimum": 1
+          },
+          "state": {
+            "type": "string",
+            "description": "`withdrawn` once its issuer withdrew it or the badge was retired. A code past `validUntil` or out of claims stays `active` and admits no one.",
+            "enum": [
+              "active",
+              "withdrawn"
+            ]
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "After this the code admits no one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsCreateV0_1ClaimId": {
+        "type": "string",
+        "description": "Opaque identifier of a claim code's record: `bcl_` followed by 16 to 64 base64url characters. Random; never the code itself, which the community keeps only as a digest (VTI-BDG-025).",
+        "pattern": "^bcl_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsCreateV0_1ClaimSecret": {
+        "type": "string",
+        "description": "A claim code itself: at least 128 random bits the community generated, base64url (22 to 64 characters). A bearer secret: shown to its issuer once, redeemed by a member, never stored or answered again (VTI-BDG-025).",
+        "pattern": "^[A-Za-z0-9_-]{22,64}$"
+      },
+      "VtcBadgesClaimsCreateV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsCreateV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcBadgesClaimsCreateV0_1Payload": {
+        "type": "object",
+        "description": "Issue a claim code for a community badge: the community answers the code, once. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "badgeId",
+          "label",
+          "validUntil",
+          "limit"
+        ],
+        "properties": {
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsCreateV0_1BadgeId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsCreateV0_1Ext"
+          },
+          "label": {
+            "type": "string",
+            "description": "What the code is for — the event, say.",
+            "maxLength": 120,
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many claims the code admits.",
+            "maximum": 10000,
+            "minimum": 1
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "After this the code admits no one. At most 90 days ahead."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsCreateV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/badges/claims/create/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/claims/create/0.1#response.",
+        "required": [
+          "claim",
+          "code"
+        ],
+        "properties": {
+          "claim": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsCreateV0_1ClaimCode"
+          },
+          "code": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsCreateV0_1ClaimSecret"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsCreateV0_1Ext"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsListV0_1BadgeId": {
+        "type": "string",
+        "description": "Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001).",
+        "pattern": "^bdg_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsListV0_1ClaimCode": {
+        "type": "object",
+        "description": "A claim code's record, as the badge's owners and administrators see it: never the code (VTI-BDG-027).",
+        "required": [
+          "claimId",
+          "badgeId",
+          "label",
+          "validUntil",
+          "limit",
+          "claims",
+          "state",
+          "createdAt"
+        ],
+        "properties": {
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsListV0_1BadgeId"
+          },
+          "claimId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsListV0_1ClaimId"
+          },
+          "claims": {
+            "type": "integer",
+            "description": "How many members have redeemed it.",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsListV0_1EntryId"
+          },
+          "label": {
+            "type": "string",
+            "description": "What the code is for — the event, say — shown to the badge's owners. Never shown to whoever redeems it.",
+            "maxLength": 120,
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many claims the code admits.",
+            "maximum": 10000,
+            "minimum": 1
+          },
+          "state": {
+            "type": "string",
+            "description": "`withdrawn` once its issuer withdrew it or the badge was retired. A code past `validUntil` or out of claims stays `active` and admits no one.",
+            "enum": [
+              "active",
+              "withdrawn"
+            ]
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "After this the code admits no one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsListV0_1ClaimId": {
+        "type": "string",
+        "description": "Opaque identifier of a claim code's record: `bcl_` followed by 16 to 64 base64url characters. Random; never the code itself, which the community keeps only as a digest (VTI-BDG-025).",
+        "pattern": "^bcl_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsListV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcBadgesClaimsListV0_1Payload": {
+        "type": "object",
+        "description": "A badge's claim codes, as its owners and administrators see them: never a code. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "badgeId"
+        ],
+        "properties": {
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsListV0_1BadgeId"
+          },
+          "cursor": {
+            "type": "string",
+            "description": "An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the badge; a responder MUST NOT accept a cursor it did not issue.",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsListV0_1Ext"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer.",
+            "maximum": 200,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsListV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/badges/claims/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/claims/list/0.1#response.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsListV0_1Ext"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcBadgesClaimsListV0_1ClaimCode"
+            },
+            "description": "Newest `createdAt` first.",
+            "maxItems": 200
+          },
+          "nextCursor": {
+            "type": "string",
+            "description": "Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`.",
+            "maxLength": 1024
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsRedeemV0_1Award": {
+        "type": "object",
+        "description": "One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share).",
+        "required": [
+          "awardId",
+          "badgeId",
+          "entryId",
+          "state",
+          "offeredAt"
+        ],
+        "properties": {
+          "awardId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1AwardId"
+          },
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1BadgeId"
+          },
+          "credentialId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1GroupCredentialId"
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked."
+          },
+          "entryId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1EntryId"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When an unanswered offer lapses, where the community expires offers."
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1Ext"
+          },
+          "givenBy": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1EntryId"
+          },
+          "note": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1AwardNote"
+          },
+          "offeredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "shared": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1AwardShare"
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1AwardState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsRedeemV0_1AwardId": {
+        "type": "string",
+        "description": "Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community.",
+        "pattern": "^awd_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsRedeemV0_1AwardNote": {
+        "type": "string",
+        "description": "What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090).",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "VtcBadgesClaimsRedeemV0_1AwardShare": {
+        "type": "object",
+        "description": "Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071).",
+        "required": [
+          "verificationUrl",
+          "since"
+        ],
+        "properties": {
+          "bakedImageUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.",
+            "maxLength": 2048
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "verificationUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "The public location that answers the credential and a verification of it.",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsRedeemV0_1AwardState": {
+        "type": "string",
+        "description": "`offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).",
+        "enum": [
+          "offered",
+          "accepted",
+          "declined",
+          "withdrawn",
+          "expired",
+          "revoked"
+        ]
+      },
+      "VtcBadgesClaimsRedeemV0_1BadgeId": {
+        "type": "string",
+        "description": "Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001).",
+        "pattern": "^bdg_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsRedeemV0_1ClaimSecret": {
+        "type": "string",
+        "description": "A claim code itself: at least 128 random bits the community generated, base64url (22 to 64 characters). A bearer secret: shown to its issuer once, redeemed by a member, never stored or answered again (VTI-BDG-025).",
+        "pattern": "^[A-Za-z0-9_-]{22,64}$"
+      },
+      "VtcBadgesClaimsRedeemV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsRedeemV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcBadgesClaimsRedeemV0_1GroupCredentialId": {
+        "type": "string",
+        "description": "Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain.",
+        "maxLength": 512,
+        "minLength": 1
+      },
+      "VtcBadgesClaimsRedeemV0_1Payload": {
+        "type": "object",
+        "description": "Redeem a claim code: the member is admitted to the badge, the redemption being their consent. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1ClaimSecret"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1Ext"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsRedeemV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/badges/claims/redeem/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/claims/redeem/0.1#response.",
+        "required": [
+          "award"
+        ],
+        "properties": {
+          "award": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1Award"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsRedeemV0_1Ext"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsWithdrawV0_1BadgeId": {
+        "type": "string",
+        "description": "Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001).",
+        "pattern": "^bdg_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsWithdrawV0_1ClaimCode": {
+        "type": "object",
+        "description": "A claim code's record, as the badge's owners and administrators see it: never the code (VTI-BDG-027).",
+        "required": [
+          "claimId",
+          "badgeId",
+          "label",
+          "validUntil",
+          "limit",
+          "claims",
+          "state",
+          "createdAt"
+        ],
+        "properties": {
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsWithdrawV0_1BadgeId"
+          },
+          "claimId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsWithdrawV0_1ClaimId"
+          },
+          "claims": {
+            "type": "integer",
+            "description": "How many members have redeemed it.",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsWithdrawV0_1EntryId"
+          },
+          "label": {
+            "type": "string",
+            "description": "What the code is for — the event, say — shown to the badge's owners. Never shown to whoever redeems it.",
+            "maxLength": 120,
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many claims the code admits.",
+            "maximum": 10000,
+            "minimum": 1
+          },
+          "state": {
+            "type": "string",
+            "description": "`withdrawn` once its issuer withdrew it or the badge was retired. A code past `validUntil` or out of claims stays `active` and admits no one.",
+            "enum": [
+              "active",
+              "withdrawn"
+            ]
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "After this the code admits no one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsWithdrawV0_1ClaimId": {
+        "type": "string",
+        "description": "Opaque identifier of a claim code's record: `bcl_` followed by 16 to 64 base64url characters. Random; never the code itself, which the community keeps only as a digest (VTI-BDG-025).",
+        "pattern": "^bcl_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsWithdrawV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcBadgesClaimsWithdrawV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcBadgesClaimsWithdrawV0_1Payload": {
+        "type": "object",
+        "description": "Withdraw a claim code: it admits no one from now on; claims already made stand. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "claimId"
+        ],
+        "properties": {
+          "claimId": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsWithdrawV0_1ClaimId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsWithdrawV0_1Ext"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcBadgesClaimsWithdrawV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/badges/claims/withdraw/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/claims/withdraw/0.1#response.",
+        "required": [
+          "claim"
+        ],
+        "properties": {
+          "claim": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsWithdrawV0_1ClaimCode"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcBadgesClaimsWithdrawV0_1Ext"
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcBadgesCreateV0_1Badge": {
         "type": "object",
         "description": "A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one.",
@@ -7156,19 +7710,28 @@
       },
       "VtcBadgesCreateV0_1RuleCondition": {
         "type": "object",
-        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`.",
         "required": [
           "fact",
           "op"
         ],
         "properties": {
+          "count": {
+            "type": "integer",
+            "description": "With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`.",
+            "maximum": 100000,
+            "minimum": 1
+          },
           "fact": {
             "type": "string",
             "enum": [
               "role",
               "field",
               "personhood",
-              "joinedAt"
+              "joinedAt",
+              "kudosReceived",
+              "ideasSelected",
+              "electionTickets"
             ]
           },
           "field": {
@@ -7176,13 +7739,14 @@
           },
           "op": {
             "type": "string",
-            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.",
             "enum": [
               "equals",
               "oneOf",
               "exists",
               "before",
-              "after"
+              "after",
+              "atLeast"
             ]
           },
           "value": {
@@ -10806,19 +11370,28 @@
       },
       "VtcBadgesPromoteV0_1RuleCondition": {
         "type": "object",
-        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`.",
         "required": [
           "fact",
           "op"
         ],
         "properties": {
+          "count": {
+            "type": "integer",
+            "description": "With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`.",
+            "maximum": 100000,
+            "minimum": 1
+          },
           "fact": {
             "type": "string",
             "enum": [
               "role",
               "field",
               "personhood",
-              "joinedAt"
+              "joinedAt",
+              "kudosReceived",
+              "ideasSelected",
+              "electionTickets"
             ]
           },
           "field": {
@@ -10826,13 +11399,14 @@
           },
           "op": {
             "type": "string",
-            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.",
             "enum": [
               "equals",
               "oneOf",
               "exists",
               "before",
-              "after"
+              "after",
+              "atLeast"
             ]
           },
           "value": {
@@ -23031,6 +23605,11 @@
         },
         "additionalProperties": false
       },
+      "VtcGroupsCreateV0_1BadgeId": {
+        "type": "string",
+        "description": "Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001).",
+        "pattern": "^bdg_[A-Za-z0-9_-]{16,64}$"
+      },
       "VtcGroupsCreateV0_1DynamicRule": {
         "type": "object",
         "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",
@@ -23082,6 +23661,9 @@
           "createdAt"
         ],
         "properties": {
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcGroupsCreateV0_1BadgeId"
+          },
           "carriesAuthority": {
             "type": "boolean",
             "description": "`true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does."
@@ -23265,19 +23847,28 @@
       },
       "VtcGroupsCreateV0_1RuleCondition": {
         "type": "object",
-        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`.",
         "required": [
           "fact",
           "op"
         ],
         "properties": {
+          "count": {
+            "type": "integer",
+            "description": "With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`.",
+            "maximum": 100000,
+            "minimum": 1
+          },
           "fact": {
             "type": "string",
             "enum": [
               "role",
               "field",
               "personhood",
-              "joinedAt"
+              "joinedAt",
+              "kudosReceived",
+              "ideasSelected",
+              "electionTickets"
             ]
           },
           "field": {
@@ -23285,13 +23876,14 @@
           },
           "op": {
             "type": "string",
-            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.",
             "enum": [
               "equals",
               "oneOf",
               "exists",
               "before",
-              "after"
+              "after",
+              "atLeast"
             ]
           },
           "value": {
@@ -23772,6 +24364,11 @@
         },
         "additionalProperties": false
       },
+      "VtcGroupsListV0_2BadgeId": {
+        "type": "string",
+        "description": "Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001).",
+        "pattern": "^bdg_[A-Za-z0-9_-]{16,64}$"
+      },
       "VtcGroupsListV0_2DynamicRule": {
         "type": "object",
         "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",
@@ -23823,6 +24420,9 @@
           "createdAt"
         ],
         "properties": {
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcGroupsListV0_2BadgeId"
+          },
           "carriesAuthority": {
             "type": "boolean",
             "description": "`true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does."
@@ -24018,19 +24618,28 @@
       },
       "VtcGroupsListV0_2RuleCondition": {
         "type": "object",
-        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`.",
         "required": [
           "fact",
           "op"
         ],
         "properties": {
+          "count": {
+            "type": "integer",
+            "description": "With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`.",
+            "maximum": 100000,
+            "minimum": 1
+          },
           "fact": {
             "type": "string",
             "enum": [
               "role",
               "field",
               "personhood",
-              "joinedAt"
+              "joinedAt",
+              "kudosReceived",
+              "ideasSelected",
+              "electionTickets"
             ]
           },
           "field": {
@@ -24038,13 +24647,14 @@
           },
           "op": {
             "type": "string",
-            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.",
             "enum": [
               "equals",
               "oneOf",
               "exists",
               "before",
-              "after"
+              "after",
+              "atLeast"
             ]
           },
           "value": {
@@ -25414,6 +26024,11 @@
         },
         "additionalProperties": false
       },
+      "VtcGroupsShowV0_1BadgeId": {
+        "type": "string",
+        "description": "Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001).",
+        "pattern": "^bdg_[A-Za-z0-9_-]{16,64}$"
+      },
       "VtcGroupsShowV0_1DynamicRule": {
         "type": "object",
         "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",
@@ -25465,6 +26080,9 @@
           "createdAt"
         ],
         "properties": {
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcGroupsShowV0_1BadgeId"
+          },
           "carriesAuthority": {
             "type": "boolean",
             "description": "`true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does."
@@ -25627,19 +26245,28 @@
       },
       "VtcGroupsShowV0_1RuleCondition": {
         "type": "object",
-        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`.",
         "required": [
           "fact",
           "op"
         ],
         "properties": {
+          "count": {
+            "type": "integer",
+            "description": "With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`.",
+            "maximum": 100000,
+            "minimum": 1
+          },
           "fact": {
             "type": "string",
             "enum": [
               "role",
               "field",
               "personhood",
-              "joinedAt"
+              "joinedAt",
+              "kudosReceived",
+              "ideasSelected",
+              "electionTickets"
             ]
           },
           "field": {
@@ -25647,13 +26274,14 @@
           },
           "op": {
             "type": "string",
-            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.",
             "enum": [
               "equals",
               "oneOf",
               "exists",
               "before",
-              "after"
+              "after",
+              "atLeast"
             ]
           },
           "value": {
@@ -25678,6 +26306,11 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcGroupsUpdateV0_1BadgeId": {
+        "type": "string",
+        "description": "Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001).",
+        "pattern": "^bdg_[A-Za-z0-9_-]{16,64}$"
       },
       "VtcGroupsUpdateV0_1DynamicRule": {
         "type": "object",
@@ -25730,6 +26363,9 @@
           "createdAt"
         ],
         "properties": {
+          "badgeId": {
+            "$ref": "#/components/schemas/VtcGroupsUpdateV0_1BadgeId"
+          },
           "carriesAuthority": {
             "type": "boolean",
             "description": "`true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does."
@@ -25915,19 +26551,28 @@
       },
       "VtcGroupsUpdateV0_1RuleCondition": {
         "type": "object",
-        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card.",
+        "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`.",
         "required": [
           "fact",
           "op"
         ],
         "properties": {
+          "count": {
+            "type": "integer",
+            "description": "With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`.",
+            "maximum": 100000,
+            "minimum": 1
+          },
           "fact": {
             "type": "string",
             "enum": [
               "role",
               "field",
               "personhood",
-              "joinedAt"
+              "joinedAt",
+              "kudosReceived",
+              "ideasSelected",
+              "electionTickets"
             ]
           },
           "field": {
@@ -25935,13 +26580,14 @@
           },
           "op": {
             "type": "string",
-            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.",
+            "description": "`equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.",
             "enum": [
               "equals",
               "oneOf",
               "exists",
               "before",
-              "after"
+              "after",
+              "atLeast"
             ]
           },
           "value": {

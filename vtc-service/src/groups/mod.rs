@@ -736,6 +736,23 @@ pub fn check_rule(
     rule: &Value,
     schema: &[crate::directory::model::FieldDef],
 ) -> Result<(), RuleError> {
+    check_rule_reading(rule, schema, false)
+}
+
+/// [`check_rule`] for a badge group's rule, which may also read the counts of
+/// VTI-BDG-015 with `atLeast`.
+pub fn check_badge_rule(
+    rule: &Value,
+    schema: &[crate::directory::model::FieldDef],
+) -> Result<(), RuleError> {
+    check_rule_reading(rule, schema, true)
+}
+
+fn check_rule_reading(
+    rule: &Value,
+    schema: &[crate::directory::model::FieldDef],
+    counts: bool,
+) -> Result<(), RuleError> {
     use crate::directory::model::{FieldSource, FieldState, FieldType};
     let bad = |field: Option<&str>, reason: &str| RuleError {
         field: field.map(str::to_string),
@@ -751,6 +768,14 @@ pub fn check_rule(
         let op = c.get("op").and_then(Value::as_str).unwrap_or_default();
         let field = c.get("field").and_then(Value::as_str);
         let mut date = fact == "joinedAt";
+        let count = dynamic::COUNT_FACTS.contains(&fact);
+        if count && !counts {
+            return Err(bad(
+                None,
+                "only a badge's group reads kudosReceived, ideasSelected or electionTickets \
+                 (VTI-BDG-015)",
+            ));
+        }
         match (fact, field) {
             ("field", Some(key)) => {
                 let def = schema
@@ -770,6 +795,7 @@ pub fn check_rule(
                 return Err(bad(Some(key), "only a `field` condition names a field"));
             }
             ("role" | "personhood" | "joinedAt", None) => {}
+            (_, None) if count => {}
             _ => return Err(bad(None, "an unknown fact")),
         }
         let value = c.get("value");
@@ -779,8 +805,25 @@ pub fn check_rule(
             "oneOf" => value.is_none() && values.is_some(),
             "exists" => value.is_none() && values.is_none(),
             "before" | "after" => date && value.is_some_and(Value::is_string) && values.is_none(),
+            "atLeast" => {
+                count
+                    && c.get("count")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|v| v >= 1)
+                    && value.is_none()
+                    && values.is_none()
+            }
             _ => false,
         };
+        if count && op != "atLeast" {
+            return Err(bad(None, "a count is compared with `atLeast`"));
+        }
+        if !count && c.get("count").is_some() {
+            return Err(bad(
+                field,
+                "`count` goes only with a count fact and `atLeast`",
+            ));
+        }
         if !ok {
             return Err(bad(
                 field,

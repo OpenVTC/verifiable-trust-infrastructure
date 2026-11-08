@@ -3725,6 +3725,227 @@ export interface components {
             award: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Award"];
             ext?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Ext"];
         };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesClaimsCreateV0_1BadgeId: string;
+        /** @description A claim code's record, as the badge's owners and administrators see it: never the code (VTI-BDG-027). */
+        VtcBadgesClaimsCreateV0_1ClaimCode: {
+            badgeId: components["schemas"]["VtcBadgesClaimsCreateV0_1BadgeId"];
+            claimId: components["schemas"]["VtcBadgesClaimsCreateV0_1ClaimId"];
+            /** @description How many members have redeemed it. */
+            claims: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesClaimsCreateV0_1EntryId"];
+            /** @description What the code is for — the event, say — shown to the badge's owners. Never shown to whoever redeems it. */
+            label: string;
+            /** @description How many claims the code admits. */
+            limit: number;
+            /**
+             * @description `withdrawn` once its issuer withdrew it or the badge was retired. A code past `validUntil` or out of claims stays `active` and admits no one.
+             * @enum {string}
+             */
+            state: "active" | "withdrawn";
+            /**
+             * Format: date-time
+             * @description After this the code admits no one.
+             */
+            validUntil: string;
+        };
+        /** @description Opaque identifier of a claim code's record: `bcl_` followed by 16 to 64 base64url characters. Random; never the code itself, which the community keeps only as a digest (VTI-BDG-025). */
+        VtcBadgesClaimsCreateV0_1ClaimId: string;
+        /** @description A claim code itself: at least 128 random bits the community generated, base64url (22 to 64 characters). A bearer secret: shown to its issuer once, redeemed by a member, never stored or answered again (VTI-BDG-025). */
+        VtcBadgesClaimsCreateV0_1ClaimSecret: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesClaimsCreateV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesClaimsCreateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Issue a claim code for a community badge: the community answers the code, once. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesClaimsCreateV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesClaimsCreateV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesClaimsCreateV0_1Ext"];
+            /** @description What the code is for — the event, say. */
+            label: string;
+            /** @description How many claims the code admits. */
+            limit: number;
+            /**
+             * Format: date-time
+             * @description After this the code admits no one. At most 90 days ahead.
+             */
+            validUntil: string;
+        };
+        /** @description The success response to a vtc/badges/claims/create/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/claims/create/0.1#response. */
+        VtcBadgesClaimsCreateV0_1Response: {
+            claim: components["schemas"]["VtcBadgesClaimsCreateV0_1ClaimCode"];
+            code: components["schemas"]["VtcBadgesClaimsCreateV0_1ClaimSecret"];
+            ext?: components["schemas"]["VtcBadgesClaimsCreateV0_1Ext"];
+        };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesClaimsListV0_1BadgeId: string;
+        /** @description A claim code's record, as the badge's owners and administrators see it: never the code (VTI-BDG-027). */
+        VtcBadgesClaimsListV0_1ClaimCode: {
+            badgeId: components["schemas"]["VtcBadgesClaimsListV0_1BadgeId"];
+            claimId: components["schemas"]["VtcBadgesClaimsListV0_1ClaimId"];
+            /** @description How many members have redeemed it. */
+            claims: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesClaimsListV0_1EntryId"];
+            /** @description What the code is for — the event, say — shown to the badge's owners. Never shown to whoever redeems it. */
+            label: string;
+            /** @description How many claims the code admits. */
+            limit: number;
+            /**
+             * @description `withdrawn` once its issuer withdrew it or the badge was retired. A code past `validUntil` or out of claims stays `active` and admits no one.
+             * @enum {string}
+             */
+            state: "active" | "withdrawn";
+            /**
+             * Format: date-time
+             * @description After this the code admits no one.
+             */
+            validUntil: string;
+        };
+        /** @description Opaque identifier of a claim code's record: `bcl_` followed by 16 to 64 base64url characters. Random; never the code itself, which the community keeps only as a digest (VTI-BDG-025). */
+        VtcBadgesClaimsListV0_1ClaimId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesClaimsListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesClaimsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A badge's claim codes, as its owners and administrators see them: never a code. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesClaimsListV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesClaimsListV0_1BadgeId"];
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the badge; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcBadgesClaimsListV0_1Ext"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+        };
+        /** @description The success response to a vtc/badges/claims/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/claims/list/0.1#response. */
+        VtcBadgesClaimsListV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesClaimsListV0_1Ext"];
+            /** @description Newest `createdAt` first. */
+            items: components["schemas"]["VtcBadgesClaimsListV0_1ClaimCode"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesClaimsRedeemV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesClaimsRedeemV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesClaimsRedeemV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesClaimsRedeemV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesClaimsRedeemV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesClaimsRedeemV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesClaimsRedeemV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesClaimsRedeemV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesClaimsRedeemV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesClaimsRedeemV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesClaimsRedeemV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesClaimsRedeemV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesClaimsRedeemV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesClaimsRedeemV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesClaimsRedeemV0_1BadgeId: string;
+        /** @description A claim code itself: at least 128 random bits the community generated, base64url (22 to 64 characters). A bearer secret: shown to its issuer once, redeemed by a member, never stored or answered again (VTI-BDG-025). */
+        VtcBadgesClaimsRedeemV0_1ClaimSecret: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesClaimsRedeemV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesClaimsRedeemV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesClaimsRedeemV0_1GroupCredentialId: string;
+        /** @description Redeem a claim code: the member is admitted to the badge, the redemption being their consent. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesClaimsRedeemV0_1Payload: {
+            code: components["schemas"]["VtcBadgesClaimsRedeemV0_1ClaimSecret"];
+            ext?: components["schemas"]["VtcBadgesClaimsRedeemV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/claims/redeem/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/claims/redeem/0.1#response. */
+        VtcBadgesClaimsRedeemV0_1Response: {
+            award: components["schemas"]["VtcBadgesClaimsRedeemV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesClaimsRedeemV0_1Ext"];
+        };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesClaimsWithdrawV0_1BadgeId: string;
+        /** @description A claim code's record, as the badge's owners and administrators see it: never the code (VTI-BDG-027). */
+        VtcBadgesClaimsWithdrawV0_1ClaimCode: {
+            badgeId: components["schemas"]["VtcBadgesClaimsWithdrawV0_1BadgeId"];
+            claimId: components["schemas"]["VtcBadgesClaimsWithdrawV0_1ClaimId"];
+            /** @description How many members have redeemed it. */
+            claims: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesClaimsWithdrawV0_1EntryId"];
+            /** @description What the code is for — the event, say — shown to the badge's owners. Never shown to whoever redeems it. */
+            label: string;
+            /** @description How many claims the code admits. */
+            limit: number;
+            /**
+             * @description `withdrawn` once its issuer withdrew it or the badge was retired. A code past `validUntil` or out of claims stays `active` and admits no one.
+             * @enum {string}
+             */
+            state: "active" | "withdrawn";
+            /**
+             * Format: date-time
+             * @description After this the code admits no one.
+             */
+            validUntil: string;
+        };
+        /** @description Opaque identifier of a claim code's record: `bcl_` followed by 16 to 64 base64url characters. Random; never the code itself, which the community keeps only as a digest (VTI-BDG-025). */
+        VtcBadgesClaimsWithdrawV0_1ClaimId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesClaimsWithdrawV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesClaimsWithdrawV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Withdraw a claim code: it admits no one from now on; claims already made stand. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesClaimsWithdrawV0_1Payload: {
+            claimId: components["schemas"]["VtcBadgesClaimsWithdrawV0_1ClaimId"];
+            ext?: components["schemas"]["VtcBadgesClaimsWithdrawV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/claims/withdraw/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/claims/withdraw/0.1#response. */
+        VtcBadgesClaimsWithdrawV0_1Response: {
+            claim: components["schemas"]["VtcBadgesClaimsWithdrawV0_1ClaimCode"];
+            ext?: components["schemas"]["VtcBadgesClaimsWithdrawV0_1Ext"];
+        };
         /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
         VtcBadgesCreateV0_1Badge: {
             badgeId: components["schemas"]["VtcBadgesCreateV0_1BadgeId"];
@@ -3896,16 +4117,18 @@ export interface components {
             ext?: components["schemas"]["VtcBadgesCreateV0_1Ext"];
             group?: components["schemas"]["VtcBadgesCreateV0_1Group"];
         };
-        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`. */
         VtcBadgesCreateV0_1RuleCondition: {
+            /** @description With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`. */
+            count?: number;
             /** @enum {string} */
-            fact: "role" | "field" | "personhood" | "joinedAt";
+            fact: "role" | "field" | "personhood" | "joinedAt" | "kudosReceived" | "ideasSelected" | "electionTickets";
             field?: components["schemas"]["VtcBadgesCreateV0_1FieldKey"];
             /**
-             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.
              * @enum {string}
              */
-            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            op: "equals" | "oneOf" | "exists" | "before" | "after" | "atLeast";
             value?: string | boolean;
             values?: string[];
         };
@@ -5359,16 +5582,18 @@ export interface components {
             /** @description How many current holders were offered the badge — one offer each, who they are never said here. */
             holdersOffered?: number;
         };
-        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`. */
         VtcBadgesPromoteV0_1RuleCondition: {
+            /** @description With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`. */
+            count?: number;
             /** @enum {string} */
-            fact: "role" | "field" | "personhood" | "joinedAt";
+            fact: "role" | "field" | "personhood" | "joinedAt" | "kudosReceived" | "ideasSelected" | "electionTickets";
             field?: components["schemas"]["VtcBadgesPromoteV0_1FieldKey"];
             /**
-             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.
              * @enum {string}
              */
-            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            op: "equals" | "oneOf" | "exists" | "before" | "after" | "atLeast";
             value?: string | boolean;
             values?: string[];
         };
@@ -9655,6 +9880,8 @@ export interface components {
              */
             state: "removed" | "removing" | "pending";
         };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcGroupsCreateV0_1BadgeId: string;
         /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
         VtcGroupsCreateV0_1DynamicRule: {
             all: components["schemas"]["VtcGroupsCreateV0_1RuleCondition"][];
@@ -9669,6 +9896,7 @@ export interface components {
         VtcGroupsCreateV0_1FieldKey: string;
         /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
         VtcGroupsCreateV0_1Group: {
+            badgeId?: components["schemas"]["VtcGroupsCreateV0_1BadgeId"];
             /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
             carriesAuthority: boolean;
             /** Format: date-time */
@@ -9740,16 +9968,18 @@ export interface components {
             ext?: components["schemas"]["VtcGroupsCreateV0_1Ext"];
             group: components["schemas"]["VtcGroupsCreateV0_1Group"];
         };
-        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`. */
         VtcGroupsCreateV0_1RuleCondition: {
+            /** @description With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`. */
+            count?: number;
             /** @enum {string} */
-            fact: "role" | "field" | "personhood" | "joinedAt";
+            fact: "role" | "field" | "personhood" | "joinedAt" | "kudosReceived" | "ideasSelected" | "electionTickets";
             field?: components["schemas"]["VtcGroupsCreateV0_1FieldKey"];
             /**
-             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.
              * @enum {string}
              */
-            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            op: "equals" | "oneOf" | "exists" | "before" | "after" | "atLeast";
             value?: string | boolean;
             values?: string[];
         };
@@ -9924,6 +10154,8 @@ export interface components {
              */
             state: "left" | "optedOut" | "requestWithdrawn" | "pending";
         };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcGroupsListV0_2BadgeId: string;
         /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
         VtcGroupsListV0_2DynamicRule: {
             all: components["schemas"]["VtcGroupsListV0_2RuleCondition"][];
@@ -9938,6 +10170,7 @@ export interface components {
         VtcGroupsListV0_2FieldKey: string;
         /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
         VtcGroupsListV0_2Group: {
+            badgeId?: components["schemas"]["VtcGroupsListV0_2BadgeId"];
             /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
             carriesAuthority: boolean;
             /** Format: date-time */
@@ -10015,16 +10248,18 @@ export interface components {
             /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
             nextCursor?: string;
         };
-        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`. */
         VtcGroupsListV0_2RuleCondition: {
+            /** @description With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`. */
+            count?: number;
             /** @enum {string} */
-            fact: "role" | "field" | "personhood" | "joinedAt";
+            fact: "role" | "field" | "personhood" | "joinedAt" | "kudosReceived" | "ideasSelected" | "electionTickets";
             field?: components["schemas"]["VtcGroupsListV0_2FieldKey"];
             /**
-             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.
              * @enum {string}
              */
-            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            op: "equals" | "oneOf" | "exists" | "before" | "after" | "atLeast";
             value?: string | boolean;
             values?: string[];
         };
@@ -10518,6 +10753,8 @@ export interface components {
              */
             verifiedAt: string;
         };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcGroupsShowV0_1BadgeId: string;
         /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
         VtcGroupsShowV0_1DynamicRule: {
             all: components["schemas"]["VtcGroupsShowV0_1RuleCondition"][];
@@ -10532,6 +10769,7 @@ export interface components {
         VtcGroupsShowV0_1FieldKey: string;
         /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
         VtcGroupsShowV0_1Group: {
+            badgeId?: components["schemas"]["VtcGroupsShowV0_1BadgeId"];
             /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
             carriesAuthority: boolean;
             /** Format: date-time */
@@ -10595,19 +10833,23 @@ export interface components {
             /** @enum {string} */
             myMembership: "member" | "pending" | "requested" | "optedOut" | "none";
         };
-        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`. */
         VtcGroupsShowV0_1RuleCondition: {
+            /** @description With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`. */
+            count?: number;
             /** @enum {string} */
-            fact: "role" | "field" | "personhood" | "joinedAt";
+            fact: "role" | "field" | "personhood" | "joinedAt" | "kudosReceived" | "ideasSelected" | "electionTickets";
             field?: components["schemas"]["VtcGroupsShowV0_1FieldKey"];
             /**
-             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.
              * @enum {string}
              */
-            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            op: "equals" | "oneOf" | "exists" | "before" | "after" | "atLeast";
             value?: string | boolean;
             values?: string[];
         };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcGroupsUpdateV0_1BadgeId: string;
         /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
         VtcGroupsUpdateV0_1DynamicRule: {
             all: components["schemas"]["VtcGroupsUpdateV0_1RuleCondition"][];
@@ -10622,6 +10864,7 @@ export interface components {
         VtcGroupsUpdateV0_1FieldKey: string;
         /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
         VtcGroupsUpdateV0_1Group: {
+            badgeId?: components["schemas"]["VtcGroupsUpdateV0_1BadgeId"];
             /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
             carriesAuthority: boolean;
             /** Format: date-time */
@@ -10694,16 +10937,18 @@ export interface components {
             ext?: components["schemas"]["VtcGroupsUpdateV0_1Ext"];
             group: components["schemas"]["VtcGroupsUpdateV0_1Group"];
         };
-        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`. */
         VtcGroupsUpdateV0_1RuleCondition: {
+            /** @description With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`. */
+            count?: number;
             /** @enum {string} */
-            fact: "role" | "field" | "personhood" | "joinedAt";
+            fact: "role" | "field" | "personhood" | "joinedAt" | "kudosReceived" | "ideasSelected" | "electionTickets";
             field?: components["schemas"]["VtcGroupsUpdateV0_1FieldKey"];
             /**
-             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.
              * @enum {string}
              */
-            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            op: "equals" | "oneOf" | "exists" | "before" | "after" | "atLeast";
             value?: string | boolean;
             values?: string[];
         };

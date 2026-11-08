@@ -15,6 +15,7 @@
 import type {
   BadgeAwardsShareResponse,
   BadgeAwardsUnshareResponse,
+  BadgeClaimsRedeemResponse,
   BadgeCreatePayload,
   BadgeCreateResponse,
   BadgeHoldersListResponse,
@@ -55,6 +56,7 @@ export const KUDOS_GIVE_TASK = "https://trusttasks.org/spec/vtc/badges/kudos/giv
 export const KUDOS_LIST_TASK = "https://trusttasks.org/spec/vtc/badges/kudos/list/0.1";
 export const AWARDS_SHARE_TASK = "https://trusttasks.org/spec/vtc/badges/awards/share/0.1";
 export const AWARDS_UNSHARE_TASK = "https://trusttasks.org/spec/vtc/badges/awards/unshare/0.1";
+export const CLAIMS_REDEEM_TASK = "https://trusttasks.org/spec/vtc/badges/claims/redeem/0.1";
 
 export type Badge = BadgeShowResponse["badge"];
 export type BadgeSettings = BadgeSettingsShowResponse["settings"];
@@ -95,6 +97,11 @@ export const arrangeWall = (p: BadgeMineArrangePayload) => send<BadgeMineArrange
  *  the page never shares one on its own. */
 export const shareAward = (awardId: string) =>
   send<BadgeAwardsShareResponse>(AWARDS_SHARE_TASK, { awardId }).then((r) => r.award);
+
+/** Claim a badge with a code an event's host handed out (VTI-BDG-026): the redemption is
+ *  the member's consent, and the badge is theirs from the answer. */
+export const redeemClaim = (code: string) =>
+  send<BadgeClaimsRedeemResponse>(CLAIMS_REDEEM_TASK, { code: code.trim() }).then((r) => r.award);
 
 /** Stop showing it: the locations answer nothing from now on. Revokes nothing. */
 export const unshareAward = (awardId: string) =>

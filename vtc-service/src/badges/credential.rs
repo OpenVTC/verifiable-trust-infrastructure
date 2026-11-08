@@ -469,11 +469,47 @@ pub async fn issue_admitting(
     let Some(badge) = for_group(state, group).await.map_err(Failure::Local)? else {
         return Ok(None);
     };
+    let held = super::accepted_of(&state.badges_ks, &badge.badge_id, entry_id)
+        .await
+        .map_err(Failure::Local)?;
+    let issued = if held.is_empty() {
+        let change = if given_by.is_some() {
+            "requestApproved"
+        } else {
+            "givenByRule"
+        };
+        issue_with_new_award(state, group, &badge, member_did, entry_id, given_by, change)
+            .await?
+            .0
+    } else {
+        issue(state, group, &badge, member_did, Some(entry_id), &held).await?
+    };
+    Ok(Some(crate::groups::credential::Issued {
+        credential_id: issued.credential_id,
+        valid_until: issued.valid_until,
+        credential: issued.credential,
+    }))
+}
+
+/// Record one new accepted award of `badge` to `entry_id` and issue the credential with it
+/// among the holder's evidence: credential first, the award recorded after it is issued,
+/// audited as `change`. For an admission outside an offer (VTI-BDG-024, 013) and a claim
+/// code's redemption (VTI-BDG-026), whose consent is the request, the rule's admission or
+/// the redemption itself.
+pub async fn issue_with_new_award(
+    state: &AppState,
+    group: &Group,
+    badge: &Badge,
+    member_did: &str,
+    entry_id: &str,
+    given_by: Option<&str>,
+    change: &str,
+) -> Result<(Issued, Award), Failure> {
     let mut evidence = super::accepted_of(&state.badges_ks, &badge.badge_id, entry_id)
         .await
         .map_err(Failure::Local)?;
     let now = Utc::now();
-    let new = evidence.is_empty().then(|| Award {
+    let mut award = Award {
         award_id: super::new_award_id(),
         badge_id: badge.badge_id.clone(),
         entry_id: entry_id.to_string(),
@@ -486,44 +522,31 @@ pub async fn issue_admitting(
         credential_id: None,
         revoke_reason: None,
         shared: None,
-    });
-    if let Some(a) = &new {
-        evidence.push(a.clone());
+    };
+    evidence.push(award.clone());
+    let issued = issue(state, group, badge, member_did, Some(entry_id), &evidence).await?;
+    award.credential_id = Some(issued.credential_id.clone());
+    {
+        let _guard = super::WRITE_LOCK.lock().await;
+        super::put_award(&state.badges_ks, &award)
+            .await
+            .map_err(Failure::Local)?;
     }
-    let issued = issue(state, group, &badge, member_did, Some(entry_id), &evidence).await?;
-    if let Some(mut a) = new {
-        a.credential_id = Some(issued.credential_id.clone());
-        {
-            let _guard = super::WRITE_LOCK.lock().await;
-            super::put_award(&state.badges_ks, &a)
-                .await
-                .map_err(Failure::Local)?;
-        }
-        super::audit(
-            state,
-            given_by.unwrap_or(member_did),
-            vti_common::audit::BadgeChangedData {
-                badge_id: a.badge_id.clone(),
-                award_id: Some(a.award_id.clone()),
-                entry_id: Some(a.entry_id.clone()),
-                change: if given_by.is_some() {
-                    "requestApproved"
-                } else {
-                    "givenByRule"
-                }
-                .to_string(),
-                fields: Vec::new(),
-                group_id: Some(group.group_id.clone()),
-            },
-        )
-        .await
-        .map_err(Failure::Local)?;
-    }
-    Ok(Some(crate::groups::credential::Issued {
-        credential_id: issued.credential_id,
-        valid_until: issued.valid_until,
-        credential: issued.credential,
-    }))
+    super::audit(
+        state,
+        given_by.unwrap_or(member_did),
+        vti_common::audit::BadgeChangedData {
+            badge_id: award.badge_id.clone(),
+            award_id: Some(award.award_id.clone()),
+            entry_id: Some(award.entry_id.clone()),
+            change: change.to_string(),
+            fields: Vec::new(),
+            group_id: Some(group.group_id.clone()),
+        },
+    )
+    .await
+    .map_err(Failure::Local)?;
+    Ok((issued, award))
 }
 
 /// The badge `group` backs, read for the groups' own issuance paths (admission by a

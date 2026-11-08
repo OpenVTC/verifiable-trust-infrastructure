@@ -2,15 +2,24 @@
 // condition must hold, each over a verified fact — the community role, an
 // administrator- or credential-sourced directory field, personhood, the join
 // date. A member-written field is never offered: a rule that read one would let
-// a member join by editing their card, and the community refuses it.
+// a member join by editing their card, and the community refuses it. A badge's
+// rule may also count the community's own records (`counts`, VTI-BDG-015):
+// kudos accepted, ideas selected, elections ticketed — never another group's.
 
 import { useQuery } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
 
 import { listFields } from "@/lib/directory";
 
-export type Fact = "role" | "field" | "personhood" | "joinedAt";
-export type Op = "equals" | "oneOf" | "exists" | "before" | "after";
+export type Fact =
+  | "role"
+  | "field"
+  | "personhood"
+  | "joinedAt"
+  | "kudosReceived"
+  | "ideasSelected"
+  | "electionTickets";
+export type Op = "equals" | "oneOf" | "exists" | "before" | "after" | "atLeast";
 
 export interface RuleCondition {
   fact: Fact;
@@ -18,6 +27,8 @@ export interface RuleCondition {
   op: Op;
   value?: string | boolean;
   values?: string[];
+  /** With `atLeast`: the least a count fact must be. */
+  count?: number;
 }
 
 export interface DynamicRule {
@@ -30,6 +41,15 @@ const FACTS: { id: Fact; label: string }[] = [
   { id: "joinedAt", label: "Joined" },
   { id: "field", label: "A verified directory field" },
 ];
+
+/** The counts only a badge's rule reads (VTI-BDG-015). */
+const COUNT_FACTS: { id: Fact; label: string }[] = [
+  { id: "kudosReceived", label: "Kudos accepted" },
+  { id: "ideasSelected", label: "Ideas a board selected" },
+  { id: "electionTickets", label: "Elections taken a ticket in" },
+];
+
+const isCount = (f: Fact) => f === "kudosReceived" || f === "ideasSelected" || f === "electionTickets";
 
 const OPS: Record<Fact, { id: Op; label: string }[]> = {
   role: [
@@ -48,11 +68,15 @@ const OPS: Record<Fact, { id: Op; label: string }[]> = {
     { id: "before", label: "is before" },
     { id: "after", label: "is after" },
   ],
+  kudosReceived: [{ id: "atLeast", label: "at least" }],
+  ideasSelected: [{ id: "atLeast", label: "at least" }],
+  electionTickets: [{ id: "atLeast", label: "at least" }],
 };
 
 /** A condition reset to its fact's first operation. */
 function fresh(fact: Fact): RuleCondition {
   const op = OPS[fact][0]?.id ?? "exists";
+  if (op === "atLeast") return { fact, op, count: 1 };
   return { fact, op, ...(op === "exists" ? {} : op === "oneOf" ? { values: [] } : { value: "" }) };
 }
 
@@ -64,6 +88,7 @@ export function ruleReady(rule: DynamicRule): boolean {
     rule.all.length > 0 &&
     rule.all.every((c) => {
       if (c.fact === "field" && !c.field) return false;
+      if (c.op === "atLeast") return Number.isInteger(c.count) && (c.count ?? 0) >= 1;
       if (c.op === "exists") return true;
       if (c.op === "oneOf") return (c.values ?? []).length > 0;
       return typeof c.value === "boolean" || (c.value ?? "").toString().trim() !== "";
@@ -80,7 +105,8 @@ export function wireRule(rule: DynamicRule): DynamicRule {
       ...(c.fact === "field" ? { field: c.field } : {}),
       op: c.op,
       ...(c.op === "oneOf" ? { values: c.values } : {}),
-      ...(c.op !== "oneOf" && c.op !== "exists" ? { value: c.value } : {}),
+      ...(c.op === "atLeast" ? { count: c.count } : {}),
+      ...(c.op !== "oneOf" && c.op !== "exists" && c.op !== "atLeast" ? { value: c.value } : {}),
     })),
   };
 }
@@ -89,11 +115,15 @@ export function RuleEditor({
   value,
   onChange,
   className,
+  counts = false,
 }: {
   value: DynamicRule;
   onChange: (rule: DynamicRule) => void;
   className?: string;
+  /** A badge's rule: offer the counts of VTI-BDG-015 too. */
+  counts?: boolean;
 }) {
+  const facts = counts ? [...FACTS, ...COUNT_FACTS] : FACTS;
   const fields = useQuery({ queryKey: ["directory", "fields"], queryFn: () => listFields() });
   // Only what the community vouches for (create item 2).
   const verified = (fields.data?.fields ?? []).filter((f) => {
@@ -115,7 +145,7 @@ export function RuleEditor({
             value={c.fact}
             onChange={(e) => set(i, fresh(e.target.value as Fact))}
           >
-            {FACTS.map((f) => (
+            {facts.map((f) => (
               <option key={f.id} value={f.id}>
                 {f.label}
               </option>
@@ -140,6 +170,7 @@ export function RuleEditor({
             value={c.op}
             onChange={(e) => {
               const op = e.target.value as Op;
+              if (op === "atLeast") return set(i, { fact: c.fact, op, count: c.count ?? 1 });
               set(i, {
                 fact: c.fact,
                 ...(c.field ? { field: c.field } : {}),
@@ -168,6 +199,16 @@ export function RuleEditor({
                     .filter(Boolean),
                 })
               }
+            />
+          )}
+          {c.op === "atLeast" && isCount(c.fact) && (
+            <input
+              aria-label="At least"
+              type="number"
+              min={1}
+              max={100000}
+              value={c.count ?? 1}
+              onChange={(e) => set(i, { ...c, count: Math.max(1, Math.floor(Number(e.target.value) || 1)) })}
             />
           )}
           {(c.op === "equals" || c.op === "before" || c.op === "after") && (

@@ -27,6 +27,10 @@ use vti_specs::vtc::badges::{
         share::v0_1 as awards_share, unshare::v0_1 as awards_unshare,
         withdraw::v0_1 as awards_withdraw,
     },
+    claims::{
+        create::v0_1 as claims_create, list::v0_1 as claims_list, redeem::v0_1 as claims_redeem,
+        withdraw::v0_1 as claims_withdraw,
+    },
     create::v0_1 as badge_create,
     holders::list::v0_1 as holders_list,
     images::{get::v0_1 as images_get, upload::v0_1 as images_upload},
@@ -74,6 +78,10 @@ pub(crate) const AWARDS_OFFER_TYPE: &str = <awards_offer::Payload as Payload>::T
 pub(crate) const AWARDS_WITHDRAW_TYPE: &str = <awards_withdraw::Payload as Payload>::TYPE_URI;
 pub(crate) const AWARDS_REVOKE_TYPE: &str = <awards_revoke::Payload as Payload>::TYPE_URI;
 pub(crate) const AWARDS_LIST_TYPE: &str = <awards_list::Payload as Payload>::TYPE_URI;
+pub(crate) const CLAIMS_CREATE_TYPE: &str = <claims_create::Payload as Payload>::TYPE_URI;
+pub(crate) const CLAIMS_LIST_TYPE: &str = <claims_list::Payload as Payload>::TYPE_URI;
+pub(crate) const CLAIMS_WITHDRAW_TYPE: &str = <claims_withdraw::Payload as Payload>::TYPE_URI;
+pub(crate) const CLAIMS_REDEEM_TYPE: &str = <claims_redeem::Payload as Payload>::TYPE_URI;
 pub(crate) const AWARDS_SHARE_TYPE: &str = <awards_share::Payload as Payload>::TYPE_URI;
 pub(crate) const AWARDS_UNSHARE_TYPE: &str = <awards_unshare::Payload as Payload>::TYPE_URI;
 pub(crate) const HOLDERS_LIST_TYPE: &str = <holders_list::Payload as Payload>::TYPE_URI;
@@ -105,6 +113,10 @@ pub(crate) const URIS: &[&str] = &[
     AWARDS_LIST_TYPE,
     AWARDS_SHARE_TYPE,
     AWARDS_UNSHARE_TYPE,
+    CLAIMS_CREATE_TYPE,
+    CLAIMS_LIST_TYPE,
+    CLAIMS_WITHDRAW_TYPE,
+    CLAIMS_REDEEM_TYPE,
     HOLDERS_LIST_TYPE,
     WALL_SHOW_TYPE,
     MINE_LIST_TYPE,
@@ -179,6 +191,20 @@ codes! {
     SHARE_ERR_PUBLIC_LOCATION_UNAVAILABLE = awards_share::PUBLIC_LOCATION_UNAVAILABLE;
     UNSHARE_ERR_BADGES_OFF = awards_unshare::BADGES_OFF;
     UNSHARE_ERR_NOT_FOUND = awards_unshare::NOT_FOUND;
+    CLAIMS_CREATE_ERR_BADGES_OFF = claims_create::BADGES_OFF;
+    CLAIMS_CREATE_ERR_NOT_FOUND = claims_create::NOT_FOUND;
+    CLAIMS_CREATE_ERR_NOT_CLAIMABLE = claims_create::NOT_CLAIMABLE;
+    CLAIMS_CREATE_ERR_SETTINGS_INVALID = claims_create::SETTINGS_INVALID;
+    CLAIMS_LIST_ERR_NOT_FOUND = claims_list::NOT_FOUND;
+    CLAIMS_LIST_ERR_CURSOR_INVALID = claims_list::CURSOR_INVALID;
+    CLAIMS_WITHDRAW_ERR_BADGES_OFF = claims_withdraw::BADGES_OFF;
+    CLAIMS_WITHDRAW_ERR_NOT_FOUND = claims_withdraw::NOT_FOUND;
+    REDEEM_ERR_BADGES_OFF = claims_redeem::BADGES_OFF;
+    REDEEM_ERR_CODE_INVALID = claims_redeem::CODE_INVALID;
+    REDEEM_ERR_ALREADY_CLAIMED = claims_redeem::ALREADY_CLAIMED;
+    REDEEM_ERR_ALREADY_HELD = claims_redeem::ALREADY_HELD;
+    REDEEM_ERR_KEY_HOLDER_UNAVAILABLE = claims_redeem::KEY_HOLDER_UNAVAILABLE;
+    REDEEM_ERR_KEY_HOLDER_REFUSED = claims_redeem::KEY_HOLDER_REFUSED;
     AWARDS_LIST_ERR_CURSOR_INVALID = awards_list::CURSOR_INVALID;
     HOLDERS_ERR_NOT_FOUND = holders_list::NOT_FOUND;
     HOLDERS_ERR_CURSOR_INVALID = holders_list::CURSOR_INVALID;
@@ -226,6 +252,10 @@ pub(super) async fn dispatch(
         AWARDS_REVOKE_TYPE => handle_revoke(state, ctx, doc).await,
         AWARDS_LIST_TYPE => handle_awards_list(state, ctx, doc).await,
         AWARDS_SHARE_TYPE => handle_share(state, ctx, doc).await,
+        CLAIMS_CREATE_TYPE => handle_claims_create(state, ctx, doc).await,
+        CLAIMS_LIST_TYPE => handle_claims_list(state, ctx, doc).await,
+        CLAIMS_WITHDRAW_TYPE => handle_claims_withdraw(state, ctx, doc).await,
+        CLAIMS_REDEEM_TYPE => handle_claims_redeem(state, ctx, doc).await,
         AWARDS_UNSHARE_TYPE => handle_unshare(state, ctx, doc).await,
         HOLDERS_LIST_TYPE => handle_holders_list(state, ctx, doc).await,
         WALL_SHOW_TYPE => handle_wall_show(state, ctx, doc).await,
@@ -1167,7 +1197,7 @@ async fn handle_create(
             Ok(s) => s,
             Err(e) => return app_error_to_reject(&doc, &e),
         };
-        if let Err(e) = groups::check_rule(rule, &schema) {
+        if let Err(e) = groups::check_badge_rule(rule, &schema) {
             let mut details = json!({ "reason": e.reason.clone() });
             if let Some(f) = &e.field {
                 details["field"] = json!(f);
@@ -1553,6 +1583,10 @@ async fn handle_retire(
         if let Err(e) = badges::withdraw_open_offers(&state.badges_ks, &badge.badge_id, now).await {
             return app_error_to_reject(&doc, &e);
         }
+    }
+    // A retired badge's claim codes admit no one (VTI-BDG-027).
+    if let Err(e) = badges::claims::withdraw_all_of_badge(&state.badges_ks, &badge.badge_id).await {
+        return app_error_to_reject(&doc, &e);
     }
     // A retired badge is shown outside no longer (`share` item 9); also on a retry.
     if let Err(e) = badges::share::stop_all_of_badge(&state.badges_ks, &badge.badge_id).await {
@@ -2728,6 +2762,327 @@ async fn handle_unshare(
     success_response(&doc, json!({ "award": award.wire(true) }))
 }
 
+// ─── claim codes (VTI-BDG-025 – 027) ────────────────────────────────────────
+
+/// The badge `badge_id` names, where the caller owns it — manages its group — or
+/// administers badges; `None` otherwise, which every claim task answers as `notFound`.
+async fn claimable_by(
+    state: &AppState,
+    view: &View,
+    badge_id: &str,
+) -> Result<Option<Badge>, AppError> {
+    Ok(view
+        .visible(state, badge_id)
+        .await?
+        .filter(|b| view.admin || (badge_is_community(b) && view.owns(b))))
+}
+
+/// `claims/create/0.1` (VTI-BDG-025).
+async fn handle_claims_create(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = settings_on(state, &doc, CLAIMS_CREATE_ERR_BADGES_OFF).await {
+        return r;
+    }
+    if let Err(r) = parse_spec_payload::<claims_create::Payload>(&doc) {
+        return r;
+    }
+    let p = doc.payload.clone();
+    let view = match View::read(state, who).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let badge = match claimable_by(state, &view, str_of(&p, "badgeId").unwrap_or_default()).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            return declared(
+                &doc,
+                CLAIMS_CREATE_ERR_NOT_FOUND,
+                "No badge you own has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if !badge.is_community() {
+        return declared_with(
+            &doc,
+            CLAIMS_CREATE_ERR_NOT_CLAIMABLE,
+            "A kudos badge is given by members one by one, never by a code.",
+            json!({ "reason": "kudos" }),
+        );
+    }
+    if !badge.is_active() {
+        return declared_with(
+            &doc,
+            CLAIMS_CREATE_ERR_NOT_CLAIMABLE,
+            "This badge was retired.",
+            json!({ "reason": "retired" }),
+        );
+    }
+    let now = Utc::now();
+    let valid_until = str_of(&p, "validUntil")
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.with_timezone(&Utc));
+    let Some(valid_until) =
+        valid_until.filter(|t| *t > now && *t <= now + Duration::days(badges::claims::MAX_DAYS))
+    else {
+        return declared(
+            &doc,
+            CLAIMS_CREATE_ERR_SETTINGS_INVALID,
+            "A code's time is in the future and at most 90 days ahead.",
+        );
+    };
+    let limit = p["limit"].as_u64().unwrap_or(1).clamp(1, 10_000) as u32;
+    let label = str_of(&p, "label").unwrap_or_default();
+    let (rec, code) = match badges::claims::create(
+        &state.badges_ks,
+        &badge.badge_id,
+        label,
+        valid_until,
+        limit,
+        view.entry_id.as_deref(),
+    )
+    .await
+    {
+        Ok(x) => x,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let mut data = changed(&badge.badge_id, "claimCodeIssued");
+    data.fields = vec![rec.claim_id.clone()];
+    if let Err(e) = audit(state, &view.who.did, data).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    success_response(&doc, json!({ "claim": rec.wire(), "code": code }))
+}
+
+/// `claims/list/0.1` (VTI-BDG-027): never a code.
+async fn handle_claims_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<claims_list::Payload>(&doc) {
+        return r;
+    }
+    let p = doc.payload.clone();
+    let not_found = || {
+        declared(
+            &doc,
+            CLAIMS_LIST_ERR_NOT_FOUND,
+            "No badge you own has this identifier.",
+        )
+    };
+    match badges::settings(&state.badges_ks).await {
+        Ok(s) if s.enabled => {}
+        Ok(_) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    let view = match View::read(state, who).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let badge = match claimable_by(state, &view, str_of(&p, "badgeId").unwrap_or_default()).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let all = match badges::claims::of_badge(&state.badges_ks, &badge.badge_id).await {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let binding = format!("badges/claims/list|{}|{}", view.who.did, badge.badge_id);
+    let offset = match offset_of(&p, &binding) {
+        Ok(o) => o,
+        Err(()) => {
+            return declared(
+                &doc,
+                CLAIMS_LIST_ERR_CURSOR_INVALID,
+                "This cursor is not this caller's for this badge.",
+            );
+        }
+    };
+    let (items, next) = page(&all, offset, limit_of(&p), &binding);
+    let mut body = json!({ "items": items.iter().map(|c| c.wire()).collect::<Vec<_>>() });
+    if let Some(n) = next {
+        body["nextCursor"] = json!(n);
+    }
+    success_response(&doc, body)
+}
+
+/// `claims/withdraw/0.1` (VTI-BDG-027): admits no one more; claims made stand.
+async fn handle_claims_withdraw(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = settings_on(state, &doc, CLAIMS_WITHDRAW_ERR_BADGES_OFF).await {
+        return r;
+    }
+    if let Err(r) = parse_spec_payload::<claims_withdraw::Payload>(&doc) {
+        return r;
+    }
+    let view = match View::read(state, who).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let claim_id = str_of(&doc.payload, "claimId").unwrap_or_default();
+    let not_found = || {
+        declared(
+            &doc,
+            CLAIMS_WITHDRAW_ERR_NOT_FOUND,
+            "No claim code of a badge you own has this identifier.",
+        )
+    };
+    let rec = match badges::claims::get(&state.badges_ks, claim_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    match claimable_by(state, &view, &rec.badge_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    let rec = match badges::claims::withdraw(&state.badges_ks, claim_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let mut data = changed(&rec.badge_id, "claimCodeWithdrawn");
+    data.fields = vec![rec.claim_id.clone()];
+    if let Err(e) = audit(state, &view.who.did, data).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    success_response(&doc, json!({ "claim": rec.wire() }))
+}
+
+/// `claims/redeem/0.1` (VTI-BDG-026): the redemption is the member's consent; admitted as
+/// on an approved request, with an award whose giver is the code's issuer.
+async fn handle_claims_redeem(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let (view, entry_id) = match holder(state, ctx, &doc).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if let Err(r) = settings_on(state, &doc, REDEEM_ERR_BADGES_OFF).await {
+        return r;
+    }
+    if let Err(r) = parse_spec_payload::<claims_redeem::Payload>(&doc) {
+        return r;
+    }
+    let code = str_of(&doc.payload, "code").unwrap_or_default().to_string();
+    let invalid = || declared(&doc, REDEEM_ERR_CODE_INVALID, "This code admits no one.");
+    // Item 2: the code and its badge, refused alike.
+    let rec = match badges::claims::by_code(&state.badges_ks, &code).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return invalid(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let badge = match badges::get_badge(&state.badges_ks, &rec.badge_id).await {
+        Ok(Some(b)) if b.is_active() && b.is_community() => b,
+        Ok(_) => return invalid(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let group = match &badge.group_id {
+        Some(g) => match groups::get(state.directory.ks(), g).await {
+            Ok(Some(g)) => g,
+            Ok(None) => return invalid(),
+            Err(e) => return app_error_to_reject(&doc, &e),
+        },
+        None => return invalid(),
+    };
+    // Item 3: a one-off badge already held.
+    if !badge.repeatable && view.my_count(&badge.badge_id) > 0 {
+        return declared(
+            &doc,
+            REDEEM_ERR_ALREADY_HELD,
+            "You already hold this badge.",
+        );
+    }
+    // Item 5: the claim is counted before anything is issued.
+    let now = Utc::now();
+    let rec = match badges::claims::reserve(&state.badges_ks, &code, &entry_id, now).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(badges::claims::Refusal::CodeInvalid)) => return invalid(),
+        Ok(Err(badges::claims::Refusal::AlreadyClaimed)) => {
+            return declared(
+                &doc,
+                REDEEM_ERR_ALREADY_CLAIMED,
+                "You have already claimed this code.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 4: credential first, then the award and the membership.
+    let (issued, award) = match badges::credential::issue_with_new_award(
+        state,
+        &group,
+        &badge,
+        &view.who.did,
+        &entry_id,
+        rec.created_by.as_deref(),
+        "claimed",
+    )
+    .await
+    {
+        Ok(x) => x,
+        Err(f) => {
+            if let Err(e) =
+                badges::claims::release(&state.badges_ks, &rec.claim_id, &entry_id).await
+            {
+                tracing::warn!(error = %e, "could not give back a claim whose issue failed");
+            }
+            return failure_refusal(
+                &doc,
+                f,
+                REDEEM_ERR_KEY_HOLDER_UNAVAILABLE,
+                REDEEM_ERR_KEY_HOLDER_REFUSED,
+            );
+        }
+    };
+    badges::credential::offer(state, &group, &view.who.did, &issued).await;
+    {
+        let ks = state.directory.ks();
+        let _dir = crate::directory::WRITE_LOCK.lock().await;
+        let existing = match groups::membership(ks, &group.group_id, &entry_id).await {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        let m = Membership {
+            group_id: group.group_id.clone(),
+            entry_id: entry_id.clone(),
+            source: existing
+                .as_ref()
+                .map_or("claimed".to_string(), |m| m.source.clone()),
+            since: existing.as_ref().map_or(now, |m| m.since),
+            state: "active".into(),
+            credential_id: Some(issued.credential_id.clone()),
+            credential_valid_until: Some(issued.valid_until),
+        };
+        if let Err(e) = groups::put_membership(ks, &m).await {
+            return app_error_to_reject(&doc, &e);
+        }
+    }
+    success_response(&doc, json!({ "award": award.wire(true) }))
+}
+
 /// `awards/list/0.1`: the owners' view, hidden holders marked (VTI-BDG-030).
 async fn handle_awards_list(
     state: &AppState,
@@ -3207,6 +3562,10 @@ async fn handle_accept(
     }
     if let Err(e) = badges::put_award(&state.badges_ks, &accepted).await {
         return app_error_to_reject(&doc, &e);
+    }
+    // An automatic badge may count accepted kudos (VTI-BDG-015).
+    if badge.kind == BadgeKind::Kudos {
+        groups::dynamic::kick();
     }
     if let Some(group) = &group {
         let ks = state.directory.ks();

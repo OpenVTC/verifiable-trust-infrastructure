@@ -1898,6 +1898,8 @@ async fn handle_select(
         return app_error_to_reject(&doc, &e);
     }
     drop(_guard);
+    // An automatic badge may count selected ideas (VTI-BDG-015).
+    crate::groups::dynamic::kick();
     idea_answer(state, &doc, &who, &idea).await
 }
 

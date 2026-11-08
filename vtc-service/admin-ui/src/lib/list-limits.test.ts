@@ -60,6 +60,7 @@ const GROUPS_LIST = `${T}/vtc/groups/list/0.2`;
 const BOARDS_LIST = `${T}/vtc/boards/list/0.1`;
 const BADGES_LIST = `${T}/vtc/badges/list/0.1`;
 const BADGES_AWARDS = `${T}/vtc/badges/awards/list/0.1`;
+const BADGES_CLAIMS = `${T}/vtc/badges/claims/list/0.1`;
 const BADGES_HOLDERS = `${T}/vtc/badges/holders/list/0.1`;
 const BADGES_KUDOS = `${T}/vtc/badges/kudos/list/0.1`;
 const NETWORKS_LIST = `${T}/vtc/networks/list/0.2`;
@@ -123,6 +124,7 @@ const SITES: Site[] = [
   { file: "lib/badges.ts", site: "...(state ? { state } : {}),\n      limit: PAGE", uri: BADGES_AWARDS, from: ["PAGE"] },
   { file: "lib/badges.ts", site: "(HOLDERS_LIST, {\n      badgeId,\n      limit: PAGE", uri: BADGES_HOLDERS, from: ["PAGE"] },
   { file: "lib/badges.ts", site: "all: true,\n      limit: PAGE", uri: BADGES_KUDOS, from: ["PAGE"] },
+  { file: "lib/badges.ts", site: "(CLAIMS_LIST, {\n      badgeId,\n      limit: PAGE", uri: BADGES_CLAIMS, from: ["PAGE"] },
   // The member portal's badges: one page of badges, of a badge's holders, and of the member's kudos.
   { file: "members/badges-api.ts", site: "(BADGES_LIST_TASK, { limit: 200", uri: BADGES_LIST, from: ["200"] },
   { file: "members/badges-api.ts", site: "{ badgeId, limit: 200 }", uri: BADGES_HOLDERS, from: ["200"] },
@@ -226,7 +228,22 @@ function resolve(text: string, token: string): number[] {
   return values;
 }
 
+// A `limit` that is no page size: declared here, with why, so the per-file count still holds.
+const NOT_PAGE_SIZES: { file: string; site: string; why: string }[] = [
+  {
+    file: "lib/badges.ts",
+    site: "limit: admits",
+    why: "a claim code's number of claims (vtc/badges/claims/create), not a listing's page size",
+  },
+];
+
 describe("the list-limit census", () => {
+  it("finds every declared non-page `limit` where it says", () => {
+    for (const n of NOT_PAGE_SIZES) {
+      expect(FILES[n.file]?.includes(n.site), `${n.file} no longer contains \`${n.site}\``).toBe(true);
+    }
+  });
+
   it("lists every listing it checks in the pinned table", () => {
     for (const s of SITES) {
       expect(LIST_LIMIT_MAX[s.uri], `${s.uri} has no pinned maximum`).toBeTypeOf("number");
@@ -254,9 +271,9 @@ describe("the list-limit census", () => {
   it("covers every limit the console sends, file by file", () => {
     for (const [file, text] of Object.entries(FILES)) {
       const found = limitLines(text).length;
-      const listed = new Set(
-        SITES.filter((s) => s.file === file && limitLines(s.site).length > 0).map((s) => s.site),
-      ).size;
+      const listed =
+        new Set(SITES.filter((s) => s.file === file && limitLines(s.site).length > 0).map((s) => s.site)).size +
+        NOT_PAGE_SIZES.filter((n) => n.file === file).length;
       expect(found, `${file} sets ${found} limit(s) but the census lists ${listed}`).toBe(listed);
     }
   });

@@ -531,6 +531,22 @@ spec_types! {
     BadgesAwardsRevoke01Payload(badges::awards::revoke::v0_1::Payload);
     /// `vtc/badges/awards/revoke/0.1#response`.
     BadgesAwardsRevoke01Response(badges::awards::revoke::v0_1::Response);
+    /// `vtc/badges/claims/create/0.1` payload — issuing a claim code for an event.
+    BadgesClaimsCreate01Payload(badges::claims::create::v0_1::Payload);
+    /// `vtc/badges/claims/create/0.1#response`.
+    BadgesClaimsCreate01Response(badges::claims::create::v0_1::Response);
+    /// `vtc/badges/claims/list/0.1` payload — a badge's claim codes, never a code.
+    BadgesClaimsList01Payload(badges::claims::list::v0_1::Payload);
+    /// `vtc/badges/claims/list/0.1#response`.
+    BadgesClaimsList01Response(badges::claims::list::v0_1::Response);
+    /// `vtc/badges/claims/withdraw/0.1` payload — a claim code admits no one more.
+    BadgesClaimsWithdraw01Payload(badges::claims::withdraw::v0_1::Payload);
+    /// `vtc/badges/claims/withdraw/0.1#response`.
+    BadgesClaimsWithdraw01Response(badges::claims::withdraw::v0_1::Response);
+    /// `vtc/badges/claims/redeem/0.1` payload — a member claims the badge with a code.
+    BadgesClaimsRedeem01Payload(badges::claims::redeem::v0_1::Payload);
+    /// `vtc/badges/claims/redeem/0.1#response`.
+    BadgesClaimsRedeem01Response(badges::claims::redeem::v0_1::Response);
     /// `vtc/badges/awards/share/0.1` payload — the holder shows an award outside.
     BadgesAwardsShare01Payload(badges::awards::share::v0_1::Payload);
     /// `vtc/badges/awards/share/0.1#response`.
@@ -1111,6 +1127,14 @@ mod tests {
         check::<BadgesAwardsWithdraw01Response>();
         check::<BadgesAwardsRevoke01Payload>();
         check::<BadgesAwardsRevoke01Response>();
+        check::<BadgesClaimsCreate01Payload>();
+        check::<BadgesClaimsCreate01Response>();
+        check::<BadgesClaimsList01Payload>();
+        check::<BadgesClaimsList01Response>();
+        check::<BadgesClaimsWithdraw01Payload>();
+        check::<BadgesClaimsWithdraw01Response>();
+        check::<BadgesClaimsRedeem01Payload>();
+        check::<BadgesClaimsRedeem01Response>();
         check::<BadgesAwardsShare01Payload>();
         check::<BadgesAwardsShare01Response>();
         check::<BadgesAwardsUnshare01Payload>();

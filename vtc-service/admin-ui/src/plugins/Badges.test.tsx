@@ -14,6 +14,9 @@ import {
   SETTINGS_SHOW,
   SETTINGS_UPDATE,
   SHOW,
+  CLAIMS_CREATE,
+  CLAIMS_LIST,
+  CLAIMS_WITHDRAW,
 } from "@/lib/badges";
 import { GROUPS_LIST_TASK, GROUPS_REQUESTS_LIST_TASK, GROUPS_SHOW_TASK } from "@/lib/groups";
 import { ROLES_LIST_TASK } from "@/lib/roles";
@@ -178,6 +181,36 @@ describe("the Badges page", () => {
     await waitFor(() =>
       expect(sentPayloads(requests, AWARDS_REVOKE)).toEqual([{ awardId: "awd_W5k2N8xRb3Qz7TpLAAAAAA", reason: "given in error" }]),
     );
+  });
+
+  it("issues a claim code, shows it once, and withdraws one", async () => {
+    const claim = { claimId: "bcl_T4nQ8mLw2Rx9Kv5Z", badgeId: BADGE_ID, label: "Saturday workshop", validUntil: "2026-12-01T18:00:00Z", limit: 40, claims: 3, state: "active", createdAt: "2026-11-08T09:00:00Z" };
+    const requests = mockFetch([
+      ...ROUTES,
+      taskRoute(SHOW, { badge: badge(), myState: "none", myCount: 0, credentialRegime: "inside", owners: [OTHER] }),
+      taskRoute(HOLDERS_LIST, { total: 0, items: [] }),
+      taskRoute(GROUPS_SHOW_TASK, { group: { groupId: GROUP_ID, name: "Workshop host", kind: "static", managers: [OTHER] }, myMembership: "none" }),
+      taskRoute(GROUPS_REQUESTS_LIST_TASK, { items: [] }),
+      taskRoute(AWARDS_LIST, { items: [] }),
+      taskRoute(CLAIMS_LIST, { items: [claim] }),
+      taskRoute(CLAIMS_CREATE, { claim: { ...claim, claims: 0 }, code: "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua" }),
+      taskRoute(CLAIMS_WITHDRAW, { claim: { ...claim, state: "withdrawn" } }),
+    ]);
+    renderWithProviders(<Badges />, {
+      route: `/badges/${BADGE_ID}`,
+      path: "/badges/*",
+      whoami: whoamiWith(["vtc.badges.admin"]),
+    });
+    expect(await screen.findByText("3 of 40")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Claim code label"), { target: { value: "Sunday" } });
+    fireEvent.change(screen.getByLabelText("Claim code until"), { target: { value: "2026-12-02T18:00" } });
+    fireEvent.change(screen.getByLabelText("Claim code limit"), { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Issue a code" }));
+    expect(await screen.findByText("Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua")).toBeTruthy();
+    const sent = sentPayloads(requests, CLAIMS_CREATE) as { label: string; limit: number }[];
+    expect(sent[0]).toMatchObject({ badgeId: BADGE_ID, label: "Sunday", limit: 12 });
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw" }));
+    await waitFor(() => expect(sentPayloads(requests, CLAIMS_WITHDRAW)).toEqual([{ claimId: claim.claimId }]));
   });
 
   it("saves the settings with a reason, never sending what the community wrote", async () => {

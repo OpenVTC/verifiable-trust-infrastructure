@@ -1000,7 +1000,17 @@ When adding a flow, add it here and a line to the root index.
   evidence — never `issue`, which is renewal; `members/add` on a badge group is refused
   (`awards/offer`); and every membership end outside a badge task (`leave`, opt-out,
   `members/remove`, the rule) calls `badges::on_group_exit`, closing the awards (declined
-  or taken back), stopping shares and revoking the slot. **Hidden is
+  or taken back), stopping shares and revoking the slot. **Rule counts** (VTI-BDG-015,
+  `groups::dynamic::Counts`, `badges::rule_counts`): `kudosReceived`, `ideasSelected`,
+  `electionTickets` with `atLeast` + `count` — `groups::check_badge_rule` admits them,
+  `check_rule` (every other group) refuses them; counted from the community's own records at
+  each recompute (tickets by the member's current DID, never a cast); accepting kudos,
+  selecting an idea and issuing a ticket `dynamic::kick()`. **Claim codes**
+  (`badges::claims`, VTI-BDG-025 – 027): a 256-bit code kept only as its digest
+  (`bcdig:`), a claim **reserved** (counted and marked) under the lock before the credential
+  is issued and released if it fails, so a limit is never exceeded; redemption goes through
+  `credential::issue_with_new_award` (always a new award, giver = the issuer); retire
+  withdraws the codes; `claims/list` never answers a code. **Hidden is
   portal-only** (`badges::Prefs`, VTI-BDG-030): walls, `holders/list` and counts leave a hidden
   holder out; `awards/list` shows owners `hidden: true`; memberships and credentials stand.
   Holder's tasks accept the portal's delegated key (`vtc/badges` in `PORTAL_SIGNING_SCOPE`);
