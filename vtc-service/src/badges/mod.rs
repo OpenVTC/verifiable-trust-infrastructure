@@ -843,6 +843,101 @@ pub async fn holder_slots_of_entry(
     Ok(out)
 }
 
+// ─── the badge group's own paths ─────────────────────────────────────────
+
+/// Audit a badge change by reference (VTI-BDG-091). Refused rather than made unaudited.
+pub(crate) async fn audit(
+    state: &crate::server::AppState,
+    actor: &str,
+    data: vti_common::audit::BadgeChangedData,
+) -> Result<(), AppError> {
+    let writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::ServiceError {
+            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            message: "audit writer not configured: badge changes are refused rather than made \
+                      unaudited"
+                .into(),
+        })?;
+    writer
+        .write(
+            actor,
+            None,
+            vti_common::audit::AuditEvent::BadgeChanged(data),
+        )
+        .await
+        .map(drop)
+}
+
+/// How a membership of a badge group ended other than through a badge task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupExit {
+    /// The holder left, or opted out of an automatic badge: declining the badge
+    /// (VTI-BDG-013).
+    Left,
+    /// An owner removed them, or the rule no longer admits them: the badge taken back.
+    Removed,
+}
+
+/// A membership of `group` ended through the groups' own paths (`vtc/groups/leave`, an
+/// owner's `members/remove`, the rule): the holding ends with it. Every accepted award of
+/// the badge to `entry_id` is closed — declined where the holder left, taken back where
+/// they were removed — any share of it stops, and their credential is revoked where it
+/// carries a status (VTI-BDG-063). Nothing for a group that backs no badge.
+pub async fn on_group_exit(
+    state: &crate::server::AppState,
+    group: &crate::groups::Group,
+    entry_id: &str,
+    actor: &str,
+    how: GroupExit,
+) -> Result<usize, AppError> {
+    let Some(badge_id) = &group.badge_id else {
+        return Ok(0);
+    };
+    let ks = &state.badges_ks;
+    let closed = {
+        let _guard = WRITE_LOCK.lock().await;
+        let now = Utc::now();
+        let mut closed = Vec::new();
+        for mut a in accepted_of(ks, badge_id, entry_id).await? {
+            share::forget(ks, &mut a).await?;
+            a.decided_at = Some(now);
+            match how {
+                GroupExit::Left => a.state = AwardState::Declined,
+                GroupExit::Removed => {
+                    a.state = AwardState::Revoked;
+                    a.revoke_reason = Some("removed from the badge group".into());
+                }
+            }
+            put_award(ks, &a).await?;
+            closed.push(a);
+        }
+        closed
+    };
+    for a in &closed {
+        audit(
+            state,
+            actor,
+            vti_common::audit::BadgeChangedData {
+                badge_id: a.badge_id.clone(),
+                award_id: Some(a.award_id.clone()),
+                entry_id: Some(a.entry_id.clone()),
+                change: match how {
+                    GroupExit::Left => "declined",
+                    GroupExit::Removed => "revoked",
+                }
+                .to_string(),
+                fields: Vec::new(),
+                group_id: Some(group.group_id.clone()),
+            },
+        )
+        .await?;
+    }
+    credential::revoke_holder(state, badge_id, entry_id).await?;
+    Ok(closed.len())
+}
+
 // ─── departure ───────────────────────────────────────────────────────────
 
 /// A member's departure (VTI-BDG-090): their open offers are withdrawn, their shares stop

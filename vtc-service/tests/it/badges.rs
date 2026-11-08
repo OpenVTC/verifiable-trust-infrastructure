@@ -2334,3 +2334,186 @@ async fn badge_groups_are_published_to_the_registry_as_recognised_issuers_and_wi
     assert!(records.keys().any(|k| k.starts_with("did:example:other|")));
     assert!(!records.keys().any(|k| k.starts_with("did:example:stray|")));
 }
+
+fn group_task(name: &str) -> String {
+    let version = match name {
+        "requests/list" | "members/list" | "list" => "0.2",
+        _ => "0.1",
+    };
+    format!("https://trusttasks.org/spec/vtc/groups/{name}/{version}")
+}
+
+/// The badges the member holds, by badge, with each one's count (`mine/list`).
+async fn holding(fix: &Fixture, badge_id: &str) -> u64 {
+    let (_, doc) = fix.as_member("mine/list", json!({})).await;
+    doc["payload"]["badges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["badge"]["badgeId"] == badge_id)
+        .map_or(0, |b| b["count"].as_u64().unwrap())
+}
+
+/// VTI-BDG-014 / 024: an approved request for a badge is the requester's consent — they
+/// hold the badge, by an award recorded with the credential as its evidence. VTI-BDG-020:
+/// an owner never gives a badge by adding the member to its group. Leaving the group
+/// declines the badge; an owner's removal takes it back; both end the holding and revoke
+/// the credential's status (VTI-BDG-013, 023, 063).
+#[tokio::test]
+async fn a_badge_groups_own_paths_give_and_end_the_badge_as_its_awards_do() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["shareableOutside"] = json!(true);
+    body["requestable"] = json!(true);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group_id = doc["payload"]["badge"]["groupId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // An owner adding the member to the group gives nothing.
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("members/add"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+
+    // Asking, approved: the member holds it, with the award as the credential's evidence.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("join"),
+        json!({ "groupId": group_id, "message": "I ran one." }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let request_id = doc["payload"]["request"]["requestId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("requests/decide"),
+        json!({ "requestId": request_id, "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+    let awards =
+        vtc_service::badges::accepted_of(&fix.vtc.state.badges_ks, &badge_id, &fix.member_entry)
+            .await
+            .unwrap();
+    assert_eq!(awards.len(), 1);
+    let vc = fix.vta.calls_of(SIGN_DOCUMENT).last().unwrap()["document"].clone();
+    assert_eq!(awards[0].credential_id.as_deref(), vc["id"].as_str());
+    assert_eq!(
+        vc["credentialSubject"]["achievement"]["id"],
+        format!("https://vtc.example.com/badges/{badge_id}")
+    );
+    let slot = slot_of(&vc);
+    assert!(!revocation_list(&fix).await.is_set(slot));
+
+    // Leaving the group declines the badge and revokes the credential.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("leave"),
+        json!({ "groupId": group_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+    let a = vtc_service::badges::get_award(&fix.vtc.state.badges_ks, &awards[0].award_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.state, vtc_service::badges::AwardState::Declined);
+    assert!(revocation_list(&fix).await.is_set(slot));
+
+    // Given again and accepted, then removed by an owner: taken back.
+    let award = fix.hold(&badge_id).await;
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("members/remove"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+    let a = vtc_service::badges::get_award(&fix.vtc.state.badges_ks, &award)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.state, vtc_service::badges::AwardState::Revoked);
+}
+
+/// VTI-BDG-013: an automatic badge is held by whoever its rule admits, each holding an
+/// award the rule made; opting out of its group declines it.
+#[tokio::test]
+async fn an_automatic_badge_is_held_by_its_rule_and_declined_by_opting_out() {
+    let fix = fixture().await;
+    set_settings(&fix, |s| s.automatic_badges = true).await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Member", &sha, false);
+    body["requestable"] = json!(false);
+    body["automatic"] =
+        json!({ "rule": { "all": [{ "fact": "role", "op": "equals", "value": "member" }] } });
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group_id = doc["payload"]["badge"]["groupId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group = vtc_service::groups::get(fix.vtc.state.directory.ks(), &group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+    let awards =
+        vtc_service::badges::accepted_of(&fix.vtc.state.badges_ks, &badge_id, &fix.member_entry)
+            .await
+            .unwrap();
+    assert_eq!(awards.len(), 1);
+    assert!(awards[0].given_by.is_none(), "an award the rule made");
+    // A second pass gives nothing more.
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+
+    // Opting out is declining the badge.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("leave"),
+        json!({ "groupId": group_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+    let a = vtc_service::badges::get_award(&fix.vtc.state.badges_ks, &awards[0].award_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.state, vtc_service::badges::AwardState::Declined);
+}

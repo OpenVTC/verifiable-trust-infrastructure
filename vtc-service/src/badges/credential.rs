@@ -453,6 +453,79 @@ pub async fn offer(state: &AppState, group: &Group, member_did: &str, issued: &I
     }
 }
 
+/// Admit `member_did` (at `entry_id`) to a badge group outside an offer: an approved
+/// request, which is the requester's consent (VTI-BDG-024), or the group's rule
+/// (VTI-BDG-013). Where they hold no accepted award of the badge, one is recorded —
+/// `given_by` the owner who approved, absent for a rule — and is the new credential's
+/// evidence: credential first, the award recorded after it is issued (VTI-BDG-021).
+/// `None` for a group that backs no badge.
+pub async fn issue_admitting(
+    state: &AppState,
+    group: &Group,
+    member_did: &str,
+    entry_id: &str,
+    given_by: Option<&str>,
+) -> Result<Option<crate::groups::credential::Issued>, Failure> {
+    let Some(badge) = for_group(state, group).await.map_err(Failure::Local)? else {
+        return Ok(None);
+    };
+    let mut evidence = super::accepted_of(&state.badges_ks, &badge.badge_id, entry_id)
+        .await
+        .map_err(Failure::Local)?;
+    let now = Utc::now();
+    let new = evidence.is_empty().then(|| Award {
+        award_id: super::new_award_id(),
+        badge_id: badge.badge_id.clone(),
+        entry_id: entry_id.to_string(),
+        given_by: given_by.map(str::to_string),
+        note: None,
+        state: super::AwardState::Accepted,
+        offered_at: now,
+        decided_at: Some(now),
+        expires_at: None,
+        credential_id: None,
+        revoke_reason: None,
+        shared: None,
+    });
+    if let Some(a) = &new {
+        evidence.push(a.clone());
+    }
+    let issued = issue(state, group, &badge, member_did, Some(entry_id), &evidence).await?;
+    if let Some(mut a) = new {
+        a.credential_id = Some(issued.credential_id.clone());
+        {
+            let _guard = super::WRITE_LOCK.lock().await;
+            super::put_award(&state.badges_ks, &a)
+                .await
+                .map_err(Failure::Local)?;
+        }
+        super::audit(
+            state,
+            given_by.unwrap_or(member_did),
+            vti_common::audit::BadgeChangedData {
+                badge_id: a.badge_id.clone(),
+                award_id: Some(a.award_id.clone()),
+                entry_id: Some(a.entry_id.clone()),
+                change: if given_by.is_some() {
+                    "requestApproved"
+                } else {
+                    "givenByRule"
+                }
+                .to_string(),
+                fields: Vec::new(),
+                group_id: Some(group.group_id.clone()),
+            },
+        )
+        .await
+        .map_err(Failure::Local)?;
+    }
+    Ok(Some(crate::groups::credential::Issued {
+        credential_id: issued.credential_id,
+        valid_until: issued.valid_until,
+        credential: issued.credential,
+    }))
+}
+
 /// The badge `group` backs, read for the groups' own issuance paths (admission by a
 /// request, a dynamic rule, renewal): a badge group issues the badge credential, never a
 /// membership credential.
