@@ -21,8 +21,10 @@ use vti_common::store::KeyspaceHandle;
 
 use super::{Award, BADGE_SHARED_PATH, Badge};
 
-/// The holder's share of one award: the token and the locations it answers at.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The holder's share of one award: the token and the locations it answers at. The token is
+/// a bearer capability — whoever holds it reads the credential — so `Debug` never prints it,
+/// nor the locations that carry it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Shared {
     /// Never on the wire as such; only inside the locations.
@@ -30,6 +32,15 @@ pub struct Shared {
     pub verification_url: String,
     pub baked_image_url: String,
     pub since: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for Shared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shared")
+            .field("token", &"<redacted>")
+            .field("since", &self.since)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Shared {
