@@ -82,6 +82,7 @@ use vti_common::store::KeyspaceHandle;
 use vti_specs::auth::step_up::approve_request::v0_5 as approve_request;
 use vti_specs::auth::step_up::approve_response::v0_7 as approve_response;
 use vti_specs::auth::step_up::approver::attest::v0_1 as attest;
+use vti_specs::auth::step_up::requests::show::v0_1 as requests_show;
 use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PublicKeyCredential};
 
 use crate::auth::session::now_epoch;
@@ -103,8 +104,12 @@ pub const EVIDENCE_APPROVER_SIGNED: &str = "approverSigned";
 /// `vta/task-consent/v1\0`.
 const DIGEST_DOMAIN: &[u8] = b"vtc/step-up/v1\0";
 
+/// The task a hand-off names (`$defs.Handoff`'s `show`).
+const REQUESTS_SHOW_TYPE: &str = <requests_show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 const PENDING_PREFIX: &str = "pending:";
 const MARK_PREFIX: &str = "mark:";
+const HANDOFF_PREFIX: &str = "handoff:";
 
 /// The operation's digest: SHA-256 over the domain tag, the length-prefixed
 /// type URI and the length-prefixed RFC 8785 canonical payload, as a
@@ -138,9 +143,88 @@ fn digest_with(
     vti_common::task_consent::domain_digest(DIGEST_DOMAIN, type_uri, payload, challenge)
 }
 
-/// The inline `auth/step-up/approve-request/0.5` payload a gated operation
-/// refuses with.
-pub type ApproveRequest = approve_request::Payload;
+/// The step-up a gated operation refuses with: the inline
+/// `auth/step-up/approve-request/0.5` payload, and — where the subject's own
+/// wallet could answer it — the hand-off by which it fetches the step-up
+/// (`auth/step-up/requests/show/0.1`, VTI-LNK-126).
+///
+/// Dereferences to the payload, so a reader of the request reads it as before.
+#[derive(Debug, Clone)]
+pub struct ApproveRequest {
+    pub request: approve_request::Payload,
+    pub handoff: Option<StepUpHandoff>,
+}
+
+impl ApproveRequest {
+    /// A request with no hand-off.
+    pub fn inline_only(request: approve_request::Payload) -> Self {
+        Self {
+            request,
+            handoff: None,
+        }
+    }
+}
+
+/// Serialised as the inline request alone: the hand-off is carried beside it
+/// only by [`refusal_details`], never inside the request.
+impl Serialize for ApproveRequest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.request.serialize(serializer)
+    }
+}
+
+impl std::ops::Deref for ApproveRequest {
+    type Target = approve_request::Payload;
+    fn deref(&self) -> &Self::Target {
+        &self.request
+    }
+}
+
+/// A single-use handle to one pending step-up, given only inline to the party
+/// whose operation was refused (VTI-LNK-126). Its `Debug` hides the handle:
+/// whoever holds it can read the operation once.
+#[derive(Clone)]
+pub struct StepUpHandoff {
+    pub handle: String,
+    /// Epoch seconds: the pending step-up's own expiry.
+    pub expires_at: u64,
+}
+
+impl std::fmt::Debug for StepUpHandoff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepUpHandoff")
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The storage row a hand-off handle keys in `step_up_marks`: the pending
+/// step-up's challenge, the inline request as given, and the operation exactly
+/// as received.
+///
+/// Kept only while the step-up is pending, and removed by the first read
+/// ([`take_handoff`]). Never on the wire: the response is built from it.
+#[derive(Serialize, Deserialize)]
+struct HandoffRecord {
+    challenge: String,
+    subject: String,
+    /// The inline approve-request payload, as JSON.
+    request: Value,
+    type_uri: String,
+    payload: Value,
+    expires_at: u64,
+}
+
+/// A hand-off read and spent ([`take_handoff`]).
+#[derive(Debug, Clone)]
+pub struct HandoffShown {
+    pub subject: String,
+    /// The inline approve-request payload, as JSON.
+    pub request: Value,
+    pub type_uri: String,
+    pub payload: Value,
+    pub expires_at: u64,
+}
 
 /// A parked ceremony for one refused operation, keyed by its challenge.
 #[derive(Serialize, Deserialize)]
@@ -266,7 +350,7 @@ pub struct MarkInfo {
 #[derive(Debug)]
 pub enum EvidencedGate {
     Satisfied(StepUpEvidence),
-    Required(Box<approve_request::Payload>),
+    Required(Box<ApproveRequest>),
 }
 
 /// Read and remove `key` in one step ([`KeyspaceHandle::take_raw`]), so of two
@@ -290,6 +374,10 @@ fn mark_key(admin_did: &str, digest: &str) -> String {
     format!("{MARK_PREFIX}{admin_did}:{digest}")
 }
 
+fn handoff_key(handle: &str) -> String {
+    format!("{HANDOFF_PREFIX}{handle}")
+}
+
 /// What [`redeem_or_request`] found.
 #[derive(Debug)]
 pub enum Gate {
@@ -298,7 +386,7 @@ pub enum Gate {
     Satisfied,
     /// No gesture yet. A ceremony is parked; the caller refuses with
     /// [`refusal_details`] over this request.
-    Required(Box<approve_request::Payload>),
+    Required(Box<ApproveRequest>),
 }
 
 /// Spend the recorded gesture for `(admin_did, this operation)`, or park a
@@ -440,7 +528,7 @@ pub(crate) async fn request_step_up(
     type_uri: &str,
     payload: &Value,
     reason: &str,
-) -> Result<approve_request::Payload, AppError> {
+) -> Result<ApproveRequest, AppError> {
     // Only the actor's own factors. A signed document names one actor; any
     // other principal's factor answering for them would be exactly the
     // substitution the gate exists to stop. Either way the answer must also
@@ -512,15 +600,107 @@ pub(crate) async fn request_step_up(
         options.as_ref(),
         &factors.approvers,
     )?;
+    // A hand-off only where the subject's own wallet can answer: a step-up
+    // approver's statement. A passkey bound to this community's relying party
+    // is answered where it is registered, which is never a wallet reading a
+    // trigger link.
+    let handoff = if factors.approvers.is_empty() {
+        None
+    } else {
+        Some(
+            mint_handoff(
+                state,
+                &challenge,
+                admin_did,
+                &request,
+                type_uri,
+                payload,
+                pending.expires_at,
+            )
+            .await?,
+        )
+    };
     info!(
         admin = %admin_did,
         task = %type_uri,
         %bound_to,
         approvers = factors.approvers.len(),
         webauthn = options.is_some(),
+        handoff = handoff.is_some(),
         "operation-bound step-up requested"
     );
-    Ok(request)
+    Ok(ApproveRequest { request, handoff })
+}
+
+/// A 16-byte handle (VTI-LNK-126), base64url without padding.
+fn fresh_handle() -> String {
+    use base64::Engine as _;
+    use rand::Rng as _;
+    let mut raw = [0u8; 16];
+    rand::rng().fill_bytes(&mut raw);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
+}
+
+/// Record the hand-off for one pending step-up: its challenge, the request as
+/// given inline, and the operation exactly as received.
+async fn mint_handoff(
+    state: &AppState,
+    challenge: &str,
+    subject: &str,
+    request: &approve_request::Payload,
+    type_uri: &str,
+    payload: &Value,
+    expires_at: u64,
+) -> Result<StepUpHandoff, AppError> {
+    let handle = fresh_handle();
+    let record = HandoffRecord {
+        challenge: challenge.to_string(),
+        subject: subject.to_string(),
+        request: serde_json::to_value(request)
+            .map_err(|e| AppError::Internal(format!("approve-request serialise: {e}")))?,
+        type_uri: type_uri.to_string(),
+        payload: payload.clone(),
+        expires_at,
+    };
+    state
+        .step_up_marks_ks
+        .insert(handoff_key(&handle), &record)
+        .await?;
+    Ok(StepUpHandoff { handle, expires_at })
+}
+
+/// Read a hand-off and spend it, in one step: the first read of a live handle
+/// gets the step-up and its operation, and every later one `None`
+/// (`auth/step-up/requests/show/0.1`, consumer items 1 and 2). `None` too for
+/// a handle never minted, past its expiry, or whose step-up was already
+/// answered — one answer for all, so a handle tells nothing about which.
+pub async fn take_handoff(
+    state: &AppState,
+    handle: &str,
+) -> Result<Option<HandoffShown>, AppError> {
+    let ks = &state.step_up_marks_ks;
+    let Some(record) = take::<HandoffRecord>(ks, handoff_key(handle)).await? else {
+        return Ok(None);
+    };
+    if now_epoch() >= record.expires_at {
+        return Ok(None);
+    }
+    // Still pending: an approve-response takes the pending mark, so a step-up
+    // already answered (or swept) has nothing left to show.
+    if ks
+        .get::<PendingMark>(pending_key(&record.challenge))
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(HandoffShown {
+        subject: record.subject,
+        request: record.request,
+        type_uri: record.type_uri,
+        payload: record.payload,
+        expires_at: record.expires_at,
+    }))
 }
 
 /// Park a ceremony for a signing-key enrolment (`auth/signing-key/enroll/0.2`)
@@ -543,7 +723,7 @@ pub async fn request_for_enrolment(
     type_uri: &str,
     payload: &Value,
     reason: &str,
-) -> Result<approve_request::Payload, AppError> {
+) -> Result<ApproveRequest, AppError> {
     let webauthn = state.webauthn.as_ref().ok_or_else(|| {
         AppError::StepUpRequired(
             "enrolling a signing key needs a passkey gesture, and this community has no \
@@ -586,6 +766,7 @@ pub async fn request_for_enrolment(
         .insert(pending_key(&challenge), &pending)
         .await?;
     info!(identity = %identity_did, %requester, %bound_to, "signing-key enrolment step-up requested");
+    // No hand-off: this request reaches only the requester (enroll item 5).
     approve_request_payload(
         identity_did,
         &challenge,
@@ -594,6 +775,7 @@ pub async fn request_for_enrolment(
         Some(&options),
         &[],
     )
+    .map(ApproveRequest::inline_only)
 }
 
 /// Spend the recorded gesture for `(admin_did, this operation)`: `true` when a
@@ -741,8 +923,33 @@ fn approve_request_payload(
 /// The refusal a gated operation answers with while no gesture is recorded:
 /// `permissionDenied`, with the ceremony inline (approve-request 0.5, *Inline
 /// delivery*).
-pub fn refusal_details(request: &approve_request::Payload) -> Value {
-    json!({ "stepUpRequest": request })
+///
+/// Beside it, where one was minted, `stepUpHandoff`
+/// (`auth/step-up/requests/show/0.1`, `$defs.Handoff`): the handle by which the
+/// subject's wallet fetches this step-up when the party refused cannot answer
+/// it itself (VTI-LNK-126).
+pub fn refusal_details(request: &ApproveRequest) -> Value {
+    let mut details = json!({ "stepUpRequest": request.request });
+    if let Some(handoff) = &request.handoff {
+        details["stepUpHandoff"] = handoff_details(handoff);
+    }
+    details
+}
+
+/// The `details.stepUpHandoff` object.
+fn handoff_details(handoff: &StepUpHandoff) -> Value {
+    json!({
+        "handle": handoff.handle,
+        "expiresAt": rfc3339(handoff.expires_at),
+        "show": REQUESTS_SHOW_TYPE,
+    })
+}
+
+/// Epoch seconds as a whole-second RFC 3339 instant in UTC.
+pub fn rfc3339(epoch: u64) -> String {
+    DateTime::<Utc>::from_timestamp(i64::try_from(epoch).unwrap_or(i64::MAX), 0)
+        .unwrap_or_default()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// Why an approve-response was refused. Each maps onto a code
@@ -1233,6 +1440,7 @@ pub async fn sweep_expired(ks: &KeyspaceHandle, now: DateTime<Utc>) -> Result<us
             expiry_of::<PendingMark> as fn(&[u8]) -> Option<u64>,
         ),
         (MARK_PREFIX, expiry_of::<RedeemableMark>),
+        (HANDOFF_PREFIX, expiry_of::<HandoffRecord>),
     ] {
         for (key, value) in ks.prefix_iter_raw(prefix.as_bytes().to_vec()).await? {
             // An unreadable row can never be honoured, so it goes too.
@@ -1254,6 +1462,11 @@ impl Expiring for PendingMark {
     }
 }
 impl Expiring for RedeemableMark {
+    fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+}
+impl Expiring for HandoffRecord {
     fn expires_at(&self) -> u64 {
         self.expires_at
     }

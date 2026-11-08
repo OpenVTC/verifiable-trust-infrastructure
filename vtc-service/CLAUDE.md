@@ -652,9 +652,23 @@ When adding a flow, add it here and a line to the root index.
   themselves; a revoked approver DID is never bound again. Once a subject holds
   a dedicated factor, their session passkeys stop counting. A
   console-key-signed answer is `subjectMismatch`.
+- **The hand-off** (`auth/step-up/requests/show/0.1`, VTI-LNK-125 – 131): a
+  refusal for a subject holding an approver carries `details.stepUpHandoff`
+  beside the inline request — a 16-byte handle naming the pending step-up, the
+  inline request and the operation **as received** (`handoff:<handle>` in
+  `step_up_marks`, its expiry the pending mark's). The party refused (a
+  delegated key, `vtc-mcp`) shows the subject a `step-up` link; their wallet
+  reads it with a fresh `did:key` and gets the request as a document this
+  community signs to the subject, plus the operation. Keep: the read takes the
+  row atomically, is answered at most once, and every unanswerable handle
+  (never minted, read, expired, step-up already answered) is the one
+  `notFound`; reading is no part of an approval — the step-up is recorded
+  only from an approve-response as before; no hand-off on an enrolment
+  step-up (it reaches only its requester) or a passkey-only subject.
 - **Code**: `vtc-service/src/acl/{bound_step_up,approver}.rs`,
   `vtc-service/src/step_up_approver.rs`,
-  `vtc-service/src/trust_tasks/step_up_approver_tasks.rs`.
+  `vtc-service/src/trust_tasks/{step_up_approver_tasks,step_up_handoff_tasks}.rs`,
+  `vtc-client/src/step_up.rs` (the link a refused party builds).
 - **Docs**: `docs/03-vtc/admin-access.md` §3.1,
   `docs/05-design-notes/vtc-approver-step-up.md`.
 

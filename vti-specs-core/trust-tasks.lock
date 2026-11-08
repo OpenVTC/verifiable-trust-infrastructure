@@ -279,6 +279,12 @@ type_uri = "https://trusttasks.org/spec/auth/step-up/approver/revoke/0.1"
 digest = "sha256:c4b7fb21f40230fbcdae05be6a793c90b3d9cde4847efdf08b96c2ae63a8601f"
 
 [[task]]
+slug = "auth/step-up/requests/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/auth/step-up/requests/show/0.1"
+digest = "sha256:ba32f26c8b5ae1fad912f468e63f7ea3789497ec6fae746b9f6a19c7701d6fd8"
+
+[[task]]
 slug = "auth/whoami"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/auth/whoami/0.1"

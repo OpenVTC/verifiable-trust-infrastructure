@@ -119,6 +119,31 @@ The bridge returns that as a *successful* call whose result says
 sent again. The prompts say up front which steps park; the workflow tools stop
 there and report; `vtc_actions_show` follows it.
 
+### 2.3a A step-up is yours, through a link
+
+An authority-changing act — a grant, a role change, a join criterion — also
+takes your own step-up, bound to that one operation (VTI-APV-015). The bridge
+signs with a key you delegated, and a delegated key can redeem a step-up but
+never make one. So when you hold a step-up approver, such as the browser
+plugin's, the community hands the step-up to your wallet instead. The bridge
+returns a *successful* call whose result says `"status": "stepUpRequired"` and
+carries a `step-up` link (VTI-LNK-125 – VTI-LNK-131):
+
+1. Open the link in your wallet, or scan it as a QR code. It expires within
+   five minutes.
+2. Your wallet reads the step-up from the community itself, signed by the
+   community and addressed to you, together with the operation exactly as
+   the bridge sent it. It checks that the two belong together, and shows you
+   what will be done.
+3. Approve there. Your wallet answers the community directly, as you; nothing
+   comes back through the bridge.
+4. Ask the assistant to send the identical call again. It goes through.
+
+The link can be opened once. If it has expired or was used, the call is simply
+sent again for a new one. A workflow tool stops at that step and reports the
+link in its progress. Administrators whose only factor is a passkey get no
+link; they finish the act in the console.
+
 ### 2.4 Deciding is vouching
 
 `vtc_actions_decide` signs a `task-consent/decision` as this identity — the
@@ -209,7 +234,7 @@ What you then hold, and nothing more:
   administrative standing, read at every call. The delegation creates no
   access-control entry, expires within 30 days, appears in the console's list
   of your signing keys, and is revoked on its own. It can never approve an
-  action or answer a step-up: those stay with your own factor (§11). The
+  action or answer a step-up: those stay with your own factor (§2.3a). The
   authorization is single-use, usable only by the key it names, and lapses an
   hour after `cnm` signs it unless sent.
 
@@ -454,12 +479,9 @@ An administrator's assistant, enrolled as in §3.1 with `vtc.groups.manage`.
   the console's own page, which signs it through the wallet for the console's
   key. The fix is a console action that signs the same authorization for a
   key you name.
-- **Step-up through the wallet.** An authority-changing act — a grant, a role
-  change, a join criterion — takes your own factor bound to that one
-  operation, and a delegated key can never make that gesture. The bridge
-  reports the refusal; finishing the act in the console works today. Handing
-  the step-up request to your wallet out of band changes the step-up
-  ceremony, so it starts in the specification.
+- **Step-up through the wallet, in the wallet.** The community and the bridge
+  carry the `step-up` link (§2.3a); the browser plugin's reader for it is not
+  released yet. Until it is, finish the act in the console.
 - **Approving someone else's action** is a decision signed by your own DID,
   which a delegated key may not sign: use the console, your wallet or
   `cnm consent approve`.
