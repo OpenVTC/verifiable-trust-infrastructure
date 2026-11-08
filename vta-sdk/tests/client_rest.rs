@@ -31,9 +31,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // envelope `type` and the `payload` — which is strictly more precise, because
 // the payload is what the VTA actually acts on.
 
-const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
-const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
-const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.1";
+const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
+const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
+const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.2";
 /// `get_key_secret` dispatches this: the operation moved to the seeds slice
 /// because it acts on the seed behind the key, not the key itself.
 const TASK_KEYS_EXPORT_SECRET: &str = "https://trusttasks.org/spec/keys/export-secret/0.1";
@@ -257,10 +257,10 @@ async fn health_500_maps_to_server_error() {
 
 // ── Discovery + VTA management ──────────────────────────────────────
 
-/// `trust-task-discovery/0.1` replaces the retired `capabilities` task (#1043).
+/// `trust-task-discovery/0.3` replaces the retired `capabilities` task (#1043).
 ///
 /// Asserts the decode, not the transport: the response is a bare list plus an
-/// optional framework version, and `frameworkVersion` is OPTIONAL in 0.1, so a
+/// optional framework version, and `frameworkVersion` is OPTIONAL, so a
 /// responder that omits it must still decode rather than erroring.
 #[tokio::test]
 async fn supported_trust_tasks_decodes_without_a_framework_version() {
@@ -274,8 +274,8 @@ async fn supported_trust_tasks_decodes_without_a_framework_version() {
         // supplied here is the payload, not the whole document.
         json!({
             "supportedTypes": [
-                "https://trusttasks.org/spec/acl/grant/0.1",
-                "https://trusttasks.org/spec/acl/revoke/0.1"
+                "https://trusttasks.org/spec/acl/grant/0.2",
+                "https://trusttasks.org/spec/acl/revoke/0.2"
             ]
         }),
     )
@@ -285,7 +285,7 @@ async fn supported_trust_tasks_decodes_without_a_framework_version() {
     assert_eq!(tasks.supported_types.len(), 2);
     assert!(
         tasks.framework_version.is_none(),
-        "an omitted frameworkVersion is legitimate in 0.1, not an error"
+        "an omitted frameworkVersion is legitimate, not an error"
     );
 }
 
@@ -462,14 +462,14 @@ async fn list_keys_paginates_query_params() {
         .and(body_partial_json(json!({
             "type": TASK_KEYS_LIST,
             "payload": {
-                "offset": 10, "limit": 5,
+                "cursor": "k1.page", "limit": 5,
                 "status": "active", "contextId": "ctx-a"
             }
         })))
         .respond_with(
             tt_ok(json!({
                 "keys": [key_record_json("k1")],
-                "total": 1
+                "nextCursor": "k1.next"
             }))
             .await,
         )
@@ -478,10 +478,10 @@ async fn list_keys_paginates_query_params() {
         .await;
     let c = client(&server).await;
     let resp = c
-        .list_keys(10, 5, Some("active"), Some("ctx-a"))
+        .list_keys(Some("k1.page"), 5, Some("active"), Some("ctx-a"))
         .await
         .unwrap();
-    assert_eq!(resp.total, 1);
+    assert_eq!(resp.next_cursor.as_deref(), Some("k1.next"));
     assert_eq!(resp.keys.len(), 1);
 }
 
@@ -716,14 +716,16 @@ async fn rotate_seed_with_mnemonic() {
 
 // ── ACL ─────────────────────────────────────────────────────────────
 
-/// One entry in the canonical `acl/_shared/0.1/acl-entry` wire shape:
-/// `subject`/`scopes`, RFC 3339 timestamps, nested `stepUp`/`approve`.
+/// One entry in the canonical `acl/_shared/0.2/acl-entry` wire shape: every
+/// authority axis explicit, RFC 3339 timestamps.
 fn acl_entry_json(did: &str) -> Value {
     json!({
         "subject": did,
         "role": "admin",
         "label": "ops",
-        "scopes": ["ctx-a"],
+        "act": {"scope": "contexts", "contexts": ["ctx-a"]},
+        "keys": {"scope": "all"},
+        "capabilities": {"scope": "ceiling"},
         "createdAt": "2023-11-14T22:13:20Z",
         "createdBy": "did:web:vta",
     })
@@ -742,7 +744,7 @@ async fn list_acl_no_filter() {
         "GET",
         "/acl",
         200,
-        json!({"entries": [acl_entry_json("did:key:zAdmin")], "truncated": false}),
+        json!({"entries": [acl_entry_json("did:key:zAdmin")]}),
     )
     .await;
     let c = client(&server).await;
@@ -756,11 +758,11 @@ async fn list_acl_with_context_query() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        // `scope`, not `context`: the task payload names the filter
-        // differently from the query string it replaced.
+        // 0.3 requires the direction with a context, so the default one is
+        // spelled out.
         .and(body_partial_json(json!({
             "type": TASK_ACL_LIST,
-            "payload": {"scope": "ctx-a"}
+            "payload": {"context": "ctx-a", "direction": "actingIn"}
         })))
         .respond_with(tt_ok(json!({"entries": []})).await)
         .expect(1)
@@ -771,11 +773,10 @@ async fn list_acl_with_context_query() {
     assert!(resp.entries.is_empty());
 }
 
-/// A non-default direction rides the query string; `list_acl` and an explicit
-/// `acting-in` must stay byte-identical to the historical request, so an older
-/// VTA keeps answering them.
+/// `acl/list/0.3` names the direction whenever it names a context (and never
+/// otherwise), in its lowerCamelCase spelling.
 #[tokio::test]
-async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
+async fn list_acl_states_the_direction_with_a_context() {
     use vta_sdk::acl::ContextDirection;
 
     let server = MockServer::start().await;
@@ -783,7 +784,7 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
         .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
-            "payload": {"scope": "acme/eng", "direction": "subtree"}
+            "payload": {"context": "acme/eng", "direction": "subtree"}
         })))
         .respond_with(tt_ok(json!({"entries": []})).await)
         .expect(1)
@@ -798,18 +799,46 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .and(body_partial_json(json!({"payload": {"scope": "acme/eng"}})))
-        // An old VTA rejects an unknown field, so the default direction must
-        // be omitted rather than spelled out.
         .and(no_payload_key("direction"))
+        .and(no_payload_key("context"))
         .respond_with(tt_ok(json!({"entries": []})).await)
-        .expect(2)
+        .expect(1)
         .mount(&server)
         .await;
-    c.list_acl(Some("acme/eng")).await.unwrap();
-    c.list_acl_in_direction(Some("acme/eng"), ContextDirection::ActingIn)
-        .await
-        .unwrap();
+    c.list_acl(None).await.unwrap();
+}
+
+/// A page with a `nextCursor` is followed: the client returns every entry, and
+/// re-sends the cursor it was given.
+#[tokio::test]
+async fn list_acl_follows_next_cursor_to_the_last_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(body_partial_json(json!({"payload": {"cursor": "page-2"}})))
+        .respond_with(tt_ok(json!({"entries": [acl_entry_json("did:key:zTwo")]})).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(no_payload_key("cursor"))
+        .respond_with(
+            tt_ok(json!({
+                "entries": [acl_entry_json("did:key:zOne")],
+                "nextCursor": "page-2"
+            }))
+            .await,
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    let all = c.list_acl(None).await.unwrap();
+    let dids: Vec<&str> = all.entries.iter().map(|e| e.did.as_str()).collect();
+    assert_eq!(dids, ["did:key:zOne", "did:key:zTwo"]);
 }
 
 /// Self-service key rotation is the one ACL verb whose REST route answers the
@@ -937,14 +966,67 @@ async fn create_acl_409_maps_to_conflict() {
 #[tokio::test]
 async fn update_acl_patches() {
     let server = MockServer::start().await;
-    let _g = mount_json(
-        &server,
-        "PATCH",
-        "/acl/did:key:zAdmin",
-        200,
-        acl_entry_envelope("did:key:zAdmin"),
-    )
-    .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/update/0.2",
+            "payload": {"subject": "did:key:zAdmin", "label": "ops"}
+        })))
+        .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    let req = UpdateAclRequest {
+        label: Some("ops".into()),
+        allowed_contexts: None,
+        step_up_approver: None,
+        step_up_require: None,
+        approve_scope: None,
+        allowed_keys: None,
+        capabilities: None,
+    };
+    let resp = c.update_acl("did:key:zAdmin", req).await.unwrap();
+    assert_eq!(resp.did, "did:key:zAdmin");
+}
+
+/// 0.2 puts every narrowing of `act` in `acl/revoke`: moving an entry from
+/// `ctx-a` to `ctx-b` reads the stored entry, widens to the union with
+/// `acl/update`, then narrows with `acl/revoke {kind: act}` — the subject never
+/// holds a context it neither had nor was meant to get.
+#[tokio::test]
+async fn update_acl_moves_contexts_by_widening_then_narrowing() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/show/0.2"
+        })))
+        .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/update/0.2",
+            "payload": {"act": {"scope": "contexts", "contexts": ["ctx-a", "ctx-b"]}}
+        })))
+        .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/revoke/0.2",
+            "payload": {"revocation": {"kind": "act", "act": {"scope": "contexts", "contexts": ["ctx-b"]}}}
+        })))
+        .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
+        .expect(1)
+        .mount(&server)
+        .await;
     let c = client(&server).await;
     let req = UpdateAclRequest {
         label: None,
@@ -955,8 +1037,7 @@ async fn update_acl_patches() {
         allowed_keys: None,
         capabilities: None,
     };
-    let resp = c.update_acl("did:key:zAdmin", req).await.unwrap();
-    assert_eq!(resp.did, "did:key:zAdmin");
+    c.update_acl("did:key:zAdmin", req).await.unwrap();
 }
 
 #[tokio::test]
@@ -1116,7 +1197,10 @@ async fn delete_context_with_force_query() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(signed_response(json!({ "id": "primary", "deleted": true })).await),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1130,7 +1214,10 @@ async fn delete_context_no_force_omits_query() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(signed_response(json!({ "id": "primary", "deleted": true })).await),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1565,13 +1652,13 @@ async fn list_audit_logs_paginates() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        // camelCase, per canonical `audit/list/0.1`. A snake_case key
+        // camelCase, per canonical `audit/list/0.2`. A snake_case key
         // here would be dropped by the handler's serde binding and the
         // filter would silently not apply.
         .and(body_partial_json(json!({
             "type": TASK_AUDIT_LIST,
             "payload": {
-                "pageSize": 25,
+                "limit": 25,
                 "action": "key.create",
                 "cursor": "opaque-token"
             }
@@ -1585,8 +1672,7 @@ async fn list_audit_logs_paginates() {
                     "outcome": "success",
                     "actor": "did:key:zActor",
                 }],
-                "truncated": true,
-                "cursor": "next-token"
+                "nextCursor": "next-token"
             }))
             .await,
         )
@@ -1595,14 +1681,13 @@ async fn list_audit_logs_paginates() {
         .await;
     let c = client(&server).await;
     let params = vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
-        page_size: Some(25),
+        limit: Some(25),
         action: Some("key.create".into()),
         cursor: Some("opaque-token".into()),
         ..Default::default()
     };
     let r = c.list_audit_logs(&params).await.unwrap();
-    assert!(r.truncated);
-    assert_eq!(r.cursor.as_deref(), Some("next-token"));
+    assert_eq!(r.next_cursor.as_deref(), Some("next-token"));
     assert_eq!(r.entries[0].event_id, "e1");
     assert_eq!(r.entries[0].action, "key.create");
 }
@@ -1620,7 +1705,7 @@ async fn audit_list_percent_encodes_rfc3339_bounds() {
         .and(body_partial_json(json!({
             "payload": {"from": "2026-07-01T00:00:00Z"}
         })))
-        .respond_with(tt_ok(json!({"entries": [], "truncated": false})).await)
+        .respond_with(tt_ok(json!({"entries": []})).await)
         .expect(1)
         .mount(&server)
         .await;
@@ -1630,7 +1715,7 @@ async fn audit_list_percent_encodes_rfc3339_bounds() {
         ..Default::default()
     };
     let r = c.list_audit_logs(&params).await.unwrap();
-    assert!(!r.truncated);
+    assert!(r.next_cursor.is_none());
 }
 
 #[tokio::test]
@@ -1943,7 +2028,7 @@ async fn check_auth_false_when_401() {
 async fn fetch_context_secrets_walks_all_pages() {
     let server = MockServer::start().await;
 
-    // Page 1: 100 keys, total = 101
+    // Page 1: 100 keys and a cursor to the rest
     let mut page1_keys = Vec::new();
     for i in 0..100 {
         page1_keys.push(key_record_json(&format!("k{i}")));
@@ -1953,15 +2038,18 @@ async fn fetch_context_secrets_walks_all_pages() {
         .and(auth_match())
         .and(body_partial_json(json!({
             "type": TASK_KEYS_LIST,
-            "payload": {"offset": 0}
+            "payload": {"limit": 100}
         })))
         .respond_with(
             tt_ok(json!({
                 "keys": page1_keys,
-                "total": 101
+                "nextCursor": "k1.page-2"
             }))
             .await,
         )
+        // The second page's request carries `limit` too, so this mock would
+        // match it: answer the first page once and let the next fall through.
+        .up_to_n_times(1)
         .expect(1)
         .mount(&server)
         .await;
@@ -1972,12 +2060,11 @@ async fn fetch_context_secrets_walks_all_pages() {
         .and(auth_match())
         .and(body_partial_json(json!({
             "type": TASK_KEYS_LIST,
-            "payload": {"offset": 100}
+            "payload": {"cursor": "k1.page-2"}
         })))
         .respond_with(
             tt_ok(json!({
-                "keys": [key_record_json("k100")],
-                "total": 101
+                "keys": [key_record_json("k100")]
             }))
             .await,
         )
@@ -2222,7 +2309,7 @@ async fn mount_presign_vta(
 fn presign_request(
     upload_id: Option<&str>,
     ops: Vec<Value>,
-) -> trust_tasks_rs::specs::external::credentials::issue::v0_3::Payload {
+) -> vti_specs::external::credentials::issue::v0_3::Payload {
     let mut presign = json!({ "prefix": "rooms/x/", "objectKey": "o", "requests": ops });
     if let Some(id) = upload_id {
         presign["uploadId"] = json!(id);
@@ -2319,40 +2406,6 @@ fn task_type(uri: &'static str) -> impl Fn(&wiremock::Request) -> bool {
     }
 }
 
-/// A VTA that predates the 0.2 versions: it refuses them `unsupportedType` and answers
-/// 0.1 with `ok`.
-async fn mount_only_0_1(
-    server: &MockServer,
-    v0_2: &'static str,
-    v0_1: &'static str,
-    ok: Value,
-) -> (wiremock::MockGuard, wiremock::MockGuard) {
-    let refused = Mock::given(method("POST"))
-        .and(path("/trust-tasks"))
-        .and(task_type(v0_2))
-        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
-            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": {
-                "code": "unsupportedType",
-                "message": format!("unsupported type: {v0_2}"),
-                "retryable": false,
-            },
-        })))
-        .expect(1)
-        .mount_as_scoped(server)
-        .await;
-    let answered = Mock::given(method("POST"))
-        .and(path("/trust-tasks"))
-        .and(task_type(v0_1))
-        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(ok).await))
-        .expect(1)
-        .mount_as_scoped(server)
-        .await;
-    (refused, answered)
-}
-
 /// A VTA refusing `uri` `unsupportedType`, exactly `times` times.
 async fn mount_unsupported(
     server: &MockServer,
@@ -2377,31 +2430,35 @@ async fn mount_unsupported(
         .await
 }
 
-/// `rooms/keys/act/0.4` first, then 0.3, then 0.2, then 0.1 with the same document.
+/// `rooms/keys/act/0.10` only: answered there, and never asked at an older version.
 #[tokio::test]
-async fn room_act_falls_back_to_0_1() {
+#[allow(deprecated)] // the SDK sends act 0.10 until it moves to 0.11
+async fn room_act_goes_at_0_10_only() {
     let server = MockServer::start().await;
     let member = "did:webvh:example.com:people:alice";
-    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
-    let _v3 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.3", 1).await;
-    let _m = mount_only_0_1(
-        &server,
-        "https://trusttasks.org/spec/rooms/keys/act/0.2",
-        "https://trusttasks.org/spec/rooms/keys/act/0.1",
-        json!({
-            "principal": member,
-            "document": {
-                "id": "urn:uuid:00000000-0000-4000-8000-0000000000a2",
-                "type": "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
-                "issuer": member,
-                "recipient": "did:key:zHost",
-                "issuedAt": "2026-01-01T00:05:00Z",
-                "payload": { "uploadId": "u" },
-                "proof": { "type": "DataIntegrityProof" }
-            }
-        }),
-    )
-    .await;
+    let _v8 = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type("https://trusttasks.org/spec/rooms/keys/act/0.10"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_response(json!({
+                    "principal": member,
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a2",
+                        "type": "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
+                        "issuer": member,
+                        "recipient": "did:key:zHost",
+                        "issuedAt": "2026-01-01T00:05:00Z",
+                        "payload": { "uploadId": "u" },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                }))
+                .await,
+            ),
+        )
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
     let c = client(&server).await;
     let doc = unsigned_room_request(
         "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
@@ -2410,8 +2467,46 @@ async fn room_act_falls_back_to_0_1() {
         json!({ "uploadId": "u" }),
     )
     .unwrap();
-    let resp = c.room_act(&doc).await.expect("answered at 0.1");
+    let resp = c.room_act(&doc).await.expect("answered at 0.10");
     assert_eq!(resp.principal.as_str(), member);
+}
+
+/// A VTA that does not serve `rooms/keys/act/0.10` is reported as such, for a room request
+/// and for a reply to a community's offer alike: nothing older is asked.
+#[tokio::test]
+async fn room_act_never_falls_back_to_a_superseded_version() {
+    let server = MockServer::start().await;
+    let _v10 = mount_unsupported(
+        &server,
+        "https://trusttasks.org/spec/rooms/keys/act/0.10",
+        2,
+    )
+    .await;
+    let _v5 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.5", 0).await;
+    let _v1 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.1", 0).await;
+    let c = client(&server).await;
+    for (type_uri, recipient, payload) in [
+        (
+            "https://trusttasks.org/spec/rooms/records/get/0.2",
+            "did:key:zHost",
+            json!({ "roomId": "did:key:zRoom", "key": "k" }),
+        ),
+        (
+            "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4",
+            "did:webvh:example.com:northwind-community",
+            json!({}),
+        ),
+    ] {
+        let doc = unsigned_room_request(
+            type_uri,
+            recipient,
+            Some("did:webvh:example.com:people:alice"),
+            payload,
+        )
+        .unwrap();
+        let err = c.room_act(&doc).await.expect_err("no 0.8");
+        assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
+    }
 }
 
 /// The owner's group tasks go at their current version only: a VTA that does not serve it
@@ -2435,7 +2530,7 @@ async fn room_group_tasks_never_fall_back_to_a_superseded_version() {
     .await;
     let _remove = mount_unsupported(
         &server,
-        "https://trusttasks.org/spec/rooms/owner/group/remove/0.3",
+        "https://trusttasks.org/spec/rooms/owner/group/remove/0.4",
         1,
     )
     .await;
@@ -2449,7 +2544,15 @@ async fn room_group_tasks_never_fall_back_to_a_superseded_version() {
         .await
         .map(|_| ());
     let remove = c
-        .room_group_remove_v0_3(room, "did:key:zHost", member, "room-key", &[], None, None)
+        .room_group_remove(
+            room,
+            "did:key:zHost",
+            member,
+            Some("room-key"),
+            &[],
+            None,
+            None,
+        )
         .await
         .map(|_| ());
     for (task, r) in [("add", add), ("renew", renew), ("remove", remove)] {
@@ -2528,117 +2631,35 @@ async fn an_earlier_removal_refused_is_final_and_never_falls_back() {
     }
 }
 
-/// `rooms/owner/register/0.2` first; a VTA that does not serve it is asked at 0.1, the
-/// same request, and its answer — 0.2's without `revocation` — read as 0.2's.
+/// `rooms/owner/register/0.2` only: a VTA that does not serve it is reported as such and
+/// never asked at 0.1.
 #[tokio::test]
-async fn room_owner_register_falls_back_to_0_1() {
+async fn room_owner_register_never_falls_back_to_0_1() {
     let server = MockServer::start().await;
-    let room = "did:webvh:example.com:rooms:northwind";
-    let host = "did:webvh:example.com:northwind-community";
-    let _m = mount_only_0_1(
+    let _v2 = mount_unsupported(
         &server,
         "https://trusttasks.org/spec/rooms/owner/register/0.2",
+        1,
+    )
+    .await;
+    let _v1 = mount_unsupported(
+        &server,
         "https://trusttasks.org/spec/rooms/owner/register/0.1",
-        json!({ "roomId": room, "host": host, "epoch": 1 }),
+        0,
     )
     .await;
     let c = client(&server).await;
-    let resp = c
+    let err = c
         .room_owner_register(vta_sdk::client::RoomRegistration {
-            room_id: room,
-            host_did: host,
+            room_id: "did:webvh:example.com:rooms:northwind",
+            host_did: "did:webvh:example.com:northwind-community",
             visibility: "attributed".parse().unwrap(),
             owner_did: Some("did:webvh:example.com:people:alice"),
             retention_days: None,
             retention_policy: None,
         })
         .await
-        .expect("answered at 0.1");
-    assert_eq!(resp.epoch.get(), 1);
-    assert!(resp.revocation.is_none());
-}
-
-/// A reply to a community's offer is completed at `rooms/keys/act/0.4` or 0.3, or not at
-/// all: the earlier versions' schema refuses its type, so a VTA without either is reported
-/// as such and never asked at 0.2.
-#[tokio::test]
-async fn room_act_for_an_offer_does_not_fall_back_past_0_3() {
-    let server = MockServer::start().await;
-    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
-    let _v3 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.3", 1).await;
-    let _v2 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.2", 0).await;
-    let c = client(&server).await;
-    let doc = unsigned_room_request(
-        "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
-        "did:webvh:example.com:northwind-community",
-        Some("did:webvh:example.com:people:alice"),
-        json!({}),
-    )
-    .unwrap();
-    let err = c.room_act(&doc).await.expect_err("no 0.3");
-    assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
-}
-
-/// A member's VTA that serves `rooms/keys/act/0.3` but not 0.4 still completes
-/// `vtc/rooms/offers/list/0.1`: asked at 0.4, refused, asked at 0.3.
-#[tokio::test]
-async fn room_act_for_offers_list_0_1_falls_back_to_0_3() {
-    let server = MockServer::start().await;
-    let member = "did:webvh:example.com:people:alice";
-    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
-    let _v3 = Mock::given(method("POST"))
-        .and(path("/trust-tasks"))
-        .and(task_type("https://trusttasks.org/spec/rooms/keys/act/0.3"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(
-                signed_response(json!({
-                    "principal": member,
-                    "document": {
-                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a4",
-                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
-                        "issuer": member,
-                        "recipient": "did:webvh:example.com:northwind-community",
-                        "issuedAt": "2026-01-01T00:09:00Z",
-                        "payload": {},
-                        "proof": { "type": "DataIntegrityProof" }
-                    }
-                }))
-                .await,
-            ),
-        )
-        .expect(1)
-        .mount_as_scoped(&server)
-        .await;
-    let c = client(&server).await;
-    let doc = unsigned_room_request(
-        "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
-        "did:webvh:example.com:northwind-community",
-        Some(member),
-        json!({}),
-    )
-    .unwrap();
-    let resp = c.room_act(&doc).await.expect("answered at 0.3");
-    assert_eq!(resp.principal.as_str(), member);
-}
-
-/// `vtc/rooms/offers/list/0.2` is completed at `rooms/keys/act/0.4` only: 0.3's closed
-/// table refuses it (`typeNotActable`), so a VTA without 0.4 is reported as
-/// [`VtaError::UnsupportedTaskType`] — the caller's cue to list at 0.1 — and never asked
-/// at 0.3.
-#[tokio::test]
-async fn room_act_for_offers_list_0_2_goes_at_0_4_only() {
-    let server = MockServer::start().await;
-    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
-    let _v3 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.3", 0).await;
-    let c = client(&server).await;
-    let doc = unsigned_room_request(
-        "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2",
-        "did:webvh:example.com:northwind-community",
-        Some("did:webvh:example.com:people:alice"),
-        json!({}),
-    )
-    .unwrap();
-    let err = c.room_act(&doc).await.expect_err("no 0.4");
+        .expect_err("no 0.2");
     assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
 }
 

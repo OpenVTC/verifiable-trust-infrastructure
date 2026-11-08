@@ -128,7 +128,7 @@ pub(super) async fn handle_enroll_challenge(
     }
 }
 
-/// Handler for `spec/vta/passkey-vms/enroll-submit/0.1`. Admin only
+/// Handler for `spec/vta/passkey-vms/enroll-submit/0.2`. Admin only
 /// (enforced by the operation function). Appends the new VM to the
 /// DID document via a WebVH LogEntry; pushes the update to the
 /// configured mediator.
@@ -313,7 +313,7 @@ mod tests {
                 "vta/passkey-vms/revoke",
             ),
             (
-                "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/0.1",
+                "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/0.2",
                 "vta/passkey-vms/enroll-submit",
             ),
         ] {

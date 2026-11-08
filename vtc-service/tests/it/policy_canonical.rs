@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 
 use vtc_service::test_support::TestVtc;
 
-const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
-const LIST: &str = "https://trusttasks.org/spec/policy/list/0.2";
+const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
+const LIST: &str = "https://trusttasks.org/spec/policy/list/0.3";
 const GET: &str = "https://trusttasks.org/spec/policy/get/0.1";
 const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 
@@ -78,7 +78,7 @@ async fn call(
 
 async fn upsert(fix: &Fixture, body: Value) -> (StatusCode, Value) {
     let (_, doc) = fix.signer.call(&fix._vtc, UPSERT, body).await;
-    let success = if doc["payload"]["created"] == false {
+    let success = if doc["payload"]["wasCreated"] == false {
         StatusCode::OK
     } else {
         StatusCode::CREATED
@@ -128,7 +128,7 @@ async fn upsert_returns_a_canonical_policy_module() {
     let (status, body) = upsert(&fix, upsert_body("join", JOIN_POLICY)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(
-        body["created"], true,
+        body["wasCreated"], true,
         "first revision is a creation: {body}"
     );
 
@@ -235,7 +235,7 @@ async fn expected_version_is_a_real_compare_and_swap() {
     fresh["expectedVersion"] = json!(1);
     let (status, body) = upsert(&fix, fresh).await;
     assert_eq!(status, StatusCode::OK, "a revision, not a creation: {body}");
-    assert_eq!(body["created"], false, "{body}");
+    assert_eq!(body["wasCreated"], false, "{body}");
     assert_eq!(body["policy"]["version"], 2);
 }
 
@@ -282,8 +282,8 @@ async fn list_and_get_return_canonical_envelopes() {
         "canonical key: {list_body}"
     );
     assert!(
-        list_body.get("truncated").is_some(),
-        "required: {list_body}"
+        list_body.get("truncated").is_none() && list_body.get("cursor").is_none(),
+        "0.2's `truncated` / `cursor` are gone in 0.3: {list_body}"
     );
     assert!(
         list_body.get("items").is_none(),

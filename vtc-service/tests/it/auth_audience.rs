@@ -9,7 +9,7 @@
 //! (`common::session_probe`): `GET /v1/auth/whoami`, which these tests used,
 //! became a signed document answered for a session's bound key (#1641), and
 //! no other route is a plain token check. The `Trust-Task` header gate is
-//! exercised on `auth/refresh/0.1`, one of the few header-gated routes left.
+//! exercised on `auth/refresh/0.2`, one of the few header-gated routes left.
 
 use std::sync::Arc;
 

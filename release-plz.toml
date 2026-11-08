@@ -22,13 +22,22 @@
 # is nothing for two concurrent PRs to conflict over.
 changelog_config = "cliff.toml"
 
-# Compare each crate's public API against its published version and force a
-# compatibility-breaking bump when it actually broke — rather than trusting an
-# author to notice. This is the check the old hand-rolled flow could not make.
+# Bump sizes come from conventional commits (a `!` title is a breaking bump),
+# not from release-plz's own cargo-semver-checks run. The API check is CI's
+# `release bump is large enough` on the Release PR (scripts/semver-report.sh,
+# enforce mode), which blocks a bump that is too small and names the crate and
+# the version it needs.
 #
-# On by default, and switched OFF per-crate below for the twelve subsystem
-# crates. See that block for why.
-semver_check = true
+# release-plz's check was switched off because it was the slow half of a check
+# made twice. It semver-checked every changed crate on every merge to main —
+# each check a cold rustdoc build of the crate's dependency tree, twice — one at
+# a time so the runner would not run out of memory: 40-135 minutes per
+# regeneration, restarted by every merge. And it was not the authority: it
+# proposed too-small bumps (vti-common 0.16.2, vta-sdk 0.32.4 on 2026-09-05)
+# that the guard exists to catch. The guard ran the same checks again on the
+# Release PR. Now only the guard runs them, and skips every crate whose
+# proposed version is already a breaking bump.
+semver_check = false
 
 # One GitHub Release per published crate, carrying that crate's changelog
 # section. This is what an external consumer lands on from crates.io.
@@ -45,85 +54,10 @@ pr_labels = ["release"]
 # touching npm when it finds no `admin-ui/package.json`.
 
 
-# ── semver checks: on where the API has a consumer ───────────────────────────
+# Which crates the API check covers is `EXCLUDED` in scripts/semver-report.sh:
+# the twelve subsystem crates and vtc-service, whose APIs have no consumer.
 #
-# The twelve subsystem crates are on crates.io for one reason: crates.io
-# requires a published crate's whole dependency closure to be published, and
-# `vta-service` is published (for OpenVTC's `MockVta` harness — see
-# RELEASING.md). Nothing depends on their APIs directly, in this workspace or
-# outside it; they are reached through `vta-service`, which re-exports them.
-#
-# Checking an API nobody consumes costs real time on EVERY pull request:
-# `cargo semver-checks --workspace` builds rustdoc JSON for each crate twice,
-# current and baseline. Adding these took the job from ~17 minutes to over 35.
-# That is a tax on every PR in the repo, paid for a signal no consumer can act
-# on.
-#
-# `vta-service` itself keeps the check: it has a real consumer
-# (`openvtc-core`'s dev-dependency), so a silent break there reaches somebody.
-# So do the seven crates with external consumers, via the workspace default.
-#
-# Bump size for these falls back to conventional commits, which is what it was
-# before they were ever published. If one of them grows a direct consumer,
-# delete its entry here.
-[[package]]
-name = "vta-audit"
-semver_check = false
-
-[[package]]
-name = "vta-backup"
-semver_check = false
-
-[[package]]
-name = "vta-config"
-semver_check = false
-
-[[package]]
-name = "vta-external"
-semver_check = false
-
-[[package]]
-name = "vta-keys"
-semver_check = false
-
-[[package]]
-name = "vta-keyspaces"
-semver_check = false
-
-[[package]]
-name = "vta-policy"
-semver_check = false
-
-[[package]]
-name = "vta-support"
-semver_check = false
-
-[[package]]
-name = "vta-sweepers"
-semver_check = false
-
-[[package]]
-name = "vta-tee"
-semver_check = false
-
-[[package]]
-name = "vta-vault"
-semver_check = false
-
-[[package]]
-name = "vta-webvh"
-semver_check = false
-
-[[package]]
-name = "vti-webauthn"
-semver_check = false
-
-# vtc-service is published as a binary, for `cargo install vtc-service`. Its
-# library has no consumer in or outside this workspace, so checking its API is
-# the same cost-for-no-signal as the subsystem crates above, on the largest
-# crate here. Bumps come from conventional commits. `scripts/semver-report.sh`
-# excludes it to match.
-#
+# vtc-service is published as a binary, for `cargo install vtc-service`.
 # `publish_allow_dirty`: cargo counts gitignored files that `include` names as
 # uncommitted, and the package's two web bundles are exactly that (built by
 # publish.yml just before this runs). Without it `cargo publish` refuses
@@ -132,5 +66,4 @@ semver_check = false
 # the bundles and nothing else.
 [[package]]
 name = "vtc-service"
-semver_check = false
 publish_allow_dirty = true

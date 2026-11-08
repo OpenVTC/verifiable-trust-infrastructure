@@ -49,11 +49,15 @@ interaction rides that transport as a canonical Trust Task:
 
 | Operation | Trust Task | Proof |
 |---|---|---|
-| Publish / update a member | `registry/record/put/0.1` | signed |
-| Remove a member (RTBF, departure) | `registry/record/delete/0.1` | signed |
-| Read a member's record | `registry/record/query/0.1` | none |
-| Recognition check | `registry/recognition/0.1` | none |
-| Health probe | `registry/record/query/0.1` (limit 1) | none |
+| Publish / update a member | `registry/record/put/0.3` | signed |
+| Remove a member (RTBF, departure) | `registry/record/delete/0.2` | signed |
+| Read a member's record | `registry/record/query/0.3` | none |
+| Recognition check | `registry/recognition/0.2` | none |
+| Health probe | `registry/record/query/0.3` (limit 1) | none |
+
+A registry that answers `unsupportedVersion` to these — every released
+affinidi-trust-registry-rs up to 0.28 — is sent the 0.1 versions instead, and
+the client remembers that until restart.
 
 Writes are signed with the VTC's assertion key (`{vtc_did}#key-0`)
 — the same identity that mints VMC/VAC — and the registry must
@@ -527,7 +531,7 @@ absent one means the record makes no such assertion. It is not `false`:
 showing "not authorised" against a recognition record would invent a refusal
 the registry never made.
 
-`vtc/registry/records/list/0.1`, admin-gated. The API takes the full filter
+`vtc/registry/records/list/0.2`, admin-gated. The API takes the full filter
 set (`entityId`, `authorityId`, `action`, `resource`) and a cursor; the card
 shows the first page unfiltered, which is the whole graph for any community
 that has not outgrown one page.

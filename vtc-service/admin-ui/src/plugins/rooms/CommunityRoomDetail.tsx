@@ -1,6 +1,11 @@
 // One room the community owns, `/rooms/community/<roomId>` — the owner's view
-// (`vtc/rooms/community/get/0.2`), its details (`…/update/0.1`) and its members
-// (`…/members/{list,add,remove}`).
+// (`vtc/rooms/community/get/0.4`), its details (`…/update/0.3`), its state in its
+// owner's lifecycle (archive, unarchive, remove — `CommunityRoomLifecycle.tsx`)
+// and its members (`…/members/{list,add,remove}`).
+//
+// **What a room's state allows.** Only an active room admits members; a room
+// being purged or removed is a read-only tombstone — no details are edited and no
+// member is removed (there is nothing left to withdraw them from).
 //
 // **Its details** — label, description, tags — are how administrators tell the
 // community's rooms apart, and the label and description are what a member
@@ -48,7 +53,9 @@ import {
   fetchCommunityRoom,
   roomProfileNotice,
   roomProfileStateOf,
+  roomLifecycleOf,
   roomRenewalOf,
+  roomStateOf,
   type RoomProfileState,
   fetchCommunityRoomMembers,
   type DepartureRemoval,
@@ -72,6 +79,7 @@ import type {
 
 import { RefusalCard } from "./CommunityRefusal";
 import { AuthorityExpiry, COMMUNITY_ROOMS_KEY, RenewalFailing, TagChips } from "./CommunityRooms";
+import { RoomLifecycle } from "./CommunityRoomLifecycle";
 import { COMMUNITY_PATH, LifecyclePill, TIER_BLURB, roomPath, type Tier } from "./shared";
 
 /** The Audit trail (`plugins/audit.tsx`). It has no per-room filter: a
@@ -85,6 +93,7 @@ const STATE_FILTERS: { id: StateFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "offered", label: "Offered" },
   { id: "admitted", label: "Admitted" },
+  { id: "suspended", label: "Suspended" },
   { id: "removed", label: "Removed" },
 ];
 
@@ -137,6 +146,7 @@ export function CommunityRoomDetail() {
         }
       />
       <RoomFacts room={room} renewal={roomRenewalOf(q.data.ext)} profile={roomProfileStateOf(q.data.ext)} />
+      <RoomLifecycle room={room} lifecycle={roomLifecycleOf(q.data.ext)} openOffers={room.offered} />
       <Members room={room} />
     </section>
   );
@@ -156,11 +166,13 @@ function RoomFacts({
   const auditor = useCan("vtc.audit.read", "*");
   const [editing, setEditing] = useState(false);
   const r = room.room;
+  // A room being purged or removed is a tombstone: nothing of it changes.
+  const tombstone = roomStateOf(room) === "purging" || roomStateOf(room) === "removed";
   return (
     <section className="card">
       <div className="rooms-toolbar">
         <h2>Room</h2>
-        {!editing && (
+        {!editing && !tombstone && (
           <button type="button" className="secondary" onClick={() => setEditing(true)}>
             <Pencil size={14} aria-hidden="true" /> Edit details
           </button>
@@ -206,6 +218,7 @@ function RoomFacts({
         <dt>Members</dt>
         <dd>
           {room.admitted} admitted, {room.offered} offered
+          {room.suspended ? `, ${room.suspended} suspended` : ""}
         </dd>
         {profile && (
           <>
@@ -236,7 +249,7 @@ function RoomFacts({
         )}
         <dt>Created</dt>
         <dd>
-          {new Date(r.createdAt * 1000).toLocaleString()}
+          {new Date(r.createdAt).toLocaleString()}
           {room.createdBy && (
             <>
               {" "}
@@ -366,14 +379,18 @@ function Members({ room }: { room: CommunityRoom }) {
   });
   const items = q.data?.items ?? [];
   const departures = q.data?.departures ?? [];
+  const state = roomStateOf(room);
+  // Only an active room admits anyone (`members/add/0.2` `wrongState`).
+  const admits = state === "active";
+  const tombstone = state === "purging" || state === "removed";
 
   return (
     <section className="card" aria-labelledby="community-room-members">
       <div className="rooms-toolbar">
         <h2 id="community-room-members">Members</h2>
-        {!adding && (
-          <button type="button" onClick={() => setAdding(true)}>
-            <UserPlus aria-hidden="true" /> Add a member
+        {!adding && admits && (
+          <button className="primary" type="button" onClick={() => setAdding(true)}>
+            <UserPlus size={14} aria-hidden="true" /> Add a member
           </button>
         )}
       </div>
@@ -382,7 +399,14 @@ function Members({ room }: { room: CommunityRoom }) {
         to collect with their own VTA (<code>pnm rooms offers accept</code>). They are{" "}
         <b>admitted</b> once they accept.
       </p>
-      {adding && <AddMember room={room} onDone={() => setAdding(false)} />}
+      {!admits && (
+        <p className="muted rooms-sub">
+          {tombstone
+            ? "This room was removed: these records are its history."
+            : "This room admits no one until it is active again."}
+        </p>
+      )}
+      {adding && admits && <AddMember room={room} onDone={() => setAdding(false)} />}
       <Tabs variant="segmented" label="Show" items={STATE_FILTERS} value={filter} onChange={setFilter} />
       {q.isPending && <p>Reading the members…</p>}
       {q.isError && <RefusalCard title="The members could not be read" error={q.error} />}
@@ -400,6 +424,7 @@ function Members({ room }: { room: CommunityRoom }) {
         <MembersTable
           room={room}
           members={items}
+          removable={!tombstone}
           leaving={new Set(departures.map((d) => d.member))}
           onRemoved={(outcome, error) => setRemoved({ outcome, error })}
         />
@@ -410,7 +435,7 @@ function Members({ room }: { room: CommunityRoom }) {
 }
 
 function stateChip(state: CommunityRoomMemberState) {
-  const tone = state === "admitted" ? "success" : state === "offered" ? "warning" : "";
+  const tone = state === "admitted" ? "success" : state === "offered" || state === "suspended" ? "warning" : "";
   return <span className={`chip ${tone}`}>{state}</span>;
 }
 
@@ -454,11 +479,14 @@ function DepartureNotice({ departures }: { departures: DepartureRemoval[] }) {
 function MembersTable({
   room,
   members,
+  removable,
   leaving,
   onRemoved,
 }: {
   room: CommunityRoom;
   members: CommunityRoomMember[];
+  /** Whether a member can still be removed: not once the room is purged. */
+  removable: boolean;
   leaving: Set<string>;
   onRemoved: (outcome: string | null, err: unknown) => void;
 }) {
@@ -492,9 +520,12 @@ function MembersTable({
           <td className="muted">
             offered {formatIso(m.offeredAt)}
             {m.admittedAt && <div className="rooms-sub">admitted {formatIso(m.admittedAt)}</div>}
+            {m.suspendedAt && <div className="rooms-sub">suspended {formatIso(m.suspendedAt)}</div>}
             {m.removedAt && <div className="rooms-sub">removed {formatIso(m.removedAt)}</div>}
           </td>
-          <td>{m.state !== "removed" && <RemoveMember room={room} member={m} onResult={onRemoved} />}</td>
+          <td>
+            {removable && m.state !== "removed" && <RemoveMember room={room} member={m} onResult={onRemoved} />}
+          </td>
         </tr>
       ))}
     </DataTable>
@@ -563,11 +594,12 @@ function AddMember({ room, onDone }: { room: CommunityRoom; onDone: () => void }
             onChange={(e) => setMember(e.target.value)}
           />
         </Field>
-        <fieldset className="community-choices inline">
+        <fieldset className="choice-group inline">
           <legend className="field-label">Actions</legend>
           {MEMBER_ACTIONS.map((a) => (
-            <label key={a.id} title={a.hint}>
-              <input type="checkbox" checked={actions.includes(a.id)} onChange={() => toggle(a.id)} /> {a.id}
+            <label key={a.id} className="checkbox" title={a.hint}>
+              <input type="checkbox" checked={actions.includes(a.id)} onChange={() => toggle(a.id)} />
+              <span className="checkbox-text">{a.id}</span>
             </label>
           ))}
         </fieldset>

@@ -173,7 +173,7 @@ pub enum IssuedCredentialStatus {
     Revoked,
 }
 
-/// `spec/vta/credentials/list/0.1` request body.
+/// `spec/vta/credentials/list/0.2` request body.
 ///
 /// Every member is an optional filter, AND-combined. An unfiltered request is
 /// answered — unlike `vault/credentials/query`, which refuses one. The two look
@@ -194,7 +194,7 @@ pub struct ListCredentialsBody {
     pub status: Option<IssuedCredentialStatus>,
     /// Maximum records to return. The agent caps this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<u32>,
+    pub limit: Option<u32>,
     /// Continue a previous page. Opaque to the caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
@@ -243,19 +243,18 @@ pub struct IssuedCredentialSummary {
     pub revocation_reason: Option<String>,
 }
 
-/// `spec/vta/credentials/list/0.1` response body.
+/// `spec/vta/credentials/list/0.2` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListCredentialsResponse {
     /// One summary per matching credential. Empty when nothing matched — a
     /// successful answer, not an error.
     pub credentials: Vec<IssuedCredentialSummary>,
-    /// The agent stopped early. A consumer must not read a truncated page as a
-    /// complete account of what was issued.
-    pub truncated: bool,
-    /// Pass to the next request to continue. Absent on the last page.
+    /// Pass to the next request's `cursor` to continue. Present exactly when
+    /// the agent stopped early, so a consumer must not read a page carrying it
+    /// as a complete account of what was issued; absent on the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
     /// Ecosystem-defined extension members (SPEC §4.5.1).
     ///
     /// Carried explicitly rather than swept up by relaxing

@@ -280,6 +280,9 @@ pub struct VtaClient {
     /// receive leg belongs to the session they share. See
     /// [`VtaClient::receive_health`].
     pub(super) receive_leg: std::sync::Arc<ReceiveLeg>,
+    /// The room profiles' `recordMembers` this client resolved, per room epoch — see
+    /// [`VtaClient::room_record_members`]. Shared by clones.
+    pub(super) record_members: std::sync::Arc<rooms_records::RecordMembersCache>,
 }
 
 /// Reply timeouts in a row after which a client stops re-forming its TSP
@@ -418,18 +421,30 @@ mod external;
 pub use external::presign_split_at;
 #[cfg(feature = "sealed-transfer")]
 pub use external::{open_external_credential, seal_external_secret};
+mod collection;
 #[cfg(feature = "test-loopback")]
 pub mod loopback;
 mod memory;
+mod notifications;
 mod pcs;
 mod persona;
 mod policy;
 mod rooms;
+mod rooms_records;
+mod rooms_watch;
 mod witness;
 pub use rooms::{
     RoomAction, RoomLabelEdit, RoomRegistration, RoomRetentionPolicy, RoomVisibility,
     is_community_type, is_offer_type, room_label_payload, unsigned_community_request,
     unsigned_room_request,
+};
+pub use rooms_records::{
+    MEMBER_PROFILE_KIND, RECORD_BODY_MEMBERS, RECORD_FILE_MEMBERS, RECORD_KIND_VALUES,
+    ROOM_READ_MAX_KEYS, RoomBrowse, check_record_members, record_members_permitted,
+    record_members_used, unsigned_room_request_v0_11,
+};
+pub use rooms_watch::{
+    ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal, unsigned_room_request_v0_12,
 };
 mod secrets;
 mod vault;
@@ -439,7 +454,7 @@ mod webvh;
 ///
 /// Re-exported so the shape can be *built* by anything that needs to assert it,
 /// rather than hand-written a second time and left to drift.
-pub use webvh::flatten_with_did;
+pub use webvh::{flatten_with_did, update_task_for};
 
 #[cfg(feature = "client")]
 mod audit;
@@ -524,6 +539,7 @@ impl VtaClient {
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
             receive_leg: Default::default(),
+            record_members: Default::default(),
             identity: None,
             transport: Transport::Rest {
                 client: crate::http::rest_client(),
@@ -575,6 +591,7 @@ impl VtaClient {
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
             receive_leg: Default::default(),
+            record_members: Default::default(),
             identity: Some(std::sync::Arc::new(identity)),
             transport: Transport::Rest {
                 client: http,
@@ -681,6 +698,7 @@ impl VtaClient {
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
             receive_leg: Default::default(),
+            record_members: Default::default(),
             identity: identity.map(std::sync::Arc::new),
             transport: Transport::DIDComm {
                 session,
@@ -988,6 +1006,7 @@ impl VtaClient {
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
             receive_leg: Default::default(),
+            record_members: Default::default(),
             identity: identity.map(std::sync::Arc::new),
             transport: Transport::Tsp {
                 session: std::sync::Arc::new(session),
@@ -1834,7 +1853,7 @@ impl VtaClient {
     /// the failure moves earlier and gets more legible, it does not get more
     /// frequent.
     fn check_payload_conforms(type_uri: &str, payload: &serde_json::Value) -> Result<(), VtaError> {
-        let Some(schema) = trust_tasks_rs::schema_index::schema_for(type_uri) else {
+        let Some(schema) = vti_specs::schema_index::schema_for(type_uri) else {
             return Ok(());
         };
         trust_tasks_rs::validate::against_schema(schema, payload).map_err(|e| {
@@ -2877,7 +2896,7 @@ impl VtaClient {
     #[cfg(feature = "client")]
     pub async fn health_details(
         &self,
-    ) -> Result<trust_tasks_rs::specs::vta::health::details::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::vta::health::details::v0_1::Response, VtaError> {
         self.rpc_tt(
             crate::trust_tasks::TASK_VTA_HEALTH_DETAILS_0_1,
             serde_json::json!({}),
@@ -2898,8 +2917,8 @@ impl VtaClient {
     #[cfg(feature = "client")]
     pub async fn restore_status(
         &self,
-    ) -> Result<trust_tasks_rs::specs::vta::restore::status::v0_1::Response, VtaError> {
-        let resp: trust_tasks_rs::specs::vta::restore::status::v0_1::Response = self
+    ) -> Result<vti_specs::vta::restore::status::v0_1::Response, VtaError> {
+        let resp: vti_specs::vta::restore::status::v0_1::Response = self
             .rpc_tt(
                 crate::trust_tasks::TASK_VTA_RESTORE_STATUS_0_1,
                 serde_json::json!({}),
@@ -2928,7 +2947,7 @@ impl VtaClient {
     #[cfg(feature = "client")]
     pub async fn list_my_sessions(
         &self,
-    ) -> Result<trust_tasks_rs::specs::auth::sessions::list::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::auth::sessions::list::v0_1::Response, VtaError> {
         self.rpc_tt(
             crate::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1,
             serde_json::json!({}),
@@ -2960,7 +2979,7 @@ impl VtaClient {
         if let Some(reason) = reason {
             payload["reason"] = serde_json::Value::String(reason.to_string());
         }
-        let resp: trust_tasks_rs::specs::auth::revoke_session::v0_2::Response = self
+        let resp: vti_specs::auth::revoke_session::v0_2::Response = self
             .rpc_tt(
                 crate::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
                 payload,
@@ -2978,7 +2997,7 @@ impl VtaClient {
     // and `features`/`services` at the DID document, which is authoritative for
     // what a party speaks. `didCreationModes` had no consumer at all.
 
-    /// Ask which Trust Task types this agent serves — `trust-task-discovery/0.1`.
+    /// Ask which Trust Task types this agent serves — `trust-task-discovery/0.3`.
     ///
     /// `patterns` are slug globs matched against the URI's slug (everything
     /// after `https://trusttasks.org/spec/`): `*` for everything, `vta/acl/*`
@@ -3001,7 +3020,7 @@ impl VtaClient {
         patterns: &[&str],
     ) -> Result<crate::protocols::discovery::SupportedTasksResponse, VtaError> {
         self.rpc_tt(
-            crate::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
+            crate::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
             serde_json::json!({ "patterns": patterns }),
             30,
         )
@@ -3517,7 +3536,7 @@ mod tests {
     async fn an_error_document_needs_no_proof() {
         let client = signed_reply_client();
         let doc = serde_json::json!({
-            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.6",
             "payload": { "code": "taskFailed", "message": "no" }
         });
         client
@@ -3831,11 +3850,25 @@ mod tests {
         };
         let json = serde_json::to_value(&req).unwrap();
         // The builder API is unchanged; only what it serialises moved. The wire
-        // is canonical `acl/grant/0.1`: the entry is nested and uses `subject`
-        // and `scopes`.
+        // is canonical `acl/grant/0.2`: the entry is nested, uses `subject`, and
+        // states every authority axis explicitly.
         assert_eq!(json["entry"]["subject"], "did:key:z6Mk123");
         assert_eq!(json["entry"]["role"], "admin");
-        assert_eq!(json["entry"]["scopes"][0], "vta");
+        assert_eq!(
+            json["entry"]["act"],
+            serde_json::json!({"scope": "contexts", "contexts": ["vta"]})
+        );
+        assert_eq!(json["entry"]["keys"], serde_json::json!({"scope": "all"}));
+        assert_eq!(
+            json["entry"]["capabilities"],
+            serde_json::json!({"scope": "ceiling"})
+        );
+        // Approve authority is stated as none rather than left to absence.
+        assert_eq!(
+            json["entry"]["approve"],
+            serde_json::json!({"scope": "none"})
+        );
+        assert!(json["entry"].get("approveCapabilities").is_none());
         assert!(
             json.get("did").is_none(),
             "pre-fold flat shape is gone: {json}"
@@ -3843,12 +3876,33 @@ mod tests {
         // An omitted approver must not appear at all — an empty `stepUp` object
         // would read as a configured-but-blank override rather than absence.
         assert!(json["entry"].get("stepUp").is_none());
-        assert!(json["entry"].get("approve").is_none());
         // An unset label is omitted rather than emitted as null.
         assert!(!json["entry"].as_object().unwrap().contains_key("label"));
-        assert_eq!(json["entry"]["scopes"], serde_json::json!(["vta"]));
-        // And the pre-fold member name is not emitted alongside the new one.
-        assert!(json["entry"].get("allowedContexts").is_none(), "{json}");
+        // And no 0.1 member is emitted alongside the 0.2 ones.
+        for legacy in ["scopes", "allowedKeys", "allowedContexts"] {
+            assert!(json["entry"].get(legacy).is_none(), "{legacy}: {json}");
+        }
+
+        // The empty-list reading is the role's, stated explicitly: an admin
+        // with no contexts acts everywhere, any other role nowhere.
+        let admin = serde_json::to_value(CreateAclRequest::new("did:key:zA", "admin")).unwrap();
+        assert_eq!(admin["entry"]["act"], serde_json::json!({"scope": "all"}));
+        let reader = serde_json::to_value(CreateAclRequest::new("did:key:zB", "reader")).unwrap();
+        assert_eq!(reader["entry"]["act"], serde_json::json!({"scope": "none"}));
+        // "The whole role plus an additive grant" is the ceiling enumerated.
+        let holder = serde_json::to_value(
+            CreateAclRequest::new("did:key:zC", "reader")
+                .capabilities(vec!["persona-holder".into()]),
+        )
+        .unwrap();
+        assert_eq!(
+            holder["entry"]["capabilities"],
+            serde_json::json!({"scope": "listed", "grants": [
+                {"capability": "vault-read"},
+                {"capability": "memory-read"},
+                {"capability": "persona-holder", "additive": true},
+            ]})
+        );
     }
 
     #[test]
@@ -3936,10 +3990,10 @@ mod tests {
 
     #[test]
     fn test_list_keys_response_deserialization() {
-        let json = r#"{"keys":[],"total":0}"#;
+        let json = r#"{"keys":[]}"#;
         let resp: ListKeysResponse = serde_json::from_str(json).unwrap();
         assert!(resp.keys.is_empty());
-        assert_eq!(resp.total, 0);
+        assert!(resp.next_cursor.is_none());
     }
 
     #[test]
@@ -3973,15 +4027,12 @@ mod tests {
         // A framework success document carries `payload`; dispatch returns it.
         let doc = serde_json::json!({
             "id": "urn:uuid:abc",
-            "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "type": "https://trusttasks.org/spec/device/list/0.3#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": { "devices": [], "truncated": false }
+            "payload": { "devices": [] }
         });
         let out = VtaClient::extract_trust_task_payload(doc).unwrap();
-        assert_eq!(
-            out,
-            serde_json::json!({ "devices": [], "truncated": false })
-        );
+        assert_eq!(out, serde_json::json!({ "devices": [] }));
     }
 
     #[test]
@@ -3991,7 +4042,7 @@ mod tests {
         // reject reason rather than a silent empty success.
         let doc = serde_json::json!({
             "id": "urn:uuid:def",
-            "type": "https://trusttasks.org/spec/vault/get/0.1#reject",
+            "type": "https://trusttasks.org/spec/vault/get/0.3#reject",
             "reason": "vault/get:notFound — no such entry"
         });
         let err = VtaClient::extract_trust_task_payload(doc).unwrap_err();
@@ -4195,7 +4246,7 @@ mod idempotency_document_tests {
         IDEMPOTENCY_KEY
             .scope("urn:uuid:k".to_string(), async {
                 let doc = build_task_document(
-                    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+                    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
                     serde_json::json!({}),
                     None,
                 );
@@ -4223,7 +4274,7 @@ mod idempotency_document_tests {
     #[tokio::test]
     async fn outside_a_scope_no_document_carries_a_key() {
         let doc = build_task_document(
-            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
             serde_json::json!({}),
             None,
         );
@@ -4267,7 +4318,7 @@ mod client_identity_tests {
     use super::*;
     use crate::trust_tasks;
 
-    const TYPE: &str = trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0;
+    const TYPE: &str = trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2;
 
     fn did_key_from_seed(seed_byte: u8) -> (String, String) {
         let seed = [seed_byte; 32];
@@ -4364,7 +4415,7 @@ mod client_identity_tests {
         // wrong.
         const URIS: [&str; 3] = [
             trust_tasks::TASK_CONTEXTS_CREATE_1_0,
-            trust_tasks::TASK_ACL_GRANT_0_1,
+            trust_tasks::TASK_ACL_GRANT_0_2,
             trust_tasks::TASK_CONTEXTS_LIST_1_0,
         ];
 
@@ -4373,7 +4424,7 @@ mod client_identity_tests {
         let mut saw_proof_required = false;
 
         for uri in URIS {
-            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri).unwrap_or_else(|| {
+            let policy = vti_specs::schema_index::spec_policy_for(uri).unwrap_or_else(|| {
                 panic!("{uri} has no published policy — the registry moved under this test")
             });
             saw_proof_required |= policy.is_proof_required;

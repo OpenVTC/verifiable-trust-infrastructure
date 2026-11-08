@@ -41,7 +41,7 @@ pub enum DiagCheck {
     /// token — so a green row here does mean the grant landed.
     AuthenticateREST,
     /// The first round-trip that asks the **VTA** anything:
-    /// `trust-task-discovery/0.1`, whose answer is the VTA's own dispatch
+    /// `trust-task-discovery/0.3`, whose answer is the VTA's own dispatch
     /// table.
     ///
     /// It settles the three questions the rows above cannot, in one call and

@@ -89,7 +89,7 @@ const RESEND_0_2_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/r
 const ENDORSEMENT_REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 const ENDORSEMENT_TYPE_REGISTER_TASK: &str =
     "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
-const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 
 /// The community's own policy for naming vetters automatically: any active

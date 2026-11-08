@@ -331,7 +331,7 @@ async fn audit_list_round_trips_through_the_real_client() {
     }
 
     let params = vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
-        page_size: Some(2),
+        limit: Some(2),
         ..Default::default()
     };
     let first = client
@@ -339,10 +339,10 @@ async fn audit_list_round_trips_through_the_real_client() {
         .await
         .expect("audit/list round-trips");
 
-    assert_eq!(first.entries.len(), 2, "pageSize must be honoured");
+    assert_eq!(first.entries.len(), 2, "limit must be honoured");
     assert!(
-        first.truncated && first.cursor.is_some(),
-        "more entries exist, so the page must be marked truncated with a cursor"
+        first.next_cursor.is_some(),
+        "more entries exist, so the page must carry a nextCursor"
     );
 
     // The envelope arrives populated — not a shape-compatible row of
@@ -367,7 +367,7 @@ async fn audit_list_round_trips_through_the_real_client() {
     let next = client
         .list_audit_logs(
             &vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
-                cursor: first.cursor.clone(),
+                cursor: first.next_cursor.clone(),
                 ..params.clone()
             },
         )
@@ -406,18 +406,18 @@ async fn audit_cursor_is_bound_to_its_filters() {
     let first = client
         .list_audit_logs(
             &vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
-                page_size: Some(1),
+                limit: Some(1),
                 ..Default::default()
             },
         )
         .await
         .expect("audit/list round-trips");
-    let cursor = first.cursor.expect("more entries remain");
+    let cursor = first.next_cursor.expect("more entries remain");
 
     let err = client
         .list_audit_logs(
             &vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
-                page_size: Some(1),
+                limit: Some(1),
                 cursor: Some(cursor),
                 // A filter that was not in force when the cursor was minted.
                 action: Some("acl.create".into()),

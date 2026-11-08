@@ -10,7 +10,7 @@ use chrono::Utc;
 use serde_json::Value;
 use trust_tasks_rs::{ErrorPayload, TrustTask, TrustTaskCode};
 use uuid::Uuid;
-use vti_voting::service::{BallotBox, Caller, Failure, VerifiedCast};
+use vti_voting::service::{BallotBox, Caller, ElectionVersion, Failure, VerifiedCast};
 
 use crate::config::CommunitiesConfig;
 use crate::identity::Identity;
@@ -27,6 +27,9 @@ pub struct AppState {
     /// One permit per cast being checked: the checks run on blocking threads, never more at
     /// once than the machine has cores.
     pub cast_checks: tokio::sync::Semaphore,
+    /// Whether the identity's mediator session is connected right now, as its supervisor
+    /// reports it; `None` without a provisioned identity (the HTTPS-only test `did:key`).
+    pub messaging: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl AppState {
@@ -44,7 +47,16 @@ impl AppState {
             resolver,
             communities,
             cast_checks: tokio::sync::Semaphore::new(cores),
+            messaging: None,
         }
+    }
+
+    /// The state of a service that reaches its mediator: `connected` is
+    /// [`vti_common::host_session::supervise_reporting`]'s report.
+    #[must_use]
+    pub fn with_messaging(mut self, connected: tokio::sync::watch::Receiver<bool>) -> Self {
+        self.messaging = Some(connected);
+        self
     }
 }
 
@@ -95,11 +107,38 @@ enum Task {
 }
 
 impl Task {
-    fn from_type(type_uri: &str) -> Option<Self> {
+    /// The task `type_uri` names, at whatever version it names it: `Ok` with that version when
+    /// it is one served ([`Task::versions`]), `Err(Some(task))` for a task served at another
+    /// version, `Err(None)` for anything else.
+    fn from_type(type_uri: &str) -> Result<(Self, &'static str), Option<Self>> {
         // A request's `#request` fragment is optional (framework SPEC §4.4.1): the generated
         // payload types, and so every peer sending through them, use the bare form.
         let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
-        let rest = bare.strip_prefix(SPEC)?.strip_suffix("/0.1")?;
+        let path = bare.strip_prefix(SPEC).ok_or(None)?;
+        let (slug, version) = path.rsplit_once('/').ok_or(None)?;
+        let task = Self::from_slug(slug).ok_or(None)?;
+        task.versions()
+            .iter()
+            .find(|v| **v == version)
+            .map(|v| (task, *v))
+            .ok_or(Some(task))
+    }
+
+    /// The versions this service serves: `voting/election/{register,show}` at 0.4, whose
+    /// manifest admits the `credential` roll (voting/_shared/0.4, VTI-VOT-025), at 0.3, whose
+    /// manifest admits a `textReleaseThreshold` as low as 1 (voting/_shared/0.3, VTI-VOT-065),
+    /// and at 0.2, whose manifest admits 10 or more, for communities that send them;
+    /// `voting/board/read` at 0.2, whose lifecycle entries name their instants `…At`
+    /// (voting/_shared/0.2); every other task at 0.1.
+    fn versions(self) -> &'static [&'static str] {
+        match self {
+            Task::Register | Task::Show => &["0.4", "0.3", "0.2"],
+            Task::Read => &["0.2"],
+            _ => &["0.1"],
+        }
+    }
+
+    fn from_slug(rest: &str) -> Option<Self> {
         Some(match rest {
             "voting/election/register" => Task::Register,
             "voting/election/show" => Task::Show,
@@ -252,14 +291,25 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
         )
         .await;
     }
-    let Some(task) = Task::from_type(&doc.type_uri.to_string()) else {
-        return refuse(
-            state,
-            &doc,
-            standard("unsupportedType"),
-            "not a task this service serves",
-        )
-        .await;
+    let (task, version) = match Task::from_type(&doc.type_uri.to_string()) {
+        Ok(served) => served,
+        Err(Some(task)) => {
+            let message = format!(
+                "this ballot box serves {} at {} only",
+                task.slug(),
+                task.versions().join(" and ")
+            );
+            return refuse(state, &doc, standard("unsupportedVersion"), &message).await;
+        }
+        Err(None) => {
+            return refuse(
+                state,
+                &doc,
+                standard("unsupportedType"),
+                "not a task this service serves",
+            )
+            .await;
+        }
     };
     let now = Utc::now();
     if doc.expires_at.is_some_and(|t| t < now) {
@@ -393,9 +443,9 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
         match task {
             Task::Register => match registration_refused(state, &bb, signer_did, p) {
                 Some(f) => Err(f),
-                None => bb.register(signer_did, p, now),
+                None => bb.register_at(election_version(version), signer_did, p, now),
             },
-            Task::Show => bb.show(caller, p, now),
+            Task::Show => bb.show_at(election_version(version), caller, p, now),
             Task::Close => bb.close(signer_did, p, now),
             Task::Cancel => bb.cancel(signer_did, p, now),
             Task::Cast => match &verified {
@@ -431,6 +481,15 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
             signed(state, StatusCode::OK, value).await
         }
         Err(f) => refuse_failure(state, &doc, task, f).await,
+    }
+}
+
+/// The `voting/election/{register,show}` version a served `version` names: 0.2, 0.3 or 0.4.
+fn election_version(version: &str) -> ElectionVersion {
+    match version {
+        "0.2" => ElectionVersion::V0_2,
+        "0.3" => ElectionVersion::V0_3,
+        _ => ElectionVersion::V0_4,
     }
 }
 

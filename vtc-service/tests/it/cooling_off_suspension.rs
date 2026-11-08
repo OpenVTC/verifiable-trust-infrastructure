@@ -32,12 +32,12 @@ use crate::common::second_party::{Gesturer, parked_action, show_action, step_up_
 use crate::common::signed::{assert_conforms, error_code, post, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 const ACL_SHOW: &str = "https://trusttasks.org/spec/acl/show/0.2";
-const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
-const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
-const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2";
+const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
+const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 
 struct Fixture {
@@ -122,7 +122,12 @@ async fn cool_off(fix: &mut Fixture, a: &Party, b: &Party) -> String {
     let (status, reply) = submit(
         fix,
         a,
-        &signed(a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
@@ -142,7 +147,7 @@ async fn revoke_now(a: &Party, b: &Party, confirm: &str, action_id: Option<&str>
     signed(
         a,
         REVOKE,
-        json!({ "subject": b.did, "ext": { "org.openvtc": { "immediate": immediate } } }),
+        json!({ "subject": b.did, "revocation": { "kind": "entry" }, "ext": { "org.openvtc": { "immediate": immediate } } }),
     )
     .await
 }
@@ -261,7 +266,7 @@ async fn cooling_off_suspends_subject_until_it_lands() {
         &signed(
             &b,
             GRANT,
-            json!({ "entry": { "subject": Party::new().did, "role": "moderator", "scopes": [] } }),
+            crate::common::signed::grant_payload(&Party::new().did, "moderator"),
         )
         .await,
     )
@@ -368,7 +373,7 @@ async fn suspended_subject_cannot_act_approve_or_counter_remove() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": d.did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&d.did, "admin"),
         )
         .await,
     )
@@ -381,7 +386,7 @@ async fn suspended_subject_cannot_act_approve_or_counter_remove() {
         &signed(
             &b,
             GRANT,
-            json!({ "entry": { "subject": Party::new().did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&Party::new().did, "admin"),
         )
         .await,
     )
@@ -412,7 +417,12 @@ async fn suspended_subject_cannot_act_approve_or_counter_remove() {
     // removal of B is not hurried — it still waits out its cooling-off.
     let (status, reply) = post(
         &fix.vtc,
-        &signed(&b, REVOKE, json!({ "subject": a.did })).await,
+        &signed(
+            &b,
+            REVOKE,
+            json!({ "subject": a.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
@@ -540,7 +550,12 @@ async fn suspension_never_leaves_no_live_unrestricted_entry() {
     let (status, reply) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did, "reason": "again" })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did, "revocation": { "kind": "entry" }, "reason": "again" }),
+        )
+        .await,
     )
     .await;
     assert!(!status.is_success(), "{reply}");
@@ -653,7 +668,7 @@ async fn remove_now_refused_on_wrong_confirmation() {
         &signed(
             &a,
             REVOKE,
-            json!({ "subject": b.did, "ext": { "org.openvtc": { "immediate": true } } }),
+            json!({ "subject": b.did, "revocation": { "kind": "entry" }, "ext": { "org.openvtc": { "immediate": true } } }),
         )
         .await,
     )
@@ -673,14 +688,19 @@ async fn remove_now_gesture_not_spendable_on_delayed_removal_and_vice_versa() {
     let b = admin(&fix).await;
 
     // A gesture for the delayed removal...
-    let delayed = signed(&a, REVOKE, json!({ "subject": b.did, "reason": "one" })).await;
+    let delayed = signed(
+        &a,
+        REVOKE,
+        json!({ "subject": b.did, "revocation": { "kind": "entry" }, "reason": "one" }),
+    )
+    .await;
     let (_, asked) = post(&fix.vtc, &delayed).await;
     fix.gesturer.gesture(&fix.vtc, &a, &asked).await;
     // ...does not admit the immediate one.
     let immediate = signed(
         &a,
         REVOKE,
-        json!({ "subject": b.did, "reason": "one",
+        json!({ "subject": b.did, "revocation": { "kind": "entry" }, "reason": "one",
                 "ext": { "org.openvtc": { "immediate": { "confirm": b.did } } } }),
     )
     .await;
@@ -692,14 +712,19 @@ async fn remove_now_gesture_not_spendable_on_delayed_removal_and_vice_versa() {
     let immediate = signed(
         &a,
         REVOKE,
-        json!({ "subject": b.did, "reason": "two",
+        json!({ "subject": b.did, "revocation": { "kind": "entry" }, "reason": "two",
                 "ext": { "org.openvtc": { "immediate": { "confirm": b.did } } } }),
     )
     .await;
     let (_, asked) = post(&fix.vtc, &immediate).await;
     fix.gesturer.gesture(&fix.vtc, &a, &asked).await;
     // ...does not admit the delayed one: it asks again rather than parking.
-    let delayed = signed(&a, REVOKE, json!({ "subject": b.did, "reason": "two" })).await;
+    let delayed = signed(
+        &a,
+        REVOKE,
+        json!({ "subject": b.did, "revocation": { "kind": "entry" }, "reason": "two" }),
+    )
+    .await;
     let (_, reply) = post(&fix.vtc, &delayed).await;
     assert!(step_up_request(&reply).is_some(), "asked again: {reply}");
     assert!(parked_action(&reply).is_none(), "{reply}");
@@ -726,7 +751,7 @@ async fn land_now_on_open_cooling_off() {
         &signed(
             &a,
             REVOKE,
-            json!({ "subject": b.did, "reason": "different",
+            json!({ "subject": b.did, "revocation": { "kind": "entry" }, "reason": "different",
                     "ext": { "org.openvtc": { "immediate": { "confirm": id, "actionId": id } } } }),
         )
         .await,
@@ -760,8 +785,8 @@ async fn land_now_on_open_cooling_off() {
 
 // ─── the git projection during a cooling-off (§8.2) ───────────────────────
 
-const GIT_BIND: &str = "https://trusttasks.org/spec/git-ns/namespace/bind/0.1";
-const GIT_GRANT: &str = "https://trusttasks.org/spec/git-ns/right/grant/0.3";
+const GIT_BIND: &str = "https://trusttasks.org/spec/git-ns/namespace/bind/0.2";
+const GIT_GRANT: &str = "https://trusttasks.org/spec/git-ns/right/grant/0.4";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 
 /// A removal policy that allows every removal, tombstoning the member.
@@ -963,6 +988,7 @@ async fn a_suspension_records_the_removals_owed_from_community_rooms() {
             offered_at: "2026-01-01T00:00:00Z".into(),
             admitted_at: Some("2026-01-01T00:00:00Z".into()),
             removed_at: None,
+            suspended_at: None,
             credentials: None,
             welcome: None,
             admitted_epoch: Some(2),

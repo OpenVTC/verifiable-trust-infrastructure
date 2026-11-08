@@ -169,6 +169,31 @@ describe("data rooms in the portal", () => {
     expect(screen.getByText("did:webvh:QmMine:rooms.example")).toBeTruthy();
   });
 
+  it("an open room is shown as open, never as an epoch it does not have", async () => {
+    const shared = { sharedAt: "2026-10-16T00:00:00Z", expiresAt: "2026-11-15T00:00:00Z" };
+    const wallet = fakeWallet({
+      list: vi.fn(async () => ({
+        rooms: [{ roomId: ROOM, label: "Public Data Room", visibility: "open", held: true, member: MEMBER, ...shared }],
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    const { unmount } = renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    expect(await screen.findByText(/open room · as you/)).toBeTruthy();
+    expect(screen.queryByText(/epoch/)).toBeNull();
+    unmount();
+
+    // Left: no keys to blame.
+    const left = fakeWallet({
+      list: vi.fn(async () => ({
+        rooms: [{ roomId: ROOM, label: "Public Data Room", visibility: "open", held: false, member: MEMBER, ...shared }],
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: left };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    expect(await screen.findByText(/you are no longer in this room/)).toBeTruthy();
+    expect(screen.queryByText(/keys/)).toBeNull();
+  });
+
   it("a community room's page is headed by its name, and a wallet without names leaves the DID", async () => {
     const shared = { held: true, sharedAt: "2026-10-16T00:00:00Z", expiresAt: "2026-11-15T00:00:00Z" };
     const named = fakeWallet({ list: vi.fn(async () => ({ rooms: [{ roomId: ROOM, label: "Board pack", ...shared }] })) });
@@ -311,6 +336,47 @@ describe("data rooms in the portal", () => {
     await screen.findByText(/Joined Board pack/);
   });
 
+  it("a room the community archived, closed or is removing says so, in a member's words", async () => {
+    const wallet = fakeWallet({
+      offers: vi.fn(async () => ({
+        offers: [
+          { ...OFFER, state: "joined" as const, roomState: "archived" as const, roomAccess: "readOnly" as const },
+          {
+            ...OFFER,
+            roomId: "did:webvh:QmClosed:rooms.example",
+            label: "Closed",
+            state: "suspended" as const,
+            roomState: "archived" as const,
+            roomAccess: "noAccess" as const,
+          },
+          {
+            ...OFFER,
+            roomId: "did:webvh:QmGoing:rooms.example",
+            label: "Going",
+            state: "suspended" as const,
+            roomState: "removalScheduled" as const,
+            roomAccess: "noAccess" as const,
+            purgeAt: "2099-01-01T00:00:00Z",
+          },
+          // A wallet reading memberships/list 0.1 says nothing of the room's state.
+          { ...OFFER, roomId: "did:webvh:QmPlain:rooms.example", label: "Plain", state: "joined" as const },
+        ],
+      })),
+      acceptOffer: vi.fn(),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    await screen.findByText("Closed");
+    expect(screen.getByText(/joined · read-only/)).toBeTruthy();
+    expect(screen.getByText(/you can still read it, but nothing new can be added/)).toBeTruthy();
+    expect(screen.getAllByText(/closed for now/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/You are restored if it reopens/)).toBeTruthy();
+    expect(screen.getByText(/removal scheduled/)).toBeTruthy();
+    expect(screen.getByText(/deleted on that date unless the removal is cancelled/)).toBeTruthy();
+    // No accept for any of them.
+    expect(screen.queryByRole("button", { name: /Accept/ })).toBeNull();
+  });
+
   it("a member who declines in the wallet sees the offer stays open, not an error", async () => {
     const wallet = fakeWallet({
       offers: vi.fn(async () => ({ offers: [OFFER] })),
@@ -366,6 +432,23 @@ describe("data rooms in the portal", () => {
     await waitFor(() => expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({ hostDid: HOST, roomId: ROOM, title: "Pricing", body: "Hold." }));
   });
 
+  // rooms/records/put/0.4: an open room takes files too, encrypted under a key
+  // its record carries in the clear — which the card says.
+  it("an open room takes a note and a file, both said to be readable by its host", async () => {
+    const wallet = fakeWallet({ info: vi.fn(async () => ({ ...INFO, visibility: "open" })) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText("Add to this room");
+    expect(screen.getByText(/a file is stored encrypted under a key its record/)).toBeTruthy();
+    expect(screen.getByText(/host can read both, as well as its members/)).toBeTruthy();
+    expect(screen.getByLabelText("Or a file")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Add file/ })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add note/ }));
+    await screen.findByText("Note added.");
+    await waitFor(() => expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({ hostDid: HOST, roomId: ROOM, title: "Hello" }));
+  });
+
   it("an opened record takes the add form's place beside the list, and Add or Close brings the form back", async () => {
     const wallet = fakeWallet();
     (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
@@ -383,6 +466,31 @@ describe("data rooms in the portal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Term sheet/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Close" }));
     await screen.findByText("Add to this room");
+  });
+
+  // An open room's record is not signed by its author, so its file is checked
+  // against the digest the record states — and the record view says so.
+  it("an open room's file is said to match its record's digest, not its author's signature", async () => {
+    const wallet = fakeWallet({
+      info: vi.fn(async () => ({ ...INFO, visibility: "open" })),
+      read: vi.fn(async () => ({
+        key: "k1",
+        version: 2,
+        status: "active",
+        updatedAt: "2026-10-16T00:00:00Z",
+        author: MEMBER,
+        title: "Term sheet",
+        file: { name: "terms.pdf", size: 1234, mediaType: "application/pdf" },
+        sealed: false,
+        verification: {},
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Term sheet/ }));
+    await screen.findByRole("button", { name: /Download/ });
+    expect(screen.getByText(/checked against the digest its record states/)).toBeTruthy();
+    expect(screen.queryByText(/what its author signed/)).toBeNull();
   });
 
   it("names authors briefly — the member's own as you — and folds retracted records away", async () => {

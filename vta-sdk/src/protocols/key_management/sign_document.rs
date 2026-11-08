@@ -6,6 +6,6 @@
 //! open object: the proof covers every member the producer sent, so a producer
 //! uses the returned `document` exactly as it is.
 
-pub use trust_tasks_rs::specs::keys::sign_document::v0_1::{
+pub use vti_specs::keys::sign_document::v0_1::{
     Payload as SignDocumentPayload, Response as SignDocumentResponse, error_codes,
 };

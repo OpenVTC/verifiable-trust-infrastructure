@@ -209,7 +209,7 @@ export const ACTIVITY: GitNsActivityItem[] = [
   {
     source: "audit",
     action: "gitNs.right.granted",
-    at: "2026-09-21T10:00:00Z",
+    occurredAt: "2026-09-21T10:00:00Z",
     actor: ALICE,
     subject: JUN,
     right: "git.commit.sign",
@@ -219,7 +219,7 @@ export const ACTIVITY: GitNsActivityItem[] = [
   {
     source: "job",
     action: "gitNs.job.bootstrap",
-    at: "2026-08-02T00:05:00Z",
+    occurredAt: "2026-08-02T00:05:00Z",
     detail: "succeeded",
     resource: "github.com/acme/widgets",
     namespace: "ns_acme",
@@ -227,7 +227,7 @@ export const ACTIVITY: GitNsActivityItem[] = [
   {
     source: "audit",
     action: "gitNs.right.granted",
-    at: "2026-08-10T00:00:00Z",
+    occurredAt: "2026-08-10T00:00:00Z",
     actor: BOB,
     subject: BOB,
     right: "git.repo.own",
@@ -246,7 +246,7 @@ export const ALICE_BREAK_GLASS: GitNsBreakGlassItem = {
   grantedAt: "2026-09-25T02:10:31Z",
   breakGlass: {
     by: ALICE,
-    at: "2026-09-25T02:10:31Z",
+    recordedAt: "2026-09-25T02:10:31Z",
     justification: "CVE fix must ship tonight; Bob unreachable since 22:00.",
   },
   state: "unratified",
@@ -434,7 +434,7 @@ export function signedReads(o: {
 }
 
 /**
- * `git-ns/view/0.5` answering the administrator's view with `repos`' drift,
+ * `git-ns/view/0.6` answering the administrator's view with `repos`' drift,
  * ahead of [`signedReads`] (pass it in `extra`). A `breakGlass: true` view is
  * answered empty.
  */
@@ -461,7 +461,7 @@ export function driftViewRoute(
   };
 }
 
-/** A `git-ns/view/0.5` `scope: administrator` answer: `docs` has drifted. */
+/** A `git-ns/view/0.6` `scope: administrator` answer: `docs` has drifted. */
 function driftView(namespaces: GitNsNamespaceRow[], waived?: GitNsSelfGrantWaived[]) {
   return {
     ...(waived ? { ext: { "org.openvtc": { selfGrantWaived: waived } } } : {}),
@@ -493,7 +493,7 @@ function driftView(namespaces: GitNsNamespaceRow[], waived?: GitNsSelfGrantWaive
   };
 }
 
-/** A `git-ns/view/0.5` `breakGlass: true` answer holding these items. A
+/** A `git-ns/view/0.6` `breakGlass: true` answer holding these items. A
  *  fixture item marked `ratified` or `pending` gets the mark that says so. */
 function breakGlassView(namespaces: GitNsNamespaceRow[], items: GitNsBreakGlassItem[]) {
   return {

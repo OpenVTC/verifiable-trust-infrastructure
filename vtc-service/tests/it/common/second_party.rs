@@ -21,10 +21,10 @@ use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse};
 
 use vtc_service::test_support::TestVtc;
 
-use super::signed::{post, signed};
+use super::signed::post;
 use super::webauthn_harness::SoftEd25519Authenticator;
 
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
 /// The document type a [`Gesturer::approval`] payload is sent as.
 pub const APPROVE_RESPONSE_TYPE: &str = APPROVE_RESPONSE;
 
@@ -109,7 +109,16 @@ impl Gesturer {
     /// `requester`'s passkey.
     pub async fn gesture(&mut self, vtc: &TestVtc, requester: &Party, refusal: &Value) {
         let payload = self.approval(vtc, refusal).await;
-        let doc = signed(requester, APPROVE_RESPONSE, payload).await;
+        // Addressed to the VTC under test, whatever DID it was configured with.
+        let recipient = vtc
+            .state
+            .config
+            .read()
+            .await
+            .vtc_did
+            .clone()
+            .unwrap_or_else(|| vtc_service::test_support::TEST_VTC_DID.to_string());
+        let doc = super::signed::signed_to(requester, &recipient, APPROVE_RESPONSE, payload).await;
         let (status, ack) = post(vtc, &doc).await;
         assert_eq!(status, StatusCode::OK, "{ack}");
         assert_eq!(ack["payload"]["status"], "recorded", "{ack}");
@@ -173,7 +182,7 @@ impl Gesturer {
 }
 
 const NEXT_STEP: &str = "https://trusttasks.org/spec/trust-task-next-step/0.1";
-const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 
 /// The action a `trust-task-next-step/0.1` reply parked the operation as.
@@ -194,7 +203,7 @@ async fn recipient(vtc: &TestVtc) -> String {
         .unwrap_or_else(|| vtc_service::test_support::TEST_VTC_DID.to_string())
 }
 
-/// `vtc/admin/actions/show/0.1` as `who`: the whole reply.
+/// `vtc/admin/actions/show/0.3` as `who`: the whole reply.
 pub async fn show_action(vtc: &TestVtc, who: &Party, action_id: &str) -> (StatusCode, Value) {
     let doc = super::signed::signed_to(
         who,

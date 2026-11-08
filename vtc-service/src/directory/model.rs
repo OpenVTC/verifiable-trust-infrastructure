@@ -1,7 +1,7 @@
 //! What the directory stores: field definitions and cards.
 //!
 //! These are the community's records, not wire types. Every task reads its
-//! payload through the generated `trust_tasks_rs::specs::vtc::directory`
+//! payload through the generated `vti_specs::vtc::directory`
 //! types (schema-checked first), and answers in the shapes
 //! `_shared/0.1/directory-card` and `_shared/0.1/field-definition` define —
 //! which these records serialize to member for member, so a stored row and

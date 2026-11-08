@@ -236,7 +236,7 @@ impl std::fmt::Debug for PresignedRequest {
 }
 
 /// One storage request a direct transfer needs presigned
-/// (`external/credentials/issue/0.2`, `PresignRequest`): each write bound to its
+/// (`external/credentials/issue/0.3`, `PresignRequest`): each write bound to its
 /// exact length and SHA-256, so storage itself refuses any other bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageOp {

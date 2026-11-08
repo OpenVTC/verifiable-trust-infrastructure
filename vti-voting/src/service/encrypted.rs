@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use trust_tasks_rs::specs::voting::{
+use vti_specs::voting::{
     ballot::cast_encrypted::v0_1 as cast_encrypted,
     trustees::{
         authorize::v0_1 as authorize, confirm::v0_1 as confirm, deal::v0_1 as deal,
@@ -160,7 +160,7 @@ impl ElectionRecord {
         Ok(())
     }
 
-    /// `votingOpens`: the ceremony forms its key from whoever qualifies, or fails.
+    /// `votingOpensAt`: the ceremony forms its key from whoever qualifies, or fails.
     pub(super) fn ceremony_deadline(&mut self) -> Result<(), Failure> {
         let Some(c) = &mut self.ceremony else {
             return Ok(());

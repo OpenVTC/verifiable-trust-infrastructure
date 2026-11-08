@@ -16,7 +16,7 @@ use vtc_service::members::{Member, store_member};
 use vtc_service::policy::default::install_defaults;
 use vtc_service::test_support::TestVtc;
 
-use trust_tasks_rs::specs::vtc::directory::card::present::v0_1::error_codes as codes;
+use vti_specs::vtc::directory::card::present::v0_1::error_codes as codes;
 
 const PRESENT_ERR_NOT_MEMBER: &str = codes::NOT_MEMBER.code;
 const PRESENT_ERR_FIELD_UNKNOWN: &str = codes::FIELD_UNKNOWN.code;

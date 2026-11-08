@@ -182,6 +182,13 @@ pub struct Group {
     /// Where this community serves the group identity's log, when it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did_log_path: Option<String>,
+    /// The badge this group backs (`crate::badges`, VTI-BDG-010): its managers are
+    /// the badge's owners, its members the holders, and its DID issues the badge
+    /// credential in place of a membership credential. A badge group never carries
+    /// authority, is not counted among shared groups, and is not listed among the
+    /// community's groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge_id: Option<String>,
     pub created_at: DateTime<Utc>,
     /// The creating administrator's directory entry, where they have one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -334,6 +341,7 @@ pub async fn on_departure(ks: &KeyspaceHandle, entry_id: &str) -> Result<usize, 
 pub fn audience_groups(state_groups: &[Group], standing: &Standing) -> BTreeSet<String> {
     state_groups
         .iter()
+        .filter(|g| g.badge_id.is_none())
         .filter(|g| standing.member_of.contains(&g.group_id) && standing.sees_members(g))
         .map(|g| g.group_id.clone())
         .collect()
@@ -351,7 +359,7 @@ pub fn new_group_id() -> String {
 }
 
 /// Tell open consoles a group changed (the `groups` topic of
-/// `vtc/admin/events/subscribe/0.3`). A hint, carrying nothing: each stream's
+/// `vtc/admin/events/subscribe/0.6`). A hint, carrying nothing: each stream's
 /// fingerprint decides whether it concerns a group its recipient manages.
 fn changed() {
     crate::admin_events::notify(crate::admin_events::Topic::Groups);
@@ -632,21 +640,12 @@ impl Standing {
 /// The entries holding `vtc.groups.manage` qualified to `group_id`, by entry:
 /// informational, read from the access-control list (`Group.managers`).
 pub async fn managers(state: &AppState, group_id: &str) -> Result<Vec<String>, AppError> {
-    let wanted = ResourceQualifier::Group(group_id.to_string());
-    let now = Utc::now();
-    let mut out = BTreeSet::new();
-    for entry in crate::acl::list_acl_entries(&state.acl_ks).await? {
-        let appointed = entry.resource_grants.iter().any(|g| {
-            g.capability == Capability::GroupsManage && g.resource == wanted && g.is_live(now)
-        });
-        if appointed
-            && let Some(e) =
-                crate::directory::cards::entry_of(state.directory.ks(), &entry.did).await?
-        {
-            out.insert(e);
-        }
-    }
-    Ok(out.into_iter().collect())
+    crate::acl::appointment::holder_entries(
+        state,
+        crate::acl::appointment::Kind::GroupManager,
+        group_id,
+    )
+    .await
 }
 
 /// `m` as `GroupMember` for `standing`: `credentialId` and
@@ -700,6 +699,9 @@ pub async fn wire(state: &AppState, group: &Group, standing: &Standing) -> Resul
     }
     if let Some(by) = &group.created_by {
         out["createdBy"] = json!(by);
+    }
+    if let Some(b) = &group.badge_id {
+        out["badgeId"] = json!(b);
     }
     if standing.sees_members(group) {
         let count = members_of(state.directory.ks(), &group.group_id)

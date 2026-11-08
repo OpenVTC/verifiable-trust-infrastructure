@@ -102,7 +102,7 @@ pub enum SealedPayloadV1 {
     /// [`MessagingBridgeCredentialsBundle`].
     MessagingBridgeCredentials(Box<MessagingBridgeCredentialsBundle>),
     /// A TEE VTA's BIP-39 seed mnemonic, released once during the first-boot
-    /// export window (`vta/attestation/mnemonic-export/1.0`, over DIDComm or
+    /// export window (`vta/attestation/mnemonic-export/1.1`, over DIDComm or
     /// TSP, or signed at first boot over HTTPS — never plain REST) for an
     /// offline paper backup.
     ///
@@ -119,11 +119,11 @@ pub enum SealedPayloadV1 {
     /// it. Additive variant — no existing variant changes.
     ExternalSecret(Box<super::external::ExternalSecretPayload>),
     /// A short-lived, downscoped provider credential issued by
-    /// `external/credentials/issue/0.1`, sealed to the consumer that asked.
+    /// `external/credentials/issue`, sealed to the consumer that asked.
     /// Additive variant — no existing variant changes.
     ExternalCredential(Box<super::external::ExternalCredentialPayload>),
     /// A community's storage credential, sealed in an administrator's client to the
-    /// community for `vtc/storage/credentials/set/0.2`: a `SealedStorageCredential`
+    /// community for `vtc/storage/credentials/set/0.3`: a `SealedStorageCredential`
     /// (`vtc/_shared/0.2/room-storage`), kept as the JSON it was sealed as so the
     /// community reads it as received. Write-only: no task ever returns it. Additive
     /// variant — no existing variant changes.

@@ -433,3 +433,375 @@ async fn the_engine_refuses_with_the_codes_its_specifications_declare() {
     .await;
     assert_eq!(code(&out), "vta/pcs/applications/delete:notFound");
 }
+
+// ─── vta/pcs/vetter/recover ──────────────────────────────────────────────────
+
+fn recover(ctx: &str, member: &str, bound_id: &str) -> TrustTask<Value> {
+    doc(
+        uris::TASK_VTA_PCS_VETTER_RECOVER_0_1,
+        json!({ "contextId": ctx, "community": COMMUNITY, "memberDid": member, "boundId": bound_id }),
+    )
+}
+
+/// Deleting a context takes its vetter engine with it, so a context created again under the
+/// same id starts a fresh engine for a different member.
+///
+/// Before, the old engine record outlived the context: keyed by a digest of the context id and
+/// the community, it was found again by the new context, still pinned to the old member DID and
+/// to a path under the old context's base — and the new member's root request was refused with
+/// `memberMismatch`.
+#[tokio::test]
+async fn a_context_recreated_under_a_deleted_ones_id_enrols_a_new_member() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    let mut rng = StdRng::seed_from_u64(0xCA);
+    let mut vtc = Vtc::new(COMMUNITY, "2026-10", requirements(), &mut rng).unwrap();
+    let params = published(&vtc);
+    enrolled_vetter(&state, &mut vtc, &mut rng, "vetter-a", "did:key:z6MkAlice").await;
+    let old_base = crate::contexts::get_context(&state.contexts_ks, "vetter-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .base_path;
+
+    let super_admin = AuthClaims {
+        allowed_contexts: Vec::new(),
+        ..claims("did:key:z6MkOperator", Role::Admin, "")
+    };
+    crate::operations::contexts::delete_context(
+        &crate::operations::keyspaces_from_app_state(&state),
+        &super_admin,
+        "vetter-a",
+        true,
+        "test",
+        #[cfg(feature = "webvh")]
+        None,
+    )
+    .await
+    .expect("delete the vetter's context");
+    assert!(
+        state
+            .pcs_engine_ks
+            .prefix_keys("vetter:")
+            .await
+            .unwrap()
+            .is_empty(),
+        "the vetter engine record outlived its context"
+    );
+    assert!(
+        state
+            .pcs_engine_ks
+            .prefix_keys("secret:vetter:")
+            .await
+            .unwrap()
+            .is_empty(),
+        "the vetter engine's wrapped state outlived its context"
+    );
+
+    crate::contexts::create_context(&state.contexts_ks, "vetter-a", "vetter-a")
+        .await
+        .expect("recreate the context under the same id");
+    let bob = "did:key:z6MkBob";
+    vtc.grant(bob);
+    let out = handle_root_request(
+        &state,
+        &claims(bob, Role::Admin, "vetter-a"),
+        doc(
+            uris::TASK_VTA_PCS_ROOT_REQUEST_0_1,
+            json!({ "contextId": "vetter-a", "community": COMMUNITY, "memberDid": bob,
+                    "parameters": params, "label": format!("vetter/{}", vtc.current_period()) }),
+        ),
+    )
+    .await;
+    ok(&out);
+
+    // The new engine's key is under the new context's base, not the deleted one's.
+    let record: crate::operations::pcs::VetterRecord = state
+        .pcs_engine_ks
+        .get(crate::operations::pcs::vetter_key("vetter-a", COMMUNITY))
+        .await
+        .unwrap()
+        .expect("a fresh engine record");
+    let new_base = crate::contexts::get_context(&state.contexts_ks, "vetter-a")
+        .await
+        .unwrap()
+        .unwrap()
+        .base_path;
+    assert_eq!(record.member_did, bob);
+    assert_ne!(new_base, old_base);
+    assert!(
+        record.path.starts_with(&format!("{new_base}/")),
+        "{} is not under {new_base}",
+        record.path
+    );
+}
+
+/// Lose the engine record and its state, as a re-created engine or a restore without them
+/// would: the seed, and the path counter, survive.
+async fn lose_vetter_record(state: &AppState, ctx: &str) {
+    let key = crate::operations::pcs::vetter_key(ctx, COMMUNITY);
+    vta_keys::imported::delete_secret(&state.pcs_engine_ks, &key)
+        .await
+        .unwrap();
+    state.pcs_engine_ks.remove(key).await.unwrap();
+}
+
+/// A blinded root request for the vetter's current key, and the identifier it carries.
+async fn root_request_id(
+    state: &AppState,
+    auth: &AuthClaims,
+    ctx: &str,
+    params: &Value,
+    label: &str,
+) -> (RootRequestWire, String) {
+    let out = handle_root_request(
+        state,
+        auth,
+        doc(
+            uris::TASK_VTA_PCS_ROOT_REQUEST_0_1,
+            json!({ "contextId": ctx, "community": COMMUNITY, "memberDid": auth.did,
+                    "parameters": params, "label": label }),
+        ),
+    )
+    .await;
+    let wire: RootRequestWire = serde_json::from_value(ok(&out)["request"].clone()).unwrap();
+    let id = wire.id.clone();
+    (wire, id)
+}
+
+/// Hand out `n` more paths from the context's counter, as key creation would.
+async fn burn_paths(state: &AppState, ctx: &str, n: usize) {
+    let base = crate::contexts::get_context(&state.contexts_ks, ctx)
+        .await
+        .unwrap()
+        .unwrap()
+        .base_path;
+    for _ in 0..n {
+        vta_keys::paths::allocate_path(&state.keys_ks, &base)
+            .await
+            .unwrap();
+    }
+}
+
+/// A valid PCS identifier no key of this VTA has.
+fn stranger_id() -> String {
+    let (id, _) = vti_vetting_pcs::scheme::member_key_from_seed(COMMUNITY, &[0x5A; 32]).unwrap();
+    vti_vetting_pcs::scheme::point_text(&id).unwrap()
+}
+
+/// The whole recovery: the vetter enrols, its engine record is lost and the seed rotated, a new
+/// root request makes a key the community refuses as a rebind, and recovering with the bound
+/// identifier restores the original key — found under the retired seed generation — so the
+/// next enrolment carries it and the community accepts it.
+#[tokio::test]
+async fn recover_restores_the_bound_key_after_the_engine_record_was_lost() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    let mut rng = StdRng::seed_from_u64(0xC9);
+    let mut vtc = Vtc::new(COMMUNITY, "2026-10", requirements(), &mut rng).unwrap();
+    let member = "did:key:z6MkAlice";
+    let alice = enrolled_vetter(&state, &mut vtc, &mut rng, "vetter-a", member).await;
+    let bound = handle_vetter_show(
+        &state,
+        &alice,
+        doc(
+            uris::TASK_VTA_PCS_VETTER_SHOW_0_1,
+            json!({ "contextId": "vetter-a", "community": COMMUNITY }),
+        ),
+    )
+    .await;
+    let bound_id = ok(&bound)["vetter"]["id"].as_str().unwrap().to_string();
+
+    // Keys created after the vetter's, in the same context: more candidates for the search.
+    burn_paths(&state, "vetter-a", 3).await;
+
+    lose_vetter_record(&state, "vetter-a").await;
+    vta_keys::seeds::rotate_seed(&state.keys_ks, &*state.seed_store, None)
+        .await
+        .expect("rotate the seed");
+
+    // The next root request makes a fresh key, which the community refuses as a rebind.
+    vtc.rotate("2026-11").unwrap();
+    let params = published(&vtc);
+    let label = "vetter/2026-11";
+    let (wire, fresh_id) = root_request_id(&state, &alice, "vetter-a", &params, label).await;
+    assert_ne!(fresh_id, bound_id, "a lost record means a fresh key");
+    let request = serde_json::from_value(wire.request.clone()).unwrap();
+    let refused = vtc.issue_vetter_root(
+        member,
+        &point_from_text(&fresh_id).unwrap(),
+        &request,
+        &mut rng,
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(vti_vetting_pcs::ProtoError::IdentifierRebound(_))
+        ),
+        "the community refuses the fresh key"
+    );
+
+    // Recover: the engine holds only an enrolment in flight, so its key can be replaced.
+    let out = handle_vetter_recover(&state, &alice, recover("vetter-a", member, &bound_id)).await;
+    let recovered = ok(&out);
+    assert_eq!(recovered["recovered"], json!(true));
+    assert_eq!(recovered["vetter"]["id"], json!(bound_id));
+    assert_eq!(recovered["vetter"]["pendingLabels"], json!([]));
+    assert_eq!(recovered["vetter"]["enrolledLabels"], json!([]));
+
+    // The recovery is audited without the identifier.
+    let rows = state.audit_ks.prefix_iter_raw("").await.unwrap();
+    let text: String = rows
+        .iter()
+        .map(|(_, v)| String::from_utf8_lossy(v).to_string())
+        .collect();
+    assert!(text.contains("pcs.vetter.recover"));
+    assert!(text.contains("key.pcs_search"));
+    assert!(
+        !text.contains(&bound_id),
+        "no audit row names the identifier"
+    );
+
+    // A second recovery changes nothing.
+    let out = handle_vetter_recover(&state, &alice, recover("vetter-a", member, &bound_id)).await;
+    assert_eq!(ok(&out)["recovered"], json!(false));
+
+    // The next enrolment carries the bound key, and the community takes it.
+    let (wire, id) = root_request_id(&state, &alice, "vetter-a", &params, label).await;
+    assert_eq!(id, bound_id);
+    let request = serde_json::from_value(wire.request.clone()).unwrap();
+    let pre = vtc
+        .issue_vetter_root(member, &point_from_text(&id).unwrap(), &request, &mut rng)
+        .expect("the community accepts the bound key");
+    let out = handle_root_accept(
+        &state,
+        &alice,
+        doc(
+            uris::TASK_VTA_PCS_ROOT_ACCEPT_0_1,
+            json!({ "contextId": "vetter-a", "community": COMMUNITY, "parameters": params,
+                    "response": { "label": label, "preCredential": enc(&pre).unwrap() } }),
+        ),
+    )
+    .await;
+    assert_eq!(ok(&out)["vetter"]["enrolledLabels"], json!([label]));
+}
+
+#[tokio::test]
+async fn recover_refuses_with_the_codes_its_specification_declares() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    let mut rng = StdRng::seed_from_u64(0xCA);
+    let mut vtc = Vtc::new(COMMUNITY, "2026-10", requirements(), &mut rng).unwrap();
+    let alice_did = "did:key:z6MkAlice";
+    let bob_did = "did:key:z6MkBob";
+    let alice = enrolled_vetter(&state, &mut vtc, &mut rng, "vetter-a", alice_did).await;
+    let _bob = enrolled_vetter(&state, &mut vtc, &mut rng, "vetter-b", bob_did).await;
+    let show = |ctx: &str| {
+        doc(
+            uris::TASK_VTA_PCS_VETTER_SHOW_0_1,
+            json!({ "contextId": ctx, "community": COMMUNITY }),
+        )
+    };
+    let bob_id = {
+        let bob = claims(bob_did, Role::Admin, "vetter-b");
+        ok(&handle_vetter_show(&state, &bob, show("vetter-b")).await)["vetter"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // Another member DID for an existing engine.
+    let out = handle_vetter_recover(
+        &state,
+        &alice,
+        recover("vetter-a", "did:key:z6MkMallory", &bob_id),
+    )
+    .await;
+    assert_eq!(code(&out), "vta/pcs/vetter/recover:memberMismatch");
+
+    // Alice's key holds a class credential and tokens: it is never replaced.
+    let out = handle_vetter_recover(
+        &state,
+        &alice,
+        recover("vetter-a", alice_did, &stranger_id()),
+    )
+    .await;
+    assert_eq!(code(&out), "vta/pcs/vetter/recover:engineEnrolled");
+
+    // A fresh context with no engine, keys of its own, and a caller who stands only there.
+    crate::contexts::create_context(&state.contexts_ks, "vetter-c", "vetter-c")
+        .await
+        .unwrap();
+    burn_paths(&state, "vetter-c", 3).await;
+    let only_c = claims(bob_did, Role::Admin, "vetter-c");
+
+    // An identifier no key of the context has.
+    let out = handle_vetter_recover(
+        &state,
+        &only_c,
+        recover("vetter-c", bob_did, &stranger_id()),
+    )
+    .await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/vetter/recover:notFound",
+        "{}",
+        body(&out)
+    );
+    // A string the schema admits that is no identifier at all.
+    let out = handle_vetter_recover(&state, &only_c, recover("vetter-c", bob_did, "z1111")).await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/vetter/recover:notFound",
+        "{}",
+        body(&out)
+    );
+
+    // Bob's key is derivable by this VTA, but from vetter-b's base: a search in vetter-c never
+    // reaches it, and a caller with no standing over vetter-b is not told where it is.
+    let out = handle_vetter_recover(&state, &only_c, recover("vetter-c", bob_did, &bob_id)).await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/vetter/recover:notFound",
+        "{}",
+        body(&out)
+    );
+    assert!(!body(&out).to_string().contains("vetter-b"));
+
+    // A caller who stands over both is sent to the context that holds it.
+    let mut both = claims(bob_did, Role::Admin, "vetter-c");
+    both.allowed_contexts.push("vetter-b".into());
+    let out = handle_vetter_recover(&state, &both, recover("vetter-c", bob_did, &bob_id)).await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/vetter/recover:heldInAnotherContext",
+        "{}",
+        body(&out)
+    );
+    assert!(body(&out).to_string().contains("vetter-b"));
+
+    // Nothing was created by the refusals.
+    let out = handle_vetter_show(&state, &only_c, show("vetter-c")).await;
+    assert_eq!(code(&out), "vta/pcs/vetter/show:notFound");
+}
+
+/// A key another engine holds is set aside, even when it is the one named: an applicant's key
+/// never becomes a vetter's.
+#[tokio::test]
+async fn recover_never_hands_another_engines_key_to_the_vetter() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    let mut rng = StdRng::seed_from_u64(0xCB);
+    let vtc = Vtc::new(COMMUNITY, "2026-10", requirements(), &mut rng).unwrap();
+    let carol = claims("did:key:z6MkCarol", Role::Admin, "applicant");
+    let application = application_for(&state, &carol, &published(&vtc)).await;
+    let applicant_id = application["id"].as_str().unwrap().to_string();
+    let out = handle_vetter_recover(
+        &state,
+        &carol,
+        recover("applicant", "did:key:z6MkCarol", &applicant_id),
+    )
+    .await;
+    assert_eq!(
+        code(&out),
+        "vta/pcs/vetter/recover:notFound",
+        "{}",
+        body(&out)
+    );
+}

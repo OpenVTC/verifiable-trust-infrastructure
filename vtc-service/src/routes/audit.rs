@@ -1,4 +1,4 @@
-//! Audit log reads: `audit/list/0.1` and `audit/verify/0.1`.
+//! Audit log reads: `audit/list/0.2` and `audit/verify/0.1`.
 //!
 //! `audit/list` — newest-first paginated view of the daemon's
 //! audit envelopes, a signed document only. Super-admin only: envelopes carry plaintext
@@ -45,8 +45,8 @@ pub struct AuditQuery {
     pub outcome: Option<String>,
     /// Not supported by this maintainer — see [`unsupported_filters`].
     pub context_id: Option<String>,
-    /// Page size. Clamped to `1..=200`. Defaults to 50.
-    pub page_size: Option<usize>,
+    /// Page size (`limit`). Clamped to `1..=200`. Defaults to 50.
+    pub limit: Option<usize>,
     /// Pagination cursor (returned by a previous call).
     pub cursor: Option<String>,
 }
@@ -216,14 +216,12 @@ impl From<&AuditEnvelope> for AuditEntry {
 #[serde(rename_all = "camelCase")]
 pub struct AuditListResponse {
     pub entries: Vec<AuditEntry>,
-    /// True when more entries match beyond this page; `cursor` is then
-    /// present.
-    pub truncated: bool,
+    /// Continuation token, present iff more entries match beyond this page.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
 }
 
-/// `audit/list/0.1` — newest-first paginated audit envelopes, for an
+/// `audit/list/0.2` — newest-first paginated audit envelopes, for an
 /// unrestricted administrator (`actor`). A signed document served by the
 /// spine (`trust_tasks::admin_tasks`); there is no REST route.
 pub(crate) async fn list_audit(
@@ -240,7 +238,7 @@ pub(crate) async fn list_audit(
         )));
     }
 
-    let limit = query.page_size.unwrap_or(50).clamp(1, MAX_LIMIT);
+    let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
 
     let audit_writer = state
         .audit_writer
@@ -300,7 +298,7 @@ pub(crate) async fn list_audit(
         idx += 1;
     }
 
-    // `truncated` must mean "more *matching* entries remain", not "more
+    // A `nextCursor` must mean "more *matching* entries remain", not "more
     // rows remain" — with a filter applied the tail may hold nothing
     // that matches, and handing back a cursor for an empty next page
     // would make a caller believe results were withheld. Scan ahead only
@@ -317,7 +315,7 @@ pub(crate) async fn list_audit(
     }
 
     let snapshot_id: u64 = pairs.len() as u64;
-    let cursor = if more_matches {
+    let next_cursor = if more_matches {
         last_seen_key.map(|k| Cursor::new(k, snapshot_id).encode_bound(&audit_key.key, &binding))
     } else {
         None
@@ -326,14 +324,13 @@ pub(crate) async fn list_audit(
     info!(
         caller = %actor,
         count = entries.len(),
-        has_more = cursor.is_some(),
+        has_more = next_cursor.is_some(),
         "audit listed",
     );
 
     Ok(AuditListResponse {
-        truncated: cursor.is_some(),
         entries,
-        cursor,
+        next_cursor,
     })
 }
 

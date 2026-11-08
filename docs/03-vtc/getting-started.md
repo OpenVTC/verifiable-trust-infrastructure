@@ -208,16 +208,22 @@ embedded admin SPA serving the install flow:
 1. You type the **claim code** the wizard printed alongside the URL.
    URL + code travel through separate channels — a leaked URL alone
    doesn't grant admin.
-2. The browser registers a passkey via WebAuthn (any algorithm the
-   authenticator supports — ES256, RS256, EdDSA all work).
-3. The SPA submits `POST /v1/install/claim/start` and `…/finish`,
-   then `POST /v1/admin/bootstrap`. That last call writes the first
-   admin's ACL entry. **Until it runs, the VTC's ACL is empty and
-   the admin DID cannot authenticate.**
+2. The browser registers a passkey via WebAuthn — Ed25519 or P-256,
+   which is what platform passkeys and security keys create — and then
+   signs once with it, proving you hold it. Your administrator DID is
+   the **`did:key` of the passkey's own key**; the install URL names no
+   DID.
+3. The SPA sends `vtc/install/claim/passkey/start/0.1` and
+   `…/finish/0.1`, then `vtc/admin/bootstrap/0.1`. That last call
+   writes the first admin's ACL entry. **Until it runs, the VTC's ACL
+   is empty.** The admin DID the wizard printed is not made an
+   administrator by the claim; grant it with `vtc acl add` (the
+   [bootstrap runbook](bootstrap-runbook.md), Path B) if you want it to
+   administer the VTC too.
 4. The token row transitions `Issued` → `Consumed` and can never be
    redeemed again.
-5. The page shows the admin DID. Sign in at `/admin/` with the
-   passkey.
+5. The page shows the passkey's admin DID. Sign in at `/admin/`
+   with the passkey.
 6. The console asks you to **Set up signing** for this browser —
    name it and confirm with the same passkey. Every admin action is a
    signed document, so this happens once per browser before the

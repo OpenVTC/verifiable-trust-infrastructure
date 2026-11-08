@@ -75,13 +75,13 @@ mod vault_tests {
 #[serde(rename_all = "camelCase")]
 pub struct VaultUpsertBody {
     pub context_id: String,
-    /// `SiteTarget` union values — `{"kind": "web-origin", "origin": …}` and
+    /// `SiteTarget` union values — `{"kind": "webOrigin", "origin": …}` and
     /// friends. Left as `Value` for the same reason `ConsentSubject` is: it is
     /// a union the caller assembles, and modelling it is a separate decision.
     pub targets: Vec<serde_json::Value>,
     pub label: String,
-    /// `password` | `passkey` | `oauth-tokens` | `did-self-issued` |
-    /// `didcomm-peer` | `bearer-token` | `ssh-key` | `custom`.
+    /// `password` | `passkey` | `oauthTokens` | `didSelfIssued` |
+    /// `didcommPeer` | `bearerToken` | `sshKey` | `custom`.
     pub secret_kind: String,
     /// Absent on create; present to update a specific entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -111,7 +111,7 @@ mod upsert_tests {
         let body = VaultUpsertBody {
             context_id: "openvtc".into(),
             targets: vec![
-                serde_json::json!({"kind": "web-origin", "origin": "https://example.test"}),
+                serde_json::json!({"kind": "webOrigin", "origin": "https://example.test"}),
             ],
             label: "example login".into(),
             secret_kind: "password".into(),
@@ -126,7 +126,7 @@ mod upsert_tests {
             serde_json::to_value(&body).expect("serialises"),
             serde_json::json!({
                 "contextId": "openvtc",
-                "targets": [{"kind": "web-origin", "origin": "https://example.test"}],
+                "targets": [{"kind": "webOrigin", "origin": "https://example.test"}],
                 "label": "example login",
                 "secretKind": "password",
             })
@@ -146,7 +146,7 @@ mod upsert_tests {
         let body = VaultUpsertBody {
             context_id: "openvtc".into(),
             targets: vec![
-                serde_json::json!({"kind": "web-origin", "origin": "https://example.test"}),
+                serde_json::json!({"kind": "webOrigin", "origin": "https://example.test"}),
             ],
             label: "example login".into(),
             secret_kind: "password".into(),

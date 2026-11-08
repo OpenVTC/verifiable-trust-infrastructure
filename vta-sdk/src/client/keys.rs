@@ -111,17 +111,20 @@ impl VtaClient {
         })
     }
 
+    /// `keys/list/0.2` — one page of key records. Pass the previous page's
+    /// `next_cursor` as `cursor` (`None` for the first page); a page carrying
+    /// no `next_cursor` is the last.
     pub async fn list_keys(
         &self,
-        offset: u64,
+        cursor: Option<&str>,
         limit: u64,
         status: Option<&str>,
         context_id: Option<&str>,
     ) -> Result<ListKeysResponse, VtaError> {
         self.rpc_tt(
-            trust_tasks::TASK_KEYS_LIST_0_1,
+            trust_tasks::TASK_KEYS_LIST_0_2,
             serde_json::to_value(crate::protocols::key_management::list::ListKeysBody {
-                offset: Some(offset),
+                cursor: cursor.map(str::to_string),
                 limit: Some(limit),
                 status: status
                     .map(str::to_string)

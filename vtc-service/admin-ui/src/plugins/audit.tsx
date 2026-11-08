@@ -1,6 +1,6 @@
 // Audit trail viewer.
 //
-// Sends signed `audit/list/0.1` documents. Super-admin only — the VTC
+// Sends signed `audit/list/0.2` documents. Super-admin only — the VTC
 // refuses anyone else with `permissionDenied`, rendered as a toast.
 //
 // Pagination is forward-only ("Show older" button). The page shows
@@ -93,6 +93,10 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   AclKeyRotated: "ACL entry rolled to a new key",
   CapabilityModuleChanged:
     "Capability module enabled, disabled, or projected to the trust registry",
+  NotificationRelayDecided:
+    "Administrator decided to relay a received notification to members (the members reached are never recorded)",
+  NetworkMembershipChanged:
+    "Verifiable Trust Network joined, repudiated or left, a group registered for a network role, or a network broadcast relayed to a group",
 };
 
 // Events that fire on a schedule or at daemon-internal lifecycle
@@ -106,7 +110,7 @@ const SYSTEM_EVENT_KINDS = new Set([
   "RegistrySyncFailed",
 ]);
 
-const TRUST_TASK = "https://trusttasks.org/spec/audit/list/0.1";
+const TRUST_TASK = "https://trusttasks.org/spec/audit/list/0.2";
 
 import type { AuditEntry, AuditListResponse } from "@/lib/wire-types";
 
@@ -130,7 +134,7 @@ async function fetchAuditPage(
   pageSize: number,
 ): Promise<AuditListResponse> {
   return postSignedRead<AuditListResponse>(TRUST_TASK, {
-    pageSize,
+    limit: pageSize,
     ...(cursor ? { cursor } : {}),
   });
 }
@@ -159,7 +163,7 @@ export function Audit() {
     } else {
       setItems((prev) => [...prev, ...query.data!.entries]);
     }
-    setNextCursor(query.data.cursor ?? null);
+    setNextCursor(query.data.nextCursor ?? null);
   }, [query.data, cursor]);
 
   useEffect(() => {
@@ -246,7 +250,7 @@ export function Audit() {
               const result = await query.refetch();
               if (result.data) {
                 setItems(result.data.entries);
-                setNextCursor(result.data.cursor ?? null);
+                setNextCursor(result.data.nextCursor ?? null);
               }
             }}
           >

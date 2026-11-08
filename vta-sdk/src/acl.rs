@@ -276,6 +276,105 @@ impl ApproveScope {
     }
 }
 
+/// Capabilities no role derives — held only where granted by name, and marked
+/// `additive: true` on the AclEntry 0.2 wire. Mirrors
+/// `vti_common::acl::ADDITIVE_CAPABILITIES`; a `vti-common` test pins the two
+/// equal.
+pub const ADDITIVE_CAPABILITIES: &[&str] = &["persona-holder"];
+
+/// The capability **ceiling** each VTA role carries, as kebab-case names —
+/// mirrors `vti_common::acl::derived_capabilities_for_role`, pinned equal by a
+/// `vti-common` test.
+///
+/// A client needs it for one thing: AclEntry 0.2 has no spelling for "the
+/// role's whole ceiling plus an additive grant" (`listed` reads its
+/// non-additive grants as the narrowing), so a grant of `persona-holder` beside
+/// a role is sent as the role's ceiling enumerated plus the additive grant. A
+/// stale copy fails safe: a name the VTA's role lacks is refused
+/// (`capabilityOutsideCeiling`), and a name missing here is simply not granted.
+pub fn role_capability_ceiling(role: &str) -> Option<&'static [&'static str]> {
+    const ADMIN: &[&str] = &[
+        "vault-read",
+        "vault-write",
+        "credential-write",
+        "memory-read",
+        "memory-write",
+        "room-present",
+        "room-open",
+        "proxy-login",
+        "fill-release",
+        "policy-admin",
+        "device-admin",
+        "sign",
+        "sign-sshsig",
+        "sign-jws",
+        "sign-csr",
+        "sign-document",
+        "sign-trust-task",
+        "key-mint",
+        "key-export",
+        "external-accounts-manage",
+        "external-auth-use",
+        "pcs-vetter",
+        "pcs-applicant",
+        "pcs-voter",
+        "pcs-trustee",
+        "witness-request",
+        "credential-present",
+    ];
+    const INITIATOR: &[&str] = &[
+        "vault-read",
+        "vault-write",
+        "credential-write",
+        "memory-read",
+        "memory-write",
+        "room-present",
+        "room-open",
+        "proxy-login",
+        "fill-release",
+        "device-admin",
+        "sign",
+        "sign-sshsig",
+        "sign-jws",
+        "sign-csr",
+        "sign-document",
+        "sign-trust-task",
+        "key-mint",
+        "external-auth-use",
+        "pcs-vetter",
+        "pcs-applicant",
+        "pcs-voter",
+        "pcs-trustee",
+        "witness-request",
+        "credential-present",
+    ];
+    const APPLICATION: &[&str] = &[
+        "vault-read",
+        "proxy-login",
+        "fill-release",
+        "sign",
+        "sign-sshsig",
+        "sign-jws",
+        "sign-csr",
+        "sign-document",
+        "sign-trust-task",
+        "memory-read",
+        "memory-write",
+        "room-present",
+        "room-open",
+        "external-auth-use",
+    ];
+    const READER: &[&str] = &["vault-read", "memory-read"];
+    match role {
+        "admin" => Some(ADMIN),
+        "initiator" => Some(INITIATOR),
+        "application" => Some(APPLICATION),
+        "reader" => Some(READER),
+        "monitor" => Some(&[]),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

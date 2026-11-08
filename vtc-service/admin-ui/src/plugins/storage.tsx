@@ -168,8 +168,8 @@ export function NewStorageButton() {
   const [params, setParams] = useSearchParams();
   if (params.get("create") === "1") return null;
   return (
-    <button type="button" onClick={() => setParams({ create: "1" })}>
-      <Plus aria-hidden="true" />
+    <button className="primary" type="button" onClick={() => setParams({ create: "1" })}>
+      <Plus size={14} aria-hidden="true" />
       New storage
     </button>
   );

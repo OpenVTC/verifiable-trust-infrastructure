@@ -44,8 +44,9 @@
 use chrono::{TimeZone, Utc};
 
 use vta_sdk::client::{AclEntryResponse, AclListResponse, ContextResponse, RenameKeyResponse};
-use vta_sdk::protocols::acl_management::entry::AclEntry;
-use vta_sdk::protocols::acl_management::list::ListAclResultBody;
+use vta_sdk::protocols::acl_management::v0_2::{
+    AclEntry, AuthorityScope, CapabilityScope, KeyScope,
+};
 
 /// Serialize what the agent returns, then decode it as the client does.
 ///
@@ -81,9 +82,10 @@ fn ts() -> chrono::DateTime<Utc> {
 // ── ACL ─────────────────────────────────────────────────────────────
 //
 // The one family where two types is the right answer. `AclEntryResponse` is not
-// a mirror of `AclEntry` — it renames `subject` to `did` and `scopes` to
-// `allowed_contexts`, and converts RFC 3339 to the epoch seconds the rest of the
-// CLI speaks. That conversion is the reason it exists, and the reason it cannot
+// a mirror of the AclEntry 0.2 wire — it renames `subject` to `did`, reads the
+// explicit `act` scope back into `allowed_contexts` through the role, `keys`
+// into `allowed_keys`, and converts RFC 3339 to the epoch seconds the rest of
+// the CLI speaks. That conversion is the reason it exists, and the reason it cannot
 // simply be re-exported the way the others were.
 //
 // Which also makes it the one that most needs checking: an adapter with real
@@ -97,15 +99,18 @@ fn ts() -> chrono::DateTime<Utc> {
 /// `None` and `Some(∅)` are opposite grants on this type, and the empty vec is
 /// the one that must survive as `"allowedKeys": []`.
 fn agent_acl_entry() -> AclEntry {
+    // `keys: none` rather than `all`, and the distinction is the whole point of
+    // this fixture: they are opposite grants, and `none` must decode as
+    // `Some(vec![])`, never as the absent filter.
     let mut entry = AclEntry::new(
-        "did:key:z6MkSubject".into(),
-        "admin".into(),
-        vec!["personal".into()],
+        "did:key:z6MkSubject",
+        "admin",
+        AuthorityScope::Contexts {
+            contexts: vec!["personal".into()],
+        },
+        KeyScope::None,
+        CapabilityScope::Ceiling,
     );
-    // `Some(vec![])` rather than the constructor's `None`, and the distinction is
-    // the whole point of this fixture: they are opposite grants, and the empty vec
-    // is the one that must survive the wire as `"allowedKeys": []`.
-    entry.allowed_keys = Some(vec![]);
     entry.label = Some("laptop".into());
     entry.created_at = Some(ts());
     entry.created_by = Some("did:key:z6MkAdmin".into());
@@ -135,12 +140,12 @@ fn acl_entry_decodes() {
     assert_eq!(
         got.allowed_contexts,
         vec!["personal".to_string()],
-        "scopes renames to allowed_contexts"
+        "act.contexts reads back as allowed_contexts"
     );
     assert_eq!(
         got.allowed_keys,
         Some(vec![]),
-        "Some(empty) is the narrowest grant and must not decode as None"
+        "keys: none is the narrowest grant and must not decode as None"
     );
     assert_eq!(got.label.as_deref(), Some("laptop"));
     assert_ne!(got.created_at, 0, "RFC 3339 must convert to epoch seconds");
@@ -150,16 +155,29 @@ fn acl_entry_decodes() {
 /// `pnm acl list`, including its elements.
 #[test]
 fn acl_list_decodes_including_its_elements() {
-    let agent = ListAclResultBody {
-        entries: vec![agent_acl_entry()],
-        truncated: false,
-        cursor: None,
-        redacted_fields: vec![],
-    };
+    let agent = serde_json::json!({ "entries": [agent_acl_entry()] });
     let got: AclListResponse = agent_to_client("pnm acl list", &agent);
     assert_eq!(got.entries.len(), 1, "the element must survive the decode");
     assert_eq!(got.entries[0].did, "did:key:z6MkSubject");
     assert_ne!(got.entries[0].created_at, 0);
+}
+
+/// The two client-private envelopes around the entry: `AclListPage`, an
+/// `acl/list/0.3` page (`nextCursor` and all), and `AclShowResponse`, the
+/// nullable `{ entry }` of `acl/show/0.2`.
+#[test]
+fn acl_list_page_and_nullable_entry_decode() {
+    // Driven through the public client, since both types are `pub(crate)`:
+    // the shapes the agent emits are what `list_acl` / `get_acl` decode in
+    // `client_rest.rs`. Here the entry they wrap is pinned to decode with its
+    // explicit axes intact.
+    let wire = serde_json::json!({ "entries": [agent_acl_entry()], "nextCursor": "c" });
+    let page: AclListResponse = agent_to_client("pnm acl list (page)", &wire);
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(
+        page.entries[0].act(),
+        &vta_sdk::acl::ActScope::Contexts(vec!["personal".into()])
+    );
 }
 
 // ── The other direction ─────────────────────────────────────────────

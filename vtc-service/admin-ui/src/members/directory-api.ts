@@ -2,7 +2,7 @@
 // signed by the portal's sign-in key (`K_b`).
 //
 // A wallet sign-in at `auth/oob/*/0.2` asks the member to let `K_b` sign
-// directory documents as them, for that session (`auth/oob/grant/0.2`
+// directory documents as them, for that session (`auth/oob/grant/0.3`
 // `signingScope: ["vtc/directory"]`). The portal keeps `K_b` for the session
 // (`@/lib/console-key` `loadMemberSessionKey`) and signs every directory
 // document with it; the VTC reads each as the member's while the session that
@@ -39,7 +39,7 @@ import { vtcDid } from "./api";
 export const FIELDS_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/fields/list/0.1";
 export const CARD_SHOW_TASK = "https://trusttasks.org/spec/vtc/directory/card/show/0.1";
 export const CARD_UPDATE_TASK = "https://trusttasks.org/spec/vtc/directory/card/update/0.1";
-export const ENTRIES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/entries/list/0.1";
+export const ENTRIES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/entries/list/0.2";
 export const ENTRIES_SHOW_TASK = "https://trusttasks.org/spec/vtc/directory/entries/show/0.1";
 export const IMAGES_UPLOAD_TASK = "https://trusttasks.org/spec/vtc/directory/images/upload/0.1";
 export const IMAGES_GET_TASK = "https://trusttasks.org/spec/vtc/directory/images/get/0.1";

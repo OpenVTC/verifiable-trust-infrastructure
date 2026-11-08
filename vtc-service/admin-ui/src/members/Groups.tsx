@@ -201,7 +201,7 @@ export function GroupPage({ groupId }: { groupId: string }) {
             </p>
           </section>
           {note && (
-            <p className="note" role="status">
+            <p className="alert alert-info" role="status">
               {note}
             </p>
           )}
@@ -237,15 +237,15 @@ export function GroupPage({ groupId }: { groupId: string }) {
               </button>
             ) : group.joinPolicy === "open" || group.joinPolicy === "request" ? (
               <form
-                className="stack"
+                className="card-form"
                 onSubmit={(e) => {
                   e.preventDefault();
                   join.mutate();
                 }}
               >
                 {group.joinPolicy === "request" && (
-                  <label>
-                    A note for its managers (optional)
+                  <label className="card-field">
+                    <span>A note for its managers (optional)</span>
                     <textarea
                       value={message}
                       maxLength={280}

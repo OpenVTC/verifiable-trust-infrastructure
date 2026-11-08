@@ -74,6 +74,18 @@ pub struct UpdateDidWebvhBody {
         alias = "expected_version_id"
     )]
     pub expected_version_id: Option<String>,
+    /// `vta/webvh/dids/update/1.1`: list (`Some(true)`) or remove
+    /// (`Some(false)`) the log's `did:scid:vh:1:<scid>?src=<source>` DID URL in
+    /// `alsoKnownAs` (VTI-KEY-164). The VTA derives the DID URL; the caller
+    /// never writes it. Applied to `document` when one is supplied, otherwise to
+    /// the current document. Changing it publishes an entry and so **rotates
+    /// the update key**, exactly as `document` does.
+    ///
+    /// `None` leaves `alsoKnownAs` alone and keeps the request a 1.0 request;
+    /// [`VtaClient::update_did_webvh_by_did`](crate::client::VtaClient::update_did_webvh_by_did)
+    /// sends 1.1 only when this is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scid_also_known_as: Option<bool>,
 }
 
 /// Caller-supplied parameters for a rotate-keys call.
@@ -129,6 +141,17 @@ pub struct UpdateDidWebvhResultBody {
     /// keeps old CLIs from showing a spurious self-host hint).
     #[serde(default)]
     pub serverless: bool,
+    /// `vta/webvh/dids/update/1.1`: whether the published document lists
+    /// [`Self::scid_did_url`] in `alsoKnownAs`. A 1.1 response always carries
+    /// it; `None` from a 1.0 (or rotate-keys) response, whose closed schema has
+    /// no such member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scid_also_known_as: Option<bool>,
+    /// `vta/webvh/dids/update/1.1`: the `did:scid:vh:1:<scid>?src=<source>` DID
+    /// URL of the log at its current location, listed or not. Present exactly
+    /// when [`Self::scid_also_known_as`] is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scid_did_url: Option<String>,
 }
 
 #[cfg(test)]
@@ -154,6 +177,7 @@ mod tests {
             ttl: Some(3600),
             label: Some("rotate after audit".into()),
             expected_version_id: None,
+            scid_also_known_as: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         let restored: UpdateDidWebvhBody = serde_json::from_str(&json).unwrap();
@@ -200,6 +224,8 @@ mod tests {
             update_keys_count: 1,
             pre_rotation_key_count: 2,
             serverless: true,
+            scid_also_known_as: None,
+            scid_did_url: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         let restored: UpdateDidWebvhResultBody = serde_json::from_str(&json).unwrap();
@@ -343,6 +369,54 @@ mod casing_tests {
             serde_json::from_str(r#"{"expected_version_id":"3-QmPrior"}"#)
                 .expect("snake_case still parses");
         assert_eq!(snake.expected_version_id.as_deref(), Some("3-QmPrior"));
+    }
+
+    /// 1.1's `scidAlsoKnownAs` is camelCase on the wire, absent when unset (so
+    /// an untouched body stays a valid 1.0 payload), and `false` survives:
+    /// `false` removes the alias, the opposite of leaving it alone.
+    #[test]
+    fn scid_also_known_as_is_camel_case_and_false_survives() {
+        assert_eq!(
+            serde_json::to_value(UpdateDidWebvhBody {
+                scid_also_known_as: Some(false),
+                ..Default::default()
+            })
+            .expect("serialises"),
+            serde_json::json!({ "scidAlsoKnownAs": false }),
+        );
+        let b: UpdateDidWebvhBody =
+            serde_json::from_str(r#"{"scidAlsoKnownAs":true}"#).expect("parses");
+        assert_eq!(b.scid_also_known_as, Some(true));
+        assert!(
+            serde_json::to_value(UpdateDidWebvhBody::default())
+                .unwrap()
+                .get("scidAlsoKnownAs")
+                .is_none()
+        );
+    }
+
+    /// The 1.1 response members are absent unless set, so a 1.0 or rotate-keys
+    /// response — closed schemas without them — stays valid.
+    #[test]
+    fn scid_response_members_are_absent_unless_set() {
+        let mut r = UpdateDidWebvhResultBody {
+            did: "did:webvh:Qm:example.com".into(),
+            new_version_id: "2-Qm".into(),
+            new_scid: "Qm".into(),
+            new_log_entry: "{}".into(),
+            update_keys_count: 1,
+            pre_rotation_key_count: 0,
+            serverless: false,
+            scid_also_known_as: None,
+            scid_did_url: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v.get("scidAlsoKnownAs").is_none() && v.get("scidDidUrl").is_none());
+        r.scid_also_known_as = Some(true);
+        r.scid_did_url = Some("did:scid:vh:1:Qm?src=example.com".into());
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["scidAlsoKnownAs"], true);
+        assert_eq!(v["scidDidUrl"], "did:scid:vh:1:Qm?src=example.com");
     }
 
     #[test]

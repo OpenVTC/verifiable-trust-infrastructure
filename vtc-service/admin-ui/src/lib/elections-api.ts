@@ -16,12 +16,14 @@
 import { postSignedRead } from "./api";
 import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 
-export const ELECTIONS_CREATE_TASK = "https://trusttasks.org/spec/vtc/elections/create/0.1";
-export const ELECTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/elections/list/0.1";
-export const ELECTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/elections/show/0.1";
+export const ELECTIONS_CREATE_TASK = "https://trusttasks.org/spec/vtc/elections/create/0.5";
+export const ELECTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/elections/list/0.5";
+export const ELECTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/elections/show/0.6";
 export const ELECTIONS_CLOSE_TASK = "https://trusttasks.org/spec/vtc/elections/close/0.1";
 export const ELECTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/elections/cancel/0.1";
 export const ELECTIONS_CERTIFY_TASK = "https://trusttasks.org/spec/vtc/elections/certify/0.1";
+export const ELECTIONS_BALLOT_BOXES_LIST_TASK =
+  "https://trusttasks.org/spec/vtc/elections/ballot-boxes/list/0.1";
 
 /** The capability every task here takes. */
 export const ELECTIONS_MANAGE = "vtc.elections.manage";
@@ -56,8 +58,8 @@ export interface ElectionListItem {
   electionId: string;
   title?: string;
   state: ElectionState;
-  votingOpens: string;
-  votingCloses: string;
+  votingOpensAt: string;
+  votingClosesAt: string;
   binding: boolean;
   ticketHeld: boolean;
 }
@@ -76,6 +78,8 @@ export interface QuestionResult {
   ranking?: Record<string, number[]>;
   score?: Record<string, unknown>;
   text?: unknown[];
+  /** Text answers held back: fewer ballots than `textReleaseThreshold` (VTI-VOT-065). */
+  withheld?: boolean;
 }
 
 export interface ElectionResult {
@@ -94,19 +98,32 @@ export interface Disclosure {
   auditors: string[];
   revote: "replace" | "refuse";
   coercionResistance: false;
+  /** Under a `credential` roll: whose membership credential admits a party to a ticket
+   *  (`RollCredentialDisclosure`, VTI-VOT-090). Absent under every other rule. */
+  rollCredential?: RollCredentialDisclosure;
 }
 
-/** `vtc/elections/show/0.1`'s answer. The manifest is carried as received. */
+/** `RollCredentialDisclosure` (voting/_shared/0.4). */
+export interface RollCredentialDisclosure {
+  memberOf: string;
+  memberOfKind: "thisCommunity" | "communityGroup" | "memberParty";
+  memberOfName?: string;
+  presenterDisclosed?: true;
+}
+
+/** `vtc/elections/show/0.6`'s answer. The manifest is carried as received. */
 export interface Election {
   manifest: Record<string, unknown> & {
     electionId: string;
     title?: string;
-    votingOpens: string;
-    votingCloses: string;
-    registrationOpens: string;
+    votingOpensAt: string;
+    votingClosesAt: string;
+    registrationOpensAt: string;
     binding: boolean;
     allowEarlyClose: boolean;
-    questions: { key: string; type: string; text?: string }[];
+    questions: { key: string; type: string; text?: string; options?: { key: string; label?: string }[] }[];
+    textReleaseThreshold?: number;
+    roll?: { rule: string; listed?: string[]; memberOf?: string };
   };
   manifestDigest: string;
   state: ElectionState;
@@ -146,22 +163,44 @@ export async function fetchElections(): Promise<ElectionListItem[]> {
   const out: ElectionListItem[] = [];
   let cursor: string | undefined;
   for (let i = 0; i < MAX_PAGES; i++) {
-    const page = await postSignedRead<{ elections: ElectionListItem[]; next?: string }>(
+    const page = await postSignedRead<{ elections: ElectionListItem[]; nextCursor?: string }>(
       ELECTIONS_LIST_TASK,
       { limit: PAGE, ...(cursor ? { cursor } : {}) },
     );
     out.push(...page.elections);
-    if (!page.next) break;
-    cursor = page.next;
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
   }
   return out;
+}
+
+/** One voting service the community trusts (VTI-VOT-082), with what its members are told about
+ *  it when an election names it (VTI-VOT-090). */
+export interface TrustedBallotBox {
+  did: string;
+  operator: string;
+  sameOperator: boolean;
+}
+
+/** `vtc/elections/ballot-boxes/list/0.1`: exactly the list `create` checks `ballotBox` against.
+ *  `null` from a VTC that predates the task, so the form falls back to a typed DID. */
+export async function fetchTrustedBallotBoxes(): Promise<TrustedBallotBox[] | null> {
+  const res = await postSignedRead<{ supportedTypes?: unknown[] }>(TASK_DISCOVERY, {
+    patterns: ["vtc/elections/*"],
+  });
+  if (!(res.supportedTypes ?? []).includes(ELECTIONS_BALLOT_BOXES_LIST_TASK)) return null;
+  const page = await postSignedRead<{ ballotBoxes: TrustedBallotBox[] }>(
+    ELECTIONS_BALLOT_BOXES_LIST_TASK,
+    {},
+  );
+  return page.ballotBoxes;
 }
 
 export function fetchElection(electionId: string): Promise<Election> {
   return postSignedRead<Election>(ELECTIONS_SHOW_TASK, { electionId });
 }
 
-/** `vtc/elections/create/0.1`. Throws a `ParkedAction` for a binding election. */
+/** `vtc/elections/create/0.5`. Throws a `ParkedAction` for a binding election. */
 export function createElection(
   manifest: Record<string, unknown>,
   confirmGesture: ConfirmGesture,
@@ -207,46 +246,6 @@ export function certifyElection(
   );
 }
 
-/** A manifest to start from: one choice question, open voting for a week from
- *  tomorrow, this community's DID and the given ballot box. */
-export function sampleManifest(community: string, ballotBox: string, now = new Date()): string {
-  const day = 24 * 3600 * 1000;
-  const iso = (t: number) => new Date(t).toISOString().replace(/\.\d{3}Z$/, "Z");
-  const start = now.getTime() + day;
-  return JSON.stringify(
-    {
-      electionId: `poll-${now.toISOString().slice(0, 10)}`,
-      community,
-      title: "",
-      questions: [
-        {
-          key: "q1",
-          type: "choice",
-          text: "",
-          options: [{ key: "yes", label: "Yes" }, { key: "no", label: "No" }],
-          minSelections: 1,
-          maxSelections: 1,
-          optional: true,
-        },
-      ],
-      secrecy: "open",
-      roll: { rule: "members" },
-      registrationOpens: iso(now.getTime()),
-      votingOpens: iso(start),
-      votingCloses: iso(start + 7 * day),
-      revote: "replace",
-      board: { visibility: "public", auditors: [] },
-      ballotBox,
-      binding: false,
-      allowEarlyClose: false,
-      resultsBeforeClose: false,
-      textReleaseThreshold: 10,
-    },
-    null,
-    2,
-  );
-}
-
 /** The declared refusals an administrator can act on, with what to do. */
 export function refusalHint(code: string | undefined): string | null {
   switch (code) {
@@ -255,7 +254,7 @@ export function refusalHint(code: string | undefined): string | null {
     case "vtc/elections/create:electionExists":
       return "This community already holds an election under that electionId. Choose another.";
     case "vtc/elections/create:unsupportedSecrecy":
-      return "Only open elections are served: set secrecy to \"open\" and remove trustees.";
+      return "This community does not serve that secrecy level. Choose another under Counting.";
     case "vtc/elections/certify:notTallied":
       return "The ballot box has not published a final result yet.";
     default:

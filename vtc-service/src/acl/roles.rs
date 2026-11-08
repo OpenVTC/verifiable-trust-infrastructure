@@ -47,7 +47,7 @@ use super::{VtcAclEntry, list_acl_entries};
 /// The declared error codes of `vtc/roles/*`, read off the generated
 /// specifications — what the tests that witness each one compare against.
 pub mod codes {
-    use trust_tasks_rs::specs::vtc::roles as r;
+    use vti_specs::vtc::roles as r;
 
     pub const DEFINE_BUILT_IN_ROLE: &str = r::define::v0_1::error_codes::BUILT_IN_ROLE.code;
     pub const DEFINE_EXISTS: &str = r::define::v0_1::error_codes::EXISTS.code;

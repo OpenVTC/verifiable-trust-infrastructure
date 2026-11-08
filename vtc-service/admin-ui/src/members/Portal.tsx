@@ -1,22 +1,22 @@
 // The member portal shell: sign-in when there is no member session, otherwise
-// the member's home. What a member can *do* here grows from this page; for
-// now it is who you are, your membership, and how you sign in.
+// the member's home (`./Home`) and the pages it links to.
 
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, BookUser, Boxes, GitBranch, LogOut, Sparkles } from "lucide-react";
+import { LogOut } from "lucide-react";
 
 import { MemberApiError, memberFetch, postMember, vtcDid, type MemberMe } from "./api";
 import { DirectoryPage, EntryPage, MyCardPage } from "./Directory";
 import { GroupPage, GroupsPage } from "./Groups";
-import { listFields, showCard } from "./directory-api";
-import { MemberAvatar, nameOf, text } from "./member-card";
+import { Home } from "./Home";
 import { ReposPage } from "./Repos";
+import { ElectionPage, ElectionsPage } from "./Elections";
+import { BadgePage, BadgesPage, MakeBadgePage } from "./Badges";
+import { BoardPage, BoardsPage } from "./Boards";
 import { RoomPage, RoomsPage } from "./Rooms";
-import { Passkeys } from "./Passkeys";
 import { forgetMemberSessionKey } from "@/lib/console-key";
 import { forgetSessionKey } from "./oob";
-import { SignIn } from "./SignIn";
+import { SignIn, isJoinIntent } from "./SignIn";
 import { CommunityTopbar, fetchCommunityProfile } from "../signin/SignInLayout";
 
 async function fetchMe(): Promise<MemberMe | null> {
@@ -33,9 +33,14 @@ async function fetchMe(): Promise<MemberMe | null> {
 
 /** The portal's page, from the location hash: `#/rooms`, `#/rooms/<roomId>`,
  *  `#/directory`, `#/directory/<entryId>`, `#/card`, `#/groups`,
- *  `#/groups/<groupId>`, `#/repos`, else home. */
+ *  `#/groups/<groupId>`, `#/repos`, `#/elections`, `#/elections/<electionId>`,
+ *  `#/boards`, `#/boards/<boardId>`, `#/badges`, `#/badges/new`,
+ *  `#/badges/<badgeId>`, else home. */
 export type Route =
   | { page: "home" }
+  | { page: "badges" }
+  | { page: "badge"; badgeId: string }
+  | { page: "make-badge" }
   | { page: "rooms" }
   | { page: "room"; roomId: string }
   | { page: "directory" }
@@ -43,12 +48,26 @@ export type Route =
   | { page: "card" }
   | { page: "groups" }
   | { page: "group"; groupId: string }
-  | { page: "repos" };
+  | { page: "repos" }
+  | { page: "elections" }
+  | { page: "election"; electionId: string }
+  | { page: "boards" }
+  | { page: "board"; boardId: string };
 
 export function routeOf(hash: string): Route {
   const path = hash.replace(/^#/, "");
   if (path === "/rooms") return { page: "rooms" };
   if (path === "/repos") return { page: "repos" };
+  if (path === "/elections") return { page: "elections" };
+  if (path === "/boards") return { page: "boards" };
+  const board = /^\/boards\/(brd_[A-Za-z0-9_-]{16,64})$/.exec(path);
+  if (board) return { page: "board", boardId: board[1]! };
+  if (path === "/badges") return { page: "badges" };
+  if (path === "/badges/new") return { page: "make-badge" };
+  const badge = /^\/badges\/(bdg_[A-Za-z0-9_-]{16,64})$/.exec(path);
+  if (badge) return { page: "badge", badgeId: badge[1]! };
+  const election = /^\/elections\/([A-Za-z0-9._-]{1,128})$/.exec(path);
+  if (election) return { page: "election", electionId: election[1]! };
   if (path === "/directory") return { page: "directory" };
   if (path === "/card") return { page: "card" };
   if (path === "/groups") return { page: "groups" };
@@ -133,8 +152,10 @@ export function Portal() {
             <p>{(me.error as Error).message}</p>
           </div>
         </main>
-      ) : !me.data ? (
-        <SignIn communityName={communityName} />
+      ) : !me.data || isJoinIntent() ? (
+        // The join page shows even to a signed-in member: joining again with a
+        // separate identity starts here, and only the wallet can offer it.
+        <SignIn communityName={communityName} signedInAs={me.data?.did} />
       ) : (
         <SignedIn me={me.data} />
       )}
@@ -147,7 +168,13 @@ export function Portal() {
  *  document names. */
 function SignedIn({ me }: { me: MemberMe }) {
   const route = useRoute();
-  const walletPage = route.page === "rooms" || route.page === "room" || route.page === "repos";
+  const walletPage =
+    route.page === "rooms" ||
+    route.page === "room" ||
+    route.page === "repos" ||
+    route.page === "elections" ||
+    route.page === "election" ||
+    route.page === "board";
   const host = useQuery({
     queryKey: ["community-did"],
     queryFn: async () => me.community.did ?? (await vtcDid()),
@@ -160,6 +187,12 @@ function SignedIn({ me }: { me: MemberMe }) {
   if (route.page === "card") return <MyCardPage />;
   if (route.page === "groups") return <GroupsPage />;
   if (route.page === "group") return <GroupPage groupId={route.groupId} />;
+  if (route.page === "boards") return <BoardsPage />;
+  if (route.page === "badges") return <BadgesPage />;
+  if (route.page === "badge") return <BadgePage badgeId={route.badgeId} />;
+  if (route.page === "make-badge") return <MakeBadgePage />;
+  // A board reads without the wallet; only its vote buttons need the community's DID.
+  if (route.page === "board") return <BoardPage boardId={route.boardId} hostDid={host.data} member={me.did} />;
   if (!host.data) {
     return (
       <main className="home" id="main">
@@ -168,197 +201,13 @@ function SignedIn({ me }: { me: MemberMe }) {
     );
   }
   if (route.page === "repos") return <ReposPage hostDid={host.data} member={me.did} />;
+  if (route.page === "elections") return <ElectionsPage hostDid={host.data} member={me.did} />;
+  if (route.page === "election") {
+    return <ElectionPage hostDid={host.data} member={me.did} electionId={route.electionId} />;
+  }
   return route.page === "rooms" ? (
     <RoomsPage hostDid={host.data} member={me.did} />
   ) : (
     <RoomPage hostDid={host.data} roomId={route.roomId} />
   );
-}
-
-/** The member's own card, on the home page: who they are here, and what the
- *  other members see. Read through the browser key a wallet sign-in delegated;
- *  any other sign-in reads nothing and the panel says how to get it. */
-function useOwnCard() {
-  const card = useQuery({ queryKey: ["directory", "card"], queryFn: showCard, retry: false });
-  const fields = useQuery({ queryKey: ["directory", "fields"], queryFn: listFields, retry: false });
-  return { card, fields };
-}
-
-function OwnCardPanel({ own }: { own: ReturnType<typeof useOwnCard> }) {
-  const c = own.card.data?.card;
-  const values = (c?.values ?? {}) as Record<string, unknown>;
-  const name = nameOf(values);
-  const sub = [text(values.nickname), text(values.pronouns)].filter(Boolean).join(" · ");
-  const shownToMembers = (own.fields.data?.fields ?? [])
-    .filter((f) => f.state === "active" && f.source !== "derived" && values[f.key] !== undefined)
-    .filter((f) => {
-      const a = (c?.visibility?.[f.key] as string | undefined) ?? f.defaultVisibility;
-      return a === "members" || a === "public";
-    })
-    .map((f) => f.label);
-  const published = c?.discoverability.external && c.externalCard?.state === "published";
-  return (
-    <section className="card" aria-labelledby="own-card-heading">
-      <div className="card-head">
-        <BookUser size={18} aria-hidden="true" />
-        <h2 id="own-card-heading">Your card</h2>
-      </div>
-      {!c ? (
-        <p className="muted">
-          {own.card.isPending
-            ? "Loading…"
-            : "Sign in with your wallet to see and edit your card here."}
-        </p>
-      ) : (
-        <>
-          <div className="me-card">
-            <MemberAvatar entryId={c.entryId} value={values.avatar} name={name} size={64} />
-            <div className="me-card-names">
-              <strong>{name ?? "No name yet"}</strong>
-              {sub && <span className="muted">{sub}</span>}
-              {published && <span className="pill pill-ok">Published beyond the community</span>}
-            </div>
-          </div>
-          <p className="muted">
-            {name === null
-              ? "Add your name so other members can find you."
-              : shownToMembers.length > 0
-                ? `Every member sees your ${shownToMembers.join(", ")}.`
-                : "Only some members see anything on your card."}
-          </p>
-        </>
-      )}
-      <p>
-        <a className="btn btn-primary" href="#/card">
-          Edit your card
-        </a>{" "}
-        <a className="btn btn-ghost" href="#/directory">
-          Browse members
-        </a>{" "}
-        <a className="btn btn-ghost" href="#/groups">
-          Groups
-        </a>
-      </p>
-    </section>
-  );
-}
-
-function Home({ me }: { me: MemberMe }) {
-  const joined = new Date(me.joinedAt);
-  const own = useOwnCard();
-  const values = (own.card.data?.card.values ?? {}) as Record<string, unknown>;
-  const name = nameOf(values);
-  const first = name?.split(/\s+/)[0];
-  return (
-    <main className="home" id="main">
-      <section className="welcome welcome-personal">
-        {own.card.data && (
-          <MemberAvatar
-            entryId={own.card.data.card.entryId}
-            value={values.avatar}
-            name={name}
-            size={72}
-          />
-        )}
-        <div>
-          <p className="eyebrow">Member portal</p>
-          <h1>{first ? `Welcome back, ${first}` : "Welcome back"}</h1>
-          <p className="lead">
-            You're signed in as a member of{" "}
-            {me.community.name || "this community"}.
-          </p>
-        </div>
-      </section>
-
-      <div className="grid">
-        <OwnCardPanel own={own} />
-
-        <section className="card" aria-labelledby="membership-heading">
-          <div className="card-head">
-            <BadgeCheck size={18} aria-hidden="true" />
-            <h2 id="membership-heading">Your membership</h2>
-          </div>
-          <dl className="facts">
-            <div>
-              <dt>Status</dt>
-              <dd>
-                <span className="pill pill-ok">Active</span>
-              </dd>
-            </div>
-            <div>
-              <dt>Role</dt>
-              <dd className="cap">{me.role}</dd>
-            </div>
-            <div>
-              <dt>Member since</dt>
-              <dd>{joined.toLocaleDateString()}</dd>
-            </div>
-            <div>
-              <dt>Your identity</dt>
-              <dd>
-                <code className="wrap">{me.did}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>Signed in with</dt>
-              <dd>{signInMethod(me.amr)}</dd>
-            </div>
-          </dl>
-        </section>
-
-        <Passkeys canManage={me.canManagePasskeys} />
-
-        <section className="card" aria-labelledby="rooms-card-heading">
-          <div className="card-head">
-            <Boxes size={18} aria-hidden="true" />
-            <h2 id="rooms-card-heading">Data rooms</h2>
-          </div>
-          <p className="muted">
-            Shared spaces for notes and files, encrypted for their members. They open through your wallet, which
-            shows you everything you add before it is added.
-          </p>
-          <p>
-            <a className="btn btn-primary" href="#/rooms">
-              Open your rooms
-            </a>
-          </p>
-        </section>
-
-        <section className="card" aria-labelledby="repos-card-heading">
-          <div className="card-head">
-            <GitBranch size={18} aria-hidden="true" />
-            <h2 id="repos-card-heading">Repositories</h2>
-          </div>
-          <p className="muted">
-            The repositories you can create, own, maintain and sign commits for, what is shared on
-            the ones you own, and your linked forge accounts.
-          </p>
-          <p>
-            <a className="btn btn-primary" href="#/repos">
-              See your repositories
-            </a>
-          </p>
-        </section>
-
-        <section className="card card-soon" aria-labelledby="soon-heading">
-          <div className="card-head">
-            <Sparkles size={18} aria-hidden="true" />
-            <h2 id="soon-heading">Coming to the portal</h2>
-          </div>
-          <ul className="soon">
-            <li>Your credentials and their status</li>
-            <li>Relationships and endorsements</li>
-          </ul>
-        </section>
-      </div>
-    </main>
-  );
-}
-
-/** How the member signed in, from the session's `amr`. A wallet sign-in by
- *  trigger link carries `oob`; the legacy SIOPv2 path carries only `did`. */
-function signInMethod(amr: string[]): string {
-  if (amr.includes("passkey")) return "Passkey";
-  if (amr.includes("oob")) return "Your wallet";
-  return "Your VTA (SIOPv2)";
 }

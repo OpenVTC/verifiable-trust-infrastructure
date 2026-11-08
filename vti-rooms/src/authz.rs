@@ -120,6 +120,11 @@ pub struct VerifiedChain {
     /// A verifier that reports nothing here cannot be held to a list: [`authorize`] then
     /// refuses a disclosing tier's presentation whenever the room's list withdraws anything.
     pub presented: Presented,
+    /// The earliest instant at which any credential the presentation carried stops being
+    /// valid, where the verifier read one — what bounds a state a host keeps on the strength
+    /// of this presentation (`rooms/watch/0.1` Host item 5: a watch lapses no later). `None`
+    /// is "none of them expires", or a verifier that does not say.
+    pub valid_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Cryptographic verification of a presentation.
@@ -265,6 +270,11 @@ impl AuthorizedAction {
     /// is later held to ([`revocation::Presented`]).
     pub fn presented(&self) -> &Presented {
         &self.verified.presented
+    }
+    /// When the first credential of the presentation stops being valid
+    /// ([`VerifiedChain::valid_until`]).
+    pub fn valid_until(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.verified.valid_until
     }
     /// Refuse unless `credential` — presented beside the chain, such as a succession
     /// nomination — is withdrawn by none of the list this was authorized against. The same
@@ -564,6 +574,20 @@ async fn check(
         )));
     }
 
+    // A room its **owner archived** is frozen: reads keep working, and nothing else does
+    // but the owner's own `admin` acts — unarchiving is one, so the exemption is what
+    // gives the freeze an exit, exactly as it does for the lapse gate below. Like the
+    // mirror gate, a statement about the room rather than a judgement of the caller, and
+    // checked before verification for the same reason.
+    if room.frozen_at.is_some() && !matches!(action, Action::Read | Action::Admin) {
+        return Err(AppError::Forbidden(format!(
+            "room `{}` was archived by its owner and is read-only until it is unarchived; \
+             {} is refused, reads and export still work",
+            room.room_id,
+            action.as_str()
+        )));
+    }
+
     let lifecycle = room.lifecycle(now);
     if !matches!(action, Action::Admin) && !lifecycle.accepts_writes() && action != Action::Read {
         return Err(AppError::Forbidden(format!(
@@ -639,6 +663,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         }
     }
 
@@ -727,6 +752,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
             ..room(Visibility::Open)
         };
 
@@ -774,6 +800,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
             epoch_expires_at: Some(NOW - 1),
             ..room(Visibility::Open)
         };
@@ -792,6 +819,83 @@ mod tests {
             matches!(&err, AppError::Forbidden(m) if m.contains("read mirror")),
             "the mirror gate must answer first: {err:?}"
         );
+    }
+
+    /// A room its owner archived is frozen (`vtc/rooms/community/archive/0.1`): a read and
+    /// the owner's own `admin` acts pass, every other action is refused — whatever the
+    /// chain confers, since the freeze is a statement about the room, not the caller.
+    #[tokio::test]
+    async fn a_frozen_room_serves_reads_and_admin_and_refuses_everything_else() {
+        let frozen = Room {
+            frozen_at: Some(NOW - 10),
+            ..room(Visibility::Open)
+        };
+
+        for action in [Action::Read, Action::Admin] {
+            authorize(
+                &frozen,
+                &presentation(1, false),
+                action,
+                PRESENTER,
+                NOW,
+                &Vouches::for_all(),
+                revs(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{action:?} must pass a freeze: {e:?}"));
+        }
+
+        for action in [Action::Write, Action::Curate] {
+            let err = authorize(
+                &frozen,
+                &presentation(1, false),
+                action,
+                PRESENTER,
+                NOW,
+                &Vouches::for_all(),
+                revs(),
+            )
+            .await
+            .expect_err("a frozen room accepts no writes");
+            assert!(
+                matches!(&err, AppError::Forbidden(m)
+                    if m.contains("archived by its owner") && m.contains("unarchived")),
+                "{action:?}: {err:?}"
+            );
+        }
+    }
+
+    /// `None` — every room stored before the freeze existed — is not frozen.
+    #[tokio::test]
+    async fn an_unfrozen_room_accepts_every_action_its_chain_confers() {
+        let open = room(Visibility::Open);
+        assert!(!open.is_frozen());
+        for action in [Action::Read, Action::Write, Action::Curate, Action::Admin] {
+            authorize(
+                &open,
+                &presentation(1, false),
+                action,
+                PRESENTER,
+                NOW,
+                &Vouches::for_all(),
+                revs(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{action:?}: {e:?}"));
+        }
+    }
+
+    /// A stored row without `frozenAt` reads back as not frozen, and a frozen one
+    /// round-trips.
+    #[test]
+    fn frozen_at_defaults_to_not_frozen_and_round_trips() {
+        let mut value = serde_json::to_value(room(Visibility::Open)).unwrap();
+        assert!(value.get("frozenAt").is_none(), "skip-if-none: {value}");
+        let back: Room = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(back.frozen_at, None);
+        value["frozenAt"] = serde_json::json!(42);
+        let back: Room = serde_json::from_value(value).unwrap();
+        assert_eq!(back.frozen_at, Some(42));
     }
 
     /// A verifier that vouches for whatever it is handed.
@@ -829,6 +933,7 @@ mod tests {
                 actions: self.0.clone(),
                 member: Some(presenter.to_string()),
                 presented: Default::default(),
+                valid_until: None,
             })
         }
     }
@@ -850,6 +955,7 @@ mod tests {
                 actions: vec!["read".into()],
                 member: Some("did:key:zSomeoneElse".into()),
                 presented: Default::default(),
+                valid_until: None,
             })
         }
     }

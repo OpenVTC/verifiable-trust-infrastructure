@@ -385,7 +385,8 @@ pub async fn provision_integration(
         .map_err(|e| match e {
             AppError::NotFound(_) => AppError::Validation(format!(
                 "integration template '{template_name}' is not registered on this VTA. \
-                 Register it via 'pnm did-templates create {template_name} --file <path>' \
+                 Register it via 'pnm did-templates create --file <path> --context {context}' (the file's \
+                 `name` must be '{template_name}') \
                  then retry."
             )),
             other => other,
@@ -543,7 +544,11 @@ pub async fn provision_integration(
                     signing_key_id: None,
                     ka_key_id: None,
                     template: Some(template_name.clone()),
-                    template_context: None,
+                    // The same scope the template was found in above: context
+                    // first, then global, then built-in. `None` searched global
+                    // only, so a template registered in the context passed the
+                    // checks and then was not found here.
+                    template_context: Some(context.clone()),
                     template_vars: template_vars_hashmap,
                     // provision-integration always creates an integration DID,
                     // never the VTA's own identity.

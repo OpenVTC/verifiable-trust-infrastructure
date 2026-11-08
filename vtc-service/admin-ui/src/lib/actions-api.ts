@@ -54,11 +54,11 @@ import {
 } from "./wallet";
 import { serializeAssertion } from "./webauthn";
 
-export const ACTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+export const ACTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
 export { ACTIONS_SHOW_TASK };
-export const ACTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2";
+export const ACTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
 export const ACTIONS_ACKNOWLEDGE_TASK =
-  "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2";
+  "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3";
 export const DECISION_TASK = "https://trusttasks.org/spec/task-consent/decision/0.2";
 
 /** The longest `reason` a decision or cancel carries. */
@@ -93,7 +93,8 @@ export type ActionsView = "waitingForMe" | "requestedByMe" | "history" | "all";
 
 export interface ActionApproval {
   subject: string;
-  at: string;
+  /** When the decision was recorded (`_shared/0.3`). */
+  decidedAt: string;
 }
 
 /** A reduction of an unrestricted administrator that nobody but the requester
@@ -296,7 +297,7 @@ export function coolingOffOf(action: Action): CoolingOff | null {
 }
 
 /** The readable command an operator's offline write ran, by its
- *  `vtc/operator/offline-write/0.1` `command`. */
+ *  `vtc/operator/offline-write/0.2` `command`. */
 export const OPERATOR_COMMAND_TEXT: Readonly<Record<string, string>> = Object.freeze({
   aclAdd: "vtc acl add",
   aclRemove: "vtc acl remove",

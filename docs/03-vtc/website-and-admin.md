@@ -109,7 +109,7 @@ file bytes**.
 
 | Endpoint | `Trust-Task` header |
 |---|---|
-| `GET /v1/website/files` | `spec/vtc/website/files/list/0.1` |
+| `GET /v1/website/files` | `spec/vtc/website/files/list/0.3` |
 | `GET /v1/website/files/{path}` | **none** — file bytes out |
 | `PUT /v1/website/files/{path}` | **none** — file bytes in |
 | `DELETE /v1/website/files/{path}` | `spec/vtc/website/files/delete/0.1` |
@@ -194,9 +194,12 @@ The moment an operator sets `root_dir`, the filesystem handler
 takes over and the default is unreachable.
 
 It is written for a visitor who has never heard of a VTC: the main
-call to action is **Get started** at [openvtc.net](https://openvtc.net),
-which explains what a community is and how to get a wallet and join.
-Beside it is **Member sign-in** (`/members/`). The page then outlines
+call to action is **Join this community**, which opens the member
+portal's join page (`/members/?join`, see *Joining from the browser*
+under [Member portal](#member-portal)). Beside it is **Member sign-in**
+(`/members/`), and under both a link to
+[openvtc.net](https://openvtc.net), which explains what a community is
+and how to get a wallet. The page then outlines
 what the community runs on — git repositories governed across GitHub,
 Forgejo/Codeberg and Gitea, verifiable data rooms, access management,
 membership credentials, cross-community recognition — and ends with
@@ -305,6 +308,24 @@ whichever app registers the `did` scheme. It returns 404 until the
 community profile is initialised. An operator site under
 `website.root_dir` can show the same code with
 `<img src="/v1/community/did-qr.svg" alt="QR code of the community DID">`.
+
+A phone cannot scan its own screen, so on a device with a touch screen
+the page also shows **Join in Keyring**: a link to the same bare DID
+(`<a href="did:webvh:…">`). The phone hands the tap to the app that
+registers the `did` scheme, and Keyring routes it exactly as it routes a
+scan, into joining the community. It is labeled *Join* so a member
+does not take it for sign-in, and the note under it points members to
+**Member sign-in**. The page sets the link only for a value of the form
+`did:<method>:…`, and shows it as soon as the profile names the DID,
+even if the code fails to load. A touch screen is any
+coarse pointer (`any-pointer: coarse`), so an iPad with a keyboard or
+trackpad counts, as does an iPad presenting itself as a Mac
+(`maxTouchPoints`). Where touch is the only input (a phone, or a tablet
+on its own), the link comes first and the code starts folded behind
+"Show the code for another device". Without such an app installed, the
+tap does nothing (Android) or reports an invalid address (iOS), so the
+Copy button stays beside it. An operator site can offer the same link
+with the DID from `public-profile`'s `communityDid`.
 
 ### Transport connectivity
 
@@ -792,7 +813,7 @@ with the same `no-referrer`, `no-store` and CSP as the portal's.
 
 The SIOPv2 path is two calls, both on canonical Trust Tasks:
 
-1. `POST /v1/auth/` (`spec/auth/authenticate/0.1`) — the DIDComm-packed or
+1. `POST /v1/auth/` (`spec/auth/authenticate/0.3`) — the DIDComm-packed or
    SIOP challenge response, returning `{ session, tokens }` with a bearer
    access token.
 2. `spec/vtc/auth/admin-session/0.2`, a signed document on
@@ -1041,7 +1062,7 @@ Every document the portal then signs with the browser's sign-in key and
 the community accepts as the member's — a directory read, a card edit, a
 group join, a repository view — is audited as `MemberPortalKeyUsed`
 against the member, naming the key (`startKeyDid`), the grant that delegated
-to it (`grantId`, the `id` of the approved `auth/oob/grant/0.2`), the
+to it (`grantId`, the `id` of the approved `auth/oob/grant/0.3`), the
 task type and the document's id (grant 0.2 consumer item 7). The row is
 written before the document takes effect, and a community without an
 audit writer refuses the document rather than accept it unaudited. The
@@ -1162,7 +1183,7 @@ namespace, with who gave each and any expiry; on the repositories they
 own or administer, what every other member holds there, with the
 granter's reason; every repository the community governs, with its
 owners; and the forge accounts linked to them. The page reads
-`git-ns/view/0.4` and `git-ns/account/link-status/0.1`, signed by the
+`git-ns/view/0.6` and `git-ns/account/link-status/0.1`, signed by the
 portal's sign-in key: a wallet sign-in offers `git-ns/view` and
 `git-ns/account/link-status` in its `signingScope` beside the directory
 and groups, and nothing else under `git-ns`. The view is the member's
@@ -1171,7 +1192,7 @@ console shows in the console).
 
 **Linking or unlinking a forge account** is not signed by the portal key.
 It binds the account the forge then gives the member's roles to, so
-`auth/oob/grant/0.2` consumer item 6 excludes it from a delegated key,
+`auth/oob/grant/0.3` consumer item 6 excludes it from a delegated key,
 as it does every right change. The page asks the member's wallet instead
 (`window.vtaWallet.git.linkAccount` / `unlinkAccount`), which asks the
 member, signs `git-ns/account/link` or `git-ns/account/unlink` as their
@@ -1183,12 +1204,73 @@ roles. A member whose wallet has no `git` channel is shown
 `cnm git link --forge <forge>`. Granting and revoking stay in `cnm git`
 and the console.
 
+**Elections** (`/members/#/elections`, `#/elections/<electionId>`). The
+elections the community lets the member vote in, each with what it asks,
+its schedule and how it is run (the disclosure members are shown before a
+ticket, VTI-VOT-090), and buttons to take a ticket and to vote. Everything
+goes through the member's wallet (`window.vtaWallet.elections`), never the
+portal key and never a portal route: this page is the community's own code
+and knows who is signed in, and the community is never trusted to learn how
+anyone voted. So the ballot is filled in the **wallet's own window**, the
+member's VTA builds and signs the cast under a key made for that cast alone,
+and the wallet sends it to the ballot box itself after a random pause —
+never through the community. After a vote the page is told only that the
+wallet's window closed (and whether a ticket had to be taken first), never
+whether a vote was cast; the wallet shows the outcome. Voting with no
+ticket held takes one and stops, so the two are apart in time. The wallet
+must be allowed to reach the ballot box's address from its popup. Elections
+the member was notified of are listed beside the community's own, showing only
+what the notification says (VTI-NTF-063), and are opened as a member of the
+party the notification names (`memberOf`), the wallet asking before it shows
+that membership. The home page's *Needs your attention* lists those of them
+whose notice still stands and whose voting has not closed, by identifier,
+linked as the Elections page links them, so `memberOf` always comes from the
+standing notice and never from the link. See
+[Community elections](elections.md#voting-from-the-member-portal).
+
 **Routing.** The mount is fixed at `/members` and takes precedence
 over an operator website's own `/members` path. In subdomain mode it
 is served on the **API's** host, since its calls go to `/v1/member/*`
 on its own origin. WebAuthn accepts the single origin derived from
 `public_url`, so portal passkeys work where that origin serves the
 portal — the default path mode does.
+
+### Joining from the browser
+
+`/members/?join` is the sign-in page worded for someone who is not a
+member yet: the same wallet code, headed **Join with your wallet**, the
+browser wallet's install guide, and none of the options that need a
+membership (portal passkeys, the older SIOPv2 sign-in). The page asks
+the daemon for nothing the sign-in page does not; the difference is
+what the wallet does with the code. A wallet holding no identity for
+this community offers to join it instead of signing in: it reads the
+join manifest (`vtc/join-requests/manifest/0.4`) as a throwaway key,
+lets the person join as a **new identity for the community** — the
+VTA Wallet browser extension sets up a context of its own at the
+person's VTA (`vtc-<portal host>`) and one new DID in it — or as one
+they already have, and sends `vtc/join-requests/submit/0.3` signed by
+that identity. Under the default join criteria the request is referred
+to an administrator, who decides it on **Join requests**; once it is
+approved, the person signs in on the ordinary page with the same
+wallet. Joining this way needs a Verifiable Trust Agent the wallet
+administers, with at least one DID hosting server for the new identity.
+
+A request from a DID that is already a current member (one in the
+community's ACL; a departed member may apply again) is refused at once
+with `vtc/join-requests/submit:alreadyMember` and nothing is queued, so
+no administrator reviews a request that could never be admitted. The
+browser wallet takes that answer to the ordinary sign-in for the same
+code.
+
+The join page's code carries `data-oob-intent="join"` on its link. A
+browser wallet that already signs in to this community reads it as "the
+person asked to join": instead of signing straight in, it says they are
+already a member and offers to join with a new identity, made in a context
+of its own (`vtc-<portal host>-2`, …), so a person can hold a second,
+unlinked membership. The attribute changes only what the wallet offers;
+the code and the protocol are the sign-in page's. The join page shows
+even in a browser already signed in to the portal — it says as whom, and
+links to the member pages — since that is where a second identity starts.
 
 ## Routing modes
 

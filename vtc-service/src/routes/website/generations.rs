@@ -15,7 +15,7 @@ use crate::error::{AppError, TaskError};
 use crate::server::AppState;
 use crate::website::storage::{GenerationEntry, list_managed_generations, swap_current_symlink};
 
-use trust_tasks_rs::specs::vtc::website as website_spec;
+use vti_specs::vtc::website as website_spec;
 
 /// `vtc/website/generations/list:notManaged` — live mode has no generations.
 pub const GENERATIONS_LIST_ERR_NOT_MANAGED: &str =

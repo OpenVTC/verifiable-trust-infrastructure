@@ -41,7 +41,7 @@ pub enum ActionsCommands {
     /// Stay connected and print a line whenever something you administer
     /// changes — which topic, and for actions, acknowledgements and join
     /// requests your count. Never what changed: read the topic for that.
-    /// HTTPS only (`vtc/admin/events/subscribe/0.1`); Ctrl-C to stop.
+    /// HTTPS only (`vtc/admin/events/subscribe/0.6`); Ctrl-C to stop.
     Watch {
         /// Topics to watch (repeatable). Default: every topic you may read.
         #[arg(long = "topic", value_enum)]

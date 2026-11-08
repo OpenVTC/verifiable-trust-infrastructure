@@ -1,4 +1,4 @@
-//! Integration coverage for the signed `spec/audit/list/0.1` document
+//! Integration coverage for the signed `spec/audit/list/0.2` document
 //! (phase 2b(ii)).
 //!
 //! What matters here is not the URI swap but the three things the
@@ -14,7 +14,7 @@ use tower::ServiceExt;
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
-const LIST_TASK: &str = "https://trusttasks.org/spec/audit/list/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/audit/list/0.2";
 const PROFILE_TASK: &str = "https://trusttasks.org/spec/vtc/community/profile/update/0.1";
 
 struct Fixture {
@@ -38,7 +38,7 @@ async fn super_admin_token(_fix: &Fixture) -> String {
     "admin".into()
 }
 
-/// `audit/list/0.1` signed by the party `who` names, with the filters in
+/// `audit/list/0.2` signed by the party `who` names, with the filters in
 /// `query` (`a=b&c=d`, as the bearer route read them) as the payload: the
 /// reply's status and payload.
 async fn list(fix: &Fixture, who: &str, query: &str) -> (StatusCode, Value) {
@@ -46,7 +46,7 @@ async fn list(fix: &Fixture, who: &str, query: &str) -> (StatusCode, Value) {
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (k, v) = pair.split_once('=').expect("key=value");
         let v = match k {
-            "pageSize" => json!(v.parse::<u64>().unwrap()),
+            "limit" => json!(v.parse::<u64>().unwrap()),
             _ => json!(v),
         };
         payload.insert(k.to_string(), v);
@@ -133,10 +133,13 @@ async fn response_and_entries_are_the_canonical_shape() {
 
     // Canonical response envelope, not the old Paginated wrapper.
     assert!(body.get("entries").is_some(), "entries: {body}");
-    assert!(body.get("truncated").is_some(), "truncated: {body}");
     assert!(
         body.get("items").is_none() && body.get("next_cursor").is_none(),
         "the pre-migration Paginated shape must be gone: {body}"
+    );
+    assert!(
+        body.get("truncated").is_none() && body.get("cursor").is_none(),
+        "0.1's `truncated` / `cursor` are gone in 0.2: {body}"
     );
 
     let entry = &body["entries"][0];
@@ -207,8 +210,7 @@ async fn action_filter_is_actually_applied() {
         body["entries"].as_array().unwrap().is_empty(),
         "an unmatched action filter must not fall back to everything: {body}"
     );
-    assert_eq!(body["truncated"], false);
-    assert!(body.get("cursor").is_none() || body["cursor"].is_null());
+    assert!(body.get("nextCursor").is_none(), "{body}");
 }
 
 #[tokio::test]
@@ -278,16 +280,18 @@ async fn a_cursor_cannot_be_replayed_under_different_filters() {
     seed(&fix, &token, 4).await;
 
     // Page 1 of 2, filtered.
-    let (status, page1) = list(&fix, &token, "action=CommunityProfileUpdated&pageSize=1").await;
+    let (status, page1) = list(&fix, &token, "action=CommunityProfileUpdated&limit=1").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(page1["truncated"], true, "expected more pages: {page1}");
-    let cursor = page1["cursor"].as_str().expect("cursor").to_string();
+    let cursor = page1["nextCursor"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected more pages: {page1}"))
+        .to_string();
 
     // Same filters → resumes.
     let (status, page2) = list(
         &fix,
         &token,
-        &format!("action=CommunityProfileUpdated&pageSize=1&cursor={cursor}"),
+        &format!("action=CommunityProfileUpdated&limit=1&cursor={cursor}"),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "same filters must resume: {page2}");
@@ -296,7 +300,7 @@ async fn a_cursor_cannot_be_replayed_under_different_filters() {
     let (status, body) = list(
         &fix,
         &token,
-        &format!("action=MemberAdded&pageSize=1&cursor={cursor}"),
+        &format!("action=MemberAdded&limit=1&cursor={cursor}"),
     )
     .await;
     assert_ne!(
@@ -306,7 +310,7 @@ async fn a_cursor_cannot_be_replayed_under_different_filters() {
     );
 
     // Dropping the filter entirely is also a change.
-    let (status, body) = list(&fix, &token, &format!("pageSize=1&cursor={cursor}")).await;
+    let (status, body) = list(&fix, &token, &format!("limit=1&cursor={cursor}")).await;
     assert_ne!(
         status,
         StatusCode::OK,
@@ -315,16 +319,16 @@ async fn a_cursor_cannot_be_replayed_under_different_filters() {
 }
 
 #[tokio::test]
-async fn truncated_reflects_matching_entries_not_raw_rows() {
+async fn next_cursor_reflects_matching_entries_not_raw_rows() {
     let fix = build().await;
     let token = super_admin_token(&fix).await;
     seed(&fix, &token, 3).await;
 
     // A filter matching nothing, with rows still unread behind the
-    // page: `truncated` must be false, or the caller pages forever
+    // page: there must be no `nextCursor`, or the caller pages forever
     // into an empty tail believing results were withheld.
-    let (_, body) = list(&fix, &token, "action=NoSuchEvent&pageSize=1").await;
-    assert_eq!(body["truncated"], false, "{body}");
+    let (_, body) = list(&fix, &token, "action=NoSuchEvent&limit=1").await;
+    assert!(body.get("nextCursor").is_none(), "{body}");
 }
 
 #[tokio::test]

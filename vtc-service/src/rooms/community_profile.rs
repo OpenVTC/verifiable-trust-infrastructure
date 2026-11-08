@@ -1,6 +1,6 @@
 //! The profile of every room the community owns — its label and description, written
 //! **into the room** by the community's VTA, so the room's members can read what the room
-//! is (`vtc/rooms/community/create/0.3` step 5, `vtc/rooms/community/update/0.2` items
+//! is (`vtc/rooms/community/create/0.4` step 5, `vtc/rooms/community/update/0.3` items
 //! 10–12, `rooms/keys/profile/write/0.1`).
 //!
 //! # What goes where
@@ -41,10 +41,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use trust_tasks_rs::specs::rooms::keys::profile::{
-    read::v0_1 as profile_read, write::v0_1 as profile_write,
-};
 use vti_common::error::AppError;
+use vti_specs::rooms::keys::profile::{read::v0_1 as profile_read, write::v0_1 as profile_write};
 
 use super::community::{CommunityRooms, HolderError, KeyHolder, OwnedRoom};
 use crate::server::AppState;
@@ -396,6 +394,12 @@ pub async fn sweep(state: &AppState, now: DateTime<Utc>) -> Result<SweepReport, 
         return Ok(report);
     }
     for room in state.community_rooms.rooms().await? {
+        // An archived room is written to by nobody, its owner included
+        // (`vtc/rooms/community/archive/0.1` item 9): what is owed is written once it is
+        // unarchived, and a room on its way out never.
+        if room.status.state != super::community_lifecycle::RoomState::Active {
+            continue;
+        }
         let Some(rec) = record(&state.community_rooms, &room.room_id).await? else {
             continue;
         };

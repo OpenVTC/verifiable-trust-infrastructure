@@ -42,8 +42,8 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ),
     (
         "vta-keys/src/custody.rs",
-        4,
-        "the custody doors: load the seed for an authorized record (holding the root privately), and for an authorized PCS member key (returning only its domain-separated seed)",
+        6,
+        "the custody doors: load the seed for an authorized record (holding the root privately), for an authorized PCS member key (returning only its domain-separated seed), and for an authorized, bounded PCS key search inside one context's base (returning only which candidate matched)",
     ),
     (
         "vta-service/src/operations/key_custody.rs",

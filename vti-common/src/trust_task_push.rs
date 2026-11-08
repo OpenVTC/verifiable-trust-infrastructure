@@ -75,11 +75,20 @@
 //! defines a retry as the bit-for-bit identical document, and §7.2 item 11
 //! requires a consumer that already accepted an `id` to refuse different
 //! content under it with `idConflict` — a re-stamped `issuedAt` and a new proof
-//! are different content. And no `expiresAt` helps: VTI consumers apply their
-//! window to `issuedAt` whatever `expiresAt` says, and cap the replay record at
-//! it, so that a producer cannot choose how long a consumer must remember it.
+//! are different content.
 //!
-//! So the engine issues a **new attempt** (SPEC §8.4, last paragraph) whenever
+//! What keeps most pushes inside the window is **a stated expiry**
+//! (VTI-TRN-048). A document stating an `expiresAt` is accepted until then, up
+//! to thirty days after its `issuedAt`, whatever the ten-minute maximum age
+//! (VTI-OPS-024, VTI-OPS-028). So a node signs a pushed document with
+//! [`state_delivery_expiry`] — an `expiresAt` at the push's deadline — and a
+//! copy a mediator holds while its recipient is offline is still acceptable
+//! when collected. The two predicates below place a document by that
+//! acceptance end, not by `issuedAt` alone.
+//!
+//! Where a document is still past its acceptance end — it states no expiry, or
+//! the deadline runs past the thirty-day horizon — the engine issues a **new
+//! attempt** (SPEC §8.4, last paragraph) whenever
 //! it would otherwise put a document past its acceptance window on the wire:
 //! a fresh `id`, a fresh `issuedAt`, the node's proof again
 //! ([`PushReissuer`]), and everything else unchanged. The attempt stays in the
@@ -161,7 +170,7 @@ use vta_sdk::protocol::matching::{
 use crate::capability_client::TRUST_TASK_ENVELOPE_TYPE;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
-use crate::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW;
+use crate::trust_task::acceptance::{EXPIRY_HORIZON, VTI_ACCEPTANCE_WINDOW};
 use crate::tsp_reach::TspReachability;
 
 /// What a node lends the push engine: the stores and handles that are its own.
@@ -339,24 +348,108 @@ fn issued_at(doc: &Value) -> Option<DateTime<Utc>> {
     doc.get("issuedAt")?.as_str()?.parse::<DateTime<Utc>>().ok()
 }
 
-/// Whether the recipient has stopped accepting `doc` by `now`, before its skew
-/// tolerance: the point past which the engine will not put it on the wire
-/// again (discovery 0.3's "SHOULD NOT send after `issuedAt + maxAgeSeconds`").
-/// A document with no readable `issuedAt` cannot be placed in any window, so it
-/// is never judged past one — it is sent as it is.
-///
-/// The window is [`VTI_ACCEPTANCE_WINDOW`] — VTI-TRN-045's documented constant,
-/// its last tier — for every recipient; see the module docs (*Which window*)
-/// for why the engine reads no advertised one.
-fn past_acceptance(doc: &Value, now: DateTime<Utc>) -> bool {
-    issued_at(doc).is_some_and(|t| VTI_ACCEPTANCE_WINDOW.past_max_age(t, now))
+/// The document's `expiresAt`, when it carries a readable one.
+fn expires_at(doc: &Value) -> Option<DateTime<Utc>> {
+    doc.get("expiresAt")?
+        .as_str()?
+        .parse::<DateTime<Utc>>()
+        .ok()
 }
 
-/// Whether the recipient refuses `doc` at `now`, skew tolerance included. A
-/// copy collected past this point was refused, whatever the collection
-/// evidence says.
+/// The document's **acceptance end** at a recipient applying
+/// [`VTI_ACCEPTANCE_WINDOW`] (VTI-TRN-044's definition, from VTI-OPS-024): its
+/// `expiresAt`, no later than the thirty-day horizon (VTI-OPS-028), where it
+/// states one; otherwise `issuedAt` plus the maximum age. `None` with no
+/// readable `issuedAt`: the document cannot be placed in any window.
+///
+/// The window is VTI-TRN-045's documented constant, its last tier, for every
+/// recipient; see the module docs (*Which window*) for why the engine reads no
+/// advertised one.
+fn acceptance_end(doc: &Value) -> Option<DateTime<Utc>> {
+    let issued = issued_at(doc)?;
+    Some(match expires_at(doc) {
+        Some(expiry) => issued
+            .checked_add_signed(EXPIRY_HORIZON)
+            .map_or(expiry, |horizon| expiry.min(horizon)),
+        None => issued
+            .checked_add_signed(VTI_ACCEPTANCE_WINDOW.max_age)
+            .unwrap_or(DateTime::<Utc>::MAX_UTC),
+    })
+}
+
+/// Whether the recipient has stopped accepting `doc` by `now`, before its skew
+/// tolerance: its acceptance end, past which the engine will not put it on the
+/// wire again (VTI-TRN-046's SHOULD NOT). A document with no readable
+/// `issuedAt` is never judged past one — it is sent as it is.
+fn past_acceptance(doc: &Value, now: DateTime<Utc>) -> bool {
+    acceptance_end(doc).is_some_and(|end| now >= end)
+}
+
+/// Whether the recipient refuses `doc` at `now`, skew tolerance included: past
+/// its latest acceptable instant (VTI-TRN-044). A copy collected past this
+/// point was refused, whatever the collection evidence says.
 fn refused_when_collected(doc: &Value, now: DateTime<Utc>) -> bool {
-    issued_at(doc).is_some_and(|t| VTI_ACCEPTANCE_WINDOW.refuses(t, now))
+    acceptance_end(doc)
+        .and_then(|end| end.checked_add_signed(VTI_ACCEPTANCE_WINDOW.clock_skew))
+        .is_some_and(|latest| now > latest)
+}
+
+/// State the push's deadline on an **unsigned** document as its `expiresAt`
+/// (**VTI-TRN-048**), before it is signed and handed to [`push_trust_task`]
+/// with the same `deliver_by`.
+///
+/// A document that states no expiry is acceptable for the recipient's maximum
+/// age — ten minutes — so a delivery lasting a day would depend on a chain of
+/// new attempts each reaching the recipient before it went stale. One stating
+/// the deadline is acceptable for as long as the push runs, up to the
+/// thirty-day horizon (VTI-OPS-028), so a copy a mediator holds while its
+/// recipient is offline is still acceptable when collected. Each new attempt
+/// carries it unchanged ([`new_attempt`]), and so the recipient's record of
+/// the idempotency key lasts as long as any of them can be accepted
+/// (VTI-OPS-066).
+///
+/// The expiry is the close of the delivery window and no later — a document
+/// stated to stand longer than its sender pursues it asks the recipient to
+/// remember it for nothing — counted from the document's `issuedAt` (or `now`
+/// without one) and rounded down to whole seconds. An `expiresAt` the
+/// document already states is kept where it is earlier: the task said the
+/// request lapses then. Refused on a signed document, whose proof the change
+/// would break.
+pub fn state_delivery_expiry(
+    doc: &mut Value,
+    deliver_by: Duration,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    let obj = doc
+        .as_object_mut()
+        .ok_or_else(|| AppError::Validation("a Trust Task document is a JSON object".into()))?;
+    if obj.contains_key("proof") {
+        return Err(AppError::Internal(
+            "the delivery expiry is stated before signing; this document is already signed".into(),
+        ));
+    }
+    let from = obj
+        .get("issuedAt")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+        .unwrap_or(now);
+    let deadline = chrono::TimeDelta::from_std(deliver_by)
+        .ok()
+        .and_then(|d| from.checked_add_signed(d))
+        .map(|t| chrono::SubsecRound::trunc_subsecs(t, 0))
+        .ok_or_else(|| AppError::Validation("the delivery window is out of range".into()))?;
+    let stated = obj
+        .get("expiresAt")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    if stated.is_some_and(|t| t <= deadline) {
+        return Ok(());
+    }
+    obj.insert(
+        "expiresAt".into(),
+        Value::String(deadline.to_rfc3339_opts(SecondsFormat::Secs, true)),
+    );
+    Ok(())
 }
 
 /// A **new attempt** at `previous` (SPEC §8.4): a fresh `id`, a fresh
@@ -1494,6 +1587,73 @@ mod tests {
             &doc,
             at_window + window.clock_skew + chrono::TimeDelta::seconds(1)
         ));
+    }
+
+    /// **VTI-TRN-048 / VTI-OPS-028.** A document stating an expiry is
+    /// acceptable until it, past the maximum age, and no later than the
+    /// horizon: the engine places it there, not at `issuedAt + max_age`.
+    #[test]
+    fn a_stated_expiry_moves_the_acceptance_end() {
+        let window = VTI_ACCEPTANCE_WINDOW;
+        let issued = chrono::SubsecRound::trunc_subsecs(Utc::now(), 0);
+        let mut doc = signed_at(issued);
+        let day = issued + chrono::TimeDelta::days(1);
+        doc["expiresAt"] = json!(day.to_rfc3339_opts(SecondsFormat::Secs, true));
+        assert!(!past_acceptance(&doc, issued + chrono::TimeDelta::hours(1)));
+        assert!(past_acceptance(&doc, day));
+        assert!(!refused_when_collected(&doc, day + window.clock_skew));
+        assert!(refused_when_collected(
+            &doc,
+            day + window.clock_skew + chrono::TimeDelta::seconds(1)
+        ));
+
+        let year = issued + chrono::TimeDelta::days(365);
+        doc["expiresAt"] = json!(year.to_rfc3339_opts(SecondsFormat::Secs, true));
+        assert_eq!(acceptance_end(&doc), Some(issued + EXPIRY_HORIZON));
+    }
+
+    /// **VTI-TRN-048.** The deadline is stated as the expiry, counted from
+    /// `issuedAt`, in whole seconds; an earlier expiry the task already states
+    /// is kept; and a signed document is refused rather than broken.
+    #[test]
+    fn the_delivery_deadline_is_stated_as_the_expiry() {
+        let issued = chrono::SubsecRound::trunc_subsecs(Utc::now(), 0);
+        let mut doc = signed_at(issued);
+        doc.as_object_mut().unwrap().remove("proof");
+        let mut stated = doc.clone();
+        state_delivery_expiry(&mut stated, Duration::from_secs(86_400), Utc::now()).unwrap();
+        assert_eq!(
+            expires_at(&stated),
+            Some(issued + chrono::TimeDelta::days(1))
+        );
+        assert!(
+            stated["expiresAt"].as_str().unwrap().ends_with('Z')
+                && !stated["expiresAt"].as_str().unwrap().contains('.'),
+            "whole seconds"
+        );
+
+        let soon = issued + chrono::TimeDelta::hours(1);
+        let mut earlier = doc.clone();
+        earlier["expiresAt"] = json!(soon.to_rfc3339_opts(SecondsFormat::Secs, true));
+        state_delivery_expiry(&mut earlier, Duration::from_secs(86_400), Utc::now()).unwrap();
+        assert_eq!(
+            expires_at(&earlier),
+            Some(soon),
+            "the earlier expiry stands"
+        );
+
+        let mut later = doc.clone();
+        later["expiresAt"] =
+            json!((issued + chrono::TimeDelta::days(9)).to_rfc3339_opts(SecondsFormat::Secs, true));
+        state_delivery_expiry(&mut later, Duration::from_secs(86_400), Utc::now()).unwrap();
+        assert_eq!(
+            expires_at(&later),
+            Some(issued + chrono::TimeDelta::days(1)),
+            "no later than the close of the delivery window"
+        );
+
+        let mut signed = signed_at(issued);
+        assert!(state_delivery_expiry(&mut signed, Duration::from_secs(60), Utc::now()).is_err());
     }
 
     /// A document with no `issuedAt` cannot be placed in any window, so it is

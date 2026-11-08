@@ -1,11 +1,11 @@
 //! Census: no workspace crate hand-writes a serde payload or response type for
-//! a Trust Task whose wire types `trust-tasks-rs` generates.
+//! a Trust Task whose wire types `vti-specs` generates.
 //!
 //! ## Why
 //!
 //! The Trust Task specifications in dtgwg-trust-tasks-tf are normative, and
-//! `trust-tasks-codegen` turns each one into Rust types published under
-//! `trust_tasks_rs::specs`. A hand-written copy of one of those types is a
+//! `trust-tasks-build` turns each version VTI pins into Rust types under
+//! `vti_specs`. A hand-written copy of one of those types is a
 //! second definition of the wire that nothing keeps in step with the first.
 //!
 //! The peer-vetting work showed what that costs. Its copies drifted from the
@@ -22,7 +22,7 @@
 //! every `Serialize` or `Deserialize` struct and enum in every workspace member's
 //! production source. Where the summary names a Trust Task **and** calls the
 //! type a payload, request, response or body, or says the task publishes it, the
-//! census asks `trust_tasks_rs::schema_index` whether that task has a generated
+//! census asks `vti_specs::schema_index` whether that task has a generated
 //! module. If it does, the type duplicates the generated one.
 //!
 //! So name the task in a wire type's summary. A type that carries a task's
@@ -58,36 +58,7 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
     (
         "vta-sdk/src/protocols/acl_management/change_role.rs",
         "ChangeRoleBody",
-    ), // acl/change-role/0.1
-    (
-        "vta-sdk/src/protocols/acl_management/create.rs",
-        "CreateAclBody",
-    ), // acl/grant/0.1
-    (
-        "vta-sdk/src/protocols/acl_management/create.rs",
-        "CreateAclResponseBody",
-    ), // acl/grant/0.1
-    (
-        "vta-sdk/src/protocols/acl_management/delete.rs",
-        "DeleteAclBody",
-    ), // acl/revoke/0.1
-    (
-        "vta-sdk/src/protocols/acl_management/delete.rs",
-        "DeleteAclResultBody",
-    ), // acl/revoke/0.1
-    ("vta-sdk/src/protocols/acl_management/get.rs", "GetAclBody"), // acl/show/0.1
-    (
-        "vta-sdk/src/protocols/acl_management/get.rs",
-        "GetAclResultBody",
-    ), // acl/show/0.1
-    (
-        "vta-sdk/src/protocols/acl_management/list.rs",
-        "ListAclBody",
-    ), // acl/list/0.1
-    (
-        "vta-sdk/src/protocols/acl_management/list.rs",
-        "ListAclResultBody",
-    ), // acl/list/0.1
+    ), // acl/change-role/0.2
     (
         "vta-sdk/src/protocols/acl_management/swap.rs",
         "SwapKeyBody",
@@ -97,17 +68,13 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
         "SwapKeyResultBody",
     ), // acl/swap-key/0.1
     (
-        "vta-sdk/src/protocols/acl_management/update.rs",
-        "UpdateAclBody",
-    ), // acl/update/0.1
-    (
         "vta-sdk/src/protocols/audit_management/list.rs",
         "ListAuditLogsBody",
-    ), // audit/list/0.1
+    ), // audit/list/0.2
     (
         "vta-sdk/src/protocols/audit_management/list.rs",
         "ListAuditLogsResultBody",
-    ), // audit/list/0.1
+    ), // audit/list/0.2
     (
         "vta-sdk/src/protocols/audit_management/verify.rs",
         "VerifyChainBody",
@@ -119,7 +86,7 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
     (
         "vta-sdk/src/protocols/discovery.rs",
         "SupportedTasksResponse",
-    ), // trust-task-discovery/0.1
+    ), // trust-task-discovery/0.3
     (
         "vta-sdk/src/protocols/key_management/create.rs",
         "CreateKeyResponseBody",
@@ -151,19 +118,19 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
     (
         "vta-sdk/src/protocols/policy_management.rs",
         "ListPoliciesBody",
-    ), // policy/list/0.2
+    ), // policy/list/0.3
     (
         "vta-sdk/src/protocols/policy_management.rs",
         "ListPoliciesResultBody",
-    ), // policy/list/0.2
+    ), // policy/list/0.3
     (
         "vta-sdk/src/protocols/policy_management.rs",
         "UpsertPolicyBody",
-    ), // policy/upsert/0.2
+    ), // policy/upsert/0.3
     (
         "vta-sdk/src/protocols/policy_management.rs",
         "UpsertPolicyResultBody",
-    ), // policy/upsert/0.2
+    ), // policy/upsert/0.3
     (
         "vta-sdk/src/protocols/vta_management/get_config.rs",
         "GetConfigBody",
@@ -180,14 +147,11 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
         "vta-sdk/src/protocols/vta_management/update_config.rs",
         "UpdateConfigResultBody",
     ), // config/patch/0.1
+    ("vta-service/src/trust_tasks/vault.rs", "VaultListBody"), // vault/list/0.4
     (
         "vta-service/src/trust_tasks/vault.rs",
         "VaultListResponseBody",
-    ), // vault/list/0.1
-    (
-        "vta-service/src/trust_tasks/vault.rs",
-        "VaultListStatusFilter",
-    ), // vault/list/0.1
+    ), // vault/list/0.4
     (
         "vta-service/src/trust_tasks/vault.rs",
         "VaultProxyLoginBody",
@@ -245,20 +209,20 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
         "vtc-service/src/routes/website/generations.rs",
         "RollbackResponse",
     ), // vtc/website/rollback/0.1
-    ("vti-rooms/src/wire.rs", "ChainBody"),                   // rooms/epoch/chain/0.1
+    ("vti-rooms/src/wire.rs", "ChainBody"),                   // rooms/epoch/chain/0.2
     ("vti-rooms/src/wire.rs", "ClaimOwnerBody"),              // rooms/owner/claim/0.1
     ("vti-rooms/src/wire.rs", "CommitsBody"),                 // rooms/epoch/commits/0.1
     ("vti-rooms/src/wire.rs", "CurateRecordBody"),            // rooms/records/curate/0.1
     ("vti-rooms/src/wire.rs", "GetRecordBody"),               // rooms/records/get/0.2
-    ("vti-rooms/src/wire.rs", "ListRecordsBody"),             // rooms/records/list/0.1
+    ("vti-rooms/src/wire.rs", "ListRecordsBody"),             // rooms/records/list/0.5
     ("vti-rooms/src/wire.rs", "MintEpochBody"),               // rooms/epoch/mint/0.1
     ("vti-rooms/src/wire.rs", "PruneBody"),                   // rooms/epoch/prune/0.2
-    ("vti-rooms/src/wire.rs", "PutRecordBody"),               // rooms/records/put/0.1
+    ("vti-rooms/src/wire.rs", "PutRecordBody"),               // rooms/records/put/0.3
     ("vti-rooms/src/wire.rs", "TransferOwnerBody"),           // rooms/owner/transfer/0.1
 ];
 
 /// The size of [`PREDATES_GENERATED`], asserted so the list cannot grow quietly.
-const PREDATES_GENERATED_COUNT: usize = 67;
+const PREDATES_GENERATED_COUNT: usize = 58;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -412,9 +376,9 @@ fn claimed_generated_task(attrs: &[Attribute]) -> Option<String> {
     if !claims_to_carry(&prose) {
         return None;
     }
-    references.into_iter().find(|r| {
-        trust_tasks_rs::schema_index::schema_for(&format!("{SPEC_AUTHORITY}{r}")).is_some()
-    })
+    references
+        .into_iter()
+        .find(|r| vti_specs::schema_index::schema_for(&format!("{SPEC_AUTHORITY}{r}")).is_some())
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -495,12 +459,12 @@ fn no_workspace_crate_hand_writes_a_generated_trust_task_type() {
         .collect();
     assert!(
         duplicates.is_empty(),
-        "{} hand-written type(s) restate a Trust Task that trust-tasks-rs generates:\n{}\n\n\
-         Use the generated type from `trust_tasks_rs::specs` (the vetting family re-exports \
+        "{} hand-written type(s) restate a Trust Task that vti-specs generates:\n{}\n\n\
+         Use the generated type from `vti_specs` (the vetting family re-exports \
          its own from `vta_sdk::protocols::vetting`). A rule the schema cannot state belongs \
          in a check over the generated type, not in a copy of it. If the specification is \
-         wrong, change it in dtgwg-trust-tasks-tf and take the trust-tasks-rs release that \
-         carries it.",
+         wrong, change it in dtgwg-trust-tasks-tf and pin the version that carries it \
+         (CLAUDE.md, \"Pinning a task version\").",
         duplicates.len(),
         duplicates
             .iter()

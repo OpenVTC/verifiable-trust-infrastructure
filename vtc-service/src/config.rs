@@ -139,6 +139,13 @@ pub struct AppConfig {
         skip_serializing_if = "crate::elections::VotingConfig::is_empty"
     )]
     pub voting: crate::elections::VotingConfig,
+    /// The community's boards (`[boards]`): how long a deleted board's tombstones are kept
+    /// (VTI-BRD-008). Absent: the default, twelve months.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::boards::BoardsConfig::is_default"
+    )]
+    pub boards: crate::boards::BoardsConfig,
     /// The community's groups (`[groups]`, the `vtc/groups/*` tasks): where its VTA
     /// mints each group's identity, and how long the credentials it issues last.
     ///
@@ -361,6 +368,13 @@ pub struct RoomsConfig {
     /// `noKeyHolder` naming this section. Writing it is what turns them on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub community: Option<CommunityRoomsConfig>,
+    /// Whether this host refuses, on an `open` room, a new version of a `message` or a
+    /// `reaction` by a member other than its original author (`rooms/records/put/0.5` Host
+    /// item 15, a MAY). **Absent means on** ([`RoomsConfig::refuses_rewrites_by_others`]);
+    /// `false` accepts such a rewrite. Sealed rooms are unaffected: their host never sees a
+    /// record's kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refuse_rewrites_by_others: Option<bool>,
 }
 
 /// Where the community's own rooms get their identities (`[rooms.community]`).
@@ -400,9 +414,22 @@ pub struct CommunityRoomsConfig {
     /// lands (`rooms::community_renewal`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority_renew_within_days: Option<u32>,
+    /// How long a removed room's content is kept before it is purged, in days, when the
+    /// removal names no grace period (`vtc/rooms/community/remove/0.1` `graceDays`).
+    /// Default 30; at most 365. During it the room admits nobody and the removal can be
+    /// cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removal_grace_days: Option<u32>,
 }
 
 impl CommunityRoomsConfig {
+    /// [`Self::removal_grace_days`], defaulted and bounded.
+    pub fn removal_grace_days(&self) -> u32 {
+        self.removal_grace_days
+            .unwrap_or(crate::rooms::community_lifecycle::DEFAULT_REMOVAL_GRACE_DAYS)
+            .min(crate::rooms::community_lifecycle::MAX_REMOVAL_GRACE_DAYS)
+    }
+
     /// [`Self::authority_valid_days`], defaulted and at least one day.
     pub fn authority_valid_days(&self) -> u32 {
         self.authority_valid_days.unwrap_or(365).max(1)
@@ -530,6 +557,14 @@ impl RoomsConfig {
     pub fn files_enabled(&self) -> bool {
         self.files.as_ref().is_some_and(|f| f.enabled)
     }
+
+    /// `[rooms] refuse_rewrites_by_others`, on unless set `false`. The specification makes
+    /// the refusal a MAY; it is on by default because it costs nothing on the one tier where
+    /// the host reads `kind` anyway, and keeps a member from rewriting another's words for
+    /// every reader that predates the readers' own rule.
+    pub fn refuses_rewrites_by_others(&self) -> bool {
+        self.refuse_rewrites_by_others.unwrap_or(true)
+    }
 }
 
 /// Room files (`[rooms.files]`), `docs/05-design-notes/data-rooms-files.md` §5–§6.
@@ -592,7 +627,7 @@ pub struct RoomFilesConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration_max_bytes_per_second: Option<u64>,
     /// Which storage authentication modes this host permits beyond `vta-account`
-    /// (`[rooms.files.auth]`, `vtc/storage/configs/create/0.2` item 9). Absent, neither
+    /// (`[rooms.files.auth]`, `vtc/storage/configs/create/0.3` item 9). Absent, neither
     /// `ambient` nor `sealed` is offered: both put backend authority on this machine,
     /// so whether they exist at all is the host operator's choice, never the
     /// administrators'.
@@ -601,7 +636,7 @@ pub struct RoomFilesConfig {
 }
 
 /// `[rooms.files.auth]`: the storage authentication modes this host permits and how
-/// its ambient identity is used (`vtc/storage/configs/create/0.2` items 9–10,
+/// its ambient identity is used (`vtc/storage/configs/create/0.3` items 9–10,
 /// "Room-scoped credentials"). Every member is optional and off by default, so a
 /// configuration written before these modes existed starts unchanged.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -1527,7 +1562,10 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "vti_common::rate_limit::deserialize_trusted_proxy_cidrs"
+    )]
     pub trust_xff_cidrs: Vec<IpNetwork>,
     /// Retired: `trust_xff`. Present only to **refuse** a config that still
     /// declares it — replaced by `trust_xff_cidrs`, an explicit trusted-proxy
@@ -2420,6 +2458,17 @@ mod tests {
         let cfg: ServerConfig =
             toml::from_str("trust_xff_cidrs = [\"127.0.0.1/32\"]").expect("parse");
         assert_eq!(cfg.trust_xff_cidrs.len(), 1);
+    }
+
+    /// A range trusting every peer would let any client name its own
+    /// rate-limit bucket.
+    #[test]
+    fn a_catch_all_trust_xff_range_is_refused() {
+        for cidr in ["0.0.0.0/0", "::/0"] {
+            let err = toml::from_str::<ServerConfig>(&format!("trust_xff_cidrs = [\"{cidr}\"]"))
+                .expect_err("a catch-all range must be refused");
+            assert!(err.to_string().contains("covers every address"), "{err}");
+        }
     }
 
     #[test]

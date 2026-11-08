@@ -2,7 +2,7 @@
 //!
 //! Wraps `vta-sdk`'s [`DIDCommSession`] (the affinidi ATM client) so iOS /
 //! Android can connect to the holder's mediator and pull VTA-pushed messages —
-//! e.g. an `auth/step-up/approve-request/0.1` delivered for the proxied
+//! e.g. an `auth/step-up/approve-request/0.5` delivered for the proxied
 //! step-up. The session authenticates to the mediator as the holder and opens
 //! live delivery; [`MediatorSession::receive_next`] yields the next inbound
 //! message already unpacked under the holder key.

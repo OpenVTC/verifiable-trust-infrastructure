@@ -366,6 +366,18 @@ fn index_prefix(context_id: &str, namespace: &str) -> String {
     format!("appv:{context_id}:{namespace}:")
 }
 
+/// Every storage-key prefix holding state for `context_id`, across all
+/// namespaces and all four record families. The trailing `:` keeps each scan
+/// context-exact: `app:acme:` never matches `app:acme2:…` or `app:acme/eng:…`.
+fn context_family_prefixes(context_id: &str) -> [String; 4] {
+    [
+        context_prefix(context_id),
+        format!("appv:{context_id}:"),
+        format!("appc:{context_id}:"),
+        format!("appt:{context_id}:"),
+    ]
+}
+
 fn counter_key(context_id: &str, namespace: &str) -> String {
     format!("appc:{context_id}:{namespace}")
 }
@@ -1037,7 +1049,7 @@ fn skipped(key: &str) -> WriteResult {
         key: key.to_string(),
         outcome: WriteOutcome::Skipped,
         version: None,
-        created: None,
+        was_created: None,
         current_version: None,
         current_value: None,
         current_deleted: None,
@@ -1090,7 +1102,7 @@ async fn dry_run_atomic(
                     key: w.key.clone(),
                     outcome: WriteOutcome::Conflict,
                     version: None,
-                    created: None,
+                    was_created: None,
                     current_version: cur
                         .map(|c| c.version)
                         .or(existing.as_ref().map(|r| r.version)),
@@ -1110,7 +1122,7 @@ async fn dry_run_atomic(
                     key: w.key.clone(),
                     outcome: WriteOutcome::NotFound,
                     version: None,
-                    created: None,
+                    was_created: None,
                     current_version: None,
                     current_value: None,
                     current_deleted: None,
@@ -1142,7 +1154,7 @@ async fn dry_run_atomic(
                     key: w.key.clone(),
                     outcome: WriteOutcome::TooLarge,
                     version: None,
-                    created: None,
+                    was_created: None,
                     current_version: None,
                     current_value: None,
                     current_deleted: None,
@@ -1166,7 +1178,7 @@ fn write_result(
         key: key.to_string(),
         outcome: o,
         version: None,
-        created: None,
+        was_created: None,
         current_version: None,
         current_value: None,
         current_deleted: None,
@@ -1176,7 +1188,7 @@ fn write_result(
     match outcome {
         Ok(o) => Ok(WriteResult {
             version: Some(o.version),
-            created: Some(o.created),
+            was_created: Some(o.created),
             ..base(WriteOutcome::Written)
         }),
         Err(AppStateError::VersionConflict {
@@ -1366,6 +1378,33 @@ pub async fn reap_tombstones_through(
         }
     }
     Ok(reaped)
+}
+
+/// Remove everything the store holds for `context_id`: records (live and
+/// tombstoned), the version index, and every namespace's write counter and
+/// reap watermark. Called by the context-deletion cascade. Returns how many
+/// records (live or tombstoned) went, for the deletion's log line.
+///
+/// The counters go too, deliberately. A context deleted and later recreated
+/// under the same id is a new context; it must start with an empty store and a
+/// change feed from zero, not inherit the old one's records — which is what a
+/// client syncing from an empty watermark would otherwise pull straight back.
+pub async fn purge_context(ks: &KeyspaceHandle, context_id: &str) -> Result<usize, AppError> {
+    let mut batch = Batch::new();
+    let (mut any, mut records) = (false, 0);
+    for (i, prefix) in context_family_prefixes(context_id).into_iter().enumerate() {
+        for key in ks.prefix_keys(prefix).await? {
+            batch.remove(key);
+            any = true;
+            if i == 0 {
+                records += 1;
+            }
+        }
+    }
+    if any {
+        ks.apply_batch(batch).await?;
+    }
+    Ok(records)
 }
 
 /// Reap every tombstone whose retention window has elapsed, across every

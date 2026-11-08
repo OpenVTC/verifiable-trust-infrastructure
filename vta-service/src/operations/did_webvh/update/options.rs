@@ -76,6 +76,13 @@ pub struct UpdateDidWebvhOptions {
     /// behaviour for scripted callers.
     #[serde(default)]
     pub expected_version_id: Option<String>,
+    /// `vta/webvh/dids/update/1.1`: list (`Some(true)`) or remove
+    /// (`Some(false)`) the log's did:scid DID URL in `alsoKnownAs`, applied to
+    /// [`Self::document`] or, absent one, to the current document. `Some(_)`
+    /// also asks for the 1.1 response members and turns an update that would
+    /// change nothing into `NoChange`. See `scid_alias`.
+    #[serde(default)]
+    pub scid_also_known_as: Option<bool>,
 }
 
 // `UpdateDidWebvhResult` is now an alias for

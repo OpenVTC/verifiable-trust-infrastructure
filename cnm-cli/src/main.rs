@@ -4,6 +4,7 @@ mod actions_watch;
 mod audit;
 mod auth;
 mod backup;
+mod boards;
 mod config;
 mod consent;
 mod did_log;
@@ -11,6 +12,7 @@ mod elections;
 mod git;
 mod member;
 mod members;
+mod networks;
 mod onboard;
 mod pnm_profile;
 mod rooms;
@@ -288,6 +290,13 @@ enum Commands {
         command: git::GitCommands,
     },
 
+    /// The community's boards: create them, decide and select their ideas, moderate notes
+    /// (`vtc/boards/*`). Members propose and vote with `pnm boards` / `pnm elections`.
+    Boards {
+        #[command(subcommand)]
+        command: boards::BoardsCommands,
+    },
+
     /// The community's polls, surveys and elections: create them from a manifest, list,
     /// show, close, cancel, and certify a result (`vtc/elections/*`).
     Elections {
@@ -300,6 +309,13 @@ enum Commands {
     Rooms {
         #[command(subcommand)]
         command: rooms::RoomsCommands,
+    },
+
+    /// The Verifiable Trust Networks this community belongs to: list them, join from a
+    /// network's invitation, leave, or reject a listing (`vtc/networks/*`).
+    Networks {
+        #[command(subcommand)]
+        command: networks::NetworksCommands,
     },
 
     /// Where the community keeps its rooms' files: its storage configs, and a `sealed`
@@ -761,6 +777,13 @@ enum ContextCommands {
         /// hidden aliases.
         #[arg(long = "yes", short = 'y', alias = "force", short_alias = 'f')]
         yes: bool,
+        /// Finish the deletion even if a DID's hosting server cannot confirm
+        /// removing its published log (down, refusing, or no longer
+        /// registered). Those DIDs may keep resolving and removing them is
+        /// then up to you. Without it you are shown them and asked; `--yes`
+        /// does not answer that question.
+        #[arg(long)]
+        abandon_host_copies: bool,
     },
     /// Create a context and mint a sealed admin credential for its first admin.
     ///
@@ -959,9 +982,9 @@ enum KeyCommands {
         /// Maximum number of keys to return
         #[arg(long, default_value = "50")]
         limit: u64,
-        /// Number of keys to skip
-        #[arg(long, default_value = "0")]
-        offset: u64,
+        /// Continue from a previous page: the `nextCursor` it printed
+        #[arg(long)]
+        cursor: Option<String>,
         /// FILTER: only keys with this status (`active` or `revoked`).
         #[arg(long)]
         status: Option<String>,
@@ -1079,7 +1102,9 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Git { .. }
             | Commands::Rooms { .. }
             | Commands::Storage { .. }
+            | Commands::Networks { .. }
             | Commands::Elections { .. }
+            | Commands::Boards { .. }
             | Commands::Consent { .. }
             | Commands::Actions { .. }
             | Commands::Access { .. }
@@ -1105,6 +1130,23 @@ async fn community_vtc(
     let did = vtc_did.as_deref().or(profile.vtc_did.as_deref());
     let target = vtc::resolve_target(did, url.as_deref()).await?;
     Ok((community_keyring_key(&slug), target))
+}
+
+/// The active community's DID — `--vtc-did`, else its profile's — without resolving it or
+/// reaching the VTC, for the commands that work offline.
+fn community_did_offline(
+    community: &Option<String>,
+    vtc_did: &Option<String>,
+    cnm_config: &config::CnmConfig,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(did) = vtc_did {
+        return Ok(did.clone());
+    }
+    let (slug, profile) = resolve_community(community.as_deref(), cnm_config)?;
+    profile.vtc_did.clone().ok_or_else(|| {
+        format!("community '{slug}' names no VTC DID. Pass it: --vtc-did <the community's DID>")
+            .into()
+    })
 }
 
 /// `cnm bootstrap request --out <PATH> [--label <NAME>]`
@@ -1552,9 +1594,11 @@ async fn main() {
                 Some(did) if !clear => contexts::cmd_context_update_did(&client, &id, &did).await,
                 _ => contexts::cmd_context_clear_did(&client, &id).await,
             },
-            ContextCommands::Delete { id, yes } => {
-                contexts::cmd_context_delete(&client, &id, yes).await
-            }
+            ContextCommands::Delete {
+                id,
+                yes,
+                abandon_host_copies,
+            } => contexts::cmd_context_delete(&client, &id, yes, abandon_host_copies).await,
             ContextCommands::Bootstrap {
                 id,
                 name,
@@ -1719,6 +1763,14 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
+        Commands::Networks { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    networks::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
         Commands::Storage { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => {
@@ -1727,10 +1779,27 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
+        // Offline: only the community's DID is needed, and it comes from the operator.
+        Commands::Elections {
+            command: elections::ElectionsCommands::Manifest { command },
+        } => community_did_offline(&cli.community, &cli.vtc_did, &cnm_config)
+            .and_then(|did| elections::run_manifest(command, &did)),
         Commands::Elections { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => {
                     elections::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        // Offline: a starting board needs nothing from the community.
+        Commands::Boards {
+            command: command @ boards::BoardsCommands::Init { .. },
+        } => boards::run_init(command),
+        Commands::Boards { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    boards::run(command, &key, &target, cli.transport.into()).await
                 }
                 Err(e) => Err(e),
             }
@@ -1861,10 +1930,10 @@ async fn main() {
             }
             KeyCommands::List {
                 limit,
-                offset,
+                cursor,
                 status,
                 context,
-            } => keys::cmd_key_list(&client, offset, limit, status, context).await,
+            } => keys::cmd_key_list(&client, cursor, limit, status, context).await,
             KeyCommands::Secrets { key_ids, context } => {
                 keys::cmd_key_secrets(&client, key_ids, context).await
             }
@@ -2567,7 +2636,7 @@ mod tests {
         let cmd = Commands::Keys {
             command: KeyCommands::List {
                 limit: 50,
-                offset: 0,
+                cursor: None,
                 status: None,
                 context: None,
             },

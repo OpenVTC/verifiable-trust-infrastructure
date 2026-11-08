@@ -1,4 +1,5 @@
 pub mod acl;
+pub mod acl_v0_2;
 /// Versioned, namespaced application state. Backs the
 /// `vta/app-state/{get,put,list,delete,get-many,put-many}/1.0` Trust Tasks.
 /// Records are keyed `app:<contextId>:<namespace>:<key>` in the
@@ -16,6 +17,9 @@ pub mod audit;
 /// `descriptor_deps_from_app_state` below), and the deployment glue — how a
 /// restored seed is committed — in `crate::restore`.
 pub use vta_backup::ops as backup;
+/// Collection for the principal's identifiers (`vta/collection/*`,
+/// VTI-NTF-080 – 093): who holds each persona DID's mediator connection.
+pub mod collection;
 pub mod config;
 pub mod contexts;
 pub mod credential_exchange;
@@ -45,6 +49,9 @@ pub mod keys;
 /// `list` is a `mem:<contextId>:` prefix scan.
 pub mod memory;
 /// Runtime Policy Decision Point management (`policy/*`).
+/// The notifications this VTA holds for its principal (`notifications/*`,
+/// `vta/notifications/*`, VTI-NTF-022 – 053).
+pub mod notifications;
 pub mod outbound;
 /// Passkey login — DID-VM-resolved WebAuthn assertion verification.
 /// Drives `vta/auth/passkey-login-{start,finish}/1.0` trust-tasks.
@@ -79,6 +86,9 @@ pub mod room_groups;
 pub mod room_host;
 pub mod room_invitation;
 pub mod room_issuance;
+/// The watches this VTA holds for its principal's clients (`rooms/keys/watch/0.1`): the
+/// minimal record, the bounds, and the per-watch addresses.
+pub mod room_key_watch;
 pub mod room_member;
 pub mod room_oracle;
 /// A room's own profile (`rooms/keys/profile/{read,write}`): the statement a member holding
@@ -112,21 +122,18 @@ pub fn keyspaces_from_app_state(s: &crate::server::AppState) -> Keyspaces<'_> {
         did_templates: &s.did_templates_ks,
         audit: &s.audit_ks,
         imported: &s.imported_ks,
-        #[cfg(feature = "webvh")]
-        webvh: &s.webvh_ks,
-    }
-}
-
-/// Borrow keyspaces from a `VtaState` (DIDComm handlers).
-#[cfg(feature = "didcomm")]
-pub fn keyspaces_from_vta_state(s: &crate::messaging::router::VtaState) -> Keyspaces<'_> {
-    Keyspaces {
-        keys: &s.keys_ks,
-        acl: &s.acl_ks,
-        contexts: &s.contexts_ks,
-        did_templates: &s.did_templates_ks,
-        audit: &s.audit_ks,
-        imported: &s.imported_ks,
+        memory: &s.memory_ks,
+        app_state: &s.app_state_ks,
+        internal: &s.internal_ks,
+        vault: &s.vault_ks,
+        consent: &s.consent_ks,
+        consent_approvers: &s.consent_approvers_ks,
+        persona: &s.persona_ks,
+        pcs_engine: &s.pcs_engine_ks,
+        notifications: &s.notifications_ks,
+        external_accounts: &s.external_accounts_ks,
+        external_secrets: &s.external_secrets_ks,
+        collection: &s.collection_ks,
         #[cfg(feature = "webvh")]
         webvh: &s.webvh_ks,
     }

@@ -317,7 +317,7 @@ pub(crate) async fn deliver_grant(state: &AppState, member_did: &str, credential
 
 /// `vtc/vetting/vetters/grant:notMember` — `memberDid` is not an active member.
 pub const GRANT_ERR_NOT_MEMBER: &str =
-    trust_tasks_rs::specs::vtc::vetting::vetters::grant::v0_1::error_codes::NOT_MEMBER.code;
+    vti_specs::vtc::vetting::vetters::grant::v0_1::error_codes::NOT_MEMBER.code;
 
 /// Issue (or return) `member_did`'s vetter grant. The caller holds
 /// [`GRANT_LOCK`] and has decided the actor may grant, and delivers a newly

@@ -157,6 +157,8 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         vault: Default::default(),
         app_state: Default::default(),
         witness: Default::default(),
+        notifications: Default::default(),
+        collection: Default::default(),
         policy: Default::default(),
         secrets: Default::default(),
         tee: Default::default(),
@@ -1048,6 +1050,19 @@ pub struct TestAppOptions {
     /// [`BudgetClock::manual`](crate::trust_tasks::operation_budget::BudgetClock::manual),
     /// so no token refills while it runs and it moves time itself.
     pub operation_budget_clock: Option<crate::trust_tasks::operation_budget::BudgetClock>,
+
+    /// A store directory the caller owns and keeps, for a test that builds the
+    /// app twice over the same disk — a restart (#2402). `None` (the default)
+    /// is a fresh temporary directory owned by the returned context, as every
+    /// other test has always had.
+    ///
+    /// An empty directory is seeded from the keyspace template, like the
+    /// default; a directory already holding a store is reopened as it is, so
+    /// the second app sees exactly what the first one left. fjall locks the
+    /// directory for as long as any handle on the database lives, so the
+    /// reopen succeeds only once the first app — router, context and every
+    /// keyspace handle — has been dropped.
+    pub data_dir: Option<std::path::PathBuf>,
 }
 
 /// A mediator-backed transport identity for the mock VTA
@@ -1251,9 +1266,20 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     init_jwt_provider();
 
     let dir = tempfile::tempdir().expect("temp dir");
-    let store =
-        vti_common::store::test_fixture::open_with_keyspaces(dir.path(), crate::keyspaces::ALL)
-            .expect("open store");
+    let data_dir = opts
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| dir.path().to_path_buf());
+    let reopening = std::fs::read_dir(&data_dir).is_ok_and(|mut d| d.next().is_some());
+    let store = if reopening {
+        vti_common::store::Store::open(&vti_common::config::StoreConfig {
+            data_dir: data_dir.clone(),
+        })
+        .expect("reopen the retained store — is a handle from the previous app still alive?")
+    } else {
+        vti_common::store::test_fixture::open_with_keyspaces(&data_dir, crate::keyspaces::ALL)
+            .expect("open store")
+    };
 
     let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
     let sessions_ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();
@@ -1292,7 +1318,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
     let sealed_nonces_ks = store.keyspace(crate::keyspaces::SEALED_NONCES).unwrap();
     let backup_bundles_ks = store.keyspace(crate::keyspaces::BACKUP_BUNDLES).unwrap();
-    let backup_blob_dir = dir.path().join("backups");
+    let backup_blob_dir = data_dir.join("backups");
     let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
     #[cfg(feature = "webvh")]
     let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
@@ -1327,7 +1353,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     ) = if opts.provisionable_vta {
         let (did, ps, signer) = provision_vta_signing_identity(
             &keys_ks,
-            dir.path(),
+            &data_dir,
             opts.vta_transport.as_ref().map(|t| t.did.as_str()),
         )
         .await;
@@ -1352,11 +1378,11 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         [auth]
         jwt_signing_key = "{}"
         "#,
-        dir.path().display(),
+        data_dir.display(),
         BASE64.encode(jwt_seed),
     ))
     .expect("parse config");
-    config.config_path = dir.path().join("config.toml");
+    config.config_path = data_dir.join("config.toml");
     config.server.operation_rate_limit_per_sec = opts.operation_rate_limit_per_sec;
     config.server.operation_rate_limit_per_subject_per_sec =
         opts.operation_rate_limit_per_subject_per_sec;
@@ -1461,6 +1487,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         ),
         internal_ks: store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap(),
         idempotency_ks: store.keyspace(crate::keyspaces::IDEMPOTENCY).unwrap(),
+        accepted_ids_ks: store.keyspace(crate::keyspaces::ACCEPTED_IDS).unwrap(),
         // Empty by default: a test VTA trusts no mdoc issuer until one is
         // configured, matching the fail-closed production default. A test that
         // needs mdoc receive builds its own anchors and swaps this out.
@@ -1493,6 +1520,16 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         ),
         pcs_engine_ks: store.keyspace(crate::keyspaces::PCS_ENGINE).unwrap(),
         witness_sessions_ks: store.keyspace(crate::keyspaces::WITNESS_SESSIONS).unwrap(),
+        notifications_ks: store.keyspace(crate::keyspaces::NOTIFICATIONS).unwrap(),
+        collection_ks: store.keyspace(crate::keyspaces::COLLECTION).unwrap(),
+        collection: std::sync::Arc::new(crate::operations::collection::CollectionControl::new(
+            config.read().await.collection.suspend,
+        )),
+        room_key_watches: std::sync::Arc::new(
+            crate::operations::room_key_watch::RoomKeyWatches::new(
+                store.keyspace(crate::keyspaces::ROOM_KEY_WATCHES).unwrap(),
+            ),
+        ),
         room_groups_ks: store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap(),
         room_invitations_ks: store.keyspace(crate::keyspaces::ROOM_INVITATIONS).unwrap(),
         app_state_ks: store.keyspace(crate::keyspaces::APP_STATE).unwrap(),
@@ -1927,7 +1964,7 @@ async fn stub_host_answer(
 ) -> serde_json::Value {
     use serde_json::{Value, json};
     use std::sync::atomic::Ordering;
-    use trust_tasks_rs::specs::did_management as dm;
+    use vti_specs::did_management as dm;
 
     const CREATED: &str = "2026-01-01T00:00:00Z";
     const DM: &str = "https://trusttasks.org/spec/did-management/";
@@ -2038,8 +2075,8 @@ async fn stub_host_answer(
         // has **no** record of, so a reconcile against it reports both arms
         // (the slot is host-only; the DID a test mints is agent-only), and
         // `servers/retire-orphan` has something retireable.
-        "did/list/0.1" => (
-            conforms::<dm::did::list::v0_1::Payload>(&payload),
+        "did/list/0.2" => (
+            conforms::<dm::did::list::v0_2::Payload>(&payload),
             json!({
                 "records": [{
                     "mnemonic": "cov-orphan-slot",
@@ -2050,7 +2087,6 @@ async fn stub_host_answer(
                     "updatedAt": CREATED,
                     "versionCount": 0,
                 }],
-                "total": 1,
             }),
         ),
         "me/domains/0.1" => (
@@ -2164,6 +2200,12 @@ struct MockVtaTransports {
     /// alongside the ATM. Held so a test can reach the VTA-side relationship
     /// store (see [`MockVta::forget_tsp_relationship`]).
     profile: Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    /// The room watches' address supervisor
+    /// ([`crate::messaging::watch_addresses::run`]), once
+    /// [`MockVta::start_watch_addresses`] has started it. Stopped by `shutdown`
+    /// (the cancel above) and awaited, so every address's socket is closed
+    /// before the mediator goes.
+    watch_addresses: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// A candidate mediator configured for migration-handshake tests.
@@ -2278,6 +2320,7 @@ impl MockVta {
             operation_rate_limit_per_sec: None,
             operation_rate_limit_per_subject_per_sec: None,
             operation_budget_clock: None,
+            data_dir: None,
         };
         let mut mock = Self::serve(build_test_app_with(opts).await).await;
         mock.webvh_host = Some(host);
@@ -2330,6 +2373,19 @@ impl MockVta {
     /// ```
     #[cfg(feature = "transport-harness")]
     pub async fn start_with_transports() -> MockVta {
+        Self::start_with_transports_using(|b| b).await
+    }
+
+    /// [`start_with_transports`](Self::start_with_transports), with the
+    /// embedded mediator's builder passed through `customize` first — for a
+    /// test that needs the mediator configured as a deployment configures it
+    /// (its `global_acl_default`, say) rather than as the fixture defaults it.
+    #[cfg(feature = "transport-harness")]
+    pub async fn start_with_transports_using(
+        customize: impl FnOnce(
+            affinidi_messaging_test_mediator::TestMediatorBuilder,
+        ) -> affinidi_messaging_test_mediator::TestMediatorBuilder,
+    ) -> MockVta {
         use affinidi_messaging_test_mediator::TestMediator;
         use affinidi_tdk::dids::{
             OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
@@ -2348,14 +2404,16 @@ impl MockVta {
         // VTA now requires before it will admit any application message — and
         // §7.2.2 says *drop*, so the symptom is a harness that times out with
         // nothing explaining it.
-        let mediator = TestMediator::builder()
-            .local_direct_delivery(true, false)
-            .enable_forwarding(true)
-            .enable_external_forwarding(true)
-            .enable_inter_mediator_relay(true)
-            .spawn()
-            .await
-            .expect("spawn test mediator");
+        let mediator = customize(
+            TestMediator::builder()
+                .local_direct_delivery(true, false)
+                .enable_forwarding(true)
+                .enable_external_forwarding(true)
+                .enable_inter_mediator_relay(true),
+        )
+        .spawn()
+        .await
+        .expect("spawn test mediator");
         let mediator_did = mediator.did().to_string();
 
         // The `accept` list is deliberately empty — see MAX_DID_BYTES below. It
@@ -2513,8 +2571,69 @@ impl MockVta {
             messaging,
             atm,
             profile: messaging_profile,
+            watch_addresses: None,
         });
         mock
+    }
+
+    /// Give the VTA the `[messaging]` section a deployed VTA on this mediator
+    /// has: what a room watch mints its address at, and the route a push to a
+    /// `did:key` client takes. Not done by
+    /// [`start_with_transports`](Self::start_with_transports) itself, because
+    /// with it every push to a `did:key` finds a route, which tests written
+    /// against the mock without one do not expect.
+    #[cfg(feature = "transport-harness")]
+    pub async fn configure_messaging(&self) {
+        let t = self
+            .transports
+            .as_ref()
+            .expect("configure_messaging() requires start_with_transports()");
+        self.ctx.state.config.write().await.messaging = Some(vti_common::config::MessagingConfig {
+            mediator_url: t.mediator.endpoint().to_string(),
+            mediator_did: t.mediator_did.clone(),
+            mediator_host: None,
+            setup_acl: false,
+            drain_inbox_on_start: false,
+        });
+    }
+
+    /// Start the room watches' address supervisor, as `server.rs` does at boot:
+    /// one mediator connection per watch's address. Separate from
+    /// [`configure_messaging`](Self::configure_messaging) so a test can arm a
+    /// watch, let its host signal, and only then open the address's connection.
+    #[cfg(feature = "transport-harness")]
+    pub fn start_watch_addresses(&mut self) {
+        let state = self.ctx.state.clone();
+        let t = self
+            .transports
+            .as_mut()
+            .expect("start_watch_addresses() requires start_with_transports()");
+        assert!(
+            t.watch_addresses.is_none(),
+            "the address supervisor is already running"
+        );
+        t.watch_addresses = Some(tokio::spawn(crate::messaging::watch_addresses::run(
+            state,
+            t.shutdown.clone(),
+        )));
+    }
+
+    /// How many messages the embedded mediator holds for `did`, waiting for it
+    /// to collect them.
+    #[cfg(feature = "transport-harness")]
+    pub async fn mediator_inbox_count(&self, did: &str) -> u64 {
+        use sha2::{Digest, Sha256};
+
+        let t = self
+            .transports
+            .as_ref()
+            .expect("mediator_inbox_count() requires start_with_transports()");
+        t.mediator
+            .store()
+            .inbox_status(&hex::encode(Sha256::digest(did.as_bytes())))
+            .await
+            .map(|s| s.message_count)
+            .unwrap_or(0)
     }
 
     /// Test seam: make the VTA **forget** its TSP relationship with `peer_did`,
@@ -2785,6 +2904,9 @@ impl MockVta {
             if let Some(handle) = transports.loop_handle.take() {
                 let _ = handle.await;
             }
+            if let Some(handle) = transports.watch_addresses.take() {
+                let _ = handle.await;
+            }
             transports.atm.graceful_shutdown().await;
             transports.mediator.shutdown();
         }
@@ -2809,6 +2931,9 @@ impl Drop for MockVta {
             // Prefer `shutdown().await`, which does stop it properly.
             transports.shutdown.cancel();
             if let Some(handle) = transports.loop_handle.take() {
+                handle.abort();
+            }
+            if let Some(handle) = transports.watch_addresses.take() {
                 handle.abort();
             }
             transports.mediator.shutdown();
@@ -3302,7 +3427,7 @@ mod transport_harness_tests {
                 &orphan,
                 "thread-d6-1",
                 &framed,
-                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
             )
             .await;
 
@@ -3342,13 +3467,13 @@ mod transport_harness_tests {
                 &orphan,
                 "t-a",
                 &framed,
-                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2
             ),
             b.recover_for_test(
                 &orphan,
                 "t-b",
                 &framed,
-                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2
             ),
         );
 
@@ -3409,7 +3534,7 @@ mod transport_harness_tests {
         let thread = "urn:uuid:d6-success-req-1";
         let request = trust_tasks_rs::TrustTask::new(
             thread,
-            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2
                 .parse::<trust_tasks_rs::TypeUri>()
                 .expect("acl/grant/0.1 is a valid Type URI"),
             serde_json::json!({}),
@@ -3423,7 +3548,7 @@ mod transport_harness_tests {
                 peer.did(),
                 thread,
                 &framed,
-                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
             )
             .await;
 
@@ -3514,7 +3639,7 @@ mod transport_harness_tests {
         let thread = "urn:uuid:idle-reinvite-req-1";
         let request = trust_tasks_rs::TrustTask::new(
             thread,
-            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2
                 .parse::<trust_tasks_rs::TypeUri>()
                 .expect("acl/grant/0.1 is a valid Type URI"),
             serde_json::json!({}),
@@ -4262,4 +4387,79 @@ pub async fn seed_holder_key(
         .await
         .expect("store the holder key record");
     did
+}
+
+/// Make `member` (a holder key this VTA manages — [`seed_holder_key`]) a member
+/// of the room `room_did`: an authority credential conferring `actions` and a
+/// membership credential, both issued and signed by the room with
+/// `room_secret`, put in this VTA's vault where the room oracle looks for them.
+/// Valid from a minute ago for 30 days.
+pub async fn seed_room_membership(
+    state: &crate::server::AppState,
+    room_did: &str,
+    room_secret: &affinidi_tdk::secrets_resolver::secrets::Secret,
+    member: &str,
+    actions: &[&str],
+) {
+    use chrono::{Duration, Utc};
+    use dtg_credentials::DTGCredential;
+
+    let now = Utc::now();
+    let mut vac = DTGCredential::new_vac(
+        room_did.to_string(),
+        dtg_credentials::IssuerScope::Public,
+        member.to_string(),
+        room_did.to_string(),
+        actions.iter().map(|a| a.to_string()).collect(),
+        now - Duration::minutes(1),
+        now + Duration::days(30),
+    )
+    .expect("an authority credential")
+    .with_id(format!("urn:example:vac:{member}"));
+    vac.sign(room_secret, None)
+        .await
+        .expect("the room signs the authority credential");
+    let mut vmc = DTGCredential::new_vmc(
+        room_did.to_string(),
+        member.to_string(),
+        now - Duration::minutes(1),
+        Some(now + Duration::days(30)),
+        false,
+    );
+    vmc.sign(room_secret, None)
+        .await
+        .expect("the room signs the membership credential");
+    for (type_tag, cred) in [
+        (crate::operations::room_oracle::AUTHORITY_TYPE, &vac),
+        (crate::operations::room_oracle::MEMBERSHIP_TYPE, &vmc),
+    ] {
+        use crate::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
+        crate::vault::storage::put(
+            &state.vault_ks,
+            &StoredCredential {
+                id: format!("{type_tag}-{room_did}-{member}"),
+                format: CredentialFormat::EddsaJcs2022,
+                types: vec![type_tag.into()],
+                schema_id: None,
+                community_did: None,
+                context_id: None,
+                subject_did: None,
+                issuer_did: Some(room_did.to_string()),
+                purpose: None,
+                status: CredentialStatus::Unknown,
+                valid_from: None,
+                valid_until: None,
+                received_at: now.to_rfc3339(),
+                source: None,
+                tags: Default::default(),
+                body: serde_json::to_vec(cred).expect("serialize the credential"),
+                lifecycle: vti_common::vault::VaultStatus::Active,
+                archived_at: None,
+                deleted_at: None,
+                grace_until: None,
+            },
+        )
+        .await
+        .expect("put the room credential in the vault");
+    }
 }

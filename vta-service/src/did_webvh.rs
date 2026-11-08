@@ -1271,7 +1271,7 @@ mod tests {
             &keys_ks,
             &cli_super_admin(),
             operations::keys::ListKeysParams {
-                offset: None,
+                cursor: None,
                 limit: Some(100),
                 status: None,
                 context_id: None,

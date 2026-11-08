@@ -1,7 +1,7 @@
 //! `vault …` operator/agent commands (online, via the trust-task dispatcher).
 //!
 //! Thin wrappers over the `VtaClient::vault_*` methods plus the seal/open
-//! helpers. Secret-bearing operations use `didcomm-authcrypt` sealed envelopes
+//! helpers. Secret-bearing operations use `didcommAuthcrypt` sealed envelopes
 //! and therefore require the DIDComm transport (the seal is produced with the
 //! caller's own keys):
 //! - `upsert` seals the cleartext secret to the VTA before sending.
@@ -157,7 +157,7 @@ pub async fn cmd_vault_upsert(
     let sealed_secret = match secret {
         Some(s) => {
             let jwe = client.seal_vault_secret(s).await?;
-            Some(json!({ "envelope": "didcomm-authcrypt", "jwe": jwe }))
+            Some(json!({ "envelope": "didcommAuthcrypt", "jwe": jwe }))
         }
         None => None,
     };
@@ -175,7 +175,7 @@ pub async fn cmd_vault_release(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = client.vault_release_entry(&id, target).await?;
 
-    // The released secret rides in a `didcomm-authcrypt` envelope; open it with
+    // The released secret rides in a `didcommAuthcrypt` envelope; open it with
     // the caller's keys. Walk the documented shape
     // (`sealedSecret.jwe`) and fall back to printing the raw response if the
     // VTA emitted an envelope variant this client can't open.
@@ -189,7 +189,7 @@ pub async fn cmd_vault_release(
             print_result("Released secret (cleartext):", &secret)
         }
         None => {
-            eprintln!("{DIM}(no didcomm-authcrypt sealedSecret in response — printing raw){RESET}");
+            eprintln!("{DIM}(no didcommAuthcrypt sealedSecret in response — printing raw){RESET}");
             print_result("Release response:", &response)
         }
     }

@@ -115,7 +115,7 @@ describe("postSignedTrustTask", () => {
         status: 403,
         body: {
           id: "urn:uuid:err",
-          type: "https://trusttasks.org/spec/trust-task-error/0.5",
+          type: "https://trusttasks.org/spec/trust-task-error/0.6",
           payload: {
             code: "permissionDenied",
             message: "Trust Task proof verification failed",

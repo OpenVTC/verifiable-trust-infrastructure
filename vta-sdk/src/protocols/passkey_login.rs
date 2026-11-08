@@ -1,8 +1,8 @@
 //! Passkey-based login wire types.
 //!
 //! Maps to the trust-task URIs declared in
-//! [`crate::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1`] and
-//! [`crate::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1`].
+//! [`crate::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_2`] and
+//! [`crate::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2`].
 //!
 //! ## Flow
 //!
@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 /// Client → server: request a passkey-login challenge.
 ///
-/// Wire shape conforms to `spec/auth/passkey/login/start/0.1`: the
+/// Wire shape conforms to `spec/auth/passkey/login/start/0.2`: the
 /// `did` field serialises as `subject` per the canonical schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

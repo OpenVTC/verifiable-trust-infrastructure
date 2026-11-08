@@ -9,7 +9,7 @@
 //!   context carrying `sign-jws`;
 //! - room files in a `vta-account` storage config are read and written with
 //!   presigned requests the VTA issues one object at a time
-//!   (`external/credentials/issue/0.1`, [`crate::rooms::vta_storage`]).
+//!   (`external/credentials/issue/0.3`, [`crate::rooms::vta_storage`]).
 //!
 //! In both the VTA decides, as for any other caller.
 //!
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(sign_jws_answer(&ok, "k").unwrap(), "a.b.c");
 
         let denied = reply(
-            "https://trusttasks.org/spec/trust-task-error/0.5",
+            "https://trusttasks.org/spec/trust-task-error/0.6",
             json!({ "code": "permissionDenied", "message": "no sign-jws" }),
         );
         let err = sign_jws_answer(&denied, "k").unwrap_err().to_string();

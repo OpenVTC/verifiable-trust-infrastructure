@@ -11,7 +11,7 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::vta::metrics::show::v0_1 as metrics_show_spec;
+use vti_specs::vta::metrics::show::v0_1 as metrics_show_spec;
 
 use super::helpers::{TrustTaskOutcome, app_error_to_reject, parse_payload, success_response};
 use crate::auth::AuthClaims;

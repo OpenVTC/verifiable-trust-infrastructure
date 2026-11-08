@@ -4,18 +4,14 @@ use tracing::info;
 use crate::audit::{self, audit};
 use vta_sdk::protocols::acl_management::{
     create::{CreateAclResponseBody, CreateAclResultBody},
-    delete::DeleteAclResultBody,
-    get::GetAclResultBody,
-    list::ListAclResultBody,
     swap::AclSwapPresentation,
 };
 
 use crate::acl::{
-    AclEntry, ApproveScope, Capability, ContextDirection, Role, acl_entry_matches_context,
-    capabilities_beyond_role, delete_acl_entry, effective_capabilities, get_acl_entry,
-    is_acl_entry_auditable, is_acl_entry_visible, list_acl_entries, store_acl_entry,
-    update_acl_entry_versioned, validate_acl_modification, validate_additive_capability_grant,
-    validate_approve_scope_grant, validate_role_assignment,
+    AclEntry, ApproveScope, Capability, Role, capabilities_beyond_role, delete_acl_entry,
+    effective_capabilities, get_acl_entry, is_acl_entry_auditable, is_acl_entry_visible,
+    store_acl_entry, update_acl_entry_versioned, validate_acl_modification,
+    validate_additive_capability_grant, validate_approve_scope_grant, validate_role_assignment,
 };
 use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
@@ -47,6 +43,11 @@ pub struct UpdateAclParams {
     /// `Some` sets the expiry (Unix epoch seconds — the wire carries RFC 3339,
     /// converted at the transport boundary); `None` leaves it unchanged.
     pub expires_at: Option<u64>,
+    /// Make the entry permanent (`acl/update/0.2` `expiresAt: null`) — a
+    /// privilege increase, judged like a grant by the whole-entry bound below
+    /// (VTI-ACL-053), so it is refused where the caller's own entry expires.
+    /// Ignored when `expires_at` is `Some`.
+    pub clear_expiry: bool,
     /// Optional human-readable rationale, recorded with the audit entry.
     pub reason: Option<String>,
     /// Replace this entry's capability narrowing.
@@ -74,6 +75,25 @@ pub struct UpdateAclParams {
     /// stored entry on every request, so the narrowed set applies to the
     /// subject's next sign call even while its access token stays valid.
     pub allowed_keys: Option<Option<std::collections::BTreeSet<String>>>,
+}
+
+impl UpdateAclParams {
+    /// A patch that changes nothing; set the members to replace.
+    pub fn unchanged() -> Self {
+        Self {
+            role: None,
+            label: None,
+            allowed_contexts: None,
+            step_up_approver: None,
+            step_up_require: None,
+            approve_scope: None,
+            expires_at: None,
+            clear_expiry: false,
+            reason: None,
+            capabilities: None,
+            allowed_keys: None,
+        }
+    }
 }
 
 /// Refuse a wire `stepUp.require` value.
@@ -910,6 +930,8 @@ pub async fn create_acl(
     Ok(to_result_body(&entry))
 }
 
+// The stored-shape reads the 0.1 adapters used, kept for the tests below that
+// exercise authorization through them. `acl_v0_2::{show, list}` serve the wire.
 /// Read one entry in the maintainer's **stored** shape.
 ///
 /// Deliberately not `pub`: [`CreateAclResultBody`] is the internal view, and a
@@ -917,6 +939,7 @@ pub async fn create_acl(
 /// other surface — and the SDK client — speaks canonical `{ entry }`. That is
 /// exactly how `acl-management/1.0/get-acl` came to answer a shape no client
 /// could parse (#884). Transports go through [`show_by_subject`].
+#[cfg(test)]
 async fn get_acl(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -949,23 +972,24 @@ async fn get_acl(
 ///
 /// Stored shape, so not `pub` — see [`get_acl`]. Transports go through
 /// [`list_entries`].
+#[cfg(test)]
 async fn list_acl(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     context_filter: Option<&str>,
-    direction: ContextDirection,
+    direction: crate::acl::ContextDirection,
     channel: &str,
 ) -> Result<Vec<CreateAclResultBody>, AppError> {
     auth.require_manage()?;
 
-    if context_filter.is_none() && direction != ContextDirection::default() {
+    if context_filter.is_none() && direction != crate::acl::ContextDirection::default() {
         return Err(AppError::Validation(format!(
             "`direction={direction}` filters a context and there is no context to filter — \
              pass a context as well, or drop the direction to list every visible entry"
         )));
     }
 
-    let all_entries = list_acl_entries(acl_ks).await?;
+    let all_entries = crate::acl::list_acl_entries(acl_ks).await?;
     let entries: Vec<CreateAclResultBody> = all_entries
         .iter()
         .filter(|e| is_acl_entry_auditable(auth, e))
@@ -980,7 +1004,7 @@ async fn list_acl(
         // this context", and a sweep asking that with this filter got back the
         // entries it was *not* revoking (#822).
         .filter(|e| match context_filter {
-            Some(ctx) => acl_entry_matches_context(e, ctx, direction),
+            Some(ctx) => crate::acl::acl_entry_matches_context(e, ctx, direction),
             None => true,
         })
         .map(to_result_body)
@@ -996,8 +1020,8 @@ async fn list_acl(
     Ok(entries)
 }
 
-/// Stored shape, so not `pub` — see [`get_acl`]. Transports go through
-/// [`update_from_params`].
+/// Stored shape, so not `pub`. Transports go through [`update_from_params`]
+/// (and `acl_v0_2::update` / `acl_v0_2::revoke` above it).
 async fn update_acl(
     acl_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
@@ -1031,7 +1055,8 @@ async fn update_acl(
         entry.role = role.clone();
     }
     if let Some(label) = params.label {
-        entry.label = Some(label);
+        // Empty clears (`acl/update/0.2` `label: null`).
+        entry.label = (!label.is_empty()).then_some(label);
     }
     if let Some(capabilities) = params.capabilities {
         // Checked against the *post-patch* role, so narrowing and a role change
@@ -1055,7 +1080,8 @@ async fn update_acl(
         entry.capabilities = capabilities;
     }
     if let Some(approver) = params.step_up_approver {
-        entry.step_up_approver = Some(approver);
+        // Empty clears (`acl/update/0.2` `stepUp.approver: null`).
+        entry.step_up_approver = (!approver.is_empty()).then_some(approver);
     }
     if let Some(require) = params.step_up_require {
         // Empty string clears the override; otherwise parse + validate.
@@ -1142,6 +1168,8 @@ async fn update_acl(
 
     if let Some(expires_at) = params.expires_at {
         entry.expires_at = Some(expires_at);
+    } else if params.clear_expiry {
+        entry.expires_at = None;
     }
 
     // The patched entry, judged whole: one the caller could have created
@@ -1512,183 +1540,9 @@ pub async fn swap_acl(
 // Aliased: `AclEntry` is already the *stored* type in this module. The wire
 // form and the stored form are deliberately different shapes, so keeping both
 // names visible stops one being mistaken for the other.
-use vta_sdk::protocols::acl_management::entry::{AclEntry as WireAclEntry, to_epoch};
+use vta_sdk::protocols::acl_management::entry::AclEntry as WireAclEntry;
 
-/// `acl/grant/0.1` → [`create_acl`].
-pub async fn grant_from_entry(
-    acl_ks: &KeyspaceHandle,
-    audit: &vta_audit::SharedAuditSink,
-    contexts_ks: &KeyspaceHandle,
-    auth: &AuthClaims,
-    entry: WireAclEntry,
-    channel: &str,
-) -> Result<CreateAclResponseBody, AppError> {
-    let role = Role::parse(&entry.role)
-        .map_err(|_| AppError::Validation(format!("invalid role: {}", entry.role)))?;
-
-    // A narrowing may arrive with the grant, so an entry is never briefly wider
-    // than the operator intended — the window a grant-then-narrow pair leaves
-    // open, during which the subject holds everything its role implies and may
-    // already be authenticating. An unrecognised name is refused here, exactly
-    // as on the update path.
-    let capabilities = match vta_sdk::protocols::acl_management::entry::capabilities_from_ext(
-        entry.ext.as_ref(),
-    ) {
-        Ok(Some(names)) => parse_capability_names(&names)?,
-        Ok(None) => Vec::new(),
-        Err(reason) => return Err(AppError::Validation(reason)),
-    };
-    let handoff = vta_sdk::protocols::acl_management::entry::handoff_from_ext(entry.ext.as_ref())
-        .map_err(AppError::Validation)?;
-
-    let stored = create_acl(
-        acl_ks,
-        audit,
-        contexts_ks,
-        auth,
-        CreateAclParams {
-            did: entry.subject.clone(),
-            role,
-            label: entry.label.clone(),
-            allowed_contexts: entry.scopes.clone(),
-            expires_at: entry.expires_at.map(to_epoch),
-            step_up_approver: entry.step_up_approver(),
-            step_up_require: entry.step_up_require(),
-            approve_scope: entry.approve_scope(),
-            allowed_keys: entry
-                .allowed_keys
-                .clone()
-                .map(|keys| keys.into_iter().collect()),
-            capabilities,
-            handoff,
-        },
-        channel,
-    )
-    .await?;
-    Ok(CreateAclResponseBody {
-        entry: WireAclEntry::from_result(&stored),
-    })
-}
-
-/// `acl/grant/0.1` carrying
-/// [`HANDOFF_ROLLOVER_EXT_MEMBER`](vta_sdk::protocols::acl_management::create::HANDOFF_ROLLOVER_EXT_MEMBER)
-/// → [`exercise_handoff`].
-///
-/// The caller's own marked entry is replaced by `entry`'s subject, which the
-/// caller minted and holds (VTI-CLT-017). This is how a TEE VTA's first-boot
-/// claim DID hands its expiring bootstrap entry to the operator's long-term
-/// key without the VTA minting that key (VTI-CLT-002, #2066).
-///
-/// The successor carries only what [`exercise_handoff`] honours: subject,
-/// role, label, scopes and a capability narrowing. Every other member is
-/// refused rather than dropped, so a request never reads as granted when it
-/// was not — in particular `expiresAt`, since the successor takes the
-/// granter's recorded expiry (VTI-ACL-055).
-pub async fn rollover_from_entry(
-    acl_ks: &KeyspaceHandle,
-    audit: &vta_audit::SharedAuditSink,
-    contexts_ks: &KeyspaceHandle,
-    auth: &AuthClaims,
-    entry: WireAclEntry,
-    channel: &str,
-) -> Result<CreateAclResponseBody, AppError> {
-    let role = Role::parse(&entry.role)
-        .map_err(|_| AppError::Validation(format!("invalid role: {}", entry.role)))?;
-    if !entry.subject.starts_with("did:") {
-        return Err(AppError::Validation(format!(
-            "a hand-off successor must be a DID, found {}",
-            entry.subject
-        )));
-    }
-    if entry.expires_at.is_some() {
-        return Err(AppError::Validation(
-            "a hand-off successor takes the expiry the granter recorded with the marker \
-             (VTI-ACL-055); omit `expiresAt`"
-                .into(),
-        ));
-    }
-    if entry.step_up.is_some() || entry.approve.is_some() || entry.allowed_keys.is_some() {
-        return Err(AppError::Validation(
-            "a hand-off successor carries the marked entry's key filter and no step-up or \
-             approve authority of its own; omit `stepUp`, `approve` and `allowedKeys`"
-                .into(),
-        ));
-    }
-    if vta_sdk::protocols::acl_management::entry::handoff_from_ext(entry.ext.as_ref())
-        .map_err(AppError::Validation)?
-    {
-        return Err(AppError::Forbidden(
-            "a hand-off successor cannot itself be marked as a hand-off (VTI-ACL-054)".into(),
-        ));
-    }
-    let capabilities = match vta_sdk::protocols::acl_management::entry::capabilities_from_ext(
-        entry.ext.as_ref(),
-    ) {
-        Ok(Some(names)) => parse_capability_names(&names)?,
-        Ok(None) => Vec::new(),
-        Err(reason) => return Err(AppError::Validation(reason)),
-    };
-
-    let stored = exercise_handoff(
-        acl_ks,
-        audit,
-        contexts_ks,
-        auth,
-        HandOffSuccessor {
-            did: entry.subject.clone(),
-            role,
-            label: entry.label.clone(),
-            allowed_contexts: entry.scopes.clone(),
-            capabilities,
-        },
-        channel,
-        None,
-    )
-    .await?;
-    Ok(CreateAclResponseBody {
-        entry: WireAclEntry::from_result(&stored),
-    })
-}
-
-/// `acl/show/0.1` → [`get_acl`].
-pub async fn show_by_subject(
-    acl_ks: &KeyspaceHandle,
-    auth: &AuthClaims,
-    subject: &str,
-    channel: &str,
-) -> Result<GetAclResultBody, AppError> {
-    let stored = get_acl(acl_ks, auth, subject, channel).await?;
-    Ok(GetAclResultBody {
-        entry: WireAclEntry::from_result(&stored),
-        // Nothing is withheld from a caller already authorized to read the
-        // entry, so the list is empty rather than absent — an explicit "we
-        // redacted nothing" beats leaving the caller to infer it.
-        redacted_fields: Vec::new(),
-    })
-}
-
-/// `acl/list/0.1` → [`list_acl`].
-pub async fn list_entries(
-    acl_ks: &KeyspaceHandle,
-    auth: &AuthClaims,
-    scope: Option<&str>,
-    direction: ContextDirection,
-    channel: &str,
-) -> Result<ListAclResultBody, AppError> {
-    let stored = list_acl(acl_ks, auth, scope, direction, channel).await?;
-    Ok(ListAclResultBody {
-        entries: stored.iter().map(WireAclEntry::from_result).collect(),
-        // This maintainer returns every matching entry in one response, so the
-        // page is never partial. Saying so explicitly is the point of the
-        // member: a caller must never have to infer completeness from length,
-        // which is how a truncated revocation sweep reads as a finished one.
-        truncated: false,
-        cursor: None,
-        redacted_fields: Vec::new(),
-    })
-}
-
-/// `acl/change-role/0.1` → [`change_role`].
+/// [`change_role`], answered as the realized entry under `entry`.
 ///
 /// Every transport reads the transition through this wrapper so the realized
 /// entry comes back under `entry`, like grant/show/update. REST and the Trust
@@ -1714,7 +1568,7 @@ pub async fn change_role_by_subject(
     })
 }
 
-/// `acl/update/0.1` → [`update_acl`].
+/// [`update_acl`], answered as the realized entry under `entry`.
 pub async fn update_from_params(
     acl_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
@@ -1730,43 +1584,10 @@ pub async fn update_from_params(
     })
 }
 
-/// `acl/revoke/0.1` → [`delete_acl`].
-///
-/// Canonical revoke has a scope-reduction mode (`scopes` lists what to
-/// withdraw, the entry survives). This maintainer implements full removal
-/// only, and **refuses** a scoped request rather than treating it as a full
-/// removal — silently taking the whole entry when the caller asked to withdraw
-/// one scope removes far more authority than was requested, which is not a
-/// direction to guess in.
-pub async fn revoke_by_subject(
-    acl_ks: &KeyspaceHandle,
-    audit: &vta_audit::SharedAuditSink,
-    auth: &AuthClaims,
-    subject: &str,
-    scopes: Option<Vec<String>>,
-    channel: &str,
-) -> Result<DeleteAclResultBody, AppError> {
-    if let Some(scopes) = scopes.filter(|s| !s.is_empty()) {
-        return Err(AppError::Validation(format!(
-            "scope reduction is not supported by this maintainer — `scopes` named {} entr{}, \
-             but only full revocation is implemented. Omit `scopes` to remove the entry.",
-            scopes.len(),
-            if scopes.len() == 1 { "y" } else { "ies" }
-        )));
-    }
-    // Read before removing so the response carries what was actually
-    // withdrawn. Canonical revoke returns the entry, not a boolean: a bare
-    // `deleted: true` cannot tell an auditor what authority was lost.
-    let stored = get_acl(acl_ks, auth, subject, channel).await?;
-    delete_acl(acl_ks, audit, auth, subject, channel).await?;
-    Ok(DeleteAclResultBody {
-        entry: WireAclEntry::from_result(&stored),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acl::ContextDirection;
     use crate::acl::{AclEntry, entry_has_capability, store_acl_entry};
     use crate::store::Store;
     use vti_common::config::StoreConfig;
@@ -2259,19 +2080,26 @@ mod tests {
     /// holds everything its role implies and may already be authenticating.
     #[tokio::test]
     async fn a_grant_creates_the_entry_already_narrowed() {
+        use vta_sdk::protocols::acl_management::v0_2 as w;
         let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
 
-        let mut wire = WireAclEntry::new(
-            "did:key:zNew".into(),
-            "application".into(),
-            vec!["ctx-a".into()],
+        let wire = w::AclEntry::new(
+            "did:key:zNew",
+            "application",
+            w::AuthorityScope::Contexts {
+                contexts: vec!["ctx-a".into()],
+            },
+            w::KeyScope::All,
+            w::CapabilityScope::Listed {
+                grants: vec![
+                    w::CapabilityGrant::new("memory-read", false),
+                    w::CapabilityGrant::new("room-present", false),
+                ],
+            },
         );
-        wire.ext = Some(serde_json::json!({
-            "org.openvtc.capabilities": ["memory-read", "room-present"],
-        }));
 
-        let body = grant_from_entry(
+        let body = crate::operations::acl_v0_2::grant(
             &acl_ks,
             &audit,
             &contexts_ks,
@@ -2281,15 +2109,12 @@ mod tests {
         )
         .await
         .expect("an application entry may be created narrowed");
-        // The response echoes the narrowing through the entry's `ext`, which is
-        // where every other surface reads it from.
-        let echoed = vta_sdk::protocols::acl_management::entry::capabilities_from_ext(
-            body.entry.ext.as_ref(),
-        )
-        .expect("the echoed ext parses");
+        // The response states the narrowing explicitly.
         assert_eq!(
-            echoed,
-            Some(vec!["memory-read".to_string(), "room-present".to_string()])
+            body["entry"]["capabilities"],
+            serde_json::json!({"scope": "listed", "grants": [
+                {"capability": "memory-read"}, {"capability": "room-present"},
+            ]})
         );
 
         // Narrowed from the first request, not from a follow-up.
@@ -2305,20 +2130,28 @@ mod tests {
     }
 
     /// The same ceiling rule as update, applied where the entry is born: a name
-    /// the role never had is refused rather than dropped, and no row is left
-    /// behind holding more than the operator asked for.
+    /// the role never had is refused (`capabilityOutsideCeiling`) rather than
+    /// dropped, and no row is left behind holding more than asked for.
     #[tokio::test]
     async fn a_grant_refuses_a_capability_the_role_lacks() {
+        use crate::operations::acl_v0_2::V02Error;
+        use vta_sdk::protocols::acl_management::v0_2 as w;
         let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
 
-        let mut wire =
-            WireAclEntry::new("did:key:zNew".into(), "reader".into(), vec!["ctx-a".into()]);
-        wire.ext = Some(serde_json::json!({
-            "org.openvtc.capabilities": ["room-present"],
-        }));
+        let wire = w::AclEntry::new(
+            "did:key:zNew",
+            "reader",
+            w::AuthorityScope::Contexts {
+                contexts: vec!["ctx-a".into()],
+            },
+            w::KeyScope::All,
+            w::CapabilityScope::Listed {
+                grants: vec![w::CapabilityGrant::new("room-present", false)],
+            },
+        );
 
-        let err = grant_from_entry(
+        let err = crate::operations::acl_v0_2::grant(
             &acl_ks,
             &audit,
             &contexts_ks,
@@ -2329,7 +2162,7 @@ mod tests {
         .await
         .expect_err("a reader cannot be created holding room-present");
         assert!(
-            matches!(err, AppError::Validation(ref m) if m.contains("RoomPresent")),
+            matches!(err, V02Error::CapabilityOutsideCeiling { ref caps, .. } if caps == &["room-present"]),
             "the refusal must name what it refused: {err:?}"
         );
         assert!(
@@ -2341,24 +2174,31 @@ mod tests {
         );
     }
 
-    /// An unknown name is refused too — the operator asked for a narrowing this
-    /// build cannot enforce, and creating the entry anyway would hand them one
-    /// that holds more than they believe.
+    /// An unknown name is refused too (`unknownCapability`) — the operator
+    /// asked for a narrowing this build cannot enforce.
     #[tokio::test]
     async fn a_grant_refuses_an_unknown_capability_name() {
+        use crate::operations::acl_v0_2::V02Error;
+        use vta_sdk::protocols::acl_management::v0_2 as w;
         let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
 
-        let mut wire = WireAclEntry::new(
-            "did:key:zNew".into(),
-            "application".into(),
-            vec!["ctx-a".into()],
+        let wire = w::AclEntry::new(
+            "did:key:zNew",
+            "application",
+            w::AuthorityScope::Contexts {
+                contexts: vec!["ctx-a".into()],
+            },
+            w::KeyScope::All,
+            w::CapabilityScope::Listed {
+                grants: vec![
+                    w::CapabilityGrant::new("memory-read", false),
+                    w::CapabilityGrant::new("teleport", false),
+                ],
+            },
         );
-        wire.ext = Some(serde_json::json!({
-            "org.openvtc.capabilities": ["memory-read", "teleport"],
-        }));
 
-        let err = grant_from_entry(
+        let err = crate::operations::acl_v0_2::grant(
             &acl_ks,
             &audit,
             &contexts_ks,
@@ -2369,7 +2209,7 @@ mod tests {
         .await
         .expect_err("an unknown capability name must be refused");
         assert!(
-            matches!(err, AppError::Validation(ref m) if m.contains("teleport")),
+            matches!(err, V02Error::UnknownCapability(ref c) if c == &["teleport"]),
             "the refusal must name the word it did not recognise: {err:?}"
         );
     }
@@ -2394,6 +2234,7 @@ mod tests {
             step_up_require: None,
             approve_scope: None,
             expires_at: None,
+            clear_expiry: false,
             reason: None,
             capabilities: caps,
         };
@@ -2479,6 +2320,7 @@ mod tests {
                 step_up_require: None,
                 approve_scope: None,
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
                 capabilities: Some(vec![Capability::RoomPresent]),
             },
@@ -2516,6 +2358,7 @@ mod tests {
             step_up_require: None,
             approve_scope: Some(scope),
             expires_at: None,
+            clear_expiry: false,
             reason: None,
             capabilities: None,
         };
@@ -2606,6 +2449,7 @@ mod tests {
             step_up_require: None,
             approve_scope: None,
             expires_at: None,
+            clear_expiry: false,
             reason: None,
             allowed_keys: replacement,
             capabilities: None,
@@ -2728,6 +2572,7 @@ mod tests {
                 step_up_require: None,
                 approve_scope: Some(ApproveScope::All),
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
                 capabilities: None,
             },
@@ -2752,6 +2597,7 @@ mod tests {
                 step_up_require: None,
                 approve_scope: None,
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
                 capabilities: None,
             },
@@ -2795,6 +2641,7 @@ mod tests {
                 step_up_require: None,
                 approve_scope: Some(ApproveScope::All),
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
                 capabilities: None,
             },
@@ -2822,6 +2669,7 @@ mod tests {
                 step_up_require: None,
                 approve_scope: Some(ApproveScope::Contexts(vec!["ctx-b".into()])),
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
                 capabilities: None,
             },
@@ -2859,6 +2707,7 @@ mod tests {
                 allowed_contexts: Some(vec!["ctx-a".into()]),
                 approve_scope: None,
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
                 capabilities: None,
             },
@@ -2900,6 +2749,7 @@ mod tests {
                 allowed_contexts: Some(vec!["ctx-a".into()]),
                 approve_scope: None,
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
                 capabilities: None,
             },
@@ -2938,6 +2788,7 @@ mod tests {
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-b".into()]),
                 approve_scope: None,
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
                 capabilities: None,
             },
@@ -3090,6 +2941,7 @@ mod tests {
                 step_up_require: None,
                 approve_scope: None,
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
             },
             "test",
@@ -3328,6 +3180,7 @@ mod tests {
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-ghost".into()]),
                 approve_scope: None,
                 expires_at: None,
+                clear_expiry: false,
                 reason: None,
                 capabilities: None,
             },
@@ -3370,6 +3223,7 @@ mod tests {
             step_up_require: None,
             approve_scope: None,
             expires_at: None,
+            clear_expiry: false,
             reason: None,
             capabilities: None,
             allowed_keys: None,

@@ -419,6 +419,7 @@ impl ChainVerifier for DtgChainVerifier {
         };
 
         // The pooling defence: membership and authority must describe one subject.
+        let mut membership_until = None;
         let member = match room.visibility {
             // The subject is withheld, so it is proved rather than compared. `authorize`
             // has already refused a presentation with no binding at all; this is whether
@@ -491,15 +492,26 @@ impl ChainVerifier for DtgChainVerifier {
                     )));
                 }
                 presented.membership = Some(credential_facts(&membership));
+                membership_until = membership.valid_until();
                 Some(root.subject().to_string())
             }
         };
+
+        // The first instant any credential read here stops being valid — what a state kept
+        // on this presentation (a watch) may not outlive. A `private` room's membership is
+        // proved, not read, so its own validity is not known here.
+        let valid_until = chain
+            .iter()
+            .filter_map(|c| c.valid_until())
+            .chain(membership_until)
+            .min();
 
         Ok(VerifiedChain {
             subject: verified.subject,
             actions: verified.actions,
             member,
             presented,
+            valid_until,
         })
     }
 
@@ -547,6 +559,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         }
     }
 
@@ -820,6 +833,7 @@ mod signed {
                 record_retention: None,
                 last_prune: None,
                 epoch_floor: None,
+                frozen_at: None,
             },
             owner_chain: vec![enc(&owner_vac)],
             owner_did,
@@ -1530,6 +1544,7 @@ pub mod test_support {
                     record_retention: None,
                     last_prune: None,
                     epoch_floor: None,
+                    frozen_at: None,
                 },
                 owner_chain: vec![enc(&owner_vac)],
                 agent_chain: vec![enc(&agent_vac), enc(&owner_vac)],

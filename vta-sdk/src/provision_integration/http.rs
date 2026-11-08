@@ -432,10 +432,9 @@ mod tests {
         };
         use chrono::Duration;
 
-        let schema = trust_tasks_rs::schema_index::schema_for(
-            crate::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
-        )
-        .expect("the 0.3 schema is published and indexed");
+        let schema =
+            vti_specs::schema_index::schema_for(crate::trust_tasks::TASK_PROVISION_INTEGRATION_0_3)
+                .expect("the 0.3 schema is published and indexed");
 
         let (seed, pub_bytes) = crate::sealed_transfer::generate_ed25519_keypair();
         let client_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);

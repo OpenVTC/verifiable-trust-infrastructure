@@ -706,12 +706,15 @@ pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
 /// carries `cancelled`. SPEC §5.2 forward-minor compatibility means a consumer
 /// pinned to `0.3` SHOULD still accept these.
 ///
+/// Now `0.6`, tracking `trust-tasks-rs` 0.36: it carries `unsupportedExtension`
+/// and `indeterminate` (framework 0.7, SPEC §8.3), for the same reason.
+///
 /// The constant is pinned by `unrouted_and_routed_errors_agree_on_the_type_uri`
 /// below, which compares it against a real `reject_with`. When the framework
 /// bumps the version, that test fails rather than this service silently
 /// speaking two dialects again — which is exactly how this bump was caught.
 pub(crate) fn framework_error_type_uri() -> TypeUri {
-    "https://trusttasks.org/spec/trust-task-error/0.5"
+    "https://trusttasks.org/spec/trust-task-error/0.6"
         .parse()
         .expect("framework error Type URI parses")
 }

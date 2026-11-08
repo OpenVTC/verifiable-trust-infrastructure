@@ -27,7 +27,7 @@ use tower::ServiceExt;
 use vta_service::test_support::build_test_app;
 
 const KEYS_CREATE: &str = "https://trusttasks.org/spec/keys/create/0.1";
-const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
 /// The caller's signing seed. A `did:key` derived from it, rather than a
 /// hand-written DID, because SPEC §7.2 item 7a wants a proof on `keys/create`
 /// and item 6 wants the in-band issuer to be the identity the token
@@ -294,7 +294,7 @@ async fn the_same_key_on_a_different_task_is_refused() {
     // claim path rather than being skipped before the key is examined.
     let other = json!({
         "id": "urn:uuid:e2",
-        "type": "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
+        "type": "https://trusttasks.org/spec/vta/webvh/dids/create/1.2",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": caller(),
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
@@ -404,4 +404,225 @@ async fn a_failed_task_does_not_hold_its_key() {
         before + 1,
         "and that retry must actually do the work"
     );
+}
+
+// ── Across a restart, and across an interrupted attempt (#2402) ─────
+//
+// Everything above runs in one process against one live store. These build
+// the VTA twice over the same directory — the first app, its router, context
+// and every keyspace handle dropped before the second is built — so what the
+// second app sees is only what reached the disk. The caller is the same DID
+// throughout (`Principal::Did`), re-authenticated against the reopened store.
+
+use vta_service::test_support::{TestAppContext, TestAppOptions, build_test_app_with};
+use vti_common::idempotency::{EntryState, IdempotencyStore, Principal};
+
+/// The app over `dir`, the `test` context in place, and a token for
+/// [`caller`]. On a reopened store the context is already there.
+async fn app_at(dir: &std::path::Path) -> (axum::Router, TestAppContext, String) {
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        data_dir: Some(dir.to_path_buf()),
+        ..Default::default()
+    })
+    .await;
+    if vta_service::contexts::get_context(&ctx.contexts_ks, CONTEXT)
+        .await
+        .expect("read context")
+        .is_none()
+    {
+        vta_service::contexts::create_context(&ctx.contexts_ks, CONTEXT, "Idempotency tests")
+            .await
+            .expect("context");
+    }
+    let token = ctx.mint_token(caller().as_str(), "admin", vec![]).await;
+    (router, ctx, token)
+}
+
+/// Drop the first app and show the store was released: fjall locks its
+/// directory while any handle lives, so a reopen succeeding here is the proof
+/// that nothing from the first lifetime is still holding the database.
+fn shut_down(dir: &std::path::Path, router: axum::Router, ctx: TestAppContext) {
+    let config = vti_common::config::StoreConfig {
+        data_dir: dir.to_path_buf(),
+    };
+    assert!(
+        vti_common::store::Store::open(&config).is_err(),
+        "the directory must be locked while the first app lives, or reopening it proves nothing"
+    );
+    drop(router);
+    drop(ctx);
+    drop(vti_common::store::Store::open(&config).expect("store released by the first app"));
+}
+
+async fn idempotency_record(
+    ctx: &TestAppContext,
+    key: &str,
+) -> vti_common::idempotency::CacheEntry {
+    IdempotencyStore::new(ctx.state.idempotency_ks.clone())
+        .get(&Principal::Did(caller()).hash(), key)
+        .await
+        .expect("read idempotency record")
+        .expect("the keyed request left a record")
+}
+
+/// Put back the record a process leaves when it dies after the handler
+/// committed its effect but before `record_outcome` ran: the claim, in flight,
+/// no response — exactly what `claim` wrote, `claimed_ago` in the past.
+async fn interrupt_after_effect(ctx: &TestAppContext, key: &str, claimed_ago: chrono::Duration) {
+    let mut entry = idempotency_record(ctx, key).await;
+    entry.state = EntryState::InFlight;
+    entry.response_status = 0;
+    entry.response_headers.clear();
+    entry.response_body.clear();
+    entry.created_at = chrono::Utc::now() - claimed_ago;
+    IdempotencyStore::new(ctx.state.idempotency_ks.clone())
+        .put(&Principal::Did(caller()).hash(), &entry)
+        .await
+        .expect("write the interrupted claim");
+}
+
+/// VTI-OPS-061 / VTI-OPS-065 across a restart: the same key on a fresh
+/// envelope converges on the first effect; the same key with another payload
+/// is refused; and the controls — another key, no key — still perform, so the
+/// convergence is the key's doing, not `keys/create` being convergent or the
+/// envelope-id replay cache (every envelope here is new).
+#[tokio::test]
+async fn vti_ops_061_a_keyed_effect_survives_a_restart_once() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let (router, ctx, token) = app_at(dir.path()).await;
+    let (s, first) = post(
+        &router,
+        &token,
+        &create_doc("r1", "restart", Some("urn:uuid:idem-restart")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    let key_id = first["payload"]["key"]["keyId"].clone();
+    assert!(key_id.is_string(), "{first}");
+    assert_eq!(key_count(&router, &token).await, 1);
+    shut_down(dir.path(), router, ctx);
+
+    let (router, _ctx, token) = app_at(dir.path()).await;
+    assert_eq!(
+        key_count(&router, &token).await,
+        1,
+        "the first effect is on disk"
+    );
+
+    let (s, retry) = post(
+        &router,
+        &token,
+        &create_doc("r2", "restart", Some("urn:uuid:idem-restart")),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the retry is answered, not refused: {retry}"
+    );
+    assert_eq!(
+        retry["payload"]["key"]["keyId"], key_id,
+        "answered with the first result"
+    );
+    assert_eq!(key_count(&router, &token).await, 1, "no second key");
+
+    let (s, changed) = post(
+        &router,
+        &token,
+        &create_doc("r3", "different", Some("urn:uuid:idem-restart")),
+    )
+    .await;
+    assert_ne!(s, StatusCode::OK, "{changed}");
+    assert!(changed.to_string().contains("idempotency key"), "{changed}");
+    assert_eq!(
+        key_count(&router, &token).await,
+        1,
+        "the refusal made nothing"
+    );
+
+    let (s, b) = post(
+        &router,
+        &token,
+        &create_doc("r4", "restart", Some("urn:uuid:idem-restart-other")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let (s, b) = post(&router, &token, &create_doc("r5", "restart", None)).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(
+        key_count(&router, &token).await,
+        3,
+        "another key and no key each perform: the controls"
+    );
+}
+
+/// VTI-OPS-061 at the commit point: the process dies after `keys/create`
+/// committed its key and before the outcome was recorded. After the restart the
+/// retry under that key is told to wait while the claim could still be live,
+/// and once it cannot, is told the outcome is unknown — and the task is never
+/// run again under that key. Before #2402 the stale claim was reclaimed and the
+/// retry minted a second key.
+#[tokio::test]
+async fn vti_ops_061_an_attempt_interrupted_after_its_effect_is_never_rerun() {
+    const KEY: &str = "urn:uuid:idem-interrupted";
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let (router, ctx, token) = app_at(dir.path()).await;
+    let (s, first) = post(&router, &token, &create_doc("i1", "interrupted", Some(KEY))).await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    assert_eq!(key_count(&router, &token).await, 1);
+    interrupt_after_effect(&ctx, KEY, chrono::Duration::zero()).await;
+    shut_down(dir.path(), router, ctx);
+
+    let (router, ctx, token) = app_at(dir.path()).await;
+
+    // Inside the grace: the claim may belong to a live attempt.
+    let (_, waiting) = post(&router, &token, &create_doc("i2", "interrupted", Some(KEY))).await;
+    assert_eq!(waiting["payload"]["code"], "unavailable", "{waiting}");
+    assert_eq!(
+        key_count(&router, &token).await,
+        1,
+        "not run while in flight"
+    );
+
+    // Past the grace: the attempt is dead and its outcome unknown. Asked
+    // twice, because the answer must not turn into a reclaim.
+    interrupt_after_effect(&ctx, KEY, chrono::Duration::minutes(11)).await;
+    for envelope in ["i3", "i4"] {
+        let (s, unknown) = post(
+            &router,
+            &token,
+            &create_doc(envelope, "interrupted", Some(KEY)),
+        )
+        .await;
+        // The count first: if this regresses, the failure should report the
+        // duplicate itself, not a status code.
+        assert_eq!(
+            key_count(&router, &token).await,
+            1,
+            "an abandoned attempt is never re-run: the duplicate #2402 asked about"
+        );
+        assert_ne!(s, StatusCode::OK, "{unknown}");
+        assert_eq!(unknown["payload"]["code"], "taskFailed", "{unknown}");
+        assert!(
+            unknown["payload"]["details"]["claimedAt"].is_string(),
+            "the refusal says when the lost attempt started: {unknown}"
+        );
+    }
+    assert_eq!(
+        idempotency_record(&ctx, KEY).await.state,
+        EntryState::InFlight,
+        "the refusal leaves the record as the interruption left it"
+    );
+
+    // The way forward the refusal names: check, then a new key.
+    let (s, b) = post(
+        &router,
+        &token,
+        &create_doc("i5", "interrupted", Some("urn:uuid:idem-interrupted-2")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(key_count(&router, &token).await, 2);
 }

@@ -20,8 +20,8 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tracing::{info, warn};
-use trust_tasks_rs::specs::vtc::members::authority_reduction_pending_notice::v0_1 as notice;
 use vti_common::capability_client::build_document;
+use vti_specs::vtc::members::authority_reduction_pending_notice::v0_1 as notice;
 
 use crate::acl::VtcAclEntry;
 use crate::error::AppError;
@@ -62,6 +62,26 @@ pub fn pending_outcome(
             ("narrowed", Some(prior_role))
         } else {
             ("revoked", None)
+        };
+    }
+    // A community-role move carries the administrative authority its new role
+    // implies only where the entry's authority is exactly the one its current
+    // role implies (`vtc/members/role/set/0.1` item 8).
+    if type_uri == crate::trust_tasks::member_role_tasks::ROLE_SET_TYPE
+        && let Some(to) = payload["toRole"]
+            .as_str()
+            .and_then(|r| r.parse::<crate::acl::VtcRole>().ok())
+    {
+        let mut next = prior.clone();
+        if crate::routes::acl::expressible_in_v0_1(prior) {
+            next.admin = to.implied_authority();
+        }
+        next.role = to;
+        let resulting = crate::routes::acl::role_string(&next);
+        return if resulting != prior_role {
+            ("demoted", Some(resulting))
+        } else {
+            ("narrowed", Some(prior_role))
         };
     }
     if type_uri.contains("/acl/change-role/") {
@@ -144,7 +164,6 @@ async fn try_send(
     let mut doc_value = serde_json::to_value(&doc).map_err(|e| {
         AppError::Internal(format!("serialise authority-reduction-pending notice: {e}"))
     })?;
-    signer.sign_operational_doc(&mut doc_value).await?;
 
     // Deliverable until the reduction lands, and a little past it: after the
     // landing the reduced notice is what is true.
@@ -154,6 +173,8 @@ async fn try_send(
         .unwrap_or_default()
         .max(std::time::Duration::from_secs(3600))
         .saturating_add(std::time::Duration::from_secs(3600));
+    vti_common::trust_task_push::state_delivery_expiry(&mut doc_value, window, chrono::Utc::now())?;
+    signer.sign_operational_doc(&mut doc_value).await?;
     crate::member_push::push_trust_task(state, &prior.did, doc_value, window).await?;
     info!(
         subject = %prior.did,
@@ -262,9 +283,17 @@ mod tests {
         let prior = admin();
         let cases = [
             (
-                format!("{SPEC}/acl/revoke/0.1"),
-                json!({ "subject": "did:key:zCarol" }),
+                format!("{SPEC}/acl/revoke/0.2"),
+                json!({ "subject": "did:key:zCarol", "revocation": { "kind": "entry" } }),
                 ("revoked", None),
+            ),
+            (
+                format!("{SPEC}/acl/revoke/0.2"),
+                json!({
+                    "subject": "did:key:zCarol",
+                    "revocation": { "kind": "act", "act": { "scope": "none" } },
+                }),
+                ("narrowed", Some("community-admin".to_string())),
             ),
             (
                 format!("{SPEC}/vtc/members/admin-remove/0.1"),
@@ -272,18 +301,23 @@ mod tests {
                 ("revoked", None),
             ),
             (
-                format!("{SPEC}/acl/change-role/0.1"),
+                format!("{SPEC}/vtc/members/role/set/0.1"),
                 json!({ "subject": "did:key:zCarol", "fromRole": "admin", "toRole": "member" }),
                 ("demoted", Some("member".to_string())),
             ),
             (
-                format!("{SPEC}/acl/update/0.1"),
-                json!({ "subject": "did:key:zCarol", "scopes": ["ctx-a"] }),
+                format!("{SPEC}/vtc/members/role/set/0.1"),
+                json!({ "subject": "did:key:zCarol", "fromRole": "admin", "toRole": "moderator" }),
+                ("demoted", Some("moderator".to_string())),
+            ),
+            (
+                format!("{SPEC}/acl/update/0.2"),
+                json!({ "subject": "did:key:zCarol", "capabilities": { "scope": "none" } }),
                 ("narrowed", Some("community-admin".to_string())),
             ),
             (
-                format!("{SPEC}/acl/grant/0.1"),
-                json!({ "entry": { "subject": "did:key:zCarol", "role": "admin", "scopes": ["a"] } }),
+                format!("{SPEC}/acl/grant/0.2"),
+                json!({ "entry": { "subject": "did:key:zCarol", "role": "community-admin" } }),
                 ("narrowed", Some("community-admin".to_string())),
             ),
         ];
@@ -300,8 +334,12 @@ mod tests {
         let p = notice_payload(
             "act-5b8f1d4e9c2a4f6b8e317a0c5d9e2f14",
             &prior,
-            &format!("{SPEC}/acl/revoke/0.1"),
-            &json!({ "subject": "did:key:zCarol", "reason": "compromised laptop" }),
+            &format!("{SPEC}/acl/revoke/0.2"),
+            &json!({
+                "subject": "did:key:zCarol",
+                "revocation": { "kind": "entry" },
+                "reason": "compromised laptop",
+            }),
             "did:key:zDana",
             at("2026-10-03T09:00:00Z"),
             at("2026-10-04T09:00:00Z"),
@@ -315,7 +353,7 @@ mod tests {
         let p = notice_payload(
             "act-0f3e2d1c4b5a69788796a5b4c3d2e1f0",
             &prior,
-            &format!("{SPEC}/acl/change-role/0.1"),
+            &format!("{SPEC}/vtc/members/role/set/0.1"),
             &json!({ "subject": "did:key:zCarol", "fromRole": "admin", "toRole": "member", "reason": "  " }),
             "did:key:zDana",
             at("2026-10-03T09:00:00Z"),

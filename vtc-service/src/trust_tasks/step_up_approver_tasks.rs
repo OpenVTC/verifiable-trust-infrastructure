@@ -17,13 +17,13 @@
 //! | `revoke` | as `list` | as `list`, **and** the caller's own step-up bound to this document |
 
 use serde_json::Value;
-use trust_tasks_rs::specs::auth::step_up::approver::enroll::v0_1 as enroll;
-use trust_tasks_rs::specs::auth::step_up::approver::invite::v0_1 as invite;
-use trust_tasks_rs::specs::auth::step_up::approver::list::v0_1 as list;
-use trust_tasks_rs::specs::auth::step_up::approver::redeem::finish::v0_1 as redeem_finish;
-use trust_tasks_rs::specs::auth::step_up::approver::redeem::start::v0_1 as redeem_start;
-use trust_tasks_rs::specs::auth::step_up::approver::revoke::v0_1 as revoke;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use vti_specs::auth::step_up::approver::enroll::v0_1 as enroll;
+use vti_specs::auth::step_up::approver::invite::v0_2 as invite;
+use vti_specs::auth::step_up::approver::list::v0_1 as list;
+use vti_specs::auth::step_up::approver::redeem::finish::v0_1 as redeem_finish;
+use vti_specs::auth::step_up::approver::redeem::start::v0_1 as redeem_start;
+use vti_specs::auth::step_up::approver::revoke::v0_1 as revoke;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, declared_code, reject_with, reject_with_code,
@@ -123,7 +123,7 @@ async fn gate(
     }
 }
 
-/// `auth/step-up/approver/invite/0.1`. Binding someone a factor is an act of
+/// `auth/step-up/approver/invite/0.2`. Binding someone a factor is an act of
 /// authority, so beyond the administrator's signature it takes a step-up of
 /// their own bound to this document (invite/0.1, *Authorization*): a single
 /// stolen administrator key cannot mint factors for others.

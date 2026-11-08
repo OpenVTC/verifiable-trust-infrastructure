@@ -121,7 +121,7 @@ the VTA (`/auth/challenge` runs `check_acl_full`), which is why only that row
 says "Authenticate".
 
 **"Verify authorization with the VTA" is the row that asks.** It dispatches
-`trust-task-discovery/0.1` — any authenticated caller, answered from the VTA's
+`trust-task-discovery/0.3` — any authenticated caller, answered from the VTA's
 own dispatch table — before anything is minted:
 
 | what you see | what it means | what to do |
@@ -1304,7 +1304,7 @@ serve it later.
 | 7 | VC claim shape | `adminOf` always, `operatorOf` when template mints an integration DID |
 | 8 | Command name | `provision-integration` |
 | 9 | HTTP endpoint ACL | `require_admin` scoped to target context |
-| 10 | `GET /did/{did}/log` auth | Public, unauthenticated, `tower_governor` rate-limited |
+| 10 | `GET /did/{did}/log` auth | Public, unauthenticated, per-IP rate-limited |
 | 11 | Sealed-transfer producer assertion | `DidSigned` by `vta_did`; `--expect-digest` mandatory; `--assertion pinned-only` escape hatch |
 | 12 | JSON-LD context hosting | Bake locally; publishing at canonical URL is operational follow-up |
 | 13 | VP `proofPurpose` | `authentication` (VC `proofPurpose` stays `assertionMethod`) |

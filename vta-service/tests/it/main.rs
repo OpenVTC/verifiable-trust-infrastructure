@@ -14,6 +14,7 @@
 //! <module>::`; see `.github/workflows/ci.yml` for the feature-gated
 //! examples.
 
+mod accepted_ids_record;
 mod api_integration;
 mod app_state_single_construction;
 mod approvals_breakglass_cli;
@@ -37,6 +38,7 @@ mod provision_integration_provisionable;
 mod push_new_attempt_freshness;
 mod refresh_trust_task;
 mod revoke_session_trust_task;
+mod room_record_members_gate;
 mod security;
 mod session_jti_pin;
 mod sessions_list_trust_task;
@@ -52,4 +54,5 @@ mod vault_sign_in_oob;
 mod vault_sign_trust_task_purpose;
 mod vault_trust_task;
 mod vault_unseal_authcrypt;
+mod voter_json_bytes;
 mod whoami_trust_task;

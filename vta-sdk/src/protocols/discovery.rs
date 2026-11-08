@@ -1,7 +1,7 @@
 //! Capability discovery.
 //!
 //! One question, one answer: **which Trust Tasks does this agent serve?** —
-//! `trust-task-discovery/0.1`, the published canonical family, answered from the
+//! `trust-task-discovery/0.3`, the published canonical family, answered from the
 //! agent's own dispatch table.
 //!
 //! # What used to be here
@@ -30,7 +30,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Response to `trust-task-discovery/0.1` — the Trust Task types an agent
+/// Response to `trust-task-discovery/0.3` — the Trust Task types an agent
 /// serves.
 ///
 /// Deliberately a local mirror of the framework crate's `Response` rather than a
@@ -45,10 +45,11 @@ use serde::{Deserialize, Serialize};
 pub struct SupportedTasksResponse {
     /// The Type URIs this agent serves, matching the requested patterns.
     pub supported_types: Vec<String>,
-    /// MAJOR.MINOR of the Trust Tasks framework spec the responder targets.
+    /// The Trust Tasks framework release the responder targets
+    /// (`MAJOR.MINOR.PATCH` from discovery 0.2 onward).
     ///
-    /// Optional in 0.1 and RECOMMENDED afterwards, so absent is a legitimate
-    /// answer from an older peer rather than a malformed one.
+    /// Optional on the wire, so absent is a legitimate answer rather than a
+    /// malformed one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub framework_version: Option<String>,
 }

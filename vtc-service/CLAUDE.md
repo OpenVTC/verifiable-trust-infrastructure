@@ -185,8 +185,17 @@ When adding a flow, add it here and a line to the root index.
   TEE-KMS (a permanent VTC non-goal) are supported. Factory:
   `vtc-service/src/keys/seed_store/mod.rs::create_secret_store`.
 - **First administrators**: the install claim writes the first
-  `community-admin` (passkey claim 0.2, or wallet claim 0.3 binding the
-  plugin's approver as step-up factor); `co_admin_did` adds a second;
+  `community-admin` (the passkey install `vtc/install/claim/passkey/*/0.1`,
+  whose administrator DID is the passkey's own Ed25519 or P-256 `did:key`,
+  proven by an assertion before any authority; or wallet claim 0.3 binding the
+  plugin's approver as step-up factor). Setup and `vtc admin invite` without
+  `--did` mint passkey invitations (token names no DID; the authority is
+  recorded on the row, `install::InvitedAuthority`, and `finish` writes the
+  entry when the community already has an administrator); `--did` mints a
+  wallet one. The console and `vtc/admin/invites/create/0.2` mint either kind
+  (`did` absent = passkey); a passkey invitation always takes the gesture and
+  consent an unrestricted grant takes, since nobody authorises it at the
+  claim. `co_admin_did` adds a second;
   `--single-admin` writes `[acl] single_admin_mode` (see *VTC administrator
   action list*).
 - **Code**: `vtc-service/src/setup/{wizard,from_toml,phase1}.rs` (both
@@ -225,21 +234,38 @@ When adding a flow, add it here and a line to the root index.
 - **Renewal** (`rooms::community_renewal`, create item 6's SHOULD): a sweeper
   reissues the community's own VMC + `admin` VAC within `[rooms.community]
   authority_renew_within_days` (default 30, ≤ half the life) and stores each
-  **under the vault handle it replaces** — the VTA refuses to choose between
-  two VACs for one persona, so never add one beside the other. Handles are
-  recorded at create (`authority-renewal:<room>`), else found by
-  `vault/credentials/query` + `get` (needs `vault-read`). Remote first: the
+  **under the vault handle it replaces** — never add one beside the other. Handles
+  are recorded at create (`authority-renewal:<room>`), else found by
+  `vault/credentials/query` + `get` (needs `vault-read`), choosing among several
+  by the VTA's own rule (`room_oracle::current`: latest `validFrom` in force; a
+  tie is refused with the vault ids, to archive one). Remote first: the
   owner's record's `ownerAuthorityValidUntil` is written last; the sweeper is
   the only retry owner (capped backoff + jitter); failures are `warn`ed,
   audited at the start of a run, and shown in `get`/`list`'s
   `ext["org.openvtc"].authorityRenewal`. No "renew now" task exists.
-- **The room's profile** (create 0.3 / update 0.2, `rooms::community_profile`): the label
+- **The room's profile** (create 0.4 / update 0.3, `rooms::community_profile`): the label
   and description — never the tags — go only to the community's own VTA in
   `rooms/keys/profile/write`, as the community, and into the room sealed; never the host
   record, a credential or `register`. A write that did not land is `pending`, never a failed
   request; the profile sweeper is its one retry owner and always writes the room as it is
   then. Needs `room-open` on the community's VTA entry.
-- **Code**: `vtc-service/src/rooms/{community,community_profile}.rs`,
+- **Archive and remove** (`vtc/rooms/community/{archive,unarchive,remove}/0.1`,
+  `removal/cancel/0.1`; `rooms::community_lifecycle`): the **owner's** lifecycle, stored on
+  `OwnedRoom.status` — `active → archived(readOnly|noAccess) → removalScheduled → purging →
+  removed` — beside the host's, which stays computed and never set. `readOnly` freezes the
+  host record (`vti_rooms::Room::frozen_at`: every task but a read refused, the owner's
+  Admin acts excepted); `noAccess` and every removal **reset** the room (one `room`
+  withdrawal, the only one a private room's host applies), then re-issue the community's
+  own credentials **after** the reset's second (`validFrom < revokedAt` is withdrawn) —
+  admitted members become `suspended`, open offers withdrawn. A reset is recorded as a
+  `Pending` change **before** it is asked for and finished by the lifecycle worker (the
+  one retry owner, also for purges and for restoring suspended members by renewal);
+  never reset twice once the host accepted one. Removal only from archived; the purge
+  deletes host rows, every blob (incl. moved copies), assignment, bindings, the served DID
+  log, then asks the VTA to delete the DID (a SHOULD: reported, never holding the purge),
+  and keeps a tombstone (`hosted_snapshot`, members' records without credentials). The
+  0.3 / 0.1 reads stay served: purged rooms hidden, `suspended` read as `admitted`.
+- **Code**: `vtc-service/src/rooms/{community,community_profile,community_lifecycle}.rs`,
   `vtc-service/src/trust_tasks/community_room_tasks.rs`,
   `cnm-cli/src/rooms.rs` (`cnm rooms …`).
 - **Docs**: `docs/03-vtc/community-rooms.md`.
@@ -247,7 +273,7 @@ When adding a flow, add it here and a line to the root index.
 ### VTC room file migration (`vtc/rooms/storage/migrate`)
 - **What**: Moves a hosted room's existing blobs onto the storage config it is
   assigned to (`data-rooms-files.md` §7.3; 0.2 served beside 0.1, each answered
-  at its own version, one engine; `vtc/rooms/get/0.2` reports the migration through
+  at its own version, one engine; `vtc/rooms/get/0.3` reports the migration through
   `vtc/_shared/0.1/room-migration`): copy, read back and verify against
   every chunk digest and the whole-blob digest of the committed manifest, switch,
   and the old copy deleted by collection after the orphan grace window. No key.
@@ -376,7 +402,7 @@ When adding a flow, add it here and a line to the root index.
   after the VTA answered), keeps `MemberRecord::sources` (`gb_…` ids, plus
   `direct` for an administrator's admission), owes a `LeftGroup` removal
   through `rooms::departures` when no source is left — never removing a direct
-  admission — and renews bound admissions into `offers/list/0.3` `renewals`
+  admission — and renews bound admissions into `offers/list/0.4` `renewals`
   (membership + authority, never an invitation; the renewed `validUntil` becomes
   the admission's own).
 - **Group grants** (`acl::group_grant`, `groups::authority`, VTI-DIR-100 – 105):
@@ -433,7 +459,8 @@ When adding a flow, add it here and a line to the root index.
   manager's appointment is a resource grant written under the git-ns write lock
   (so `acl/*` writes keep it); a granter who departs or no longer covers it
   sends it to an `acl.grants.review` item (`groupGrants`), withdrawn on decline
-  or at the deadline (`groups::managers::sweep`).
+  or at the deadline (`groups::managers::sweep`). The grant/review/withdraw machinery is
+  `acl::appointment`, shared with board facilitators; keep both kinds on it.
 - **Code**: `vtc-service/src/groups/` (`mod`, `identity`, `policy`),
   `vtc-service/src/trust_tasks/group_tasks.rs`,
   `vtc-service/policies/default/groups.rego`, `vta-sdk/templates/vtc-group.json`.
@@ -455,7 +482,7 @@ When adding a flow, add it here and a line to the root index.
   reduction nobody but requester and subject could approve; lands after
   `acl.removal_cooling_off`, cancellable by the requester only) and
   `acknowledge` items (each offline ACL write, VTI-VTC-023, record type
-  `vtc/operator/offline-write/0.1`).
+  `vtc/operator/offline-write/0.2`).
 - **Invariants to preserve**: an approval is a `task-consent/decision` signed
   by the approver's **own DID** (wallet or `cnm`), never a console key;
   `webauthn` / `approverSigned` evidence rides beside it, never instead. The
@@ -516,6 +543,29 @@ When adding a flow, add it here and a line to the root index.
   presentation or a key, and never import the extension's code: the wallet's
   gates (the page is the `SignInPortal` origin, rooms the member shared, each
   write confirmed) are the authorization (`data-rooms-files.md` §8.5).
+- **Elections in the portal** (`src/members/Elections.tsx`, `wallet-elections.ts`):
+  the pages talk only to the member's wallet (`window.vtaWallet.elections`). The
+  ballot is filled in the wallet's own window and the cast goes from the wallet to
+  the ballot box; never render a ballot here, add a `/v1/member/*` route or a
+  `signingScope` family that carries a choice, a ticket or a cast, or show the
+  page whether a vote was cast — the community is never trusted to learn how
+  anyone voted (VTI-VOT-001). Notified elections (`list`'s `notified`, VTI-NTF-063) show only
+  identifier, audience, period and status; `memberOf` is passed only from a notification still
+  standing — never the page's own choice, never to a wallet that reports no notifications (it
+  refuses the field) — and the page never presents anything: the wallet asks first
+  (VTI-VOT-016). `electionListOf` accepts every list shape a wallet may answer. The home
+  page's attention items take notified elections from the same `member-elections` query
+  (`actionableNotified`: standing, voting not closed, not in the community's list) and link
+  with `electionHref`, so `memberOf` is still read on the election page. `refusalKind` /
+  `declinedInWallet` read the wallet error's `code` first (`REFUSAL_BY_CODE` for Trust Task
+  codes, `WALLET_OUTCOME_BY_CODE` for the wallet's own), its words only for an older wallet
+  or an unknown code.
+- **Join page** (`/members/?join`, the landing page's *Join this community*):
+  the sign-in page's wallet code, worded for a newcomer, with no
+  membership-only option. It changes words only — the wallet decides from
+  its own vault whether a code means sign-in or join (a community it holds
+  no identity for), and the join itself is `vtc/join-requests/*`. Never give
+  this page a route or task of its own.
 - **DID self-check**: `did_self_check` resolves the VTC's own DID (boot +
   5-minute lazy cache) and warns when the published document lacks
   `TrustTaskHTTPS` / `SignInPortal`; `GET /v1/member/sign-in/config` carries
@@ -544,7 +594,7 @@ When adding a flow, add it here and a line to the root index.
   authority-conferring roles are never seated; an administrative role takes the
   bound gesture; `application` entries and removed records are refused for
   make-membership. Wire types, document policy and error codes are the
-  generated `trust_tasks_rs::specs::vtc::members::{admit, make_membership}`
+  generated `vti_specs::vtc::members::{admit, make_membership}`
   (trust-tasks-tf #784); a payload is schema-checked before it is parsed, so an
   out-of-schema `subject` / `role` is `malformedRequest`, never
   `roleNotPermitted`.
@@ -648,16 +698,16 @@ When adding a flow, add it here and a line to the root index.
   (`vtc/rooms/community/{list,get}`, `members/list`) show, so a `rooms` seam
   that moves nothing they show is no hint.
 - **Transport**: HTTPS binding 0.3 §2.1 **streamed responses** — the signed
-  `vtc/admin/events/subscribe/0.1` document POSTed to the ordinary
+  `vtc/admin/events/subscribe/0.6` document POSTed to the ordinary
   `/v1/trust-tasks` door with `Accept: text/event-stream, application/json;q=0.5`,
   answered `200 text/event-stream` with the signed `#response` as the first
-  event and `vtc/admin/events/event/0.1` documents after it (one per `data:`
+  event and `vtc/admin/events/event/0.5` documents after it (one per `data:`
   line, no `event:` field, SSE `id` = resume token, heartbeats as comments).
   Why SSE and not TSP/DIDComm: the console is a browser holding only a console
   key, and no other binding defines a streamed response — a subscribe arriving
   any other way is `streamUnavailable`. Why `fetch` and not `EventSource`:
   every (re)connection must be a freshly signed POST; resumption is in-band
-  `since` only (`Last-Event-ID` is a cross-check, mismatch → `malformedRequest`).
+  `resumeToken` only (`Last-Event-ID` is a cross-check, mismatch → `malformedRequest`).
 - **Hints only — the invariant**: an event carries `topic`, `at`,
   `resumeToken` and, on `actions` / `acknowledgements` / `joinRequests`, the
   recipient's `count`. Never a record, a record id or a DID, in any member
@@ -699,7 +749,7 @@ When adding a flow, add it here and a line to the root index.
   truth; the registry and the forge (through a per-community bridge) are
   projections of it.
 - **Wire**: the `git-ns/*` Trust Tasks, generated types under
-  `trust_tasks_rs::specs::git_ns`, served on the document dispatcher. Authority
+  `vti_specs::git_ns`, served on the document dispatcher. Authority
   is the proof signer's **git rights**, read at execution time — never a bearer
   token, and never the community-admin role (whose community-wide
   `git.ns.admin` only binds, reseats a headless namespace and ratifies). **One
@@ -723,7 +773,7 @@ When adding a flow, add it here and a line to the root index.
   on backup import (`git_ns::migrate`); unmappable ones are kept inert under
   `rights-unmapped:*` with an acknowledge item. The admin REST routes (`/v1/git-ns/*`) are read-only
   console projections; the administrator's view, namespace and repository
-  listings and break-glass list are signed reads (`git-ns/view/0.5`,
+  listings and break-glass list are signed reads (`git-ns/view/0.6`,
   `git-ns/namespace/list`, `git-ns/repo/list` in `git_ns::admin_reads`),
   answered to a namespace's administrators only, never to a bearer session.
 - **Invariants to preserve**: the fixed rules of `git-ns/right/grant` live in
@@ -750,7 +800,7 @@ When adding a flow, add it here and a line to the root index.
   `right_ratify`/`right_revoke` as the decider, it never expires into
   acceptance, nobody cancels it, and it closes however the record ends.
   A member who is no console user answers that step-up with a **step-up
-  passkey** (`step_up_passkey`, `auth/passkey/enroll/invite/0.2` `purpose:
+  passkey** (`step_up_passkey`, `auth/passkey/enroll/invite/0.3` `purpose:
   stepUp`), served only as Trust Tasks on the spine
   (`trust_tasks::step_up_passkey_tasks`). It is enrolled only through a
   community admin's single-use invite (signed, with a bound gesture) plus its
@@ -762,10 +812,10 @@ When adding a flow, add it here and a line to the root index.
   A namespace admin gets no forge role: role projection (`bridge::highest_repo_rights`) counts only rights held in the person's own
   name, sends an admin with none as `git.ns.admin` (no role), one entry per
   account, and never a namespace-level `projectRoles` job. Jobs are
-  `git-ns/bridge/job` 0.5 to a bridge that lists 0.5 in
-  `trust-task-discovery`, else 0.4 (`bridge::send_versioned`); never
-  downgrade, and `closePullRequest` (the pull-request gate,
-  `git_ns::pr_gate`) is never sent to a bridge without 0.5.
+  `git-ns/bridge/job` 0.7 only, sent only to a bridge that lists 0.7 in
+  `trust-task-discovery` 0.3 (`bridge::send_versioned`); never downgrade.
+  The bridge's `event` (0.6) and `result` (0.2) are served at their current
+  version only.
 - **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
   `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.
@@ -817,6 +867,158 @@ When adding a flow, add it here and a line to the root index.
   its proof verified by the reader (`vti_voting::steps::ProvenRequests`, CONVENTIONS §9.6); the
   election key `show` carries is formed by the community from those steps alone, never taken
   from `voting/trustees/status`, which carries no proof.
+- **Credential rolls** (`elections::{roll,presentation}`, VTI-VOT-015 – 018, 025 – 029):
+  `roll.memberOf` is classified at create (community, group, or an active member party holding an
+  unrevoked VMC of ours; else `rollUntrusted`) and **recorded** (`ElectionRecord::roll_party`) —
+  never re-derived, so a deleted group's DID is never read as a member party. A claim's (and a
+  `show/0.6` read's) presentation is checked **before** the election is looked up and without
+  reference to it; an unobtainable DID document or status list is the standard `indeterminate`,
+  identical whatever the election, recording nothing. Never move that check after the lookup,
+  and never read anything but the community's own records after it (own status lists, the
+  member party's membership and slot, the group's authority and membership). A member-party
+  election is seen by anyone but a manager or the party only on a passing presentation; every
+  other outcome is `electionUnknown`, never a specific code. Lists never carry a presentation
+  and never show such an election to anyone else, not as a stub. Never keep a presentation;
+  a read's `id` is kept for the window only (`store::accept_presentation`).
+- **Console manifest builder** (`admin-ui/src/plugins/ElectionBuilder.tsx`,
+  `admin-ui/src/lib/election-manifest.ts`): a guided form whose checks mirror
+  `vti_voting::rules::check_manifest` and whose bounds are pinned to the vendored
+  `vtc/elections/create/0.5` bundle by `election-manifest.test.ts` — re-pin a new create
+  version there too. A convenience, never the authority: the community re-checks on create.
+  Its ballot-box field is a choice from `vtc/elections/ballot-boxes/list/0.1` (answered from the
+  same live `[voting]` config `create` checks, so the two can never disagree), falling back to a
+  typed DID when the VTC does not list the task.
+  Never let the form silently drop a manifest member it does not edit (`manifestToDraft` refuses).
 - **Code**: `vtc-service/src/elections/`, `vtc-service/src/trust_tasks/election_tasks.rs`,
   `vtc-service/tests/it/election_tasks.rs`.
 - **Docs**: `docs/03-vtc/elections.md`.
+
+### VTC community boards (`vtc/boards/*`, VTI-BRD-001 – 080)
+- **What**: Boards where members propose ideas and leave notes, each idea a facilitator
+  accepts is put to an election of its own (`board.<boardId>.<ideaId>`), and facilitators
+  select among them with the results in view. Records in the `boards` keyspace (backed up).
+- **Invariants to preserve**: creating a board or changing its template takes
+  `vtc.boards.manage` **and** `vtc.elections.manage` (unqualified); a facilitator
+  (`vtc.boards.manage`, unqualified or `board:<id>`) opens elections only from that template,
+  never binding, through `elections::ops::{check_create, create}` — never a second registrar,
+  never parked. **No copy of election state**: an idea keeps only `election_id` + `accepted_at`;
+  open/opening/refused/cancelled, `ballotsOnBoard` and the result are read from the election
+  record every time (`boards::view`). The election id is written on the idea **before** the
+  election is created. A board never records or reports a ticket or a ballot (VTI-BRD-033).
+  Results for selection come from `elections::ops::verify` (certify's items 3 – 9, factored
+  out), kept uncertified in `ElectionRecord::verified` by the elections sweeper or by `select`;
+  shown `certified: false` until certified. `vtc/boards` is in `PORTAL_SIGNING_SCOPE`: member
+  tasks accept the delegated key, facilitator tasks (`create`, `update`, `ideas/decide`,
+  `ideas/select`, `notes/hide`) go through `member_signer` only and never do (VTI-BRD-051).
+  Audit (`BoardChanged`) by reference, never text. Departure withdraws proposed ideas; erasure
+  removes text no election carries (`boards::on_departure`, called beside
+  `groups::on_departure`). **Closing ends the voting** (VTI-BRD-006, `boards::ops::end_voting`):
+  the board is stored closed first, then each election gets a `PendingEnd` (close early if voting,
+  cancel if not yet) recorded **before** the ballot box is asked; the answer never waits, and the
+  elections sweeper is the one retry owner. Every board election is opened `allowEarlyClose: true`
+  whatever the template says, and a template with `false` is `templateInvalid` (VTI-BRD-030). A
+  closed board opens no election. **Deleting** (`vtc/boards/delete`, VTI-BRD-007/008) takes
+  `vtc.boards.manage` unqualified and a bound step-up spent only after every check passed; only a
+  closed/archived board with no election running; audited before anything goes; each election
+  leaves only a `Tombstone` (id, manifest digest, kept heads — never title, roll or tickets) for
+  `[boards] tombstone_retention` (days, `0` = none, `"forever"`), removed by the sweeper.
+  **Facilitators by appointment** (`vtc/boards/facilitators/*`, VTI-BRD-090 – 093,
+  `boards::facilitators` over `acl::appointment`, shared with group managers): a resource grant
+  `vtc.boards.manage` at `board:<id>` on the appointee's entry, delegated by a signer who
+  facilitates the board, written under the git-ns write lock. Peers never remove one another
+  (only the appointee or an unqualified holder). A granter who departs or stops facilitating
+  sends it to `acl.grants.review` (`boardGrants`), withdrawn on decline or at the deadline
+  (`boards::facilitators::sweep`, run by the directory sweep, audited `facilitatorWithdrawn`);
+  deleting the board withdraws them all. Never record facilitators on the board itself.
+- **Code**: `vtc-service/src/boards/{mod,ops}.rs`, `vtc-service/src/trust_tasks/board_tasks.rs`,
+  `vtc-service/tests/it/board_tasks.rs`.
+- **Docs**: `docs/03-vtc/boards.md`, `docs/05-design-notes/vtc-boards.md`.
+
+### VTC member badges (`vtc/badges/*`, VTI-BDG-001 – 095)
+- **What**: Badges members earn, hold and show on their directory card: community badges
+  defined by `vtc.badges.admin` and given by their owners, kudos badges any member makes and
+  gives. Records in the `badges` keyspace (backed up), pictures in `badge_images`.
+- **Invariants to preserve**: **a community badge is a badge group** (`Group.badge_id`): its
+  owners are the group's managers (`vtc.groups.manage` qualified `group:<id>`, by appointment),
+  its holders the group's members, requests are `vtc/groups/join` + `requests/decide`, owners
+  `managers/{add,remove}`, retiring deletes the group (one revocation bit, VTI-DIR-083). A
+  badge group never carries authority (`bindings/add` refuses it), is left out of
+  `vtc/groups/list` and of `audience_groups`. **An award is an offer until accepted**
+  (`badges::Award`, VTI-BDG-020): `awards/offer` and `kudos/give` record `offered` and admit,
+  issue and show nothing; `mine/accept` issues the badge credential **as the group**
+  (`badges::credential`, an Open Badges 3.0 `OpenBadgeCredential`, the community as the
+  Achievement's `creator`, one `evidence` per award) through `keys/sign-document` **before**
+  recording the membership; `groups::credential::issue` branches to it for any group with
+  `badge_id`, so admission by request, rule and renewal issue the same profile. Every badge
+  credential embeds the community's OB3 `EndorsementCredential` of the Achievement
+  (`credential::ensure_endorsement`: signed as the community once, kept on `Badge.endorsement`,
+  VTI-BDG-060). **Two regimes** by `shareableOutside`, fixed at create/promote: inside-only
+  (short-lived, renewed, no status) and outside (VTI-BDG-062: `settings.credentialValidDays`,
+  default 730, a slot in the **community's** revocation list, `bslot:<badge>:<entry>`, one per
+  badge and holder, reused by every re-issue; never a set of the badge's or the group's own —
+  the W3C list algorithm compares no issuers). `credential::{revoke_holder,
+  revoke_all_holders, revoke_departed}` flip it on take-back of the last award, retire and
+  departure (VTI-BDG-063); keep every path that ends a holding on one of them. A shareable
+  badge's **public artefacts** (`badges::public`, VTI-BDG-051): `GET /badges/<id>` (the
+  Achievement document) and `/badges/<id>/image` (the re-encoded picture), parent-root routes
+  beside the identity logs, let through the host-surface gate (`is_badge_artefact_path`),
+  unauthenticated, naming no holder or count (VTI-BDG-071); an inside-only or unknown badge is
+  the same `404` — never serve an inside badge's picture there (VTI-BDG-050). **Hidden is
+  portal-only** (`badges::Prefs`, VTI-BDG-030): walls, `holders/list` and counts leave a hidden
+  holder out; `awards/list` shows owners `hidden: true`; memberships and credentials stand.
+  Holder's tasks accept the portal's delegated key (`vtc/badges` in `PORTAL_SIGNING_SCOPE`);
+  `settings/update`, `update`, `retire`, `promote`, `awards/*` go through `member_signer`
+  only (VTI-BDG-095). `settings/update` and a community badge's `retire` take a bound
+  step-up, never the action list (they confer nothing). Pictures reuse
+  `directory::images::{reencode,store,get,may_reference}` over `badge_images`; an upload is
+  the uploader's until a badge holds it. Kudos limits count every giving whatever its later
+  state. Departure withdraws offers and preferences and keeps givings by reference
+  (`badges::on_departure`, beside `groups::on_departure`). Audit `BadgeChanged` by reference.
+  **The pages**: the console plugin (`admin-ui/src/plugins/badges.tsx` over `lib/badges.ts`)
+  signs with the console key only, and reuses the groups' tasks for a badge's requests and
+  owners; the portal (`admin-ui/src/members/Badges.tsx` over `members/badges-api.ts`, the
+  `WallSection` on a member's card, the home tile) signs with `K_b` through `send` and never
+  offers an owner's act. The badge Type URIs are spelled out in full in both API modules (the
+  list-limit census matches the literal), and the console's wire types come from the
+  `Badges*01` wrappers in `vta_sdk::openapi` listed in `routes::openapi_spec` — a new badge
+  task needs both, then `UPDATE_OPENAPI=1` and `npm run wire:generate`.
+- **Code**: `vtc-service/src/badges/{mod,credential,public}.rs`,
+  `vtc-service/src/trust_tasks/badge_tasks.rs`, `vtc-service/tests/it/badges.rs`,
+  `admin-ui/src/plugins/badges.tsx`, `admin-ui/src/members/Badges.tsx`.
+- **Docs**: `docs/03-vtc/badges.md`, `docs/05-design-notes/vtc-badges.md`.
+
+### VTC notifications (`notifications/*`, VTI-NTF-040 – 063)
+- **What**: The community as **originator** of the `election` kind — an election under a
+  credential roll naming a member party is notified to that party once the ballot box has
+  registered it, and withdrawn (higher revision, `withdrawn`) if cancelled or closed before
+  voting closes — and as **recipient and relayer** of notifications addressed to it.
+- **Invariants to preserve**: the notice (`party-notice:<electionId>` in `elections`) is written
+  **before** anything is sent; `notifications::election::settle`, run by the election sweeper,
+  is its only writer and sender, through the durable member push — never send it from a task
+  handler. It carries only the reference (community, `electionId`, `vtc/elections/show/0.6`,
+  `memberOf`, voting period); nothing is sent after voting closes. Received notifications are
+  verified (`verify_delivery`) and kept **exactly as received** (`admin_actions::
+  received_document`) in `notifications` (backed up) by the stated policy (ACL entry, or a
+  relationship in force with the community DID); the receipt never says what was done. A relay
+  is never automatic: `inbox::relay_to_members` refuses a decision that has not acknowledged
+  `inbox::disclosure` (VTI-NTF-046), and records the members before it queues anything; every
+  later revision goes to the same members (`inbox::settle`, the one retry owner); the record
+  is kept until the period ends (30 days without one) and used for nothing else; nothing is
+  ever reported to the originator (VTI-NTF-043). The policy also counts a network the
+  community is an **acknowledged** member of by its own record (VTI-NTF-034); a listing never
+  acknowledged does not count. Administrators read with `vtc/notifications/{list,show}/0.1`
+  (`vtc.notifications.read`) and decide with `vtc/notifications/relay/0.1`
+  (`vtc.notifications.relay`, qualifiable `group:<id>`, which permits only that group): the
+  selection — all members, one group, one role — is resolved once at the decision to **active**
+  members, never the community, the originator or any relayer in the chain (VTI-NTF-047, also
+  re-checked for every later revision), and the relay is allowed while the received chain has
+  at most three relays (VTI-NTF-041). `allMembers` takes the requester's bound step-up
+  (VTI-NTF-074). Each decision is recorded with its selection and count, audited as
+  `NotificationRelayDecided`, and never names or returns whom it reached (VTI-NTF-073). The
+  election notice re-checks that the member party is still an active member before every
+  offering revision; a withdrawal goes regardless (VTI-NTF-005).
+- **Code**: `vtc-service/src/notifications/{mod,election,inbox}.rs`,
+  `vtc-service/src/trust_tasks/notification_tasks.rs`, `vtc-service/src/elections/sweeper.rs`,
+  `vtc-service/tests/it/notifications_admin.rs`, console `admin-ui/src/plugins/notifications.tsx`.
+- **Docs**: `docs/02-vta/notifications.md`, `docs/03-vtc/notifications.md`,
+  `docs/03-vtc/elections.md`.

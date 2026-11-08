@@ -68,7 +68,8 @@ pub use consent::{
 };
 pub use mint::{MintRequest, mint_and_store_sd_jwt_vc, mint_sd_jwt_vc};
 pub use model::{
-    CredentialFormat, CredentialPurpose, CredentialStatus, IndexField, StoredCredential,
+    BodyEncoding, CredentialFormat, CredentialPurpose, CredentialStatus, IndexField,
+    StoredCredential,
 };
 pub use present::{present_di_vc, present_sd_jwt_vc};
 pub use query::{CredentialDescriptor, CredentialQuery, search};

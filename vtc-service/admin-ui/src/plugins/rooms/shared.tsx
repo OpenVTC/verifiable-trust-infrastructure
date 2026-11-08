@@ -2,6 +2,9 @@
 // its lifecycle state. The reasoning behind both is in `plugins/rooms.tsx`'s
 // header.
 
+import { roomStateLabel } from "@/lib/community-rooms-api";
+import type { CommunityRoomStatus } from "@/lib/wire-types";
+
 export const TIERS = ["open", "attributed", "private"] as const;
 export type Tier = (typeof TIERS)[number];
 
@@ -29,6 +32,32 @@ export function LifecyclePill({ value }: { value: string }) {
   return (
     <span className={`chip ${tone}`} title={LIFECYCLE_MEANS[value] ?? value}>
       {value}
+    </span>
+  );
+}
+
+/** What each owner-lifecycle state means — the room's state as its owner (this
+ *  community) set it, beside the host's computed lifecycle above. */
+export const ROOM_STATE_MEANS: Record<string, string> = {
+  active: "Open to change.",
+  archived:
+    "Closed to change: it admits no one and its host accepts no writes. Reversible with Unarchive.",
+  removalScheduled:
+    "Every credential is withdrawn and its content is kept until the purge date. The removal can be cancelled until then.",
+  purging: "Its content is being deleted at the host and every storage location. Not reversible.",
+  removed: "Its content is gone. This record is kept as the room's history.",
+};
+
+/** A room's owner-lifecycle state, in words — never colour alone. Active is
+ *  neutral; archived is neutral; anything on its way out is a warning, and
+ *  removed is muted. */
+export function RoomStateChip({ status }: { status?: CommunityRoomStatus }) {
+  const state = status?.state ?? "active";
+  const tone =
+    state === "removalScheduled" || state === "purging" ? "warning" : "";
+  return (
+    <span className={`chip ${tone}`.trim()} title={ROOM_STATE_MEANS[state] ?? state}>
+      {roomStateLabel(status)}
     </span>
   );
 }

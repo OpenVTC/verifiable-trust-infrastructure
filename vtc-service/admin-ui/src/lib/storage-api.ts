@@ -11,7 +11,7 @@
 // assuming a named role) and `sealed` (a credential the community keeps) are its
 // host operator's to permit; with either, the community mints a credential scoped to
 // one room for at most 15 minutes. A sealed credential is set with
-// `vtc/storage/credentials/set/0.2`, sealed in this browser to the community before it
+// `vtc/storage/credentials/set/0.3`, sealed in this browser to the community before it
 // is sent (`sealed-transfer.ts`) — or, where this browser cannot, in `cnm` (`cnm
 // storage credentials set`). Nothing here keeps it.
 //
@@ -44,13 +44,13 @@ import type {
 
 export const STORAGE_LIST_TASK = "https://trusttasks.org/spec/vtc/storage/configs/list/0.2";
 export const STORAGE_GET_TASK = "https://trusttasks.org/spec/vtc/storage/configs/get/0.2";
-export const STORAGE_CREATE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/create/0.2";
-export const STORAGE_UPDATE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/update/0.2";
-export const STORAGE_RETIRE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1";
+export const STORAGE_CREATE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/create/0.3";
+export const STORAGE_UPDATE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/update/0.3";
+export const STORAGE_RETIRE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/retire/0.3";
 export const STORAGE_PROBE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1";
-export const ROOM_STORAGE_ASSIGN_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1";
-export const ROOM_STORAGE_MIGRATE_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2";
-export const STORAGE_CREDENTIALS_SET_TASK = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.2";
+export const ROOM_STORAGE_ASSIGN_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.2";
+export const ROOM_STORAGE_MIGRATE_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.3";
+export const STORAGE_CREDENTIALS_SET_TASK = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3";
 
 /** The most configs the spec returns per page. */
 const CONFIGS_PAGE = 100;
@@ -142,7 +142,7 @@ export async function sealCredentialForCommunity(credential: SealedStorageCreden
 }
 
 /**
- * Store a sealed block as a config's credential (`vtc/storage/credentials/set/0.2`),
+ * Store a sealed block as a config's credential (`vtc/storage/credentials/set/0.3`),
  * replacing any before it. Parked for approval like any storage change; approvers
  * see the config and the block's digest, never the credential.
  */
@@ -158,7 +158,7 @@ export const MIN_MIGRATION_BYTES_PER_SECOND = 65_536;
 
 /**
  * Move a room's existing files onto the storage it is assigned to
- * (`vtc/rooms/storage/migrate/0.2`): copied, checked against what their
+ * (`vtc/rooms/storage/migrate/0.3`): copied, checked against what their
  * uploaders committed to, switched, and the old copies deleted after the grace
  * window. Parked for approval like an assignment. Sent again for a room whose
  * migration is queued, running or paused, it answers with that migration —
@@ -190,7 +190,7 @@ export const KIND_MEANS: Record<string, string> = {
 
 /**
  * What a `sealed` config is labelled with wherever it is shown
- * (`vtc/storage/configs/create/0.2` item 9, `get/0.2` item 5).
+ * (`vtc/storage/configs/create/0.3` item 9, `get/0.2` item 5).
  */
 export const SEALED_WARNING =
   "A stored credential protects against every administrator, but not against whoever operates the machine this community runs on: they can recover it.";

@@ -1,7 +1,7 @@
 //! Rate limits on the HTTPS Trust Task door, `POST /v1/trust-tasks`.
 //!
 //! The door serves anonymous and signed traffic alike, so one per-address
-//! budget cannot fit both. The unauthenticated governor (a burst of 10, then
+//! budget cannot fit both. The unauthenticated limiter (a burst of 10, then
 //! one request every 5 s) is right for a stranger making this service resolve
 //! DIDs and verify signatures; an administrator whose console now signs every
 //! read exhausts it while navigating. So a document is charged one of two
@@ -9,9 +9,9 @@
 //!
 //! | the document | charged, and when |
 //! |---|---|
-//! | unsigned, or signed by a DID the community holds no entry for | the per-address governor ([`UNAUTH_LIMITER`]), **before** anything is verified |
+//! | unsigned, or signed by a DID the community holds no entry for | the per-address limiter ([`UNAUTH_LIMITER`]), **before** anything is verified |
 //! | signed by a DID that holds a live ACL entry (or a console key delegated by one, or a member-portal sign-in key whose live delegation covers the type) | the signer's own bucket ([`SIGNER_LIMITER`]), **after** its proof verifies |
-//! | claiming such a signer but not verifying as it | the per-address governor as well, as soon as the claim fails |
+//! | claiming such a signer but not verifying as it | the per-address limiter as well, as soon as the claim fails |
 //!
 //! # Why a fresh DID buys nothing
 //!
@@ -32,12 +32,12 @@
 //!   [`SIGNED_ADDRESS_LIMITER`] ceiling, generous enough for a console and
 //!   small enough to bound the verification work one address can cause;
 //! - one that then fails to verify as that signer is charged the strict
-//!   per-address governor too, so an address sending forgeries loses its
+//!   per-address limiter too, so an address sending forgeries loses its
 //!   anonymous budget exactly as an anonymous flood would;
 //! - and the signer's own bucket is charged only once the proof verifies, so
 //!   nobody can drain a member's budget by naming them.
 //!
-//! The same per-address governor state backs the other unauthenticated routes
+//! The same per-address limiter state backs the other unauthenticated routes
 //! ([`crate::routes`]), so moving this door off the tower layer does not give
 //! an address a second anonymous budget.
 //!
@@ -108,21 +108,18 @@
 //! documents never touch the anonymous governor, so a join or recognise flood
 //! does not cost an address its sign-ins, nor the reverse. The redeem
 //! long-poll keeps its own cap on polls held open per address
-//! (`oob_tasks::PollGuard`).
+//! (`vti_oob_server::PollGuard`).
 
 use std::net::IpAddr;
-use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use affinidi_rate_limit::{KeyedRateLimiterState, TooManyRequests};
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
-use governor::clock::{Clock, DefaultClock};
-use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
-use tower_governor::key_extractor::KeyExtractor;
-use vti_common::rate_limit::TrustedProxyKeyExtractor;
+use vti_common::rate_limit::{Client, LimiterSweep, TrustedProxyKeyExtractor};
 
 use super::rate_limit::{
     ROOM_ADDRESS_LIMITER, ROOM_PRESENTER_LIMITER, ROOM_TRANSFER_LIMITER, RateLimited,
@@ -151,31 +148,29 @@ pub const SIGN_IN_PERIOD: Duration = Duration::from_secs(1);
 /// sign-in ceiling on top of the one it paid on arrival.
 pub const SIGN_IN_FAILURE_COST: u32 = 10;
 
-/// Past this many tracked addresses, the sign-in limiter forgets the ones that
-/// have refilled completely.
-const SIGN_IN_TRACKED_KEYS: usize = 10_000;
-
 /// The door's limiters, shared by every request.
 #[derive(Clone)]
 pub struct TrustTaskLimits {
-    /// The unauthenticated governor's own state — the one the tower layer on
-    /// the other unauthenticated routes charges.
-    address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
-    signed_address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
-    signer: Arc<DefaultKeyedRateLimiter<String>>,
+    /// The unauthenticated limiter's own state — the one the layer on the
+    /// other unauthenticated routes charges.
+    address: KeyedRateLimiterState<IpAddr>,
+    signed_address: KeyedRateLimiterState<IpAddr>,
+    signer: KeyedRateLimiterState<String>,
     /// The sign-in (`auth/oob/*`) ceiling, per address.
-    sign_in: Arc<DefaultKeyedRateLimiter<IpAddr>>,
+    sign_in: KeyedRateLimiterState<IpAddr>,
     /// The room budgets, built from `[rooms.rate_limits]` when the first room
     /// document arrives (the router is built before the configuration is read).
     rooms: Arc<OnceLock<Arc<RoomLimiters>>>,
     key_extractor: TrustedProxyKeyExtractor,
+    /// Sweeps the limiters above while the router holds these limits.
+    _sweep: LimiterSweep,
 }
 
 impl TrustTaskLimits {
-    /// `address` is the unauthenticated governor's limiter, so both charge one
+    /// `address` is the unauthenticated layer's limiter, so both charge one
     /// budget per address.
     pub fn new(
-        address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
+        address: KeyedRateLimiterState<IpAddr>,
         key_extractor: TrustedProxyKeyExtractor,
     ) -> Self {
         Self::with_quotas(
@@ -188,26 +183,25 @@ impl TrustTaskLimits {
     }
 
     fn with_quotas(
-        address: Arc<DefaultKeyedRateLimiter<IpAddr>>,
+        address: KeyedRateLimiterState<IpAddr>,
         key_extractor: TrustedProxyKeyExtractor,
         signed_address: Quota,
         signer: Quota,
         sign_in: Quota,
     ) -> Self {
+        let sweep = LimiterSweep::new();
         Self {
-            address,
-            signed_address: Arc::new(RateLimiter::keyed(signed_address)),
-            signer: Arc::new(RateLimiter::keyed(signer)),
-            sign_in: Arc::new(RateLimiter::keyed(sign_in)),
+            address: sweep.swept(address),
+            signed_address: sweep.swept(signed_address.limiter()),
+            signer: sweep.swept(signer.limiter()),
+            sign_in: sweep.swept(sign_in.limiter()),
             rooms: Arc::new(OnceLock::new()),
             key_extractor,
+            _sweep: sweep,
         }
     }
 
     fn charge_sign_in(&self, address: &IpAddr) -> Result<(), RateLimited> {
-        if self.sign_in.len() > SIGN_IN_TRACKED_KEYS {
-            self.sign_in.retain_recent();
-        }
         charge(&self.sign_in, address).map_err(|wait| {
             RateLimited::new(
                 SIGN_IN_ADDRESS_LIMITER,
@@ -221,7 +215,7 @@ impl TrustTaskLimits {
     /// Spend up to [`SIGN_IN_FAILURE_COST`] of the address's sign-in ceiling.
     fn penalize_sign_in(&self, address: &IpAddr) {
         for _ in 0..SIGN_IN_FAILURE_COST {
-            if self.sign_in.check_key(address).is_err() {
+            if self.sign_in.check(*address).is_err() {
                 break;
             }
         }
@@ -245,18 +239,14 @@ impl TrustTaskLimits {
 /// four a second once the burst is spent — the known-signer ceiling's rate.
 pub const ROOM_FAILURE_COST: u32 = 25;
 
-/// Past this many tracked keys, a room limiter forgets the ones that have
-/// refilled completely, so its map does not grow with every address that ever
-/// sent a room document.
-const ROOM_TRACKED_KEYS: usize = 10_000;
-
 /// The room budgets (see the module docs).
 pub(crate) struct RoomLimiters {
-    address: DefaultKeyedRateLimiter<IpAddr>,
-    presenter: DefaultKeyedRateLimiter<[u8; 16]>,
-    transfer: DefaultKeyedRateLimiter<[u8; 16]>,
+    address: KeyedRateLimiterState<IpAddr>,
+    presenter: KeyedRateLimiterState<[u8; 16]>,
+    transfer: KeyedRateLimiterState<[u8; 16]>,
     /// Keys the (room, presenter) hash, so the maps name nobody.
     secret: [u8; 32],
+    _sweep: LimiterSweep,
 }
 
 impl RoomLimiters {
@@ -268,11 +258,13 @@ impl RoomLimiters {
         let q = |b: RoomBudget| quota(b.interval, b.burst);
         let mut secret = [0u8; 32];
         rand::fill(&mut secret);
+        let sweep = LimiterSweep::new();
         Self {
-            address: RateLimiter::keyed(q(address)),
-            presenter: RateLimiter::keyed(q(presenter)),
-            transfer: RateLimiter::keyed(q(transfer)),
+            address: sweep.swept(q(address).limiter()),
+            presenter: sweep.swept(q(presenter).limiter()),
+            transfer: sweep.swept(q(transfer).limiter()),
             secret,
+            _sweep: sweep,
         }
     }
 
@@ -290,9 +282,6 @@ impl RoomLimiters {
     }
 
     fn charge_address(&self, address: &IpAddr) -> Result<(), RateLimited> {
-        if self.address.len() > ROOM_TRACKED_KEYS {
-            self.address.retain_recent();
-        }
         charge(&self.address, address).map_err(|wait| {
             RateLimited::new(
                 ROOM_ADDRESS_LIMITER,
@@ -306,7 +295,7 @@ impl RoomLimiters {
     /// Spend up to [`ROOM_FAILURE_COST`] of the address's room ceiling.
     fn penalize(&self, address: &IpAddr) {
         for _ in 0..ROOM_FAILURE_COST {
-            if self.address.check_key(address).is_err() {
+            if self.address.check(*address).is_err() {
                 break;
             }
         }
@@ -322,9 +311,6 @@ impl RoomLimiters {
             RoomTraffic::Operation => (&self.presenter, ROOM_PRESENTER_LIMITER, "room operations"),
             RoomTraffic::Transfer => (&self.transfer, ROOM_TRANSFER_LIMITER, "file chunks"),
         };
-        if limiter.len() > ROOM_TRACKED_KEYS {
-            limiter.retain_recent();
-        }
         charge(limiter, &self.member_key(room_id, presenter)).map_err(|wait| {
             RateLimited::new(
                 name,
@@ -386,23 +372,43 @@ pub(crate) fn admit_room(room_id: &str, presenter: &str, traffic: RoomTraffic) -
         .unwrap_or(true)
 }
 
+/// A per-key budget: a burst, then one request per period.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Quota {
+    period: Duration,
+    burst: u32,
+}
+
+impl Quota {
+    fn limiter<K: std::hash::Hash + Eq + Clone>(self) -> KeyedRateLimiterState<K> {
+        let limiter = KeyedRateLimiterState::per_period(self.period, self.burst);
+        assert!(limiter.is_enabled(), "a quota always limits");
+        limiter
+    }
+}
+
+/// A budget of `burst`, then one request per `period`.
+///
+/// # Panics
+///
+/// On a zero `period` or `burst`. Either would build a limiter that refuses
+/// nothing (a zero period) or reads as one (a zero burst is taken as one), and
+/// a limit that quietly turns itself off is the failure this guards against.
+/// The budgets here are constants, and the room budgets are clamped on load.
 fn quota(period: Duration, burst: u32) -> Quota {
-    Quota::with_period(period)
-        .expect("the period is a non-zero constant")
-        .allow_burst(NonZeroU32::new(burst).expect("the burst is a non-zero constant"))
+    assert!(!period.is_zero(), "a rate-limit period is never zero");
+    assert!(burst > 0, "a rate-limit burst is never zero");
+    Quota { period, burst }
 }
 
 /// Charge `key` one request, or say how long to wait.
-fn charge<K>(limiter: &DefaultKeyedRateLimiter<K>, key: &K) -> Result<(), u64>
+fn charge<K>(limiter: &KeyedRateLimiterState<K>, key: &K) -> Result<(), u64>
 where
     K: std::hash::Hash + Eq + Clone,
 {
-    limiter.check_key(key).map_err(|not_until| {
-        not_until
-            .wait_time_from(DefaultClock::default().now())
-            .as_secs_f64()
-            .ceil() as u64
-    })
+    limiter
+        .charge(key.clone())
+        .map_err(|TooManyRequests { retry_after_secs }| retry_after_secs)
 }
 
 fn unauth_refusal(wait: u64) -> RateLimited {
@@ -414,25 +420,56 @@ fn unauth_refusal(wait: u64) -> RateLimited {
     )
 }
 
-/// The address a request is charged to, as the governor keys it.
+/// Who sent a request, as the unauthenticated limiter resolves it: the
+/// address handlers see (`ip`) and the key the limiters charge (`key`, an
+/// IPv6 client's `/64`).
 #[derive(Clone, Copy, Debug)]
-pub struct ClientAddress(pub IpAddr);
+pub struct ClientAddress(pub Client);
 
-/// Resolve the request's [`ClientAddress`] exactly as the tower governor does
-/// (trusted proxies, then the peer), refusing as it does when there is none.
+/// Resolve the request's [`ClientAddress`] exactly as the unauthenticated
+/// limiter does (trusted proxies, then the peer), refusing as it does when
+/// there is none: `403` with no peer address, `400` for an unreadable chain
+/// from a trusted proxy, both naming the `unauth` limiter.
 pub async fn client_address(
     axum::extract::State(limits): axum::extract::State<TrustTaskLimits>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    match limits.key_extractor.extract(&request) {
-        Ok(ip) => {
-            request.extensions_mut().insert(ClientAddress(ip));
+    match limits.key_extractor.client_of(&request) {
+        Ok(client) => {
+            request.extensions_mut().insert(ClientAddress(client));
             request.extensions_mut().insert(limits);
             next.run(request).await
         }
-        Err(e) => super::rate_limit::governor_error_response(e),
+        Err(refusal) => limits.address.refuse(&refusal),
     }
+}
+
+/// The per-address limiter in front of the other unauthenticated routes: a
+/// burst of 10, then one request every 5 s, charged to the same state an
+/// anonymous `POST /v1/trust-tasks` document pays, so an address has one
+/// anonymous budget across the chain. Refuses as [`client_address`] does when
+/// the client cannot be attributed, and with the [`UNAUTH_LIMITER`] `429`
+/// otherwise.
+pub async fn unauthenticated(
+    axum::extract::State(limits): axum::extract::State<TrustTaskLimits>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let client = match limits.key_extractor.client_of(&request) {
+        Ok(client) => client,
+        Err(refusal) => return limits.address.refuse(&refusal),
+    };
+    if let Err(wait) = charge(&limits.address, &client.key) {
+        if limits.address.first_refusal_in_window(&client.key) {
+            tracing::warn!(
+                client = %client.key,
+                "address over the unauthenticated rate limit; refusing it until its bucket refills"
+            );
+        }
+        return axum::response::IntoResponse::into_response(unauth_refusal(wait));
+    }
+    next.run(request).await
 }
 
 /// The known signer a document claims, and the principal it is charged to.
@@ -444,11 +481,12 @@ struct Claimed {
 /// One document's admission.
 pub struct Admission {
     limits: TrustTaskLimits,
+    /// The key the sending address is charged as ([`Client::key`]).
     address: IpAddr,
     claimed: Option<Claimed>,
     /// The claimed signer's proof verified, and its bucket was charged.
     verified: AtomicBool,
-    /// The strict governor has been charged for this document.
+    /// The strict per-address limiter has been charged for this document.
     address_charged: AtomicBool,
     refusal: Mutex<Option<RateLimited>>,
     /// Set for a `rooms/*` document, which none of the above is charged for.
@@ -461,6 +499,8 @@ pub struct Admission {
 impl Admission {
     /// Decide, before anything is verified, which budget `body` is charged
     /// to, and charge what is charged now. `Err` is the refusal to answer.
+    /// `address` is the key the sender is charged as ([`Client::key`]), not
+    /// the address handlers see.
     pub async fn begin(
         state: &AppState,
         limits: &TrustTaskLimits,
@@ -617,7 +657,9 @@ impl VerifiedAdmission for Admission {
     fn room_precharged(&self) -> bool {
         self.room.is_some()
     }
+}
 
+impl vti_trust_task_server::VerifiedAdmission for Admission {
     fn admit_verified(&self, signer: &str) -> bool {
         // A room document is charged when its room authorizes it, not here.
         if self.room.is_some() {
@@ -728,6 +770,7 @@ async fn known_principal(state: &AppState, did: &str, type_uri: Option<&str>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vti_trust_task_server::VerifiedAdmission as _;
 
     fn limits(signed_address_burst: u32, signer_burst: u32) -> TrustTaskLimits {
         limits_with_sign_in(signed_address_burst, signer_burst, 10)
@@ -740,8 +783,8 @@ mod tests {
     ) -> TrustTaskLimits {
         let slow = Duration::from_secs(3600);
         TrustTaskLimits::with_quotas(
-            Arc::new(RateLimiter::keyed(quota(slow, 2))),
-            TrustedProxyKeyExtractor::new(Vec::new()),
+            quota(slow, 2).limiter(),
+            TrustedProxyKeyExtractor::new(Vec::new()).unwrap(),
             quota(slow, signed_address_burst),
             quota(slow, signer_burst),
             quota(slow, sign_in_burst),
@@ -996,5 +1039,124 @@ mod tests {
         let k = limiters.member_key("ab", "c");
         assert_ne!(k, limiters.member_key("a", "bc"));
         assert_ne!(k, rooms(1, 1, 1).member_key("ab", "c"), "keyed per process");
+    }
+
+    /// The unauthenticated chain's limit answers with its own `429` (limiter
+    /// `unauth`, the route's explanation, `Retry-After`), and one IPv6 host
+    /// rotating addresses inside its `/64` draws on one budget.
+    #[tokio::test]
+    async fn the_unauthenticated_limit_charges_a_64_once() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::{Request, StatusCode, header};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let unauth = quota(Duration::from_secs(3600), 2)
+            .limiter()
+            .with_source(super::super::rate_limit::RATE_LIMIT_SOURCE)
+            .with_limiter_name(UNAUTH_LIMITER);
+        let limits =
+            TrustTaskLimits::new(unauth, TrustedProxyKeyExtractor::new(Vec::new()).unwrap());
+        let app = axum::Router::new()
+            .route("/", axum::routing::get(|| async { "served" }))
+            .layer(axum::middleware::from_fn_with_state(
+                limits,
+                unauthenticated,
+            ));
+        let from = |peer: &str| {
+            let mut req = Request::get("/").body(Body::empty()).unwrap();
+            req.extensions_mut()
+                .insert(ConnectInfo(peer.parse::<std::net::SocketAddr>().unwrap()));
+            req
+        };
+
+        for peer in ["[2001:db8:1:2::a]:1", "[2001:db8:1:2::b]:1"] {
+            let res = app.clone().oneshot(from(peer)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{peer}");
+        }
+        let res = app
+            .clone()
+            .oneshot(from("[2001:db8:1:2::c]:1"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(res.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vtc");
+        assert!(res.headers().contains_key(header::RETRY_AFTER));
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "rate_limited");
+        assert_eq!(body["limiter"], UNAUTH_LIMITER);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("unauthenticated requests from this address"),
+            "{body}"
+        );
+
+        let res = app.oneshot(from("[2001:db8:1:3::a]:1")).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "another /64 has its own budget"
+        );
+    }
+
+    /// A zero period would build a limiter that refuses nothing.
+    #[test]
+    #[should_panic(expected = "never zero")]
+    fn a_zero_period_is_refused() {
+        quota(Duration::ZERO, 10);
+    }
+
+    /// A request the door cannot attribute is refused as the unauthenticated
+    /// layer refuses it, naming the `unauth` limiter: `400` for an unreadable
+    /// chain from a trusted proxy, `403` with no peer address. Neither is a
+    /// `429`, and neither reaches the door.
+    #[tokio::test]
+    async fn an_unattributable_request_is_refused_before_the_door() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let unauth = quota(Duration::from_secs(3600), 10)
+            .limiter()
+            .with_source(super::super::rate_limit::RATE_LIMIT_SOURCE)
+            .with_limiter_name(UNAUTH_LIMITER);
+        let limits = TrustTaskLimits::new(
+            unauth,
+            TrustedProxyKeyExtractor::new(vec!["127.0.0.1/32".parse().unwrap()]).unwrap(),
+        );
+        let app = axum::Router::new()
+            .route("/", axum::routing::post(|| async { "served" }))
+            .layer(axum::middleware::from_fn_with_state(limits, client_address));
+
+        let mut bad_chain = Request::post("/")
+            .header("x-forwarded-for", "not-an-address")
+            .body(Body::empty())
+            .unwrap();
+        bad_chain.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:1".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        let res = app.clone().oneshot(bad_chain).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vtc");
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "invalid_forwarded_for");
+        assert_eq!(body["limiter"], UNAUTH_LIMITER);
+
+        let no_peer = Request::post("/").body(Body::empty()).unwrap();
+        let res = app.oneshot(no_peer).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(res.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vtc");
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&body).is_err(),
+            "the 403 is plain text, not a JSON refusal"
+        );
     }
 }

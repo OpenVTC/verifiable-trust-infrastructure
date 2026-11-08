@@ -3,7 +3,7 @@
 //! This is the *canonical* auth transport the VTA serves: a
 //! pre-session, family-owned dispatch on `POST /trust-tasks`
 //! (`vta-service::trust_tasks::auth::owns`/`dispatch_pre_session`) whose
-//! `auth/authenticate/0.2` document's holder `eddsa-jcs-2022` Data-Integrity
+//! `auth/authenticate/0.3` document's holder `eddsa-jcs-2022` Data-Integrity
 //! proof **is** the authentication — no DIDComm packing, no mediator. It
 //! mirrors `vta-mobile-core::build_authenticate`, but signs in-process with
 //! the holder key (which the provision-client owns) via the same
@@ -20,7 +20,7 @@
 use crate::auth_di;
 use crate::session::TokenResult;
 
-/// Authenticate over plain REST using a DI-signed `auth/authenticate/0.2`
+/// Authenticate over plain REST using a DI-signed `auth/authenticate/0.3`
 /// Trust Task, returning the same [`TokenResult`] as
 /// [`crate::session::challenge_response`].
 ///
@@ -79,7 +79,7 @@ pub async fn challenge_response_di(
         format!("unexpected challenge response from VTA at {trust_tasks_url} (is this a VTA?): {e}")
     })?;
 
-    // Steps 2–3 — sign the `auth/authenticate/0.2` Trust Task with the holder
+    // Steps 2–3 — sign the `auth/authenticate/0.3` Trust Task with the holder
     // key (payload `{ challenge, sessionId }`, `eddsa-jcs-2022` proof over the
     // proof-less document) and POST it. A rate-limited authenticate is retried
     // with this same challenge while it is valid, never by starting over —

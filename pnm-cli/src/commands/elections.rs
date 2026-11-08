@@ -5,7 +5,7 @@ use vta_cli_common::commands::elections::{self, VoteTarget};
 use vta_cli_common::commands::elections_trustee::{self as trustee, TrusteeTarget};
 use vta_sdk::client::VtaClient;
 
-use crate::cli::{ElectionCommands, ElectionTarget, TrusteeCommands};
+use crate::cli::{ElectionCommands, ElectionTarget, MembershipPresenting, TrusteeCommands};
 
 fn target(t: &ElectionTarget) -> VoteTarget<'_> {
     VoteTarget {
@@ -13,6 +13,13 @@ fn target(t: &ElectionTarget) -> VoteTarget<'_> {
         vtc_did: &t.vtc_did,
         member: &t.member,
         context: &t.context,
+    }
+}
+
+fn presenting(p: &MembershipPresenting) -> elections::Presenting<'_> {
+    elections::Presenting {
+        credential: p.membership_credential.as_deref(),
+        member_of: p.member_of.as_deref(),
     }
 }
 
@@ -34,11 +41,15 @@ pub(crate) async fn run(
         ElectionCommands::Show {
             election_id,
             target: t,
-        } => elections::cmd_show(client, target(&t), &election_id).await,
+            presenting: p,
+        } => elections::cmd_show_presenting(client, target(&t), &election_id, presenting(&p)).await,
         ElectionCommands::Ticket {
             election_id,
             target: t,
-        } => elections::cmd_ticket(client, target(&t), &election_id).await,
+            presenting: p,
+        } => {
+            elections::cmd_ticket_presenting(client, target(&t), &election_id, presenting(&p)).await
+        }
         ElectionCommands::Vote {
             election_id,
             answers,
@@ -58,6 +69,10 @@ pub(crate) async fn run(
             )
             .await
         }
+        ElectionCommands::Verify {
+            election_id,
+            target: t,
+        } => elections::cmd_verify(client, target(&t), &election_id).await,
         ElectionCommands::Trustee(TrusteeCommands::Status {
             election_id,
             target: t,

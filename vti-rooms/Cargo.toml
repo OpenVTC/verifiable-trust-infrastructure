@@ -1,7 +1,7 @@
 [package]
 name = "vti-rooms"
 description = "Data-room storage, wire types, and authorization — the parts of a room that are not a service"
-version = "0.20.0"
+version = "0.32.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -63,6 +63,9 @@ test-support = ["host", "dep:tempfile"]
 # header for why these stay hand-written. The dependency buys the trait and the
 # schema index, not a replacement for the shapes.
 trust-tasks-rs = { workspace = true }
+# The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
+# "Pinning a task version").
+vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.7" }
 # The store abstraction and AppError. This crate's only internal dependency:
 # a room's storage and authorization need nothing from a community service,
 # which is the whole reason they are extractable.
@@ -70,7 +73,7 @@ trust-tasks-rs = { workspace = true }
 # Optional, and load-bearing that it is: `vti-common` is server-side by its own
 # description and pulls axum, fjall and tokio, none of which build for wasm. It
 # is the `host` feature's whole content.
-vti-common = { path = "../vti-common", version = "0.49", optional = true }
+vti-common = { path = "../vti-common", version = "0.61", optional = true }
 # Room files (`blobs`), also host-only: one lock serialising reservations and
 # reference counts, minted transfer handles, and the collection log line.
 tokio = { workspace = true, optional = true, features = ["sync", "fs"] }
@@ -82,6 +85,8 @@ thiserror = { workspace = true }
 serde_json = { workspace = true }
 # The published schema types `updatedAt` as an RFC 3339 string.
 chrono = { workspace = true }
+# A member's name is bounded in code points after NFC (`MemberName`, `member_profile`).
+unicode-normalization = "0.1"
 
 # The record commitment (`merkle`). RFC 8785 canonicalisation so a leaf commits
 # to the record's *meaning* rather than to one serialiser's field order, and
@@ -140,6 +145,5 @@ getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"], opti
 tempfile = "3"
 tokio = { workspace = true }
 
-[lints.rust]
-# See `[workspace.lints.rust]` in the workspace Cargo.toml.
-deprecated = "allow"
+[lints]
+workspace = true

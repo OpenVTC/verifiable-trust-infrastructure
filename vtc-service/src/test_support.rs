@@ -559,6 +559,18 @@ impl TestVtcBuilder {
         let member_pushes_ks = store
             .keyspace(crate::store::keyspaces::MEMBER_PUSHES)
             .expect("member_pushes ks");
+        let notifications_ks = store
+            .keyspace(crate::store::keyspaces::NOTIFICATIONS)
+            .expect("notifications ks");
+        let boards_ks = store
+            .keyspace(crate::store::keyspaces::BOARDS)
+            .expect("boards ks");
+        let badges_ks = store
+            .keyspace(crate::store::keyspaces::BADGES)
+            .expect("badges ks");
+        let badge_images_ks = store
+            .keyspace(crate::store::keyspaces::BADGE_IMAGES)
+            .expect("badge_images ks");
         let oid4vp_keys_ks = store
             .keyspace(crate::store::keyspaces::OID4VP_KEYS)
             .expect("oid4vp_keys ks");
@@ -730,6 +742,26 @@ impl TestVtcBuilder {
             self.ballot_boxes
         };
 
+        // Watches, signalling as the service does; a test lends its own `Signals` with
+        // `state.room_watches.set_signals`.
+        let room_watches = Arc::new(vti_rooms::watch::RoomWatches::new(
+            store
+                .keyspace(crate::store::keyspaces::ROOM_WATCHES)
+                .expect("room_watches ks"),
+            rooms_ks.clone(),
+            room_revocations_ks.clone(),
+        ));
+        if credential_signer.is_some() && did_resolver.is_some() {
+            room_watches.set_signals(Arc::new(crate::rooms::watch::VtcSignals {
+                peers: crate::outbound::PeerTasks {
+                    didcomm: didcomm_cell.clone(),
+                    signer: credential_signer.clone(),
+                    replies: pending_replies.clone(),
+                    resolver: did_resolver.clone(),
+                },
+            }));
+        }
+
         let state = AppState {
             // Fixed key: a test never needs the counter to be unguessable, and
             // a deterministic one keeps a failure reproducible.
@@ -768,6 +800,7 @@ impl TestVtcBuilder {
             room_records_ks,
             room_epoch_links_ks,
             room_revocations_ks,
+            room_watches,
             room_files,
             room_storage,
             community_rooms: crate::rooms::community::CommunityRooms::new(
@@ -803,6 +836,10 @@ impl TestVtcBuilder {
             admin_actions_ks,
             step_up_approvers_ks,
             member_pushes_ks,
+            notifications_ks,
+            boards_ks,
+            badges_ks,
+            badge_images_ks,
             oid4vp_signers: {
                 for record in &self.oid4vp_identities {
                     crate::oid4vp::put_identity(&oid4vp_keys_ks, record)

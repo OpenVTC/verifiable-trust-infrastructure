@@ -8,7 +8,7 @@
 //!
 //! - [`ChallengeResponse`] mirrors `spec/auth/challenge/0.1#response`.
 //! - [`AuthenticateResponse`] mirrors
-//!   `spec/auth/authenticate/0.1#response`; carries the canonical
+//!   `spec/auth/authenticate/0.3#response`; carries the canonical
 //!   [`Session`] + [`TokenBundle`] structures from
 //!   `auth/_shared/0.1/`.
 //!
@@ -126,7 +126,7 @@ impl std::fmt::Debug for TokenBundle {
 }
 
 /// Server responds from `POST /auth/`. Conforms to
-/// `spec/auth/authenticate/0.1#response`: `{ session, tokens }`.
+/// `spec/auth/authenticate/0.3#response`: `{ session, tokens }`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

@@ -1,0 +1,89 @@
+/* Layout particular to the Groups screen. Shared look lives in components.css. */
+
+tr.clickable {
+  cursor: pointer;
+}
+
+/* The group's name in the list, its description under it. */
+.group-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.group-name-cell .muted {
+  font-size: var(--text-sm);
+}
+
+/* The lists on a group's page — requests, managers, bound rooms, what it
+ * gives — one row each: who or what on the left, the action on the right,
+ * a hairline between rows. */
+.group-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.group-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+.group-list > li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.group-list > li:last-child {
+  padding-bottom: 0;
+}
+.group-list > li > .row-actions {
+  margin-left: auto;
+}
+.group-list .chip {
+  margin: 0 0 0 var(--space-2);
+}
+.group-request-note {
+  flex-basis: 100%;
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* A dynamic group's rule: one line per condition, read left to right, each
+ * line after the first starting with "and". */
+.group-rule {
+  gap: var(--space-2);
+}
+.group-rule-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.group-rule-row > select,
+.group-rule-row > input {
+  width: auto;
+  flex: 1 1 10rem;
+  min-width: 8rem;
+  max-width: 18rem;
+}
+.group-rule-and {
+  flex: 0 0 2.25rem;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-align: right;
+}
+.group-rule-add {
+  align-self: flex-start;
+  margin-top: var(--space-1);
+}
+
+/* The capabilities a group may give: one per line, like the role ceiling
+ * picker, with the ones that need approval marked. */
+.group-cap-list {
+  gap: var(--space-2);
+}

@@ -1316,7 +1316,7 @@ mod tests {
         } else {
             ResponseTemplate::new(403).set_body_json(serde_json::json!({
                 "id": "urn:uuid:33333333-3333-3333-3333-333333333333",
-                "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+                "type": "https://trusttasks.org/spec/trust-task-error/0.6",
                 "payload": {
                     "code": "acl/swap-key:linkProofInvalid",
                     "message": "the link proof is not signed by newSubject",

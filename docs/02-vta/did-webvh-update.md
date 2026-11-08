@@ -44,6 +44,9 @@ Both operations are Trust Tasks keyed on the DID, reached the same way over
 TSP, DIDComm or HTTPS (`POST /trust-tasks`):
 
 - `https://trusttasks.org/spec/vta/webvh/dids/update/1.0`
+- `https://trusttasks.org/spec/vta/webvh/dids/update/1.1` — 1.0 plus
+  `scidAlsoKnownAs` (see *The did:scid alias* below). It extends 1.0, so the
+  same handler serves both and an approval rule naming either holds both.
 - `https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0`
 - `https://trusttasks.org/spec/vta/webvh/dids/realign-keys/1.0` — the repair
   that renames a DID's key records onto the verification-method ids its
@@ -69,6 +72,44 @@ The earlier `POST /contexts/{ctx_id}/dids/{scid}/{update,rotate-keys}` and
 ```
 
 Every member but `did` is optional.
+
+### The did:scid alias (`update/1.1`)
+
+Every did:webvh log is also `did:scid:vh:1:<scid>`, and the two forms are one
+subject only while the did:webvh document lists
+`did:scid:vh:1:<scid>?src=<source>` in `alsoKnownAs` (VTI-KEY-164).
+`create/1.2` lists it at creation; `update/1.1` lists or removes it on a log
+that already exists:
+
+```json
+{ "did": "did:webvh:Q...:host:slug", "scidAlsoKnownAs": true, "expectedVersionId": "3-Qm..." }
+```
+
+- The VTA derives `<source>` from the DID (the part after `did:webvh:<scid>:`,
+  `:` → `/`, percent-encoding kept) with `vta_sdk::did_scid::scid_forms`; the
+  caller never writes the URL. It applies to `document` when one is supplied,
+  otherwise to the current document.
+- `true` appends the URL after the existing entries unless it is listed; a
+  did:scid entry for this SCID naming an older `src` is replaced in place.
+  `false` removes every did:scid entry for this SCID, with or without `src`.
+- An identity this VTA **presents** as its did:scid keeps its alias: `false`,
+  or any `document` without it (1.0 or 1.1), is refused —
+  `vta/webvh/dids/update:scidAliasRequired` under 1.1, and under 1.0 a
+  validation refusal whose message leads with `scidAliasRequired`.
+  "Presented" is the `presented` flag on the did:scid identity record
+  `create/1.2` writes (`webvh_store::ScidIdentity`), or the VTA's configured
+  `vta_did` being this log's did:scid DID.
+- A request whose resulting document and parameters equal the latest entry's
+  is `vta/webvh/dids/update:noChange`: nothing is published, no key rotates.
+- Otherwise it is a document change: it publishes an entry and **rotates the
+  update key**, like `document`. The response adds `scidAlsoKnownAs` (as
+  published) and `scidDidUrl` (always).
+- The did:scid identity record follows the published document, so a webvh/dids
+  task takes the did:scid DID exactly while the alias is listed.
+
+CLI: `pnm did-mgmt dids scid-alias --did <did> --list|--remove [--no-confirm]`.
+`VtaClient::update_did_webvh_by_did` sends 1.1 only when
+`UpdateDidWebvhBody::scid_also_known_as` is set, and 1.0 otherwise.
 
 ### Rotate-keys payload
 

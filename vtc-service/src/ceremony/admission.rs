@@ -49,7 +49,7 @@
 //!   role;
 //! - `admin`, or any role whose authority would confer authority-conferring
 //!   capabilities, is never seated this way: admit the member, then promote
-//!   them with `acl/change-role`, which carries its own step-up and consent
+//!   them with `vtc/members/role/set`, which carries its own step-up and consent
 //!   (VTI-APV-018). A role that carries administrative authority at all takes
 //!   the requester's operation-bound gesture (VTI-OPS-051), as `acl/grant`
 //!   does;
@@ -161,8 +161,8 @@ pub enum MakeMembershipRefusal {
 /// The declared error codes of the two tasks, read off their specifications
 /// (trust-tasks-tf #784) so none is spelled here.
 pub mod codes {
-    use trust_tasks_rs::specs::vtc::members::admit::v0_1::error_codes as admit;
-    use trust_tasks_rs::specs::vtc::members::make_membership::v0_1::error_codes as make;
+    use vti_specs::vtc::members::admit::v0_1::error_codes as admit;
+    use vti_specs::vtc::members::make_membership::v0_1::error_codes as make;
 
     pub const ADMIT_HAS_ENTRY: &str = admit::HAS_ENTRY.code;
     pub const ADMIT_ALREADY_MEMBER: &str = admit::ALREADY_MEMBER.code;
@@ -436,7 +436,7 @@ async fn check_add(
     if matches!(role, VtcRole::Admin) {
         return Err(not_permitted(format!(
             "a direct admission never seats `admin`: add {subject} as a member, then promote them \
-             with acl/change-role, which takes its own passkey gesture and another \
+             with vtc/members/role/set, which takes its own passkey gesture and another \
              administrator's consent (VTI-APV-018)"
         )));
     }

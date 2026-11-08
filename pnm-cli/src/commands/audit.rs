@@ -28,7 +28,7 @@ pub(crate) async fn run(
                 outcome,
                 context_id,
                 cursor,
-                page_size,
+                limit: page_size,
             };
             audit::cmd_list_audit_logs(client, &params).await
         }

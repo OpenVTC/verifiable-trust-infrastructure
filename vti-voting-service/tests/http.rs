@@ -54,9 +54,9 @@ fn registration(community: &Identity, service_did: &str, id: &str) -> Value {
             "minSelections": 1, "maxSelections": 1, "optional": false }],
         "secrecy": "open",
         "roll": { "rule": "members" },
-        "registrationOpens": t(now - Duration::days(2)),
-        "votingOpens": t(now - Duration::hours(1)),
-        "votingCloses": t(now + Duration::days(1)),
+        "registrationOpensAt": t(now - Duration::days(2)),
+        "votingOpensAt": t(now - Duration::hours(1)),
+        "votingClosesAt": t(now + Duration::days(1)),
         "revote": "replace",
         "board": { "visibility": "public", "auditors": [] },
         "ballotBox": service_did,
@@ -137,6 +137,184 @@ async fn only_a_served_community_registers_and_within_its_quota() {
     assert_eq!(answer["payload"]["code"], "unavailable");
 }
 
+/// The box serves `voting/election/{register,show}` at 0.3 and 0.2 and `voting/board/read` at
+/// 0.2 — the manifest and the lifecycle entries name their instants `…At` (voting/_shared/0.2
+/// and later) — and says so to a 0.1 request rather than reading one it cannot.
+#[tokio::test]
+async fn a_0_1_registration_show_or_board_read_is_unsupported_version() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let community = Identity::from_seed(&[0x33; 32]).unwrap();
+    let svc = state_serving(
+        &dir,
+        CommunitiesConfig {
+            allowed: vec![community.did.clone()],
+            ..Default::default()
+        },
+    );
+    let box_did = svc.identity.did.clone();
+    for (task, payload) in [
+        (
+            "election/register",
+            registration(&community, &box_did, "agm"),
+        ),
+        (
+            "election/show",
+            json!({ "community": community.did, "electionId": "agm" }),
+        ),
+        (
+            "board/read",
+            json!({ "community": community.did, "electionId": "agm", "from": 0, "limit": 1 }),
+        ),
+    ] {
+        let mut d = doc(task, &box_did, None, payload).await;
+        d["type"] = json!(format!(
+            "https://trusttasks.org/spec/voting/{task}/0.1#request"
+        ));
+        d["issuer"] = json!(community.did);
+        let mut typed: TrustTask<Value> = serde_json::from_value(d).unwrap();
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut typed, &community.key)
+            .await
+            .unwrap();
+        let (status, answer) = send(&svc, serde_json::to_value(&typed).unwrap()).await;
+        assert_ne!(status, StatusCode::OK, "{answer}");
+        assert_eq!(
+            answer["payload"]["code"], "unsupportedVersion",
+            "{task}: {answer}"
+        );
+    }
+}
+
+/// VTI-VOT-065: the box registers and shows a `textReleaseThreshold` of 1 – 9 at
+/// `voting/election/{register,show}/0.3`, and never refuses one there. Under 0.2, whose schema
+/// says 10, such a registration is malformed and such an election is not shown — 0.2 is
+/// refused `unsupportedVersion` for it — while one of 10 or more is served at both versions.
+#[tokio::test]
+async fn vti_vot_065_a_threshold_below_ten_is_registered_and_shown_at_0_3_only() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let community = Identity::from_seed(&[0x34; 32]).unwrap();
+    let svc = state(&dir);
+    let box_did = svc.identity.did.clone();
+
+    let low = |id: &str| {
+        let mut r = registration(&community, &box_did, id);
+        r["manifest"]["textReleaseThreshold"] = json!(3);
+        let digest = manifest_digest(&r["manifest"]).unwrap();
+        r["manifestDigest"] = json!(digest_multibase(&digest));
+        r
+    };
+    let register_at = |version: &'static str, payload: Value| {
+        let box_did = box_did.clone();
+        let community = &community;
+        async move {
+            doc_at(
+                "election/register",
+                version,
+                &box_did,
+                Some(community),
+                payload,
+            )
+            .await
+        }
+    };
+
+    let (status, answer) = send(&svc, register_at("0.2", low("small")).await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["payload"]["code"], "malformedRequest");
+
+    let (status, answer) = send(&svc, register_at("0.3", low("small")).await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    let show = |version: &'static str, id: &str| {
+        let payload = json!({ "community": community.did, "electionId": id });
+        let box_did = box_did.clone();
+        async move { doc_at("election/show", version, &box_did, None, payload).await }
+    };
+    let (status, answer) = send(&svc, show("0.3", "small").await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["payload"]["manifest"]["textReleaseThreshold"], 3);
+    let (status, answer) = send(&svc, show("0.2", "small").await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["payload"]["code"], "unsupportedVersion");
+
+    // Ten or more: registered under 0.2, as a community from before 0.3 sends it, and shown
+    // at either version.
+    let usual = registration(&community, &box_did, "usual");
+    let (status, answer) = send(&svc, register_at("0.2", usual).await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    for version in ["0.2", "0.3"] {
+        let (status, answer) = send(&svc, show(version, "usual").await).await;
+        assert_eq!(status, StatusCode::OK, "{version}: {answer}");
+        assert_eq!(answer["payload"]["manifest"]["textReleaseThreshold"], 10);
+    }
+}
+
+/// VTI-VOT-025: the box registers and shows an election under a credential roll at
+/// `voting/election/{register,show}/0.4` only. Under 0.3 and 0.2, whose manifest has no
+/// `credential` rule, such a registration is malformed and such an election is not shown —
+/// those versions are refused `unsupportedVersion` for it — while a members roll registered at
+/// 0.4 is still shown at every version.
+#[tokio::test]
+async fn vti_vot_025_a_credential_roll_is_registered_and_shown_at_0_4_only() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let community = Identity::from_seed(&[0x35; 32]).unwrap();
+    let svc = state(&dir);
+    let box_did = svc.identity.did.clone();
+
+    let credential = |id: &str| {
+        let mut r = registration(&community, &box_did, id);
+        r["manifest"]["roll"] = json!({
+            "rule": "credential",
+            "memberOf": format!("{}:groups:g7", community.did),
+        });
+        let digest = manifest_digest(&r["manifest"]).unwrap();
+        r["manifestDigest"] = json!(digest_multibase(&digest));
+        r
+    };
+    let register_at = |version: &'static str, payload: Value| {
+        let box_did = box_did.clone();
+        let community = &community;
+        async move {
+            doc_at(
+                "election/register",
+                version,
+                &box_did,
+                Some(community),
+                payload,
+            )
+            .await
+        }
+    };
+    for version in ["0.2", "0.3"] {
+        let (status, answer) = send(&svc, register_at(version, credential("roll")).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{version}: {answer}");
+        assert_eq!(answer["payload"]["code"], "malformedRequest");
+    }
+    let (status, answer) = send(&svc, register_at("0.4", credential("roll")).await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    let show = |version: &'static str, id: &str| {
+        let payload = json!({ "community": community.did, "electionId": id });
+        let box_did = box_did.clone();
+        async move { doc_at("election/show", version, &box_did, None, payload).await }
+    };
+    let (status, answer) = send(&svc, show("0.4", "roll").await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["payload"]["manifest"]["roll"]["rule"], "credential");
+    for version in ["0.2", "0.3"] {
+        let (status, answer) = send(&svc, show(version, "roll").await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{version}: {answer}");
+        assert_eq!(answer["payload"]["code"], "unsupportedVersion");
+    }
+
+    let usual = registration(&community, &box_did, "usual");
+    let (status, answer) = send(&svc, register_at("0.4", usual).await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    for version in ["0.2", "0.3", "0.4"] {
+        let (status, answer) = send(&svc, show(version, "usual").await).await;
+        assert_eq!(status, StatusCode::OK, "{version}: {answer}");
+    }
+}
+
 async fn send(state: &Arc<AppState>, doc: Value) -> (StatusCode, Value) {
     let res = router(state.clone())
         .oneshot(
@@ -154,9 +332,25 @@ async fn send(state: &Arc<AppState>, doc: Value) -> (StatusCode, Value) {
 
 /// A request document, signed by `signer` when given.
 async fn doc(task: &str, to: &str, signer: Option<&Identity>, payload: Value) -> Value {
+    let version = match task {
+        "election/register" | "election/show" => "0.3",
+        "board/read" => "0.2",
+        _ => "0.1",
+    };
+    doc_at(task, version, to, signer, payload).await
+}
+
+/// [`doc`], at `version`.
+async fn doc_at(
+    task: &str,
+    version: &str,
+    to: &str,
+    signer: Option<&Identity>,
+    payload: Value,
+) -> Value {
     let mut d = json!({
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
-        "type": format!("https://trusttasks.org/spec/voting/{task}/0.1#request"),
+        "type": format!("https://trusttasks.org/spec/voting/{task}/{version}#request"),
         "recipient": to,
         "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": payload,
@@ -198,9 +392,9 @@ async fn an_election_over_http_with_a_restart() {
             "minSelections": 1, "maxSelections": 1, "optional": false }],
         "secrecy": "open",
         "roll": { "rule": "members" },
-        "registrationOpens": (now - Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "votingOpens": (now - Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "votingCloses": (now + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "registrationOpensAt": (now - Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingOpensAt": (now - Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingClosesAt": (now + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "revote": "replace",
         "board": { "visibility": "public", "auditors": [] },
         "ballotBox": service_did,
@@ -422,9 +616,9 @@ async fn trustees_enrol_over_http() {
         "secrecy": "sealed",
         "trustees": { "dids": trustees.iter().map(|t| t.did.clone()).collect::<Vec<_>>(), "threshold": 2 },
         "roll": { "rule": "members" },
-        "registrationOpens": (now - Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "votingOpens": (now + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "votingCloses": (now + Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "registrationOpensAt": (now - Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingOpensAt": (now + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingClosesAt": (now + Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "revote": "replace",
         "board": { "visibility": "public", "auditors": [] },
         "ballotBox": service_did,
@@ -571,5 +765,62 @@ async fn a_request_names_its_recipient_and_a_cast_its_did_key() {
     let (status, answer) = send(&st, cast).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
     assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+async fn get(state: &Arc<AppState>, path: &str) -> (StatusCode, Value) {
+    let res = router(state.clone())
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+/// Without a provisioned identity no community can reach the box: alive, never ready.
+#[tokio::test]
+async fn health_without_messaging_is_alive_but_never_ready() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let svc = state(&dir);
+
+    let (status, body) = get(&svc, "/health").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["messaging"], "disabled");
+    assert_eq!(body["did"], svc.identity.did);
+
+    let (status, body) = get(&svc, "/health/ready").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["status"], "notReady");
+    assert_eq!(body["messaging"], "disabled");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Readiness follows the mediator session's live state both ways — never latched at the first
+/// connect (R6.2) — while liveness stays `200` throughout, so the cast door is never pulled.
+#[tokio::test]
+async fn readiness_follows_the_mediator_session_both_ways() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let (connected, rx) = tokio::sync::watch::channel(false);
+    let svc = Arc::new(
+        Arc::into_inner(state(&dir))
+            .expect("sole owner")
+            .with_messaging(rx),
+    );
+
+    for (up, code, messaging) in [
+        (false, StatusCode::SERVICE_UNAVAILABLE, "notConnected"),
+        (true, StatusCode::OK, "connected"),
+        (false, StatusCode::SERVICE_UNAVAILABLE, "notConnected"),
+    ] {
+        connected.send_replace(up);
+        let (status, body) = get(&svc, "/health/ready").await;
+        assert_eq!(status, code, "{body}");
+        assert_eq!(body["messaging"], messaging);
+        let (status, body) = get(&svc, "/health").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["messaging"], messaging);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

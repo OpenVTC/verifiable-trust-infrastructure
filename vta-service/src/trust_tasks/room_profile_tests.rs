@@ -28,17 +28,37 @@ struct Host {
     did: String,
     state: Arc<room_host::HostState>,
     doc: Value,
+    /// The type of every document the host received, in order.
+    seen: Arc<std::sync::Mutex<Vec<String>>>,
     _dir: tempfile::TempDir,
+}
+
+impl Host {
+    /// How many documents of `task` the host received.
+    fn received(&self, task: &str) -> usize {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.as_str() == task)
+            .count()
+    }
 }
 
 async fn start_host() -> Host {
     start_host_with(false).await
 }
 
+async fn start_host_with(contend: bool) -> Host {
+    start_host_opts(contend, false).await
+}
+
 /// [`start_host`]; with `contend`, every `rooms/records/put` loses its predicted version to
 /// another write that lands just before it — the version race `rooms/keys/profile/write`
-/// item 6 answers `contended` for when it never stops.
-async fn start_host_with(contend: bool) -> Host {
+/// item 6 answers `contended` for when it never stops. With `predates_v3`, the host answers
+/// `rooms/records/get/0.3` and `rooms/records/list/0.6` `unsupportedType`, as a host from
+/// before them does.
+async fn start_host_opts(contend: bool, predates_v3: bool) -> Host {
     let party = Party::new();
     let dir = tempfile::tempdir().unwrap();
     let state = room_host::open_state(dir.path()).expect("a host");
@@ -49,16 +69,36 @@ async fn start_host_with(contend: bool) -> Host {
     let shared = state.clone();
     let host_did = party.did.clone();
     let secret = party.secret_multibase.clone();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
     let app = axum::Router::new().route(
         "/trust-tasks",
         axum::routing::post(move |body: axum::body::Bytes| {
             let shared = shared.clone();
             let host_did = host_did.clone();
             let secret = secret.clone();
+            let log = log.clone();
             async move {
+                let received: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let task = received["type"].as_str().unwrap_or_default().to_string();
+                log.lock().unwrap().push(task.clone());
+                if predates_v3
+                    && (task == vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE
+                        || task == vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE)
+                {
+                    let doc: TrustTask<Value> = serde_json::from_value(received).unwrap();
+                    let refused = doc.reject_with(
+                        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                        trust_tasks_rs::RejectReason::UnsupportedType { type_uri: task },
+                    );
+                    return (
+                        axum::http::StatusCode::OK,
+                        serde_json::to_string(&refused).unwrap(),
+                    );
+                }
                 if contend {
                     let doc: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-                    if doc["type"] == vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE
+                    if doc["type"] == vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE
                         && let Some(room) = doc["payload"]["roomId"].as_str()
                     {
                         let noise = vti_rooms::Record {
@@ -73,6 +113,9 @@ async fn start_host_with(contend: bool) -> Host {
                             cleartext: Some(json!({ "body": "another member's write" })),
                             author: None,
                             updated_at: 0,
+                            created_at: None,
+                            created_by: None,
+                            body_stored_at: None,
                         };
                         vti_rooms::storage::put_record(
                             shared.rooms(),
@@ -123,6 +166,7 @@ async fn start_host_with(contend: bool) -> Host {
         did: party.did,
         state,
         doc,
+        seen,
         _dir: dir,
     }
 }
@@ -229,6 +273,7 @@ async fn seed_room(host: &Host, room: &str, owner: &str, visibility: vti_rooms::
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         },
     )
     .await
@@ -281,7 +326,11 @@ struct Sealed {
 }
 
 async fn sealed_room() -> Sealed {
-    let host = start_host().await;
+    sealed_room_on(start_host().await).await
+}
+
+/// [`sealed_room`], on `host`.
+async fn sealed_room_on(host: Host) -> Sealed {
     let room = Party::new();
     let owner = vta(
         &room,
@@ -352,7 +401,11 @@ async fn admit_at(s: &Sealed, key_path: &str, actions: &[&str]) -> Vta {
     let welcome = {
         use base64::Engine as _;
         base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(out["payload"]["welcome"].as_str().expect("{out}"))
+            .decode(
+                out["payload"]["welcome"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{out}")),
+            )
             .unwrap()
     };
     room_groups::join(
@@ -530,6 +583,62 @@ async fn an_advance_re_writes_the_profile_under_the_new_epoch() {
     assert_eq!(got["payload"]["profile"], board());
 }
 
+/// **`recordMembers` survives every advance.** The owner's key holder re-writes the profile
+/// under the epoch each advance moves to, and must carry `recordMembers` through unchanged
+/// (`RoomProfile.recordMembers`, *Turning them on*, step 2): one that dropped it would
+/// silently turn the room's record members off at the next removal. An admission and a
+/// renewal here; a removal takes the same read-before and re-write-after
+/// (`room_owner_group::handle_remove_v0_4`), which this fixture cannot drive — its room's
+/// signing key is not the room DID's, so the host refuses the withdrawal a removal sends.
+#[tokio::test]
+async fn an_advance_carries_record_members_into_the_new_epoch() {
+    let s = sealed_room().await;
+    let profile = json!({
+        "name": "Deal room",
+        "recordMembers": ["kind", "inReplyTo", "writtenAt", "editedAt", "width", "height",
+                          "preview"],
+    });
+    write_profile(&s.owner, &s.room.did, &s.host, profile.clone()).await;
+    let before = read(&s.owner, &s.room.did, &s.host).await;
+    assert_eq!(before["payload"]["profile"], profile, "{before}");
+    assert_eq!(before["payload"]["epoch"], 1, "{before}");
+
+    // An admission advances the room to epoch 2.
+    let _member = admit(&s, &["read", "write"]).await;
+    let admitted = read(&s.owner, &s.room.did, &s.host).await;
+    assert_eq!(admitted["payload"]["epoch"], 2, "{admitted}");
+    assert_eq!(
+        admitted["payload"]["stale"], false,
+        "re-written under epoch 2"
+    );
+    assert_eq!(
+        admitted["payload"]["profile"], profile,
+        "carried through the admission"
+    );
+
+    // A renewal to epoch 3.
+    let renewed = body(
+        super::super::room_owner_group::handle_renew_v0_2(
+            &s.owner.state,
+            &admin(),
+            request(
+                vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
+                json!({ "roomId": s.room.did, "host": s.host.did }),
+            ),
+        )
+        .await,
+    );
+    assert_eq!(renewed["payload"]["epoch"], 3, "{renewed}");
+    let after = read(&s.owner, &s.room.did, &s.host).await;
+    assert_eq!(after["payload"]["status"], "found", "{after}");
+    assert_eq!(after["payload"]["epoch"], 3);
+    assert_eq!(after["payload"]["stale"], false, "re-written under epoch 3");
+    assert_eq!(
+        after["payload"]["profile"], profile,
+        "recordMembers carried through unchanged"
+    );
+}
+
 /// Clearing retracts the current epoch's record (curate at the host), and the walk stops
 /// there: `cleared`, not the older profile below it. An advance after a clear writes none.
 #[tokio::test]
@@ -620,11 +729,11 @@ async fn browse_and_read_keep_the_profile_out_of_the_records() {
     let key = w["payload"]["key"].as_str().unwrap().to_string();
 
     let listed = body(
-        super::super::room_group::handle_browse(
+        super::super::room_group::handle_browse_v0_3(
             &s.owner.state,
             &admin(),
             request(
-                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1,
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3,
                 json!({ "roomId": s.room.did, "host": s.host.did }),
             ),
         )
@@ -870,6 +979,9 @@ async fn put_sealed(s: &Sealed, key: &str, epoch: u32, ciphertext: String, nonce
             cleartext: None,
             author: Some(s.owner.persona.clone()),
             updated_at: 0,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         },
         Some(0),
         Utc::now().timestamp() as u64,
@@ -1101,3 +1213,610 @@ async fn record_read_and_backfill_name_the_host_failure() {
         "{got}"
     );
 }
+
+// ─── `rooms/keys/read/0.2` and `rooms/keys/browse/0.4` (trust-tasks-tf #1027) ───────────
+//
+// What the host records about each version — `createdAt`, `createdBy`, `bodyStoredAt`, and
+// on an `open` room the record's `kind` — passed through exactly as served, with fallback to
+// a host that predates `rooms/records/get/0.3` and `rooms/records/list/0.6`; and read/0.2's
+// batch form, each key answered on its own.
+
+const READ_0_2: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_2;
+const BROWSE_0_4: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4;
+const GET_V3: &str = vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE;
+const GET_V2: &str = vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE;
+const LIST_V6: &str = vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE;
+const LIST_V5: &str = vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE;
+
+/// `rooms/keys/read/0.2` with `which` — `{"key": …}` or `{"keys": […]}` — as `v`.
+async fn read_v0_2(v: &Vta, room: &str, host: &str, which: Value) -> Value {
+    read_v0_2_within(
+        v,
+        room,
+        host,
+        which,
+        super::super::room_read::Budget::DEFAULT,
+    )
+    .await
+}
+
+async fn read_v0_2_within(
+    v: &Vta,
+    room: &str,
+    host: &str,
+    which: Value,
+    budget: super::super::room_read::Budget,
+) -> Value {
+    let mut payload = json!({ "roomId": room, "host": host });
+    for (k, val) in which.as_object().unwrap() {
+        payload[k] = val.clone();
+    }
+    body(
+        super::super::room_read::read_v0_2_within(
+            &v.state,
+            &admin(),
+            request(READ_0_2, payload),
+            budget,
+        )
+        .await,
+    )
+}
+
+async fn browse_v0_4(v: &Vta, room: &str, host: &str) -> Value {
+    body(
+        super::super::room_group::handle_browse_v0_4(
+            &v.state,
+            &admin(),
+            request(BROWSE_0_4, json!({ "roomId": room, "host": host })),
+        )
+        .await,
+    )
+}
+
+fn decoded(b64: &Value) -> String {
+    use base64::Engine as _;
+    String::from_utf8(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(
+                b64.as_str()
+                    .unwrap_or_else(|| panic!("not base64url: {b64}")),
+            )
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// Write an `open` room's record with `rooms/records/put/0.5`, completed as `v`'s member by
+/// `rooms/keys/act/0.11` and handed to the host unaltered — what pnm does.
+async fn put_open_v0_5(v: &Vta, room: &str, host: &Host, key: &str, cleartext: Value) -> Value {
+    let unsigned = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
+        "recipient": host.did,
+        "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": { "roomId": room, "key": key, "cleartext": cleartext },
+    });
+    let acted = body(
+        super::super::room_act::handle_act_v0_11(
+            &v.state,
+            &admin(),
+            request(
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_11,
+                json!({ "document": unsigned }),
+            ),
+        )
+        .await,
+    );
+    let completed = acted["payload"]["document"].clone();
+    assert!(completed.is_object(), "{acted}");
+    let answer = room_host::dispatch(&host.state, &serde_json::to_vec(&completed).unwrap()).await;
+    let doc = answer.document;
+    assert!(
+        doc["type"]
+            .as_str()
+            .is_some_and(|t| t.ends_with("#response")),
+        "{doc}"
+    );
+    doc["payload"].clone()
+}
+
+/// An `open` room on `host`, its owner holding every action.
+async fn open_room_on(host: &Host) -> (Party, Vta) {
+    let room = Party::new();
+    let owner = vta(
+        &room,
+        host,
+        OWNER_KEY_PATH,
+        &["read", "write", "curate", "admin"],
+    )
+    .await;
+    seed_room(host, &room.did, &owner.persona, vti_rooms::Visibility::Open).await;
+    (room, owner)
+}
+
+/// A batch answers every key in order, each on its own: a record with the host's times, a
+/// key the host does not hold as that key's `hostRefused` with the host's code — and none of
+/// the single-record members at the top.
+#[tokio::test]
+async fn read_0_2_answers_each_key_on_its_own_in_order() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-a", "first").await;
+    owner_writes(&s, "rec-b", "second").await;
+
+    let got = read_v0_2(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": ["rec-a", "missing", "rec-b"] }),
+    )
+    .await;
+    let p = &got["payload"];
+    assert!(
+        got["type"].as_str().unwrap().ends_with("#response"),
+        "{got}"
+    );
+    for absent in ["key", "version", "verification", "plaintext"] {
+        assert!(p.get(absent).is_none(), "{absent} at the top: {got}");
+    }
+    let results = p["results"].as_array().unwrap();
+    let keys: Vec<_> = results.iter().map(|r| r["key"].clone()).collect();
+    assert_eq!(keys, vec![json!("rec-a"), json!("missing"), json!("rec-b")]);
+
+    assert_eq!(decoded(&results[0]["plaintext"]), "first", "{got}");
+    assert_eq!(decoded(&results[2]["plaintext"]), "second", "{got}");
+    for r in [&results[0], &results[2]] {
+        assert!(r["createdAt"].is_string(), "{r}");
+        assert!(r["bodyStoredAt"].is_string(), "{r}");
+        assert_eq!(r["verification"]["trace"], "verified", "{r}");
+        assert!(r.get("error").is_none(), "{r}");
+    }
+
+    let missing = &results[1];
+    assert_eq!(
+        missing["error"]["code"], "rooms/keys/read:hostRefused",
+        "{got}"
+    );
+    assert_eq!(missing["error"]["retryable"], false, "{got}");
+    assert!(missing["error"]["details"]["code"].is_string(), "{got}");
+    assert!(missing.get("version").is_none(), "never both: {got}");
+
+    assert_eq!(s.host.received(GET_V3), 3, "each key its own get/0.3");
+    assert_eq!(s.host.received(GET_V2), 0);
+}
+
+/// A request naming `key` is answered as 0.1 answers it, with the host's times — and 0.1
+/// itself, reading with get/0.2, carries none of them.
+#[tokio::test]
+async fn read_0_2_of_one_key_passes_the_hosts_times_through() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-a", "first").await;
+
+    let got = read_v0_2(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "key": "rec-a" }),
+    )
+    .await;
+    let p = &got["payload"];
+    assert_eq!(p["key"], "rec-a", "{got}");
+    assert_eq!(decoded(&p["plaintext"]), "first");
+    assert!(p["createdAt"].is_string(), "{got}");
+    assert!(p["bodyStoredAt"].is_string(), "{got}");
+    assert!(p.get("results").is_none(), "{got}");
+
+    let old = read_record(&s.owner, &s, "rec-a").await;
+    assert_eq!(plaintext_of(&old), "first");
+    for member in ["createdAt", "createdBy", "bodyStoredAt"] {
+        assert!(old["payload"].get(member).is_none(), "{member}: {old}");
+    }
+}
+
+/// A host that predates `rooms/records/get/0.3` answers it `unsupportedType`: the record is
+/// read with get/0.2 and carries none of the host's times — and the rest of the batch asks
+/// get/0.2 straight away.
+#[tokio::test]
+async fn read_0_2_falls_back_to_get_0_2_once_per_request() {
+    let s = sealed_room_on(start_host_opts(false, true).await).await;
+    owner_writes(&s, "rec-a", "first").await;
+    owner_writes(&s, "rec-b", "second").await;
+
+    let got = read_v0_2(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": ["rec-a", "rec-b"] }),
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    assert_eq!(decoded(&results[0]["plaintext"]), "first", "{got}");
+    assert_eq!(decoded(&results[1]["plaintext"]), "second", "{got}");
+    for r in &results {
+        for member in ["createdAt", "createdBy", "bodyStoredAt"] {
+            assert!(r.get(member).is_none(), "{member}: {r}");
+        }
+    }
+    assert_eq!(s.host.received(GET_V3), 1, "asked once, then remembered");
+    assert_eq!(s.host.received(GET_V2), 2);
+}
+
+/// A batch stops beginning keys at its size bound: what it read is answered, every key it
+/// did not come to is `notAttempted` (retryable, nothing implied), and the host never saw
+/// those.
+#[tokio::test]
+async fn read_0_2_answers_keys_past_its_bound_not_attempted() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-a", "first").await;
+    owner_writes(&s, "rec-b", "second").await;
+
+    let got = read_v0_2_within(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": ["rec-a", "rec-b", "missing"] }),
+        super::super::room_read::Budget {
+            bytes: 1,
+            time: std::time::Duration::from_secs(60),
+        },
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    assert_eq!(decoded(&results[0]["plaintext"]), "first", "{got}");
+    for r in &results[1..] {
+        assert_eq!(
+            r["error"]["code"],
+            vti_specs::rooms::keys::read::v0_2::error_codes::NOT_ATTEMPTED.to_string(),
+            "{got}"
+        );
+        assert_eq!(r["error"]["code"], "rooms/keys/read:notAttempted", "{got}");
+        assert_eq!(r["error"]["retryable"], true, "{got}");
+        assert!(r["error"].get("details").is_none(), "{got}");
+    }
+    assert_eq!(s.host.received(GET_V3), 1, "only the key it read");
+    assert_eq!(
+        super::super::room_read::outcomes(&got["payload"]["results"]).len(),
+        3
+    );
+}
+
+/// What concerns the request as a whole is one refusal, before the host is asked anything:
+/// both or neither of `key` and `keys`, more than 32, the same key twice.
+#[tokio::test]
+async fn read_0_2_refuses_a_malformed_batch_whole() {
+    let s = sealed_room().await;
+    let thirty_three: Vec<String> = (0..33).map(|i| format!("rec-{i}")).collect();
+    let thirty_two: Vec<String> = (0..32).map(|i| format!("rec-{i}")).collect();
+    for which in [
+        json!({ "keys": thirty_three }),
+        json!({ "keys": ["rec-a", "rec-a"] }),
+        json!({ "keys": [] }),
+        json!({ "key": "rec-a", "keys": ["rec-b"] }),
+        json!({}),
+    ] {
+        let got = read_v0_2(&s.owner, &s.room.did, &s.host.did, which.clone()).await;
+        assert_eq!(got["payload"]["code"], "malformedRequest", "{which}: {got}");
+        assert!(got["payload"].get("results").is_none(), "{got}");
+    }
+    assert_eq!(s.host.received(GET_V3), 0);
+
+    // Thirty-two is the bound, not past it: every key is read (none is held here).
+    let got = read_v0_2(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": thirty_two }),
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap();
+    assert_eq!(results.len(), super::super::room_read::MAX_KEYS, "{got}");
+    assert!(
+        results
+            .iter()
+            .all(|r| r["error"]["code"] == "rooms/keys/read:hostRefused"),
+        "{got}"
+    );
+    assert_eq!(s.host.received(GET_V3), 32);
+}
+
+/// **Repairs are per batch.** A member behind by a commit, reading a page of records sealed
+/// under the epoch it has not reached and one written before it joined, catches up once and
+/// fetches the history once — and every record opens.
+#[tokio::test]
+async fn a_batch_repairs_once_and_opens_every_record() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-early", "written at epoch 1").await;
+    let a = admit(&s, &["read"]).await;
+    let _b = admit_at(&s, SECOND_MEMBER_KEY_PATH, &["read"]).await;
+    assert_eq!(held(&a, &s).await.epoch, 2);
+    let mut keys = vec!["rec-early".to_string()];
+    for i in 0..4 {
+        owner_writes(&s, &format!("rec-{i}"), &format!("record {i}")).await;
+        keys.push(format!("rec-{i}"));
+    }
+    let commits_before = s.host.received(vti_rooms::wire::ROOMS_EPOCH_COMMITS_TYPE);
+    let chain_before = s.host.received(vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE);
+
+    let got = read_v0_2(&a, &s.room.did, &s.host.did, json!({ "keys": keys })).await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    assert_eq!(
+        decoded(&results[0]["plaintext"]),
+        "written at epoch 1",
+        "{got}"
+    );
+    for i in 0..4 {
+        assert_eq!(
+            decoded(&results[i + 1]["plaintext"]),
+            format!("record {i}"),
+            "{got}"
+        );
+    }
+    assert_eq!(
+        s.host.received(vti_rooms::wire::ROOMS_EPOCH_COMMITS_TYPE) - commits_before,
+        1,
+        "one catch-up for the batch"
+    );
+    assert_eq!(
+        s.host.received(vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE) - chain_before,
+        1,
+        "one chain extension for the batch"
+    );
+    assert_eq!(held(&a, &s).await.epoch, 3);
+    assert_eq!(held(&a, &s).await.earliest_readable_epoch, 1);
+}
+
+/// One key that will not open is that key's `cannotOpen`, with its reason and epoch, and
+/// never fails the record beside it.
+#[tokio::test]
+async fn a_record_that_will_not_open_fails_only_its_own_key() {
+    let s = sealed_room().await;
+    let a = admit(&s, &["read"]).await;
+    owner_writes(&s, "rec-good", "readable").await;
+    vti_rooms::storage::advance_epoch(
+        s.host.state.rooms(),
+        &s.room.did,
+        3,
+        Utc::now().timestamp() as u64,
+    )
+    .await
+    .unwrap();
+    put_sealed(
+        &s,
+        "rec-unreachable",
+        3,
+        "AAAA".into(),
+        "AAAAAAAAAAAAAAAA".into(),
+    )
+    .await;
+
+    let got = read_v0_2(
+        &a,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": ["rec-unreachable", "rec-good"] }),
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    let e = &results[0]["error"];
+    assert_eq!(e["code"], "rooms/keys/read:cannotOpen", "{got}");
+    assert_eq!(e["details"]["reason"], "notDelivered", "{got}");
+    assert_eq!(e["details"]["epoch"], 3, "{got}");
+    assert_eq!(e["retryable"], false, "{got}");
+    assert_eq!(decoded(&results[1]["plaintext"]), "readable", "{got}");
+
+    // The same key alone is refused with exactly that code.
+    let alone = read_v0_2(
+        &a,
+        &s.room.did,
+        &s.host.did,
+        json!({ "key": "rec-unreachable" }),
+    )
+    .await;
+    assert_eq!(alone["payload"]["code"], *e.get("code").unwrap(), "{alone}");
+}
+
+/// The declared refusals of read/0.2 and browse/0.4: no membership is `notAMember`; a host
+/// nobody answers at is `hostUnreachable` (per key in a batch); one that does not serve the
+/// room is browse's `hostRefused`.
+#[tokio::test]
+async fn read_0_2_and_browse_0_4_name_their_refusals() {
+    let mut s = sealed_room().await;
+    let stranger = Party::new().did;
+    let got = read_v0_2(&s.owner, &stranger, &s.host.did, json!({ "key": "k" })).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::read::v0_2::error_codes::NOT_A_MEMBER.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/read:notAMember",
+        "{got}"
+    );
+    let got = browse_v0_4(&s.owner, &stranger, &s.host.did).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_4::error_codes::NOT_A_MEMBER.to_string(),
+        "{got}"
+    );
+
+    let (dead, doc) = unreachable_host();
+    knows(&mut s.owner, &dead, doc).await;
+    let got = read_v0_2(&s.owner, &s.room.did, &dead, json!({ "key": "k" })).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::read::v0_2::error_codes::HOST_UNREACHABLE.to_string(),
+        "{got}"
+    );
+    let got = read_v0_2(&s.owner, &s.room.did, &dead, json!({ "keys": ["k", "l"] })).await;
+    for r in got["payload"]["results"].as_array().unwrap() {
+        assert_eq!(
+            r["error"]["code"], "rooms/keys/read:hostUnreachable",
+            "{got}"
+        );
+        assert_eq!(r["error"]["retryable"], true, "{got}");
+    }
+    let got = browse_v0_4(&s.owner, &s.room.did, &dead).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_4::error_codes::HOST_UNREACHABLE.to_string(),
+        "{got}"
+    );
+
+    let other = start_host().await;
+    knows(&mut s.owner, &other.did, other.doc.clone()).await;
+    let got = browse_v0_4(&s.owner, &s.room.did, &other.did).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_4::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+    let got = read_v0_2(&s.owner, &s.room.did, &other.did, json!({ "key": "k" })).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::read::v0_2::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+}
+
+/// browse/0.4 passes list/0.6's rows through as served — `createdAt`, `createdBy`,
+/// `bodyStoredAt`, and on an open room `kind` — and a host that predates list/0.6 is listed
+/// with 0.5, its rows carrying none of them.
+#[tokio::test]
+async fn browse_0_4_passes_list_0_6_rows_through_and_falls_back_to_0_5() {
+    for predates in [false, true] {
+        let host = start_host_opts(false, predates).await;
+        let (room, owner) = open_room_on(&host).await;
+        put_open_v0_5(
+            &owner,
+            &room.did,
+            &host,
+            "msg-1",
+            json!({ "body": "hello", "kind": "message" }),
+        )
+        .await;
+
+        let got = browse_v0_4(&owner, &room.did, &host.did).await;
+        let p = &got["payload"];
+        assert!(
+            got["type"].as_str().unwrap().ends_with("#response"),
+            "{got}"
+        );
+        assert_eq!(p["complete"], true, "{got}");
+        assert_eq!(p["verification"]["count"], "agrees", "{got}");
+        let row = &p["records"][0];
+        assert_eq!(row["key"], "msg-1", "{got}");
+        if predates {
+            for member in ["createdAt", "createdBy", "bodyStoredAt", "kind"] {
+                assert!(row.get(member).is_none(), "{member}: {got}");
+            }
+            assert_eq!(host.received(LIST_V6), 1, "asked once");
+            assert_eq!(host.received(LIST_V5), 1);
+        } else {
+            assert_eq!(row["kind"], "message", "{got}");
+            assert_eq!(row["createdBy"], owner.persona, "{got}");
+            assert!(row["createdAt"].is_string(), "{got}");
+            assert!(row["bodyStoredAt"].is_string(), "{got}");
+            assert_eq!(host.received(LIST_V5), 0);
+        }
+        // browse/0.3 is unchanged: list/0.5, its rows without the new members.
+        let old = body(
+            super::super::room_group::handle_browse_v0_3(
+                &owner.state,
+                &admin(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3,
+                    json!({ "roomId": room.did, "host": host.did }),
+                ),
+            )
+            .await,
+        );
+        assert!(
+            old["payload"]["records"][0].get("createdAt").is_none(),
+            "{old}"
+        );
+    }
+}
+
+/// **End to end, on an open room whose profile lists the members.** The writer reads the
+/// profile and is permitted `kind`, `inReplyTo` and `writtenAt` (and not `editedAt`); writes
+/// a message, a reply to it and a reaction with `rooms/records/put/0.5` through
+/// `rooms/keys/act/0.11`; and a member reads all three back in one `rooms/keys/read/0.2`
+/// batch — each record's `kind` and `inReplyTo` as written, and the host's times.
+#[tokio::test]
+async fn messages_replies_and_reactions_round_trip_through_a_batch_read() {
+    let host = start_host().await;
+    let (room, owner) = open_room_on(&host).await;
+    let mut profile = board();
+    profile["recordMembers"] = json!(["kind", "inReplyTo", "writtenAt"]);
+    let w = write_profile(&owner, &room.did, &host, profile).await;
+    assert_eq!(w["payload"]["outcome"], "written", "{w}");
+
+    // The writer's rule, against the profile as its readers see it.
+    let read = read(&owner, &room.did, &host).await;
+    let listed: Vec<String> =
+        serde_json::from_value(read["payload"]["profile"]["recordMembers"].clone())
+            .unwrap_or_else(|e| panic!("{e}: {read}"));
+    let written_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let message = json!({ "body": "Shall we meet on Thursday?", "kind": "message",
+                          "writtenAt": written_at });
+    let reply = json!({ "body": "Thursday works.", "kind": "message",
+                        "inReplyTo": { "key": "msg-1" }, "writtenAt": written_at });
+    for body in [&message, &reply] {
+        vti_rooms::record_members::permitted(body.as_object().unwrap(), Some(&listed))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    let edited = json!({ "body": "x", "editedAt": written_at });
+    assert!(
+        vti_rooms::record_members::permitted(edited.as_object().unwrap(), Some(&listed)).is_err(),
+        "`editedAt` is not listed"
+    );
+
+    let first = put_open_v0_5(&owner, &room.did, &host, "msg-1", message).await;
+    let version = first["version"].as_u64().unwrap();
+    put_open_v0_5(&owner, &room.did, &host, "reply-1", reply).await;
+    let reaction = json!({ "body": "👍", "kind": "reaction",
+                           "inReplyTo": { "key": "msg-1", "version": version } });
+    vti_rooms::record_members::permitted(reaction.as_object().unwrap(), Some(&listed)).unwrap();
+    put_open_v0_5(&owner, &room.did, &host, "react-1", reaction).await;
+
+    let got = read_v0_2(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "keys": ["msg-1", "reply-1", "react-1"] }),
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    assert_eq!(results.len(), 3, "{got}");
+    for r in &results {
+        assert!(r.get("error").is_none(), "{got}");
+        assert_eq!(r["createdBy"], owner.persona, "{got}");
+        assert!(r["createdAt"].is_string(), "{got}");
+        assert!(r["bodyStoredAt"].is_string(), "{got}");
+        assert!(
+            r.get("plaintext").is_none(),
+            "an open room's body is cleartext"
+        );
+    }
+    assert_eq!(results[0]["cleartext"]["kind"], "message", "{got}");
+    assert_eq!(results[0]["cleartext"]["writtenAt"], written_at, "{got}");
+    assert!(results[0]["cleartext"].get("inReplyTo").is_none(), "{got}");
+    assert_eq!(results[1]["cleartext"]["kind"], "message", "{got}");
+    assert_eq!(
+        results[1]["cleartext"]["inReplyTo"],
+        json!({ "key": "msg-1" }),
+        "{got}"
+    );
+    assert_eq!(results[2]["cleartext"]["kind"], "reaction", "{got}");
+    assert_eq!(
+        results[2]["cleartext"]["inReplyTo"],
+        json!({ "key": "msg-1", "version": version }),
+        "{got}"
+    );
+    assert_eq!(results[2]["cleartext"]["body"], "👍", "{got}");
+}
+
+/// `rooms/keys/watch`, `rooms/keys/changed` and `rooms/keys/act/0.12`, on these fixtures.
+/// The pass-on rides the push path, which a build without DIDComm has no route for.
+#[cfg(feature = "didcomm")]
+#[path = "room_key_watch_tests.rs"]
+mod watch;

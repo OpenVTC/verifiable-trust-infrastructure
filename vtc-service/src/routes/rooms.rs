@@ -36,16 +36,18 @@ pub struct HostedRoom {
     /// or `reclaimable`. Computed, never stored — minting an epoch *is* the
     /// renewal, so a stored state would be a second thing to keep true.
     pub lifecycle: String,
-    /// When the current epoch expires. Absent means the room never lapses.
+    /// When the current epoch expires, as an RFC 3339 instant. Absent means the
+    /// room never lapses.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub epoch_expires_at: Option<u64>,
+    pub epoch_expires_at: Option<String>,
     pub retention_days: u32,
     /// Present when this host serves a read-only copy rather than the room
     /// itself, naming the primary it pulls from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mirror_of: Option<String>,
-    pub created_at: u64,
-    pub updated_at: u64,
+    /// RFC 3339, as every instant from `vtc/_shared/0.3/room-storage`'s `HostedRoom` on.
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 /// `GET /v1/rooms` — every room this community hosts.
@@ -85,10 +87,18 @@ pub(crate) fn hosted(r: vti_rooms::Room, now: u64) -> HostedRoom {
         }
         .to_string(),
         epoch: r.epoch,
-        epoch_expires_at: r.epoch_expires_at,
+        epoch_expires_at: r.epoch_expires_at.map(rfc3339),
         retention_days: r.retention_days,
         mirror_of: r.mirror_of,
-        created_at: r.created_at,
-        updated_at: r.updated_at,
+        created_at: rfc3339(r.created_at),
+        updated_at: rfc3339(r.updated_at),
     }
+}
+
+/// Unix seconds as an RFC 3339 instant, to the second.
+fn rfc3339(secs: u64) -> String {
+    let secs = i64::try_from(secs).unwrap_or(i64::MAX);
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0)
+        .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC)
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }

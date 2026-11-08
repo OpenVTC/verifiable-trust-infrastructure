@@ -5,25 +5,24 @@
 //! name: a file is sealed before [`VtcClient::begin_upload`] and opened after
 //! [`VtcClient::download_chunk`], by a party holding that one file's key (`vti_rooms::files`).
 //!
-//! The payloads and responses are the generated `trust_tasks_rs::specs::rooms` types. Each
+//! The payloads and responses are the generated `vti_specs::rooms` types. Each
 //! payload is built through its generated type, so a value the schema refuses is refused
 //! here rather than by the host.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use trust_tasks_rs::Payload as _;
-use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk;
-use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::{
+use vti_specs::rooms::blobs::chunk::v0_1 as download_chunk;
+use vti_specs::rooms::blobs::get::v0_2 as blob_get_v2;
+use vti_specs::rooms::blobs::upload::{
     abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
     commit::v0_2 as upload_commit_v2,
 };
-use trust_tasks_rs::specs::rooms::info::v0_1 as room_info;
-use trust_tasks_rs::specs::rooms::info::v0_2 as room_info_v2;
-use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
-use trust_tasks_rs::specs::rooms::records::prune::v0_1 as records_prune;
-use trust_tasks_rs::specs::rooms::records::put::v0_3 as put_v3;
-use trust_tasks_rs::specs::rooms::records::retention::set::v0_1 as retention_set;
+use vti_specs::rooms::info::v0_3 as room_info;
+use vti_specs::rooms::records::get::v0_2 as get_v2;
+use vti_specs::rooms::records::prune::v0_2 as records_prune;
+use vti_specs::rooms::records::put::v0_3 as put_v3;
+use vti_specs::rooms::records::retention::set::v0_1 as retention_set;
 
 use super::{RoomSession, SealedContent};
 use crate::{VtcClient, VtcError};
@@ -31,12 +30,14 @@ use crate::{VtcClient, VtcError};
 pub use blob_get_v2::Response as BlobGetV2Response;
 pub use blob_get_v2::TransferTarget as ReadTarget;
 pub use download_chunk::Response as DownloadChunkResponse;
+#[allow(deprecated)]
+// get/0.3 adds only host-recorded times and author, which this client does not read yet
 pub use get_v2::Response as GetRecordV2Response;
+#[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
 pub use put_v3::Response as PutRecordV3Response;
 pub use records_prune::Response as PruneRecordsResponse;
 pub use retention_set::Response as RetentionSetResponse;
 pub use room_info::Response as RoomInfoResponse;
-pub use room_info_v2::Response as RoomInfoV2Response;
 pub use upload_begin_v2::{Response as BeginUploadV2Response, TransferTarget as WriteTarget};
 pub use upload_chunk_v2::Response as UploadChunkResponse;
 pub use upload_commit_v2::Response as CommitUploadResponse;
@@ -327,7 +328,9 @@ impl VtcClient {
         response(uri, v)
     }
 
-    /// `rooms/info/0.1`: the room's visibility, epoch, limits and usage.
+    /// `rooms/info/0.3`: the room's visibility, epoch, limits and usage, its record
+    /// retention in force (absent when it states none) and its latest record prune
+    /// (`prunedAt`).
     pub async fn room_info(
         &self,
         session: &RoomSession,
@@ -349,6 +352,7 @@ impl VtcClient {
     ///
     /// On a sealed tier the body is still ciphertext; open it through the member's VTA and
     /// check it with [`super::body::verify_record_body`] before using anything in it.
+    #[allow(deprecated)] // get/0.3 adds only host-recorded times and author, which this client does not read yet
     pub async fn get_record_v2(
         &self,
         session: &RoomSession,
@@ -373,6 +377,7 @@ impl VtcClient {
     /// Each blob must be committed in this room first, and the record's sealed body must
     /// describe it; the host can check the first and never the second.
     #[allow(clippy::too_many_arguments)]
+    #[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
     pub async fn put_sealed_record_with_blobs(
         &self,
         session: &RoomSession,
@@ -403,26 +408,7 @@ impl VtcClient {
         response(uri, v)
     }
 
-    /// `rooms/info/0.2`: 0.1's answer, the room's record retention in force (absent when it
-    /// states none) and its latest record prune.
-    pub async fn room_info_v2(
-        &self,
-        session: &RoomSession,
-        signer_did: &str,
-        private_key_multibase: &str,
-    ) -> Result<RoomInfoV2Response, VtcError> {
-        let p = payload::<room_info_v2::Payload>(serde_json::json!({
-            "roomId": session.room_id,
-            "presentation": session.presentation,
-        }))?;
-        let uri = room_info_v2::Payload::TYPE_URI;
-        let v = self
-            .room_task(uri, p, signer_did, private_key_multibase)
-            .await?;
-        response(uri, v)
-    }
-
-    /// `rooms/records/prune/0.1`: remove the records the room's record retention makes
+    /// `rooms/records/prune/0.2`: remove the records the room's record retention makes
     /// eligible — `retracted` tombstones, `aged` records, or both. Needs `admin`.
     ///
     /// **Irreversible, for every member**: what is removed is removed outright, tombstones
@@ -501,6 +487,7 @@ impl VtcClient {
     /// The payload is checked against the generated type but sent **as given**, so a
     /// `validUntil` reaches the host in the spelling the writer chose.
     #[allow(clippy::too_many_arguments)]
+    #[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
     pub async fn put_cleartext_record_v3(
         &self,
         session: &RoomSession,

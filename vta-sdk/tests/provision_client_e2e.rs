@@ -304,7 +304,7 @@ async fn mount_auth_mocks(server: &MockServer) {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {

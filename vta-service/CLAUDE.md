@@ -248,7 +248,7 @@ When adding a flow, add it here and a line to the root index.
 - **Wire** (`POST /auth/` content-negotiates on the body shape; all paths
   converge on `vti_common::auth::handlers::handle_authenticate`):
   - **DI-signed Trust Task (canonical REST)** — a plain JSON
-    `auth/authenticate/0.1` document whose holder `eddsa-jcs-2022`
+    `auth/authenticate/0.3` document whose holder `eddsa-jcs-2022`
     Data-Integrity proof *is* the authentication. No DIDComm packing /
     mediator needed, so a REST-only VTA (no `atm`) can authenticate. The
     proof's `verificationMethod` DID is the proven signer; `did:key`
@@ -262,7 +262,7 @@ When adding a flow, add it here and a line to the root index.
     (no-op freshness check), the DIDComm path enforces a 60s window on the
     envelope's `created_time`.
   - **`POST /auth/refresh` content-negotiates the same way**: a plain
-    `auth/refresh/0.1` Trust Task (canonical REST) **or** a DIDComm envelope.
+    `auth/refresh/0.2` Trust Task (canonical REST) **or** a DIDComm envelope.
     Refresh carries *no proof* — the opaque refresh token in the payload is the
     bearer credential (OAuth2 §10.4 rotation), so the Trust Task path passes
     `signer_did: None`. Together with the authenticate path above, the mobile
@@ -534,14 +534,14 @@ When adding a flow, add it here and a line to the root index.
   cannot carry them (`WizardInputs` is `deny_unknown_fields`).
 - **Runtime surface**: `pnm approvals {list,require,remove,approvers,
   explain}` and `pnm policy {list,show,upsert,delete}` — read-modify-write
-  of the reserved row over `policy/get/0.1` + `policy/upsert/0.2`.
+  of the reserved row over `policy/get/0.1` + `policy/upsert/0.3`.
   **Trust-Task transport only**; the SDK's REST arm is unimplemented and
   no `/policies` axum route exists, so a REST client gets a 404.
 - **Offline break-glass**: `vta approvals {list,remove,delete-all}` +
   `vta policy {list,delete}`. Deliberately **cannot create** a rule; daemon
   stopped; not available in TEE.
 - **Ceremony**: `task-consent/request/0.1` (outbound push, VTA-signed),
-  `task-consent/decision/0.1` (**the only dispatched one**, DI-signed by
+  `task-consent/decision/0.2` (**the only dispatched one**, DI-signed by
   the approver), `task-consent/granted/0.1` (notice). Approver-set
   membership alone authorizes a decision — an ACL entry is **not** required
   (#907). Ceremony tasks are exempt from PDP re-gating
@@ -620,22 +620,22 @@ When adding a flow, add it here and a line to the root index.
   payload **as received** (a generated-type round trip rewrites its timestamps). The VTA
   keeps the list with the room key (`room_groups`, `room-revocations/<roomId>`), signs one
   list per sequence under `room_revocation::signing_lock`, through the gated oracle, and
-  delivers it before answering `rooms/owner/register`. `group/remove/0.3` withdraws
-  first, then advances; a private room is never withdrawn per member.
+  delivers it before answering `rooms/owner/register`. `group/remove/0.4` withdraws
+  first, then advances; a private room is never withdrawn per member — 0.4 drops its
+  leaf alone and answers `withdrawn: false` (trust-tasks-tf #975).
   `register/0.2` answers success once the host took the registration, with
   `revocation.status` `inForce` only when the host answered with the list's head; a
   `pending` list is retained (room, host, sequence, persona) **before** the delivery and
   redelivered by `trust_tasks::room_list_delivery`, the one retry owner — latest list,
   capped backoff + jitter, never a `refused` one. A pending removal's list refused on
-  redelivery is settled by `group/remove/0.3` item 8 at **every** version and task
+  redelivery is settled by `group/remove/0.4` item 8 at **every** version and task
   (`HostCall::settle_refused_list`): only `listInvalid`/`entryNotPermitted`/
   `sequenceConflict` discard the list (and only while still held); the request is then
-  refused and never goes on to its own work — `earlierRemovalRefused` at `remove/0.3`,
-  `add/0.3` and `renew/0.2` (trust-tasks-tf #824), the task's own `hostRefused` with
-  `{member, code, listKept}` at the versions declaring no such code. `AdvanceCodes`
-  stages `hostUnreachable` and `hostRefused` independently: `add/0.3` / `renew/0.2`
-  stage the first and give `hostRefused` `{code, reason}`; only `remove/0.2`/`0.3`
-  give it `{stage, code}`.
+  refused and never goes on to its own work — `earlierRemovalRefused` at `remove/0.4`,
+  `add/0.3` and `renew/0.2` (trust-tasks-tf #824), the only versions served. A pending
+  removal with no list (a private room's) is settled by item 8.3 alone. `AdvanceCodes`:
+  every version stages `hostUnreachable`; `add/0.3` / `renew/0.2` give `hostRefused`
+  `{code, reason}`, only `remove/0.4` gives it `{stage, code}`.
 - **Code**: `vti-rooms/src/{revocation,revocation_tasks,authz}.rs`,
   `vti-rooms-dtg/src/lib.rs` (`verify_room_signed`, `credential_facts`),
   `room-host/src/files.rs`, `vtc-service/src/rooms/{handlers,files}.rs`,
@@ -899,8 +899,8 @@ When adding a flow, add it here and a line to the root index.
   `confidence`, `evidence`, `validFor`, `validUntil` — inside the signed sealed body, or
   an open room's cleartext at `rooms/records/put/0.3`; trust-tasks-tf #865); a room
   states how long it keeps its records and an `admin` prunes what that makes eligible
-  (`rooms/records/{prune,retention/set}`, `rooms/create/0.2`, `rooms/info/0.2`,
-  `rooms/records/list/0.3`, `rooms/keys/browse/0.2`; #868); an epoch prune leaves an
+  (`rooms/records/{prune,retention/set}`, `rooms/create/0.2`, `rooms/info/0.3`,
+  `rooms/records/list/0.5`, `rooms/keys/browse/0.3`; #868); an epoch prune leaves an
   epoch floor that members' key holders apply (`rooms/epoch/{prune,chain}/0.2`,
   `rooms/keys/{chain,backfill}/0.2`; #869).
 - **Invariants to preserve**: provenance is display and weighting, **never authority**,
@@ -925,3 +925,106 @@ When adding a flow, add it here and a line to the root index.
   `vtc_client::rooms` (`prune_records`, `set_record_retention`, `prune_epoch_v2`, …),
   `pnm rooms records {prune,retention}`, `pnm rooms prune`.
 - **Docs**: `docs/02-vta/data-rooms.md` (§9, §10.4, §10.5).
+
+### Watching rooms for a client (`rooms/keys/watch/0.1`, `rooms/keys/changed/0.1`)
+- **What**: a wallet with no member keys and no address asks its VTA to watch up to 64
+  rooms at one host (trust-tasks-tf #1040). The VTA arms `rooms/watch/0.1` at the host per
+  room as the member (presentation narrowed to `read`, member-signed, as `act/0.12`
+  completes one) with a fresh `did:peer:2` address of its own (DIDComm at the VTA's
+  mediator), receives the host's `rooms/changed` at that address over a connection of its
+  own (`messaging::watch_addresses`), and passes one `rooms/keys/changed` on to the caller
+  through `step_up::push_to_device_with(.., wake: false)`.
+- **Invariants to preserve**: the record is exactly Recipient item 6's list — never a
+  watermark, a signalled version or a signal time (`operations::room_key_watch`, keyspace
+  `room_key_watches`, encrypted, not backed up, no derived `Debug` over its keys). The
+  address is never the VTA's, member's or caller's DID and never reused, except a re-arm of
+  an unfired watch, which keeps it. A signal is passed on only when the transport proved the
+  watch's host, for the watch's room, while armed; the watch is forgotten **before** the
+  pass-on is sent (one per arming). The pass-on carries `roomId`, `member`, `host`,
+  `latestVersion` only, never the address, no doorbell, deadline = one attempt window (no
+  re-send of an accepted push). Removal: fired, cancelled, lapsed (≤ 30 days, ≤ host's
+  `expiresAt`), caller lost standing, member's credentials gone (`room_key_watch::sweep`,
+  every 30 s with the address supervisor). Own bounds 64/member, 64/caller, 256 total →
+  `limitReached`; no mediator → `limitReached`. `act/0.12` relays `rooms/watch` without
+  reading, checking or changing `address`, `sinceVersion` or `leaseSeconds` (Recipient
+  item 6) — never add a recipient-side address check; Producer item 6 binds the client,
+  and `pnm rooms watch --via-host` enforces it before sending.
+- **Code**: `vta-service/src/operations/room_key_watch.rs`,
+  `vta-service/src/trust_tasks/{room_key_watch,room_key_watch_tests,room_changed,room_act}.rs`,
+  `vta-service/src/messaging/watch_addresses.rs`, `vta_sdk::client` (`room_watch`,
+  `room_act_v0_12`, `room_changed_signal`), `pnm rooms watch [--via-host]`. End to end
+  through a real mediator (address session, a signal queued before it opens, the pass-on
+  to the wallet): `tests/e2e/tests/room_key_watch.rs`.
+- **Docs**: `docs/02-vta/data-rooms.md` (*Watching instead of polling*).
+
+### Held notifications (`notifications/*`, `vta/notifications/*/0.1`)
+- **What**: The VTA as **recipient** of `notifications/notify/0.1` and `notifications/relay/0.1`
+  (VTI-NTF-001 – 053): every layer verified, held by the stated acceptance policy in the
+  trust context of the DID it was addressed to, and served to the principal's clients as
+  `vta/notifications/{list,show,dismiss}/0.1` (`pnm notifications …`); a client hands over
+  what it received for a persona DID with `vta/notifications/deposit/0.1`.
+- **Invariants to preserve**: notify/relay are counterparty tasks (zero-authority claim for a
+  sender the ACL does not know, `notifications::is_counterparty_task`); nothing is kept on the
+  claim. `vta_sdk::notifications::verify_delivery` is the only way to a notification's members —
+  each proof over the JSON as received (the spine's `received::document_as_received`), each
+  forwarded layer addressed to its relayer, ≤ 4 relays, `relayable`; never re-apply a forwarded
+  layer's acceptance window. The policy (`[notifications]`, `operations::notifications::
+  standing_of`) counts the **delivering relayer, never the originator** (VTI-NTF-031). The
+  receipt is the same whatever `receive` did — never branch the answer on `Disposition`
+  (VTI-NTF-023). One record per (addressee, originator identity, `notificationId`); a higher
+  revision replaces it and keeps `recordId` and a dismissal; equal or lower changes nothing.
+  `show` returns the delivering document exactly as received. Reads take the caller's named
+  context only; another context's record is `notificationUnknown`. Nothing here sends a
+  message (VTI-NTF-053). Keyspace `notifications` is backed up; lapsed/withdrawn records are
+  swept after `retain_lapsed_days`. Only documents addressed to the VTA's own DID arrive (the
+  spine checks `recipient`); one addressed to a persona DID whose socket a client holds comes
+  in by **`vta/notifications/deposit/0.1`** (VTI-NTF-054 – 056): standing in `contextId` first,
+  then `notAddressedHere` unless `recipient` is a DID held in that context, then exactly the
+  direct-delivery path — `verify_delivery`, then `trust_tasks::admit_carried_document` (the
+  acceptance window, `expiresAt` and the same replay guard, at the hand-over) — anything failing
+  is `documentInvalid`; `receive` counts the delivering party, never the depositing client;
+  a repeat answers the same receipt. Never let the client's ACL entry stand in for the
+  relationship, and never deposit a re-serialised document.
+- **Code**: `vta-sdk/src/notifications.rs`, `vta-sdk/src/client/notifications.rs`,
+  `vta-service/src/operations/notifications.rs`,
+  `vta-service/src/trust_tasks/{notifications,notifications_tests}.rs`,
+  `vta-cli-common/src/commands/notifications.rs`.
+- **Docs**: `docs/02-vta/notifications.md`.
+
+### Collection for the principal's identifiers (`vta/collection/*/0.1`)
+- **What**: Who holds each persona DID's one mediator connection (VTI-NTF-080 – 098): the VTA,
+  or one client under a **collection claim** (a lease), or nobody and why. `pnm collection
+  claim|release|list|status|enable|disable`. Collection by default is a **stored setting of each
+  trust context**, **on unless disabled there** (VTI-NTF-094), read with standing and changed with
+  administrative authority over the context (`vta/collection/settings/{show,set}/0.1`, VTI-NTF-095 –
+  096) — never inherited by descendants, never from config. The operator's only switch is the
+  off-only `[collection] suspend` (VTI-NTF-098; tenant overlay can only engage it), read at boot and
+  audited at the boot that engages or lifts it. Claims are served whatever the setting.
+- **Invariants to preserve**: `settings/set` audits **before** applying (refuses if it cannot),
+  writes the record, then — disabling — closes each of the context's sessions under its identifier's
+  lock **before answering**; the collector's `may_open` re-reads the suspension and the context's
+  setting under that same lock. Enabling clears the context's `conflict:` rows (VTI-NTF-085) and
+  kicks; the same value is `changed: false` and touches nothing (not `changedBy`). Nothing enables a
+  context whose setting disables it — never add an operator "enable" key or a run-time way to lift
+  the suspension. The first boot of the release runs `backfill_provisioned` (audit rows of
+  `key.secret_export` on `provision-integration`, or provisioning's key labels) before the collector
+  opens anything, once (`backfill:provisioned`). A retired `collect_by_default` key is warned about
+  and ignored, never refused. One session (TDK + ATM + one websocket) per collected DID —
+  `CollectionControl::insert` refuses a second, and never the VTA's own DID. A grant writes the
+  claim and closes the VTA's connection **under the identifier's lock** before it answers; the
+  collector re-reads the claim under the same lock before opening one. Release by the claimant
+  ends at once; by anyone else it only makes the claim unrenewable, and the VTA waits for the end
+  plus `clock_skew_secs`. Candidates exclude the VTA's DID, every ACL subject, every
+  `provisioned:` DID (written by provision-integration) and `[collection] exclude`. A collected
+  notify/relay goes through exactly the deposit path (`bind_document_to_sender`,
+  `verify_delivery`, `admit_carried_document`, `receive`) and is answered **as the persona**
+  (persona issuer and proof) with the same receipt; everything else is `unsupportedType` as the
+  persona — never dispatched to the spine, never naming the VTA. Budget: no standing → the
+  unauthenticated bound; never per identifier. Conflicts: 5 short-lived connections in 15 min →
+  stop, `conflict:` record, `collection.conflict` audit, cleared by a claim. Rollover / swap-key
+  carry claims (`carry_claims`); context deletion purges them and the context's setting; sweeps
+  drop claims on DIDs no longer collectable. Keyspace `collection` is backed up (settings included).
+- **Code**: `vta-service/src/operations/collection.rs` (+ `_tests.rs`),
+  `vta-service/src/messaging/collector.rs`, `vta-service/src/trust_tasks/collection.rs`
+  (+ `_tests.rs`), `vta_sdk::client` (`collection_*`), `vta-cli-common/src/commands/collection.rs`.
+- **Docs**: `docs/02-vta/collection.md`.

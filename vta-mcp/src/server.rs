@@ -14,7 +14,7 @@
 //!
 //! ## Three things every call goes through
 //!
-//! 1. **[`crate::guard`]** — the local per-operation gate, because an MCP host
+//! 1. **[`vti_mcp_common::guard`]** — the local per-operation gate, because an MCP host
 //!    approves a *tool* and this bridge's most useful tool is "invoke any
 //!    operation". Every convenience tool declares the Trust Task URI it wraps,
 //!    so `--read-only` cannot be side-stepped by calling `sign` instead of
@@ -31,8 +31,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::guard::{Decision, Guard, Risk, classify};
-use crate::observability::{CallRecord, Recorder, redact_call};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
@@ -49,6 +47,8 @@ use serde_json::{Value, json};
 use vta_sdk::agent_session::AgentSession;
 use vta_sdk::error::VtaError;
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
+use vti_mcp_common::guard::{Decision, Guard, Risk, classify};
+use vti_mcp_common::observability::{CallRecord, Recorder, redact_call};
 
 /// The Trust Task URI each convenience tool **actually sends**.
 ///
@@ -58,24 +58,23 @@ use vta_sdk::protocols::key_management::sign::SignAlgorithm;
 /// `VtaClient`'s call sites rather than the freshest constant. Several are the
 /// deprecated `0.1` forms for exactly that reason; they move when
 /// `vta_sdk::client` moves, not before.
-#[allow(deprecated)]
 mod wire {
     use vta_sdk::trust_tasks as t;
 
-    /// `trust-task-discovery/0.1` — what `supported_trust_tasks` asks.
-    pub const DISCOVERY: &str = t::TASK_TRUST_TASK_DISCOVERY_0_1;
-    /// `keys/list/0.1`.
-    pub const KEYS_LIST: &str = t::TASK_KEYS_LIST_0_1;
+    /// `trust-task-discovery/0.3` — what `supported_trust_tasks` asks.
+    pub const DISCOVERY: &str = t::TASK_TRUST_TASK_DISCOVERY_0_3;
+    /// `keys/list/0.2`.
+    pub const KEYS_LIST: &str = t::TASK_KEYS_LIST_0_2;
     /// `keys/sign/0.1` — the signing oracle.
     pub const KEYS_SIGN: &str = t::TASK_KEYS_SIGN_0_1;
-    /// `vault/list/0.1`.
-    pub const VAULT_LIST: &str = t::TASK_VAULT_LIST_0_1;
-    /// `vault/get/0.1`.
-    pub const VAULT_GET: &str = t::TASK_VAULT_GET_0_1;
-    /// `vault/release/0.1`.
-    pub const VAULT_RELEASE: &str = t::TASK_VAULT_RELEASE_0_1;
-    /// `device/heartbeat/0.1`.
-    pub const DEVICE_HEARTBEAT: &str = t::TASK_DEVICE_HEARTBEAT_0_1;
+    /// `vault/list/0.4`.
+    pub const VAULT_LIST: &str = t::TASK_VAULT_LIST_0_4;
+    /// `vault/get/0.3`.
+    pub const VAULT_GET: &str = t::TASK_VAULT_GET_0_3;
+    /// `vault/release/0.2`.
+    pub const VAULT_RELEASE: &str = t::TASK_VAULT_RELEASE_0_2;
+    /// `device/heartbeat/0.3`.
+    pub const DEVICE_HEARTBEAT: &str = t::TASK_DEVICE_HEARTBEAT_0_3;
 }
 
 /// Resource URI for the bridge's own state.
@@ -116,9 +115,9 @@ pub struct SupportedTasksParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListKeysParams {
-    /// Pagination offset (default 0).
+    /// The previous page's `nextCursor` (omit for the first page).
     #[serde(default)]
-    pub offset: Option<u64>,
+    pub cursor: Option<String>,
     /// Max keys to return (default 50).
     #[serde(default)]
     pub limit: Option<u64>,
@@ -320,11 +319,12 @@ impl CallGuard {
     fn emit(&self, outcome: &'static str, error: Option<String>, duration_ms: u128) {
         // A refusal can quote the request back (a schema error names the offending value);
         // for a personal label that value is text no log may carry.
-        let error = if crate::observability::carries_personal_text(self.operation.as_deref()) {
-            error.map(|_| "<elided: personal label>".to_string())
-        } else {
-            error
-        };
+        let error =
+            if vti_mcp_common::observability::carries_personal_text(self.operation.as_deref()) {
+                error.map(|_| "<elided: personal label>".to_string())
+            } else {
+                error
+            };
         let record = CallRecord {
             seq: self.seq,
             tool: self.tool,
@@ -377,7 +377,7 @@ impl VtaMcp {
             holder,
             guard: Arc::new(guard),
             recorder,
-            started: crate::observability::now_rfc3339().into(),
+            started: vti_mcp_common::observability::now_rfc3339().into(),
         }
     }
 
@@ -403,7 +403,7 @@ impl VtaMcp {
             holder,
             guard: Arc::new(guard),
             recorder,
-            started: crate::observability::now_rfc3339().into(),
+            started: vti_mcp_common::observability::now_rfc3339().into(),
         }
     }
 
@@ -568,7 +568,7 @@ impl VtaMcp {
                 "list_keys",
                 Some(wire::KEYS_LIST),
                 json!({
-                    "offset": p.offset,
+                    "cursor": p.cursor,
                     "limit": p.limit,
                     "status": p.status,
                     "contextId": p.context_id,
@@ -583,7 +583,7 @@ impl VtaMcp {
         let result = match self.client() {
             Ok(client) => client
                 .list_keys(
-                    p.offset.unwrap_or(0),
+                    p.cursor.as_deref(),
                     p.limit.unwrap_or(50),
                     p.status.as_deref(),
                     p.context_id.as_deref(),
@@ -1147,7 +1147,7 @@ impl ServerHandler for VtaMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guard::ConfirmLevel;
+    use vti_mcp_common::guard::ConfirmLevel;
 
     fn bridge() -> VtaMcp {
         VtaMcp::degraded(

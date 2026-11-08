@@ -17,7 +17,7 @@ use tower::ServiceExt;
 use vtc_service::test_support::TestVtc;
 
 const MEMBERS_UPDATE: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
-const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const KIB: usize = 1024;
 
 /// A document of `type_uri`, padded to exactly `len` bytes.
@@ -116,7 +116,7 @@ async fn the_rest_of_the_unauthenticated_chain_keeps_its_cap() {
     let (status, _) = post_with(
         &vtc,
         "/v1/auth/refresh",
-        Some("https://trusttasks.org/spec/auth/refresh/0.1"),
+        Some("https://trusttasks.org/spec/auth/refresh/0.2"),
         document_of(MEMBERS_UPDATE, 64 * KIB + 1),
     )
     .await;

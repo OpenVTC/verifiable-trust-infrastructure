@@ -57,6 +57,7 @@ VTA via the `vtc-host` DID template.
 | Deploy a VTA inside a Nitro Enclave | [TEE architecture](02-vta/tee-architecture.md) |
 | Build an app that uses a VTA | [VTA integration guide](02-vta/integration-guide.md) |
 | Use a VTA from Claude Code / Claude Desktop | [vta-mcp](02-vta/vta-mcp.md) |
+| Run or take part in a community from Claude Code / Claude Desktop | [vtc-mcp](03-vtc/vtc-mcp.md) |
 | Provision a mediator / webvh-host / custom integration | [Provision-integration](02-vta/provision-integration.md) |
 | Require a second person to approve an operation | [Approvals](02-vta/approvals.md) |
 | Understand the consent ceremony (DTTE) end to end | [Task consent](02-vta/task-consent.md) |
@@ -71,6 +72,9 @@ VTA via the `vtc-host` DID template.
 | Run a ballot box for community polls and elections | [The voting service](07-voting/README.md) |
 | Run a poll or election in a community | [Community elections](03-vtc/elections.md) |
 | Get a relationship witnessed, as a principal whose keys a VTA holds | [The VTA as a witnessed party](02-vta/witness-party.md) |
+| Receive, list and relay notifications (an election put to a member party) | [Notifications](02-vta/notifications.md) |
+| Who collects a persona DID's messages at its mediator: the VTA or a claiming client | [Collection](02-vta/collection.md) |
+| A community's received notifications and relay decisions | [Community notifications](03-vtc/notifications.md) |
 | Look up a BIP-32 path | [BIP-32 paths](04-reference/bip32-paths.md) |
 | Read the threat model | [Security model](01-concepts/security-model.md) |
 
@@ -177,6 +181,10 @@ How to operate and integrate against a VTC.
 - **[Credential delivery](03-vtc/credential-delivery.md)** — how an
   admitted member receives its credentials, and the Eucalyptus
   migration note for clients that read them from the verdict.
+- **[vtc-mcp](03-vtc/vtc-mcp.md)** — a community from an MCP host: an
+  administrator's or a member's AI assistant configuring and running it as
+  one identity over TSP, DIDComm or HTTPS, with the guides and workflows
+  shipped as prompts.
 - **[Trust-registry integration](03-vtc/trust-registry.md)** —
   registry publish, membership sync, cross-community recognition.
 - **[Trust-registry deployment](03-vtc/trust-registry-deployment.md)** —
@@ -216,6 +224,13 @@ How to operate and integrate against a VTC.
 In-flight or historical design documents kept for context. These
 are implementer-facing rather than operator-facing.
 
+- **[vtc-mcp](05-design-notes/vtc-mcp.md)** — proposed: a VTC twin of
+  `vta-mcp`. A native Trust Task client over TSP, then DIDComm (never a
+  `cnm` subprocess), one generic `vtc_call` catalogued from the pinned
+  specification bundles, an identity ladder (member persona, dedicated agent
+  entry), the shared local guard, and VTC knowledge shipped as MCP resources
+  and prompts for groups, boards, elections, data rooms, admission and
+  administration.
 - **[TSP Rev 3 migration](05-design-notes/tsp-rev3-migration.md)** — the
   inventory of what this repository has to change for Trust Spanning Protocol
   Rev 3, which is a flag day rather than a migration: nothing a Rev 2 peer packs
@@ -233,6 +248,13 @@ are implementer-facing rather than operator-facing.
   rather than adding a PATCH component, and explains why the sender speaking
   *down* is what lets `deny_unknown_fields` stay. Design only; §2 is a proposal
   for the shared registry.
+- **[Key roles — design](05-design-notes/key-roles.md)** — why durable identities split keys by role (attestation, operational, messaging, update, authenticator), protection boundaries, the external recovery key (and why not the VTA's BIP-32 seed), rotation vs revocation, approvals, method profiles, benefits and implications.
+- **[Key roles — implementation plan](05-design-notes/key-roles-implementation.md)** —
+  the ordered PRs that implement method-neutral key roles (`vta/dids/*`): method
+  profiles, `keyRoles`, generated role keys outside the seed and every backup,
+  the external recovery key, preview-bound approval, and passkeys as
+  `authenticator` keys on a person's identity only. Each step is mapped to the
+  VTI-KEY requirements it satisfies and the Appendix F rows it closes.
 - **[Application-state store](05-design-notes/appstate-store.md)** — the
   proposed third store (beside the secrets and credential vaults) for
   versioned, namespaced, per-context application JSON: why agent memory
@@ -314,6 +336,9 @@ are implementer-facing rather than operator-facing.
   rather than three, and what was retired to get there.
 - **[ACL scope semantics](05-design-notes/acl-scope-semantics.md)** —
   the *act* vs *confer* axis on an ACL entry.
+- **[Trigger links](05-design-notes/trigger-link-design.md)** —
+  why a trigger link is an `https` URL with its parameters in the fragment,
+  not a DIDComm out-of-band or VCALM interaction URL.
 
 ### Part VI — Host services
 

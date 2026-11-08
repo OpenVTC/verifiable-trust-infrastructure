@@ -192,16 +192,16 @@ impl PeerTasks {
             .map_err(|e| PeerError::NoMatchingProtocol(e.to_string()))
     }
 
-    /// Sign one document of `type_uri` to `peer_did`, send it, and await the
-    /// peer's signed reply for up to `timeout`.
-    pub(crate) async fn exchange(
+    /// Sign one **one-way** document of `type_uri` to `peer_did` and hand it to the
+    /// delivery layer over the transport [`Self::select`] chooses. No reply is awaited and
+    /// none is expected; `Ok` means accepted locally (R1.1), and a caller that needs more
+    /// owns that. Used for signals that have no `#response` (`rooms/changed/0.1`).
+    pub(crate) async fn send_one_way(
         &self,
         peer_did: &str,
         type_uri: &str,
         payload: &Value,
-        timeout: std::time::Duration,
-    ) -> Result<TrustTask<Value>, PeerError> {
-        use vta_sdk::protocol::matching::Protocol;
+    ) -> Result<(), PeerError> {
         let messaging = self
             .didcomm
             .get()
@@ -211,7 +211,22 @@ impl PeerTasks {
             .as_ref()
             .ok_or_else(|| PeerError::Transient("this VTC has no signing key yet".into()))?;
         let matched = self.select(peer_did).await?;
+        let doc = self
+            .signed_document(messaging, signer, peer_did, type_uri, payload)
+            .await?;
+        Self::put_on_wire(messaging, &matched, peer_did, &doc).await
+    }
 
+    /// A document of `type_uri` from this VTC to `peer_did`, signed under the operational
+    /// key for `authentication`.
+    async fn signed_document(
+        &self,
+        messaging: &VtcMessaging,
+        signer: &crate::credentials::LocalSigner,
+        peer_did: &str,
+        type_uri: &str,
+        payload: &Value,
+    ) -> Result<TrustTask<Value>, PeerError> {
         let doc = vti_common::capability_client::build_document(
             &messaging.vtc_did,
             peer_did,
@@ -224,16 +239,23 @@ impl PeerTasks {
             .sign_operational_doc(&mut value)
             .await
             .map_err(|e| PeerError::Transient(format!("sign document: {e}")))?;
-        let doc: TrustTask<Value> = serde_json::from_value(value)
-            .map_err(|e| PeerError::Transient(format!("reparse signed document: {e}")))?;
+        serde_json::from_value(value)
+            .map_err(|e| PeerError::Transient(format!("reparse signed document: {e}")))
+    }
 
-        // Registered before sending: a reply can land while the send returns.
-        let receiver = self.replies.register(&doc.id, peer_did);
-        let sent = match matched.protocol {
+    /// Hand `doc` to the delivery layer over `matched`.
+    async fn put_on_wire(
+        messaging: &VtcMessaging,
+        matched: &vta_sdk::protocol::matching::ProtocolMatch,
+        peer_did: &str,
+        doc: &TrustTask<Value>,
+    ) -> Result<(), PeerError> {
+        use vta_sdk::protocol::matching::Protocol;
+        match matched.protocol {
             #[cfg(feature = "tsp")]
             Protocol::Tsp => {
                 let body =
-                    seal_trust_task_tsp(&doc).map_err(|e| PeerError::Transient(e.to_string()))?;
+                    seal_trust_task_tsp(doc).map_err(|e| PeerError::Transient(e.to_string()))?;
                 // `peer_endpoint` is the peer's TSP mediator; a peer on another
                 // mediator is reached through it (VTI-56).
                 vti_common::tsp_route::send_reestablishing(
@@ -248,13 +270,43 @@ impl PeerTasks {
                 .map(|_| ())
                 .map_err(|e| PeerError::Transient(format!("TSP send failed: {e}")))
             }
-            Protocol::Didcomm => send_trust_task_didcomm(messaging, peer_did, &doc)
+            Protocol::Didcomm => send_trust_task_didcomm(messaging, peer_did, doc)
                 .await
                 .map_err(|e| PeerError::Transient(e.to_string())),
             _ => Err(PeerError::NoMatchingProtocol(format!(
                 "{peer_did} can be reached by no transport this VTC speaks"
             ))),
-        };
+        }
+    }
+
+    /// Sign one document of `type_uri` to `peer_did`, send it, and await the
+    /// peer's signed reply for up to `timeout`.
+    pub(crate) async fn exchange(
+        &self,
+        peer_did: &str,
+        type_uri: &str,
+        payload: &Value,
+        timeout: std::time::Duration,
+    ) -> Result<TrustTask<Value>, PeerError> {
+        #[cfg(feature = "tsp")]
+        use vta_sdk::protocol::matching::Protocol;
+        let messaging = self
+            .didcomm
+            .get()
+            .ok_or_else(|| PeerError::Transient("VTC messaging is not running yet".into()))?;
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| PeerError::Transient("this VTC has no signing key yet".into()))?;
+        let matched = self.select(peer_did).await?;
+
+        let doc = self
+            .signed_document(messaging, signer, peer_did, type_uri, payload)
+            .await?;
+
+        // Registered before sending: a reply can land while the send returns.
+        let receiver = self.replies.register(&doc.id, peer_did);
+        let sent = Self::put_on_wire(messaging, &matched, peer_did, &doc).await;
         if let Err(e) = sent {
             self.replies.abandon(&doc.id);
             return Err(e);
@@ -267,6 +319,31 @@ impl PeerTasks {
             }
             Err(_) => {
                 self.replies.abandon(&doc.id);
+                // D4 (`tsp-relationship-recovery.md`): a peer that holds no
+                // relationship with us — a fresh or reset store after a
+                // restart — drops our frame silently (TSP §7.2.2), which looks
+                // exactly like a lost round-trip. Our durable "related" half
+                // would then never re-invite and every exchange would time out
+                // for good (a ballot box restarted under a live VTC did exactly
+                // this). Reset our half so the caller's next attempt goes
+                // through `send_reestablishing` and re-forms the relationship
+                // first. Safe on a false positive: if the peer kept its half,
+                // the fresh invite reconciles. Repair only — never resend here;
+                // the caller's backoff stays the one retry owner.
+                #[cfg(feature = "tsp")]
+                if matched.protocol == Protocol::Tsp
+                    && let Err(e) = messaging
+                        .atm
+                        .tsp()
+                        .reset_relationship(&messaging.profile, peer_did)
+                        .await
+                {
+                    tracing::warn!(
+                        peer = %peer_did,
+                        error = %e,
+                        "could not reset the TSP relationship after a reply timeout",
+                    );
+                }
                 Err(PeerError::Transient(format!(
                     "no reply from {peer_did} within {}s",
                     timeout.as_secs()
@@ -311,7 +388,7 @@ mod tests {
     fn the_tsp_seal_is_the_published_envelope() {
         let doc: TrustTask<Value> = TrustTask::new(
             "urn:uuid:1".to_string(),
-            "https://trusttasks.org/spec/registry/record/put/0.1"
+            "https://trusttasks.org/spec/registry/record/put/0.3"
                 .parse()
                 .expect("valid type URI"),
             serde_json::json!({}),

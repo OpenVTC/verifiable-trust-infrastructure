@@ -26,7 +26,7 @@ fn task(name: &str) -> String {
     format!("{SPEC}/{name}/0.1")
 }
 
-use trust_tasks_rs::specs::vtc::directory as d;
+use vti_specs::vtc::directory as d;
 
 const UPLOAD_ERR_NOT_MEMBER: &str = d::images::upload::v0_1::error_codes::NOT_MEMBER.code;
 const UPLOAD_ERR_TOO_LARGE: &str = d::images::upload::v0_1::error_codes::TOO_LARGE.code;

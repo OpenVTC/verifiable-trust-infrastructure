@@ -17,8 +17,149 @@ pub use vti_secrets::{SecretBackend, SecretsConfig};
 /// deployments. See `docs/05-design-notes/tenant-config-allowlist.md`.
 pub mod tenant_overlay;
 pub use tenant_overlay::{
-    TenantConfigOverlay, TenantKmsOverlay, TenantMessagingOverlay, TenantOverlayError,
+    TenantCollectionOverlay, TenantConfigOverlay, TenantKmsOverlay, TenantMessagingOverlay,
+    TenantOverlayError,
 };
+
+/// The notifications this VTA holds for its principal (`notifications/*`,
+/// VTI-NTF-030 – 033, VTI-NTF-052): the acceptance policy this VTA states, and how
+/// long a lapsed or withdrawn notification is kept.
+///
+/// The stated policy (VTI-NTF-030): a notification is held only when the party
+/// that delivered it — the originator, or for a relay the last relayer
+/// (VTI-NTF-031) — is a party the principal holds a relationship with: an issuer
+/// of a membership credential held in the context, a party of a relationship
+/// credential held there, a party holding an ACL entry at this VTA, or a DID in
+/// [`accept_from`](Self::accept_from). Every other verified notification is
+/// declined, and answered with the same receipt (VTI-NTF-023).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct NotificationsConfig {
+    /// DIDs the principal has chosen to accept notifications from, beside the
+    /// relationships the policy counts on its own.
+    #[serde(default)]
+    pub accept_from: Vec<String>,
+    /// Accept a verified notification from any party. The principal's choice
+    /// "otherwise" of VTI-NTF-030; off by default.
+    #[serde(default)]
+    pub accept_any: bool,
+    /// Days a notification is kept after it lapsed (its `validUntil` passed) or
+    /// was withdrawn, before it is discarded (VTI-NTF-052; default 30). A
+    /// notification with no `validUntil` lapses only by withdrawal.
+    #[serde(default = "default_notifications_retain_lapsed_days")]
+    pub retain_lapsed_days: u32,
+}
+
+fn default_notifications_retain_lapsed_days() -> u32 {
+    30
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            accept_from: Vec::new(),
+            accept_any: false,
+            retain_lapsed_days: default_notifications_retain_lapsed_days(),
+        }
+    }
+}
+
+/// **Collection** of the principal's identifiers (`vta/collection/*`,
+/// VTI-NTF-080 – 098): the VTA holding the one mediator connection of each
+/// persona DID whose keys it holds and that no client has claimed.
+///
+/// Whether the VTA collects by default is **not** set here: it is a stored
+/// setting of each trust context, enabled unless a party with administrative
+/// authority over the context disables it with
+/// `vta/collection/settings/set/0.1` (VTI-NTF-094, VTI-NTF-095). The one switch
+/// the operator keeps is [`suspend`](Self::suspend), which can only stop
+/// collection (VTI-NTF-098).
+///
+/// The retired `collect_by_default` key (VTI-NTF-093, withdrawn) is no longer
+/// read: [`AppConfig::validate`] warns that it is ignored, whatever its value.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct CollectionConfig {
+    /// The operator's suspension of collection by default (VTI-NTF-098):
+    /// while `true` the VTA collects for no unclaimed persona DID in any
+    /// context, whatever each context's setting says, and changes no context's
+    /// setting. It can only stop collection — there is no operator key that
+    /// enables it for a context whose setting disables it. Read at boot;
+    /// engaging or lifting it is audited at the boot that applies it. Default
+    /// `false`.
+    #[serde(default)]
+    pub suspend: bool,
+    /// The most identifiers the VTA collects for at once (VTI-NTF-088; default
+    /// 64). One beyond it is listed as collected by nobody, reason `limit`.
+    #[serde(default = "default_collection_max_identifiers")]
+    pub max_identifiers: usize,
+    /// The longest claim the VTA grants, in seconds (VTI-NTF-082; default and
+    /// ceiling thirty days).
+    #[serde(default = "default_collection_max_claim_secs")]
+    pub max_claim_secs: u64,
+    /// The claim granted when a client asks for no duration (default 24 hours,
+    /// the length VTI-NTF-083 asks clients to request).
+    #[serde(default = "default_collection_default_claim_secs")]
+    pub default_claim_secs: u64,
+    /// The VTA's clock-skew tolerance in seconds (default 60): it resumes
+    /// collecting for an identifier no earlier than a claim's end plus this,
+    /// unless the claimant released it (VTI-NTF-084).
+    #[serde(default = "default_collection_clock_skew_secs")]
+    pub clock_skew_secs: u64,
+    /// Identifiers the VTA never collects for, beside the ones it already
+    /// excludes (its own DID, any DID holding an ACL entry, and the identities
+    /// provision-integration minted for another party). For an integration
+    /// provisioned before this setting existed, whose holder collects for it.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+/// The configuration key VTI-NTF-093's operator setting was read from. It is
+/// retired: [`AppConfig::validate`] names it in a warning of its own, and it
+/// has no effect whatever its value.
+pub const RETIRED_COLLECT_BY_DEFAULT_KEY: &str = "collection.collect_by_default";
+
+/// Thirty days: the ceiling VTI-NTF-082 puts on the maximum a VTA states.
+pub const COLLECTION_MAX_CLAIM_SECS_CEILING: u64 = 30 * 24 * 3600;
+
+fn default_collection_max_identifiers() -> usize {
+    64
+}
+
+fn default_collection_max_claim_secs() -> u64 {
+    COLLECTION_MAX_CLAIM_SECS_CEILING
+}
+
+fn default_collection_default_claim_secs() -> u64 {
+    24 * 3600
+}
+
+fn default_collection_clock_skew_secs() -> u64 {
+    60
+}
+
+impl Default for CollectionConfig {
+    fn default() -> Self {
+        Self {
+            suspend: false,
+            max_identifiers: default_collection_max_identifiers(),
+            max_claim_secs: default_collection_max_claim_secs(),
+            default_claim_secs: default_collection_default_claim_secs(),
+            clock_skew_secs: default_collection_clock_skew_secs(),
+            exclude: Vec::new(),
+        }
+    }
+}
+
+impl CollectionConfig {
+    /// The maximum claim the VTA states: the configured value, held to between
+    /// one minute and thirty days.
+    #[must_use]
+    pub fn stated_max_claim_secs(&self) -> u64 {
+        self.max_claim_secs
+            .clamp(60, COLLECTION_MAX_CLAIM_SECS_CEILING)
+    }
+}
 
 /// Being the principal's **witnessed party** (`vta/witness/{open,present,accept}`):
 /// the VTA's side of a `witness/session` whose documents the client carries.
@@ -235,6 +376,14 @@ pub struct AppConfig {
     /// witnesses read a member presentation.
     #[serde(default)]
     pub witness: WitnessPartyConfig,
+    /// The notifications this VTA holds for its principal: its stated acceptance
+    /// policy and retention (VTI-NTF-030, VTI-NTF-052).
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
+    /// Collection for the principal's identifiers (VTI-NTF-080 – 093): the
+    /// operator's "collection by default" setting, off unless enabled.
+    #[serde(default)]
+    pub collection: CollectionConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
     /// Verifier DIDs the holder **auto-consents** to when answering a
@@ -510,7 +659,10 @@ pub struct ServerConfig {
     /// not flow to arbitrary origins.
     #[serde(default)]
     pub cors_origins: Vec<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "vti_common::rate_limit::deserialize_trusted_proxy_cidrs"
+    )]
     pub trust_xff_cidrs: Vec<IpNetwork>,
     /// Token replenishment interval for the **auth** rate limiter, in
     /// **seconds per token** — not requests per second. One new token every
@@ -1570,6 +1722,18 @@ impl AppConfig {
         // worth flagging, but never a reason to refuse a config that otherwise
         // boots (P0.9b — softer than `deny_unknown_fields`).
         for key in &self.unknown_keys {
+            if key == RETIRED_COLLECT_BY_DEFAULT_KEY {
+                tracing::warn!(
+                    "`[collection] collect_by_default` in {} is retired and ignored, whatever \
+                     its value (VTI-NTF-093 is withdrawn). Collection by default is now a \
+                     setting of each trust context, on unless a context administrator turns it \
+                     off (`pnm collection disable --context <id>`, VTI-NTF-094 – 095). To stop \
+                     collection on this whole VTA, set `[collection] suspend = true` \
+                     (VTI-NTF-098). Remove the key to silence this warning.",
+                    self.config_path.display()
+                );
+                continue;
+            }
             tracing::warn!(
                 "unknown configuration key `{key}` in {} — ignored. Check for a typo, \
                  a removed/renamed setting, or a key placed in the wrong [section].",
@@ -1777,6 +1941,18 @@ mod validate_tests {
     fn trust_xff_cidrs_still_parses() {
         let config = cfg("[server]\ntrust_xff_cidrs = [\"127.0.0.1/32\"]\n");
         assert_eq!(config.server.trust_xff_cidrs.len(), 1);
+    }
+
+    /// A range trusting every peer would let any client name its own
+    /// rate-limit bucket.
+    #[test]
+    fn a_catch_all_trust_xff_range_is_refused() {
+        for cidr in ["0.0.0.0/0", "::/0"] {
+            let err =
+                toml::from_str::<AppConfig>(&format!("[server]\ntrust_xff_cidrs = [\"{cidr}\"]\n"))
+                    .expect_err("a catch-all range must be refused");
+            assert!(err.to_string().contains("covers every address"), "{err}");
+        }
     }
 
     /// A zero budget would starve the VTA or, read as "no budget", fail open
@@ -2062,6 +2238,37 @@ mod validate_tests {
         let (config, dir) = load("");
         std::fs::write(dir.path().join("config.toml"), "this is not = = toml").expect("write");
         assert!(config.to_runtime_toml().is_err());
+    }
+
+    /// VTI-NTF-093 is withdrawn: its key still loads (a deployed config keeps
+    /// booting) and is recorded as the retired key, which `validate` names in
+    /// its own warning; it sets nothing. `suspend` (VTI-NTF-098) is off unless
+    /// set.
+    #[test]
+    fn vti_ntf_098_the_retired_collect_by_default_key_loads_and_sets_nothing() {
+        for value in ["true", "false"] {
+            let (config, _dir) = load(&format!("[collection]\ncollect_by_default = {value}\n"));
+            assert!(
+                config
+                    .unknown_keys
+                    .iter()
+                    .any(|k| k == RETIRED_COLLECT_BY_DEFAULT_KEY),
+                "{:?}",
+                config.unknown_keys
+            );
+            assert!(!config.collection.suspend, "the retired key never suspends");
+            config
+                .validate()
+                .expect("a retired key is a warning, not an error");
+        }
+        let (config, _dir) = load("[collection]\nsuspend = true\n");
+        assert!(config.collection.suspend);
+        assert!(config.unknown_keys.is_empty(), "{:?}", config.unknown_keys);
+        let (config, _dir) = load("");
+        assert!(
+            !config.collection.suspend,
+            "not suspended unless the operator suspends"
+        );
     }
 
     #[test]

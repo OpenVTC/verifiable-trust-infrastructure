@@ -488,8 +488,8 @@ function Activity({ ns, resource }: { ns: GitNsNamespaceRow; resource: string })
         <ul className="gitns-activity">
           {items.map((it, i) => (
             <li key={i}>
-              <time dateTime={it.at} className="muted">
-                {formatDay(it.at)}
+              <time dateTime={it.occurredAt} className="muted">
+                {formatDay(it.occurredAt)}
               </time>{" "}
               · {who(it.actor)}
               {it.actor && " "}
@@ -632,7 +632,7 @@ function CommitTrust({ ns, repo }: { ns: GitNsNamespaceRow; repo: GitNsRepoRow }
             >
               {check.conclusion}
             </ToneChip>
-            {check.at && <> {formatDay(check.at)}</>}
+            {check.concludedAt && <> {formatDay(check.concludedAt)}</>}
             {check.sha && (
               <>
                 {" "}

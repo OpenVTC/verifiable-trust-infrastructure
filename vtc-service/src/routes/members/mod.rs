@@ -9,7 +9,7 @@
 //!   (`vtc/members/credentials/0.1`, see `credentials.rs`).
 //! - `PATCH /v1/members/{did}` — profile fields and non-admin role
 //!   changes. `role: admin` is refused here with the task's declared
-//!   `adminRoleForbidden`; promotion is the signed `acl/change-role/0.1`,
+//!   `adminRoleForbidden`; promotion is the signed `vtc/members/role/set/0.1`,
 //!   behind the passkey gesture the role-change ceremony's host invariant
 //!   demands. See `update.rs`.
 //!

@@ -137,7 +137,7 @@ async fn seeded_webvh_server_is_listed_over_http() {
 
 /// Full URL-direct provision against a **REST-only** MockVta, end to end:
 /// `provision_admin_rotated_via_rest` authenticates via the DI-signed
-/// `auth/authenticate/0.1` Trust Task (no DIDComm / ATM — the mock has none),
+/// `auth/authenticate/0.3` Trust Task (no DIDComm / ATM — the mock has none),
 /// the VTA mints a fresh admin DID + issues the authorization VC + seals the
 /// rotation bundle, and the client opens it. This is the round-trip that
 /// failed with "ATM not configured" before the DI-signed REST auth path
@@ -829,11 +829,10 @@ async fn webvh_family_response_shapes_inner() {
         .await
         .expect("agent-name/list");
     assert!(
-        names
-            .names
-            .iter()
-            .any(|n| n.name == "coverage-agent" && n.enabled && n.created_at == 1_767_225_600),
-        "the host's RFC 3339 createdAt is relayed as Unix seconds: {names:?}"
+        names.names.iter().any(|n| n.name == "coverage-agent"
+            && n.enabled
+            && n.created_at.map(|t| t.timestamp()) == Some(1_767_225_600)),
+        "the host's RFC 3339 createdAt is relayed as RFC 3339: {names:?}"
     );
     client
         .disable_agent_name(&did, "coverage-agent")
@@ -893,7 +892,7 @@ async fn webvh_family_response_shapes_inner() {
     );
     client
         .dispatch_trust_task(
-            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2,
             serde_json::json!({
                 "did": did,
                 "ceremonyId": challenge["ceremonyId"].as_str().expect("a ceremony id"),
@@ -901,7 +900,7 @@ async fn webvh_family_response_shapes_inner() {
                 "publicKeyMultibase": registration.public_key_multibase,
                 "coseAlgorithm": registration.cose_algorithm,
                 "attestationObject": registration.attestation_object,
-                "clientDataJson": registration.client_data_json,
+                "clientDataJSON": registration.client_data_json,
                 "authenticatorData": registration.authenticator_data,
             }),
             30,
@@ -1345,7 +1344,7 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
         &mock,
         &identity,
         &token,
-        vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
+        vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_1,
         serde_json::json!({ "service": "rest", "config": { "url": "https://vta.test" } }),
     )
     .await
@@ -1355,7 +1354,7 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
         &mock,
         &identity,
         &token,
-        vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0,
+        vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_2,
         serde_json::json!({ "service": "rest", "config": { "url": "https://vta.test/moved" } }),
     )
     .await
@@ -1365,7 +1364,7 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
         &mock,
         &identity,
         &token,
-        vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0,
+        vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_1,
         serde_json::json!({ "service": "rest" }),
     )
     .await
@@ -1375,7 +1374,7 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
         &mock,
         &identity,
         &token,
-        vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
+        vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_2,
         serde_json::json!({ "service": "rest" }),
     )
     .await
@@ -1472,7 +1471,7 @@ async fn didcomm_enable_response_requests_reply_safe_restart() {
         &mock,
         &identity,
         &token,
-        vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
+        vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_1,
         serde_json::json!({
             "service": "didcomm",
             "config": {

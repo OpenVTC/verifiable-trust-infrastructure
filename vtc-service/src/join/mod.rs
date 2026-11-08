@@ -246,27 +246,11 @@ impl JoinRequest {
 /// Transport the request arrived over. Used by the audit event
 /// (`JoinRequestData.transport`) so investigators can tell REST +
 /// DIDComm submissions apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JoinTransport {
-    Rest,
-    DIDComm,
-    /// Trust Spanning Protocol, received off the same mediator socket DIDComm
-    /// uses (the transport tags which). Receive-side only: a TSP-delivered
-    /// request is answered over TSP, but the VTC's *outbound-initiated* sends to
-    /// members stay DIDComm until the Phase B flip
-    /// (`docs/05-design-notes/tsp-enablement.md` §12, §14 Q4).
-    Tsp,
-}
-
-impl JoinTransport {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            JoinTransport::Rest => "rest",
-            JoinTransport::DIDComm => "didcomm",
-            JoinTransport::Tsp => "tsp",
-        }
-    }
-}
+///
+/// The Trust Task spine's own transport enum (`vti_trust_task_server`), so the
+/// context the spine fills in and the one the join ceremony audits are one
+/// type.
+pub use vti_trust_task_server::Transport as JoinTransport;
 
 #[cfg(test)]
 mod tests {

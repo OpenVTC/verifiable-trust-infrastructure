@@ -109,6 +109,29 @@ pub async fn delete(vault: &KeyspaceHandle, id: &str) -> Result<(), AppError> {
     )))
 }
 
+/// Delete every credential in `context_id`'s custody
+/// ([`StoredCredential::context_id`]), with its index entries, returning how
+/// many went.
+///
+/// For a context deletion only — the one caller entitled to enumerate the
+/// store, since it is removing what it finds rather than disclosing it. A
+/// credential left behind would be presentable from any context created again
+/// under the same id. Unscoped credentials (`context_id: None`) belong to no
+/// context and are untouched.
+pub async fn purge_context(vault: &KeyspaceHandle, context_id: &str) -> Result<usize, AppError> {
+    let mut removed = 0;
+    for (_key, raw) in vault.prefix_iter_raw(RECORD_PREFIX).await? {
+        let Ok(cred) = serde_json::from_slice::<StoredCredential>(&raw) else {
+            continue;
+        };
+        if cred.context_id.as_deref() == Some(context_id) {
+            delete(vault, &cred.id).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// The record at `key` as stored (plaintext bytes, for a `require_unchanged`
 /// precondition) and as parsed.
 async fn read_current(

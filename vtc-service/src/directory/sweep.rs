@@ -78,7 +78,17 @@ pub async fn settle(state: &AppState) -> Result<(usize, usize, usize), AppError>
     if let Err(e) = crate::groups::managers::sweep(state).await {
         warn!(error = %e, "could not review group manager appointments; the next pass will");
     }
+    // So do board facilitators' (VTI-BRD-092).
+    if let Err(e) = crate::boards::facilitators::sweep(state).await {
+        warn!(error = %e, "could not review board facilitator appointments; the next pass will");
+    }
+    // Badge offers past their expiry lapse, and badge pictures no badge holds go.
+    if let Err(e) = crate::badges::expire_offers(&state.badges_ks, Utc::now()).await {
+        warn!(error = %e, "could not expire badge offers; the next pass will");
+    }
     let erased = super::images::collect(state.directory.ks(), Utc::now()).await?
+        + crate::badges::collect_images(&state.badge_images_ks, &state.badges_ks, Utc::now())
+            .await?
         + super::notes::sweep_departed(state.directory.ks(), Utc::now()).await?;
     let withdrawn = super::external::reconcile_all(state).await?;
     let repaired = repair_pointers(state).await?;

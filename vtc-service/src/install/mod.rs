@@ -30,13 +30,14 @@ pub mod state_machine;
 pub mod token;
 
 pub use state_machine::{
-    InstallTokenState, InstallTokenStore, PendingBreakGlassAcl, PendingEmergencyBootstrap,
-    StartClaimOutcome,
+    InstallTokenState, InstallTokenStore, InvitedAuthority, PendingBreakGlassAcl,
+    PendingEmergencyBootstrap, StartClaimOutcome,
 };
 pub use token::{
     INSTALL_AUDIENCE, INSTALL_SESSION_AUDIENCE, INSTALL_SESSION_DEFAULT_TTL_SECS, INSTALL_SUBJECT,
     INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallSessionClaims, InstallTokenClaims, InstallTokenSigner,
-    mint_install_session_token, mint_install_token, parse_install_token,
+    mint_install_session_token, mint_install_token, mint_passkey_install_token,
+    parse_install_token,
 };
 
 use tokio::sync::Mutex;

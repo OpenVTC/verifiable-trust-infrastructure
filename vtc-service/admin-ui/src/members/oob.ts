@@ -22,8 +22,8 @@ import { guardPreviewRequest } from "@/lib/theme-preview";
 
 // TODO: replace with generated trust-tasks types
 export const OOB_TYPES = {
-  request: "https://trusttasks.org/spec/auth/oob/request/0.1",
-  redeem: "https://trusttasks.org/spec/auth/oob/redeem/0.1",
+  request: "https://trusttasks.org/spec/auth/oob/request/0.2",
+  redeem: "https://trusttasks.org/spec/auth/oob/redeem/0.2",
   cancel: "https://trusttasks.org/spec/auth/oob/cancel/0.1",
 } as const;
 
@@ -34,7 +34,7 @@ export type SessionAudience = "member" | "admin";
 
 /** The `ext` namespace that carries the audience on `auth/oob/request`, and
  *  in the VTC's signed step 1 and step 2 (so the member's grant covers it).
- *  `auth/oob/0.1`'s `purpose` is a closed enum, so it is not a purpose. */
+ *  `auth/oob/request`'s `purpose` is a closed enum, so it is not a purpose. */
 export const SESSION_EXT = "org.openvtc.session";
 
 /** The decline reason for an identity that is not an administrator. */
@@ -70,6 +70,7 @@ export function missingDidServices(cfg: SignInConfig): string[] | null {
 export interface RedeemResult {
   subject: string;
   displayName?: string | null;
+  /** The session's end (`sessionEndsAt`), as epoch seconds. */
   notAfter: number;
   amr: string[];
   /** The session the VTC issued, from the response's `ext`; `member` when
@@ -208,9 +209,14 @@ export function triggerLink(
   return link;
 }
 
-/** An instant on the wire: integer epoch seconds only (contract C9). */
+/** An instant on the wire — an RFC 3339 `…At` member (`claimClosesAt`,
+ *  `sessionEndsAt`) — as epoch seconds. Contract C9 spelt these as integer
+ *  epoch seconds; `auth/oob/request/0.2` and `redeem/0.2` spell them RFC 3339,
+ *  so an integer is no longer one. */
 export function epochOf(v: unknown): number | null {
-  return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
+  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(v)) return null;
+  const ms = Date.parse(v);
+  return Number.isNaN(ms) || ms < 0 ? null : Math.floor(ms / 1000);
 }
 
 interface WireReply {
@@ -289,7 +295,7 @@ export async function openRequest(
     );
   }
   const requestId = typeof p.requestId === "string" ? p.requestId : "";
-  const claimDeadline = epochOf(p.claimDeadline);
+  const claimDeadline = epochOf(p.claimClosesAt);
   if (!/^[A-Za-z0-9_-]{22}$/.test(requestId) || claimDeadline === null) {
     throw new Error("The community answered the sign-in request in a shape this page can't read.");
   }
@@ -309,7 +315,7 @@ export async function redeemOnce(
   return {
     subject: String(p.subject ?? ""),
     displayName: typeof p.displayName === "string" ? p.displayName : null,
-    notAfter: epochOf(p.notAfter) ?? 0,
+    notAfter: epochOf(p.sessionEndsAt) ?? 0,
     amr: Array.isArray(p.amr) ? (p.amr as string[]) : [],
     audience: audienceOf(p.ext),
   };

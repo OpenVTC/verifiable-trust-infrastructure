@@ -105,14 +105,14 @@ mod published_types {
     /// `SHOULD` in the spec would otherwise reach production as an accepted
     /// unsigned write.
     const _: () = {
-        use trust_tasks_rs::specs::persona::attribute::put::v1_1::Payload;
+        use vti_specs::persona::attribute::put::v1_1::Payload;
         assert!(<Payload as trust_tasks_rs::Payload>::IS_PROOF_REQUIRED);
         assert!(<Payload as trust_tasks_rs::Payload>::IS_ISSUED_AT_REQUIRED);
     };
 
     #[test]
     fn persona_family_is_published_and_addressable() {
-        use trust_tasks_rs::specs::persona::attribute::put::v1_1 as put;
+        use vti_specs::persona::attribute::put::v1_1 as put;
         assert_eq!(
             <put::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             "https://trusttasks.org/spec/persona/attribute/put/1.1"
@@ -125,7 +125,7 @@ mod published_types {
     /// withholding it.
     #[test]
     fn our_sensitivity_matches_the_published_enum() {
-        use trust_tasks_rs::specs::persona::attribute::list::v1_0 as list;
+        use vti_specs::persona::attribute::list::v1_0 as list;
         for (ours, theirs) in [
             (crate::Sensitivity::Normal, list::Sensitivity::Normal),
             (crate::Sensitivity::High, list::Sensitivity::High),
@@ -142,7 +142,7 @@ mod published_types {
     fn our_value_types_match_the_published_enum() {
         // The store validates values against these; a variant added upstream
         // without a matching arm here would silently reject a legal value.
-        use trust_tasks_rs::specs::persona::attribute::put::v1_1 as put;
+        use vti_specs::persona::attribute::put::v1_1 as put;
         for (ours, theirs) in [
             (crate::ValueType::String, put::ValueType::String),
             (crate::ValueType::Number, put::ValueType::Number),

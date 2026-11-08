@@ -102,24 +102,25 @@ export function DidHostingCard() {
       )}
       {field && !envPinned && (
         <>
-          <fieldset className="stack">
-            <label>
+          <fieldset className="choice-group">
+            <legend className="field-label">Published by</legend>
+            <label className="checkbox">
               <input
                 type="radio"
                 name="did-hosting"
                 checked={mode === "local"}
                 onChange={() => setMode("local")}
-              />{" "}
-              This community serves them
+              />
+              <span className="checkbox-text">This community serves them</span>
             </label>
-            <label>
+            <label className="checkbox">
               <input
                 type="radio"
                 name="did-hosting"
                 checked={mode === "server"}
                 onChange={() => setMode("server")}
-              />{" "}
-              A hosting server at the community&rsquo;s VTA
+              />
+              <span className="checkbox-text">A hosting server at the community&rsquo;s VTA</span>
             </label>
           </fieldset>
           {mode === "server" && listed.length > 0 && (

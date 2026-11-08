@@ -4,7 +4,7 @@
 //!
 //! SPEC.md §4.5.1 gives every Trust Task payload an `ext` slot for
 //! ecosystem-defined extension members, and the published schemas declare it —
-//! `acl/list/0.1`, `policy/list/0.2` and the rest all list `ext` among their
+//! `acl/list/0.1`, `policy/list/0.3` and the rest all list `ext` among their
 //! properties. So a conforming producer may send one.
 //!
 //! `#[serde(deny_unknown_fields)]` on a struct that has no `ext` field turns
@@ -70,7 +70,7 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
     (
         "IssuedCredentialSummary",
         "`vault`-style list row, not a payload root. \
-     `vta/credentials/list/0.1`'s published schema closes \
+     `vta/credentials/list/0.2`'s published schema closes \
      `IssuedCredentialSummary` with `additionalProperties: false` and declares \
      no `ext` slot on it — SPEC §4.5.1 gives the slot to the payload, which \
      this type is a member of rather than being. So no conforming producer can \
@@ -113,6 +113,25 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
          context-local profile structurally unable to name a pool attribute. \
          An `ext` slot the schema does not declare would be the first crack \
          in it.",
+    ),
+    (
+        "CapabilityRef",
+        "A member of `acl/_shared/0.2`'s AclEntry (`approveCapabilities` grants), \
+         not a payload root. The shared schema closes it with \
+         `additionalProperties: false` over `capability` / `resource` and no \
+         `ext` slot — SPEC §4.5.1 gives the slot to the entry, which has one.",
+    ),
+    (
+        "CapabilityGrant",
+        "A member of `acl/_shared/0.2`'s AclEntry (`capabilities` grants), closed \
+         by the shared schema over `capability` / `resource` / `additive` with \
+         no `ext` slot, as `CapabilityRef` above.",
+    ),
+    (
+        "StepUpReplacement",
+        "The `stepUp` member of an `acl/update/0.2` payload, which the published \
+         schema closes over `approver` / `require` with no `ext` slot; the \
+         payload itself carries `ext`.",
     ),
 ];
 

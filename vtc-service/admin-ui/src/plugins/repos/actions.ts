@@ -58,22 +58,22 @@ import type { GitNsDriftItem, GitNsRight, GitNsRoleMap } from "@/lib/wire-types"
 // these against the dispatcher's own registry (`git_ns::tasks::served_uris`)
 // instead, from its document-type allowlist.
 export const TASK_URI: Record<GitNsAction, string> = {
-  "namespace.bind": "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
+  "namespace.bind": "https://trusttasks.org/spec/git-ns/namespace/bind/0.2",
   "namespace.unbind": "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
-  "namespace.reseat": "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
+  "namespace.reseat": "https://trusttasks.org/spec/git-ns/namespace/reseat/0.4",
   // 0.3: separation of duties (fixed rule 7) and break-glass records.
-  "right.grant": "https://trusttasks.org/spec/git-ns/right/grant/0.3",
-  "right.revoke": "https://trusttasks.org/spec/git-ns/right/revoke/0.3",
-  "right.breakGlass": "https://trusttasks.org/spec/git-ns/right/break-glass/0.1",
-  "right.ratify": "https://trusttasks.org/spec/git-ns/right/ratify/0.1",
-  "repo.adopt": "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
-  "repo.transfer": "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
-  "repo.archive": "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
-  "repo.create": "https://trusttasks.org/spec/git-ns/repo/create/0.3",
+  "right.grant": "https://trusttasks.org/spec/git-ns/right/grant/0.4",
+  "right.revoke": "https://trusttasks.org/spec/git-ns/right/revoke/0.4",
+  "right.breakGlass": "https://trusttasks.org/spec/git-ns/right/break-glass/0.2",
+  "right.ratify": "https://trusttasks.org/spec/git-ns/right/ratify/0.2",
+  "repo.adopt": "https://trusttasks.org/spec/git-ns/repo/adopt/0.3",
+  "repo.transfer": "https://trusttasks.org/spec/git-ns/repo/transfer/0.3",
+  "repo.archive": "https://trusttasks.org/spec/git-ns/repo/archive/0.3",
+  "repo.create": "https://trusttasks.org/spec/git-ns/repo/create/0.4",
   // 0.3: an adopt names the member who receives the right (`subject`), and
   // the VTC refuses a 0.1 adopt, which names nobody.
-  "drift.resolve": "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
-  "roles.reproject": "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
+  "drift.resolve": "https://trusttasks.org/spec/git-ns/drift/resolve/0.4",
+  "roles.reproject": "https://trusttasks.org/spec/git-ns/roles/reproject/0.2",
 };
 
 /** Someone a change is about, named in the dialog before it is signed. */
@@ -216,7 +216,7 @@ export function reasonError(value: string): string | null {
     : null;
 }
 
-/** The longest break-glass justification (`git-ns/right/break-glass/0.1`). */
+/** The longest break-glass justification (`git-ns/right/break-glass/0.2`). */
 export const MAX_JUSTIFICATION = 2048;
 
 /** A break-glass justification: REQUIRED, never blank, at most 2048. */
@@ -229,7 +229,7 @@ export function justificationError(value: string): string | null {
 }
 
 /** A reseat's statement: REQUIRED, 1–1024 characters
- *  (`git-ns/namespace/reseat/0.3`). */
+ *  (`git-ns/namespace/reseat/0.4`). */
 export function statementError(value: string): string | null {
   const v = value.trim();
   if (!v) return "Say why the namespace is headless and why this member.";
@@ -738,7 +738,7 @@ export const CONSENT_LABEL: Record<ConsentClass, string> = {
 };
 
 /**
- * `git-ns/roles/reproject/0.1` — have the bridge re-apply the forge roles of
+ * `git-ns/roles/reproject/0.2` — have the bridge re-apply the forge roles of
  * every active or orphaned repository in a namespace, or of one repository,
  * from the VTC's rights under the bridge's current role map. No right
  * changes. Signed by a community administrator or a namespace admin, or —

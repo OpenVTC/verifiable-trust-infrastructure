@@ -187,7 +187,7 @@ export interface ApproverSignedEvidence {
 }
 
 /** The step-up request handed to the plugin's `approveStepUp` — the VTC's
- *  inline `auth/step-up/approve-request/0.4` payload, as received. */
+ *  inline `auth/step-up/approve-request/0.5` payload, as received. */
 export interface ApproverStepUpRequest {
   subject: string;
   challenge: string;
@@ -257,7 +257,7 @@ export function isWalletSigningAvailable(): boolean {
 
 /** True iff the wallet can answer a step-up with its approver **and** sign the
  *  approve-response as the subject — both halves of an `approverSigned`
- *  answer (`auth/step-up/approve-response/0.6`). */
+ *  answer (`auth/step-up/approve-response/0.7`). */
 export function isWalletApproverAvailable(): boolean {
   return isWalletSigningAvailable() && typeof window.vtaWallet?.approveStepUp === "function";
 }
@@ -431,7 +431,7 @@ export async function loginWithWallet(): Promise<VtaWalletLoginResult> {
 }
 
 const AUTH_AUTHENTICATE_TYPE =
-  "https://trusttasks.org/spec/auth/authenticate/0.1";
+  "https://trusttasks.org/spec/auth/authenticate/0.3";
 
 /** Extract the compact JWS id_token from a SessionBlob's Authorization
  *  header. */

@@ -48,7 +48,7 @@ use serde_json::{Value, json};
 use trust_tasks_rs::TrustTask;
 use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::session::TspSession;
-use vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_3;
+use vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_4;
 use vta_service::test_support::MockVta;
 
 mod common;
@@ -146,7 +146,7 @@ async fn upsert_with_tsp_secret(
 ) -> Vec<u8> {
     let mut doc: TrustTask<Value> = serde_json::from_value(json!({
         "id": id,
-        "type": TASK_VAULT_UPSERT_0_3,
+        "type": TASK_VAULT_UPSERT_0_4,
         "issuedAt": chrono::Utc::now().to_rfc3339(),
         "issuer": issuer,
         "recipient": recipient,
@@ -279,7 +279,7 @@ async fn a_tsp_sealed_secret_is_unsealed_by_a_running_vta() {
     );
     assert_eq!(
         type_uri,
-        format!("{TASK_VAULT_UPSERT_0_3}#response"),
+        format!("{TASK_VAULT_UPSERT_0_4}#response"),
         "expected a vault/upsert response: {doc:#}"
     );
 
@@ -288,7 +288,7 @@ async fn a_tsp_sealed_secret_is_unsealed_by_a_running_vta() {
     // `unseal_tsp_secret` opened a real TSP message — which is the assertion
     // `trust_tasks::vault::tsp_unseal_tests` could not make.
     assert_eq!(
-        doc.pointer("/payload/created").and_then(Value::as_bool),
+        doc.pointer("/payload/wasCreated").and_then(Value::as_bool),
         Some(true),
         "the upsert did not create an entry: {doc:#}"
     );

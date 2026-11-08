@@ -82,22 +82,12 @@ pub(crate) async fn run(
             context,
             prefix,
             actions,
-            object_key,
             presign,
             ttl,
         } => match presign {
             Some(batch) => ext::cmd_issue_presign(client, &context, &account, &batch, ttl).await,
             None => {
-                ext::cmd_issue(
-                    client,
-                    &context,
-                    &account,
-                    prefix.as_deref(),
-                    &actions,
-                    object_key.as_deref(),
-                    ttl,
-                )
-                .await
+                ext::cmd_issue(client, &context, &account, prefix.as_deref(), &actions, ttl).await
             }
         },
     }

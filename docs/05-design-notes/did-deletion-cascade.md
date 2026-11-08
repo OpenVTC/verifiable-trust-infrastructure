@@ -71,6 +71,14 @@ a *chosen* one. This rides the same rail as the existing backup-partition
 census, and turns "we forgot" from an orphan found months later in a log into a
 red test.
 
+A label is a claim about the code. `Cascade`, `Blocks` and `Revoke` are held
+to the cascade's own list of what it reaches (`DID_DELETE_REACHES` beside
+`delete_did_webvh_with`) by `did_delete_labels_match_the_cascade`. A keyspace
+whose rows should go with the DID, or should stop the deletion, but which the
+cascade does not reach yet is labelled `Orphaned`, with the intended effect in
+the comment beside it. Until that test existed, most of the census said
+`Cascade` for keyspaces nothing cleared.
+
 Two classifications are pinned explicitly because they are the ones a future
 change is most likely to get wrong:
 
@@ -151,12 +159,16 @@ construction site can opt into by omission.
   `trustoverip/dtgwg-trust-tasks-tf` and `trust-tasks-rs` bumps.
   `vta/contexts/preview-delete/1.0` is the precedent to copy, and a spec PR is
   the prerequisite — not something to work around by inventing a URI.
-- **The remaining cascades.** Classified but not yet executed: vault, consent,
-  task_consent, app_state, memory, outbox, cache, passkey_vms, imported_secrets.
-  The census names them; the code does not clear them yet.
-- **The remaining blockers.** `service_state` / `service_prev_config`, `policy`
-  and `consent_approvers` are classified `Blocks` but only the context and
-  self-DID checks are implemented.
+- **The remaining cascades and blockers.** Every keyspace labelled `Orphaned`
+  in `did_delete_effect`: the material of imported / internal keys, outbox,
+  trust-task pushes, TSP relationships, passkey VMs, consent, task consent,
+  vault, app state, memory, room groups and invitations, PCS engine, witness
+  sessions, notifications, persona bindings and contacts (should cascade); and
+  `service_state` / `service_prev_config`, `policy`, `consent_approvers` and
+  `external_accounts` (should block — only the context and self-DID checks are
+  implemented). A *context* deletion purges most of the cascade set for the
+  whole context (`vta_keyspaces::context_delete_effect`); a lone DID deletion
+  does not.
 - **Resumability (R2.1).** The daemon delete still happens before local cleanup
   with no idempotency key, so a failure between them leaves the daemon-side
   orphan the code already warns about.

@@ -86,6 +86,26 @@ pub async fn enforce_daily_quota(
     Ok(())
 }
 
+/// Remove every daily quota counter of `context_id`
+/// (`quota:{context}:{op}:{day}`), returning how many went.
+///
+/// For a context deletion. A counter left behind is inherited by a context
+/// created again under the same id, which would start its day with the old
+/// one's operations already counted against it. The trailing `:` keeps a
+/// sibling whose id merely starts with this one (`acme2`) out of the scan; a
+/// sub-context (`acme/eng`) is a different key segment and is purged with its
+/// own deletion.
+pub async fn purge_quota_counters(
+    ks: &KeyspaceHandle,
+    context_id: &str,
+) -> Result<usize, AppError> {
+    let keys = ks.prefix_keys(format!("quota:{context_id}:")).await?;
+    for key in &keys {
+        ks.remove(key.clone()).await?;
+    }
+    Ok(keys.len())
+}
+
 /// Store (create or overwrite) a context record.
 pub async fn store_context(ks: &KeyspaceHandle, record: &ContextRecord) -> Result<(), AppError> {
     ks.insert(ctx_key(&record.id), record).await

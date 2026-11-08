@@ -21,7 +21,8 @@
 //! keeps the member absent, the census enforces it, and the witness is built
 //! rather than transcribed.
 //!
-//! Members mirror `device/*/0.1`. Only what the client can actually send is
+//! Members mirror `device/register/0.2`, `device/heartbeat/0.3`,
+//! `device/disable/0.1`, `device/wipe/0.2` and `device/set-wake/0.2`. Only what the client can actually send is
 //! modelled — `attestation` and `keyCustody` are in the schema but have no
 //! producer here yet, and a field nothing sets is a claim the type should not
 //! make.
@@ -29,7 +30,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// `device/register/0.1` — claim a `DeviceBinding` on the caller's ACL entry.
+/// `device/register/0.2` — claim a `DeviceBinding` on the caller's ACL entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceRegisterBody {
@@ -45,7 +46,7 @@ pub struct DeviceRegisterBody {
     pub hpke_public_key: Option<String>,
 }
 
-/// `device/heartbeat/0.1` — refresh `lastSeenAt`, and `platform` if supplied.
+/// `device/heartbeat/0.3` — refresh `lastSeenAt`, and `platform` if supplied.
 ///
 /// Every member is optional: an empty body is the common case (a bare "still
 /// here"), and it must serialize to `{}`, not to a map of nulls.
@@ -498,7 +499,7 @@ pub struct DeviceDisableBody {
     pub reason: Option<String>,
 }
 
-/// `device/wipe/0.1` — remote-wipe a compromised or lost device.
+/// `device/wipe/0.2` — remote-wipe a compromised or lost device.
 ///
 /// `scope` and `reason` are both required by the spec: a wipe with no recorded
 /// reason is an audit gap, and the schema refuses one.
@@ -506,7 +507,7 @@ pub struct DeviceDisableBody {
 #[serde(rename_all = "camelCase")]
 pub struct DeviceWipeBody {
     pub device_id: String,
-    /// `cache` | `cache-and-keys` | `full`.
+    /// `cache` | `cacheAndKeys` | `full`.
     pub scope: String,
     pub reason: String,
 }
@@ -519,7 +520,7 @@ pub struct WakeHandle {
     pub handle: String,
 }
 
-/// `device/set-wake/0.1` — convey the device's `WakeHandle`.
+/// `device/set-wake/0.2` — convey the device's `WakeHandle`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceSetWakeBody {
@@ -849,7 +850,7 @@ mod tests {
     #[test]
     fn set_members_serialise_camel_case() {
         let full = DeviceRegisterBody {
-            consumer_kind: serde_json::json!({"kind": "service", "serviceKind": "ai-agent"}),
+            consumer_kind: serde_json::json!({"kind": "service", "serviceKind": "aiAgent"}),
             display_name: "agent".into(),
             platform: Some("macos".into()),
             hpke_public_key: Some("zHpke".into()),

@@ -68,7 +68,7 @@ export interface paths {
          *
          *     Two request shapes, tried in order:
          *
-         *     1. **Trust-Task `auth/refresh/0.1` document** (canonical REST) — no
+         *     1. **Trust-Task `auth/refresh/0.2` document** (canonical REST) — no
          *        mediator, no DIDComm stack. See [`try_refresh_trust_task`].
          *     2. **DIDComm authcrypt envelope** — for clients already on a mediator.
          *        Unchanged, and still gated by `bind_authcrypt_sender`.
@@ -296,15 +296,6 @@ export interface components {
             updatedAt?: string | null;
             updatedBy?: string | null;
         };
-        AclListResponse: {
-            cursor?: string | null;
-            entries: components["schemas"]["AclEntryResponse"][];
-            /**
-             * @description True when more entries match beyond this page; `cursor` is then
-             *     present. Required by canonical `acl/list`.
-             */
-            truncated: boolean;
-        };
         /**
          * @description `POST /v1/auth/passkey-login/finish`.
          *
@@ -465,17 +456,13 @@ export interface components {
         };
         /** @description Canonical `audit/list` response. */
         AuditListResponse: {
-            cursor?: string | null;
             entries: components["schemas"]["AuditEntry"][];
-            /**
-             * @description True when more entries match beyond this page; `cursor` is then
-             *     present.
-             */
-            truncated: boolean;
+            /** @description Continuation token, present iff more entries match beyond this page. */
+            nextCursor?: string | null;
         };
         /**
          * @description Server responds from `POST /auth/`. Conforms to
-         *     `spec/auth/authenticate/0.1#response`: `{ session, tokens }`.
+         *     `spec/auth/authenticate/0.3#response`: `{ session, tokens }`.
          */
         AuthenticateResponse: {
             session: components["schemas"]["Session"];
@@ -674,11 +661,16 @@ export interface components {
          */
         ConfigSource: "env" | "db" | "toml" | "default";
         CreateInviteRequest: {
-            /** @description Admin DID the install URL grants a passkey for. */
-            did: string;
             /**
-             * @description Operator-supplied label for the ACL entry if one needs to be
-             *     created. Ignored when the ACL entry already exists.
+             * @description The DID a **wallet** invitation is for. Absent, the invitation is a
+             *     **passkey** invitation: the administrator's DID is derived from the
+             *     passkey the invitee registers.
+             */
+            did?: string | null;
+            /**
+             * @description Operator-supplied label for the ACL entry the invitation writes — now
+             *     for a wallet invitation whose DID has none, at the claim for a passkey
+             *     invitation. Ignored when a wallet invitation's DID already has one.
              */
             label?: string | null;
             /**
@@ -692,8 +684,9 @@ export interface components {
         };
         CreateInviteResponse: {
             /**
-             * @description `true` when the call also wrote the ACL entry; `false` when
-             *     the target DID was already an admin (idempotent).
+             * @description `true` when the call also wrote the ACL entry; `false` when a wallet
+             *     invitation's DID was already an admin (idempotent), and always for a
+             *     passkey invitation, whose entry is written when it is claimed.
              */
             aclEntryCreated: boolean;
             /**
@@ -719,6 +712,8 @@ export interface components {
              *     DELETE surfaces use.
              */
             jti: string;
+            /** @description Whether this is a wallet or a passkey invitation. */
+            kind: components["schemas"]["InviteKind"];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         CredentialExchangeIssueV0_1Ext: {
@@ -1080,12 +1075,6 @@ export interface components {
              *     without downloading), so it goes upstream rather than in the bin.
              */
             etag: string;
-            /**
-             * Format: date-time
-             * @description `format: date-time`, not unix seconds. This was a `u64` until #1095 —
-             *     a type mismatch, not merely a format one: the schema says `string`.
-             */
-            modifiedAt: string;
             path: string;
             /**
              * Format: int64
@@ -1094,6 +1083,14 @@ export interface components {
              *     was absent under the name a conforming consumer looks for.
              */
             size: number;
+            /**
+             * Format: date-time
+             * @description `format: date-time`, not unix seconds. This was a `u64` until #1095 —
+             *     a type mismatch, not merely a format one: the schema says `string`.
+             *     `updatedAt` from `files/list/0.3`, the registry's one name for "when this
+             *     was last changed" (`modifiedAt` before it).
+             */
+            updatedAt: string;
         };
         /**
          * @description One observation about the document-versus-binary relationship.
@@ -1198,13 +1195,14 @@ export interface components {
             action: string;
             /** @description Who acted. Absent when an erasure has removed it from the audit row. */
             actor?: string | null;
-            at: string;
             /**
              * @description A machine-readable qualifier (`departed`, the old name of a rename, a
              *     job's state, a drift count).
              */
             detail?: string | null;
             namespace?: string | null;
+            /** @description When it happened (`git-ns/activity/list/0.3`; `at` before it). */
+            occurredAt: string;
             resource?: string | null;
             right?: string | null;
             /** @description `audit` or `job`. */
@@ -1219,14 +1217,18 @@ export interface components {
             variables: boolean;
             workflow: boolean;
         };
-        /** @description A record's `breakGlass` (`git-ns/_shared/0.5` `BreakGlass`). */
+        /** @description A record's `breakGlass` (`git-ns/_shared/0.6` `BreakGlass`). */
         GitNsBreakGlassMark: {
-            at: string;
             by: string;
             effectiveAt?: string | null;
             justification: string;
             ratifiedAt?: string | null;
             ratifiedBy?: string | null;
+            /**
+             * @description When the VTC recorded the break-glass (`git-ns/_shared/0.6`; `at`
+             *     before it).
+             */
+            recordedAt: string;
         };
         /** @description The grants one departed member issued. */
         GitNsDepartedGranter: {
@@ -1287,7 +1289,7 @@ export interface components {
             jobId: string;
             /**
              * @description `projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |
-             *     `beginBind` | `beginAccountLink` | `closePullRequest` (0.2 only).
+             *     `beginBind` | `beginAccountLink` | `closePullRequest`.
              */
             kind: string;
             lastError?: string | null;
@@ -1307,7 +1309,8 @@ export interface components {
         };
         /** @description The last verify-trust check run the bridge saw on a repository. */
         GitNsLastCheck: {
-            at: string;
+            /** @description When the check run concluded (`git-ns/repo/list/0.2`; `at` in 0.1). */
+            concludedAt: string;
             /** @description In the forge's words (`success`, `failure`). */
             conclusion: string;
             sha?: string | null;
@@ -1489,7 +1492,7 @@ export interface components {
             step: string;
         };
         /** @description Whether each step that turns commit trust on for a repository is in place, as last reported. A step that this forge's plan does not need reads `true`. */
-        GitNsViewV0_1Bootstrap: {
+        GitNsViewV0_6Bootstrap: {
             /** @description The exempt platform keyring for forge-signed merge commits is committed, or the forge's plan does not need one. */
             keyring: boolean;
             /** @description The forge refuses to merge into the default branch unless the verify-trust check passes, with no bypass, and a pull request cannot change what that check runs: an organisation-required workflow, code-owner review of workflow files, or protected workflow paths, as the forge allows. */
@@ -1499,16 +1502,38 @@ export interface components {
             /** @description The verify-trust check runs on the repository's pull requests — from a workflow committed to it, or, where the forge supports it, required on it from the namespace's own bridge-managed workflow repository at a pinned commit. */
             workflow: boolean;
         };
-        /** @description A DID, compared by exact string equality. */
-        GitNsViewV0_1Did: string;
+        /** @description How a self-granted right came to be, and whether another administrator has since ratified it. A record whose `breakGlass` has no `ratifiedBy` is **unratified**: it is live and published like any other right, it does not count toward the last-owner or last-admin invariants, and any community administrator or namespace admin of its namespace may revoke it. Ratification (git-ns/right/ratify) sets `ratifiedBy` and `ratifiedAt`; from then on the record is an ordinary grant, and `breakGlass` stays as its history. Never published to the Trust Registry. */
+        GitNsViewV0_6BreakGlass: {
+            by: components["schemas"]["GitNsViewV0_6Did"];
+            /**
+             * Format: date-time
+             * @description When the right takes effect, where the community's policy imposed a delay. Absent: it took effect at `recordedAt`. Until this instant the record confers nothing and is not published, and any administrator who may revoke it may do so.
+             */
+            effectiveAt?: string;
+            /** @description The actor's statement of why nobody else could grant this right. Shown to every community administrator, every namespace admin of the namespace and every owner of the resource; kept in the audit record; never published. */
+            justification: string;
+            /**
+             * Format: date-time
+             * @description When it was ratified. Present exactly when `ratifiedBy` is.
+             */
+            ratifiedAt?: string;
+            ratifiedBy?: components["schemas"]["GitNsViewV0_6Did"];
+            /**
+             * Format: date-time
+             * @description When the VTC recorded the break-glass.
+             */
+            recordedAt: string;
+        };
+        /** @description A bare DID in the W3C DID Core syntax (§3.1): `did:`, a method name of lowercase letters and digits, `:`, and a method-specific id of colon-separated segments drawn from `A-Z a-z 0-9 . - _` and percent-encoded octets, the last segment non-empty. A DID URL is not a DID: no path, query or fragment (`/`, `?`, `#`), so a verification-method id such as `did:key:z6Mk…#z6Mk…` is refused. Compared by exact string equality — no case folding or percent-decoding. A consumer MUST still treat the value as data: the pattern keeps shell metacharacters, whitespace and quotes out of the wire form, but it does not make a DID safe to splice into a command or markup. */
+        GitNsViewV0_6Did: string;
         /** @description One difference between the forge's observed state and the VTC's projection of a repository. */
-        GitNsViewV0_1DriftItem: {
-            account?: components["schemas"]["GitNsViewV0_1ForgeAccount"];
+        GitNsViewV0_6DriftItem: {
+            account?: components["schemas"]["GitNsViewV0_6ForgeAccount"];
             /** @description What the projection calls for, in the forge's own vocabulary. Absent when the projection calls for nothing. */
             expected?: string;
             /** @description What the forge shows, in the forge's own vocabulary (a role name such as `maintain`, a setting name). Absent when nothing is there. */
             observed?: string;
-            resource: components["schemas"]["GitNsViewV0_1RepoResource"];
+            resource: components["schemas"]["GitNsViewV0_6RepoResource"];
             /**
              * @description `roleAdded` — someone holds a forge role the projection does not give them. `roleRemoved` — a projected role is missing. `roleChanged` — a projected role is present at another level. `requiredCheckMissing` — the verify-trust check is no longer required. `protectionWeakened` — branch protection or a ruleset is weaker than the projection in another way (force-push allowed, bypass actors added). `bootstrapMissing` — a bootstrap file or variable is gone.
              * @enum {string}
@@ -1516,26 +1541,26 @@ export interface components {
             type: "roleAdded" | "roleRemoved" | "roleChanged" | "requiredCheckMissing" | "protectionWeakened" | "bootstrapMissing";
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        GitNsViewV0_1Ext: {
+        GitNsViewV0_6Ext: {
             [key: string]: unknown;
         };
         /** @description A person's account on one forge. `id` is authoritative; `login` is for display only, because logins can be renamed and re-registered. */
-        GitNsViewV0_1ForgeAccount: {
-            forge: components["schemas"]["GitNsViewV0_1ForgeHost"];
-            id: components["schemas"]["GitNsViewV0_1ForgeId"];
+        GitNsViewV0_6ForgeAccount: {
+            forge: components["schemas"]["GitNsViewV0_6ForgeHost"];
+            id: components["schemas"]["GitNsViewV0_6ForgeId"];
             /** @description The account's current login, as the forge reported it when last seen. Display only. */
             login: string;
         };
-        /** @description The lowercased DNS host of a forge: `github.com`, a GitHub Enterprise Server host, `codeberg.org`, or a self-hosted Forgejo instance such as `git.example.org`. No scheme, no port, no path. The host is a segment of every resource, so a right never crosses forges. */
-        GitNsViewV0_1ForgeHost: string;
-        /** @description An identifier the forge itself assigns — a repository id, a user or organisation id — carried as a string so a forge whose ids are not numbers needs no new version. GitHub and Forgejo ids are decimal integers written as strings (`"812736451"`). Unlike a name, it survives renames and transfers, which is why rights and bindings are keyed by it. */
-        GitNsViewV0_1ForgeId: string;
+        /** @description The lowercased DNS host of a forge: `github.com`, a GitHub Enterprise Server host, `codeberg.org`, `gitlab.com`, or a self-hosted Forgejo or GitLab instance such as `git.example.org`. No scheme, no port, no path. The host is a segment of every resource, so a right never crosses forges. */
+        GitNsViewV0_6ForgeHost: string;
+        /** @description An identifier the forge itself assigns — a repository id, a user or organisation id — carried as a string so a forge whose ids are not numbers needs no new version. GitHub, Forgejo and GitLab ids are decimal integers written as strings (`"812736451"`). Unlike a name, it survives renames and transfers, which is why rights and bindings are keyed by it. */
+        GitNsViewV0_6ForgeId: string;
         /** @description The VTC's binding to one owner on one forge. */
-        GitNsViewV0_1GitNamespace: {
-            forge: components["schemas"]["GitNsViewV0_1ForgeHost"];
-            id: components["schemas"]["GitNsViewV0_1NamespaceId"];
+        GitNsViewV0_6GitNamespace: {
+            forge: components["schemas"]["GitNsViewV0_6ForgeHost"];
+            id: components["schemas"]["GitNsViewV0_6NamespaceId"];
             /**
-             * @description Whether the owner is an organisation or a personal account, as the forge reports it. Present once known: a bridge-mode namespace learns it when binding completes, and a manual-mode namespace MAY never learn it.
+             * @description Whether the owner is an organisation or a personal account, as the forge reports it; a GitLab top-level group is an `organization`. Present once known: a bridge-mode namespace learns it when binding completes, and a manual-mode namespace MAY never learn it.
              * @enum {string}
              */
             kind?: "organization" | "user";
@@ -1544,56 +1569,68 @@ export interface components {
              * @enum {string}
              */
             mode: "bridge" | "manual";
-            owner: components["schemas"]["GitNsViewV0_1Segment"];
+            owner: components["schemas"]["GitNsViewV0_6Segment"];
             /**
              * @description `pending` — binding has started and the forge-side proof has not arrived yet. `bound` — the VTC governs rights under this namespace.
              * @enum {string}
              */
             state: "pending" | "bound";
         };
+        /** @description A forge account linked to the caller's DID with git-ns/account/link, and when the link completed. */
+        GitNsViewV0_6LinkedAccount: {
+            account: components["schemas"]["GitNsViewV0_6ForgeAccount"];
+            /**
+             * Format: date-time
+             * @description When the link completed: when the VTC recorded the account against the caller's DID.
+             */
+            linkedAt: string;
+        };
         /** @description The VTC's opaque identifier for a namespace, assigned when it is bound. Stable for the life of the binding; never reused for another binding. */
-        GitNsViewV0_1NamespaceId: string;
-        /** @description A forge-qualified resource naming exactly one repository: `<forge-host>/<owner>/<repo>`, lowercase. */
-        GitNsViewV0_1RepoResource: string;
+        GitNsViewV0_6NamespaceId: string;
+        /** @description A forge-qualified resource naming exactly one repository: `<forge-host>/<owner>/<repo-path>`, lowercase, where the repository path has 1 to 21 segments (see `Resource`). */
+        GitNsViewV0_6RepoResource: string;
         /** @description One repository as the VTC records it. */
-        GitNsViewV0_1RepoSummary: {
-            bootstrap: components["schemas"]["GitNsViewV0_1Bootstrap"];
-            forgeId?: components["schemas"]["GitNsViewV0_1ForgeId"];
+        GitNsViewV0_6RepoSummary: {
+            bootstrap: components["schemas"]["GitNsViewV0_6Bootstrap"];
+            forgeId?: components["schemas"]["GitNsViewV0_6ForgeId"];
             /** @description The DIDs holding `git.repo.own` on this repository by an explicit grant. Empty only for an `unmanaged` repository, and for an `orphaned` one whose ownership rests with the namespace admins by implication. */
-            owners: components["schemas"]["GitNsViewV0_1Did"][];
-            resource: components["schemas"]["GitNsViewV0_1RepoResource"];
+            owners: components["schemas"]["GitNsViewV0_6Did"][];
+            resource: components["schemas"]["GitNsViewV0_6RepoResource"];
             /**
              * @description `pendingCreate` — the name is reserved and the repository is not yet confirmed on the forge. `active` — managed. `archived` — archived through git-ns/repo/archive; commit rights on it are revoked. `detached` — no longer governed: its namespace was unbound, or it moved outside the namespace. `orphaned` — its last owner left the community and ownership passed to the namespace admins, who have not yet named a new owner. `unmanaged` — it exists on the forge inside a bound namespace but was never created or adopted through the VTC.
              * @enum {string}
              */
             state: "pendingCreate" | "active" | "archived" | "detached" | "orphaned" | "unmanaged";
-            sync: components["schemas"]["GitNsViewV0_1Sync"];
-            visibility: components["schemas"]["GitNsViewV0_1RepoVisibility"];
+            sync: components["schemas"]["GitNsViewV0_6Sync"];
+            visibility: components["schemas"]["GitNsViewV0_6RepoVisibility"];
         };
         /**
          * @description Repository visibility on the forge.
          * @enum {string}
          */
-        GitNsViewV0_1RepoVisibility: "public" | "private";
-        /** @description A forge-qualified resource: `<forge-host>/<owner>` for a namespace, or `<forge-host>/<owner>/<repo>` for one repository, all lowercase — `github.com/acme`, `github.com/acme/widgets`, `codeberg.org/acme`. The forge is never implied: `acme/widgets` alone is not a resource. Containment is by whole segment: `github.com/acme` contains `github.com/acme/widgets` and does not contain `github.com/acme-labs/x` or `codeberg.org/acme/widgets`. */
-        GitNsViewV0_1Resource: string;
-        /** @description What the caller may see. */
-        GitNsViewV0_1Response: {
-            ext?: components["schemas"]["GitNsViewV0_1Ext"];
-            /** @description Namespaces bound to this VTC that contain, or are contained by, `resource`. */
-            namespaces: components["schemas"]["GitNsViewV0_1GitNamespace"][];
-            /** @description Repositories within `resource`. `unmanaged` repositories are included only for callers holding `git.ns.admin` over them. */
-            repos: components["schemas"]["GitNsViewV0_1RepoSummary"][];
-            /** @description Rights within `resource` the caller may see: always the caller's own; every right on a resource the caller owns or administers. `reason` is omitted except on resources the caller owns or administers. */
-            rights: components["schemas"]["GitNsViewV0_1RightRecord"][];
+        GitNsViewV0_6RepoVisibility: "public" | "private";
+        /** @description A forge-qualified resource, all lowercase: `<forge-host>/<owner>` for a namespace, or `<forge-host>/<owner>/<repo-path>` for one repository — `github.com/acme`, `github.com/acme/widgets`, `codeberg.org/acme`. On a forge with nested groups (GitLab) the repository path holds the subgroups between the top-level owner and the project: `gitlab.com/acme/platform/tools/cli` is one repository of the namespace `gitlab.com/acme`, and a subgroup such as `gitlab.com/acme/platform` is not a resource. A repository path has 1 to 21 segments (GitLab: 20 levels of subgroup and the project); GitHub and Forgejo repository paths are always one. The forge is never implied: `acme/widgets` alone is not a resource. Containment is by whole segment: `github.com/acme` contains `github.com/acme/widgets` and does not contain `github.com/acme-labs/x` or `codeberg.org/acme/widgets`. */
+        GitNsViewV0_6Resource: string;
+        /** @description What the caller may see — or, with `scope: administrator`, everything in the namespaces they administer — and the caller's own linked forge accounts. */
+        GitNsViewV0_6Response: {
+            /** @description The forge accounts linked to the caller's own DID — never another member's — at most one per forge. With `resource`, only the account on that resource's forge. Empty when the caller has linked none. */
+            accounts: components["schemas"]["GitNsViewV0_6LinkedAccount"][];
+            ext?: components["schemas"]["GitNsViewV0_6Ext"];
+            /** @description Namespaces bound to this VTC that contain, or are contained by, `resource`. With `scope: administrator`, only those the caller administers. With `breakGlass: true`, only those containing a returned record. */
+            namespaces: components["schemas"]["GitNsViewV0_6GitNamespace"][];
+            /** @description Repositories within `resource`. `unmanaged` repositories are included only for callers holding `git.ns.admin` over them, or with `scope: administrator`. With `breakGlass: true`, only those carrying a returned record. */
+            repos: components["schemas"]["GitNsViewV0_6RepoSummary"][];
+            /** @description Rights within `resource` the caller may see: always the caller's own; every right on a resource the caller owns or administers; every unratified break-glass record in a namespace they administer or on a resource they own. With `scope: administrator`, every recorded right in the namespaces the caller administers. `reason` is omitted except on resources the caller owns or administers. With `breakGlass: true`, only records carrying `breakGlass`. */
+            rights: components["schemas"]["GitNsViewV0_6RightRecord"][];
         };
         /**
          * @description One of the five git rights. Each string is also the TRQP `action` the VTC publishes the right under in its Trust Registry, so it is carried verbatim. `git.ns.admin` and `git.repo.create` apply to a namespace resource; `git.repo.own` and `git.repo.maintain` to a repository resource; `git.commit.sign` to either.
          * @enum {string}
          */
-        GitNsViewV0_1Right: "git.ns.admin" | "git.repo.create" | "git.repo.own" | "git.repo.maintain" | "git.commit.sign";
-        /** @description One recorded right. Implied rights (§4.2 of the rights model: `own` implies `maintain` implies `commit.sign` on the same resource; `ns.admin` implies `repo.create` and `own` across its namespace) are not records and never appear as RightRecords. */
-        GitNsViewV0_1RightRecord: {
+        GitNsViewV0_6Right: "git.ns.admin" | "git.repo.create" | "git.repo.own" | "git.repo.maintain" | "git.commit.sign";
+        /** @description One recorded right. Implied rights (§4.2 of the rights model: `own` implies `maintain` implies `commit.sign` on the same resource; `ns.admin` implies `repo.create` and `own` across its namespace) are not records and never appear as RightRecords. A record carrying `breakGlass` was given by its subject to themselves through git-ns/right/break-glass; it is a real right, published like any other, and is shown with that flag on every surface that shows the record. */
+        GitNsViewV0_6RightRecord: {
+            breakGlass?: components["schemas"]["GitNsViewV0_6BreakGlass"];
             /**
              * Format: date-time
              * @description When the right lapses. Absent: no expiry.
@@ -1601,24 +1638,24 @@ export interface components {
             expiresAt?: string;
             /** Format: date-time */
             grantedAt: string;
-            grantedBy: components["schemas"]["GitNsViewV0_1Did"];
+            grantedBy: components["schemas"]["GitNsViewV0_6Did"];
             /** @description The granter's free-text reason. Disclosed only to holders of `git.repo.own` on the resource and of `git.ns.admin` over it. */
             reason?: string;
-            resource: components["schemas"]["GitNsViewV0_1Resource"];
-            right: components["schemas"]["GitNsViewV0_1Right"];
-            subject: components["schemas"]["GitNsViewV0_1Did"];
+            resource: components["schemas"]["GitNsViewV0_6Resource"];
+            right: components["schemas"]["GitNsViewV0_6Right"];
+            subject: components["schemas"]["GitNsViewV0_6Did"];
         };
-        /** @description One lowercased owner or repository name. Forges compare these case-insensitively, so the wire form is always lowercase and a producer lowercases before sending. A leading `.` is refused, which rules out `.` and `..`. */
-        GitNsViewV0_1Segment: string;
+        /** @description One lowercased owner, group or repository name. Forges compare these case-insensitively, so the wire form is always lowercase and a producer lowercases before sending. A leading `.` is refused, which rules out `.` and `..`. Up to 255 characters, the longest name GitLab allows; GitHub and Forgejo names are shorter. */
+        GitNsViewV0_6Segment: string;
         /** @description How the forge compares with the VTC's projection for one repository. */
-        GitNsViewV0_1Sync: {
+        GitNsViewV0_6Sync: {
             /**
              * Format: date-time
              * @description When the forge was last compared. Absent if never.
              */
             checkedAt?: string;
             /** @description Outstanding drift. Empty unless `state` is `drift`. */
-            drift: components["schemas"]["GitNsViewV0_1DriftItem"][];
+            drift: components["schemas"]["GitNsViewV0_6DriftItem"][];
             /**
              * @description `inSync` — the last comparison found no drift. `drift` — it found some, listed in `drift`. `pending` — a change has been sent to the forge and not yet confirmed. `unchecked` — nothing compares this repository (a manual-mode namespace).
              * @enum {string}
@@ -1707,15 +1744,15 @@ export interface components {
         HealthStatus: "active" | "degraded";
         /** @description One room, as its host can honestly describe it. */
         HostedRoom: {
-            /** Format: int64 */
-            createdAt: number;
+            /** @description RFC 3339, as every instant from `vtc/_shared/0.3/room-storage`'s `HostedRoom` on. */
+            createdAt: string;
             /** Format: int32 */
             epoch: number;
             /**
-             * Format: int64
-             * @description When the current epoch expires. Absent means the room never lapses.
+             * @description When the current epoch expires, as an RFC 3339 instant. Absent means the
+             *     room never lapses.
              */
-            epochExpiresAt?: number | null;
+            epochExpiresAt?: string | null;
             /**
              * @description Where the room sits on the lifecycle clock: `live`, `lapsed`, `dormant`
              *     or `reclaimable`. Computed, never stored — minting an epoch *is* the
@@ -1737,8 +1774,7 @@ export interface components {
             /** @description Whether the room keeps its history readable across a membership change. */
             retentionPolicy: string;
             roomId: string;
-            /** Format: int64 */
-            updatedAt: number;
+            updatedAt: string;
             visibility: string;
         };
         /**
@@ -1828,6 +1864,12 @@ export interface components {
             newlyRevoked: boolean;
             revokedAt: string;
         };
+        /**
+         * @description `vtc/_shared/0.2/invite#InviteKind`: whether an invitation names the DID
+         *     that claims it.
+         * @enum {string}
+         */
+        InviteKind: "wallet" | "passkey";
         /** @enum {string} */
         InviteStatus: "issued" | "consumed" | "expired";
         InviteSummary: {
@@ -1844,11 +1886,14 @@ export interface components {
              */
             expiresAt?: string | null;
             jti: string;
+            /** @description Whether this is a wallet or a passkey invitation. */
+            kind: components["schemas"]["InviteKind"];
             status: components["schemas"]["InviteStatus"];
             /**
-             * @description Admin DID the invite was minted for. `None` only on
-             *     legacy rows persisted before the field landed (those are
-             *     safe to clean up via revoke). New invites always carry it.
+             * @description The administrator's DID: a wallet invitation's always (but for legacy
+             *     rows persisted before the field landed, safe to clean up via revoke);
+             *     a passkey invitation's once it is consumed — the DID derived from the
+             *     passkey that claimed it.
              */
             targetDid?: string | null;
         };
@@ -2055,6 +2100,7 @@ export interface components {
         };
         ListResponse: {
             items: components["schemas"]["FileEntry"][];
+            /** @description Absent on the last page, never `null` (`files/list/0.2` onward). */
             nextCursor?: string | null;
         };
         /**
@@ -2508,10 +2554,12 @@ export interface components {
         };
         /** @description Canonical `policy/list` response. */
         PolicyListResponse: {
-            cursor?: string | null;
+            /**
+             * @description Continuation token, present iff more matching modules exist beyond
+             *     this page.
+             */
+            nextCursor?: string | null;
             policies: components["schemas"]["PolicyModuleResponse"][];
-            /** @description Canonical-required: more matching modules exist beyond this page. */
-            truncated: boolean;
         };
         /**
          * @description Canonical `policy/_shared` **PolicyModule**.
@@ -2936,9 +2984,15 @@ export interface components {
         RevokeFinishResponse: {
             credentialId: string;
             /**
-             * @description How many passkeys the subject has left.
+             * @description Always `session`: these are an administrator's login passkeys.
+             *     Step-up credentials are [`crate::step_up_passkey`]'s.
+             */
+            purpose: string;
+            /**
+             * @description How many **session** passkeys the subject has left
+             *     (`auth/passkey/revoke/finish/0.2` counts per purpose).
              *
-             *     Required by `auth/passkey/revoke/finish/0.1` and absent until #1112.
+             *     Required since `auth/passkey/revoke/finish/0.1`, and absent until #1112.
              *     It is the number the caller most needs and the one this endpoint is
              *     uniquely placed to give: the last-passkey guard refuses to leave an
              *     admin at zero, so a client that cannot see the count cannot tell
@@ -2950,6 +3004,11 @@ export interface components {
              * @description When the credential was revoked.
              */
             revokedAt: string;
+            /**
+             * @description Whose credential it was — always the producer's own here: a session
+             *     credential is revoked only by its owner on this door.
+             */
+            subject: string;
         };
         RevokeInviteResponse: {
             jti: string;
@@ -3091,13 +3150,13 @@ export interface components {
             serviceable: boolean;
         };
         UploadResponse: {
+            policy: components["schemas"]["PolicyModuleResponse"];
             /**
-             * @description Canonical-required: true when this call created a new module
-             *     lineage rather than revising an existing one. VTC's first
+             * @description Canonical-required (`wasCreated`): true when this call created a new
+             *     module lineage rather than revising an existing one. VTC's first
              *     revision for a purpose is a creation.
              */
-            created: boolean;
-            policy: components["schemas"]["PolicyModuleResponse"];
+            wasCreated: boolean;
         };
         Value: unknown;
         /** @description One vetter grant, as `GET /v1/vetting/vetters` reports it. */
@@ -3181,6 +3240,4562 @@ export interface components {
             statementDigestMultibase: string;
             /** @description The statement's `id`. */
             statementId: string;
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesAwardsListV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsListV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsListV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsListV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsListV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsListV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsListV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsListV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesAwardsListV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesAwardsListV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsListV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsListV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesAwardsListV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsListV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsListV0_1BadgeId: string;
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesAwardsListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcBadgesAwardsListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcBadgesAwardsListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesAwardsListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcBadgesAwardsListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcBadgesAwardsListV0_1CardBlobRef"] | components["schemas"]["VtcBadgesAwardsListV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsListV0_1GroupCredentialId: string;
+        /** @description The owners' view of a badge: every award of it, a page at a time, each recipient projected as the directory projects them and marked where they hid the badge. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsListV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesAwardsListV0_1BadgeId"];
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller, the badge and the filters; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            entryId?: components["schemas"]["VtcBadgesAwardsListV0_1EntryId"];
+            ext?: components["schemas"]["VtcBadgesAwardsListV0_1Ext"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+            state?: components["schemas"]["VtcBadgesAwardsListV0_1AwardState"];
+        };
+        /** @description The success response to a vtc/badges/awards/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/list/0.1#response. */
+        VtcBadgesAwardsListV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesAwardsListV0_1Ext"];
+            /** @description Newest `offeredAt` first. */
+            items: {
+                award: components["schemas"]["VtcBadgesAwardsListV0_1Award"];
+                fields?: components["schemas"]["VtcBadgesAwardsListV0_1EntryFields"];
+                /** @description True where the recipient has hidden this badge (VTI-BDG-030): off their wall, out of the holder list and its count; the award, the membership and the credential stand. */
+                hidden: boolean;
+            }[];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcBadgesAwardsListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesAwardsOfferV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsOfferV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsOfferV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsOfferV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsOfferV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsOfferV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsOfferV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsOfferV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesAwardsOfferV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesAwardsOfferV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsOfferV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsOfferV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesAwardsOfferV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsOfferV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsOfferV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsOfferV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsOfferV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsOfferV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesAwardsOfferV0_1GroupId: string;
+        /** @description A badge's owner offers a community badge to one or more members, or to every member of a group. Each offer is an award in state `offered` that the member accepts or declines; nothing is admitted or issued until they accept. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsOfferV0_1Payload: unknown | unknown;
+        /** @description The success response to a vtc/badges/awards/offer/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/offer/0.1#response. */
+        VtcBadgesAwardsOfferV0_1Response: {
+            /** @description The offers recorded, each in state `offered`. */
+            awards: components["schemas"]["VtcBadgesAwardsOfferV0_1Award"][];
+            ext?: components["schemas"]["VtcBadgesAwardsOfferV0_1Ext"];
+            /** @description Members the badge was not offered to, and why. Never an error: the rest of the offers stand. */
+            skipped: {
+                entryId: components["schemas"]["VtcBadgesAwardsOfferV0_1EntryId"];
+                /**
+                 * @description `notActiveMember`: not an active member, or not one the signer may see. `alreadyOffered`: an open offer of this badge already names them. `alreadyHolder`: they hold the badge and it is not repeatable. `requestPending`: they have asked for the badge; the owners decide the request instead.
+                 * @enum {string}
+                 */
+                reason: "notActiveMember" | "alreadyOffered" | "alreadyHolder" | "requestPending";
+            }[];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesAwardsRevokeV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsRevokeV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsRevokeV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsRevokeV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsRevokeV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsRevokeV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsRevokeV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsRevokeV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesAwardsRevokeV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesAwardsRevokeV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsRevokeV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsRevokeV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesAwardsRevokeV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsRevokeV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsRevokeV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsRevokeV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsRevokeV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsRevokeV0_1GroupCredentialId: string;
+        /** @description Take an accepted award back: revoke or stop renewing the credential that evidences it, remove the holder from the badge group where it was their last award, and tell them. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsRevokeV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesAwardsRevokeV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesAwardsRevokeV0_1Ext"];
+            /** @description Why, kept with the audit of the change for the badge's owners and administrators. The holder is told the award was taken back, never the reason. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/badges/awards/revoke/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/revoke/0.1#response. */
+        VtcBadgesAwardsRevokeV0_1Response: {
+            award: components["schemas"]["VtcBadgesAwardsRevokeV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesAwardsRevokeV0_1Ext"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesAwardsWithdrawV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsWithdrawV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsWithdrawV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesAwardsWithdrawV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsWithdrawV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsWithdrawV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsWithdrawV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsWithdrawV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsWithdrawV0_1GroupCredentialId: string;
+        /** @description Withdraw an open offer of a badge before its recipient decides. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsWithdrawV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Ext"];
+            /** @description Why, recorded with the change for the badge's owners and administrators. Not shown to the recipient. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/badges/awards/withdraw/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/withdraw/0.1#response. */
+        VtcBadgesAwardsWithdrawV0_1Response: {
+            award: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesAwardsWithdrawV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesCreateV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesCreateV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesCreateV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesCreateV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesCreateV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesCreateV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesCreateV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesCreateV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesCreateV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesCreateV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesCreateV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesCreateV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesCreateV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesCreateV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesCreateV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesCreateV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
+        VtcBadgesCreateV0_1DynamicRule: {
+            all: components["schemas"]["VtcBadgesCreateV0_1RuleCondition"][];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesCreateV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesCreateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesCreateV0_1FieldKey: string;
+        /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
+        VtcBadgesCreateV0_1Group: {
+            badgeId?: components["schemas"]["VtcBadgesCreateV0_1BadgeId"];
+            /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
+            carriesAuthority: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesCreateV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When the community's authorization credential to the group expires. The community renews it well before.
+             */
+            credentialAuthorityValidUntil?: string;
+            description?: components["schemas"]["VtcBadgesCreateV0_1GroupDescription"];
+            ext?: components["schemas"]["VtcBadgesCreateV0_1Ext"];
+            /** @description The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description. */
+            groupDid: string;
+            groupId: components["schemas"]["VtcBadgesCreateV0_1GroupId"];
+            /** @description Whether the group's DID issues its members a membership credential. Default true. */
+            issuesCredentials: boolean;
+            joinPolicy?: components["schemas"]["VtcBadgesCreateV0_1JoinPolicy"];
+            kind: components["schemas"]["VtcBadgesCreateV0_1GroupKind"];
+            /** @description Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record. */
+            managers?: components["schemas"]["VtcBadgesCreateV0_1EntryId"][];
+            /** @description Active members. Only to callers who may see the member list. */
+            memberCount?: number;
+            name: components["schemas"]["VtcBadgesCreateV0_1GroupName"];
+            rule?: components["schemas"]["VtcBadgesCreateV0_1DynamicRule"];
+            showMembers: components["schemas"]["VtcBadgesCreateV0_1GroupAudience"];
+            /** Format: date-time */
+            updatedAt?: string;
+            visibility: components["schemas"]["VtcBadgesCreateV0_1GroupAudience"];
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`. */
+        VtcBadgesCreateV0_1GroupDescription: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesCreateV0_1GroupId: string;
+        /**
+         * @description `static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1GroupKind: "static" | "dynamic";
+        /** @description The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text. */
+        VtcBadgesCreateV0_1GroupName: string;
+        /**
+         * @description How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.
+         * @enum {string}
+         */
+        VtcBadgesCreateV0_1JoinPolicy: "closed" | "request" | "open";
+        /** @description Define a badge: a community badge, which creates the badge group that backs it, or a kudos badge a member makes. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesCreateV0_1Payload: {
+            /** @description Community badges only. Present: the badge is automatic, backed by a dynamic badge group computed from `rule`; nobody gives it by hand and `requestable` is refused. */
+            automatic?: {
+                rule: components["schemas"]["VtcBadgesCreateV0_1DynamicRule"];
+            };
+            criteria?: components["schemas"]["VtcBadgesCreateV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesCreateV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesCreateV0_1Ext"];
+            holdersVisibleTo?: components["schemas"]["VtcBadgesCreateV0_1GroupAudience"];
+            /** @description The picture, as the signer uploaded it with vtc/badges/images/upload. */
+            image: {
+                /** @description The digest vtc/badges/images/upload answered to this signer. */
+                sha256: string;
+            };
+            kind: components["schemas"]["VtcBadgesCreateV0_1BadgeKind"];
+            /** @description Whether members who do not hold it see it in the badge list. Absent: true. */
+            listed?: boolean;
+            name: components["schemas"]["VtcBadgesCreateV0_1BadgeName"];
+            /** @description Community badges only. Members to appoint as the badge's owners — the badge group's managers — as vtc/groups/managers/add appoints them, bounded by the signer's own holding. */
+            owners?: components["schemas"]["VtcBadgesCreateV0_1EntryId"][];
+            /** @description Why, recorded with the change. */
+            reason: string;
+            /** @description Whether one member may hold the badge more than once. Absent: false for a community badge; a kudos badge is always repeatable and refuses `false`. */
+            repeatable?: boolean;
+            /** @description Community badges only. Whether members may ask for it (a request to join the badge group). Absent: false. */
+            requestable?: boolean;
+            /** @description Community badges only. Whether holders may show it outside the community, which fixes the credential's regime. Absent: false. */
+            shareableOutside?: boolean;
+        };
+        /** @description The success response to a vtc/badges/create/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/create/0.1#response. */
+        VtcBadgesCreateV0_1Response: {
+            badge: components["schemas"]["VtcBadgesCreateV0_1Badge"];
+            ext?: components["schemas"]["VtcBadgesCreateV0_1Ext"];
+            group?: components["schemas"]["VtcBadgesCreateV0_1Group"];
+        };
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        VtcBadgesCreateV0_1RuleCondition: {
+            /** @enum {string} */
+            fact: "role" | "field" | "personhood" | "joinedAt";
+            field?: components["schemas"]["VtcBadgesCreateV0_1FieldKey"];
+            /**
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @enum {string}
+             */
+            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            value?: string | boolean;
+            values?: string[];
+        };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesHoldersListV0_1BadgeId: string;
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesHoldersListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcBadgesHoldersListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcBadgesHoldersListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesHoldersListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesHoldersListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesHoldersListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcBadgesHoldersListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcBadgesHoldersListV0_1CardBlobRef"] | components["schemas"]["VtcBadgesHoldersListV0_1VerifiedValue"];
+        /** @description Who holds a badge, a page at a time, each holder projected as the directory projects them to the caller, with hidden holders left out and the count stated over those shown. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesHoldersListV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesHoldersListV0_1BadgeId"];
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the badge; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcBadgesHoldersListV0_1Ext"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+        };
+        /** @description The success response to a vtc/badges/holders/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/holders/list/0.1#response. */
+        VtcBadgesHoldersListV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesHoldersListV0_1Ext"];
+            /** @description Newest `latestAt` first. */
+            items: {
+                /** @description Accepted awards of this badge the holder holds (VTI-BDG-022). */
+                count: number;
+                entryId: components["schemas"]["VtcBadgesHoldersListV0_1EntryId"];
+                fields?: components["schemas"]["VtcBadgesHoldersListV0_1EntryFields"];
+                /**
+                 * Format: date-time
+                 * @description When the holder last accepted an award of this badge.
+                 */
+                latestAt: string;
+                /**
+                 * Format: date-time
+                 * @description When the holder first accepted this badge.
+                 */
+                since: string;
+            }[];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+            /** @description Holders who show the badge — the number the whole list would have, over every page. Hidden holders are not counted (VTI-BDG-030, VTI-BDG-033). */
+            total: number;
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcBadgesHoldersListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesImagesGetV0_1BadgeId: string;
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesImagesGetV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesImagesGetV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Read the bytes of a badge's picture, where the caller is an active member who may see the badge. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesImagesGetV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesImagesGetV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesImagesGetV0_1Ext"];
+            /** @description The picture the caller expects, from the `CardBlobRef` it was shown on the badge. Where the badge now holds another, the answer is `notFound`, so a reader never shows a picture under a badge it did not come from. */
+            sha256?: string;
+        };
+        /** @description The success response to a vtc/badges/images/get/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/images/get/0.1#response. */
+        VtcBadgesImagesGetV0_1Response: {
+            /** @description The stored bytes, base64url without padding. Their SHA-256 is `image.sha256`. */
+            data: string;
+            ext?: components["schemas"]["VtcBadgesImagesGetV0_1Ext"];
+            image: components["schemas"]["VtcBadgesImagesGetV0_1CardBlobRef"];
+        };
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesImagesUploadV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesImagesUploadV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /**
+         * @description The media types a directory image may have — those a `CardBlobRef` admits.
+         * @enum {string}
+         */
+        VtcBadgesImagesUploadV0_1ImageMediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+        /** @description A badge administrator, owner or member hands the community the picture for a badge. The community re-encodes it and answers the reference a badge holds. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesImagesUploadV0_1Payload: {
+            /** @description The image, base64url without padding (RFC 4648 §5). At most 262144 bytes decoded. */
+            data: string;
+            ext?: components["schemas"]["VtcBadgesImagesUploadV0_1Ext"];
+            mediaType: components["schemas"]["VtcBadgesImagesUploadV0_1ImageMediaType"];
+        };
+        /** @description The success response to a vtc/badges/images/upload/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/images/upload/0.1#response. */
+        VtcBadgesImagesUploadV0_1Response: {
+            /**
+             * Format: date-time
+             * @description When the community erases the image if no badge holds it by then.
+             */
+            expiresAt: string;
+            ext?: components["schemas"]["VtcBadgesImagesUploadV0_1Ext"];
+            image: components["schemas"]["VtcBadgesImagesUploadV0_1CardBlobRef"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesKudosGiveV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesKudosGiveV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesKudosGiveV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesKudosGiveV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesKudosGiveV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesKudosGiveV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesKudosGiveV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesKudosGiveV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesKudosGiveV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesKudosGiveV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesKudosGiveV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesKudosGiveV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesKudosGiveV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesKudosGiveV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesKudosGiveV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesKudosGiveV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesKudosGiveV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesKudosGiveV0_1GroupCredentialId: string;
+        /** @description Give a kudos badge to another member: records an award offered to them, with the giver and a note, within the community's limits. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesKudosGiveV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesKudosGiveV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesKudosGiveV0_1Ext"];
+            note?: components["schemas"]["VtcBadgesKudosGiveV0_1AwardNote"];
+            to: components["schemas"]["VtcBadgesKudosGiveV0_1EntryId"];
+        };
+        /** @description The success response to a vtc/badges/kudos/give/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/kudos/give/0.1#response. */
+        VtcBadgesKudosGiveV0_1Response: {
+            award: components["schemas"]["VtcBadgesKudosGiveV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesKudosGiveV0_1Ext"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesKudosListV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesKudosListV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesKudosListV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesKudosListV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesKudosListV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesKudosListV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesKudosListV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesKudosListV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesKudosListV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesKudosListV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesKudosListV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesKudosListV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesKudosListV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesKudosListV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesKudosListV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesKudosListV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesKudosListV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesKudosListV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesKudosListV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesKudosListV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesKudosListV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesKudosListV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesKudosListV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesKudosListV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesKudosListV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesKudosListV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesKudosListV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesKudosListV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesKudosListV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesKudosListV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesKudosListV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesKudosListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcBadgesKudosListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcBadgesKudosListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesKudosListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesKudosListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesKudosListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcBadgesKudosListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcBadgesKudosListV0_1CardBlobRef"] | components["schemas"]["VtcBadgesKudosListV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesKudosListV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesKudosListV0_1GroupId: string;
+        /** @description One giving of a kudos badge: the award, its badge, and the other party as the directory projects them to the caller — `counterpart` for a member's own list, `giver` and `recipient` for an administrator's `all`. */
+        VtcBadgesKudosListV0_1Item: {
+            award: components["schemas"]["VtcBadgesKudosListV0_1Award"];
+            badge: components["schemas"]["VtcBadgesKudosListV0_1Badge"];
+            counterpart?: components["schemas"]["VtcBadgesKudosListV0_1EntryFields"];
+            giver?: components["schemas"]["VtcBadgesKudosListV0_1EntryFields"];
+            recipient?: components["schemas"]["VtcBadgesKudosListV0_1EntryFields"];
+        };
+        /** @description List the kudos the signer received or gave, a page at a time, each with its badge and the other party as the directory projects them; or, for a badge administrator, every giving of one kudos badge. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesKudosListV0_1Payload: {
+            /**
+             * @description Every giving of `badgeId`, giver and recipient both, to a holder of `vtc.badges.admin` (VTI-BDG-042). Sent only as `true`, with `badgeId`.
+             * @enum {boolean}
+             */
+            all?: true;
+            badgeId?: components["schemas"]["VtcBadgesKudosListV0_1BadgeId"];
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the filters; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            /**
+             * @description `received`: awards to the signer, with the giver as `counterpart`. `given`: awards by the signer, with the recipient as `counterpart`. Absent: `received`. Ignored with `all`.
+             * @enum {string}
+             */
+            direction?: "received" | "given";
+            ext?: components["schemas"]["VtcBadgesKudosListV0_1Ext"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+            state?: components["schemas"]["VtcBadgesKudosListV0_1AwardState"];
+        };
+        /** @description The success response to a vtc/badges/kudos/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/kudos/list/0.1#response. */
+        VtcBadgesKudosListV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesKudosListV0_1Ext"];
+            /** @description Newest first by `offeredAt`. */
+            items: components["schemas"]["VtcBadgesKudosListV0_1Item"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcBadgesKudosListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesListV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesListV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesListV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesListV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesListV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesListV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesListV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesListV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesListV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesListV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesListV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesListV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesListV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesListV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesListV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesListV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesListV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesListV0_1GroupId: string;
+        /**
+         * @description Where the caller stands with a badge. `holder`: at least one accepted award. `offered`: an open offer names them. `requested`: an undecided request to join its badge group. `none`: nothing.
+         * @enum {string}
+         */
+        VtcBadgesListV0_1MyState: "holder" | "offered" | "requested" | "none";
+        /** @description List the badges the caller may see — every listed active badge and the ones they hold, own or are offered; every badge for an administrator — with how many of each they hold and where they stand with it. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesListV0_1Payload: {
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the filters; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcBadgesListV0_1Ext"];
+            /** @description Administrators only (`vtc.badges.admin`): also the retired badges. A holder's retired badges are in vtc/badges/mine/list. */
+            includeRetired?: boolean;
+            /** @description Administrators only (`vtc.badges.admin`): also the badges that are not `listed`. A member sees the unlisted badges they hold, own or are offered without it. */
+            includeUnlisted?: boolean;
+            kind?: components["schemas"]["VtcBadgesListV0_1BadgeKind"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+            /** @description Only badges the caller holds — at least one accepted award. */
+            mine?: boolean;
+        };
+        /** @description The success response to a vtc/badges/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/list/0.1#response. */
+        VtcBadgesListV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesListV0_1Ext"];
+            /** @description In order of `name`, then `badgeId`. */
+            items: {
+                badge: components["schemas"]["VtcBadgesListV0_1Badge"];
+                /** @description Accepted awards of this badge the caller holds; 0 where none. */
+                myCount: number;
+                myState: components["schemas"]["VtcBadgesListV0_1MyState"];
+            }[];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesMineAcceptV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesMineAcceptV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesMineAcceptV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesMineAcceptV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesMineAcceptV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesMineAcceptV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesMineAcceptV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesMineAcceptV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesMineAcceptV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesMineAcceptV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesMineAcceptV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesMineAcceptV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesMineAcceptV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineAcceptV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineAcceptV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineAcceptV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineAcceptV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineAcceptV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineAcceptV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineAcceptV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineAcceptV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineAcceptV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineAcceptV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineAcceptV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineAcceptV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineAcceptV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineAcceptV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineAcceptV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineAcceptV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineAcceptV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineAcceptV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineAcceptV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineAcceptV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description A member accepts a badge offered to them. For a community badge the badge group's DID issues their badge credential first and the membership is recorded after; for a kudos badge the giving is counted. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineAcceptV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesMineAcceptV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesMineAcceptV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/accept/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/accept/0.1#response. */
+        VtcBadgesMineAcceptV0_1Response: {
+            award: components["schemas"]["VtcBadgesMineAcceptV0_1Award"];
+            badge: components["schemas"]["VtcBadgesMineAcceptV0_1MyBadge"];
+            ext?: components["schemas"]["VtcBadgesMineAcceptV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineArrangeV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineArrangeV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineArrangeV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineArrangeV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineArrangeV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineArrangeV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineArrangeV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineArrangeV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineArrangeV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineArrangeV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineArrangeV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineArrangeV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineArrangeV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineArrangeV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineArrangeV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineArrangeV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineArrangeV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineArrangeV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineArrangeV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineArrangeV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description Arrange the signer's wall: the order of their badges, which of them are pinned beside their name, and who may see the wall. Each member absent from the request is unchanged. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineArrangeV0_1Payload: unknown | unknown | unknown;
+        /** @description The success response to a vtc/badges/mine/arrange/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/arrange/0.1#response. */
+        VtcBadgesMineArrangeV0_1Response: {
+            /** @description Every badge the signer holds, hidden ones included, in the new order, lowest `position` first, with the new `pinned` marks — as vtc/badges/mine/list answers them. */
+            badges: components["schemas"]["VtcBadgesMineArrangeV0_1MyBadge"][];
+            ext?: components["schemas"]["VtcBadgesMineArrangeV0_1Ext"];
+            visibility: components["schemas"]["VtcBadgesMineArrangeV0_1WallVisibility"];
+        };
+        /**
+         * @description Who sees a member's badges, the member's own setting (VTI-BDG-031). `members`: every active member the directory shows their card to. `nobody`: no one but the member. Never wider than the directory shows the card.
+         * @enum {string}
+         */
+        VtcBadgesMineArrangeV0_1WallVisibility: "members" | "nobody";
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesMineDeclineV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesMineDeclineV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesMineDeclineV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesMineDeclineV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesMineDeclineV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesMineDeclineV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesMineDeclineV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesMineDeclineV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesMineDeclineV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesMineDeclineV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesMineDeclineV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesMineDeclineV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesMineDeclineV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesMineDeclineV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineDeclineV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineDeclineV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineDeclineV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineDeclineV0_1GroupCredentialId: string;
+        /** @description Decline a badge offered to the signer: the offer is closed, nothing is recorded in any group and nothing is issued. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineDeclineV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesMineDeclineV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesMineDeclineV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/decline/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/decline/0.1#response. */
+        VtcBadgesMineDeclineV0_1Response: {
+            award: components["schemas"]["VtcBadgesMineDeclineV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesMineDeclineV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineHideV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineHideV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineHideV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineHideV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineHideV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineHideV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineHideV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineHideV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineHideV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineHideV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineHideV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineHideV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineHideV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineHideV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineHideV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineHideV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineHideV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineHideV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineHideV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineHideV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineHideV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineHideV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineHideV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineHideV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineHideV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description Hide a badge the signer holds: off their wall, out of the badge's holder list and its count, out of their kudos total, while every award, the badge-group membership and the credential stand unchanged. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineHideV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesMineHideV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesMineHideV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/hide/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/hide/0.1#response. */
+        VtcBadgesMineHideV0_1Response: {
+            badge: components["schemas"]["VtcBadgesMineHideV0_1MyBadge"];
+            ext?: components["schemas"]["VtcBadgesMineHideV0_1Ext"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesMineListV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesMineListV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesMineListV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesMineListV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesMineListV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesMineListV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesMineListV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesMineListV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesMineListV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesMineListV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesMineListV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesMineListV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesMineListV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesMineListV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineListV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineListV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineListV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineListV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineListV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineListV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineListV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineListV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineListV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineListV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineListV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineListV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineListV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineListV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineListV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineListV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineListV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineListV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
+        VtcBadgesMineListV0_1EntryFields: {
+            [key: string]: components["schemas"]["VtcBadgesMineListV0_1FieldValue"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesMineListV0_1FieldKey: string;
+        /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
+        VtcBadgesMineListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcBadgesMineListV0_1CardBlobRef"] | components["schemas"]["VtcBadgesMineListV0_1VerifiedValue"];
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineListV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineListV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineListV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineListV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineListV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description An award waiting for the signer's decision, with the badge it offers and its giver as the directory projects them to the signer. */
+        VtcBadgesMineListV0_1Offer: {
+            award: components["schemas"]["VtcBadgesMineListV0_1Award"];
+            badge: components["schemas"]["VtcBadgesMineListV0_1Badge"];
+            givenBy?: components["schemas"]["VtcBadgesMineListV0_1EntryFields"];
+        };
+        /** @description A member's own badges: every badge they hold, hidden ones included, in their own order, with the offers waiting for their decision, their wall visibility and their kudos total. The signer is the subject; the payload names nothing. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineListV0_1Payload: {
+            ext?: components["schemas"]["VtcBadgesMineListV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/list/0.1#response. */
+        VtcBadgesMineListV0_1Response: {
+            /** @description Every badge the signer holds, hidden ones included (`hidden: true`), in the signer's own order, lowest `position` first. */
+            badges: components["schemas"]["VtcBadgesMineListV0_1MyBadge"][];
+            ext?: components["schemas"]["VtcBadgesMineListV0_1Ext"];
+            /** @description Kudos awards the signer accepted and did not hide. Present only where the community's badge settings show kudos totals (VTI-BDG-043). */
+            kudosTotal?: number;
+            /** @description Every award in state `offered` to the signer, newest first. */
+            offers: components["schemas"]["VtcBadgesMineListV0_1Offer"][];
+            visibility: components["schemas"]["VtcBadgesMineListV0_1WallVisibility"];
+        };
+        /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
+        VtcBadgesMineListV0_1VerifiedValue: {
+            /** @description The most specific `type` of the credential the claim came from. */
+            credentialType?: string;
+            /** @description DID of the credential's issuer, shown as the field's verification badge. */
+            issuer: string;
+            /**
+             * Format: date-time
+             * @description When the credential expires, where it does. The community withdraws the value once it passes.
+             */
+            validUntil?: string;
+            /** @description The disclosed claim value. */
+            value: string | boolean | number;
+            /**
+             * Format: date-time
+             * @description When the community verified the presentation.
+             */
+            verifiedAt: string;
+        };
+        /**
+         * @description Who sees a member's badges, the member's own setting (VTI-BDG-031). `members`: every active member the directory shows their card to. `nobody`: no one but the member. Never wider than the directory shows the card.
+         * @enum {string}
+         */
+        VtcBadgesMineListV0_1WallVisibility: "members" | "nobody";
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesMineShowV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesMineShowV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesMineShowV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesMineShowV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesMineShowV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesMineShowV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesMineShowV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesMineShowV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesMineShowV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesMineShowV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesMineShowV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesMineShowV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineShowV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesMineShowV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesMineShowV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesMineShowV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesMineShowV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesMineShowV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesMineShowV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesMineShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesMineShowV0_1GroupCredentialId: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesMineShowV0_1GroupId: string;
+        /** @description A badge as its holder sees it in their own list: the wall entry plus what only the holder knows — whether they hid it, their position for it, and the credential that evidences it. */
+        VtcBadgesMineShowV0_1MyBadge: {
+            badge: components["schemas"]["VtcBadgesMineShowV0_1Badge"];
+            count: number;
+            credentialId?: components["schemas"]["VtcBadgesMineShowV0_1GroupCredentialId"];
+            /** Format: date-time */
+            credentialValidUntil?: string;
+            /** @description The holder hid it: off their wall, out of the badge's holder list for members, out of its count; the awards, the membership and the credential stand (VTI-BDG-030). */
+            hidden: boolean;
+            /** Format: date-time */
+            latestAt?: string;
+            pinned: boolean;
+            /** @description The holder's order on their wall, lowest first. */
+            position?: number;
+            /** Format: date-time */
+            since: string;
+        };
+        /** @description Show a badge the signer had hidden: back on their wall, back in the badge's holder list and its count, back in their kudos total. The reverse of vtc/badges/mine/hide. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesMineShowV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesMineShowV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesMineShowV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/mine/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/mine/show/0.1#response. */
+        VtcBadgesMineShowV0_1Response: {
+            badge: components["schemas"]["VtcBadgesMineShowV0_1MyBadge"];
+            ext?: components["schemas"]["VtcBadgesMineShowV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesPromoteV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesPromoteV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesPromoteV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesPromoteV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesPromoteV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesPromoteV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesPromoteV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesPromoteV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesPromoteV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesPromoteV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesPromoteV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesPromoteV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesPromoteV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesPromoteV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesPromoteV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesPromoteV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
+        VtcBadgesPromoteV0_1DynamicRule: {
+            all: components["schemas"]["VtcBadgesPromoteV0_1RuleCondition"][];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesPromoteV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesPromoteV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
+        VtcBadgesPromoteV0_1FieldKey: string;
+        /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
+        VtcBadgesPromoteV0_1Group: {
+            badgeId?: components["schemas"]["VtcBadgesPromoteV0_1BadgeId"];
+            /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
+            carriesAuthority: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesPromoteV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When the community's authorization credential to the group expires. The community renews it well before.
+             */
+            credentialAuthorityValidUntil?: string;
+            description?: components["schemas"]["VtcBadgesPromoteV0_1GroupDescription"];
+            ext?: components["schemas"]["VtcBadgesPromoteV0_1Ext"];
+            /** @description The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description. */
+            groupDid: string;
+            groupId: components["schemas"]["VtcBadgesPromoteV0_1GroupId"];
+            /** @description Whether the group's DID issues its members a membership credential. Default true. */
+            issuesCredentials: boolean;
+            joinPolicy?: components["schemas"]["VtcBadgesPromoteV0_1JoinPolicy"];
+            kind: components["schemas"]["VtcBadgesPromoteV0_1GroupKind"];
+            /** @description Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record. */
+            managers?: components["schemas"]["VtcBadgesPromoteV0_1EntryId"][];
+            /** @description Active members. Only to callers who may see the member list. */
+            memberCount?: number;
+            name: components["schemas"]["VtcBadgesPromoteV0_1GroupName"];
+            rule?: components["schemas"]["VtcBadgesPromoteV0_1DynamicRule"];
+            showMembers: components["schemas"]["VtcBadgesPromoteV0_1GroupAudience"];
+            /** Format: date-time */
+            updatedAt?: string;
+            visibility: components["schemas"]["VtcBadgesPromoteV0_1GroupAudience"];
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`. */
+        VtcBadgesPromoteV0_1GroupDescription: string;
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesPromoteV0_1GroupId: string;
+        /**
+         * @description `static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1GroupKind: "static" | "dynamic";
+        /** @description The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text. */
+        VtcBadgesPromoteV0_1GroupName: string;
+        /**
+         * @description How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.
+         * @enum {string}
+         */
+        VtcBadgesPromoteV0_1JoinPolicy: "closed" | "request" | "open";
+        /** @description Turn a kudos badge into a community badge: its badge group is created and its owners named, and every current holder is offered the badge so that each accepts before anything is issued or recorded. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesPromoteV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesPromoteV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesPromoteV0_1Ext"];
+            holdersVisibleTo?: components["schemas"]["VtcBadgesPromoteV0_1GroupAudience"];
+            /** @description Members to appoint as the badge's owners — the badge group's managers — as vtc/groups/managers/add appoints them, bounded by the signer's own holding. The badge's maker is an owner only if named here. */
+            owners?: components["schemas"]["VtcBadgesPromoteV0_1EntryId"][];
+            /** @description Why, recorded with the change. */
+            reason: string;
+            /** @description Whether members may ask for it (a request to join the badge group). Absent: false. */
+            requestable?: boolean;
+            /** @description Whether holders may show it outside the community, which fixes the credential's regime for the badge's life. Absent: false. */
+            shareableOutside?: boolean;
+        };
+        /** @description The success response to a vtc/badges/promote/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/promote/0.1#response. */
+        VtcBadgesPromoteV0_1Response: {
+            badge: components["schemas"]["VtcBadgesPromoteV0_1Badge"];
+            ext?: components["schemas"]["VtcBadgesPromoteV0_1Ext"];
+            group: components["schemas"]["VtcBadgesPromoteV0_1Group"];
+            /** @description How many current holders were offered the badge — one offer each, who they are never said here. */
+            holdersOffered?: number;
+        };
+        /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
+        VtcBadgesPromoteV0_1RuleCondition: {
+            /** @enum {string} */
+            fact: "role" | "field" | "personhood" | "joinedAt";
+            field?: components["schemas"]["VtcBadgesPromoteV0_1FieldKey"];
+            /**
+             * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
+             * @enum {string}
+             */
+            op: "equals" | "oneOf" | "exists" | "before" | "after";
+            value?: string | boolean;
+            values?: string[];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesRetireV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesRetireV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesRetireV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesRetireV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesRetireV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesRetireV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesRetireV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesRetireV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesRetireV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesRetireV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesRetireV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesRetireV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesRetireV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesRetireV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesRetireV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesRetireV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesRetireV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesRetireV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesRetireV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesRetireV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesRetireV0_1GroupId: string;
+        /** @description Retire a badge: it is given to nobody again, its open offers are withdrawn, and for a community badge its status-bearing credentials are revoked and its badge group deleted; every award is kept for its holders' own history. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesRetireV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesRetireV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesRetireV0_1Ext"];
+            /** @description Why, recorded with the change and shown to anyone who must approve it. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/badges/retire/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/retire/0.1#response. */
+        VtcBadgesRetireV0_1Response: {
+            badge: components["schemas"]["VtcBadgesRetireV0_1Badge"];
+            ext?: components["schemas"]["VtcBadgesRetireV0_1Ext"];
+        };
+        /** @description The community's bounds (VTI-BDG-032, VTI-BDG-040). Each has a default a community that states none applies. */
+        VtcBadgesSettingsShowV0_1BadgeLimits: {
+            /** @description Kudos badges one member may make in a calendar month. Default 5. */
+            kudosBadgesPerMakerPerMonth?: number;
+            /** @description Kudos one member may give in a day. Default 10. */
+            kudosPerGiverPerDay?: number;
+            /** @description Badges a member may pin beside their name. Default 2. */
+            maxPinned?: number;
+            /** @description Days of membership before a member may give kudos or make a kudos badge. Default 7. */
+            minTenureDays?: number;
+            /** @description Days an unanswered offer stands before it expires. Absent: offers do not expire. */
+            offerExpiresAfterDays?: number;
+            /**
+             * @description How often the same member may give a kudos badge to the same member: at most once a day, once a week, or without bound. Default `day`.
+             * @enum {string}
+             */
+            sameGiverSameMember?: "day" | "week" | "unbounded";
+        };
+        /** @description The community's badge settings (VTI-BDG-004). `enabled` false hides every badge surface and keeps every record; nothing is given or issued while it is false. */
+        VtcBadgesSettingsShowV0_1BadgeSettings: {
+            /** @description Whether dynamic badge groups are computed (VTI-BDG-013). False: a community badge may not be created on a dynamic group, and existing ones are not recomputed. */
+            automaticBadges: boolean;
+            /** @description Validity of a badge credential its holders may show outside (VTI-BDG-062). Default 730. */
+            credentialValidDays?: number;
+            enabled: boolean;
+            ext?: components["schemas"]["VtcBadgesSettingsShowV0_1Ext"];
+            kudosMakers: components["schemas"]["VtcBadgesSettingsShowV0_1KudosMakers"];
+            limits?: components["schemas"]["VtcBadgesSettingsShowV0_1BadgeLimits"];
+            /** @description Whether any community badge may be marked `requestable`. False: every badge group is closed. */
+            membersMayRequest: boolean;
+            /** @description Whether a member's kudos total is shown on their card (VTI-BDG-043). */
+            showKudosTotals: boolean;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesSettingsShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesSettingsShowV0_1GroupId: string;
+        /** @description Who may make a kudos badge (VTI-BDG-004). `nobody`: no kudos badges. `roles`: holders of any of `roles`, or members of any of `groups`. `members`: every active member. */
+        VtcBadgesSettingsShowV0_1KudosMakers: {
+            /** @description Read exactly when `policy` is `roles`. */
+            groups?: components["schemas"]["VtcBadgesSettingsShowV0_1GroupId"][];
+            /** @enum {string} */
+            policy: "nobody" | "roles" | "members";
+            /** @description Community role names. Read exactly when `policy` is `roles`. */
+            roles?: string[];
+        };
+        /** @description Read the community's badge settings. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesSettingsShowV0_1Payload: {
+            ext?: components["schemas"]["VtcBadgesSettingsShowV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/settings/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/settings/show/0.1#response. */
+        VtcBadgesSettingsShowV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesSettingsShowV0_1Ext"];
+            settings: components["schemas"]["VtcBadgesSettingsShowV0_1BadgeSettings"];
+        };
+        /** @description The community's bounds (VTI-BDG-032, VTI-BDG-040). Each has a default a community that states none applies. */
+        VtcBadgesSettingsUpdateV0_1BadgeLimits: {
+            /** @description Kudos badges one member may make in a calendar month. Default 5. */
+            kudosBadgesPerMakerPerMonth?: number;
+            /** @description Kudos one member may give in a day. Default 10. */
+            kudosPerGiverPerDay?: number;
+            /** @description Badges a member may pin beside their name. Default 2. */
+            maxPinned?: number;
+            /** @description Days of membership before a member may give kudos or make a kudos badge. Default 7. */
+            minTenureDays?: number;
+            /** @description Days an unanswered offer stands before it expires. Absent: offers do not expire. */
+            offerExpiresAfterDays?: number;
+            /**
+             * @description How often the same member may give a kudos badge to the same member: at most once a day, once a week, or without bound. Default `day`.
+             * @enum {string}
+             */
+            sameGiverSameMember?: "day" | "week" | "unbounded";
+        };
+        /** @description The community's badge settings (VTI-BDG-004). `enabled` false hides every badge surface and keeps every record; nothing is given or issued while it is false. */
+        VtcBadgesSettingsUpdateV0_1BadgeSettings: {
+            /** @description Whether dynamic badge groups are computed (VTI-BDG-013). False: a community badge may not be created on a dynamic group, and existing ones are not recomputed. */
+            automaticBadges: boolean;
+            /** @description Validity of a badge credential its holders may show outside (VTI-BDG-062). Default 730. */
+            credentialValidDays?: number;
+            enabled: boolean;
+            ext?: components["schemas"]["VtcBadgesSettingsUpdateV0_1Ext"];
+            kudosMakers: components["schemas"]["VtcBadgesSettingsUpdateV0_1KudosMakers"];
+            limits?: components["schemas"]["VtcBadgesSettingsUpdateV0_1BadgeLimits"];
+            /** @description Whether any community badge may be marked `requestable`. False: every badge group is closed. */
+            membersMayRequest: boolean;
+            /** @description Whether a member's kudos total is shown on their card (VTI-BDG-043). */
+            showKudosTotals: boolean;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesSettingsUpdateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesSettingsUpdateV0_1GroupId: string;
+        /** @description Who may make a kudos badge (VTI-BDG-004). `nobody`: no kudos badges. `roles`: holders of any of `roles`, or members of any of `groups`. `members`: every active member. */
+        VtcBadgesSettingsUpdateV0_1KudosMakers: {
+            /** @description Read exactly when `policy` is `roles`. */
+            groups?: components["schemas"]["VtcBadgesSettingsUpdateV0_1GroupId"][];
+            /** @enum {string} */
+            policy: "nobody" | "roles" | "members";
+            /** @description Community role names. Read exactly when `policy` is `roles`. */
+            roles?: string[];
+        };
+        /** @description An administrator replaces the community's badge settings. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesSettingsUpdateV0_1Payload: {
+            ext?: components["schemas"]["VtcBadgesSettingsUpdateV0_1Ext"];
+            /** @description Why, recorded with the change. */
+            reason: string;
+            /** @description The settings to put in force, whole: BadgeSettings without `updatedAt`, which the community sets. An absent optional member takes the shared schema's default. */
+            settings: components["schemas"]["VtcBadgesSettingsUpdateV0_1BadgeSettings"] & {
+                updatedAt?: unknown;
+            };
+        };
+        /** @description The success response to a vtc/badges/settings/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/settings/update/0.1#response. */
+        VtcBadgesSettingsUpdateV0_1Response: {
+            ext?: components["schemas"]["VtcBadgesSettingsUpdateV0_1Ext"];
+            settings: components["schemas"]["VtcBadgesSettingsUpdateV0_1BadgeSettings"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesShowV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesShowV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesShowV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesShowV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesShowV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesShowV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesShowV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesShowV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesShowV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesShowV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesShowV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesShowV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesShowV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesShowV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesShowV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesShowV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesShowV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesShowV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /**
+         * @description What a holder of the badge is issued, derived from its kind and `shareableOutside`. `none`: a kudos badge, no credential (VTI-BDG-041). `inside`: a community badge shown only within the community — short-lived, renewed, no status (VTI-BDG-061). `outside`: a community badge its holders may show outside — long-lived, with a status in the community's own status set (VTI-BDG-062).
+         * @enum {string}
+         */
+        VtcBadgesShowV0_1CredentialRegime: "none" | "inside" | "outside";
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesShowV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesShowV0_1GroupId: string;
+        /**
+         * @description Where the caller stands with the badge, as vtc/badges/list states it. `holder`: at least one accepted award. `offered`: an open offer names them. `requested`: an undecided request to join its badge group. `none`: nothing.
+         * @enum {string}
+         */
+        VtcBadgesShowV0_1MyState: "holder" | "offered" | "requested" | "none";
+        /** @description Read one badge the caller may see: the badge, how many of it the caller holds and where they stand with it, its owners or its maker, and the credential regime it carries. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesShowV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesShowV0_1BadgeId"];
+            ext?: components["schemas"]["VtcBadgesShowV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/show/0.1#response. */
+        VtcBadgesShowV0_1Response: {
+            badge: components["schemas"]["VtcBadgesShowV0_1Badge"];
+            credentialRegime: components["schemas"]["VtcBadgesShowV0_1CredentialRegime"];
+            ext?: components["schemas"]["VtcBadgesShowV0_1Ext"];
+            maker?: components["schemas"]["VtcBadgesShowV0_1EntryId"];
+            /** @description Accepted awards of this badge the caller holds; 0 where none. */
+            myCount: number;
+            myState: components["schemas"]["VtcBadgesShowV0_1MyState"];
+            /** @description Community badges only: the badge group's managers, whom a request for the badge goes to. Shown to every caller who may see the badge. */
+            owners?: components["schemas"]["VtcBadgesShowV0_1EntryId"][];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesUpdateV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesUpdateV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesUpdateV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesUpdateV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesUpdateV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesUpdateV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesUpdateV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesUpdateV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesUpdateV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesUpdateV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesUpdateV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesUpdateV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesUpdateV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesUpdateV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesUpdateV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesUpdateV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesUpdateV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesUpdateV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesUpdateV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesUpdateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /**
+         * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
+         * @enum {string}
+         */
+        VtcBadgesUpdateV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesUpdateV0_1GroupId: string;
+        /** @description Change a badge's name, description, criteria, picture, listing and, for a community badge, whether members may ask for it and who sees its holders. Its kind and credential regime are fixed at creation. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesUpdateV0_1Payload: {
+            badgeId: components["schemas"]["VtcBadgesUpdateV0_1BadgeId"];
+            /** @description `null` clears it. */
+            criteria?: components["schemas"]["VtcBadgesUpdateV0_1BadgeCriteria"] | unknown;
+            description?: components["schemas"]["VtcBadgesUpdateV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesUpdateV0_1Ext"];
+            holdersVisibleTo?: components["schemas"]["VtcBadgesUpdateV0_1GroupAudience"];
+            /** @description A new picture, as the signer uploaded it with vtc/badges/images/upload. Re-issues no credential: the credential names its Achievement by a stable identifier. */
+            image?: {
+                /** @description The digest vtc/badges/images/upload answered to this signer. */
+                sha256: string;
+            };
+            /** @description Whether members who do not hold it see it in the badge list. */
+            listed?: boolean;
+            name?: components["schemas"]["VtcBadgesUpdateV0_1BadgeName"];
+            /** @description Why, recorded with the change. */
+            reason: string;
+            /** @description Community badges only. Whether members may ask for it: true sets the badge group's `joinPolicy` to `request`, false to `closed`. Refused while the community's `membersMayRequest` is off, and on an automatic badge. */
+            requestable?: boolean;
+        };
+        /** @description The success response to a vtc/badges/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/update/0.1#response. */
+        VtcBadgesUpdateV0_1Response: {
+            badge: components["schemas"]["VtcBadgesUpdateV0_1Badge"];
+            ext?: components["schemas"]["VtcBadgesUpdateV0_1Ext"];
+        };
+        /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
+        VtcBadgesWallShowV0_1Badge: {
+            badgeId: components["schemas"]["VtcBadgesWallShowV0_1BadgeId"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: components["schemas"]["VtcBadgesWallShowV0_1EntryId"];
+            criteria?: components["schemas"]["VtcBadgesWallShowV0_1BadgeCriteria"];
+            description: components["schemas"]["VtcBadgesWallShowV0_1BadgeDescription"];
+            ext?: components["schemas"]["VtcBadgesWallShowV0_1Ext"];
+            groupId?: components["schemas"]["VtcBadgesWallShowV0_1GroupId"];
+            /** @description Holders who show the badge. Only to callers who may see the holders. */
+            holderCount?: number;
+            image: components["schemas"]["VtcBadgesWallShowV0_1CardBlobRef"];
+            kind: components["schemas"]["VtcBadgesWallShowV0_1BadgeKind"];
+            /** @description Whether members who do not hold the badge see it in the community's badge list. An unlisted badge is seen by its holders, its owners and administrators. */
+            listed: boolean;
+            name: components["schemas"]["VtcBadgesWallShowV0_1BadgeName"];
+            /** @description Whether one member may hold the badge more than once, each giving an award of its own (VTI-BDG-022). Always true for a kudos badge. */
+            repeatable: boolean;
+            /** @description Community badges only. Whether a member may ask for it: a request to join its badge group, decided by its owners (VTI-BDG-014). Absent reads as false. */
+            requestable?: boolean;
+            /** Format: date-time */
+            retiredAt?: string;
+            /** @description Community badges only. Whether its holders may show it outside the community, which decides the credential's regime: short-lived and renewed with no status when false, long-lived with a status in the community's own status set when true (VTI-BDG-061, VTI-BDG-062). Absent reads as false. */
+            shareableOutside?: boolean;
+            state: components["schemas"]["VtcBadgesWallShowV0_1BadgeState"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** @description How the badge is earned, shown to members and written into the credential's Achievement as its criteria narrative. Plain text. */
+        VtcBadgesWallShowV0_1BadgeCriteria: string;
+        /** @description What the badge is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesWallShowV0_1BadgeDescription: string;
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesWallShowV0_1BadgeId: string;
+        /**
+         * @description `community`: defined by holders of `vtc.badges.admin`, given by its owners (its badge group's managers), may carry a credential. `kudos`: made by a member the community's badge settings admit, given by any active member to any other, never a credential. Fixed for the badge's life; a kudos badge becomes a community badge only by promotion (vtc/badges/promote).
+         * @enum {string}
+         */
+        VtcBadgesWallShowV0_1BadgeKind: "community" | "kudos";
+        /** @description The badge's name, shown on the wall and written into the credential's Achievement. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBadgesWallShowV0_1BadgeName: string;
+        /**
+         * @description `active`: may be given and shown. `retired`: kept for its holders' own history, never given, never shown to members who do not hold it (VTI-BDG-005).
+         * @enum {string}
+         */
+        VtcBadgesWallShowV0_1BadgeState: "active" | "retired";
+        /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
+        VtcBadgesWallShowV0_1CardBlobRef: {
+            /**
+             * @description Media type of the stored bytes.
+             * @enum {string}
+             */
+            mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+            /** @description Lowercase hex SHA-256 of the stored, re-encoded bytes. */
+            sha256: string;
+            /** @description Size in bytes of the stored bytes. */
+            size?: number;
+            /**
+             * Format: uri
+             * @description Projection only: a URL the viewer can fetch the image from until `urlExpiresAt`.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Projection only: when `url` stops working.
+             */
+            urlExpiresAt?: string;
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesWallShowV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesWallShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBadgesWallShowV0_1GroupId: string;
+        /** @description A member's badge wall as a viewer sees it, answered only where the directory shows the viewer that member's card and the member shows their badges. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesWallShowV0_1Payload: {
+            entryId: components["schemas"]["VtcBadgesWallShowV0_1EntryId"];
+            ext?: components["schemas"]["VtcBadgesWallShowV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/wall/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/wall/show/0.1#response. */
+        VtcBadgesWallShowV0_1Response: {
+            /** @description The badges the member holds and shows: pinned first, then in the member's own order (VTI-BDG-032). Hidden badges are never here (VTI-BDG-030). */
+            entries: components["schemas"]["VtcBadgesWallShowV0_1WallEntry"][];
+            ext?: components["schemas"]["VtcBadgesWallShowV0_1Ext"];
+            /** @description The member's kudos total: accepted, not hidden kudos awards (VTI-BDG-043). Present exactly when the community's badge settings have `showKudosTotals` true; absent otherwise, never zero in its place. */
+            kudosTotal?: number;
+            visibility: components["schemas"]["VtcBadgesWallShowV0_1WallVisibility"];
+        };
+        /** @description One badge on a member's wall as a viewer sees it: the badge, how many times the member holds it, since when, and whether the member pinned it. Hidden badges are never wall entries (VTI-BDG-030). */
+        VtcBadgesWallShowV0_1WallEntry: {
+            badge: components["schemas"]["VtcBadgesWallShowV0_1Badge"];
+            /** @description Accepted awards of this badge the member holds. */
+            count: number;
+            /**
+             * Format: date-time
+             * @description When the member last accepted an award of this badge.
+             */
+            latestAt?: string;
+            pinned: boolean;
+            /**
+             * Format: date-time
+             * @description When the member first accepted this badge.
+             */
+            since: string;
+        };
+        /**
+         * @description Who sees a member's badges, the member's own setting (VTI-BDG-031). `members`: every active member the directory shows their card to. `nobody`: no one but the member. Never wider than the directory shows the card.
+         * @enum {string}
+         */
+        VtcBadgesWallShowV0_1WallVisibility: "members" | "nobody";
+        /** @description A board as one caller may see it. */
+        VtcBoardsCreateV0_1Board: {
+            audience: components["schemas"]["VtcBoardsCreateV0_1BoardAudience"];
+            boardId: components["schemas"]["VtcBoardsCreateV0_1BoardId"];
+            /** Format: date-time */
+            createdAt: string;
+            description?: components["schemas"]["VtcBoardsCreateV0_1BoardDescription"];
+            /** @description Whether the caller facilitates this board. */
+            facilitator: boolean;
+            formats?: components["schemas"]["VtcBoardsCreateV0_1IdeaFormat"][];
+            /** @description How many of the board's ideas are in each state the caller may see. */
+            ideaCounts: {
+                declined?: number;
+                merged?: number;
+                notSelected?: number;
+                open?: number;
+                proposed?: number;
+                selected?: number;
+                withdrawn?: number;
+            };
+            /** @description The most ideas one member may have on the board that are not `withdrawn` or `declined`. Absent: no limit beyond the community's own. */
+            maxIdeasPerMember?: number;
+            proposals: components["schemas"]["VtcBoardsCreateV0_1Window"];
+            /** @description How facilitators intend to select, in plain words (VTI-BRD-041), e.g. "The twelve ideas the most members would attend". */
+            selectionRule?: string;
+            status: components["schemas"]["VtcBoardsCreateV0_1BoardStatus"];
+            template: components["schemas"]["VtcBoardsCreateV0_1ElectionTemplate"];
+            timetable?: components["schemas"]["VtcBoardsCreateV0_1Slot"][];
+            title: components["schemas"]["VtcBoardsCreateV0_1BoardTitle"];
+            topics?: components["schemas"]["VtcBoardsCreateV0_1Topic"][];
+            voting: components["schemas"]["VtcBoardsCreateV0_1Window"];
+        };
+        /** @description Who may see and use a board (VTI-BRD-003): every active member of the community (`members`), or the members of one community group (`group`, with `groupId`). Facilitators always see the board. */
+        VtcBoardsCreateV0_1BoardAudience: {
+            /** @enum {unknown} */
+            kind: "members";
+        } | {
+            groupId: components["schemas"]["VtcBoardsCreateV0_1GroupId"];
+            /** @enum {unknown} */
+            kind: "group";
+        };
+        /** @description What the board is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsCreateV0_1BoardDescription: string;
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsCreateV0_1BoardId: string;
+        /**
+         * @description `open`: ideas and notes are taken within the board's windows. `closed`: no new idea or note; facilitators still decide and select. `archived`: no change at all; facilitators can still read it (VTI-BRD-005). `open` → `closed` → `archived`, never back.
+         * @enum {string}
+         */
+        VtcBoardsCreateV0_1BoardStatus: "open" | "closed" | "archived";
+        /** @description Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsCreateV0_1BoardTitle: string;
+        /**
+         * @description `public`: anyone reads the board. `private`: the community, the auditors the manifest names and, for one cast's inclusion, the holder of its receipt (VTI-VOT-052).
+         * @enum {string}
+         */
+        VtcBoardsCreateV0_1BoardVisibility: "public" | "private";
+        /** @description Every member of an idea's election manifest that the board fixes (VTI-BRD-030). When a facilitator accepts an idea the community completes it: `electionId` (naming the board and the idea), `community`, `title` and `description` from the idea, `registrationOpensAt` and `votingOpensAt` from the board's voting window's `opensAt` or the acceptance, whichever is later, `votingClosesAt` from its `closesAt`, `roll` from the board's audience (rule `members`, or a credential roll naming the group), and `binding: false`. A board's template is never binding, and so has no `binding` member. */
+        VtcBoardsCreateV0_1ElectionTemplate: {
+            allowEarlyClose: boolean;
+            /** @description The DID of the voting service every idea's election is registered with; one on the community's list (VTI-VOT-082). */
+            ballotBox: string;
+            /** @description The ballot box's board for each idea's election, as a manifest states it (VTI-VOT-052). `public` lets a board show each idea's ballot count while voting is open (VTI-BRD-033). */
+            board: {
+                auditors: string[];
+                visibility: components["schemas"]["VtcBoardsCreateV0_1BoardVisibility"];
+            };
+            questions: components["schemas"]["VtcBoardsCreateV0_1Question"][];
+            /** @description Open elections only: whether running totals may be read while voting is open (VTI-VOT-061). A board SHOULD set it false (VTI-BRD-033). */
+            resultsBeforeClose: boolean;
+            revote: components["schemas"]["VtcBoardsCreateV0_1Revote"];
+            secrecy: components["schemas"]["VtcBoardsCreateV0_1SecrecyLevel"];
+            /** @description Counted ballots required before any text answer is disclosed (VTI-VOT-065); SHOULD be at least 10. */
+            textReleaseThreshold: number;
+            trustees?: components["schemas"]["VtcBoardsCreateV0_1Trustees"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsCreateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBoardsCreateV0_1GroupId: string;
+        /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
+        VtcBoardsCreateV0_1IdeaFormat: string;
+        /** @description A question or option key, unique within its manifest or question. */
+        VtcBoardsCreateV0_1Key: string;
+        /** @description An administrator creates a board where members propose ideas, leave notes and vote on each accepted idea through an election of its own. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsCreateV0_1Payload: {
+            audience: components["schemas"]["VtcBoardsCreateV0_1BoardAudience"];
+            description?: components["schemas"]["VtcBoardsCreateV0_1BoardDescription"];
+            ext?: components["schemas"]["VtcBoardsCreateV0_1Ext"];
+            formats?: components["schemas"]["VtcBoardsCreateV0_1IdeaFormat"][];
+            maxIdeasPerMember?: number;
+            proposals: components["schemas"]["VtcBoardsCreateV0_1Window"];
+            selectionRule?: string;
+            template: components["schemas"]["VtcBoardsCreateV0_1ElectionTemplate"];
+            timetable?: components["schemas"]["VtcBoardsCreateV0_1Slot"][];
+            title: components["schemas"]["VtcBoardsCreateV0_1BoardTitle"];
+            topics?: components["schemas"]["VtcBoardsCreateV0_1Topic"][];
+            voting: components["schemas"]["VtcBoardsCreateV0_1Window"];
+        };
+        /** @description One question. Tagged union over `type`. */
+        VtcBoardsCreateV0_1Question: {
+            key: components["schemas"]["VtcBoardsCreateV0_1Key"];
+            maxSelections: number;
+            minSelections: number;
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsCreateV0_1QuestionOption"][];
+            text?: string;
+            /** @enum {unknown} */
+            type: "choice";
+        } | {
+            key: components["schemas"]["VtcBoardsCreateV0_1Key"];
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsCreateV0_1QuestionOption"][];
+            partial: boolean;
+            text?: string;
+            /** @enum {unknown} */
+            type: "ranking";
+        } | {
+            key: components["schemas"]["VtcBoardsCreateV0_1Key"];
+            max: number;
+            min: number;
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsCreateV0_1QuestionOption"][];
+            text?: string;
+            /** @enum {unknown} */
+            type: "score";
+        } | {
+            key: components["schemas"]["VtcBoardsCreateV0_1Key"];
+            maxLength: number;
+            optional: boolean;
+            text?: string;
+            /** @enum {unknown} */
+            type: "text";
+        };
+        VtcBoardsCreateV0_1QuestionOption: {
+            key: components["schemas"]["VtcBoardsCreateV0_1Key"];
+            /** @description Display text. Absent from a manifest registered with a ballot box that holds no question text (VTI-VOT-014). */
+            label?: string;
+        };
+        /** @description The success response to a vtc/boards/create/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/create/0.1#response. */
+        VtcBoardsCreateV0_1Response: {
+            board: components["schemas"]["VtcBoardsCreateV0_1Board"];
+            ext?: components["schemas"]["VtcBoardsCreateV0_1Ext"];
+        };
+        /**
+         * @description What a later, different ballot under one ticket does: `replace` the earlier one, or be refused (`refuse`) (VTI-VOT-041).
+         * @enum {string}
+         */
+        VtcBoardsCreateV0_1Revote: "replace" | "refuse";
+        /**
+         * @description `open`: ballots are recorded on the board as cast. `sealed`: ballots are encrypted to a jointly generated election key and decrypted after voting closes. `talliedEncrypted`: ballots are encrypted and only the totals are ever decrypted (VTI-VOT-060). The encrypted levels are cast with `voting/ballot/cast-encrypted/0.1`, under an election key the trustees generate with `voting/trustees/*` (CONVENTIONS §9).
+         * @enum {string}
+         */
+        VtcBoardsCreateV0_1SecrecyLevel: "open" | "sealed" | "talliedEncrypted";
+        /** @description One place in a board's timetable that a selected idea can be put in (VTI-BRD-040): a place (`label`, e.g. a room) and a time. */
+        VtcBoardsCreateV0_1Slot: {
+            /** Format: date-time */
+            endsAt: string;
+            label: string;
+            slotId: components["schemas"]["VtcBoardsCreateV0_1Key"];
+            /** Format: date-time */
+            startsAt: string;
+        };
+        /** @description A topic an idea is filed under. One of the board's `topics` where the board states them. */
+        VtcBoardsCreateV0_1Topic: string;
+        /** @description The trustees of a sealed or tallied-encrypted election and the number of them decryption needs (VTI-VOT-062). Neither the community nor the ballot box may be one. */
+        VtcBoardsCreateV0_1Trustees: {
+            dids: string[];
+            threshold: number;
+        };
+        /** @description A period, open from `opensAt` until `closesAt`. `closesAt` is after `opensAt` (a consumer check; JSON Schema cannot compare them). */
+        VtcBoardsCreateV0_1Window: {
+            /** Format: date-time */
+            closesAt: string;
+            /** Format: date-time */
+            opensAt: string;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsDeleteV0_1BoardId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsDeleteV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A board manager deletes a closed board: its ideas, notes and each election's content are removed, and each election keeps only a tombstone for the community's tombstone retention. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsDeleteV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsDeleteV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsDeleteV0_1Ext"];
+            /** @description Why, recorded with the deletion in the community's audit trail. */
+            reason: string;
+        };
+        /** @description The success response to a vtc/boards/delete/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/delete/0.1#response. */
+        VtcBoardsDeleteV0_1Response: {
+            boardId: components["schemas"]["VtcBoardsDeleteV0_1BoardId"];
+            /** @description Elections whose content the community removed. Each keeps a tombstone unless the retention is zero. */
+            electionsRemoved: number;
+            ext?: components["schemas"]["VtcBoardsDeleteV0_1Ext"];
+            ideasRemoved: number;
+            notesRemoved: number;
+            /** @description What the community keeps of the board's elections (VTI-BRD-007, VTI-BRD-008). */
+            tombstones: {
+                /** @description Tombstones kept: each an election's identifier, manifest digest and the board heads the community kept. Zero when the retention is zero. */
+                kept: number;
+                /**
+                 * Format: date-time
+                 * @description When they are removed. Absent when the retention is unbounded, or when none was kept.
+                 */
+                removeAt?: string;
+            };
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsFacilitatorsAddV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsFacilitatorsAddV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsFacilitatorsAddV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A facilitator of a board appoints an active member a facilitator of that board: an access-control resource grant of `vtc.boards.manage` qualified to the board (VTI-BRD-090). The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsFacilitatorsAddV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsAddV0_1BoardId"];
+            entryId: components["schemas"]["VtcBoardsFacilitatorsAddV0_1EntryId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsAddV0_1Ext"];
+            /** @description Why, recorded with the change. Plain text. */
+            reason?: string;
+        };
+        /** @description The success response to a vtc/boards/facilitators/add/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/facilitators/add/0.1#response. The board's appointed facilitators after the appointment. */
+        VtcBoardsFacilitatorsAddV0_1Response: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsAddV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsAddV0_1Ext"];
+            /** @description The board's appointed facilitators after the change, by entry: entries holding `vtc.boards.manage` qualified to this board, read from the access-control list. Holders of the capability unqualified or through a role are not listed (VTI-BRD-093). */
+            facilitators: components["schemas"]["VtcBoardsFacilitatorsAddV0_1EntryId"][];
+        };
+        /** @description One member's appointment to facilitate the board: a resource grant of `vtc.boards.manage` qualified to it. */
+        VtcBoardsFacilitatorsListV0_1Appointment: {
+            /**
+             * Format: date-time
+             * @description When the grant was written, or last re-affirmed under a new granter.
+             */
+            appointedAt: string;
+            appointedBy?: components["schemas"]["VtcBoardsFacilitatorsListV0_1EntryId"];
+            entryId: components["schemas"]["VtcBoardsFacilitatorsListV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description Present while the appointment is under review because its granter departed or no longer facilitates the board: it is withdrawn at this time unless an administrator who facilitates the board re-affirms it (VTI-BRD-092).
+             */
+            reviewEndsAt?: string;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsFacilitatorsListV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsFacilitatorsListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsFacilitatorsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A facilitator of a board reads who is appointed to facilitate it (VTI-BRD-093). The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsFacilitatorsListV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsListV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsListV0_1Ext"];
+        };
+        /** @description The success response to a vtc/boards/facilitators/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/facilitators/list/0.1#response. The board's appointed facilitators. */
+        VtcBoardsFacilitatorsListV0_1Response: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsListV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsListV0_1Ext"];
+            /** @description The board's appointments, by entry, oldest first. Holders of `vtc.boards.manage` unqualified or through a role are not listed: they facilitate every board. */
+            facilitators: components["schemas"]["VtcBoardsFacilitatorsListV0_1Appointment"][];
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsFacilitatorsRemoveV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsFacilitatorsRemoveV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsFacilitatorsRemoveV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A facilitator steps down, or a holder of `vtc.boards.manage` unqualified ends another member's appointment as a board's facilitator (VTI-BRD-091). The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsFacilitatorsRemoveV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1BoardId"];
+            entryId: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1EntryId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1Ext"];
+            /** @description Why, recorded with the change. Plain text. */
+            reason?: string;
+        };
+        /** @description The success response to a vtc/boards/facilitators/remove/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/facilitators/remove/0.1#response. The board's appointed facilitators after the removal. */
+        VtcBoardsFacilitatorsRemoveV0_1Response: {
+            boardId: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1Ext"];
+            /** @description The board's appointed facilitators after the removal, by entry: entries holding `vtc.boards.manage` qualified to this board, read from the access-control list. Holders of the capability unqualified or through a role are not listed (VTI-BRD-093). */
+            facilitators: components["schemas"]["VtcBoardsFacilitatorsRemoveV0_1EntryId"][];
+        };
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsIdeasDecideV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsIdeasDecideV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description A board's tree head (RFC 9162 §2.1). A head is signed by being carried in a document the ballot box signs; whoever keeps a head keeps that whole document. */
+        VtcBoardsIdeasDecideV0_1BoardHead: {
+            electionId: components["schemas"]["VtcBoardsIdeasDecideV0_1ElectionId"];
+            /** Format: date-time */
+            issuedAt: string;
+            rootHash: components["schemas"]["VtcBoardsIdeasDecideV0_1DigestMultibase"];
+            treeSize: number;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsIdeasDecideV0_1BoardId: string;
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcBoardsIdeasDecideV0_1DigestMultibase: string;
+        /** @description An election's identifier, unique within its community. A closed alphabet: it appears in the ticket class label `voter/<electionId>` and is framed into every hash a cast is bound to. */
+        VtcBoardsIdeasDecideV0_1ElectionId: string;
+        /** @description An election's result, computable by anyone who can read its board from the board and the registration alone (VTI-VOT-070). */
+        VtcBoardsIdeasDecideV0_1ElectionResult: {
+            ballotsCounted: number;
+            electionId: components["schemas"]["VtcBoardsIdeasDecideV0_1ElectionId"];
+            head: components["schemas"]["VtcBoardsIdeasDecideV0_1BoardHead"];
+            manifestDigest: components["schemas"]["VtcBoardsIdeasDecideV0_1DigestMultibase"];
+            questions: components["schemas"]["VtcBoardsIdeasDecideV0_1QuestionResult"][];
+        };
+        /** @enum {string} */
+        VtcBoardsIdeasDecideV0_1ElectionState: "registered" | "registration" | "voting" | "closed" | "tallied" | "cancelled";
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsIdeasDecideV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsIdeasDecideV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description An idea as one caller may see it. */
+        VtcBoardsIdeasDecideV0_1Idea: {
+            boardId: components["schemas"]["VtcBoardsIdeasDecideV0_1BoardId"];
+            decision?: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaDecision"];
+            description: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaDescription"];
+            election?: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaElection"];
+            format?: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaFormat"];
+            ideaId: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaId"];
+            /** @description Notes on the idea the caller may read. */
+            noteCount: number;
+            opening?: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaOpening"];
+            /** Format: date-time */
+            proposedAt: string;
+            proposer: components["schemas"]["VtcBoardsIdeasDecideV0_1Author"];
+            state: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaState"];
+            title: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaTitle"];
+            topic?: components["schemas"]["VtcBoardsIdeasDecideV0_1Topic"];
+        };
+        /** @description A facilitator's decision on an idea: declining or merging it (VTI-BRD-013), or selecting it or not (VTI-BRD-040). The deciding facilitator is not named to the audience. */
+        VtcBoardsIdeasDecideV0_1IdeaDecision: {
+            /** Format: date-time */
+            decidedAt: string;
+            /** @description `selected` or `notSelected` only: whether the facilitator said the decision departs from the board's `selectionRule` (VTI-BRD-041); `reason` then says why. */
+            departsFromRule?: boolean;
+            mergedInto?: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaId"];
+            /**
+             * @description Present when a facilitator decided their own idea because no other facilitator existed (VTI-BRD-013).
+             * @enum {unknown}
+             */
+            ownIdea?: true;
+            reason?: components["schemas"]["VtcBoardsIdeasDecideV0_1Reason"];
+            slotId?: components["schemas"]["VtcBoardsIdeasDecideV0_1Key"];
+        };
+        /** @description What the idea is: for a session, what it covers and who should come. Becomes its election's manifest `description` when accepted. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsIdeasDecideV0_1IdeaDescription: string;
+        /** @description An idea's election as a board shows it (VTI-BRD-033): never who took a ticket or cast a ballot. */
+        VtcBoardsIdeasDecideV0_1IdeaElection: {
+            /** @description The ballot box's latest board head's ballot count, where its board is public (VTI-VOT-052); absent otherwise. Counts ballots, not voters, where a later ballot replaces an earlier one. */
+            ballotsOnBoard?: number;
+            /**
+             * Format: date-time
+             * @description When the head `ballotsOnBoard` was read from was issued.
+             */
+            boardHeadIssuedAt?: string;
+            /** @description Present with `result`: whether the community certified it (VTI-VOT-071). */
+            certified?: boolean;
+            electionId: components["schemas"]["VtcBoardsIdeasDecideV0_1ElectionId"];
+            result?: components["schemas"]["VtcBoardsIdeasDecideV0_1ElectionResult"];
+            state: components["schemas"]["VtcBoardsIdeasDecideV0_1ElectionState"];
+        };
+        /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
+        VtcBoardsIdeasDecideV0_1IdeaFormat: string;
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsIdeasDecideV0_1IdeaId: string;
+        /** @description Shown to facilitators only: an accepted idea whose election the ballot box has not yet registered, so the idea is still `proposed` (VTI-BRD-031). `refusal` is the ballot box's or community's refusal of the last attempt, after which the idea is no longer being opened. */
+        VtcBoardsIdeasDecideV0_1IdeaOpening: {
+            electionId: components["schemas"]["VtcBoardsIdeasDecideV0_1ElectionId"];
+            refusal?: {
+                code: string;
+                /** Format: date-time */
+                refusedAt: string;
+            };
+            /**
+             * Format: date-time
+             * @description When the facilitator accepted the idea.
+             */
+            startedAt: string;
+        };
+        /**
+         * @description Where an idea stands (VTI-BRD-011).
+         * @enum {string}
+         */
+        VtcBoardsIdeasDecideV0_1IdeaState: "proposed" | "open" | "selected" | "notSelected" | "declined" | "merged" | "withdrawn";
+        /** @description An idea's title. Becomes the title of its election's manifest when the idea is accepted, and cannot change after that (VTI-BRD-012). Plain text. */
+        VtcBoardsIdeasDecideV0_1IdeaTitle: string;
+        /** @description A question or option key, unique within its manifest or question. */
+        VtcBoardsIdeasDecideV0_1Key: string;
+        /** @description A facilitator accepts a proposed idea — opening an election for it from the board's template — declines it, merges it into another, or moves a declined idea back to proposed. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsIdeasDecideV0_1Payload: {
+            /** @enum {string} */
+            decision: "accept" | "decline" | "merge" | "reopen";
+            ext?: components["schemas"]["VtcBoardsIdeasDecideV0_1Ext"];
+            ideaId: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaId"];
+            mergeInto?: components["schemas"]["VtcBoardsIdeasDecideV0_1IdeaId"];
+            reason?: components["schemas"]["VtcBoardsIdeasDecideV0_1Reason"];
+        };
+        /** @description One question's totals. `choice`: selections per option. `ranking`: per option, how many ballots placed it at each position (index 0 = first). `score`: per option, the sum and the number of ballots that scored it. `text`: the answers, in board order, withheld (`withheld: true`) below the manifest's `textReleaseThreshold`. `abstained` counts ballots that left the question unanswered. */
+        VtcBoardsIdeasDecideV0_1QuestionResult: {
+            abstained: number;
+            choice?: {
+                [key: string]: number;
+            };
+            question: components["schemas"]["VtcBoardsIdeasDecideV0_1Key"];
+            ranking?: {
+                [key: string]: number[];
+            };
+            score?: {
+                [key: string]: {
+                    count: number;
+                    sum: number;
+                };
+            };
+            text?: string[];
+            withheld?: boolean;
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsIdeasDecideV0_1Reason: string;
+        /** @description The success response to a vtc/boards/ideas/decide/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/ideas/decide/0.1#response. */
+        VtcBoardsIdeasDecideV0_1Response: {
+            ext?: components["schemas"]["VtcBoardsIdeasDecideV0_1Ext"];
+            idea: components["schemas"]["VtcBoardsIdeasDecideV0_1Idea"];
+        };
+        /** @description A topic an idea is filed under. One of the board's `topics` where the board states them. */
+        VtcBoardsIdeasDecideV0_1Topic: string;
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsIdeasProposeV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsIdeasProposeV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description A board's tree head (RFC 9162 §2.1). A head is signed by being carried in a document the ballot box signs; whoever keeps a head keeps that whole document. */
+        VtcBoardsIdeasProposeV0_1BoardHead: {
+            electionId: components["schemas"]["VtcBoardsIdeasProposeV0_1ElectionId"];
+            /** Format: date-time */
+            issuedAt: string;
+            rootHash: components["schemas"]["VtcBoardsIdeasProposeV0_1DigestMultibase"];
+            treeSize: number;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsIdeasProposeV0_1BoardId: string;
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcBoardsIdeasProposeV0_1DigestMultibase: string;
+        /** @description An election's identifier, unique within its community. A closed alphabet: it appears in the ticket class label `voter/<electionId>` and is framed into every hash a cast is bound to. */
+        VtcBoardsIdeasProposeV0_1ElectionId: string;
+        /** @description An election's result, computable by anyone who can read its board from the board and the registration alone (VTI-VOT-070). */
+        VtcBoardsIdeasProposeV0_1ElectionResult: {
+            ballotsCounted: number;
+            electionId: components["schemas"]["VtcBoardsIdeasProposeV0_1ElectionId"];
+            head: components["schemas"]["VtcBoardsIdeasProposeV0_1BoardHead"];
+            manifestDigest: components["schemas"]["VtcBoardsIdeasProposeV0_1DigestMultibase"];
+            questions: components["schemas"]["VtcBoardsIdeasProposeV0_1QuestionResult"][];
+        };
+        /** @enum {string} */
+        VtcBoardsIdeasProposeV0_1ElectionState: "registered" | "registration" | "voting" | "closed" | "tallied" | "cancelled";
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsIdeasProposeV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsIdeasProposeV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description An idea as one caller may see it. */
+        VtcBoardsIdeasProposeV0_1Idea: {
+            boardId: components["schemas"]["VtcBoardsIdeasProposeV0_1BoardId"];
+            decision?: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaDecision"];
+            description: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaDescription"];
+            election?: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaElection"];
+            format?: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaFormat"];
+            ideaId: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaId"];
+            /** @description Notes on the idea the caller may read. */
+            noteCount: number;
+            opening?: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaOpening"];
+            /** Format: date-time */
+            proposedAt: string;
+            proposer: components["schemas"]["VtcBoardsIdeasProposeV0_1Author"];
+            state: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaState"];
+            title: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaTitle"];
+            topic?: components["schemas"]["VtcBoardsIdeasProposeV0_1Topic"];
+        };
+        /** @description A facilitator's decision on an idea: declining or merging it (VTI-BRD-013), or selecting it or not (VTI-BRD-040). The deciding facilitator is not named to the audience. */
+        VtcBoardsIdeasProposeV0_1IdeaDecision: {
+            /** Format: date-time */
+            decidedAt: string;
+            /** @description `selected` or `notSelected` only: whether the facilitator said the decision departs from the board's `selectionRule` (VTI-BRD-041); `reason` then says why. */
+            departsFromRule?: boolean;
+            mergedInto?: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaId"];
+            /**
+             * @description Present when a facilitator decided their own idea because no other facilitator existed (VTI-BRD-013).
+             * @enum {unknown}
+             */
+            ownIdea?: true;
+            reason?: components["schemas"]["VtcBoardsIdeasProposeV0_1Reason"];
+            slotId?: components["schemas"]["VtcBoardsIdeasProposeV0_1Key"];
+        };
+        /** @description What the idea is: for a session, what it covers and who should come. Becomes its election's manifest `description` when accepted. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsIdeasProposeV0_1IdeaDescription: string;
+        /** @description An idea's election as a board shows it (VTI-BRD-033): never who took a ticket or cast a ballot. */
+        VtcBoardsIdeasProposeV0_1IdeaElection: {
+            /** @description The ballot box's latest board head's ballot count, where its board is public (VTI-VOT-052); absent otherwise. Counts ballots, not voters, where a later ballot replaces an earlier one. */
+            ballotsOnBoard?: number;
+            /**
+             * Format: date-time
+             * @description When the head `ballotsOnBoard` was read from was issued.
+             */
+            boardHeadIssuedAt?: string;
+            /** @description Present with `result`: whether the community certified it (VTI-VOT-071). */
+            certified?: boolean;
+            electionId: components["schemas"]["VtcBoardsIdeasProposeV0_1ElectionId"];
+            result?: components["schemas"]["VtcBoardsIdeasProposeV0_1ElectionResult"];
+            state: components["schemas"]["VtcBoardsIdeasProposeV0_1ElectionState"];
+        };
+        /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
+        VtcBoardsIdeasProposeV0_1IdeaFormat: string;
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsIdeasProposeV0_1IdeaId: string;
+        /** @description Shown to facilitators only: an accepted idea whose election the ballot box has not yet registered, so the idea is still `proposed` (VTI-BRD-031). `refusal` is the ballot box's or community's refusal of the last attempt, after which the idea is no longer being opened. */
+        VtcBoardsIdeasProposeV0_1IdeaOpening: {
+            electionId: components["schemas"]["VtcBoardsIdeasProposeV0_1ElectionId"];
+            refusal?: {
+                code: string;
+                /** Format: date-time */
+                refusedAt: string;
+            };
+            /**
+             * Format: date-time
+             * @description When the facilitator accepted the idea.
+             */
+            startedAt: string;
+        };
+        /**
+         * @description Where an idea stands (VTI-BRD-011).
+         * @enum {string}
+         */
+        VtcBoardsIdeasProposeV0_1IdeaState: "proposed" | "open" | "selected" | "notSelected" | "declined" | "merged" | "withdrawn";
+        /** @description An idea's title. Becomes the title of its election's manifest when the idea is accepted, and cannot change after that (VTI-BRD-012). Plain text. */
+        VtcBoardsIdeasProposeV0_1IdeaTitle: string;
+        /** @description A question or option key, unique within its manifest or question. */
+        VtcBoardsIdeasProposeV0_1Key: string;
+        /** @description A member proposes an idea on a board, under their own name, while the board takes proposals. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsIdeasProposeV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsIdeasProposeV0_1BoardId"];
+            description: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaDescription"];
+            ext?: components["schemas"]["VtcBoardsIdeasProposeV0_1Ext"];
+            format?: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaFormat"];
+            title: components["schemas"]["VtcBoardsIdeasProposeV0_1IdeaTitle"];
+            topic?: components["schemas"]["VtcBoardsIdeasProposeV0_1Topic"];
+        };
+        /** @description One question's totals. `choice`: selections per option. `ranking`: per option, how many ballots placed it at each position (index 0 = first). `score`: per option, the sum and the number of ballots that scored it. `text`: the answers, in board order, withheld (`withheld: true`) below the manifest's `textReleaseThreshold`. `abstained` counts ballots that left the question unanswered. */
+        VtcBoardsIdeasProposeV0_1QuestionResult: {
+            abstained: number;
+            choice?: {
+                [key: string]: number;
+            };
+            question: components["schemas"]["VtcBoardsIdeasProposeV0_1Key"];
+            ranking?: {
+                [key: string]: number[];
+            };
+            score?: {
+                [key: string]: {
+                    count: number;
+                    sum: number;
+                };
+            };
+            text?: string[];
+            withheld?: boolean;
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsIdeasProposeV0_1Reason: string;
+        /** @description The success response to a vtc/boards/ideas/propose/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/ideas/propose/0.1#response. */
+        VtcBoardsIdeasProposeV0_1Response: {
+            ext?: components["schemas"]["VtcBoardsIdeasProposeV0_1Ext"];
+            idea: components["schemas"]["VtcBoardsIdeasProposeV0_1Idea"];
+        };
+        /** @description A topic an idea is filed under. One of the board's `topics` where the board states them. */
+        VtcBoardsIdeasProposeV0_1Topic: string;
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsIdeasSelectV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsIdeasSelectV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description A board's tree head (RFC 9162 §2.1). A head is signed by being carried in a document the ballot box signs; whoever keeps a head keeps that whole document. */
+        VtcBoardsIdeasSelectV0_1BoardHead: {
+            electionId: components["schemas"]["VtcBoardsIdeasSelectV0_1ElectionId"];
+            /** Format: date-time */
+            issuedAt: string;
+            rootHash: components["schemas"]["VtcBoardsIdeasSelectV0_1DigestMultibase"];
+            treeSize: number;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsIdeasSelectV0_1BoardId: string;
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcBoardsIdeasSelectV0_1DigestMultibase: string;
+        /** @description An election's identifier, unique within its community. A closed alphabet: it appears in the ticket class label `voter/<electionId>` and is framed into every hash a cast is bound to. */
+        VtcBoardsIdeasSelectV0_1ElectionId: string;
+        /** @description An election's result, computable by anyone who can read its board from the board and the registration alone (VTI-VOT-070). */
+        VtcBoardsIdeasSelectV0_1ElectionResult: {
+            ballotsCounted: number;
+            electionId: components["schemas"]["VtcBoardsIdeasSelectV0_1ElectionId"];
+            head: components["schemas"]["VtcBoardsIdeasSelectV0_1BoardHead"];
+            manifestDigest: components["schemas"]["VtcBoardsIdeasSelectV0_1DigestMultibase"];
+            questions: components["schemas"]["VtcBoardsIdeasSelectV0_1QuestionResult"][];
+        };
+        /** @enum {string} */
+        VtcBoardsIdeasSelectV0_1ElectionState: "registered" | "registration" | "voting" | "closed" | "tallied" | "cancelled";
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsIdeasSelectV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsIdeasSelectV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description An idea as one caller may see it. */
+        VtcBoardsIdeasSelectV0_1Idea: {
+            boardId: components["schemas"]["VtcBoardsIdeasSelectV0_1BoardId"];
+            decision?: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaDecision"];
+            description: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaDescription"];
+            election?: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaElection"];
+            format?: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaFormat"];
+            ideaId: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaId"];
+            /** @description Notes on the idea the caller may read. */
+            noteCount: number;
+            opening?: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaOpening"];
+            /** Format: date-time */
+            proposedAt: string;
+            proposer: components["schemas"]["VtcBoardsIdeasSelectV0_1Author"];
+            state: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaState"];
+            title: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaTitle"];
+            topic?: components["schemas"]["VtcBoardsIdeasSelectV0_1Topic"];
+        };
+        /** @description A facilitator's decision on an idea: declining or merging it (VTI-BRD-013), or selecting it or not (VTI-BRD-040). The deciding facilitator is not named to the audience. */
+        VtcBoardsIdeasSelectV0_1IdeaDecision: {
+            /** Format: date-time */
+            decidedAt: string;
+            /** @description `selected` or `notSelected` only: whether the facilitator said the decision departs from the board's `selectionRule` (VTI-BRD-041); `reason` then says why. */
+            departsFromRule?: boolean;
+            mergedInto?: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaId"];
+            /**
+             * @description Present when a facilitator decided their own idea because no other facilitator existed (VTI-BRD-013).
+             * @enum {unknown}
+             */
+            ownIdea?: true;
+            reason?: components["schemas"]["VtcBoardsIdeasSelectV0_1Reason"];
+            slotId?: components["schemas"]["VtcBoardsIdeasSelectV0_1Key"];
+        };
+        /** @description What the idea is: for a session, what it covers and who should come. Becomes its election's manifest `description` when accepted. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsIdeasSelectV0_1IdeaDescription: string;
+        /** @description An idea's election as a board shows it (VTI-BRD-033): never who took a ticket or cast a ballot. */
+        VtcBoardsIdeasSelectV0_1IdeaElection: {
+            /** @description The ballot box's latest board head's ballot count, where its board is public (VTI-VOT-052); absent otherwise. Counts ballots, not voters, where a later ballot replaces an earlier one. */
+            ballotsOnBoard?: number;
+            /**
+             * Format: date-time
+             * @description When the head `ballotsOnBoard` was read from was issued.
+             */
+            boardHeadIssuedAt?: string;
+            /** @description Present with `result`: whether the community certified it (VTI-VOT-071). */
+            certified?: boolean;
+            electionId: components["schemas"]["VtcBoardsIdeasSelectV0_1ElectionId"];
+            result?: components["schemas"]["VtcBoardsIdeasSelectV0_1ElectionResult"];
+            state: components["schemas"]["VtcBoardsIdeasSelectV0_1ElectionState"];
+        };
+        /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
+        VtcBoardsIdeasSelectV0_1IdeaFormat: string;
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsIdeasSelectV0_1IdeaId: string;
+        /** @description Shown to facilitators only: an accepted idea whose election the ballot box has not yet registered, so the idea is still `proposed` (VTI-BRD-031). `refusal` is the ballot box's or community's refusal of the last attempt, after which the idea is no longer being opened. */
+        VtcBoardsIdeasSelectV0_1IdeaOpening: {
+            electionId: components["schemas"]["VtcBoardsIdeasSelectV0_1ElectionId"];
+            refusal?: {
+                code: string;
+                /** Format: date-time */
+                refusedAt: string;
+            };
+            /**
+             * Format: date-time
+             * @description When the facilitator accepted the idea.
+             */
+            startedAt: string;
+        };
+        /**
+         * @description Where an idea stands (VTI-BRD-011).
+         * @enum {string}
+         */
+        VtcBoardsIdeasSelectV0_1IdeaState: "proposed" | "open" | "selected" | "notSelected" | "declined" | "merged" | "withdrawn";
+        /** @description An idea's title. Becomes the title of its election's manifest when the idea is accepted, and cannot change after that (VTI-BRD-012). Plain text. */
+        VtcBoardsIdeasSelectV0_1IdeaTitle: string;
+        /** @description A question or option key, unique within its manifest or question. */
+        VtcBoardsIdeasSelectV0_1Key: string;
+        /** @description After an idea's election is tallied, a facilitator records whether it is selected, optionally placing it in a timetable slot, with the result the decision was made with. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsIdeasSelectV0_1Payload: {
+            /** @enum {string} */
+            decision: "selected" | "notSelected";
+            departsFromRule?: boolean;
+            ext?: components["schemas"]["VtcBoardsIdeasSelectV0_1Ext"];
+            ideaId: components["schemas"]["VtcBoardsIdeasSelectV0_1IdeaId"];
+            reason?: components["schemas"]["VtcBoardsIdeasSelectV0_1Reason"];
+            slotId?: components["schemas"]["VtcBoardsIdeasSelectV0_1Key"];
+        };
+        /** @description One question's totals. `choice`: selections per option. `ranking`: per option, how many ballots placed it at each position (index 0 = first). `score`: per option, the sum and the number of ballots that scored it. `text`: the answers, in board order, withheld (`withheld: true`) below the manifest's `textReleaseThreshold`. `abstained` counts ballots that left the question unanswered. */
+        VtcBoardsIdeasSelectV0_1QuestionResult: {
+            abstained: number;
+            choice?: {
+                [key: string]: number;
+            };
+            question: components["schemas"]["VtcBoardsIdeasSelectV0_1Key"];
+            ranking?: {
+                [key: string]: number[];
+            };
+            score?: {
+                [key: string]: {
+                    count: number;
+                    sum: number;
+                };
+            };
+            text?: string[];
+            withheld?: boolean;
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsIdeasSelectV0_1Reason: string;
+        /** @description The success response to a vtc/boards/ideas/select/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/ideas/select/0.1#response. */
+        VtcBoardsIdeasSelectV0_1Response: {
+            ext?: components["schemas"]["VtcBoardsIdeasSelectV0_1Ext"];
+            idea: components["schemas"]["VtcBoardsIdeasSelectV0_1Idea"];
+        };
+        /** @description A topic an idea is filed under. One of the board's `topics` where the board states them. */
+        VtcBoardsIdeasSelectV0_1Topic: string;
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsIdeasUpdateV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsIdeasUpdateV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description A board's tree head (RFC 9162 §2.1). A head is signed by being carried in a document the ballot box signs; whoever keeps a head keeps that whole document. */
+        VtcBoardsIdeasUpdateV0_1BoardHead: {
+            electionId: components["schemas"]["VtcBoardsIdeasUpdateV0_1ElectionId"];
+            /** Format: date-time */
+            issuedAt: string;
+            rootHash: components["schemas"]["VtcBoardsIdeasUpdateV0_1DigestMultibase"];
+            treeSize: number;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsIdeasUpdateV0_1BoardId: string;
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcBoardsIdeasUpdateV0_1DigestMultibase: string;
+        /** @description An election's identifier, unique within its community. A closed alphabet: it appears in the ticket class label `voter/<electionId>` and is framed into every hash a cast is bound to. */
+        VtcBoardsIdeasUpdateV0_1ElectionId: string;
+        /** @description An election's result, computable by anyone who can read its board from the board and the registration alone (VTI-VOT-070). */
+        VtcBoardsIdeasUpdateV0_1ElectionResult: {
+            ballotsCounted: number;
+            electionId: components["schemas"]["VtcBoardsIdeasUpdateV0_1ElectionId"];
+            head: components["schemas"]["VtcBoardsIdeasUpdateV0_1BoardHead"];
+            manifestDigest: components["schemas"]["VtcBoardsIdeasUpdateV0_1DigestMultibase"];
+            questions: components["schemas"]["VtcBoardsIdeasUpdateV0_1QuestionResult"][];
+        };
+        /** @enum {string} */
+        VtcBoardsIdeasUpdateV0_1ElectionState: "registered" | "registration" | "voting" | "closed" | "tallied" | "cancelled";
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsIdeasUpdateV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsIdeasUpdateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description An idea as one caller may see it. */
+        VtcBoardsIdeasUpdateV0_1Idea: {
+            boardId: components["schemas"]["VtcBoardsIdeasUpdateV0_1BoardId"];
+            decision?: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaDecision"];
+            description: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaDescription"];
+            election?: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaElection"];
+            format?: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaFormat"];
+            ideaId: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaId"];
+            /** @description Notes on the idea the caller may read. */
+            noteCount: number;
+            opening?: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaOpening"];
+            /** Format: date-time */
+            proposedAt: string;
+            proposer: components["schemas"]["VtcBoardsIdeasUpdateV0_1Author"];
+            state: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaState"];
+            title: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaTitle"];
+            topic?: components["schemas"]["VtcBoardsIdeasUpdateV0_1Topic"];
+        };
+        /** @description A facilitator's decision on an idea: declining or merging it (VTI-BRD-013), or selecting it or not (VTI-BRD-040). The deciding facilitator is not named to the audience. */
+        VtcBoardsIdeasUpdateV0_1IdeaDecision: {
+            /** Format: date-time */
+            decidedAt: string;
+            /** @description `selected` or `notSelected` only: whether the facilitator said the decision departs from the board's `selectionRule` (VTI-BRD-041); `reason` then says why. */
+            departsFromRule?: boolean;
+            mergedInto?: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaId"];
+            /**
+             * @description Present when a facilitator decided their own idea because no other facilitator existed (VTI-BRD-013).
+             * @enum {unknown}
+             */
+            ownIdea?: true;
+            reason?: components["schemas"]["VtcBoardsIdeasUpdateV0_1Reason"];
+            slotId?: components["schemas"]["VtcBoardsIdeasUpdateV0_1Key"];
+        };
+        /** @description What the idea is: for a session, what it covers and who should come. Becomes its election's manifest `description` when accepted. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsIdeasUpdateV0_1IdeaDescription: string;
+        /** @description An idea's election as a board shows it (VTI-BRD-033): never who took a ticket or cast a ballot. */
+        VtcBoardsIdeasUpdateV0_1IdeaElection: {
+            /** @description The ballot box's latest board head's ballot count, where its board is public (VTI-VOT-052); absent otherwise. Counts ballots, not voters, where a later ballot replaces an earlier one. */
+            ballotsOnBoard?: number;
+            /**
+             * Format: date-time
+             * @description When the head `ballotsOnBoard` was read from was issued.
+             */
+            boardHeadIssuedAt?: string;
+            /** @description Present with `result`: whether the community certified it (VTI-VOT-071). */
+            certified?: boolean;
+            electionId: components["schemas"]["VtcBoardsIdeasUpdateV0_1ElectionId"];
+            result?: components["schemas"]["VtcBoardsIdeasUpdateV0_1ElectionResult"];
+            state: components["schemas"]["VtcBoardsIdeasUpdateV0_1ElectionState"];
+        };
+        /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
+        VtcBoardsIdeasUpdateV0_1IdeaFormat: string;
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsIdeasUpdateV0_1IdeaId: string;
+        /** @description Shown to facilitators only: an accepted idea whose election the ballot box has not yet registered, so the idea is still `proposed` (VTI-BRD-031). `refusal` is the ballot box's or community's refusal of the last attempt, after which the idea is no longer being opened. */
+        VtcBoardsIdeasUpdateV0_1IdeaOpening: {
+            electionId: components["schemas"]["VtcBoardsIdeasUpdateV0_1ElectionId"];
+            refusal?: {
+                code: string;
+                /** Format: date-time */
+                refusedAt: string;
+            };
+            /**
+             * Format: date-time
+             * @description When the facilitator accepted the idea.
+             */
+            startedAt: string;
+        };
+        /**
+         * @description Where an idea stands (VTI-BRD-011).
+         * @enum {string}
+         */
+        VtcBoardsIdeasUpdateV0_1IdeaState: "proposed" | "open" | "selected" | "notSelected" | "declined" | "merged" | "withdrawn";
+        /** @description An idea's title. Becomes the title of its election's manifest when the idea is accepted, and cannot change after that (VTI-BRD-012). Plain text. */
+        VtcBoardsIdeasUpdateV0_1IdeaTitle: string;
+        /** @description A question or option key, unique within its manifest or question. */
+        VtcBoardsIdeasUpdateV0_1Key: string;
+        /** @description A proposer changes their idea's title, description, format or topic while it is still proposed. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsIdeasUpdateV0_1Payload: {
+            description?: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaDescription"];
+            ext?: components["schemas"]["VtcBoardsIdeasUpdateV0_1Ext"];
+            format?: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaFormat"];
+            ideaId: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaId"];
+            title?: components["schemas"]["VtcBoardsIdeasUpdateV0_1IdeaTitle"];
+            topic?: components["schemas"]["VtcBoardsIdeasUpdateV0_1Topic"];
+        };
+        /** @description One question's totals. `choice`: selections per option. `ranking`: per option, how many ballots placed it at each position (index 0 = first). `score`: per option, the sum and the number of ballots that scored it. `text`: the answers, in board order, withheld (`withheld: true`) below the manifest's `textReleaseThreshold`. `abstained` counts ballots that left the question unanswered. */
+        VtcBoardsIdeasUpdateV0_1QuestionResult: {
+            abstained: number;
+            choice?: {
+                [key: string]: number;
+            };
+            question: components["schemas"]["VtcBoardsIdeasUpdateV0_1Key"];
+            ranking?: {
+                [key: string]: number[];
+            };
+            score?: {
+                [key: string]: {
+                    count: number;
+                    sum: number;
+                };
+            };
+            text?: string[];
+            withheld?: boolean;
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsIdeasUpdateV0_1Reason: string;
+        /** @description The success response to a vtc/boards/ideas/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/ideas/update/0.1#response. */
+        VtcBoardsIdeasUpdateV0_1Response: {
+            ext?: components["schemas"]["VtcBoardsIdeasUpdateV0_1Ext"];
+            idea: components["schemas"]["VtcBoardsIdeasUpdateV0_1Idea"];
+        };
+        /** @description A topic an idea is filed under. One of the board's `topics` where the board states them. */
+        VtcBoardsIdeasUpdateV0_1Topic: string;
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsIdeasWithdrawV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description A board's tree head (RFC 9162 §2.1). A head is signed by being carried in a document the ballot box signs; whoever keeps a head keeps that whole document. */
+        VtcBoardsIdeasWithdrawV0_1BoardHead: {
+            electionId: components["schemas"]["VtcBoardsIdeasWithdrawV0_1ElectionId"];
+            /** Format: date-time */
+            issuedAt: string;
+            rootHash: components["schemas"]["VtcBoardsIdeasWithdrawV0_1DigestMultibase"];
+            treeSize: number;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsIdeasWithdrawV0_1BoardId: string;
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcBoardsIdeasWithdrawV0_1DigestMultibase: string;
+        /** @description An election's identifier, unique within its community. A closed alphabet: it appears in the ticket class label `voter/<electionId>` and is framed into every hash a cast is bound to. */
+        VtcBoardsIdeasWithdrawV0_1ElectionId: string;
+        /** @description An election's result, computable by anyone who can read its board from the board and the registration alone (VTI-VOT-070). */
+        VtcBoardsIdeasWithdrawV0_1ElectionResult: {
+            ballotsCounted: number;
+            electionId: components["schemas"]["VtcBoardsIdeasWithdrawV0_1ElectionId"];
+            head: components["schemas"]["VtcBoardsIdeasWithdrawV0_1BoardHead"];
+            manifestDigest: components["schemas"]["VtcBoardsIdeasWithdrawV0_1DigestMultibase"];
+            questions: components["schemas"]["VtcBoardsIdeasWithdrawV0_1QuestionResult"][];
+        };
+        /** @enum {string} */
+        VtcBoardsIdeasWithdrawV0_1ElectionState: "registered" | "registration" | "voting" | "closed" | "tallied" | "cancelled";
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsIdeasWithdrawV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsIdeasWithdrawV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description An idea as one caller may see it. */
+        VtcBoardsIdeasWithdrawV0_1Idea: {
+            boardId: components["schemas"]["VtcBoardsIdeasWithdrawV0_1BoardId"];
+            decision?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaDecision"];
+            description: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaDescription"];
+            election?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaElection"];
+            format?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaFormat"];
+            ideaId: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaId"];
+            /** @description Notes on the idea the caller may read. */
+            noteCount: number;
+            opening?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaOpening"];
+            /** Format: date-time */
+            proposedAt: string;
+            proposer: components["schemas"]["VtcBoardsIdeasWithdrawV0_1Author"];
+            state: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaState"];
+            title: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaTitle"];
+            topic?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1Topic"];
+        };
+        /** @description A facilitator's decision on an idea: declining or merging it (VTI-BRD-013), or selecting it or not (VTI-BRD-040). The deciding facilitator is not named to the audience. */
+        VtcBoardsIdeasWithdrawV0_1IdeaDecision: {
+            /** Format: date-time */
+            decidedAt: string;
+            /** @description `selected` or `notSelected` only: whether the facilitator said the decision departs from the board's `selectionRule` (VTI-BRD-041); `reason` then says why. */
+            departsFromRule?: boolean;
+            mergedInto?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaId"];
+            /**
+             * @description Present when a facilitator decided their own idea because no other facilitator existed (VTI-BRD-013).
+             * @enum {unknown}
+             */
+            ownIdea?: true;
+            reason?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1Reason"];
+            slotId?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1Key"];
+        };
+        /** @description What the idea is: for a session, what it covers and who should come. Becomes its election's manifest `description` when accepted. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsIdeasWithdrawV0_1IdeaDescription: string;
+        /** @description An idea's election as a board shows it (VTI-BRD-033): never who took a ticket or cast a ballot. */
+        VtcBoardsIdeasWithdrawV0_1IdeaElection: {
+            /** @description The ballot box's latest board head's ballot count, where its board is public (VTI-VOT-052); absent otherwise. Counts ballots, not voters, where a later ballot replaces an earlier one. */
+            ballotsOnBoard?: number;
+            /**
+             * Format: date-time
+             * @description When the head `ballotsOnBoard` was read from was issued.
+             */
+            boardHeadIssuedAt?: string;
+            /** @description Present with `result`: whether the community certified it (VTI-VOT-071). */
+            certified?: boolean;
+            electionId: components["schemas"]["VtcBoardsIdeasWithdrawV0_1ElectionId"];
+            result?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1ElectionResult"];
+            state: components["schemas"]["VtcBoardsIdeasWithdrawV0_1ElectionState"];
+        };
+        /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
+        VtcBoardsIdeasWithdrawV0_1IdeaFormat: string;
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsIdeasWithdrawV0_1IdeaId: string;
+        /** @description Shown to facilitators only: an accepted idea whose election the ballot box has not yet registered, so the idea is still `proposed` (VTI-BRD-031). `refusal` is the ballot box's or community's refusal of the last attempt, after which the idea is no longer being opened. */
+        VtcBoardsIdeasWithdrawV0_1IdeaOpening: {
+            electionId: components["schemas"]["VtcBoardsIdeasWithdrawV0_1ElectionId"];
+            refusal?: {
+                code: string;
+                /** Format: date-time */
+                refusedAt: string;
+            };
+            /**
+             * Format: date-time
+             * @description When the facilitator accepted the idea.
+             */
+            startedAt: string;
+        };
+        /**
+         * @description Where an idea stands (VTI-BRD-011).
+         * @enum {string}
+         */
+        VtcBoardsIdeasWithdrawV0_1IdeaState: "proposed" | "open" | "selected" | "notSelected" | "declined" | "merged" | "withdrawn";
+        /** @description An idea's title. Becomes the title of its election's manifest when the idea is accepted, and cannot change after that (VTI-BRD-012). Plain text. */
+        VtcBoardsIdeasWithdrawV0_1IdeaTitle: string;
+        /** @description A question or option key, unique within its manifest or question. */
+        VtcBoardsIdeasWithdrawV0_1Key: string;
+        /** @description A proposer withdraws their idea while it is still proposed. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsIdeasWithdrawV0_1Payload: {
+            ext?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1Ext"];
+            ideaId: components["schemas"]["VtcBoardsIdeasWithdrawV0_1IdeaId"];
+        };
+        /** @description One question's totals. `choice`: selections per option. `ranking`: per option, how many ballots placed it at each position (index 0 = first). `score`: per option, the sum and the number of ballots that scored it. `text`: the answers, in board order, withheld (`withheld: true`) below the manifest's `textReleaseThreshold`. `abstained` counts ballots that left the question unanswered. */
+        VtcBoardsIdeasWithdrawV0_1QuestionResult: {
+            abstained: number;
+            choice?: {
+                [key: string]: number;
+            };
+            question: components["schemas"]["VtcBoardsIdeasWithdrawV0_1Key"];
+            ranking?: {
+                [key: string]: number[];
+            };
+            score?: {
+                [key: string]: {
+                    count: number;
+                    sum: number;
+                };
+            };
+            text?: string[];
+            withheld?: boolean;
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsIdeasWithdrawV0_1Reason: string;
+        /** @description The success response to a vtc/boards/ideas/withdraw/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/ideas/withdraw/0.1#response. */
+        VtcBoardsIdeasWithdrawV0_1Response: {
+            ext?: components["schemas"]["VtcBoardsIdeasWithdrawV0_1Ext"];
+            idea: components["schemas"]["VtcBoardsIdeasWithdrawV0_1Idea"];
+        };
+        /** @description A topic an idea is filed under. One of the board's `topics` where the board states them. */
+        VtcBoardsIdeasWithdrawV0_1Topic: string;
+        /** @description A board as one caller may see it. */
+        VtcBoardsListV0_1Board: {
+            audience: components["schemas"]["VtcBoardsListV0_1BoardAudience"];
+            boardId: components["schemas"]["VtcBoardsListV0_1BoardId"];
+            /** Format: date-time */
+            createdAt: string;
+            description?: components["schemas"]["VtcBoardsListV0_1BoardDescription"];
+            /** @description Whether the caller facilitates this board. */
+            facilitator: boolean;
+            formats?: components["schemas"]["VtcBoardsListV0_1IdeaFormat"][];
+            /** @description How many of the board's ideas are in each state the caller may see. */
+            ideaCounts: {
+                declined?: number;
+                merged?: number;
+                notSelected?: number;
+                open?: number;
+                proposed?: number;
+                selected?: number;
+                withdrawn?: number;
+            };
+            /** @description The most ideas one member may have on the board that are not `withdrawn` or `declined`. Absent: no limit beyond the community's own. */
+            maxIdeasPerMember?: number;
+            proposals: components["schemas"]["VtcBoardsListV0_1Window"];
+            /** @description How facilitators intend to select, in plain words (VTI-BRD-041), e.g. "The twelve ideas the most members would attend". */
+            selectionRule?: string;
+            status: components["schemas"]["VtcBoardsListV0_1BoardStatus"];
+            template: components["schemas"]["VtcBoardsListV0_1ElectionTemplate"];
+            timetable?: components["schemas"]["VtcBoardsListV0_1Slot"][];
+            title: components["schemas"]["VtcBoardsListV0_1BoardTitle"];
+            topics?: components["schemas"]["VtcBoardsListV0_1Topic"][];
+            voting: components["schemas"]["VtcBoardsListV0_1Window"];
+        };
+        /** @description Who may see and use a board (VTI-BRD-003): every active member of the community (`members`), or the members of one community group (`group`, with `groupId`). Facilitators always see the board. */
+        VtcBoardsListV0_1BoardAudience: {
+            /** @enum {unknown} */
+            kind: "members";
+        } | {
+            groupId: components["schemas"]["VtcBoardsListV0_1GroupId"];
+            /** @enum {unknown} */
+            kind: "group";
+        };
+        /** @description What the board is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsListV0_1BoardDescription: string;
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsListV0_1BoardId: string;
+        /**
+         * @description `open`: ideas and notes are taken within the board's windows. `closed`: no new idea or note; facilitators still decide and select. `archived`: no change at all; facilitators can still read it (VTI-BRD-005). `open` → `closed` → `archived`, never back.
+         * @enum {string}
+         */
+        VtcBoardsListV0_1BoardStatus: "open" | "closed" | "archived";
+        /** @description Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsListV0_1BoardTitle: string;
+        /**
+         * @description `public`: anyone reads the board. `private`: the community, the auditors the manifest names and, for one cast's inclusion, the holder of its receipt (VTI-VOT-052).
+         * @enum {string}
+         */
+        VtcBoardsListV0_1BoardVisibility: "public" | "private";
+        /** @description Every member of an idea's election manifest that the board fixes (VTI-BRD-030). When a facilitator accepts an idea the community completes it: `electionId` (naming the board and the idea), `community`, `title` and `description` from the idea, `registrationOpensAt` and `votingOpensAt` from the board's voting window's `opensAt` or the acceptance, whichever is later, `votingClosesAt` from its `closesAt`, `roll` from the board's audience (rule `members`, or a credential roll naming the group), and `binding: false`. A board's template is never binding, and so has no `binding` member. */
+        VtcBoardsListV0_1ElectionTemplate: {
+            allowEarlyClose: boolean;
+            /** @description The DID of the voting service every idea's election is registered with; one on the community's list (VTI-VOT-082). */
+            ballotBox: string;
+            /** @description The ballot box's board for each idea's election, as a manifest states it (VTI-VOT-052). `public` lets a board show each idea's ballot count while voting is open (VTI-BRD-033). */
+            board: {
+                auditors: string[];
+                visibility: components["schemas"]["VtcBoardsListV0_1BoardVisibility"];
+            };
+            questions: components["schemas"]["VtcBoardsListV0_1Question"][];
+            /** @description Open elections only: whether running totals may be read while voting is open (VTI-VOT-061). A board SHOULD set it false (VTI-BRD-033). */
+            resultsBeforeClose: boolean;
+            revote: components["schemas"]["VtcBoardsListV0_1Revote"];
+            secrecy: components["schemas"]["VtcBoardsListV0_1SecrecyLevel"];
+            /** @description Counted ballots required before any text answer is disclosed (VTI-VOT-065); SHOULD be at least 10. */
+            textReleaseThreshold: number;
+            trustees?: components["schemas"]["VtcBoardsListV0_1Trustees"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBoardsListV0_1GroupId: string;
+        /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
+        VtcBoardsListV0_1IdeaFormat: string;
+        /** @description A question or option key, unique within its manifest or question. */
+        VtcBoardsListV0_1Key: string;
+        /** @description List the boards the caller may see: those whose audience admits them, and every board they facilitate. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsListV0_1Payload: {
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the filters; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcBoardsListV0_1Ext"];
+            /** @description Default true. False hides archived boards from facilitators too. */
+            includeArchived?: boolean;
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+            status?: components["schemas"]["VtcBoardsListV0_1BoardStatus"];
+        };
+        /** @description One question. Tagged union over `type`. */
+        VtcBoardsListV0_1Question: {
+            key: components["schemas"]["VtcBoardsListV0_1Key"];
+            maxSelections: number;
+            minSelections: number;
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsListV0_1QuestionOption"][];
+            text?: string;
+            /** @enum {unknown} */
+            type: "choice";
+        } | {
+            key: components["schemas"]["VtcBoardsListV0_1Key"];
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsListV0_1QuestionOption"][];
+            partial: boolean;
+            text?: string;
+            /** @enum {unknown} */
+            type: "ranking";
+        } | {
+            key: components["schemas"]["VtcBoardsListV0_1Key"];
+            max: number;
+            min: number;
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsListV0_1QuestionOption"][];
+            text?: string;
+            /** @enum {unknown} */
+            type: "score";
+        } | {
+            key: components["schemas"]["VtcBoardsListV0_1Key"];
+            maxLength: number;
+            optional: boolean;
+            text?: string;
+            /** @enum {unknown} */
+            type: "text";
+        };
+        VtcBoardsListV0_1QuestionOption: {
+            key: components["schemas"]["VtcBoardsListV0_1Key"];
+            /** @description Display text. Absent from a manifest registered with a ballot box that holds no question text (VTI-VOT-014). */
+            label?: string;
+        };
+        /** @description The success response to a vtc/boards/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/list/0.1#response. */
+        VtcBoardsListV0_1Response: {
+            boards: components["schemas"]["VtcBoardsListV0_1Board"][];
+            ext?: components["schemas"]["VtcBoardsListV0_1Ext"];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+        };
+        /**
+         * @description What a later, different ballot under one ticket does: `replace` the earlier one, or be refused (`refuse`) (VTI-VOT-041).
+         * @enum {string}
+         */
+        VtcBoardsListV0_1Revote: "replace" | "refuse";
+        /**
+         * @description `open`: ballots are recorded on the board as cast. `sealed`: ballots are encrypted to a jointly generated election key and decrypted after voting closes. `talliedEncrypted`: ballots are encrypted and only the totals are ever decrypted (VTI-VOT-060). The encrypted levels are cast with `voting/ballot/cast-encrypted/0.1`, under an election key the trustees generate with `voting/trustees/*` (CONVENTIONS §9).
+         * @enum {string}
+         */
+        VtcBoardsListV0_1SecrecyLevel: "open" | "sealed" | "talliedEncrypted";
+        /** @description One place in a board's timetable that a selected idea can be put in (VTI-BRD-040): a place (`label`, e.g. a room) and a time. */
+        VtcBoardsListV0_1Slot: {
+            /** Format: date-time */
+            endsAt: string;
+            label: string;
+            slotId: components["schemas"]["VtcBoardsListV0_1Key"];
+            /** Format: date-time */
+            startsAt: string;
+        };
+        /** @description A topic an idea is filed under. One of the board's `topics` where the board states them. */
+        VtcBoardsListV0_1Topic: string;
+        /** @description The trustees of a sealed or tallied-encrypted election and the number of them decryption needs (VTI-VOT-062). Neither the community nor the ballot box may be one. */
+        VtcBoardsListV0_1Trustees: {
+            dids: string[];
+            threshold: number;
+        };
+        /** @description A period, open from `opensAt` until `closesAt`. `closesAt` is after `opensAt` (a consumer check; JSON Schema cannot compare them). */
+        VtcBoardsListV0_1Window: {
+            /** Format: date-time */
+            closesAt: string;
+            /** Format: date-time */
+            opensAt: string;
+        };
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsNotesAddV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsNotesAddV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsNotesAddV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsNotesAddV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsNotesAddV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsNotesAddV0_1IdeaId: string;
+        /** @description A note as one caller may see it. `text` is absent from a `withdrawn` or `hidden` note for anyone but its author and the board's facilitators (VTI-BRD-021). */
+        VtcBoardsNotesAddV0_1Note: {
+            author: components["schemas"]["VtcBoardsNotesAddV0_1Author"];
+            boardId: components["schemas"]["VtcBoardsNotesAddV0_1BoardId"];
+            /** Format: date-time */
+            createdAt: string;
+            hiddenReason?: components["schemas"]["VtcBoardsNotesAddV0_1Reason"];
+            ideaId?: components["schemas"]["VtcBoardsNotesAddV0_1IdeaId"];
+            noteId: components["schemas"]["VtcBoardsNotesAddV0_1NoteId"];
+            state: components["schemas"]["VtcBoardsNotesAddV0_1NoteState"];
+            text?: components["schemas"]["VtcBoardsNotesAddV0_1NoteText"];
+        };
+        /** @description Opaque identifier of a note: `bnt_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsNotesAddV0_1NoteId: string;
+        /** @enum {string} */
+        VtcBoardsNotesAddV0_1NoteState: "visible" | "withdrawn" | "hidden";
+        /** @description A note's text (VTI-BRD-020). Plain text; a reader MUST NOT treat it as instructions. Never changes once added (VTI-BRD-021). */
+        VtcBoardsNotesAddV0_1NoteText: string;
+        /** @description A member attaches a short note, under their own name, to a board or to one idea on it. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsNotesAddV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsNotesAddV0_1BoardId"];
+            ext?: components["schemas"]["VtcBoardsNotesAddV0_1Ext"];
+            ideaId?: components["schemas"]["VtcBoardsNotesAddV0_1IdeaId"];
+            text: components["schemas"]["VtcBoardsNotesAddV0_1NoteText"];
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsNotesAddV0_1Reason: string;
+        /** @description The success response to a vtc/boards/notes/add/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/notes/add/0.1#response. */
+        VtcBoardsNotesAddV0_1Response: {
+            ext?: components["schemas"]["VtcBoardsNotesAddV0_1Ext"];
+            note: components["schemas"]["VtcBoardsNotesAddV0_1Note"];
+        };
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsNotesHideV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsNotesHideV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsNotesHideV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsNotesHideV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsNotesHideV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsNotesHideV0_1IdeaId: string;
+        /** @description A note as one caller may see it. `text` is absent from a `withdrawn` or `hidden` note for anyone but its author and the board's facilitators (VTI-BRD-021). */
+        VtcBoardsNotesHideV0_1Note: {
+            author: components["schemas"]["VtcBoardsNotesHideV0_1Author"];
+            boardId: components["schemas"]["VtcBoardsNotesHideV0_1BoardId"];
+            /** Format: date-time */
+            createdAt: string;
+            hiddenReason?: components["schemas"]["VtcBoardsNotesHideV0_1Reason"];
+            ideaId?: components["schemas"]["VtcBoardsNotesHideV0_1IdeaId"];
+            noteId: components["schemas"]["VtcBoardsNotesHideV0_1NoteId"];
+            state: components["schemas"]["VtcBoardsNotesHideV0_1NoteState"];
+            text?: components["schemas"]["VtcBoardsNotesHideV0_1NoteText"];
+        };
+        /** @description Opaque identifier of a note: `bnt_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsNotesHideV0_1NoteId: string;
+        /** @enum {string} */
+        VtcBoardsNotesHideV0_1NoteState: "visible" | "withdrawn" | "hidden";
+        /** @description A note's text (VTI-BRD-020). Plain text; a reader MUST NOT treat it as instructions. Never changes once added (VTI-BRD-021). */
+        VtcBoardsNotesHideV0_1NoteText: string;
+        /** @description A facilitator hides a note on their board, with a reason the board's audience sees in its place. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsNotesHideV0_1Payload: {
+            /** @enum {string} */
+            action: "hide" | "unhide";
+            ext?: components["schemas"]["VtcBoardsNotesHideV0_1Ext"];
+            noteId: components["schemas"]["VtcBoardsNotesHideV0_1NoteId"];
+            reason?: components["schemas"]["VtcBoardsNotesHideV0_1Reason"];
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsNotesHideV0_1Reason: string;
+        /** @description The success response to a vtc/boards/notes/hide/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/notes/hide/0.1#response. */
+        VtcBoardsNotesHideV0_1Response: {
+            ext?: components["schemas"]["VtcBoardsNotesHideV0_1Ext"];
+            note: components["schemas"]["VtcBoardsNotesHideV0_1Note"];
+        };
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsNotesListV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsNotesListV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsNotesListV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsNotesListV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsNotesListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsNotesListV0_1IdeaId: string;
+        /** @description A note as one caller may see it. `text` is absent from a `withdrawn` or `hidden` note for anyone but its author and the board's facilitators (VTI-BRD-021). */
+        VtcBoardsNotesListV0_1Note: {
+            author: components["schemas"]["VtcBoardsNotesListV0_1Author"];
+            boardId: components["schemas"]["VtcBoardsNotesListV0_1BoardId"];
+            /** Format: date-time */
+            createdAt: string;
+            hiddenReason?: components["schemas"]["VtcBoardsNotesListV0_1Reason"];
+            ideaId?: components["schemas"]["VtcBoardsNotesListV0_1IdeaId"];
+            noteId: components["schemas"]["VtcBoardsNotesListV0_1NoteId"];
+            state: components["schemas"]["VtcBoardsNotesListV0_1NoteState"];
+            text?: components["schemas"]["VtcBoardsNotesListV0_1NoteText"];
+        };
+        /** @description Opaque identifier of a note: `bnt_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsNotesListV0_1NoteId: string;
+        /** @enum {string} */
+        VtcBoardsNotesListV0_1NoteState: "visible" | "withdrawn" | "hidden";
+        /** @description A note's text (VTI-BRD-020). Plain text; a reader MUST NOT treat it as instructions. Never changes once added (VTI-BRD-021). */
+        VtcBoardsNotesListV0_1NoteText: string;
+        /** @description List a board's notes, or one idea's, as the caller may read them. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsNotesListV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsNotesListV0_1BoardId"];
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the filters; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcBoardsNotesListV0_1Ext"];
+            ideaId?: components["schemas"]["VtcBoardsNotesListV0_1IdeaId"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+            /**
+             * @description Without `ideaId`: the board's own notes (`board`, default) or every note on it (`all`). Ignored with `ideaId`.
+             * @enum {string}
+             */
+            scope?: "board" | "all";
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsNotesListV0_1Reason: string;
+        /** @description The success response to a vtc/boards/notes/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/notes/list/0.1#response. */
+        VtcBoardsNotesListV0_1Response: {
+            ext?: components["schemas"]["VtcBoardsNotesListV0_1Ext"];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+            notes: components["schemas"]["VtcBoardsNotesListV0_1Note"][];
+        };
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsNotesWithdrawV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsNotesWithdrawV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsNotesWithdrawV0_1BoardId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsNotesWithdrawV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsNotesWithdrawV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsNotesWithdrawV0_1IdeaId: string;
+        /** @description A note as one caller may see it. `text` is absent from a `withdrawn` or `hidden` note for anyone but its author and the board's facilitators (VTI-BRD-021). */
+        VtcBoardsNotesWithdrawV0_1Note: {
+            author: components["schemas"]["VtcBoardsNotesWithdrawV0_1Author"];
+            boardId: components["schemas"]["VtcBoardsNotesWithdrawV0_1BoardId"];
+            /** Format: date-time */
+            createdAt: string;
+            hiddenReason?: components["schemas"]["VtcBoardsNotesWithdrawV0_1Reason"];
+            ideaId?: components["schemas"]["VtcBoardsNotesWithdrawV0_1IdeaId"];
+            noteId: components["schemas"]["VtcBoardsNotesWithdrawV0_1NoteId"];
+            state: components["schemas"]["VtcBoardsNotesWithdrawV0_1NoteState"];
+            text?: components["schemas"]["VtcBoardsNotesWithdrawV0_1NoteText"];
+        };
+        /** @description Opaque identifier of a note: `bnt_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsNotesWithdrawV0_1NoteId: string;
+        /** @enum {string} */
+        VtcBoardsNotesWithdrawV0_1NoteState: "visible" | "withdrawn" | "hidden";
+        /** @description A note's text (VTI-BRD-020). Plain text; a reader MUST NOT treat it as instructions. Never changes once added (VTI-BRD-021). */
+        VtcBoardsNotesWithdrawV0_1NoteText: string;
+        /** @description A note's author withdraws it; its text is no longer shown to the board's audience. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsNotesWithdrawV0_1Payload: {
+            ext?: components["schemas"]["VtcBoardsNotesWithdrawV0_1Ext"];
+            noteId: components["schemas"]["VtcBoardsNotesWithdrawV0_1NoteId"];
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsNotesWithdrawV0_1Reason: string;
+        /** @description The success response to a vtc/boards/notes/withdraw/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/notes/withdraw/0.1#response. */
+        VtcBoardsNotesWithdrawV0_1Response: {
+            ext?: components["schemas"]["VtcBoardsNotesWithdrawV0_1Ext"];
+            note: components["schemas"]["VtcBoardsNotesWithdrawV0_1Note"];
+        };
+        /** @description Who proposed an idea or wrote a note, as the board's audience sees them. `entryId` is their directory entry, which survives a rotation of their DID; `name` is their directory display name as this caller may see it, absent where the directory withholds it. A departed member is shown as `formerMember: true` with neither (VTI-BRD-060). */
+        VtcBoardsShowV0_1Author: {
+            entryId?: components["schemas"]["VtcBoardsShowV0_1EntryId"];
+            /** @enum {unknown} */
+            formerMember?: true;
+            name?: string;
+            /**
+             * @description Present when the caller is the author.
+             * @enum {unknown}
+             */
+            you?: true;
+        };
+        /** @description A board as one caller may see it. */
+        VtcBoardsShowV0_1Board: {
+            audience: components["schemas"]["VtcBoardsShowV0_1BoardAudience"];
+            boardId: components["schemas"]["VtcBoardsShowV0_1BoardId"];
+            /** Format: date-time */
+            createdAt: string;
+            description?: components["schemas"]["VtcBoardsShowV0_1BoardDescription"];
+            /** @description Whether the caller facilitates this board. */
+            facilitator: boolean;
+            formats?: components["schemas"]["VtcBoardsShowV0_1IdeaFormat"][];
+            /** @description How many of the board's ideas are in each state the caller may see. */
+            ideaCounts: {
+                declined?: number;
+                merged?: number;
+                notSelected?: number;
+                open?: number;
+                proposed?: number;
+                selected?: number;
+                withdrawn?: number;
+            };
+            /** @description The most ideas one member may have on the board that are not `withdrawn` or `declined`. Absent: no limit beyond the community's own. */
+            maxIdeasPerMember?: number;
+            proposals: components["schemas"]["VtcBoardsShowV0_1Window"];
+            /** @description How facilitators intend to select, in plain words (VTI-BRD-041), e.g. "The twelve ideas the most members would attend". */
+            selectionRule?: string;
+            status: components["schemas"]["VtcBoardsShowV0_1BoardStatus"];
+            template: components["schemas"]["VtcBoardsShowV0_1ElectionTemplate"];
+            timetable?: components["schemas"]["VtcBoardsShowV0_1Slot"][];
+            title: components["schemas"]["VtcBoardsShowV0_1BoardTitle"];
+            topics?: components["schemas"]["VtcBoardsShowV0_1Topic"][];
+            voting: components["schemas"]["VtcBoardsShowV0_1Window"];
+        };
+        /** @description Who may see and use a board (VTI-BRD-003): every active member of the community (`members`), or the members of one community group (`group`, with `groupId`). Facilitators always see the board. */
+        VtcBoardsShowV0_1BoardAudience: {
+            /** @enum {unknown} */
+            kind: "members";
+        } | {
+            groupId: components["schemas"]["VtcBoardsShowV0_1GroupId"];
+            /** @enum {unknown} */
+            kind: "group";
+        };
+        /** @description What the board is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsShowV0_1BoardDescription: string;
+        /** @description A board's tree head (RFC 9162 §2.1). A head is signed by being carried in a document the ballot box signs; whoever keeps a head keeps that whole document. */
+        VtcBoardsShowV0_1BoardHead: {
+            electionId: components["schemas"]["VtcBoardsShowV0_1ElectionId"];
+            /** Format: date-time */
+            issuedAt: string;
+            rootHash: components["schemas"]["VtcBoardsShowV0_1DigestMultibase"];
+            treeSize: number;
+        };
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsShowV0_1BoardId: string;
+        /**
+         * @description `open`: ideas and notes are taken within the board's windows. `closed`: no new idea or note; facilitators still decide and select. `archived`: no change at all; facilitators can still read it (VTI-BRD-005). `open` → `closed` → `archived`, never back.
+         * @enum {string}
+         */
+        VtcBoardsShowV0_1BoardStatus: "open" | "closed" | "archived";
+        /** @description Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsShowV0_1BoardTitle: string;
+        /**
+         * @description `public`: anyone reads the board. `private`: the community, the auditors the manifest names and, for one cast's inclusion, the holder of its receipt (VTI-VOT-052).
+         * @enum {string}
+         */
+        VtcBoardsShowV0_1BoardVisibility: "public" | "private";
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcBoardsShowV0_1DigestMultibase: string;
+        /** @description An election's identifier, unique within its community. A closed alphabet: it appears in the ticket class label `voter/<electionId>` and is framed into every hash a cast is bound to. */
+        VtcBoardsShowV0_1ElectionId: string;
+        /** @description An election's result, computable by anyone who can read its board from the board and the registration alone (VTI-VOT-070). */
+        VtcBoardsShowV0_1ElectionResult: {
+            ballotsCounted: number;
+            electionId: components["schemas"]["VtcBoardsShowV0_1ElectionId"];
+            head: components["schemas"]["VtcBoardsShowV0_1BoardHead"];
+            manifestDigest: components["schemas"]["VtcBoardsShowV0_1DigestMultibase"];
+            questions: components["schemas"]["VtcBoardsShowV0_1QuestionResult"][];
+        };
+        /** @enum {string} */
+        VtcBoardsShowV0_1ElectionState: "registered" | "registration" | "voting" | "closed" | "tallied" | "cancelled";
+        /** @description Every member of an idea's election manifest that the board fixes (VTI-BRD-030). When a facilitator accepts an idea the community completes it: `electionId` (naming the board and the idea), `community`, `title` and `description` from the idea, `registrationOpensAt` and `votingOpensAt` from the board's voting window's `opensAt` or the acceptance, whichever is later, `votingClosesAt` from its `closesAt`, `roll` from the board's audience (rule `members`, or a credential roll naming the group), and `binding: false`. A board's template is never binding, and so has no `binding` member. */
+        VtcBoardsShowV0_1ElectionTemplate: {
+            allowEarlyClose: boolean;
+            /** @description The DID of the voting service every idea's election is registered with; one on the community's list (VTI-VOT-082). */
+            ballotBox: string;
+            /** @description The ballot box's board for each idea's election, as a manifest states it (VTI-VOT-052). `public` lets a board show each idea's ballot count while voting is open (VTI-BRD-033). */
+            board: {
+                auditors: string[];
+                visibility: components["schemas"]["VtcBoardsShowV0_1BoardVisibility"];
+            };
+            questions: components["schemas"]["VtcBoardsShowV0_1Question"][];
+            /** @description Open elections only: whether running totals may be read while voting is open (VTI-VOT-061). A board SHOULD set it false (VTI-BRD-033). */
+            resultsBeforeClose: boolean;
+            revote: components["schemas"]["VtcBoardsShowV0_1Revote"];
+            secrecy: components["schemas"]["VtcBoardsShowV0_1SecrecyLevel"];
+            /** @description Counted ballots required before any text answer is disclosed (VTI-VOT-065); SHOULD be at least 10. */
+            textReleaseThreshold: number;
+            trustees?: components["schemas"]["VtcBoardsShowV0_1Trustees"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBoardsShowV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsShowV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBoardsShowV0_1GroupId: string;
+        /** @description An idea as one caller may see it. */
+        VtcBoardsShowV0_1Idea: {
+            boardId: components["schemas"]["VtcBoardsShowV0_1BoardId"];
+            decision?: components["schemas"]["VtcBoardsShowV0_1IdeaDecision"];
+            description: components["schemas"]["VtcBoardsShowV0_1IdeaDescription"];
+            election?: components["schemas"]["VtcBoardsShowV0_1IdeaElection"];
+            format?: components["schemas"]["VtcBoardsShowV0_1IdeaFormat"];
+            ideaId: components["schemas"]["VtcBoardsShowV0_1IdeaId"];
+            /** @description Notes on the idea the caller may read. */
+            noteCount: number;
+            opening?: components["schemas"]["VtcBoardsShowV0_1IdeaOpening"];
+            /** Format: date-time */
+            proposedAt: string;
+            proposer: components["schemas"]["VtcBoardsShowV0_1Author"];
+            state: components["schemas"]["VtcBoardsShowV0_1IdeaState"];
+            title: components["schemas"]["VtcBoardsShowV0_1IdeaTitle"];
+            topic?: components["schemas"]["VtcBoardsShowV0_1Topic"];
+        };
+        /** @description A facilitator's decision on an idea: declining or merging it (VTI-BRD-013), or selecting it or not (VTI-BRD-040). The deciding facilitator is not named to the audience. */
+        VtcBoardsShowV0_1IdeaDecision: {
+            /** Format: date-time */
+            decidedAt: string;
+            /** @description `selected` or `notSelected` only: whether the facilitator said the decision departs from the board's `selectionRule` (VTI-BRD-041); `reason` then says why. */
+            departsFromRule?: boolean;
+            mergedInto?: components["schemas"]["VtcBoardsShowV0_1IdeaId"];
+            /**
+             * @description Present when a facilitator decided their own idea because no other facilitator existed (VTI-BRD-013).
+             * @enum {unknown}
+             */
+            ownIdea?: true;
+            reason?: components["schemas"]["VtcBoardsShowV0_1Reason"];
+            slotId?: components["schemas"]["VtcBoardsShowV0_1Key"];
+        };
+        /** @description What the idea is: for a session, what it covers and who should come. Becomes its election's manifest `description` when accepted. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsShowV0_1IdeaDescription: string;
+        /** @description An idea's election as a board shows it (VTI-BRD-033): never who took a ticket or cast a ballot. */
+        VtcBoardsShowV0_1IdeaElection: {
+            /** @description The ballot box's latest board head's ballot count, where its board is public (VTI-VOT-052); absent otherwise. Counts ballots, not voters, where a later ballot replaces an earlier one. */
+            ballotsOnBoard?: number;
+            /**
+             * Format: date-time
+             * @description When the head `ballotsOnBoard` was read from was issued.
+             */
+            boardHeadIssuedAt?: string;
+            /** @description Present with `result`: whether the community certified it (VTI-VOT-071). */
+            certified?: boolean;
+            electionId: components["schemas"]["VtcBoardsShowV0_1ElectionId"];
+            result?: components["schemas"]["VtcBoardsShowV0_1ElectionResult"];
+            state: components["schemas"]["VtcBoardsShowV0_1ElectionState"];
+        };
+        /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
+        VtcBoardsShowV0_1IdeaFormat: string;
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsShowV0_1IdeaId: string;
+        /** @description Shown to facilitators only: an accepted idea whose election the ballot box has not yet registered, so the idea is still `proposed` (VTI-BRD-031). `refusal` is the ballot box's or community's refusal of the last attempt, after which the idea is no longer being opened. */
+        VtcBoardsShowV0_1IdeaOpening: {
+            electionId: components["schemas"]["VtcBoardsShowV0_1ElectionId"];
+            refusal?: {
+                code: string;
+                /** Format: date-time */
+                refusedAt: string;
+            };
+            /**
+             * Format: date-time
+             * @description When the facilitator accepted the idea.
+             */
+            startedAt: string;
+        };
+        /**
+         * @description Where an idea stands (VTI-BRD-011).
+         * @enum {string}
+         */
+        VtcBoardsShowV0_1IdeaState: "proposed" | "open" | "selected" | "notSelected" | "declined" | "merged" | "withdrawn";
+        /** @description An idea's title. Becomes the title of its election's manifest when the idea is accepted, and cannot change after that (VTI-BRD-012). Plain text. */
+        VtcBoardsShowV0_1IdeaTitle: string;
+        /** @description A question or option key, unique within its manifest or question. */
+        VtcBoardsShowV0_1Key: string;
+        /** @description Show one board and its ideas as the caller may see them, with each accepted idea's election stage, ballot count where its board is public, and result once tallied — never who took a ticket or voted. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsShowV0_1Payload: {
+            boardId: components["schemas"]["VtcBoardsShowV0_1BoardId"];
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the filters; a responder MUST NOT accept a cursor it did not issue. */
+            cursor?: string;
+            ext?: components["schemas"]["VtcBoardsShowV0_1Ext"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
+            limit?: number;
+            state?: components["schemas"]["VtcBoardsShowV0_1IdeaState"][];
+            topic?: components["schemas"]["VtcBoardsShowV0_1Topic"];
+        };
+        /** @description One question. Tagged union over `type`. */
+        VtcBoardsShowV0_1Question: {
+            key: components["schemas"]["VtcBoardsShowV0_1Key"];
+            maxSelections: number;
+            minSelections: number;
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsShowV0_1QuestionOption"][];
+            text?: string;
+            /** @enum {unknown} */
+            type: "choice";
+        } | {
+            key: components["schemas"]["VtcBoardsShowV0_1Key"];
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsShowV0_1QuestionOption"][];
+            partial: boolean;
+            text?: string;
+            /** @enum {unknown} */
+            type: "ranking";
+        } | {
+            key: components["schemas"]["VtcBoardsShowV0_1Key"];
+            max: number;
+            min: number;
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsShowV0_1QuestionOption"][];
+            text?: string;
+            /** @enum {unknown} */
+            type: "score";
+        } | {
+            key: components["schemas"]["VtcBoardsShowV0_1Key"];
+            maxLength: number;
+            optional: boolean;
+            text?: string;
+            /** @enum {unknown} */
+            type: "text";
+        };
+        VtcBoardsShowV0_1QuestionOption: {
+            key: components["schemas"]["VtcBoardsShowV0_1Key"];
+            /** @description Display text. Absent from a manifest registered with a ballot box that holds no question text (VTI-VOT-014). */
+            label?: string;
+        };
+        /** @description One question's totals. `choice`: selections per option. `ranking`: per option, how many ballots placed it at each position (index 0 = first). `score`: per option, the sum and the number of ballots that scored it. `text`: the answers, in board order, withheld (`withheld: true`) below the manifest's `textReleaseThreshold`. `abstained` counts ballots that left the question unanswered. */
+        VtcBoardsShowV0_1QuestionResult: {
+            abstained: number;
+            choice?: {
+                [key: string]: number;
+            };
+            question: components["schemas"]["VtcBoardsShowV0_1Key"];
+            ranking?: {
+                [key: string]: number[];
+            };
+            score?: {
+                [key: string]: {
+                    count: number;
+                    sum: number;
+                };
+            };
+            text?: string[];
+            withheld?: boolean;
+        };
+        /** @description A facilitator's stated reason, shown to the board's audience with the decision it explains. Plain text. */
+        VtcBoardsShowV0_1Reason: string;
+        /** @description The success response to a vtc/boards/show/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/show/0.1#response. */
+        VtcBoardsShowV0_1Response: {
+            board: components["schemas"]["VtcBoardsShowV0_1Board"];
+            ext?: components["schemas"]["VtcBoardsShowV0_1Ext"];
+            ideas: components["schemas"]["VtcBoardsShowV0_1Idea"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+        };
+        /**
+         * @description What a later, different ballot under one ticket does: `replace` the earlier one, or be refused (`refuse`) (VTI-VOT-041).
+         * @enum {string}
+         */
+        VtcBoardsShowV0_1Revote: "replace" | "refuse";
+        /**
+         * @description `open`: ballots are recorded on the board as cast. `sealed`: ballots are encrypted to a jointly generated election key and decrypted after voting closes. `talliedEncrypted`: ballots are encrypted and only the totals are ever decrypted (VTI-VOT-060). The encrypted levels are cast with `voting/ballot/cast-encrypted/0.1`, under an election key the trustees generate with `voting/trustees/*` (CONVENTIONS §9).
+         * @enum {string}
+         */
+        VtcBoardsShowV0_1SecrecyLevel: "open" | "sealed" | "talliedEncrypted";
+        /** @description One place in a board's timetable that a selected idea can be put in (VTI-BRD-040): a place (`label`, e.g. a room) and a time. */
+        VtcBoardsShowV0_1Slot: {
+            /** Format: date-time */
+            endsAt: string;
+            label: string;
+            slotId: components["schemas"]["VtcBoardsShowV0_1Key"];
+            /** Format: date-time */
+            startsAt: string;
+        };
+        /** @description A topic an idea is filed under. One of the board's `topics` where the board states them. */
+        VtcBoardsShowV0_1Topic: string;
+        /** @description The trustees of a sealed or tallied-encrypted election and the number of them decryption needs (VTI-VOT-062). Neither the community nor the ballot box may be one. */
+        VtcBoardsShowV0_1Trustees: {
+            dids: string[];
+            threshold: number;
+        };
+        /** @description A period, open from `opensAt` until `closesAt`. `closesAt` is after `opensAt` (a consumer check; JSON Schema cannot compare them). */
+        VtcBoardsShowV0_1Window: {
+            /** Format: date-time */
+            closesAt: string;
+            /** Format: date-time */
+            opensAt: string;
+        };
+        /** @description A board as one caller may see it. */
+        VtcBoardsUpdateV0_1Board: {
+            audience: components["schemas"]["VtcBoardsUpdateV0_1BoardAudience"];
+            boardId: components["schemas"]["VtcBoardsUpdateV0_1BoardId"];
+            /** Format: date-time */
+            createdAt: string;
+            description?: components["schemas"]["VtcBoardsUpdateV0_1BoardDescription"];
+            /** @description Whether the caller facilitates this board. */
+            facilitator: boolean;
+            formats?: components["schemas"]["VtcBoardsUpdateV0_1IdeaFormat"][];
+            /** @description How many of the board's ideas are in each state the caller may see. */
+            ideaCounts: {
+                declined?: number;
+                merged?: number;
+                notSelected?: number;
+                open?: number;
+                proposed?: number;
+                selected?: number;
+                withdrawn?: number;
+            };
+            /** @description The most ideas one member may have on the board that are not `withdrawn` or `declined`. Absent: no limit beyond the community's own. */
+            maxIdeasPerMember?: number;
+            proposals: components["schemas"]["VtcBoardsUpdateV0_1Window"];
+            /** @description How facilitators intend to select, in plain words (VTI-BRD-041), e.g. "The twelve ideas the most members would attend". */
+            selectionRule?: string;
+            status: components["schemas"]["VtcBoardsUpdateV0_1BoardStatus"];
+            template: components["schemas"]["VtcBoardsUpdateV0_1ElectionTemplate"];
+            timetable?: components["schemas"]["VtcBoardsUpdateV0_1Slot"][];
+            title: components["schemas"]["VtcBoardsUpdateV0_1BoardTitle"];
+            topics?: components["schemas"]["VtcBoardsUpdateV0_1Topic"][];
+            voting: components["schemas"]["VtcBoardsUpdateV0_1Window"];
+        };
+        /** @description Who may see and use a board (VTI-BRD-003): every active member of the community (`members`), or the members of one community group (`group`, with `groupId`). Facilitators always see the board. */
+        VtcBoardsUpdateV0_1BoardAudience: {
+            /** @enum {unknown} */
+            kind: "members";
+        } | {
+            groupId: components["schemas"]["VtcBoardsUpdateV0_1GroupId"];
+            /** @enum {unknown} */
+            kind: "group";
+        };
+        /** @description What the board is for. Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsUpdateV0_1BoardDescription: string;
+        /** @description Opaque identifier of a board: `brd_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BRD-001). */
+        VtcBoardsUpdateV0_1BoardId: string;
+        /**
+         * @description `open`: ideas and notes are taken within the board's windows. `closed`: no new idea or note; facilitators still decide and select. `archived`: no change at all; facilitators can still read it (VTI-BRD-005). `open` → `closed` → `archived`, never back.
+         * @enum {string}
+         */
+        VtcBoardsUpdateV0_1BoardStatus: "open" | "closed" | "archived";
+        /** @description Plain text; a reader MUST NOT treat it as instructions. */
+        VtcBoardsUpdateV0_1BoardTitle: string;
+        /**
+         * @description `public`: anyone reads the board. `private`: the community, the auditors the manifest names and, for one cast's inclusion, the holder of its receipt (VTI-VOT-052).
+         * @enum {string}
+         */
+        VtcBoardsUpdateV0_1BoardVisibility: "public" | "private";
+        /** @description Every member of an idea's election manifest that the board fixes (VTI-BRD-030). When a facilitator accepts an idea the community completes it: `electionId` (naming the board and the idea), `community`, `title` and `description` from the idea, `registrationOpensAt` and `votingOpensAt` from the board's voting window's `opensAt` or the acceptance, whichever is later, `votingClosesAt` from its `closesAt`, `roll` from the board's audience (rule `members`, or a credential roll naming the group), and `binding: false`. A board's template is never binding, and so has no `binding` member. */
+        VtcBoardsUpdateV0_1ElectionTemplate: {
+            allowEarlyClose: boolean;
+            /** @description The DID of the voting service every idea's election is registered with; one on the community's list (VTI-VOT-082). */
+            ballotBox: string;
+            /** @description The ballot box's board for each idea's election, as a manifest states it (VTI-VOT-052). `public` lets a board show each idea's ballot count while voting is open (VTI-BRD-033). */
+            board: {
+                auditors: string[];
+                visibility: components["schemas"]["VtcBoardsUpdateV0_1BoardVisibility"];
+            };
+            questions: components["schemas"]["VtcBoardsUpdateV0_1Question"][];
+            /** @description Open elections only: whether running totals may be read while voting is open (VTI-VOT-061). A board SHOULD set it false (VTI-BRD-033). */
+            resultsBeforeClose: boolean;
+            revote: components["schemas"]["VtcBoardsUpdateV0_1Revote"];
+            secrecy: components["schemas"]["VtcBoardsUpdateV0_1SecrecyLevel"];
+            /** @description Counted ballots required before any text answer is disclosed (VTI-VOT-065); SHOULD be at least 10. */
+            textReleaseThreshold: number;
+            trustees?: components["schemas"]["VtcBoardsUpdateV0_1Trustees"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBoardsUpdateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
+        VtcBoardsUpdateV0_1GroupId: string;
+        /** @description What kind of idea it is (for an unconference: `Discussion`, `Talk`, `Workshop`, `Demo`). One of the board's `formats` where the board states them. */
+        VtcBoardsUpdateV0_1IdeaFormat: string;
+        /** @description Opaque identifier of an idea: `ida_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBoardsUpdateV0_1IdeaId: string;
+        /** @description A question or option key, unique within its manifest or question. */
+        VtcBoardsUpdateV0_1Key: string;
+        /** @description A facilitator changes a board's title, description, topics, formats, timetable or selection rule, closes or archives it, or — before voting opens — its schedule; changing its election template takes an elections manager. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBoardsUpdateV0_1Payload: {
+            audience?: components["schemas"]["VtcBoardsUpdateV0_1BoardAudience"];
+            boardId: components["schemas"]["VtcBoardsUpdateV0_1BoardId"];
+            description?: components["schemas"]["VtcBoardsUpdateV0_1BoardDescription"];
+            ext?: components["schemas"]["VtcBoardsUpdateV0_1Ext"];
+            formats?: components["schemas"]["VtcBoardsUpdateV0_1IdeaFormat"][];
+            maxIdeasPerMember?: number;
+            proposals?: components["schemas"]["VtcBoardsUpdateV0_1Window"];
+            selectionRule?: string;
+            /**
+             * @description Move the board forward; it never moves back.
+             * @enum {string}
+             */
+            status?: "closed" | "archived";
+            template?: components["schemas"]["VtcBoardsUpdateV0_1ElectionTemplate"];
+            timetable?: components["schemas"]["VtcBoardsUpdateV0_1Slot"][];
+            title?: components["schemas"]["VtcBoardsUpdateV0_1BoardTitle"];
+            topics?: components["schemas"]["VtcBoardsUpdateV0_1Topic"][];
+            voting?: components["schemas"]["VtcBoardsUpdateV0_1Window"];
+        };
+        /** @description One question. Tagged union over `type`. */
+        VtcBoardsUpdateV0_1Question: {
+            key: components["schemas"]["VtcBoardsUpdateV0_1Key"];
+            maxSelections: number;
+            minSelections: number;
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsUpdateV0_1QuestionOption"][];
+            text?: string;
+            /** @enum {unknown} */
+            type: "choice";
+        } | {
+            key: components["schemas"]["VtcBoardsUpdateV0_1Key"];
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsUpdateV0_1QuestionOption"][];
+            partial: boolean;
+            text?: string;
+            /** @enum {unknown} */
+            type: "ranking";
+        } | {
+            key: components["schemas"]["VtcBoardsUpdateV0_1Key"];
+            max: number;
+            min: number;
+            optional: boolean;
+            options: components["schemas"]["VtcBoardsUpdateV0_1QuestionOption"][];
+            text?: string;
+            /** @enum {unknown} */
+            type: "score";
+        } | {
+            key: components["schemas"]["VtcBoardsUpdateV0_1Key"];
+            maxLength: number;
+            optional: boolean;
+            text?: string;
+            /** @enum {unknown} */
+            type: "text";
+        };
+        VtcBoardsUpdateV0_1QuestionOption: {
+            key: components["schemas"]["VtcBoardsUpdateV0_1Key"];
+            /** @description Display text. Absent from a manifest registered with a ballot box that holds no question text (VTI-VOT-014). */
+            label?: string;
+        };
+        /** @description The success response to a vtc/boards/update/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/boards/update/0.1#response. */
+        VtcBoardsUpdateV0_1Response: {
+            board: components["schemas"]["VtcBoardsUpdateV0_1Board"];
+            /** @description Present when this update closed the board: how its voting was ended (VTI-BRD-006). Counts the requests made; the ballot box answers them after this response. */
+            closing?: {
+                /** @description Elections not yet open for voting, or not yet registered, that were cancelled; their ideas are not selected. */
+                cancelled: number;
+                /** @description Elections open for voting that were closed early; each is counted as it stood, and the count is final. */
+                closedEarly: number;
+                /** @description Ideas whose election does not allow closing early and closes when its manifest says. */
+                runningToClose: components["schemas"]["VtcBoardsUpdateV0_1IdeaId"][];
+            };
+            ext?: components["schemas"]["VtcBoardsUpdateV0_1Ext"];
+        };
+        /**
+         * @description What a later, different ballot under one ticket does: `replace` the earlier one, or be refused (`refuse`) (VTI-VOT-041).
+         * @enum {string}
+         */
+        VtcBoardsUpdateV0_1Revote: "replace" | "refuse";
+        /**
+         * @description `open`: ballots are recorded on the board as cast. `sealed`: ballots are encrypted to a jointly generated election key and decrypted after voting closes. `talliedEncrypted`: ballots are encrypted and only the totals are ever decrypted (VTI-VOT-060). The encrypted levels are cast with `voting/ballot/cast-encrypted/0.1`, under an election key the trustees generate with `voting/trustees/*` (CONVENTIONS §9).
+         * @enum {string}
+         */
+        VtcBoardsUpdateV0_1SecrecyLevel: "open" | "sealed" | "talliedEncrypted";
+        /** @description One place in a board's timetable that a selected idea can be put in (VTI-BRD-040): a place (`label`, e.g. a room) and a time. */
+        VtcBoardsUpdateV0_1Slot: {
+            /** Format: date-time */
+            endsAt: string;
+            label: string;
+            slotId: components["schemas"]["VtcBoardsUpdateV0_1Key"];
+            /** Format: date-time */
+            startsAt: string;
+        };
+        /** @description A topic an idea is filed under. One of the board's `topics` where the board states them. */
+        VtcBoardsUpdateV0_1Topic: string;
+        /** @description The trustees of a sealed or tallied-encrypted election and the number of them decryption needs (VTI-VOT-062). Neither the community nor the ballot box may be one. */
+        VtcBoardsUpdateV0_1Trustees: {
+            dids: string[];
+            threshold: number;
+        };
+        /** @description A period, open from `opensAt` until `closesAt`. `closesAt` is after `opensAt` (a consumer check; JSON Schema cannot compare them). */
+        VtcBoardsUpdateV0_1Window: {
+            /** Format: date-time */
+            closesAt: string;
+            /** Format: date-time */
+            opensAt: string;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcConfigDidHostingListV0_1Ext: {
@@ -3791,7 +8406,7 @@ export interface components {
             ext?: components["schemas"]["VtcDirectoryDisclosureV0_1Ext"];
         };
         /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
-        VtcDirectoryEntriesListV0_1CardBlobRef: {
+        VtcDirectoryEntriesListV0_2CardBlobRef: {
             /**
              * @description Media type of the stored bytes.
              * @enum {string}
@@ -3813,52 +8428,52 @@ export interface components {
             urlExpiresAt?: string;
         };
         /** @description One entry as a particular viewer sees it. */
-        VtcDirectoryEntriesListV0_1DirectoryEntry: {
+        VtcDirectoryEntriesListV0_2DirectoryEntry: {
             /** @description Present, and `true`, only when the viewer is one of the two parties to an attributed, in-force verified relationship with this entry's member that the community can see. Absent otherwise — never `false`, which would disclose that the community looked and found none. Relationships known only to the viewer's own agent are badged by that agent, not here. */
             connected?: boolean;
-            entryId: components["schemas"]["VtcDirectoryEntriesListV0_1EntryId"];
-            fields: components["schemas"]["VtcDirectoryEntriesListV0_1EntryFields"];
+            entryId: components["schemas"]["VtcDirectoryEntriesListV0_2EntryId"];
+            fields: components["schemas"]["VtcDirectoryEntriesListV0_2EntryFields"];
             /** @description The community groups the viewer and this member both belong to, among those whose membership the viewer may see. Absent when there are none. */
             sharedGroups?: string[];
         };
         /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
-        VtcDirectoryEntriesListV0_1EntryFields: {
-            [key: string]: components["schemas"]["VtcDirectoryEntriesListV0_1FieldValue"];
+        VtcDirectoryEntriesListV0_2EntryFields: {
+            [key: string]: components["schemas"]["VtcDirectoryEntriesListV0_2FieldValue"];
         };
         /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
-        VtcDirectoryEntriesListV0_1EntryId: string;
+        VtcDirectoryEntriesListV0_2EntryId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcDirectoryEntriesListV0_1Ext: {
+        VtcDirectoryEntriesListV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
-        VtcDirectoryEntriesListV0_1FieldKey: string;
+        VtcDirectoryEntriesListV0_2FieldKey: string;
         /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
-        VtcDirectoryEntriesListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcDirectoryEntriesListV0_1CardBlobRef"] | components["schemas"]["VtcDirectoryEntriesListV0_1VerifiedValue"];
+        VtcDirectoryEntriesListV0_2FieldValue: string | boolean | string[] | components["schemas"]["VtcDirectoryEntriesListV0_2CardBlobRef"] | components["schemas"]["VtcDirectoryEntriesListV0_2VerifiedValue"];
         /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
-        VtcDirectoryEntriesListV0_1GroupId: string;
+        VtcDirectoryEntriesListV0_2GroupId: string;
         /** @description Browse, search and filter a community's member directory. Each entry is projected for the caller: only fields the member, the community's ceiling and its policy all allow. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcDirectoryEntriesListV0_1Payload: {
-            /** @description Opaque continuation token from a previous page's `nextCursor`, valid only for the same caller and question. */
+        VtcDirectoryEntriesListV0_2Payload: {
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the question (query, filters and group); a responder MUST NOT accept a cursor it did not issue. */
             cursor?: string;
-            ext?: components["schemas"]["VtcDirectoryEntriesListV0_1Ext"];
+            ext?: components["schemas"]["VtcDirectoryEntriesListV0_2Ext"];
             /** @description Facet filters: an entry matches when, for every filter, its value of the field is one of `values`. Only facets visible to the caller. */
             filters?: {
-                field: components["schemas"]["VtcDirectoryEntriesListV0_1FieldKey"];
+                field: components["schemas"]["VtcDirectoryEntriesListV0_2FieldKey"];
                 values: string[];
             }[];
-            group?: components["schemas"]["VtcDirectoryEntriesListV0_1GroupId"];
-            /** @description Page size; the community clamps to 1..=100 (default 25). */
+            group?: components["schemas"]["VtcDirectoryEntriesListV0_2GroupId"];
+            /** @description The most items to return, at most 100; the responder chooses a default (25) and MAY return fewer. */
             limit?: number;
             /** @description Search text. At least three characters, or a whole nickname for an exact-nickname search. */
             query?: string;
         };
-        /** @description The success response to a vtc/directory/entries/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/entries/list/0.1#response. */
-        VtcDirectoryEntriesListV0_1Response: {
-            ext?: components["schemas"]["VtcDirectoryEntriesListV0_1Ext"];
+        /** @description The success response to a vtc/directory/entries/list/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/entries/list/0.2#response. */
+        VtcDirectoryEntriesListV0_2Response: {
+            ext?: components["schemas"]["VtcDirectoryEntriesListV0_2Ext"];
             /** @description Counts for the facets visible to the caller, over the whole result. Absent when none is. */
             facets?: {
-                field: components["schemas"]["VtcDirectoryEntriesListV0_1FieldKey"];
+                field: components["schemas"]["VtcDirectoryEntriesListV0_2FieldKey"];
                 values: {
                     /** @description Matching entries. Absent when below the community's threshold. */
                     count?: number;
@@ -3867,12 +8482,12 @@ export interface components {
                     value: string;
                 }[];
             }[];
-            items: components["schemas"]["VtcDirectoryEntriesListV0_1DirectoryEntry"][];
-            /** @description Continuation token, or null when this is the last page. */
-            nextCursor?: unknown;
+            items: components["schemas"]["VtcDirectoryEntriesListV0_2DirectoryEntry"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
         };
         /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
-        VtcDirectoryEntriesListV0_1VerifiedValue: {
+        VtcDirectoryEntriesListV0_2VerifiedValue: {
             /** @description The most specific `type` of the credential the claim came from. */
             credentialType?: string;
             /** @description DID of the credential's issuer, shown as the field's verification badge. */
@@ -3962,34 +8577,36 @@ export interface components {
             verifiedAt: string;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcDirectoryExportV0_1Ext: {
+        VtcDirectoryExportV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description One entry exported as a JSContact `Card` (RFC 9553). Member names inside are JSContact's own and are carried verbatim. `uid` is `urn:vtc-directory:<EntryId>`. Base fields map as their definitions' `jsContactPath` says (`displayName` → `name.full`, `nickname` → `nicknames`, `avatar` → `media` of kind `photo`, `pronouns` → `speakToAs.pronouns`, `bio` → `notes`, `links` → `links`); community fields and derived fields are exported as vendor-specific properties named by their field key. Additional members are permitted because JSContact defines them. Carried as an open object so that no JSContact member is lost in transit: a consumer MUST check that `@type` is `Card`, `version` is `1.0` and `uid` is `urn:vtc-directory:<EntryId>`, which this schema does not constrain. */
-        VtcDirectoryExportV0_1JSContactCard: {
+        VtcDirectoryExportV0_2JSContactCard: {
             [key: string]: unknown;
         };
         /** @description A directory administrator exports the whole member directory as JSContact cards, a page at a time. Members cannot export. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcDirectoryExportV0_1Payload: {
+        VtcDirectoryExportV0_2Payload: {
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and this export; a responder MUST NOT accept a cursor it did not issue. */
             cursor?: string;
-            ext?: components["schemas"]["VtcDirectoryExportV0_1Ext"];
+            ext?: components["schemas"]["VtcDirectoryExportV0_2Ext"];
             /**
              * @description The export format. Only JSContact (RFC 9553) in this version.
              * @enum {string}
              */
             format?: "jscontact";
-            /** @description Page size; clamped to 1..=500 (default 200). */
+            /** @description The most items to return, at most 500; the responder chooses a default (200) and MAY return fewer. */
             limit?: number;
             /** @description Why, recorded with the change and shown to anyone who must approve it. */
             reason: string;
         };
-        /** @description The success response to a vtc/directory/export/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/export/0.1#response. */
-        VtcDirectoryExportV0_1Response: {
+        /** @description The success response to a vtc/directory/export/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/export/0.2#response. */
+        VtcDirectoryExportV0_2Response: {
             /** Format: date-time */
             exportedAt: string;
-            ext?: components["schemas"]["VtcDirectoryExportV0_1Ext"];
-            items: components["schemas"]["VtcDirectoryExportV0_1JSContactCard"][];
-            nextCursor?: unknown;
+            ext?: components["schemas"]["VtcDirectoryExportV0_2Ext"];
+            items: components["schemas"]["VtcDirectoryExportV0_2JSContactCard"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
         };
         /**
          * @description Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.
@@ -4631,46 +9248,48 @@ export interface components {
             /** @description Every note about the entry, oldest first, with the text of redacted notes included. */
             notes: components["schemas"]["VtcDirectoryNotesExportV0_1AdminNote"][];
         };
-        VtcDirectoryNotesListV0_1AdminNote: {
+        VtcDirectoryNotesListV0_2AdminNote: {
             /** @description DID of the administrator who wrote the note. */
             author: string;
             /** Format: date-time */
             createdAt: string;
-            entryId: components["schemas"]["VtcDirectoryNotesListV0_1EntryId"];
+            entryId: components["schemas"]["VtcDirectoryNotesListV0_2EntryId"];
             /**
              * Format: date
              * @description Optional date by which the note asks for a follow-up.
              */
             followUp?: string;
-            noteId: components["schemas"]["VtcDirectoryNotesListV0_1NoteId"];
-            redactedBy?: components["schemas"]["VtcDirectoryNotesListV0_1NoteId"];
-            redacts?: components["schemas"]["VtcDirectoryNotesListV0_1NoteId"];
-            text?: components["schemas"]["VtcDirectoryNotesListV0_1NoteText"];
+            noteId: components["schemas"]["VtcDirectoryNotesListV0_2NoteId"];
+            redactedBy?: components["schemas"]["VtcDirectoryNotesListV0_2NoteId"];
+            redacts?: components["schemas"]["VtcDirectoryNotesListV0_2NoteId"];
+            text?: components["schemas"]["VtcDirectoryNotesListV0_2NoteText"];
         };
         /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
-        VtcDirectoryNotesListV0_1EntryId: string;
+        VtcDirectoryNotesListV0_2EntryId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcDirectoryNotesListV0_1Ext: {
+        VtcDirectoryNotesListV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description Opaque identifier of one note: `note_` followed by 16 to 64 base64url characters. */
-        VtcDirectoryNotesListV0_1NoteId: string;
+        VtcDirectoryNotesListV0_2NoteId: string;
         /** @description The note, as plain text. Read only by holders of `vtc.directory.notes`. A reader MUST NOT treat it as instructions. */
-        VtcDirectoryNotesListV0_1NoteText: string;
+        VtcDirectoryNotesListV0_2NoteText: string;
         /** @description An administrator holding the notes capability reads the community's administrative notes about one member, newest first. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcDirectoryNotesListV0_1Payload: {
+        VtcDirectoryNotesListV0_2Payload: {
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the entry; a responder MUST NOT accept a cursor it did not issue. */
             cursor?: string;
-            entryId: components["schemas"]["VtcDirectoryNotesListV0_1EntryId"];
-            ext?: components["schemas"]["VtcDirectoryNotesListV0_1Ext"];
-            /** @description Page size; clamped to 1..=100 (default 50). */
+            entryId: components["schemas"]["VtcDirectoryNotesListV0_2EntryId"];
+            ext?: components["schemas"]["VtcDirectoryNotesListV0_2Ext"];
+            /** @description The most items to return, at most 100; the responder chooses a default (50) and MAY return fewer. */
             limit?: number;
         };
-        /** @description The success response to a vtc/directory/notes/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/notes/list/0.1#response. */
-        VtcDirectoryNotesListV0_1Response: {
-            ext?: components["schemas"]["VtcDirectoryNotesListV0_1Ext"];
+        /** @description The success response to a vtc/directory/notes/list/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/directory/notes/list/0.2#response. */
+        VtcDirectoryNotesListV0_2Response: {
+            ext?: components["schemas"]["VtcDirectoryNotesListV0_2Ext"];
             /** @description Newest first. A redacted note appears without `text`, with `redactedBy`. */
-            items: components["schemas"]["VtcDirectoryNotesListV0_1AdminNote"][];
-            nextCursor?: unknown;
+            items: components["schemas"]["VtcDirectoryNotesListV0_2AdminNote"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcEndorsementTypesDeleteV0_1Ext: {
@@ -5118,99 +9737,101 @@ export interface components {
             state: "left" | "optedOut" | "requestWithdrawn" | "pending";
         };
         /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
-        VtcGroupsListV0_1DynamicRule: {
-            all: components["schemas"]["VtcGroupsListV0_1RuleCondition"][];
+        VtcGroupsListV0_2DynamicRule: {
+            all: components["schemas"]["VtcGroupsListV0_2RuleCondition"][];
         };
         /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
-        VtcGroupsListV0_1EntryId: string;
+        VtcGroupsListV0_2EntryId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcGroupsListV0_1Ext: {
+        VtcGroupsListV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
-        VtcGroupsListV0_1FieldKey: string;
+        VtcGroupsListV0_2FieldKey: string;
         /** @description A community group, as a caller who may see it sees it. Members a caller may not see are absent: `memberCount` only to those who may see the group's members, `managers` and `credentialAuthorityValidUntil` only to its managers. */
-        VtcGroupsListV0_1Group: {
+        VtcGroupsListV0_2Group: {
             /** @description `true` while the group has a `grants` or `role` binding. Such a group is `static` and `closed` for as long as it does. */
             carriesAuthority: boolean;
             /** Format: date-time */
             createdAt: string;
-            createdBy?: components["schemas"]["VtcGroupsListV0_1EntryId"];
+            createdBy?: components["schemas"]["VtcGroupsListV0_2EntryId"];
             /**
              * Format: date-time
              * @description When the community's authorization credential to the group expires. The community renews it well before.
              */
             credentialAuthorityValidUntil?: string;
-            description?: components["schemas"]["VtcGroupsListV0_1GroupDescription"];
-            ext?: components["schemas"]["VtcGroupsListV0_1Ext"];
+            description?: components["schemas"]["VtcGroupsListV0_2GroupDescription"];
+            ext?: components["schemas"]["VtcGroupsListV0_2Ext"];
             /** @description The group's own DID, minted by the community's VTA for this group alone. It issues the group's membership credentials. Its DID document carries no name or description. */
             groupDid: string;
-            groupId: components["schemas"]["VtcGroupsListV0_1GroupId"];
+            groupId: components["schemas"]["VtcGroupsListV0_2GroupId"];
             /** @description Whether the group's DID issues its members a membership credential. Default true. */
             issuesCredentials: boolean;
-            joinPolicy?: components["schemas"]["VtcGroupsListV0_1JoinPolicy"];
-            kind: components["schemas"]["VtcGroupsListV0_1GroupKind"];
+            joinPolicy?: components["schemas"]["VtcGroupsListV0_2JoinPolicy"];
+            kind: components["schemas"]["VtcGroupsListV0_2GroupKind"];
             /** @description Entries holding `vtc.groups.manage` qualified to this group, read from the access-control list. Informational: managers are appointed by an access-control grant (vtc/groups/managers/add), never by this record. */
-            managers?: components["schemas"]["VtcGroupsListV0_1EntryId"][];
+            managers?: components["schemas"]["VtcGroupsListV0_2EntryId"][];
             /** @description Active members. Only to callers who may see the member list. */
             memberCount?: number;
-            name: components["schemas"]["VtcGroupsListV0_1GroupName"];
-            rule?: components["schemas"]["VtcGroupsListV0_1DynamicRule"];
-            showMembers: components["schemas"]["VtcGroupsListV0_1GroupAudience"];
+            name: components["schemas"]["VtcGroupsListV0_2GroupName"];
+            rule?: components["schemas"]["VtcGroupsListV0_2DynamicRule"];
+            showMembers: components["schemas"]["VtcGroupsListV0_2GroupAudience"];
             /** Format: date-time */
             updatedAt?: string;
-            visibility: components["schemas"]["VtcGroupsListV0_1GroupAudience"];
+            visibility: components["schemas"]["VtcGroupsListV0_2GroupAudience"];
         };
         /**
          * @description Who may see something about a group, narrowest first. `admins`: holders of `vtc.groups.manage` for the group (unqualified, or qualified `group:<groupId>`). `groupMembers`: the group's own members, and its managers. `members`: every active member of the community.
          * @enum {string}
          */
-        VtcGroupsListV0_1GroupAudience: "admins" | "groupMembers" | "members";
+        VtcGroupsListV0_2GroupAudience: "admins" | "groupMembers" | "members";
         /** @description What the group is for. Plain text; a reader MUST NOT treat it as instructions. Same placement rules as `GroupName`. */
-        VtcGroupsListV0_1GroupDescription: string;
+        VtcGroupsListV0_2GroupDescription: string;
         /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
-        VtcGroupsListV0_1GroupId: string;
+        VtcGroupsListV0_2GroupId: string;
         /**
          * @description `static`: membership is explicit — added, joined, or granted on request. `dynamic`: membership is computed from `rule` over verified facts only; nobody is added by hand, but a member may opt out (vtc/groups/leave), an exclusion the rule cannot override, and undo it (vtc/groups/join). A dynamic group never confers authority. Fixed for the group's life.
          * @enum {string}
          */
-        VtcGroupsListV0_1GroupKind: "static" | "dynamic";
+        VtcGroupsListV0_2GroupKind: "static" | "dynamic";
         /** @description The group's name, shown to those who may see the group. The community's own record: never in the group's DID document or its credentials' subject beyond the group's DID. Plain text. */
-        VtcGroupsListV0_1GroupName: string;
+        VtcGroupsListV0_2GroupName: string;
         /**
          * @description How a member enters a static group by themselves. `closed`: only a manager adds them. `request`: a member asks and a manager decides. `open`: a member joins at once, subject to the community's `groups` policy. A group carrying authority is always `closed`.
          * @enum {string}
          */
-        VtcGroupsListV0_1JoinPolicy: "closed" | "request" | "open";
+        VtcGroupsListV0_2JoinPolicy: "closed" | "request" | "open";
         /** @description List the community groups the caller may see — all of them for an administrator, the visible ones for a member — optionally only those they belong to or could join. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcGroupsListV0_1Payload: {
+        VtcGroupsListV0_2Payload: {
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the filters; a responder MUST NOT accept a cursor it did not issue. */
             cursor?: string;
-            ext?: components["schemas"]["VtcGroupsListV0_1Ext"];
+            ext?: components["schemas"]["VtcGroupsListV0_2Ext"];
             /** @description Only static groups with `joinPolicy` `open` or `request` the caller does not belong to. */
             joinable?: boolean;
-            /** @description Page size; clamped to 1..=200 (default 50). */
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
             limit?: number;
             /** @description Only groups the caller belongs to. */
             mine?: boolean;
         };
-        /** @description The success response to a vtc/groups/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/list/0.1#response. */
-        VtcGroupsListV0_1Response: {
-            ext?: components["schemas"]["VtcGroupsListV0_1Ext"];
+        /** @description The success response to a vtc/groups/list/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/list/0.2#response. */
+        VtcGroupsListV0_2Response: {
+            ext?: components["schemas"]["VtcGroupsListV0_2Ext"];
             items: {
-                group: components["schemas"]["VtcGroupsListV0_1Group"];
+                group: components["schemas"]["VtcGroupsListV0_2Group"];
                 /**
                  * @description The caller's own standing in the group.
                  * @enum {string}
                  */
                 myMembership: "member" | "pending" | "requested" | "optedOut" | "none";
             }[];
-            nextCursor?: unknown;
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
         };
         /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. */
-        VtcGroupsListV0_1RuleCondition: {
+        VtcGroupsListV0_2RuleCondition: {
             /** @enum {string} */
             fact: "role" | "field" | "personhood" | "joinedAt";
-            field?: components["schemas"]["VtcGroupsListV0_1FieldKey"];
+            field?: components["schemas"]["VtcGroupsListV0_2FieldKey"];
             /**
              * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`.
              * @enum {string}
@@ -5364,7 +9985,7 @@ export interface components {
             verifiedAt: string;
         };
         /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
-        VtcGroupsMembersListV0_1CardBlobRef: {
+        VtcGroupsMembersListV0_2CardBlobRef: {
             /**
              * @description Media type of the stored bytes.
              * @enum {string}
@@ -5386,36 +10007,36 @@ export interface components {
             urlExpiresAt?: string;
         };
         /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
-        VtcGroupsMembersListV0_1EntryFields: {
-            [key: string]: components["schemas"]["VtcGroupsMembersListV0_1FieldValue"];
+        VtcGroupsMembersListV0_2EntryFields: {
+            [key: string]: components["schemas"]["VtcGroupsMembersListV0_2FieldValue"];
         };
         /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
-        VtcGroupsMembersListV0_1EntryId: string;
+        VtcGroupsMembersListV0_2EntryId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcGroupsMembersListV0_1Ext: {
+        VtcGroupsMembersListV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
-        VtcGroupsMembersListV0_1FieldKey: string;
+        VtcGroupsMembersListV0_2FieldKey: string;
         /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
-        VtcGroupsMembersListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcGroupsMembersListV0_1CardBlobRef"] | components["schemas"]["VtcGroupsMembersListV0_1VerifiedValue"];
+        VtcGroupsMembersListV0_2FieldValue: string | boolean | string[] | components["schemas"]["VtcGroupsMembersListV0_2CardBlobRef"] | components["schemas"]["VtcGroupsMembersListV0_2VerifiedValue"];
         /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
-        VtcGroupsMembersListV0_1GroupCredentialId: string;
+        VtcGroupsMembersListV0_2GroupCredentialId: string;
         /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
-        VtcGroupsMembersListV0_1GroupId: string;
-        VtcGroupsMembersListV0_1GroupMember: {
+        VtcGroupsMembersListV0_2GroupId: string;
+        VtcGroupsMembersListV0_2GroupMember: {
             /** @description The member's current group membership credential, or null when the group issues none. */
-            credentialId?: components["schemas"]["VtcGroupsMembersListV0_1GroupCredentialId"] | unknown;
+            credentialId?: components["schemas"]["VtcGroupsMembersListV0_2GroupCredentialId"] | unknown;
             /**
              * Format: date-time
              * @description When the member's current group credential expires. Shown to the member themselves and to managers only.
              */
             credentialValidUntil?: string;
-            entryId: components["schemas"]["VtcGroupsMembersListV0_1EntryId"];
-            fields?: components["schemas"]["VtcGroupsMembersListV0_1EntryFields"];
+            entryId: components["schemas"]["VtcGroupsMembersListV0_2EntryId"];
+            fields?: components["schemas"]["VtcGroupsMembersListV0_2EntryFields"];
             /** Format: date-time */
             since: string;
-            source: components["schemas"]["VtcGroupsMembersListV0_1MembershipSource"];
+            source: components["schemas"]["VtcGroupsMembersListV0_2MembershipSource"];
             /**
              * @description `active`: a member. `pending`: an addition to a group carrying authority that is waiting for the consent the community requires for a grant.
              * @enum {string}
@@ -5426,23 +10047,25 @@ export interface components {
          * @description How the member came to be in the group. `added`: by a manager. `joined`: they joined an open group. `requestApproved`: a manager approved their request. `rule`: a dynamic group's rule admits them.
          * @enum {string}
          */
-        VtcGroupsMembersListV0_1MembershipSource: "added" | "joined" | "requestApproved" | "rule";
+        VtcGroupsMembersListV0_2MembershipSource: "added" | "joined" | "requestApproved" | "rule";
         /** @description List a group's members, a page at a time, each projected for the caller as the directory projects them — only where the group shows its members to the caller. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcGroupsMembersListV0_1Payload: {
+        VtcGroupsMembersListV0_2Payload: {
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the group; a responder MUST NOT accept a cursor it did not issue. */
             cursor?: string;
-            ext?: components["schemas"]["VtcGroupsMembersListV0_1Ext"];
-            groupId: components["schemas"]["VtcGroupsMembersListV0_1GroupId"];
-            /** @description Page size; clamped to 1..=200 (default 50). */
+            ext?: components["schemas"]["VtcGroupsMembersListV0_2Ext"];
+            groupId: components["schemas"]["VtcGroupsMembersListV0_2GroupId"];
+            /** @description The most items to return, at most 200; the responder chooses a default (50) and MAY return fewer. */
             limit?: number;
         };
-        /** @description The success response to a vtc/groups/members/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/members/list/0.1#response. */
-        VtcGroupsMembersListV0_1Response: {
-            ext?: components["schemas"]["VtcGroupsMembersListV0_1Ext"];
-            items: components["schemas"]["VtcGroupsMembersListV0_1GroupMember"][];
-            nextCursor?: unknown;
+        /** @description The success response to a vtc/groups/members/list/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/members/list/0.2#response. */
+        VtcGroupsMembersListV0_2Response: {
+            ext?: components["schemas"]["VtcGroupsMembersListV0_2Ext"];
+            items: components["schemas"]["VtcGroupsMembersListV0_2GroupMember"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
         };
         /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
-        VtcGroupsMembersListV0_1VerifiedValue: {
+        VtcGroupsMembersListV0_2VerifiedValue: {
             /** @description The most specific `type` of the credential the claim came from. */
             credentialType?: string;
             /** @description DID of the credential's issuer, shown as the field's verification badge. */
@@ -5610,7 +10233,7 @@ export interface components {
             verifiedAt: string;
         };
         /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
-        VtcGroupsRequestsListV0_1CardBlobRef: {
+        VtcGroupsRequestsListV0_2CardBlobRef: {
             /**
              * @description Media type of the stored bytes.
              * @enum {string}
@@ -5632,43 +10255,45 @@ export interface components {
             urlExpiresAt?: string;
         };
         /** @description The fields of one entry that a particular viewer may see, keyed by field: the intersection of the member's visibility, the community's ceiling and policy, plus any derived fields that intersection admits. A withheld field is ABSENT, never null. */
-        VtcGroupsRequestsListV0_1EntryFields: {
-            [key: string]: components["schemas"]["VtcGroupsRequestsListV0_1FieldValue"];
+        VtcGroupsRequestsListV0_2EntryFields: {
+            [key: string]: components["schemas"]["VtcGroupsRequestsListV0_2FieldValue"];
         };
         /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
-        VtcGroupsRequestsListV0_1EntryId: string;
+        VtcGroupsRequestsListV0_2EntryId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcGroupsRequestsListV0_1Ext: {
+        VtcGroupsRequestsListV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
-        VtcGroupsRequestsListV0_1FieldKey: string;
+        VtcGroupsRequestsListV0_2FieldKey: string;
         /** @description The value of one field. Which shape a field takes is fixed by its definition's `type`: text-like types (`text`, `longText`, `url`, `email`, `phone`, `enum`, `date` as YYYY-MM-DD, `country` as ISO 3166-1 alpha-2, `did`) are strings; `multiEnum` and the base field `links` are arrays of strings; `image` and the base field `avatar` are a `CardBlobRef`; `claim` is a `VerifiedValue`; the derived base field `personhood` is a boolean. */
-        VtcGroupsRequestsListV0_1FieldValue: string | boolean | string[] | components["schemas"]["VtcGroupsRequestsListV0_1CardBlobRef"] | components["schemas"]["VtcGroupsRequestsListV0_1VerifiedValue"];
+        VtcGroupsRequestsListV0_2FieldValue: string | boolean | string[] | components["schemas"]["VtcGroupsRequestsListV0_2CardBlobRef"] | components["schemas"]["VtcGroupsRequestsListV0_2VerifiedValue"];
         /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
-        VtcGroupsRequestsListV0_1GroupId: string;
-        VtcGroupsRequestsListV0_1GroupJoinRequest: {
+        VtcGroupsRequestsListV0_2GroupId: string;
+        VtcGroupsRequestsListV0_2GroupJoinRequest: {
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             decidedAt?: string;
             /** @description The manager who decided. Shown to managers only. */
             decidedBy?: string;
-            entryId: components["schemas"]["VtcGroupsRequestsListV0_1EntryId"];
-            groupId: components["schemas"]["VtcGroupsRequestsListV0_1GroupId"];
-            message?: components["schemas"]["VtcGroupsRequestsListV0_1JoinRequestMessage"];
-            requestId: components["schemas"]["VtcGroupsRequestsListV0_1JoinRequestId"];
+            entryId: components["schemas"]["VtcGroupsRequestsListV0_2EntryId"];
+            groupId: components["schemas"]["VtcGroupsRequestsListV0_2GroupId"];
+            message?: components["schemas"]["VtcGroupsRequestsListV0_2JoinRequestMessage"];
+            requestId: components["schemas"]["VtcGroupsRequestsListV0_2JoinRequestId"];
             /** @enum {string} */
             state: "pending" | "approved" | "declined" | "withdrawn";
         };
-        VtcGroupsRequestsListV0_1JoinRequestId: string;
+        VtcGroupsRequestsListV0_2JoinRequestId: string;
         /** @description An optional note from the member to the group's managers. Plain text. */
-        VtcGroupsRequestsListV0_1JoinRequestMessage: string;
+        VtcGroupsRequestsListV0_2JoinRequestMessage: string;
         /** @description A group manager lists requests to join the groups they manage, pending by default. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcGroupsRequestsListV0_1Payload: {
+        VtcGroupsRequestsListV0_2Payload: {
+            /** @description An opaque continuation token from a previous response's `nextCursor`, bound to the caller and the filters; a responder MUST NOT accept a cursor it did not issue. */
             cursor?: string;
-            ext?: components["schemas"]["VtcGroupsRequestsListV0_1Ext"];
-            groupId?: components["schemas"]["VtcGroupsRequestsListV0_1GroupId"];
+            ext?: components["schemas"]["VtcGroupsRequestsListV0_2Ext"];
+            groupId?: components["schemas"]["VtcGroupsRequestsListV0_2GroupId"];
+            /** @description The most items to return, at most 200; the responder chooses a default and MAY return fewer. */
             limit?: number;
             /**
              * @description Absent: `pending`.
@@ -5676,17 +10301,18 @@ export interface components {
              */
             state?: "pending" | "approved" | "declined" | "withdrawn";
         };
-        /** @description The success response to a vtc/groups/requests/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/requests/list/0.1#response. */
-        VtcGroupsRequestsListV0_1Response: {
-            ext?: components["schemas"]["VtcGroupsRequestsListV0_1Ext"];
+        /** @description The success response to a vtc/groups/requests/list/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/groups/requests/list/0.2#response. */
+        VtcGroupsRequestsListV0_2Response: {
+            ext?: components["schemas"]["VtcGroupsRequestsListV0_2Ext"];
             items: {
-                fields?: components["schemas"]["VtcGroupsRequestsListV0_1EntryFields"];
-                request: components["schemas"]["VtcGroupsRequestsListV0_1GroupJoinRequest"];
+                fields?: components["schemas"]["VtcGroupsRequestsListV0_2EntryFields"];
+                request: components["schemas"]["VtcGroupsRequestsListV0_2GroupJoinRequest"];
             }[];
-            nextCursor?: unknown;
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
         };
         /** @description The value of a `credential`-sourced field: a claim the member disclosed from a credential they presented, with the issuer that attests it. A verified value always names its issuer, and a self-asserted value is never shaped as one. The community keeps only the disclosed claim and these facts about it — never the presentation. */
-        VtcGroupsRequestsListV0_1VerifiedValue: {
+        VtcGroupsRequestsListV0_2VerifiedValue: {
             /** @description The most specific `type` of the credential the claim came from. */
             credentialType?: string;
             /** @description DID of the credential's issuer, shown as the field's verification badge. */
@@ -6174,10 +10800,417 @@ export interface components {
             roleCredential?: Record<string, never>;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRegistryRecordsListV0_1Ext: {
+        VtcNetworksJoinV0_2Ext: {
             [key: string]: unknown;
         };
-        VtcRegistryRecordsListV0_1Record: {
+        VtcNetworksJoinV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksJoinV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description Accept a network's listing of the community: register groups for the network's roles, then acknowledge its membership offer. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksJoinV0_2Payload: {
+            ext?: components["schemas"]["VtcNetworksJoinV0_2Ext"];
+            /** @description The community's groups to serve the network's roles. Every role the network requires must be assigned. */
+            groups?: components["schemas"]["VtcNetworksJoinV0_2RoleAssignment"][];
+            /** @description The network's DID. For a request naming a `url`, the community refuses if the network found there answers as another DID. */
+            network: string;
+            /**
+             * Format: uri
+             * @description The network's API base, as the network's administrators gave it.
+             */
+            url: string;
+        };
+        VtcNetworksJoinV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The membership as it now stands. */
+        VtcNetworksJoinV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksJoinV0_2Ext"];
+            membership: components["schemas"]["VtcNetworksJoinV0_2NetworkMembership"];
+        };
+        VtcNetworksJoinV0_2RoleAssignment: {
+            /** @description The community group to serve the role. */
+            groupId: string;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksLeaveV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksLeaveV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksLeaveV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description Withdraw from a network the community is a member of. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksLeaveV0_2Payload: {
+            ext?: components["schemas"]["VtcNetworksLeaveV0_2Ext"];
+            /** @description The network's DID. */
+            network: string;
+            /** @description Kept in the community's audit trail. Not sent to the network. */
+            reason?: string;
+        };
+        VtcNetworksLeaveV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The membership, in state `departed`. */
+        VtcNetworksLeaveV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksLeaveV0_2Ext"];
+            membership: components["schemas"]["VtcNetworksLeaveV0_2NetworkMembership"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksListV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksListV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksListV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description List the community's network memberships, optionally in one state. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksListV0_2Payload: {
+            cursor?: string;
+            ext?: components["schemas"]["VtcNetworksListV0_2Ext"];
+            /** @description Page size; clamped to 1..=100 (default 50). */
+            limit?: number;
+            /**
+             * @description Only memberships in this state.
+             * @enum {string}
+             */
+            state?: "acknowledged" | "repudiated" | "departed";
+        };
+        VtcNetworksListV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The community's network memberships, by network DID. */
+        VtcNetworksListV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksListV0_2Ext"];
+            items: components["schemas"]["VtcNetworksListV0_2NetworkMembership"][];
+            nextCursor?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksPreviewV0_1Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksPreviewV0_1Framework: {
+            /** @description The network's governance framework. */
+            iri: string;
+            /** @description The framework version the network operates under. */
+            version: string;
+        };
+        /** @description Read a network before joining it: what it says about itself, the roles it requires a group for, and whether it lists the community. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksPreviewV0_1Payload: {
+            ext?: components["schemas"]["VtcNetworksPreviewV0_1Ext"];
+            /** @description The DID the administrator expects at `url`. When present, the community refuses if the network found there answers as another DID. */
+            network?: string;
+            /**
+             * Format: uri
+             * @description The network's API base, as the network's administrators gave it.
+             */
+            url: string;
+        };
+        /** @description The network, as the community found it at `url`, and where the community stands with it. */
+        VtcNetworksPreviewV0_1Response: {
+            /** @description The network's description, from its profile. */
+            description?: string;
+            /**
+             * @description The network's state for the community's entry, when it holds a published one: `listed` (not yet acknowledged), `acknowledged` (a member), `repudiated` (the community rejected the listing) or `suspended`.
+             * @enum {string}
+             */
+            entryState?: "listed" | "acknowledged" | "repudiated" | "suspended";
+            ext?: components["schemas"]["VtcNetworksPreviewV0_1Ext"];
+            framework?: components["schemas"]["VtcNetworksPreviewV0_1Framework"];
+            /** @description `true` only when the network holds an entry for the community whose listing verifies as the network's and lists the community as a community. */
+            listed: boolean;
+            /**
+             * @description The community's own record of the membership, when it holds one (`vtc/networks/show`).
+             * @enum {string}
+             */
+            membershipState?: "acknowledged" | "repudiated" | "departed";
+            /** @description The network's name, from its profile. */
+            name: string;
+            /** @description The DID the network at `url` answers as. */
+            network: string;
+            /** @description Why `listed` is `false`, in words for an administrator. */
+            notListedReason?: string;
+            /** @description The network's identified owner (VTI-VTN-002), from its profile. */
+            owner?: string;
+            /** @description The roles the network asks members to register a group for. `vtc/networks/join` must assign a group to each one marked `required`. */
+            roles: components["schemas"]["VtcNetworksPreviewV0_1Role"][];
+            /**
+             * Format: uri
+             * @description The URL the network was read at.
+             */
+            url: string;
+        };
+        VtcNetworksPreviewV0_1Role: {
+            /** @description What the network uses the role for. */
+            description?: string;
+            /** @description The role's name, as `vtc/networks/join` assigns a group to it. */
+            name: string;
+            /** @description Whether the network admits a member only once a group is registered for this role. */
+            required: boolean;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksRepudiateV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksRepudiateV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksRepudiateV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description Reject a network's listing of the community. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksRepudiateV0_2Payload: {
+            ext?: components["schemas"]["VtcNetworksRepudiateV0_2Ext"];
+            /** @description The network's DID. For a request naming a `url`, the community refuses if the network found there answers as another DID. */
+            network: string;
+            /** @description Kept in the community's audit trail. Not sent to the network. */
+            reason?: string;
+            /**
+             * Format: uri
+             * @description The network's API base, as the network's administrators gave it.
+             */
+            url: string;
+        };
+        VtcNetworksRepudiateV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The membership record, in state `repudiated`. */
+        VtcNetworksRepudiateV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksRepudiateV0_2Ext"];
+            membership: components["schemas"]["VtcNetworksRepudiateV0_2NetworkMembership"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcNetworksShowV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcNetworksShowV0_2NetworkMembership: {
+            /** @description The community's acknowledgement (VMC carrying the grant's digest). */
+            acknowledgement?: Record<string, never>;
+            /** @description The network's membership grant (VMC), once the community acknowledged. */
+            grant?: Record<string, never>;
+            groups: components["schemas"]["VtcNetworksShowV0_2RegisteredGroup"][];
+            /** Format: date-time */
+            joinedAt?: string;
+            /** @description The network's listing credential naming the community, as the community verified it. */
+            listing: Record<string, never>;
+            /** @description The network's name, as its profile gives it. */
+            name?: string;
+            /** @description The network's DID. */
+            network: string;
+            /** @description The community's repudiation (VSC) of the listing, or — on departure — of the grant. */
+            repudiation?: Record<string, never>;
+            /**
+             * @description `acknowledged`: the community is a member — it signed the acknowledgement of the network's grant. `repudiated`: the community rejected the network's listing of it. `departed`: the community left, by repudiating the grant.
+             * @enum {string}
+             */
+            state: "acknowledged" | "repudiated" | "departed";
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: uri
+             * @description Where the network's API is reached: the base its `/.well-known/vtn` profile is served under.
+             */
+            url: string;
+        };
+        /** @description One network membership, by the network's DID. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcNetworksShowV0_2Payload: {
+            ext?: components["schemas"]["VtcNetworksShowV0_2Ext"];
+            /** @description The network's DID. */
+            network: string;
+        };
+        VtcNetworksShowV0_2RegisteredGroup: {
+            /** @description The network's `groupRegistered/1` statement (VSC) accepting the registration: subject the group, `object.digestMultibase` the registration's digest — SHA-256 over the RFC 8785 (JCS) form of the signed request including its proof. */
+            acceptance: Record<string, never>;
+            /**
+             * Format: uri
+             * @description Where the network delivers broadcasts for the group: the community's Trust Task endpoint, at which the network sends them as `vtc/networks/deliver`.
+             */
+            endpoint: string;
+            /** @description The group's own DID, which the registration names as its `group`. */
+            groupDid: string;
+            /** @description The community's identifier for the group. */
+            groupId: string;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The registration: the community's signed `vtn/groups/register` request as the network accepted it — a complete Trust Task document, with its proof, naming the network as `recipient` and the group, `role` and `endpoint` in its payload. */
+            registration: Record<string, never>;
+            /** @description A role the network defines, e.g. `admins`: lowercase letters, digits, `-` and `_`. */
+            role: string;
+        };
+        /** @description The membership. */
+        VtcNetworksShowV0_2Response: {
+            ext?: components["schemas"]["VtcNetworksShowV0_2Ext"];
+            membership: components["schemas"]["VtcNetworksShowV0_2NetworkMembership"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRegistryRecordsListV0_2Ext: {
+            [key: string]: unknown;
+        };
+        VtcRegistryRecordsListV0_2Record: {
             /** @description The action the assertion covers. */
             action: string;
             /** @description The authority asserting it. */
@@ -6186,7 +11219,7 @@ export interface components {
             authorized?: unknown;
             /** @description The entity the record is about. */
             entityId: string;
-            ext?: components["schemas"]["VtcRegistryRecordsListV0_1Ext"];
+            ext?: components["schemas"]["VtcRegistryRecordsListV0_2Ext"];
             /** @description Present on recognition records: whether the action+resource is recognised. Absent on other record types — absent is not `false`. */
             recognized?: unknown;
             /** @description Record discriminator, as the trust registry states it. */
@@ -6194,19 +11227,19 @@ export interface components {
             /** @description The resource the assertion covers. */
             resource: string;
         };
-        VtcRegistryRecordsListV0_1Response: {
-            ext?: components["schemas"]["VtcRegistryRecordsListV0_1Ext"];
+        VtcRegistryRecordsListV0_2Response: {
+            ext?: components["schemas"]["VtcRegistryRecordsListV0_2Ext"];
             /** @description The matching records, in the maintainer's stable enumeration order. */
-            items: components["schemas"]["VtcRegistryRecordsListV0_1Record"][];
-            /** @description Continuation token for the next page, or null when this is the last. */
-            nextCursor?: unknown;
-            source: components["schemas"]["VtcRegistryRecordsListV0_1Source"];
+            items: components["schemas"]["VtcRegistryRecordsListV0_2Record"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
+            source: components["schemas"]["VtcRegistryRecordsListV0_2Source"];
         };
         /**
          * @description `registry` enumerates the trust registry itself; `local` enumerates the community's own record of what it published. They are different questions and a consumer MUST NOT treat one as a cache of the other.
          * @enum {string}
          */
-        VtcRegistryRecordsListV0_1Source: "registry" | "local";
+        VtcRegistryRecordsListV0_2Source: "registry" | "local";
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcRegistrySyncJobsDiscardV0_1Ext: {
             [key: string]: unknown;
@@ -6219,10 +11252,10 @@ export interface components {
             memberDid: string;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRegistrySyncJobsListV0_1Ext: {
+        VtcRegistrySyncJobsListV0_2Ext: {
             [key: string]: unknown;
         };
-        VtcRegistrySyncJobsListV0_1Job: {
+        VtcRegistrySyncJobsListV0_2Job: {
             /** @description Attempts made so far. `1` on a failed job means the registry answered and refused; a value at the maintainer's retry ceiling means it never answered. */
             attempts: number;
             /**
@@ -6230,10 +11263,10 @@ export interface components {
              * @description When the job was enqueued.
              */
             createdAt: string;
-            ext?: components["schemas"]["VtcRegistrySyncJobsListV0_1Ext"];
+            ext?: components["schemas"]["VtcRegistrySyncJobsListV0_2Ext"];
             /** @description Identifier of the queued job. The handle `vtc/registry/sync-jobs/retry` and `.../discard` take. */
             jobId: string;
-            kind: components["schemas"]["VtcRegistrySyncJobsListV0_1Kind"];
+            kind: components["schemas"]["VtcRegistrySyncJobsListV0_2Kind"];
             /**
              * Format: date-time
              * @description When it was last dispatched.
@@ -6253,24 +11286,24 @@ export interface components {
              * @description When the maintainer's retention sweep will delete this row. A deadline, not a fix — the member stays unpublished.
              */
             purgeDueAt?: unknown;
-            state: components["schemas"]["VtcRegistrySyncJobsListV0_1State"];
+            state: components["schemas"]["VtcRegistrySyncJobsListV0_2State"];
         };
         /**
          * @description Which mutation the job carries to the registry.
          * @enum {string}
          */
-        VtcRegistrySyncJobsListV0_1Kind: "publishMember" | "updateMember" | "deleteMember" | "markDeparted";
-        VtcRegistrySyncJobsListV0_1Response: {
-            ext?: components["schemas"]["VtcRegistrySyncJobsListV0_1Ext"];
-            items: components["schemas"]["VtcRegistrySyncJobsListV0_1Job"][];
-            /** @description Continuation token for the next page, or null when this is the last. */
-            nextCursor?: unknown;
+        VtcRegistrySyncJobsListV0_2Kind: "publishMember" | "updateMember" | "deleteMember" | "markDeparted";
+        VtcRegistrySyncJobsListV0_2Response: {
+            ext?: components["schemas"]["VtcRegistrySyncJobsListV0_2Ext"];
+            items: components["schemas"]["VtcRegistrySyncJobsListV0_2Job"][];
+            /** @description Continuation token for the next page; pass it back as `cursor`. Absent on the last page — never `null`. */
+            nextCursor?: string;
         };
         /**
          * @description `failed` is terminal: the reconciler has abandoned the job and will not retry it without an operator. `pending` and `inFlight` are moving on their own.
          * @enum {string}
          */
-        VtcRegistrySyncJobsListV0_1State: "pending" | "inFlight" | "failed";
+        VtcRegistrySyncJobsListV0_2State: "pending" | "inFlight" | "failed";
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcRegistrySyncJobsRetryV0_2Ext: {
             [key: string]: unknown;
@@ -6307,80 +11340,18 @@ export interface components {
          * @example admin
          */
         VtcRole: string;
-        /** @description One room the community owns, as its administrators see it. */
-        VtcRoomsCommunityCreateV0_1CommunityRoom: {
+        /**
+         * @description What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.
+         * @enum {string}
+         */
+        VtcRoomsCommunityArchiveV0_1ArchiveAccess: "readOnly" | "noAccess";
+        /** @description What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then. */
+        VtcRoomsCommunityArchiveV0_1CommunityRoomV3: {
             /** @description Members in state `admitted`. */
             admitted: number;
             /** @description The administrator who created it. */
             createdBy?: string;
-            label: components["schemas"]["VtcRoomsCommunityCreateV0_1RoomLabel"];
-            /** @description Offers not yet accepted or withdrawn. */
-            offered: number;
-            /**
-             * Format: date-time
-             * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
-             */
-            ownerAuthorityValidUntil?: string;
-            room: components["schemas"]["VtcRoomsCommunityCreateV0_1HostedRoom"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityCreateV0_1StorageConfigId"];
-        };
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityCreateV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsCommunityCreateV0_1HostedRoom: {
-            createdAt: number;
-            epoch: number;
-            epochExpiresAt?: number;
-            /** @enum {string} */
-            lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
-            mirrorOf?: string;
-            ownerDid: string;
-            retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsCommunityCreateV0_1RetentionPolicy"];
-            roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsCommunityCreateV0_1Visibility"];
-        };
-        VtcRoomsCommunityCreateV0_1Payload: {
-            ext?: components["schemas"]["VtcRoomsCommunityCreateV0_1Ext"];
-            label: components["schemas"]["VtcRoomsCommunityCreateV0_1RoomLabel"];
-            reason: components["schemas"]["VtcRoomsCommunityCreateV0_1Reason"];
-            /** @description How long the room is kept after it lapses. Absent: the community's default. */
-            retentionDays?: number;
-            retentionPolicy?: components["schemas"]["VtcRoomsCommunityCreateV0_1RetentionPolicy"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityCreateV0_1StorageConfigId"];
-            visibility: components["schemas"]["VtcRoomsCommunityCreateV0_1Visibility"];
-        };
-        /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityCreateV0_1Reason: string;
-        /** @description Success response to vtc/rooms/community/create. Type https://trusttasks.org/spec/vtc/rooms/community/create/0.1#response. The room as created, owned by the community. */
-        VtcRoomsCommunityCreateV0_1Response: {
-            ext?: components["schemas"]["VtcRoomsCommunityCreateV0_1Ext"];
-            room: components["schemas"]["VtcRoomsCommunityCreateV0_1CommunityRoom"];
-        };
-        /**
-         * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
-         * @enum {string}
-         */
-        VtcRoomsCommunityCreateV0_1RetentionPolicy: "chained" | "fromJoin";
-        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
-        VtcRoomsCommunityCreateV0_1RoomLabel: string;
-        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsCommunityCreateV0_1StorageConfigId: string;
-        /**
-         * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
-         * @enum {string}
-         */
-        VtcRoomsCommunityCreateV0_1Visibility: "open" | "attributed" | "private";
-        /** @description What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`. */
-        VtcRoomsCommunityCreateV0_2CommunityRoomV2: {
-            /** @description Members in state `admitted`. */
-            admitted: number;
-            /** @description The administrator who created it. */
-            createdBy?: string;
-            description?: components["schemas"]["VtcRoomsCommunityCreateV0_2RoomDescription"];
+            description?: components["schemas"]["VtcRoomsCommunityArchiveV0_1RoomDescription"];
             /**
              * Format: date-time
              * @description When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle.
@@ -6388,7 +11359,7 @@ export interface components {
             detailsUpdatedAt?: string;
             /** @description The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here. */
             detailsUpdatedBy?: string;
-            label: components["schemas"]["VtcRoomsCommunityCreateV0_2RoomLabel"];
+            label: components["schemas"]["VtcRoomsCommunityArchiveV0_1RoomLabel"];
             /** @description Offers not yet accepted or withdrawn. */
             offered: number;
             /**
@@ -6396,75 +11367,156 @@ export interface components {
              * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
              */
             ownerAuthorityValidUntil?: string;
-            room: components["schemas"]["VtcRoomsCommunityCreateV0_2HostedRoom"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityCreateV0_2StorageConfigId"];
-            tags?: components["schemas"]["VtcRoomsCommunityCreateV0_2RoomTags"];
+            room: components["schemas"]["VtcRoomsCommunityArchiveV0_1HostedRoom"];
+            status: components["schemas"]["VtcRoomsCommunityArchiveV0_1RoomStatus"];
+            storageConfig?: components["schemas"]["VtcRoomsCommunityArchiveV0_1StorageConfigId"];
+            /** @description Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero. */
+            suspended?: number;
+            tags?: components["schemas"]["VtcRoomsCommunityArchiveV0_1RoomTags"];
         };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcRoomsCommunityArchiveV0_1DigestMultibase: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityCreateV0_2Ext: {
+        VtcRoomsCommunityArchiveV0_1Ext: {
             [key: string]: unknown;
         };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsCommunityCreateV0_2HostedRoom: {
-            createdAt: number;
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsCommunityArchiveV0_1HostedRoom: {
+            /** Format: date-time */
+            createdAt: string;
             epoch: number;
-            epochExpiresAt?: number;
+            /** Format: date-time */
+            epochExpiresAt?: string;
             /** @enum {string} */
             lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
             mirrorOf?: string;
             ownerDid: string;
             retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsCommunityCreateV0_2RetentionPolicy"];
+            retentionPolicy: components["schemas"]["VtcRoomsCommunityArchiveV0_1RetentionPolicy"];
             roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsCommunityCreateV0_2Visibility"];
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: components["schemas"]["VtcRoomsCommunityArchiveV0_1Visibility"];
         };
-        VtcRoomsCommunityCreateV0_2Payload: {
-            description?: components["schemas"]["VtcRoomsCommunityCreateV0_2RoomDescription"];
-            ext?: components["schemas"]["VtcRoomsCommunityCreateV0_2Ext"];
-            label: components["schemas"]["VtcRoomsCommunityCreateV0_2RoomLabel"];
-            reason: components["schemas"]["VtcRoomsCommunityCreateV0_2Reason"];
-            /** @description How long the room is kept after it lapses. Absent: the community's default. */
-            retentionDays?: number;
-            retentionPolicy?: components["schemas"]["VtcRoomsCommunityCreateV0_2RetentionPolicy"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityCreateV0_2StorageConfigId"];
-            tags?: components["schemas"]["VtcRoomsCommunityCreateV0_2RoomTags"];
-            visibility: components["schemas"]["VtcRoomsCommunityCreateV0_2Visibility"];
+        VtcRoomsCommunityArchiveV0_1Payload: {
+            access: components["schemas"]["VtcRoomsCommunityArchiveV0_1ArchiveAccess"];
+            ext?: components["schemas"]["VtcRoomsCommunityArchiveV0_1Ext"];
+            reason: components["schemas"]["VtcRoomsCommunityArchiveV0_1Reason"];
+            /** @description The room's identifier: its DID. */
+            roomId: string;
+        };
+        /** @description A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished. */
+        VtcRoomsCommunityArchiveV0_1PendingChange: {
+            access?: components["schemas"]["VtcRoomsCommunityArchiveV0_1ArchiveAccess"];
+            /** Format: date-time */
+            beganAt: string;
+            /** @description What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential. */
+            lastError?: string;
+            state: components["schemas"]["VtcRoomsCommunityArchiveV0_1RoomState"];
+        };
+        /** @description How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has. */
+        VtcRoomsCommunityArchiveV0_1PurgeProgress: {
+            /** @description Passes made so far; 0 until the first. */
+            attempts: number;
+            /** Format: date-time */
+            lastAttemptAt?: string;
+            /** @description What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential. */
+            lastError?: string;
+            /**
+             * Format: date-time
+             * @description When the next pass is due. Absent while one runs.
+             */
+            nextAttemptAt?: string;
         };
         /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityCreateV0_2Reason: string;
-        /** @description Success response to vtc/rooms/community/create. Type https://trusttasks.org/spec/vtc/rooms/community/create/0.2#response. The room as created, owned by the community. */
-        VtcRoomsCommunityCreateV0_2Response: {
-            ext?: components["schemas"]["VtcRoomsCommunityCreateV0_2Ext"];
-            room: components["schemas"]["VtcRoomsCommunityCreateV0_2CommunityRoomV2"];
+        VtcRoomsCommunityArchiveV0_1Reason: string;
+        /** @description Success response to vtc/rooms/community/archive. Type https://trusttasks.org/spec/vtc/rooms/community/archive/0.1#response. The room as it now stands; whether anything changed; and, where the community's VTA withdrew credentials at the room's host, the revocation list in force there. */
+        VtcRoomsCommunityArchiveV0_1Response: {
+            /** @description `false` when the room was already archived with `access`: nothing was written, withdrawn or audited. */
+            changed: boolean;
+            ext?: components["schemas"]["VtcRoomsCommunityArchiveV0_1Ext"];
+            revocation?: components["schemas"]["VtcRoomsCommunityArchiveV0_1RevocationHead"];
+            /**
+             * Format: date-time
+             * @description Present with `revocation`: the withdrawal's time. The host refuses every credential the withdrawal names that was issued before it.
+             */
+            revokedAt?: string;
+            room: components["schemas"]["VtcRoomsCommunityArchiveV0_1CommunityRoomV3"];
+            /** @description Open offers this archival withdrew. Absent when there were none. */
+            withdrawnOffers?: number;
         };
         /**
          * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
          * @enum {string}
          */
-        VtcRoomsCommunityCreateV0_2RetentionPolicy: "chained" | "fromJoin";
+        VtcRoomsCommunityArchiveV0_1RetentionPolicy: "chained" | "fromJoin";
+        /** @description Which `RevocationList` a party holds, without its entries: comparable between the room's key holder and a host, and between two hosts, without disclosing whom the room withdrew. */
+        VtcRoomsCommunityArchiveV0_1RevocationHead: {
+            digest: components["schemas"]["VtcRoomsCommunityArchiveV0_1DigestMultibase"];
+            /** @description The list's `sequence`. */
+            sequence: number;
+        };
         /** @description What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityCreateV0_2RoomDescription: string;
+        VtcRoomsCommunityArchiveV0_1RoomDescription: string;
         /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
-        VtcRoomsCommunityCreateV0_2RoomLabel: string;
+        VtcRoomsCommunityArchiveV0_1RoomLabel: string;
+        /**
+         * @description Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.
+         * @enum {string}
+         */
+        VtcRoomsCommunityArchiveV0_1RoomState: "active" | "archived" | "removalScheduled" | "purging" | "removed";
+        /** @description A room's state in its owner's lifecycle, and what that state needs to be understood. */
+        VtcRoomsCommunityArchiveV0_1RoomStatus: {
+            access?: components["schemas"]["VtcRoomsCommunityArchiveV0_1ArchiveAccess"];
+            /**
+             * Format: date-time
+             * @description When the room entered `state`. Absent for a room that has been `active` since it was created.
+             */
+            changedAt?: string;
+            /** @description The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here. */
+            changedBy?: string;
+            pendingChange?: components["schemas"]["VtcRoomsCommunityArchiveV0_1PendingChange"];
+            purge?: components["schemas"]["VtcRoomsCommunityArchiveV0_1PurgeProgress"];
+            /**
+             * Format: date-time
+             * @description Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due.
+             */
+            purgeAt?: string;
+            /**
+             * Format: date-time
+             * @description Present exactly when `state` is `removed`: when the last of the room's content was deleted.
+             */
+            removedAt?: string;
+            /** @description Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none. */
+            restoring?: number;
+            state: components["schemas"]["VtcRoomsCommunityArchiveV0_1RoomState"];
+        };
         /** @description A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing. */
-        VtcRoomsCommunityCreateV0_2RoomTag: string;
+        VtcRoomsCommunityArchiveV0_1RoomTag: string;
         /** @description The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading. */
-        VtcRoomsCommunityCreateV0_2RoomTags: components["schemas"]["VtcRoomsCommunityCreateV0_2RoomTag"][];
+        VtcRoomsCommunityArchiveV0_1RoomTags: components["schemas"]["VtcRoomsCommunityArchiveV0_1RoomTag"][];
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsCommunityCreateV0_2StorageConfigId: string;
+        VtcRoomsCommunityArchiveV0_1StorageConfigId: string;
         /**
          * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
          * @enum {string}
          */
-        VtcRoomsCommunityCreateV0_2Visibility: "open" | "attributed" | "private";
+        VtcRoomsCommunityArchiveV0_1Visibility: "open" | "attributed" | "private";
         /** @description What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`. */
-        VtcRoomsCommunityCreateV0_3CommunityRoomV2: {
+        VtcRoomsCommunityCreateV0_4CommunityRoomV2: {
             /** @description Members in state `admitted`. */
             admitted: number;
             /** @description The administrator who created it. */
             createdBy?: string;
-            description?: components["schemas"]["VtcRoomsCommunityCreateV0_3RoomDescription"];
+            description?: components["schemas"]["VtcRoomsCommunityCreateV0_4RoomDescription"];
             /**
              * Format: date-time
              * @description When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle.
@@ -6472,7 +11524,7 @@ export interface components {
             detailsUpdatedAt?: string;
             /** @description The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here. */
             detailsUpdatedBy?: string;
-            label: components["schemas"]["VtcRoomsCommunityCreateV0_3RoomLabel"];
+            label: components["schemas"]["VtcRoomsCommunityCreateV0_4RoomLabel"];
             /** @description Offers not yet accepted or withdrawn. */
             offered: number;
             /**
@@ -6480,47 +11532,50 @@ export interface components {
              * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
              */
             ownerAuthorityValidUntil?: string;
-            room: components["schemas"]["VtcRoomsCommunityCreateV0_3HostedRoom"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityCreateV0_3StorageConfigId"];
-            tags?: components["schemas"]["VtcRoomsCommunityCreateV0_3RoomTags"];
+            room: components["schemas"]["VtcRoomsCommunityCreateV0_4HostedRoom"];
+            storageConfig?: components["schemas"]["VtcRoomsCommunityCreateV0_4StorageConfigId"];
+            tags?: components["schemas"]["VtcRoomsCommunityCreateV0_4RoomTags"];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityCreateV0_3Ext: {
+        VtcRoomsCommunityCreateV0_4Ext: {
             [key: string]: unknown;
         };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsCommunityCreateV0_3HostedRoom: {
-            createdAt: number;
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsCommunityCreateV0_4HostedRoom: {
+            /** Format: date-time */
+            createdAt: string;
             epoch: number;
-            epochExpiresAt?: number;
+            /** Format: date-time */
+            epochExpiresAt?: string;
             /** @enum {string} */
             lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
             mirrorOf?: string;
             ownerDid: string;
             retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsCommunityCreateV0_3RetentionPolicy"];
+            retentionPolicy: components["schemas"]["VtcRoomsCommunityCreateV0_4RetentionPolicy"];
             roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsCommunityCreateV0_3Visibility"];
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: components["schemas"]["VtcRoomsCommunityCreateV0_4Visibility"];
         };
-        VtcRoomsCommunityCreateV0_3Payload: {
-            description?: components["schemas"]["VtcRoomsCommunityCreateV0_3RoomDescription"];
-            ext?: components["schemas"]["VtcRoomsCommunityCreateV0_3Ext"];
-            label: components["schemas"]["VtcRoomsCommunityCreateV0_3RoomLabel"];
-            reason: components["schemas"]["VtcRoomsCommunityCreateV0_3Reason"];
+        VtcRoomsCommunityCreateV0_4Payload: {
+            description?: components["schemas"]["VtcRoomsCommunityCreateV0_4RoomDescription"];
+            ext?: components["schemas"]["VtcRoomsCommunityCreateV0_4Ext"];
+            label: components["schemas"]["VtcRoomsCommunityCreateV0_4RoomLabel"];
+            reason: components["schemas"]["VtcRoomsCommunityCreateV0_4Reason"];
             /** @description How long the room is kept after it lapses. Absent: the community's default. */
             retentionDays?: number;
-            retentionPolicy?: components["schemas"]["VtcRoomsCommunityCreateV0_3RetentionPolicy"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityCreateV0_3StorageConfigId"];
-            tags?: components["schemas"]["VtcRoomsCommunityCreateV0_3RoomTags"];
-            visibility: components["schemas"]["VtcRoomsCommunityCreateV0_3Visibility"];
+            retentionPolicy?: components["schemas"]["VtcRoomsCommunityCreateV0_4RetentionPolicy"];
+            storageConfig?: components["schemas"]["VtcRoomsCommunityCreateV0_4StorageConfigId"];
+            tags?: components["schemas"]["VtcRoomsCommunityCreateV0_4RoomTags"];
+            visibility: components["schemas"]["VtcRoomsCommunityCreateV0_4Visibility"];
         };
         /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityCreateV0_3Reason: string;
+        VtcRoomsCommunityCreateV0_4Reason: string;
         /** @description Success response to vtc/rooms/community/create. Type https://trusttasks.org/spec/vtc/rooms/community/create/0.3#response. The room as created, owned by the community. */
-        VtcRoomsCommunityCreateV0_3Response: {
-            ext?: components["schemas"]["VtcRoomsCommunityCreateV0_3Ext"];
-            room: components["schemas"]["VtcRoomsCommunityCreateV0_3CommunityRoomV2"];
+        VtcRoomsCommunityCreateV0_4Response: {
+            ext?: components["schemas"]["VtcRoomsCommunityCreateV0_4Ext"];
+            room: components["schemas"]["VtcRoomsCommunityCreateV0_4CommunityRoomV2"];
             /**
              * @description Whether the room's own profile — its label and description, sealed inside the room for its members — has been written. `written`: the room's members can read it. `pending`: the room exists and the community has not yet written its profile — its VTA or the room's host did not answer, or refused — and will keep trying. The room is created either way.
              * @enum {string}
@@ -6531,84 +11586,34 @@ export interface components {
          * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
          * @enum {string}
          */
-        VtcRoomsCommunityCreateV0_3RetentionPolicy: "chained" | "fromJoin";
+        VtcRoomsCommunityCreateV0_4RetentionPolicy: "chained" | "fromJoin";
         /** @description What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityCreateV0_3RoomDescription: string;
+        VtcRoomsCommunityCreateV0_4RoomDescription: string;
         /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
-        VtcRoomsCommunityCreateV0_3RoomLabel: string;
+        VtcRoomsCommunityCreateV0_4RoomLabel: string;
         /** @description A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing. */
-        VtcRoomsCommunityCreateV0_3RoomTag: string;
+        VtcRoomsCommunityCreateV0_4RoomTag: string;
         /** @description The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading. */
-        VtcRoomsCommunityCreateV0_3RoomTags: components["schemas"]["VtcRoomsCommunityCreateV0_3RoomTag"][];
+        VtcRoomsCommunityCreateV0_4RoomTags: components["schemas"]["VtcRoomsCommunityCreateV0_4RoomTag"][];
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsCommunityCreateV0_3StorageConfigId: string;
+        VtcRoomsCommunityCreateV0_4StorageConfigId: string;
         /**
          * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
          * @enum {string}
          */
-        VtcRoomsCommunityCreateV0_3Visibility: "open" | "attributed" | "private";
-        /** @description One room the community owns, as its administrators see it. */
-        VtcRoomsCommunityGetV0_1CommunityRoom: {
+        VtcRoomsCommunityCreateV0_4Visibility: "open" | "attributed" | "private";
+        /**
+         * @description What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.
+         * @enum {string}
+         */
+        VtcRoomsCommunityGetV0_4ArchiveAccess: "readOnly" | "noAccess";
+        /** @description What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then. */
+        VtcRoomsCommunityGetV0_4CommunityRoomV3: {
             /** @description Members in state `admitted`. */
             admitted: number;
             /** @description The administrator who created it. */
             createdBy?: string;
-            label: components["schemas"]["VtcRoomsCommunityGetV0_1RoomLabel"];
-            /** @description Offers not yet accepted or withdrawn. */
-            offered: number;
-            /**
-             * Format: date-time
-             * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
-             */
-            ownerAuthorityValidUntil?: string;
-            room: components["schemas"]["VtcRoomsCommunityGetV0_1HostedRoom"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityGetV0_1StorageConfigId"];
-        };
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityGetV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsCommunityGetV0_1HostedRoom: {
-            createdAt: number;
-            epoch: number;
-            epochExpiresAt?: number;
-            /** @enum {string} */
-            lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
-            mirrorOf?: string;
-            ownerDid: string;
-            retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsCommunityGetV0_1RetentionPolicy"];
-            roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsCommunityGetV0_1Visibility"];
-        };
-        /** @description Success response to vtc/rooms/community/get. Type https://trusttasks.org/spec/vtc/rooms/community/get/0.1#response. One room the community owns, with its counts. Its members are vtc/rooms/community/members/list's. */
-        VtcRoomsCommunityGetV0_1Response: {
-            ext?: components["schemas"]["VtcRoomsCommunityGetV0_1Ext"];
-            room: components["schemas"]["VtcRoomsCommunityGetV0_1CommunityRoom"];
-        };
-        /**
-         * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
-         * @enum {string}
-         */
-        VtcRoomsCommunityGetV0_1RetentionPolicy: "chained" | "fromJoin";
-        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
-        VtcRoomsCommunityGetV0_1RoomLabel: string;
-        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsCommunityGetV0_1StorageConfigId: string;
-        /**
-         * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
-         * @enum {string}
-         */
-        VtcRoomsCommunityGetV0_1Visibility: "open" | "attributed" | "private";
-        /** @description What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`. */
-        VtcRoomsCommunityGetV0_2CommunityRoomV2: {
-            /** @description Members in state `admitted`. */
-            admitted: number;
-            /** @description The administrator who created it. */
-            createdBy?: string;
-            description?: components["schemas"]["VtcRoomsCommunityGetV0_2RoomDescription"];
+            description?: components["schemas"]["VtcRoomsCommunityGetV0_4RoomDescription"];
             /**
              * Format: date-time
              * @description When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle.
@@ -6616,7 +11621,7 @@ export interface components {
             detailsUpdatedAt?: string;
             /** @description The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here. */
             detailsUpdatedBy?: string;
-            label: components["schemas"]["VtcRoomsCommunityGetV0_2RoomLabel"];
+            label: components["schemas"]["VtcRoomsCommunityGetV0_4RoomLabel"];
             /** @description Offers not yet accepted or withdrawn. */
             offered: number;
             /**
@@ -6624,118 +11629,126 @@ export interface components {
              * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
              */
             ownerAuthorityValidUntil?: string;
-            room: components["schemas"]["VtcRoomsCommunityGetV0_2HostedRoom"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityGetV0_2StorageConfigId"];
-            tags?: components["schemas"]["VtcRoomsCommunityGetV0_2RoomTags"];
+            room: components["schemas"]["VtcRoomsCommunityGetV0_4HostedRoom"];
+            status: components["schemas"]["VtcRoomsCommunityGetV0_4RoomStatus"];
+            storageConfig?: components["schemas"]["VtcRoomsCommunityGetV0_4StorageConfigId"];
+            /** @description Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero. */
+            suspended?: number;
+            tags?: components["schemas"]["VtcRoomsCommunityGetV0_4RoomTags"];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityGetV0_2Ext: {
+        VtcRoomsCommunityGetV0_4Ext: {
             [key: string]: unknown;
         };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsCommunityGetV0_2HostedRoom: {
-            createdAt: number;
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsCommunityGetV0_4HostedRoom: {
+            /** Format: date-time */
+            createdAt: string;
             epoch: number;
-            epochExpiresAt?: number;
+            /** Format: date-time */
+            epochExpiresAt?: string;
             /** @enum {string} */
             lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
             mirrorOf?: string;
             ownerDid: string;
             retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsCommunityGetV0_2RetentionPolicy"];
+            retentionPolicy: components["schemas"]["VtcRoomsCommunityGetV0_4RetentionPolicy"];
             roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsCommunityGetV0_2Visibility"];
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: components["schemas"]["VtcRoomsCommunityGetV0_4Visibility"];
         };
-        /** @description Success response to vtc/rooms/community/get. Type https://trusttasks.org/spec/vtc/rooms/community/get/0.2#response. One room the community owns, with its counts. Its members are vtc/rooms/community/members/list's. */
-        VtcRoomsCommunityGetV0_2Response: {
-            ext?: components["schemas"]["VtcRoomsCommunityGetV0_2Ext"];
-            room: components["schemas"]["VtcRoomsCommunityGetV0_2CommunityRoomV2"];
+        /** @description A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished. */
+        VtcRoomsCommunityGetV0_4PendingChange: {
+            access?: components["schemas"]["VtcRoomsCommunityGetV0_4ArchiveAccess"];
+            /** Format: date-time */
+            beganAt: string;
+            /** @description What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential. */
+            lastError?: string;
+            state: components["schemas"]["VtcRoomsCommunityGetV0_4RoomState"];
+        };
+        /** @description How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has. */
+        VtcRoomsCommunityGetV0_4PurgeProgress: {
+            /** @description Passes made so far; 0 until the first. */
+            attempts: number;
+            /** Format: date-time */
+            lastAttemptAt?: string;
+            /** @description What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential. */
+            lastError?: string;
+            /**
+             * Format: date-time
+             * @description When the next pass is due. Absent while one runs.
+             */
+            nextAttemptAt?: string;
+        };
+        /** @description Success response to vtc/rooms/community/get. Type https://trusttasks.org/spec/vtc/rooms/community/get/0.4#response. One room the community owns, in any state of its owner's lifecycle, with its counts. Its members are vtc/rooms/community/members/list's. */
+        VtcRoomsCommunityGetV0_4Response: {
+            ext?: components["schemas"]["VtcRoomsCommunityGetV0_4Ext"];
+            room: components["schemas"]["VtcRoomsCommunityGetV0_4CommunityRoomV3"];
         };
         /**
          * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
          * @enum {string}
          */
-        VtcRoomsCommunityGetV0_2RetentionPolicy: "chained" | "fromJoin";
+        VtcRoomsCommunityGetV0_4RetentionPolicy: "chained" | "fromJoin";
         /** @description What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityGetV0_2RoomDescription: string;
+        VtcRoomsCommunityGetV0_4RoomDescription: string;
         /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
-        VtcRoomsCommunityGetV0_2RoomLabel: string;
-        /** @description A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing. */
-        VtcRoomsCommunityGetV0_2RoomTag: string;
-        /** @description The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading. */
-        VtcRoomsCommunityGetV0_2RoomTags: components["schemas"]["VtcRoomsCommunityGetV0_2RoomTag"][];
-        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsCommunityGetV0_2StorageConfigId: string;
+        VtcRoomsCommunityGetV0_4RoomLabel: string;
         /**
-         * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
+         * @description Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.
          * @enum {string}
          */
-        VtcRoomsCommunityGetV0_2Visibility: "open" | "attributed" | "private";
-        /** @description One room the community owns, as its administrators see it. */
-        VtcRoomsCommunityListV0_1CommunityRoom: {
-            /** @description Members in state `admitted`. */
-            admitted: number;
-            /** @description The administrator who created it. */
-            createdBy?: string;
-            label: components["schemas"]["VtcRoomsCommunityListV0_1RoomLabel"];
-            /** @description Offers not yet accepted or withdrawn. */
-            offered: number;
+        VtcRoomsCommunityGetV0_4RoomState: "active" | "archived" | "removalScheduled" | "purging" | "removed";
+        /** @description A room's state in its owner's lifecycle, and what that state needs to be understood. */
+        VtcRoomsCommunityGetV0_4RoomStatus: {
+            access?: components["schemas"]["VtcRoomsCommunityGetV0_4ArchiveAccess"];
             /**
              * Format: date-time
-             * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
+             * @description When the room entered `state`. Absent for a room that has been `active` since it was created.
              */
-            ownerAuthorityValidUntil?: string;
-            room: components["schemas"]["VtcRoomsCommunityListV0_1HostedRoom"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityListV0_1StorageConfigId"];
+            changedAt?: string;
+            /** @description The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here. */
+            changedBy?: string;
+            pendingChange?: components["schemas"]["VtcRoomsCommunityGetV0_4PendingChange"];
+            purge?: components["schemas"]["VtcRoomsCommunityGetV0_4PurgeProgress"];
+            /**
+             * Format: date-time
+             * @description Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due.
+             */
+            purgeAt?: string;
+            /**
+             * Format: date-time
+             * @description Present exactly when `state` is `removed`: when the last of the room's content was deleted.
+             */
+            removedAt?: string;
+            /** @description Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none. */
+            restoring?: number;
+            state: components["schemas"]["VtcRoomsCommunityGetV0_4RoomState"];
         };
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityListV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsCommunityListV0_1HostedRoom: {
-            createdAt: number;
-            epoch: number;
-            epochExpiresAt?: number;
-            /** @enum {string} */
-            lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
-            mirrorOf?: string;
-            ownerDid: string;
-            retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsCommunityListV0_1RetentionPolicy"];
-            roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsCommunityListV0_1Visibility"];
-        };
-        /** @description Success response to vtc/rooms/community/list. Type https://trusttasks.org/spec/vtc/rooms/community/list/0.1#response. One page of the rooms the community owns. */
-        VtcRoomsCommunityListV0_1Response: {
-            ext?: components["schemas"]["VtcRoomsCommunityListV0_1Ext"];
-            items: components["schemas"]["VtcRoomsCommunityListV0_1CommunityRoom"][];
-            /** @description Present when more remain; pass it as `cursor`. */
-            nextCursor?: string;
-        };
-        /**
-         * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
-         * @enum {string}
-         */
-        VtcRoomsCommunityListV0_1RetentionPolicy: "chained" | "fromJoin";
-        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
-        VtcRoomsCommunityListV0_1RoomLabel: string;
+        /** @description A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing. */
+        VtcRoomsCommunityGetV0_4RoomTag: string;
+        /** @description The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading. */
+        VtcRoomsCommunityGetV0_4RoomTags: components["schemas"]["VtcRoomsCommunityGetV0_4RoomTag"][];
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsCommunityListV0_1StorageConfigId: string;
+        VtcRoomsCommunityGetV0_4StorageConfigId: string;
         /**
          * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
          * @enum {string}
          */
-        VtcRoomsCommunityListV0_1Visibility: "open" | "attributed" | "private";
-        /** @description What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`. */
-        VtcRoomsCommunityListV0_2CommunityRoomV2: {
+        VtcRoomsCommunityGetV0_4Visibility: "open" | "attributed" | "private";
+        /**
+         * @description What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.
+         * @enum {string}
+         */
+        VtcRoomsCommunityListV0_4ArchiveAccess: "readOnly" | "noAccess";
+        /** @description What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then. */
+        VtcRoomsCommunityListV0_4CommunityRoomV3: {
             /** @description Members in state `admitted`. */
             admitted: number;
             /** @description The administrator who created it. */
             createdBy?: string;
-            description?: components["schemas"]["VtcRoomsCommunityListV0_2RoomDescription"];
+            description?: components["schemas"]["VtcRoomsCommunityListV0_4RoomDescription"];
             /**
              * Format: date-time
              * @description When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle.
@@ -6743,7 +11756,7 @@ export interface components {
             detailsUpdatedAt?: string;
             /** @description The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here. */
             detailsUpdatedBy?: string;
-            label: components["schemas"]["VtcRoomsCommunityListV0_2RoomLabel"];
+            label: components["schemas"]["VtcRoomsCommunityListV0_4RoomLabel"];
             /** @description Offers not yet accepted or withdrawn. */
             offered: number;
             /**
@@ -6751,41 +11764,72 @@ export interface components {
              * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
              */
             ownerAuthorityValidUntil?: string;
-            room: components["schemas"]["VtcRoomsCommunityListV0_2HostedRoom"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityListV0_2StorageConfigId"];
-            tags?: components["schemas"]["VtcRoomsCommunityListV0_2RoomTags"];
+            room: components["schemas"]["VtcRoomsCommunityListV0_4HostedRoom"];
+            status: components["schemas"]["VtcRoomsCommunityListV0_4RoomStatus"];
+            storageConfig?: components["schemas"]["VtcRoomsCommunityListV0_4StorageConfigId"];
+            /** @description Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero. */
+            suspended?: number;
+            tags?: components["schemas"]["VtcRoomsCommunityListV0_4RoomTags"];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityListV0_2Ext: {
+        VtcRoomsCommunityListV0_4Ext: {
             [key: string]: unknown;
         };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsCommunityListV0_2HostedRoom: {
-            createdAt: number;
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsCommunityListV0_4HostedRoom: {
+            /** Format: date-time */
+            createdAt: string;
             epoch: number;
-            epochExpiresAt?: number;
+            /** Format: date-time */
+            epochExpiresAt?: string;
             /** @enum {string} */
             lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
             mirrorOf?: string;
             ownerDid: string;
             retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsCommunityListV0_2RetentionPolicy"];
+            retentionPolicy: components["schemas"]["VtcRoomsCommunityListV0_4RetentionPolicy"];
             roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsCommunityListV0_2Visibility"];
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: components["schemas"]["VtcRoomsCommunityListV0_4Visibility"];
         };
-        VtcRoomsCommunityListV0_2Payload: {
+        VtcRoomsCommunityListV0_4Payload: {
             /** @description Opaque continuation token from a previous page's `nextCursor`. */
             cursor?: string;
-            ext?: components["schemas"]["VtcRoomsCommunityListV0_2Ext"];
+            ext?: components["schemas"]["VtcRoomsCommunityListV0_4Ext"];
             /** @description Page size. The community chooses when absent (50 in the reference implementation). */
             limit?: number;
-            tag?: components["schemas"]["VtcRoomsCommunityListV0_2RoomTag"];
+            /** @description Only rooms in one of these states of their owner's lifecycle. Absent: every state but `removed`, so that a removed room — a record that it existed, and nothing in it — leaves the list unless asked for. */
+            states?: components["schemas"]["VtcRoomsCommunityListV0_4RoomState"][];
+            tag?: components["schemas"]["VtcRoomsCommunityListV0_4RoomTag"];
         };
-        /** @description Success response to vtc/rooms/community/list. Type https://trusttasks.org/spec/vtc/rooms/community/list/0.2#response. One page of the rooms the community owns. */
-        VtcRoomsCommunityListV0_2Response: {
-            ext?: components["schemas"]["VtcRoomsCommunityListV0_2Ext"];
-            items: components["schemas"]["VtcRoomsCommunityListV0_2CommunityRoomV2"][];
+        /** @description A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished. */
+        VtcRoomsCommunityListV0_4PendingChange: {
+            access?: components["schemas"]["VtcRoomsCommunityListV0_4ArchiveAccess"];
+            /** Format: date-time */
+            beganAt: string;
+            /** @description What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential. */
+            lastError?: string;
+            state: components["schemas"]["VtcRoomsCommunityListV0_4RoomState"];
+        };
+        /** @description How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has. */
+        VtcRoomsCommunityListV0_4PurgeProgress: {
+            /** @description Passes made so far; 0 until the first. */
+            attempts: number;
+            /** Format: date-time */
+            lastAttemptAt?: string;
+            /** @description What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential. */
+            lastError?: string;
+            /**
+             * Format: date-time
+             * @description When the next pass is due. Absent while one runs.
+             */
+            nextAttemptAt?: string;
+        };
+        /** @description Success response to vtc/rooms/community/list. Type https://trusttasks.org/spec/vtc/rooms/community/list/0.4#response. One page of the rooms the community owns, in the states asked for. */
+        VtcRoomsCommunityListV0_4Response: {
+            ext?: components["schemas"]["VtcRoomsCommunityListV0_4Ext"];
+            items: components["schemas"]["VtcRoomsCommunityListV0_4CommunityRoomV3"][];
             /** @description Present when more remain; pass it as `cursor`. */
             nextCursor?: string;
         };
@@ -6793,44 +11837,75 @@ export interface components {
          * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
          * @enum {string}
          */
-        VtcRoomsCommunityListV0_2RetentionPolicy: "chained" | "fromJoin";
+        VtcRoomsCommunityListV0_4RetentionPolicy: "chained" | "fromJoin";
         /** @description What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityListV0_2RoomDescription: string;
+        VtcRoomsCommunityListV0_4RoomDescription: string;
         /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
-        VtcRoomsCommunityListV0_2RoomLabel: string;
+        VtcRoomsCommunityListV0_4RoomLabel: string;
+        /**
+         * @description Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.
+         * @enum {string}
+         */
+        VtcRoomsCommunityListV0_4RoomState: "active" | "archived" | "removalScheduled" | "purging" | "removed";
+        /** @description A room's state in its owner's lifecycle, and what that state needs to be understood. */
+        VtcRoomsCommunityListV0_4RoomStatus: {
+            access?: components["schemas"]["VtcRoomsCommunityListV0_4ArchiveAccess"];
+            /**
+             * Format: date-time
+             * @description When the room entered `state`. Absent for a room that has been `active` since it was created.
+             */
+            changedAt?: string;
+            /** @description The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here. */
+            changedBy?: string;
+            pendingChange?: components["schemas"]["VtcRoomsCommunityListV0_4PendingChange"];
+            purge?: components["schemas"]["VtcRoomsCommunityListV0_4PurgeProgress"];
+            /**
+             * Format: date-time
+             * @description Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due.
+             */
+            purgeAt?: string;
+            /**
+             * Format: date-time
+             * @description Present exactly when `state` is `removed`: when the last of the room's content was deleted.
+             */
+            removedAt?: string;
+            /** @description Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none. */
+            restoring?: number;
+            state: components["schemas"]["VtcRoomsCommunityListV0_4RoomState"];
+        };
         /** @description A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing. */
-        VtcRoomsCommunityListV0_2RoomTag: string;
+        VtcRoomsCommunityListV0_4RoomTag: string;
         /** @description The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading. */
-        VtcRoomsCommunityListV0_2RoomTags: components["schemas"]["VtcRoomsCommunityListV0_2RoomTag"][];
+        VtcRoomsCommunityListV0_4RoomTags: components["schemas"]["VtcRoomsCommunityListV0_4RoomTag"][];
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsCommunityListV0_2StorageConfigId: string;
+        VtcRoomsCommunityListV0_4StorageConfigId: string;
         /**
          * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
          * @enum {string}
          */
-        VtcRoomsCommunityListV0_2Visibility: "open" | "attributed" | "private";
+        VtcRoomsCommunityListV0_4Visibility: "open" | "attributed" | "private";
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityMembersAddV0_1Ext: {
+        VtcRoomsCommunityMembersAddV0_2Ext: {
             [key: string]: unknown;
         };
         /**
          * @description What a member of a community-owned room may do there. `admin` is not among them: minting epochs, admitting and removing members are the community's, as the room's owner, and are exercised through the vtc/rooms/community/* tasks rather than by any member's credential. `curate` is not implied by `write`.
          * @enum {string}
          */
-        VtcRoomsCommunityMembersAddV0_1MemberAction: "read" | "write" | "curate";
+        VtcRoomsCommunityMembersAddV0_2MemberAction: "read" | "write" | "curate";
         /** @description The actions granted, at least one. An empty list confers nothing rather than everything, and a schema that allowed it would make the more dangerous reading available to a careless consumer. */
-        VtcRoomsCommunityMembersAddV0_1MemberActions: components["schemas"]["VtcRoomsCommunityMembersAddV0_1MemberAction"][];
+        VtcRoomsCommunityMembersAddV0_2MemberActions: components["schemas"]["VtcRoomsCommunityMembersAddV0_2MemberAction"][];
         /**
-         * @description Where an admission stands. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `removed`: an administrator removed them; on a sealed tier the room has advanced past them.
+         * @description `MemberState` plus `suspended`. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `suspended`: admitted, but the room was archived with `noAccess` (or scheduled for removal), so the room's host refuses the member's credentials; on a sealed tier they are still in the room's group. Restored to `admitted` with freshly issued credentials when the room leaves that state, and never restored if it is removed. `removed`: an administrator removed them, or withdrew their offer — archiving withdraws every open offer; on a sealed tier the room has advanced past an admitted member.
          * @enum {string}
          */
-        VtcRoomsCommunityMembersAddV0_1MemberState: "offered" | "admitted" | "removed";
-        VtcRoomsCommunityMembersAddV0_1Payload: {
-            actions: components["schemas"]["VtcRoomsCommunityMembersAddV0_1MemberActions"];
-            ext?: components["schemas"]["VtcRoomsCommunityMembersAddV0_1Ext"];
+        VtcRoomsCommunityMembersAddV0_2MemberStateV2: "offered" | "admitted" | "suspended" | "removed";
+        VtcRoomsCommunityMembersAddV0_2Payload: {
+            actions: components["schemas"]["VtcRoomsCommunityMembersAddV0_2MemberActions"];
+            ext?: components["schemas"]["VtcRoomsCommunityMembersAddV0_2Ext"];
             /** @description The member to admit: an active member of this community. */
             member: string;
-            reason: components["schemas"]["VtcRoomsCommunityMembersAddV0_1Reason"];
+            reason: components["schemas"]["VtcRoomsCommunityMembersAddV0_2Reason"];
             /** @description The room's identifier: its DID. */
             roomId: string;
             /**
@@ -6840,15 +11915,15 @@ export interface components {
             validUntil: string;
         };
         /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityMembersAddV0_1Reason: string;
-        /** @description Success response to vtc/rooms/community/members/add. Type https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1#response. The member as recorded, in state `offered`. */
-        VtcRoomsCommunityMembersAddV0_1Response: {
-            ext?: components["schemas"]["VtcRoomsCommunityMembersAddV0_1Ext"];
-            member: components["schemas"]["VtcRoomsCommunityMembersAddV0_1RoomMember"];
+        VtcRoomsCommunityMembersAddV0_2Reason: string;
+        /** @description Success response to vtc/rooms/community/members/add. Type https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2#response. The member as recorded, in state `offered`. */
+        VtcRoomsCommunityMembersAddV0_2Response: {
+            ext?: components["schemas"]["VtcRoomsCommunityMembersAddV0_2Ext"];
+            member: components["schemas"]["VtcRoomsCommunityMembersAddV0_2RoomMemberV2"];
         };
-        /** @description One party the community admitted to a room it owns, or offered admission to. */
-        VtcRoomsCommunityMembersAddV0_1RoomMember: {
-            actions: components["schemas"]["VtcRoomsCommunityMembersAddV0_1MemberActions"];
+        /** @description `RoomMember` with `MemberStateV2`, and `suspendedAt`. */
+        VtcRoomsCommunityMembersAddV0_2RoomMemberV2: {
+            actions: components["schemas"]["VtcRoomsCommunityMembersAddV0_2MemberActions"];
             /** Format: date-time */
             admittedAt?: string;
             member: string;
@@ -6856,7 +11931,12 @@ export interface components {
             offeredAt: string;
             /** Format: date-time */
             removedAt?: string;
-            state: components["schemas"]["VtcRoomsCommunityMembersAddV0_1MemberState"];
+            state: components["schemas"]["VtcRoomsCommunityMembersAddV0_2MemberStateV2"];
+            /**
+             * Format: date-time
+             * @description Present exactly when `state` is `suspended`.
+             */
+            suspendedAt?: string;
             /**
              * Format: date-time
              * @description When the member's authority credential expires.
@@ -6864,41 +11944,41 @@ export interface components {
             validUntil: string;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityMembersListV0_1Ext: {
+        VtcRoomsCommunityMembersListV0_2Ext: {
             [key: string]: unknown;
         };
         /**
          * @description What a member of a community-owned room may do there. `admin` is not among them: minting epochs, admitting and removing members are the community's, as the room's owner, and are exercised through the vtc/rooms/community/* tasks rather than by any member's credential. `curate` is not implied by `write`.
          * @enum {string}
          */
-        VtcRoomsCommunityMembersListV0_1MemberAction: "read" | "write" | "curate";
+        VtcRoomsCommunityMembersListV0_2MemberAction: "read" | "write" | "curate";
         /** @description The actions granted, at least one. An empty list confers nothing rather than everything, and a schema that allowed it would make the more dangerous reading available to a careless consumer. */
-        VtcRoomsCommunityMembersListV0_1MemberActions: components["schemas"]["VtcRoomsCommunityMembersListV0_1MemberAction"][];
+        VtcRoomsCommunityMembersListV0_2MemberActions: components["schemas"]["VtcRoomsCommunityMembersListV0_2MemberAction"][];
         /**
-         * @description Where an admission stands. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `removed`: an administrator removed them; on a sealed tier the room has advanced past them.
+         * @description `MemberState` plus `suspended`. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `suspended`: admitted, but the room was archived with `noAccess` (or scheduled for removal), so the room's host refuses the member's credentials; on a sealed tier they are still in the room's group. Restored to `admitted` with freshly issued credentials when the room leaves that state, and never restored if it is removed. `removed`: an administrator removed them, or withdrew their offer — archiving withdraws every open offer; on a sealed tier the room has advanced past an admitted member.
          * @enum {string}
          */
-        VtcRoomsCommunityMembersListV0_1MemberState: "offered" | "admitted" | "removed";
-        VtcRoomsCommunityMembersListV0_1Payload: {
+        VtcRoomsCommunityMembersListV0_2MemberStateV2: "offered" | "admitted" | "suspended" | "removed";
+        VtcRoomsCommunityMembersListV0_2Payload: {
             /** @description Opaque continuation token from a previous page's `nextCursor`. */
             cursor?: string;
-            ext?: components["schemas"]["VtcRoomsCommunityMembersListV0_1Ext"];
+            ext?: components["schemas"]["VtcRoomsCommunityMembersListV0_2Ext"];
             /** @description Page size. The community chooses when absent (50 in the reference implementation). */
             limit?: number;
             /** @description The room's identifier: its DID. */
             roomId: string;
-            state?: components["schemas"]["VtcRoomsCommunityMembersListV0_1MemberState"];
+            state?: components["schemas"]["VtcRoomsCommunityMembersListV0_2MemberStateV2"];
         };
-        /** @description Success response to vtc/rooms/community/members/list. Type https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1#response. One page of the room's members and offers. */
-        VtcRoomsCommunityMembersListV0_1Response: {
-            ext?: components["schemas"]["VtcRoomsCommunityMembersListV0_1Ext"];
-            items: components["schemas"]["VtcRoomsCommunityMembersListV0_1RoomMember"][];
+        /** @description Success response to vtc/rooms/community/members/list. Type https://trusttasks.org/spec/vtc/rooms/community/members/list/0.2#response. One page of the room's members and offers, in every state including `suspended`. */
+        VtcRoomsCommunityMembersListV0_2Response: {
+            ext?: components["schemas"]["VtcRoomsCommunityMembersListV0_2Ext"];
+            items: components["schemas"]["VtcRoomsCommunityMembersListV0_2RoomMemberV2"][];
             /** @description Present when more remain; pass it as `cursor`. */
             nextCursor?: string;
         };
-        /** @description One party the community admitted to a room it owns, or offered admission to. */
-        VtcRoomsCommunityMembersListV0_1RoomMember: {
-            actions: components["schemas"]["VtcRoomsCommunityMembersListV0_1MemberActions"];
+        /** @description `RoomMember` with `MemberStateV2`, and `suspendedAt`. */
+        VtcRoomsCommunityMembersListV0_2RoomMemberV2: {
+            actions: components["schemas"]["VtcRoomsCommunityMembersListV0_2MemberActions"];
             /** Format: date-time */
             admittedAt?: string;
             member: string;
@@ -6906,56 +11986,12 @@ export interface components {
             offeredAt: string;
             /** Format: date-time */
             removedAt?: string;
-            state: components["schemas"]["VtcRoomsCommunityMembersListV0_1MemberState"];
+            state: components["schemas"]["VtcRoomsCommunityMembersListV0_2MemberStateV2"];
             /**
              * Format: date-time
-             * @description When the member's authority credential expires.
+             * @description Present exactly when `state` is `suspended`.
              */
-            validUntil: string;
-        };
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityMembersRemoveV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /**
-         * @description What a member of a community-owned room may do there. `admin` is not among them: minting epochs, admitting and removing members are the community's, as the room's owner, and are exercised through the vtc/rooms/community/* tasks rather than by any member's credential. `curate` is not implied by `write`.
-         * @enum {string}
-         */
-        VtcRoomsCommunityMembersRemoveV0_1MemberAction: "read" | "write" | "curate";
-        /** @description The actions granted, at least one. An empty list confers nothing rather than everything, and a schema that allowed it would make the more dangerous reading available to a careless consumer. */
-        VtcRoomsCommunityMembersRemoveV0_1MemberActions: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_1MemberAction"][];
-        /**
-         * @description Where an admission stands. `offered`: credentials issued and waiting for the member to collect and accept them. `admitted`: accepted — on a sealed tier, the member is in the room's group. `removed`: an administrator removed them; on a sealed tier the room has advanced past them.
-         * @enum {string}
-         */
-        VtcRoomsCommunityMembersRemoveV0_1MemberState: "offered" | "admitted" | "removed";
-        VtcRoomsCommunityMembersRemoveV0_1Payload: {
-            ext?: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_1Ext"];
-            member: string;
-            reason: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_1Reason"];
-            /** @description The room's identifier: its DID. */
-            roomId: string;
-        };
-        /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityMembersRemoveV0_1Reason: string;
-        /** @description Success response to vtc/rooms/community/members/remove. Type https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.1#response. The member as recorded, in state `removed`, and on a sealed tier the epoch the room advanced to. */
-        VtcRoomsCommunityMembersRemoveV0_1Response: {
-            /** @description On a sealed tier, the room epoch after the removal. */
-            epoch?: number;
-            ext?: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_1Ext"];
-            member: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_1RoomMember"];
-        };
-        /** @description One party the community admitted to a room it owns, or offered admission to. */
-        VtcRoomsCommunityMembersRemoveV0_1RoomMember: {
-            actions: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_1MemberActions"];
-            /** Format: date-time */
-            admittedAt?: string;
-            member: string;
-            /** Format: date-time */
-            offeredAt: string;
-            /** Format: date-time */
-            removedAt?: string;
-            state: components["schemas"]["VtcRoomsCommunityMembersRemoveV0_1MemberState"];
+            suspendedAt?: string;
             /**
              * Format: date-time
              * @description When the member's authority credential expires.
@@ -7033,13 +12069,18 @@ export interface components {
              */
             validUntil: string;
         };
-        /** @description What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`. */
-        VtcRoomsCommunityUpdateV0_1CommunityRoomV2: {
+        /**
+         * @description What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.
+         * @enum {string}
+         */
+        VtcRoomsCommunityRemovalCancelV0_1ArchiveAccess: "readOnly" | "noAccess";
+        /** @description What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then. */
+        VtcRoomsCommunityRemovalCancelV0_1CommunityRoomV3: {
             /** @description Members in state `admitted`. */
             admitted: number;
             /** @description The administrator who created it. */
             createdBy?: string;
-            description?: components["schemas"]["VtcRoomsCommunityUpdateV0_1RoomDescription"];
+            description?: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1RoomDescription"];
             /**
              * Format: date-time
              * @description When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle.
@@ -7047,7 +12088,7 @@ export interface components {
             detailsUpdatedAt?: string;
             /** @description The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here. */
             detailsUpdatedBy?: string;
-            label: components["schemas"]["VtcRoomsCommunityUpdateV0_1RoomLabel"];
+            label: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1RoomLabel"];
             /** @description Offers not yet accepted or withdrawn. */
             offered: number;
             /**
@@ -7055,80 +12096,134 @@ export interface components {
              * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
              */
             ownerAuthorityValidUntil?: string;
-            room: components["schemas"]["VtcRoomsCommunityUpdateV0_1HostedRoom"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityUpdateV0_1StorageConfigId"];
-            tags?: components["schemas"]["VtcRoomsCommunityUpdateV0_1RoomTags"];
+            room: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1HostedRoom"];
+            status: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1RoomStatus"];
+            storageConfig?: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1StorageConfigId"];
+            /** @description Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero. */
+            suspended?: number;
+            tags?: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1RoomTags"];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityUpdateV0_1Ext: {
+        VtcRoomsCommunityRemovalCancelV0_1Ext: {
             [key: string]: unknown;
         };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsCommunityUpdateV0_1HostedRoom: {
-            createdAt: number;
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsCommunityRemovalCancelV0_1HostedRoom: {
+            /** Format: date-time */
+            createdAt: string;
             epoch: number;
-            epochExpiresAt?: number;
+            /** Format: date-time */
+            epochExpiresAt?: string;
             /** @enum {string} */
             lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
             mirrorOf?: string;
             ownerDid: string;
             retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsCommunityUpdateV0_1RetentionPolicy"];
+            retentionPolicy: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1RetentionPolicy"];
             roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsCommunityUpdateV0_1Visibility"];
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1Visibility"];
         };
-        /** @description Change the details an administrator keeps track of a community-owned room by: its label, its description, its tags. Each member given replaces the stored one; a member absent is unchanged. At least one detail is required (`minProperties` counts `roomId` and `reason`), and `description` and `removeDescription` are mutually exclusive. Nothing here reaches the room, its key holder or its members' credentials. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcRoomsCommunityUpdateV0_1Payload: {
-            description?: components["schemas"]["VtcRoomsCommunityUpdateV0_1RoomDescription"];
-            ext?: components["schemas"]["VtcRoomsCommunityUpdateV0_1Ext"];
-            label?: components["schemas"]["VtcRoomsCommunityUpdateV0_1RoomLabel"];
-            reason: components["schemas"]["VtcRoomsCommunityUpdateV0_1Reason"];
-            /**
-             * @description Remove the room's description. Only `true` is meaningful, so only `true` is accepted. A separate member rather than `description: null`, because a nullable optional member makes "unchanged" and "remove" the same value in libraries that map both to one absent option.
-             * @enum {boolean}
-             */
-            removeDescription?: true;
+        VtcRoomsCommunityRemovalCancelV0_1Payload: {
+            ext?: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1Ext"];
+            reason: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1Reason"];
             /** @description The room's identifier: its DID. */
             roomId: string;
-            tags?: components["schemas"]["VtcRoomsCommunityUpdateV0_1RoomTags"];
+        };
+        /** @description A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished. */
+        VtcRoomsCommunityRemovalCancelV0_1PendingChange: {
+            access?: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1ArchiveAccess"];
+            /** Format: date-time */
+            beganAt: string;
+            /** @description What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential. */
+            lastError?: string;
+            state: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1RoomState"];
+        };
+        /** @description How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has. */
+        VtcRoomsCommunityRemovalCancelV0_1PurgeProgress: {
+            /** @description Passes made so far; 0 until the first. */
+            attempts: number;
+            /** Format: date-time */
+            lastAttemptAt?: string;
+            /** @description What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential. */
+            lastError?: string;
+            /**
+             * Format: date-time
+             * @description When the next pass is due. Absent while one runs.
+             */
+            nextAttemptAt?: string;
         };
         /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityUpdateV0_1Reason: string;
-        /** @description Success response to vtc/rooms/community/update. Type https://trusttasks.org/spec/vtc/rooms/community/update/0.1#response. The room as it now stands, and whether this request changed it. */
-        VtcRoomsCommunityUpdateV0_1Response: {
-            /** @description `false` when every value given already matched what the room had: nothing was written, `detailsUpdatedAt` and `detailsUpdatedBy` did not move, and no change was audited. */
-            changed: boolean;
-            ext?: components["schemas"]["VtcRoomsCommunityUpdateV0_1Ext"];
-            room: components["schemas"]["VtcRoomsCommunityUpdateV0_1CommunityRoomV2"];
+        VtcRoomsCommunityRemovalCancelV0_1Reason: string;
+        /** @description Success response to vtc/rooms/community/removal/cancel. Type https://trusttasks.org/spec/vtc/rooms/community/removal/cancel/0.1#response. The room as it now stands: `archived` with `noAccess`. */
+        VtcRoomsCommunityRemovalCancelV0_1Response: {
+            ext?: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1Ext"];
+            room: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1CommunityRoomV3"];
         };
         /**
          * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
          * @enum {string}
          */
-        VtcRoomsCommunityUpdateV0_1RetentionPolicy: "chained" | "fromJoin";
+        VtcRoomsCommunityRemovalCancelV0_1RetentionPolicy: "chained" | "fromJoin";
         /** @description What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityUpdateV0_1RoomDescription: string;
+        VtcRoomsCommunityRemovalCancelV0_1RoomDescription: string;
         /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
-        VtcRoomsCommunityUpdateV0_1RoomLabel: string;
+        VtcRoomsCommunityRemovalCancelV0_1RoomLabel: string;
+        /**
+         * @description Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.
+         * @enum {string}
+         */
+        VtcRoomsCommunityRemovalCancelV0_1RoomState: "active" | "archived" | "removalScheduled" | "purging" | "removed";
+        /** @description A room's state in its owner's lifecycle, and what that state needs to be understood. */
+        VtcRoomsCommunityRemovalCancelV0_1RoomStatus: {
+            access?: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1ArchiveAccess"];
+            /**
+             * Format: date-time
+             * @description When the room entered `state`. Absent for a room that has been `active` since it was created.
+             */
+            changedAt?: string;
+            /** @description The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here. */
+            changedBy?: string;
+            pendingChange?: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1PendingChange"];
+            purge?: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1PurgeProgress"];
+            /**
+             * Format: date-time
+             * @description Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due.
+             */
+            purgeAt?: string;
+            /**
+             * Format: date-time
+             * @description Present exactly when `state` is `removed`: when the last of the room's content was deleted.
+             */
+            removedAt?: string;
+            /** @description Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none. */
+            restoring?: number;
+            state: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1RoomState"];
+        };
         /** @description A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing. */
-        VtcRoomsCommunityUpdateV0_1RoomTag: string;
+        VtcRoomsCommunityRemovalCancelV0_1RoomTag: string;
         /** @description The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading. */
-        VtcRoomsCommunityUpdateV0_1RoomTags: components["schemas"]["VtcRoomsCommunityUpdateV0_1RoomTag"][];
+        VtcRoomsCommunityRemovalCancelV0_1RoomTags: components["schemas"]["VtcRoomsCommunityRemovalCancelV0_1RoomTag"][];
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsCommunityUpdateV0_1StorageConfigId: string;
+        VtcRoomsCommunityRemovalCancelV0_1StorageConfigId: string;
         /**
          * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
          * @enum {string}
          */
-        VtcRoomsCommunityUpdateV0_1Visibility: "open" | "attributed" | "private";
-        /** @description What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`. */
-        VtcRoomsCommunityUpdateV0_2CommunityRoomV2: {
+        VtcRoomsCommunityRemovalCancelV0_1Visibility: "open" | "attributed" | "private";
+        /**
+         * @description What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.
+         * @enum {string}
+         */
+        VtcRoomsCommunityRemoveV0_1ArchiveAccess: "readOnly" | "noAccess";
+        /** @description What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then. */
+        VtcRoomsCommunityRemoveV0_1CommunityRoomV3: {
             /** @description Members in state `admitted`. */
             admitted: number;
             /** @description The administrator who created it. */
             createdBy?: string;
-            description?: components["schemas"]["VtcRoomsCommunityUpdateV0_2RoomDescription"];
+            description?: components["schemas"]["VtcRoomsCommunityRemoveV0_1RoomDescription"];
             /**
              * Format: date-time
              * @description When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle.
@@ -7136,7 +12231,7 @@ export interface components {
             detailsUpdatedAt?: string;
             /** @description The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here. */
             detailsUpdatedBy?: string;
-            label: components["schemas"]["VtcRoomsCommunityUpdateV0_2RoomLabel"];
+            label: components["schemas"]["VtcRoomsCommunityRemoveV0_1RoomLabel"];
             /** @description Offers not yet accepted or withdrawn. */
             offered: number;
             /**
@@ -7144,35 +12239,345 @@ export interface components {
              * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
              */
             ownerAuthorityValidUntil?: string;
-            room: components["schemas"]["VtcRoomsCommunityUpdateV0_2HostedRoom"];
-            storageConfig?: components["schemas"]["VtcRoomsCommunityUpdateV0_2StorageConfigId"];
-            tags?: components["schemas"]["VtcRoomsCommunityUpdateV0_2RoomTags"];
+            room: components["schemas"]["VtcRoomsCommunityRemoveV0_1HostedRoom"];
+            status: components["schemas"]["VtcRoomsCommunityRemoveV0_1RoomStatus"];
+            storageConfig?: components["schemas"]["VtcRoomsCommunityRemoveV0_1StorageConfigId"];
+            /** @description Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero. */
+            suspended?: number;
+            tags?: components["schemas"]["VtcRoomsCommunityRemoveV0_1RoomTags"];
         };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcRoomsCommunityRemoveV0_1DigestMultibase: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsCommunityUpdateV0_2Ext: {
+        VtcRoomsCommunityRemoveV0_1Ext: {
             [key: string]: unknown;
         };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsCommunityUpdateV0_2HostedRoom: {
-            createdAt: number;
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsCommunityRemoveV0_1HostedRoom: {
+            /** Format: date-time */
+            createdAt: string;
             epoch: number;
-            epochExpiresAt?: number;
+            /** Format: date-time */
+            epochExpiresAt?: string;
             /** @enum {string} */
             lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
             mirrorOf?: string;
             ownerDid: string;
             retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsCommunityUpdateV0_2RetentionPolicy"];
+            retentionPolicy: components["schemas"]["VtcRoomsCommunityRemoveV0_1RetentionPolicy"];
             roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsCommunityUpdateV0_2Visibility"];
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: components["schemas"]["VtcRoomsCommunityRemoveV0_1Visibility"];
+        };
+        VtcRoomsCommunityRemoveV0_1Payload: {
+            ext?: components["schemas"]["VtcRoomsCommunityRemoveV0_1Ext"];
+            /** @description Days from now until the room's content is purged. `0` purges at once, and cannot be undone. Absent: the community's configured default (30 days in the reference implementation). On a room already scheduled for removal, replaces its `purgeAt` with now plus this. */
+            graceDays?: number;
+            reason: components["schemas"]["VtcRoomsCommunityRemoveV0_1Reason"];
+            /** @description The room's identifier: its DID. */
+            roomId: string;
+        };
+        /** @description A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished. */
+        VtcRoomsCommunityRemoveV0_1PendingChange: {
+            access?: components["schemas"]["VtcRoomsCommunityRemoveV0_1ArchiveAccess"];
+            /** Format: date-time */
+            beganAt: string;
+            /** @description What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential. */
+            lastError?: string;
+            state: components["schemas"]["VtcRoomsCommunityRemoveV0_1RoomState"];
+        };
+        /** @description How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has. */
+        VtcRoomsCommunityRemoveV0_1PurgeProgress: {
+            /** @description Passes made so far; 0 until the first. */
+            attempts: number;
+            /** Format: date-time */
+            lastAttemptAt?: string;
+            /** @description What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential. */
+            lastError?: string;
+            /**
+             * Format: date-time
+             * @description When the next pass is due. Absent while one runs.
+             */
+            nextAttemptAt?: string;
+        };
+        /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+        VtcRoomsCommunityRemoveV0_1Reason: string;
+        /** @description Success response to vtc/rooms/community/remove. Type https://trusttasks.org/spec/vtc/rooms/community/remove/0.1#response. The room as it now stands — `removalScheduled` with its `purgeAt`, or `purging` when `graceDays` was `0` — and, where the community's VTA reset the room's credentials at its host, the revocation list in force there. */
+        VtcRoomsCommunityRemoveV0_1Response: {
+            ext?: components["schemas"]["VtcRoomsCommunityRemoveV0_1Ext"];
+            revocation?: components["schemas"]["VtcRoomsCommunityRemoveV0_1RevocationHead"];
+            /**
+             * Format: date-time
+             * @description Present with `revocation`: the reset's time.
+             */
+            revokedAt?: string;
+            room: components["schemas"]["VtcRoomsCommunityRemoveV0_1CommunityRoomV3"];
+        };
+        /**
+         * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
+         * @enum {string}
+         */
+        VtcRoomsCommunityRemoveV0_1RetentionPolicy: "chained" | "fromJoin";
+        /** @description Which `RevocationList` a party holds, without its entries: comparable between the room's key holder and a host, and between two hosts, without disclosing whom the room withdrew. */
+        VtcRoomsCommunityRemoveV0_1RevocationHead: {
+            digest: components["schemas"]["VtcRoomsCommunityRemoveV0_1DigestMultibase"];
+            /** @description The list's `sequence`. */
+            sequence: number;
+        };
+        /** @description What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+        VtcRoomsCommunityRemoveV0_1RoomDescription: string;
+        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
+        VtcRoomsCommunityRemoveV0_1RoomLabel: string;
+        /**
+         * @description Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.
+         * @enum {string}
+         */
+        VtcRoomsCommunityRemoveV0_1RoomState: "active" | "archived" | "removalScheduled" | "purging" | "removed";
+        /** @description A room's state in its owner's lifecycle, and what that state needs to be understood. */
+        VtcRoomsCommunityRemoveV0_1RoomStatus: {
+            access?: components["schemas"]["VtcRoomsCommunityRemoveV0_1ArchiveAccess"];
+            /**
+             * Format: date-time
+             * @description When the room entered `state`. Absent for a room that has been `active` since it was created.
+             */
+            changedAt?: string;
+            /** @description The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here. */
+            changedBy?: string;
+            pendingChange?: components["schemas"]["VtcRoomsCommunityRemoveV0_1PendingChange"];
+            purge?: components["schemas"]["VtcRoomsCommunityRemoveV0_1PurgeProgress"];
+            /**
+             * Format: date-time
+             * @description Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due.
+             */
+            purgeAt?: string;
+            /**
+             * Format: date-time
+             * @description Present exactly when `state` is `removed`: when the last of the room's content was deleted.
+             */
+            removedAt?: string;
+            /** @description Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none. */
+            restoring?: number;
+            state: components["schemas"]["VtcRoomsCommunityRemoveV0_1RoomState"];
+        };
+        /** @description A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing. */
+        VtcRoomsCommunityRemoveV0_1RoomTag: string;
+        /** @description The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading. */
+        VtcRoomsCommunityRemoveV0_1RoomTags: components["schemas"]["VtcRoomsCommunityRemoveV0_1RoomTag"][];
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcRoomsCommunityRemoveV0_1StorageConfigId: string;
+        /**
+         * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
+         * @enum {string}
+         */
+        VtcRoomsCommunityRemoveV0_1Visibility: "open" | "attributed" | "private";
+        /**
+         * @description What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.
+         * @enum {string}
+         */
+        VtcRoomsCommunityUnarchiveV0_1ArchiveAccess: "readOnly" | "noAccess";
+        /** @description What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then. */
+        VtcRoomsCommunityUnarchiveV0_1CommunityRoomV3: {
+            /** @description Members in state `admitted`. */
+            admitted: number;
+            /** @description The administrator who created it. */
+            createdBy?: string;
+            description?: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1RoomDescription"];
+            /**
+             * Format: date-time
+             * @description When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle.
+             */
+            detailsUpdatedAt?: string;
+            /** @description The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here. */
+            detailsUpdatedBy?: string;
+            label: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1RoomLabel"];
+            /** @description Offers not yet accepted or withdrawn. */
+            offered: number;
+            /**
+             * Format: date-time
+             * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
+             */
+            ownerAuthorityValidUntil?: string;
+            room: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1HostedRoom"];
+            status: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1RoomStatus"];
+            storageConfig?: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1StorageConfigId"];
+            /** @description Admissions in state `suspended`: withdrawn while the room was archived with `noAccess`, and restored when it leaves that state. Absent when zero. */
+            suspended?: number;
+            tags?: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1RoomTags"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRoomsCommunityUnarchiveV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsCommunityUnarchiveV0_1HostedRoom: {
+            /** Format: date-time */
+            createdAt: string;
+            epoch: number;
+            /** Format: date-time */
+            epochExpiresAt?: string;
+            /** @enum {string} */
+            lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
+            mirrorOf?: string;
+            ownerDid: string;
+            retentionDays: number;
+            retentionPolicy: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1RetentionPolicy"];
+            roomId: string;
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1Visibility"];
+        };
+        VtcRoomsCommunityUnarchiveV0_1Payload: {
+            ext?: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1Ext"];
+            reason: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1Reason"];
+            /** @description The room's identifier: its DID. */
+            roomId: string;
+        };
+        /** @description A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished. */
+        VtcRoomsCommunityUnarchiveV0_1PendingChange: {
+            access?: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1ArchiveAccess"];
+            /** Format: date-time */
+            beganAt: string;
+            /** @description What stopped the last attempt, for an administrator. Plain text; it names no member and carries no credential. */
+            lastError?: string;
+            state: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1RoomState"];
+        };
+        /** @description How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has. */
+        VtcRoomsCommunityUnarchiveV0_1PurgeProgress: {
+            /** @description Passes made so far; 0 until the first. */
+            attempts: number;
+            /** Format: date-time */
+            lastAttemptAt?: string;
+            /** @description What stopped the last pass, for an administrator. Present only after a pass failed. Plain text, written by the community; it names no member and carries no credential. */
+            lastError?: string;
+            /**
+             * Format: date-time
+             * @description When the next pass is due. Absent while one runs.
+             */
+            nextAttemptAt?: string;
+        };
+        /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+        VtcRoomsCommunityUnarchiveV0_1Reason: string;
+        /** @description Success response to vtc/rooms/community/unarchive. Type https://trusttasks.org/spec/vtc/rooms/community/unarchive/0.1#response. The room as it now stands, `active`, and whether anything changed. Suspended members still being restored are counted in `room.status.restoring`. */
+        VtcRoomsCommunityUnarchiveV0_1Response: {
+            /** @description `false` when the room was already `active` with no change pending: nothing was written or audited. */
+            changed: boolean;
+            ext?: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1Ext"];
+            room: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1CommunityRoomV3"];
+        };
+        /**
+         * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
+         * @enum {string}
+         */
+        VtcRoomsCommunityUnarchiveV0_1RetentionPolicy: "chained" | "fromJoin";
+        /** @description What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+        VtcRoomsCommunityUnarchiveV0_1RoomDescription: string;
+        /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
+        VtcRoomsCommunityUnarchiveV0_1RoomLabel: string;
+        /**
+         * @description Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.
+         * @enum {string}
+         */
+        VtcRoomsCommunityUnarchiveV0_1RoomState: "active" | "archived" | "removalScheduled" | "purging" | "removed";
+        /** @description A room's state in its owner's lifecycle, and what that state needs to be understood. */
+        VtcRoomsCommunityUnarchiveV0_1RoomStatus: {
+            access?: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1ArchiveAccess"];
+            /**
+             * Format: date-time
+             * @description When the room entered `state`. Absent for a room that has been `active` since it was created.
+             */
+            changedAt?: string;
+            /** @description The administrator whose act put the room in `state`. Present exactly when `changedAt` is, except for `purging` and `removed` reached when a grace period ended, which no one did at that moment: then the administrator who scheduled the removal. The reason each gave is in the community's audit trail, not here. */
+            changedBy?: string;
+            pendingChange?: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1PendingChange"];
+            purge?: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1PurgeProgress"];
+            /**
+             * Format: date-time
+             * @description Present when `state` is `removalScheduled`: when the grace period ends and the purge begins. Kept when `state` is `purging` or `removed`, as when it became due.
+             */
+            purgeAt?: string;
+            /**
+             * Format: date-time
+             * @description Present exactly when `state` is `removed`: when the last of the room's content was deleted.
+             */
+            removedAt?: string;
+            /** @description Admissions still `suspended` that the community is restoring, after the room left `noAccess` — the room re-issues each member's credentials and the member collects them as a renewal. Absent when there are none. */
+            restoring?: number;
+            state: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1RoomState"];
+        };
+        /** @description A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing. */
+        VtcRoomsCommunityUnarchiveV0_1RoomTag: string;
+        /** @description The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading. */
+        VtcRoomsCommunityUnarchiveV0_1RoomTags: components["schemas"]["VtcRoomsCommunityUnarchiveV0_1RoomTag"][];
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcRoomsCommunityUnarchiveV0_1StorageConfigId: string;
+        /**
+         * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
+         * @enum {string}
+         */
+        VtcRoomsCommunityUnarchiveV0_1Visibility: "open" | "attributed" | "private";
+        /** @description What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`. */
+        VtcRoomsCommunityUpdateV0_3CommunityRoomV2: {
+            /** @description Members in state `admitted`. */
+            admitted: number;
+            /** @description The administrator who created it. */
+            createdBy?: string;
+            description?: components["schemas"]["VtcRoomsCommunityUpdateV0_3RoomDescription"];
+            /**
+             * Format: date-time
+             * @description When `label`, `description` or `tags` last changed. Absent until the first change after creation. Distinct from `room.updatedAt`, which is the host record's and moves with the room's epoch and lifecycle.
+             */
+            detailsUpdatedAt?: string;
+            /** @description The administrator who made that change. Present exactly when `detailsUpdatedAt` is. The earlier values and who set them are in the community's audit trail, not here. */
+            detailsUpdatedBy?: string;
+            label: components["schemas"]["VtcRoomsCommunityUpdateV0_3RoomLabel"];
+            /** @description Offers not yet accepted or withdrawn. */
+            offered: number;
+            /**
+             * Format: date-time
+             * @description When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before.
+             */
+            ownerAuthorityValidUntil?: string;
+            room: components["schemas"]["VtcRoomsCommunityUpdateV0_3HostedRoom"];
+            storageConfig?: components["schemas"]["VtcRoomsCommunityUpdateV0_3StorageConfigId"];
+            tags?: components["schemas"]["VtcRoomsCommunityUpdateV0_3RoomTags"];
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRoomsCommunityUpdateV0_3Ext: {
+            [key: string]: unknown;
+        };
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsCommunityUpdateV0_3HostedRoom: {
+            /** Format: date-time */
+            createdAt: string;
+            epoch: number;
+            /** Format: date-time */
+            epochExpiresAt?: string;
+            /** @enum {string} */
+            lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
+            mirrorOf?: string;
+            ownerDid: string;
+            retentionDays: number;
+            retentionPolicy: components["schemas"]["VtcRoomsCommunityUpdateV0_3RetentionPolicy"];
+            roomId: string;
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: components["schemas"]["VtcRoomsCommunityUpdateV0_3Visibility"];
         };
         /** @description Change the details an administrator keeps track of a community-owned room by: its label, its description, its tags. Each member given replaces the stored one; a member absent is unchanged. At least one detail is required (`minProperties` counts `roomId` and `reason`), and `description` and `removeDescription` are mutually exclusive. A changed label or description is also re-written into the room's own profile, sealed inside the room for its members, through the community's VTA; tags never are. Nothing here reaches the room's host record or any credential. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcRoomsCommunityUpdateV0_2Payload: {
-            description?: components["schemas"]["VtcRoomsCommunityUpdateV0_2RoomDescription"];
-            ext?: components["schemas"]["VtcRoomsCommunityUpdateV0_2Ext"];
-            label?: components["schemas"]["VtcRoomsCommunityUpdateV0_2RoomLabel"];
-            reason: components["schemas"]["VtcRoomsCommunityUpdateV0_2Reason"];
+        VtcRoomsCommunityUpdateV0_3Payload: {
+            description?: components["schemas"]["VtcRoomsCommunityUpdateV0_3RoomDescription"];
+            ext?: components["schemas"]["VtcRoomsCommunityUpdateV0_3Ext"];
+            label?: components["schemas"]["VtcRoomsCommunityUpdateV0_3RoomLabel"];
+            reason: components["schemas"]["VtcRoomsCommunityUpdateV0_3Reason"];
             /**
              * @description Remove the room's description. Only `true` is meaningful, so only `true` is accepted. A separate member rather than `description: null`, because a nullable optional member makes "unchanged" and "remove" the same value in libraries that map both to one absent option.
              * @enum {boolean}
@@ -7180,16 +12585,16 @@ export interface components {
             removeDescription?: true;
             /** @description The room's identifier: its DID. */
             roomId: string;
-            tags?: components["schemas"]["VtcRoomsCommunityUpdateV0_2RoomTags"];
+            tags?: components["schemas"]["VtcRoomsCommunityUpdateV0_3RoomTags"];
         };
         /** @description Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityUpdateV0_2Reason: string;
+        VtcRoomsCommunityUpdateV0_3Reason: string;
         /** @description Success response to vtc/rooms/community/update. Type https://trusttasks.org/spec/vtc/rooms/community/update/0.2#response. The room as it now stands, and whether this request changed it. */
-        VtcRoomsCommunityUpdateV0_2Response: {
+        VtcRoomsCommunityUpdateV0_3Response: {
             /** @description `false` when every value given already matched what the room had: nothing was written, `detailsUpdatedAt` and `detailsUpdatedBy` did not move, and no change was audited. */
             changed: boolean;
-            ext?: components["schemas"]["VtcRoomsCommunityUpdateV0_2Ext"];
-            room: components["schemas"]["VtcRoomsCommunityUpdateV0_2CommunityRoomV2"];
+            ext?: components["schemas"]["VtcRoomsCommunityUpdateV0_3Ext"];
+            room: components["schemas"]["VtcRoomsCommunityUpdateV0_3CommunityRoomV2"];
             /**
              * @description Whether the room's own profile — sealed inside the room for its members — now carries the new label and description. `written`: it does. `pending`: the details changed and the profile has not yet been re-written — the room is lapsed, or its VTA or host did not answer, or refused — and the community will keep trying. `unchanged`: nothing the profile carries changed (only tags, or `changed: false`), so nothing was written.
              * @enum {string}
@@ -7200,201 +12605,84 @@ export interface components {
          * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
          * @enum {string}
          */
-        VtcRoomsCommunityUpdateV0_2RetentionPolicy: "chained" | "fromJoin";
+        VtcRoomsCommunityUpdateV0_3RetentionPolicy: "chained" | "fromJoin";
         /** @description What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-        VtcRoomsCommunityUpdateV0_2RoomDescription: string;
+        VtcRoomsCommunityUpdateV0_3RoomDescription: string;
         /** @description A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data. */
-        VtcRoomsCommunityUpdateV0_2RoomLabel: string;
+        VtcRoomsCommunityUpdateV0_3RoomLabel: string;
         /** @description A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing. */
-        VtcRoomsCommunityUpdateV0_2RoomTag: string;
+        VtcRoomsCommunityUpdateV0_3RoomTag: string;
         /** @description The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading. */
-        VtcRoomsCommunityUpdateV0_2RoomTags: components["schemas"]["VtcRoomsCommunityUpdateV0_2RoomTag"][];
+        VtcRoomsCommunityUpdateV0_3RoomTags: components["schemas"]["VtcRoomsCommunityUpdateV0_3RoomTag"][];
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsCommunityUpdateV0_2StorageConfigId: string;
+        VtcRoomsCommunityUpdateV0_3StorageConfigId: string;
         /**
          * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
          * @enum {string}
          */
-        VtcRoomsCommunityUpdateV0_2Visibility: "open" | "attributed" | "private";
+        VtcRoomsCommunityUpdateV0_3Visibility: "open" | "attributed" | "private";
         /** @description A config holding some of this room's blobs, other than the one it is assigned to. */
-        VtcRoomsGetV0_1ConfigHoldings: {
+        VtcRoomsGetV0_3ConfigHoldings: {
             bytes: number;
-            configId: components["schemas"]["VtcRoomsGetV0_1StorageConfigId"];
+            configId: components["schemas"]["VtcRoomsGetV0_3StorageConfigId"];
             files: number;
         };
         /** @description The limits a room is enforced against now, with where each scope's came from. */
-        VtcRoomsGetV0_1EffectiveLimits: {
+        VtcRoomsGetV0_3EffectiveLimits: {
             /** @description The host-wide largest-file ceiling, which no room or member limit can exceed. */
             hostCeilingBytes?: number;
-            limits: components["schemas"]["VtcRoomsGetV0_1RoomLimits"];
-            memberSource: components["schemas"]["VtcRoomsGetV0_1LimitSource"];
-            roomSource: components["schemas"]["VtcRoomsGetV0_1LimitSource"];
+            limits: components["schemas"]["VtcRoomsGetV0_3RoomLimits"];
+            memberSource: components["schemas"]["VtcRoomsGetV0_3LimitSource"];
+            roomSource: components["schemas"]["VtcRoomsGetV0_3LimitSource"];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsGetV0_1Ext: {
+        VtcRoomsGetV0_3Ext: {
             [key: string]: unknown;
         };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsGetV0_1HostedRoom: {
-            createdAt: number;
+        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
+        VtcRoomsGetV0_3HostedRoom: {
+            /** Format: date-time */
+            createdAt: string;
             epoch: number;
-            epochExpiresAt?: number;
+            /** Format: date-time */
+            epochExpiresAt?: string;
             /** @enum {string} */
             lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
             mirrorOf?: string;
             ownerDid: string;
             retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsGetV0_1RetentionPolicy"];
+            retentionPolicy: components["schemas"]["VtcRoomsGetV0_3RetentionPolicy"];
             roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsGetV0_1Visibility"];
+            /** Format: date-time */
+            updatedAt: string;
+            visibility: components["schemas"]["VtcRoomsGetV0_3Visibility"];
         };
         /**
          * @description Where an effective limit came from. `policy`: the community's rooms policy at the room's creation. `override`: an administrator's vtc/rooms/limits/set. `default`: the community's configured defaults, where neither applies. The host-wide ceiling bounds all three.
          * @enum {string}
          */
-        VtcRoomsGetV0_1LimitSource: "policy" | "override" | "default";
-        /** @description Progress of the room's migration, as vtc/rooms/storage/migrate reports it. */
-        VtcRoomsGetV0_1MigrationProgress: {
-            doneBytes: number;
-            doneFiles: number;
-            migrationId: string;
-            /**
-             * @description `paused`: halted by a capacity or backend failure and resumable by issuing vtc/rooms/storage/migrate again. `failed`: halted on a blob whose copy did not verify; the blob stays where it was.
-             * @enum {string}
-             */
-            state: "running" | "paused" | "complete" | "failed";
-            totalBytes: number;
-            totalFiles: number;
-        };
-        VtcRoomsGetV0_1Response: {
-            ext?: components["schemas"]["VtcRoomsGetV0_1Ext"];
-            /** @description The room's largest committed blobs, by size only. */
-            largestBlobs?: {
-                configId: components["schemas"]["VtcRoomsGetV0_1StorageConfigId"];
-                /** Format: date-time */
-                createdAt: string;
-                size: number;
-            }[];
-            limits: components["schemas"]["VtcRoomsGetV0_1EffectiveLimits"];
-            /** @description On an `attributed` room only: how many members have added files. Absent on `open` and `private` rooms. */
-            membersWithUsage?: number;
-            room: components["schemas"]["VtcRoomsGetV0_1HostedRoom"];
-            /** @description Where the room's blobs are. */
-            storage: {
-                configId: components["schemas"]["VtcRoomsGetV0_1StorageConfigId"];
-                earlierConfigs: components["schemas"]["VtcRoomsGetV0_1ConfigHoldings"][];
-                migration?: components["schemas"]["VtcRoomsGetV0_1MigrationProgress"];
-            };
-            usage: {
-                /** @description Blobs no record names, awaiting deletion after the grace window. */
-                orphans: {
-                    bytes: number;
-                    files: number;
-                    /** Format: date-time */
-                    oldestOrphanedAt?: string;
-                };
-                room: components["schemas"]["VtcRoomsGetV0_1Usage"];
-            };
-        };
-        /**
-         * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
-         * @enum {string}
-         */
-        VtcRoomsGetV0_1RetentionPolicy: "chained" | "fromJoin";
-        /** @description How much a host is willing to store for one room, at the room and per member. A hosting decision, set by the host and never by anything in the room's credentials. An upload must fit every scope at once: the object against the smallest `maxFileBytes` that applies, and the member and the room with the file added. */
-        VtcRoomsGetV0_1RoomLimits: {
-            /** @description False refuses every rooms/blobs/* upload for the room. Reads of blobs already stored continue. */
-            filesEnabled: boolean;
-            member?: components["schemas"]["VtcRoomsGetV0_1ScopeLimits"];
-            room?: components["schemas"]["VtcRoomsGetV0_1ScopeLimits"];
-        };
-        /** @description Limits at one scope. Every member is optional: an absent member means the scope sets no limit of that kind, and the next wider scope's limit, or the host's ceiling, governs. All sizes are ciphertext bytes. */
-        VtcRoomsGetV0_1ScopeLimits: {
-            /** @description The total size of the committed and reserved blobs the scope may hold. */
-            maxBytes?: number;
-            /** @description The largest single blob the scope accepts. Never above 1 GiB, the transfer ceiling (BlobManifest). */
-            maxFileBytes?: number;
-            /** @description The number of committed blobs the scope may hold. 0 refuses every upload at this scope. */
-            maxFiles?: number;
-        };
-        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsGetV0_1StorageConfigId: string;
-        /** @description What one scope holds now. Ciphertext bytes throughout. */
-        VtcRoomsGetV0_1Usage: {
-            /** @description Their total size. A blob stops counting the moment it is orphaned (its last record dropped it or was retracted), not when the host finally deletes it, so a member who deletes a file has the room back at once. */
-            bytes: number;
-            /** @description Committed blobs that are not orphaned. */
-            files: number;
-            /** @description Bytes reserved by uploads begun and not yet committed, aborted or expired. Counted against `maxBytes`, so two concurrent uploads cannot both fit under a limit only one of them fits. */
-            reservedBytes: number;
-            /** @description Uploads begun and not yet committed, aborted or expired. Counted against `maxFiles`. */
-            reservedFiles?: number;
-        };
-        /**
-         * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
-         * @enum {string}
-         */
-        VtcRoomsGetV0_1Visibility: "open" | "attributed" | "private";
-        /** @description A config holding some of this room's blobs, other than the one it is assigned to. */
-        VtcRoomsGetV0_2ConfigHoldings: {
-            bytes: number;
-            configId: components["schemas"]["VtcRoomsGetV0_2StorageConfigId"];
-            files: number;
-        };
-        /** @description The limits a room is enforced against now, with where each scope's came from. */
-        VtcRoomsGetV0_2EffectiveLimits: {
-            /** @description The host-wide largest-file ceiling, which no room or member limit can exceed. */
-            hostCeilingBytes?: number;
-            limits: components["schemas"]["VtcRoomsGetV0_2RoomLimits"];
-            memberSource: components["schemas"]["VtcRoomsGetV0_2LimitSource"];
-            roomSource: components["schemas"]["VtcRoomsGetV0_2LimitSource"];
-        };
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsGetV0_2Ext: {
-            [key: string]: unknown;
-        };
-        /** @description One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none. */
-        VtcRoomsGetV0_2HostedRoom: {
-            createdAt: number;
-            epoch: number;
-            epochExpiresAt?: number;
-            /** @enum {string} */
-            lifecycle: "live" | "lapsed" | "dormant" | "reclaimable";
-            mirrorOf?: string;
-            ownerDid: string;
-            retentionDays: number;
-            retentionPolicy: components["schemas"]["VtcRoomsGetV0_2RetentionPolicy"];
-            roomId: string;
-            updatedAt: number;
-            visibility: components["schemas"]["VtcRoomsGetV0_2Visibility"];
-        };
-        /**
-         * @description Where an effective limit came from. `policy`: the community's rooms policy at the room's creation. `override`: an administrator's vtc/rooms/limits/set. `default`: the community's configured defaults, where neither applies. The host-wide ceiling bounds all three.
-         * @enum {string}
-         */
-        VtcRoomsGetV0_2LimitSource: "policy" | "override" | "default";
+        VtcRoomsGetV0_3LimitSource: "policy" | "override" | "default";
         /** @description A one-line summary of the last failure, for an administrator: the step, the config and the backend's error code or status (`put to eu-s3-primary: 503 SlowDown`). Never a credential, a presigned URL, a signed request, a room identifier or anything derived from a room's contents. */
-        VtcRoomsGetV0_2MigrationLastError: string;
+        VtcRoomsGetV0_3MigrationLastError: string;
         /**
          * @description Why a migration is `paused`. `capacity`: the destination config cannot hold the rest. `source`: a config the blobs are being moved off keeps failing to serve them. `destination`: the destination config keeps refusing writes, or is no longer `active`. `credential`: the community cannot obtain a credential for one of the configs.
          * @enum {string}
          */
-        VtcRoomsGetV0_2MigrationPauseCause: "capacity" | "source" | "destination" | "credential";
+        VtcRoomsGetV0_3MigrationPauseCause: "capacity" | "source" | "destination" | "credential";
         /** @description Progress of the room's migration, as vtc/rooms/storage/migrate reports it. */
-        VtcRoomsGetV0_2MigrationProgress: {
+        VtcRoomsGetV0_3MigrationProgress: {
             doneBytes: number;
             doneFiles: number;
-            lastError?: components["schemas"]["VtcRoomsGetV0_2MigrationLastError"];
+            lastError?: components["schemas"]["VtcRoomsGetV0_3MigrationLastError"];
             migrationId: string;
             /**
              * Format: date-time
              * @description When the community will next try by itself. Present while a `running` migration waits out a backoff, and on a `paused` one the community will retry unprompted; absent on a `paused` one only re-issuing vtc/rooms/storage/migrate resumes (such as `capacity`).
              */
             nextAttemptAt?: string;
-            pausedCause?: components["schemas"]["VtcRoomsGetV0_2MigrationPauseCause"];
-            state: components["schemas"]["VtcRoomsGetV0_2MigrationState"];
-            toConfig: components["schemas"]["VtcRoomsGetV0_2StorageConfigId"];
+            pausedCause?: components["schemas"]["VtcRoomsGetV0_3MigrationPauseCause"];
+            state: components["schemas"]["VtcRoomsGetV0_3MigrationState"];
+            toConfig: components["schemas"]["VtcRoomsGetV0_3StorageConfigId"];
             totalBytes: number;
             totalFiles: number;
         };
@@ -7402,25 +12690,25 @@ export interface components {
          * @description `queued`: approved and waiting for another migration on this community to finish; nothing copied yet (a community that runs one migration at a time). `running`: copying, including while it retries a failing step with backoff. `paused`: halted after its automatic retries reached their cap without success, or on a cause that retrying cannot clear (`pausedCause`); resumed by issuing vtc/rooms/storage/migrate again, and by the community itself at `nextAttemptAt` when present. `complete`: every blob that was to move has moved. `failed`: halted on a blob whose copy did not verify against its manifest; that blob stays where it was.
          * @enum {string}
          */
-        VtcRoomsGetV0_2MigrationState: "queued" | "running" | "paused" | "complete" | "failed";
-        VtcRoomsGetV0_2Response: {
-            ext?: components["schemas"]["VtcRoomsGetV0_2Ext"];
+        VtcRoomsGetV0_3MigrationState: "queued" | "running" | "paused" | "complete" | "failed";
+        VtcRoomsGetV0_3Response: {
+            ext?: components["schemas"]["VtcRoomsGetV0_3Ext"];
             /** @description The room's largest committed blobs, by size only. */
             largestBlobs?: {
-                configId: components["schemas"]["VtcRoomsGetV0_2StorageConfigId"];
+                configId: components["schemas"]["VtcRoomsGetV0_3StorageConfigId"];
                 /** Format: date-time */
                 createdAt: string;
                 size: number;
             }[];
-            limits: components["schemas"]["VtcRoomsGetV0_2EffectiveLimits"];
+            limits: components["schemas"]["VtcRoomsGetV0_3EffectiveLimits"];
             /** @description On an `attributed` room only: how many members have added files. Absent on `open` and `private` rooms. */
             membersWithUsage?: number;
-            room: components["schemas"]["VtcRoomsGetV0_2HostedRoom"];
+            room: components["schemas"]["VtcRoomsGetV0_3HostedRoom"];
             /** @description Where the room's blobs are. */
             storage: {
-                configId: components["schemas"]["VtcRoomsGetV0_2StorageConfigId"];
-                earlierConfigs: components["schemas"]["VtcRoomsGetV0_2ConfigHoldings"][];
-                migration?: components["schemas"]["VtcRoomsGetV0_2MigrationProgress"];
+                configId: components["schemas"]["VtcRoomsGetV0_3StorageConfigId"];
+                earlierConfigs: components["schemas"]["VtcRoomsGetV0_3ConfigHoldings"][];
+                migration?: components["schemas"]["VtcRoomsGetV0_3MigrationProgress"];
             };
             usage: {
                 /** @description Blobs no record names, awaiting deletion after the grace window. */
@@ -7430,23 +12718,23 @@ export interface components {
                     /** Format: date-time */
                     oldestOrphanedAt?: string;
                 };
-                room: components["schemas"]["VtcRoomsGetV0_2Usage"];
+                room: components["schemas"]["VtcRoomsGetV0_3Usage"];
             };
         };
         /**
          * @description Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.
          * @enum {string}
          */
-        VtcRoomsGetV0_2RetentionPolicy: "chained" | "fromJoin";
+        VtcRoomsGetV0_3RetentionPolicy: "chained" | "fromJoin";
         /** @description How much a host is willing to store for one room, at the room and per member. A hosting decision, set by the host and never by anything in the room's credentials. An upload must fit every scope at once: the object against the smallest `maxFileBytes` that applies, and the member and the room with the file added. */
-        VtcRoomsGetV0_2RoomLimits: {
+        VtcRoomsGetV0_3RoomLimits: {
             /** @description False refuses every rooms/blobs/* upload for the room. Reads of blobs already stored continue. */
             filesEnabled: boolean;
-            member?: components["schemas"]["VtcRoomsGetV0_2ScopeLimits"];
-            room?: components["schemas"]["VtcRoomsGetV0_2ScopeLimits"];
+            member?: components["schemas"]["VtcRoomsGetV0_3ScopeLimits"];
+            room?: components["schemas"]["VtcRoomsGetV0_3ScopeLimits"];
         };
         /** @description Limits at one scope. Every member is optional: an absent member means the scope sets no limit of that kind, and the next wider scope's limit, or the host's ceiling, governs. All sizes are ciphertext bytes. */
-        VtcRoomsGetV0_2ScopeLimits: {
+        VtcRoomsGetV0_3ScopeLimits: {
             /** @description The total size of the committed and reserved blobs the scope may hold. */
             maxBytes?: number;
             /** @description The largest single blob the scope accepts. Never above 1 GiB, the transfer ceiling (BlobManifest). */
@@ -7455,9 +12743,9 @@ export interface components {
             maxFiles?: number;
         };
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsGetV0_2StorageConfigId: string;
+        VtcRoomsGetV0_3StorageConfigId: string;
         /** @description What one scope holds now. Ciphertext bytes throughout. */
-        VtcRoomsGetV0_2Usage: {
+        VtcRoomsGetV0_3Usage: {
             /** @description Their total size. A blob stops counting the moment it is orphaned (its last record dropped it or was retracted), not when the host finally deletes it, so a member who deletes a file has the room back at once. */
             bytes: number;
             /** @description Committed blobs that are not orphaned. */
@@ -7471,7 +12759,7 @@ export interface components {
          * @description How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.
          * @enum {string}
          */
-        VtcRoomsGetV0_2Visibility: "open" | "attributed" | "private";
+        VtcRoomsGetV0_3Visibility: "open" | "attributed" | "private";
         /** @description The limits a room is enforced against now, with where each scope's came from. */
         VtcRoomsLimitsSetV0_1EffectiveLimits: {
             /** @description The host-wide largest-file ceiling, which no room or member limit can exceed. */
@@ -7549,79 +12837,48 @@ export interface components {
             reservedFiles?: number;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsStorageAssignV0_1Ext: {
+        VtcRoomsStorageAssignV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description Point one hosted room at another storage config for its new uploads. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcRoomsStorageAssignV0_1Payload: {
-            configId: components["schemas"]["VtcRoomsStorageAssignV0_1StorageConfigId"];
-            ext?: components["schemas"]["VtcRoomsStorageAssignV0_1Ext"];
+        VtcRoomsStorageAssignV0_2Payload: {
+            configId: components["schemas"]["VtcRoomsStorageAssignV0_2StorageConfigId"];
+            ext?: components["schemas"]["VtcRoomsStorageAssignV0_2Ext"];
             /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
             reason: string;
             /** @description The room's identifier, as its owner minted it. */
             roomId: string;
         };
-        VtcRoomsStorageAssignV0_1Response: {
+        VtcRoomsStorageAssignV0_2Response: {
             /** @description The room's blobs now on a config other than its assigned one. vtc/rooms/storage/migrate moves them. */
             blobsOnEarlierConfigs: number;
-            configId: components["schemas"]["VtcRoomsStorageAssignV0_1StorageConfigId"];
-            ext?: components["schemas"]["VtcRoomsStorageAssignV0_1Ext"];
-            previousConfigId: components["schemas"]["VtcRoomsStorageAssignV0_1StorageConfigId"];
+            configId: components["schemas"]["VtcRoomsStorageAssignV0_2StorageConfigId"];
+            ext?: components["schemas"]["VtcRoomsStorageAssignV0_2Ext"];
+            previousConfigId: components["schemas"]["VtcRoomsStorageAssignV0_2StorageConfigId"];
             /** @description The room's identifier, as its owner minted it. */
             roomId: string;
         };
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsStorageAssignV0_1StorageConfigId: string;
+        VtcRoomsStorageAssignV0_2StorageConfigId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsStorageMigrateV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /** @description Move a hosted room's existing blobs onto its assigned storage config: copy, verify against the manifest, switch, orphan the old copy. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcRoomsStorageMigrateV0_1Payload: {
-            ext?: components["schemas"]["VtcRoomsStorageMigrateV0_1Ext"];
-            /** @description Upper bound on the copy rate. The community applies its own lower bound when absent or larger. */
-            maxBytesPerSecond?: number;
-            /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-            reason: string;
-            /** @description The room's identifier, as its owner minted it. */
-            roomId: string;
-        };
-        VtcRoomsStorageMigrateV0_1Response: {
-            doneBytes: number;
-            doneFiles: number;
-            ext?: components["schemas"]["VtcRoomsStorageMigrateV0_1Ext"];
-            fromConfigs: components["schemas"]["VtcRoomsStorageMigrateV0_1StorageConfigId"][];
-            /** @description Community-generated handle for this room's migration. */
-            migrationId: string;
-            /** @description The room's identifier, as its owner minted it. */
-            roomId: string;
-            /** @enum {string} */
-            state: "running" | "paused" | "complete" | "failed";
-            toConfig: components["schemas"]["VtcRoomsStorageMigrateV0_1StorageConfigId"];
-            totalBytes: number;
-            totalFiles: number;
-        };
-        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsStorageMigrateV0_1StorageConfigId: string;
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcRoomsStorageMigrateV0_2Ext: {
+        VtcRoomsStorageMigrateV0_3Ext: {
             [key: string]: unknown;
         };
         /** @description A one-line summary of the last failure, for an administrator: the step, the config and the backend's error code or status (`put to eu-s3-primary: 503 SlowDown`). Never a credential, a presigned URL, a signed request, a room identifier or anything derived from a room's contents. */
-        VtcRoomsStorageMigrateV0_2MigrationLastError: string;
+        VtcRoomsStorageMigrateV0_3MigrationLastError: string;
         /**
          * @description Why a migration is `paused`. `capacity`: the destination config cannot hold the rest. `source`: a config the blobs are being moved off keeps failing to serve them. `destination`: the destination config keeps refusing writes, or is no longer `active`. `credential`: the community cannot obtain a credential for one of the configs.
          * @enum {string}
          */
-        VtcRoomsStorageMigrateV0_2MigrationPauseCause: "capacity" | "source" | "destination" | "credential";
+        VtcRoomsStorageMigrateV0_3MigrationPauseCause: "capacity" | "source" | "destination" | "credential";
         /**
          * @description `queued`: approved and waiting for another migration on this community to finish; nothing copied yet (a community that runs one migration at a time). `running`: copying, including while it retries a failing step with backoff. `paused`: halted after its automatic retries reached their cap without success, or on a cause that retrying cannot clear (`pausedCause`); resumed by issuing vtc/rooms/storage/migrate again, and by the community itself at `nextAttemptAt` when present. `complete`: every blob that was to move has moved. `failed`: halted on a blob whose copy did not verify against its manifest; that blob stays where it was.
          * @enum {string}
          */
-        VtcRoomsStorageMigrateV0_2MigrationState: "queued" | "running" | "paused" | "complete" | "failed";
+        VtcRoomsStorageMigrateV0_3MigrationState: "queued" | "running" | "paused" | "complete" | "failed";
         /** @description Move a hosted room's existing blobs onto its assigned storage config: copy, verify against the manifest, switch, orphan the old copy. Orphaned blobs are not moved. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcRoomsStorageMigrateV0_2Payload: {
-            ext?: components["schemas"]["VtcRoomsStorageMigrateV0_2Ext"];
+        VtcRoomsStorageMigrateV0_3Payload: {
+            ext?: components["schemas"]["VtcRoomsStorageMigrateV0_3Ext"];
             /** @description Upper bound on the copy rate. The community applies its own lower bound when absent or larger. */
             maxBytesPerSecond?: number;
             /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
@@ -7629,12 +12886,12 @@ export interface components {
             /** @description The room's identifier, as its owner minted it. */
             roomId: string;
         };
-        VtcRoomsStorageMigrateV0_2Response: {
+        VtcRoomsStorageMigrateV0_3Response: {
             doneBytes: number;
             doneFiles: number;
-            ext?: components["schemas"]["VtcRoomsStorageMigrateV0_2Ext"];
-            fromConfigs: components["schemas"]["VtcRoomsStorageMigrateV0_2StorageConfigId"][];
-            lastError?: components["schemas"]["VtcRoomsStorageMigrateV0_2MigrationLastError"];
+            ext?: components["schemas"]["VtcRoomsStorageMigrateV0_3Ext"];
+            fromConfigs: components["schemas"]["VtcRoomsStorageMigrateV0_3StorageConfigId"][];
+            lastError?: components["schemas"]["VtcRoomsStorageMigrateV0_3MigrationLastError"];
             /** @description Community-generated handle for this room's migration. */
             migrationId: string;
             /**
@@ -7642,16 +12899,16 @@ export interface components {
              * @description When the community will next try by itself. Present while a `running` migration waits out a backoff, and on a `paused` one the community will retry unprompted; absent on a `paused` one only re-issuing vtc/rooms/storage/migrate resumes (such as `capacity`).
              */
             nextAttemptAt?: string;
-            pausedCause?: components["schemas"]["VtcRoomsStorageMigrateV0_2MigrationPauseCause"];
+            pausedCause?: components["schemas"]["VtcRoomsStorageMigrateV0_3MigrationPauseCause"];
             /** @description The room's identifier, as its owner minted it. */
             roomId: string;
-            state: components["schemas"]["VtcRoomsStorageMigrateV0_2MigrationState"];
-            toConfig: components["schemas"]["VtcRoomsStorageMigrateV0_2StorageConfigId"];
+            state: components["schemas"]["VtcRoomsStorageMigrateV0_3MigrationState"];
+            toConfig: components["schemas"]["VtcRoomsStorageMigrateV0_3StorageConfigId"];
             totalBytes: number;
             totalFiles: number;
         };
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcRoomsStorageMigrateV0_2StorageConfigId: string;
+        VtcRoomsStorageMigrateV0_3StorageConfigId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcRoomsUsageV0_1Ext: {
             [key: string]: unknown;
@@ -8010,181 +13267,56 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /**
-         * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
-         * @enum {string}
-         */
-        VtcStorageConfigsCreateV0_1ConfigState: "active" | "draining" | "retired";
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcStorageConfigsCreateV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
-        VtcStorageConfigsCreateV0_1ExternalAccountContextId: string;
-        /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
-        VtcStorageConfigsCreateV0_1ExternalAccountId: string;
-        VtcStorageConfigsCreateV0_1GcsSettings: {
-            /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
-            bucket: string;
-            /** @enum {unknown} */
-            kind: "gcs";
-            prefix?: components["schemas"]["VtcStorageConfigsCreateV0_1ObjectPrefix"];
-        };
-        VtcStorageConfigsCreateV0_1LocalSettings: {
-            /** @enum {unknown} */
-            kind: "local";
-            /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
-            root: string;
-        };
-        /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
-        VtcStorageConfigsCreateV0_1ObjectPrefix: string;
-        /** @description Add a storage config: a named backend and how the community authenticates to it. Never a secret. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcStorageConfigsCreateV0_1Payload: {
-            auth?: components["schemas"]["VtcStorageConfigsCreateV0_1StorageAuth"];
-            /** @description Total ciphertext bytes the community will store on this config across every room. Absent means none set. */
-            capacityBytes?: number;
-            ext?: components["schemas"]["VtcStorageConfigsCreateV0_1Ext"];
-            id: components["schemas"]["VtcStorageConfigsCreateV0_1StorageConfigId"];
-            /** @description Make this the config rooms are assigned to when neither policy nor creator names one. */
-            isDefault?: boolean;
-            /** @description A display name for administrators and, with the kind, for a room's creator. */
-            label: string;
-            /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-            reason: string;
-            settings: components["schemas"]["VtcStorageConfigsCreateV0_1StorageSettings"];
-        };
-        VtcStorageConfigsCreateV0_1Response: {
-            config: components["schemas"]["VtcStorageConfigsCreateV0_1StorageConfig"];
-            ext?: components["schemas"]["VtcStorageConfigsCreateV0_1Ext"];
-        };
-        VtcStorageConfigsCreateV0_1S3Settings: {
-            /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
-            bucket: string;
-            /**
-             * Format: uri
-             * @description The S3 API endpoint, for a store other than AWS (R2, B2, MinIO). Absent means AWS S3 in `region`. HTTPS only.
-             */
-            endpoint?: string;
-            /** @enum {unknown} */
-            kind: "s3";
-            /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
-            pathStyle?: boolean;
-            prefix?: components["schemas"]["VtcStorageConfigsCreateV0_1ObjectPrefix"];
-            /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
-            region: string;
-        };
-        /**
-         * @description How the community authenticates to a config's backend. Absent on a `local` config, which needs none.
-         *
-         *     `vta-account` (RECOMMENDED): an external account in the community's VTA, named by the context that owns it and its identifier there. The VTA holds the long-lived authority; the community holds nothing that outlives a credential lifetime, and asks for credentials scoped to one room's prefix for at most 15 minutes, every issuance audited at the VTA. Required for a `walrus` config other than a `sealed` one, since the VTA's `sui-signer` account signs its storage transactions.
-         *
-         *     `ambient`: the cloud identity of the machine the community runs on (an instance role, workload identity), downscoped to one room's prefix by the community itself. Not audited or rate-limited by the VTA, and usable by anything on that machine that reaches the metadata endpoint. Not valid for `walrus`.
-         *
-         *     `sealed` (discouraged): a long-lived credential stored by the community, set with vtc/storage/credentials/set. Protects against every administrator through every surface the community offers; does not protect against whoever operates the machine.
-         */
-        VtcStorageConfigsCreateV0_1StorageAuth: {
-            account: components["schemas"]["VtcStorageConfigsCreateV0_1ExternalAccountId"];
-            context: components["schemas"]["VtcStorageConfigsCreateV0_1ExternalAccountContextId"];
-            /** @enum {unknown} */
-            mode: "vta-account";
-        } | {
-            /** @enum {unknown} */
-            mode: "ambient";
-        } | {
-            /** @enum {unknown} */
-            mode: "sealed";
-        };
-        /** @description One storage config as the community holds it. Carries no secret. */
-        VtcStorageConfigsCreateV0_1StorageConfig: {
-            auth?: components["schemas"]["VtcStorageConfigsCreateV0_1StorageAuth"];
-            /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
-            capacityBytes?: number;
-            /** Format: date-time */
-            createdAt: string;
-            createdBy: string;
-            id: components["schemas"]["VtcStorageConfigsCreateV0_1StorageConfigId"];
-            /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
-            isDefault?: boolean;
-            /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
-            label: string;
-            settings: components["schemas"]["VtcStorageConfigsCreateV0_1StorageSettings"];
-            state: components["schemas"]["VtcStorageConfigsCreateV0_1ConfigState"];
-            /** Format: date-time */
-            updatedAt?: string;
-            updatedBy?: string;
-        };
-        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcStorageConfigsCreateV0_1StorageConfigId: string;
-        /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
-        VtcStorageConfigsCreateV0_1StorageSettings: components["schemas"]["VtcStorageConfigsCreateV0_1LocalSettings"] | components["schemas"]["VtcStorageConfigsCreateV0_1S3Settings"] | components["schemas"]["VtcStorageConfigsCreateV0_1GcsSettings"] | components["schemas"]["VtcStorageConfigsCreateV0_1WalrusSettings"];
-        VtcStorageConfigsCreateV0_1WalrusSettings: {
-            /**
-             * Format: uri
-             * @description The Walrus aggregator the community reads through.
-             */
-            aggregatorUrl: string;
-            /** @description Storage epochs to buy when a blob is registered. Walrus sells storage in epochs (two weeks on mainnet) and caps one purchase at 53. */
-            epochs: number;
-            /** @description How many epochs before a live blob's end epoch the community extends it. A blob that has become an orphan is not extended, and lapses: the Walrus form of deletion. */
-            extendBeforeEpochs: number;
-            /** @enum {unknown} */
-            kind: "walrus";
-            /**
-             * Format: uri
-             * @description The Walrus upload relay the community writes through. The community never runs a publisher: a publisher holds a hot wallet in its own configuration, which is the long-lived secret these tasks exist to avoid.
-             */
-            relayUrl: string;
-        };
         /** @description The ARN of an AWS IAM role, in any AWS partition (`arn:aws:`, `arn:aws-cn:`, `arn:aws-us-gov:`). Validated here because the community passes it to STS AssumeRole and derives the partition of the session policy's resources from it; it must never carry anything but a role ARN. */
-        VtcStorageConfigsCreateV0_2AwsRoleArn: string;
+        VtcStorageConfigsCreateV0_3AwsRoleArn: string;
         /**
          * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
          * @enum {string}
          */
-        VtcStorageConfigsCreateV0_2ConfigState: "active" | "draining" | "retired";
+        VtcStorageConfigsCreateV0_3ConfigState: "active" | "draining" | "retired";
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcStorageConfigsCreateV0_2Ext: {
+        VtcStorageConfigsCreateV0_3Ext: {
             [key: string]: unknown;
         };
         /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
-        VtcStorageConfigsCreateV0_2ExternalAccountContextId: string;
+        VtcStorageConfigsCreateV0_3ExternalAccountContextId: string;
         /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
-        VtcStorageConfigsCreateV0_2ExternalAccountId: string;
-        VtcStorageConfigsCreateV0_2GcsSettings: {
+        VtcStorageConfigsCreateV0_3ExternalAccountId: string;
+        VtcStorageConfigsCreateV0_3GcsSettings: {
             /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
             bucket: string;
             /** @enum {unknown} */
             kind: "gcs";
-            prefix?: components["schemas"]["VtcStorageConfigsCreateV0_2ObjectPrefix"];
+            prefix?: components["schemas"]["VtcStorageConfigsCreateV0_3ObjectPrefix"];
         };
-        VtcStorageConfigsCreateV0_2LocalSettings: {
+        VtcStorageConfigsCreateV0_3LocalSettings: {
             /** @enum {unknown} */
             kind: "local";
             /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
             root: string;
         };
         /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
-        VtcStorageConfigsCreateV0_2ObjectPrefix: string;
+        VtcStorageConfigsCreateV0_3ObjectPrefix: string;
         /** @description Add a storage config: a named backend and how the community authenticates to it. Never a secret. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcStorageConfigsCreateV0_2Payload: {
-            auth?: components["schemas"]["VtcStorageConfigsCreateV0_2StorageAuth"];
+        VtcStorageConfigsCreateV0_3Payload: {
+            auth?: components["schemas"]["VtcStorageConfigsCreateV0_3StorageAuth"];
             /** @description Total ciphertext bytes the community will store on this config across every room. Absent means none set. */
             capacityBytes?: number;
-            ext?: components["schemas"]["VtcStorageConfigsCreateV0_2Ext"];
-            id: components["schemas"]["VtcStorageConfigsCreateV0_2StorageConfigId"];
+            ext?: components["schemas"]["VtcStorageConfigsCreateV0_3Ext"];
+            id: components["schemas"]["VtcStorageConfigsCreateV0_3StorageConfigId"];
             /** @description Make this the config rooms are assigned to when neither policy nor creator names one. */
             isDefault?: boolean;
             /** @description A display name for administrators and, with the kind, for a room's creator. */
             label: string;
             /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
             reason: string;
-            settings: components["schemas"]["VtcStorageConfigsCreateV0_2StorageSettings"];
+            settings: components["schemas"]["VtcStorageConfigsCreateV0_3StorageSettings"];
         };
-        VtcStorageConfigsCreateV0_2Response: {
-            config: components["schemas"]["VtcStorageConfigsCreateV0_2StorageConfig"];
-            ext?: components["schemas"]["VtcStorageConfigsCreateV0_2Ext"];
+        VtcStorageConfigsCreateV0_3Response: {
+            config: components["schemas"]["VtcStorageConfigsCreateV0_3StorageConfig"];
+            ext?: components["schemas"]["VtcStorageConfigsCreateV0_3Ext"];
         };
-        VtcStorageConfigsCreateV0_2S3Settings: {
+        VtcStorageConfigsCreateV0_3S3Settings: {
             /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
             bucket: string;
             /**
@@ -8196,7 +13328,7 @@ export interface components {
             kind: "s3";
             /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
             pathStyle?: boolean;
-            prefix?: components["schemas"]["VtcStorageConfigsCreateV0_2ObjectPrefix"];
+            prefix?: components["schemas"]["VtcStorageConfigsCreateV0_3ObjectPrefix"];
             /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
             region: string;
         };
@@ -8211,222 +13343,43 @@ export interface components {
          *
          *     `ambient` and `sealed` are host-operator choices: a community MAY refuse either by its own host configuration, whatever its administrators ask.
          */
-        VtcStorageConfigsCreateV0_2StorageAuth: {
-            account: components["schemas"]["VtcStorageConfigsCreateV0_2ExternalAccountId"];
-            context: components["schemas"]["VtcStorageConfigsCreateV0_2ExternalAccountContextId"];
+        VtcStorageConfigsCreateV0_3StorageAuth: {
+            account: components["schemas"]["VtcStorageConfigsCreateV0_3ExternalAccountId"];
+            context: components["schemas"]["VtcStorageConfigsCreateV0_3ExternalAccountContextId"];
             /** @enum {unknown} */
             mode: "vta-account";
         } | {
             /** @enum {unknown} */
             mode: "ambient";
-            roleArn?: components["schemas"]["VtcStorageConfigsCreateV0_2AwsRoleArn"];
+            roleArn?: components["schemas"]["VtcStorageConfigsCreateV0_3AwsRoleArn"];
         } | {
             /** @enum {unknown} */
             mode: "sealed";
         };
         /** @description One storage config as the community holds it. Carries no secret. */
-        VtcStorageConfigsCreateV0_2StorageConfig: {
-            auth?: components["schemas"]["VtcStorageConfigsCreateV0_2StorageAuth"];
+        VtcStorageConfigsCreateV0_3StorageConfig: {
+            auth?: components["schemas"]["VtcStorageConfigsCreateV0_3StorageAuth"];
             /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
             capacityBytes?: number;
             /** Format: date-time */
             createdAt: string;
             createdBy: string;
-            id: components["schemas"]["VtcStorageConfigsCreateV0_2StorageConfigId"];
+            id: components["schemas"]["VtcStorageConfigsCreateV0_3StorageConfigId"];
             /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
             isDefault?: boolean;
             /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
             label: string;
-            settings: components["schemas"]["VtcStorageConfigsCreateV0_2StorageSettings"];
-            state: components["schemas"]["VtcStorageConfigsCreateV0_2ConfigState"];
+            settings: components["schemas"]["VtcStorageConfigsCreateV0_3StorageSettings"];
+            state: components["schemas"]["VtcStorageConfigsCreateV0_3ConfigState"];
             /** Format: date-time */
             updatedAt?: string;
             updatedBy?: string;
         };
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcStorageConfigsCreateV0_2StorageConfigId: string;
+        VtcStorageConfigsCreateV0_3StorageConfigId: string;
         /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
-        VtcStorageConfigsCreateV0_2StorageSettings: components["schemas"]["VtcStorageConfigsCreateV0_2LocalSettings"] | components["schemas"]["VtcStorageConfigsCreateV0_2S3Settings"] | components["schemas"]["VtcStorageConfigsCreateV0_2GcsSettings"] | components["schemas"]["VtcStorageConfigsCreateV0_2WalrusSettings"];
-        VtcStorageConfigsCreateV0_2WalrusSettings: {
-            /**
-             * Format: uri
-             * @description The Walrus aggregator the community reads through.
-             */
-            aggregatorUrl: string;
-            /** @description Storage epochs to buy when a blob is registered. Walrus sells storage in epochs (two weeks on mainnet) and caps one purchase at 53. */
-            epochs: number;
-            /** @description How many epochs before a live blob's end epoch the community extends it. A blob that has become an orphan is not extended, and lapses: the Walrus form of deletion. */
-            extendBeforeEpochs: number;
-            /** @enum {unknown} */
-            kind: "walrus";
-            /**
-             * Format: uri
-             * @description The Walrus upload relay the community writes through. The community never runs a publisher: a publisher holds a hot wallet in its own configuration, which is the long-lived secret these tasks exist to avoid.
-             */
-            relayUrl: string;
-        };
-        /**
-         * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
-         * @enum {string}
-         */
-        VtcStorageConfigsGetV0_1ConfigState: "active" | "draining" | "retired";
-        /** @description Whether a config can authenticate now, and how — never the credential. `status`: `vta-account`, `ambient` and `sealed` are usable; `required` means the config cannot store until a credential is provided (a `sealed` config never set, or set before a restore, which carries no credential); `none` is a `local` config. */
-        VtcStorageConfigsGetV0_1CredentialState: {
-            account?: components["schemas"]["VtcStorageConfigsGetV0_1ExternalAccountId"];
-            context?: components["schemas"]["VtcStorageConfigsGetV0_1ExternalAccountContextId"];
-            fingerprint?: components["schemas"]["VtcStorageConfigsGetV0_1DigestMultibase"];
-            /** @description Present with `vta-account`: how many rooms the community currently holds a live room-scoped credential for. */
-            roomsHoldingCredentials?: number;
-            /**
-             * Format: date-time
-             * @description Present with `sealed`: when the stored credential was last set.
-             */
-            setAt?: string;
-            /** @enum {string} */
-            status: "vta-account" | "ambient" | "sealed" | "required" | "none";
-        };
-        /**
-         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
-         *
-         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
-         *
-         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
-         *
-         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
-         */
-        VtcStorageConfigsGetV0_1DigestMultibase: string;
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcStorageConfigsGetV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
-        VtcStorageConfigsGetV0_1ExternalAccountContextId: string;
-        /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
-        VtcStorageConfigsGetV0_1ExternalAccountId: string;
-        VtcStorageConfigsGetV0_1GcsSettings: {
-            /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
-            bucket: string;
-            /** @enum {unknown} */
-            kind: "gcs";
-            prefix?: components["schemas"]["VtcStorageConfigsGetV0_1ObjectPrefix"];
-        };
-        VtcStorageConfigsGetV0_1LocalSettings: {
-            /** @enum {unknown} */
-            kind: "local";
-            /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
-            root: string;
-        };
-        /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
-        VtcStorageConfigsGetV0_1ObjectPrefix: string;
-        VtcStorageConfigsGetV0_1Response: {
-            assignedRooms: string[];
-            assignedRoomsTruncated: boolean;
-            config: components["schemas"]["VtcStorageConfigsGetV0_1StorageConfig"];
-            ext?: components["schemas"]["VtcStorageConfigsGetV0_1Ext"];
-            facts: components["schemas"]["VtcStorageConfigsGetV0_1StorageConfigFacts"];
-        };
-        VtcStorageConfigsGetV0_1S3Settings: {
-            /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
-            bucket: string;
-            /**
-             * Format: uri
-             * @description The S3 API endpoint, for a store other than AWS (R2, B2, MinIO). Absent means AWS S3 in `region`. HTTPS only.
-             */
-            endpoint?: string;
-            /** @enum {unknown} */
-            kind: "s3";
-            /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
-            pathStyle?: boolean;
-            prefix?: components["schemas"]["VtcStorageConfigsGetV0_1ObjectPrefix"];
-            /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
-            region: string;
-        };
-        /**
-         * @description How the community authenticates to a config's backend. Absent on a `local` config, which needs none.
-         *
-         *     `vta-account` (RECOMMENDED): an external account in the community's VTA, named by the context that owns it and its identifier there. The VTA holds the long-lived authority; the community holds nothing that outlives a credential lifetime, and asks for credentials scoped to one room's prefix for at most 15 minutes, every issuance audited at the VTA. Required for a `walrus` config other than a `sealed` one, since the VTA's `sui-signer` account signs its storage transactions.
-         *
-         *     `ambient`: the cloud identity of the machine the community runs on (an instance role, workload identity), downscoped to one room's prefix by the community itself. Not audited or rate-limited by the VTA, and usable by anything on that machine that reaches the metadata endpoint. Not valid for `walrus`.
-         *
-         *     `sealed` (discouraged): a long-lived credential stored by the community, set with vtc/storage/credentials/set. Protects against every administrator through every surface the community offers; does not protect against whoever operates the machine.
-         */
-        VtcStorageConfigsGetV0_1StorageAuth: {
-            account: components["schemas"]["VtcStorageConfigsGetV0_1ExternalAccountId"];
-            context: components["schemas"]["VtcStorageConfigsGetV0_1ExternalAccountContextId"];
-            /** @enum {unknown} */
-            mode: "vta-account";
-        } | {
-            /** @enum {unknown} */
-            mode: "ambient";
-        } | {
-            /** @enum {unknown} */
-            mode: "sealed";
-        };
-        /** @description One storage config as the community holds it. Carries no secret. */
-        VtcStorageConfigsGetV0_1StorageConfig: {
-            auth?: components["schemas"]["VtcStorageConfigsGetV0_1StorageAuth"];
-            /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
-            capacityBytes?: number;
-            /** Format: date-time */
-            createdAt: string;
-            createdBy: string;
-            id: components["schemas"]["VtcStorageConfigsGetV0_1StorageConfigId"];
-            /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
-            isDefault?: boolean;
-            /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
-            label: string;
-            settings: components["schemas"]["VtcStorageConfigsGetV0_1StorageSettings"];
-            state: components["schemas"]["VtcStorageConfigsGetV0_1ConfigState"];
-            /** Format: date-time */
-            updatedAt?: string;
-            updatedBy?: string;
-        };
-        /** @description What a config holds and whether it works, computed at the time of the read. Ciphertext bytes throughout. */
-        VtcStorageConfigsGetV0_1StorageConfigFacts: {
-            /** @description Their total size. Counts against `capacityBytes` until the backend deletion has actually happened, unlike room and member usage, which stop counting an orphaned blob at once. */
-            bytes: number;
-            credential: components["schemas"]["VtcStorageConfigsGetV0_1CredentialState"];
-            /** @description Blobs stored on this config that are not yet deleted, wherever their rooms are now assigned. */
-            files: number;
-            health: components["schemas"]["VtcStorageConfigsGetV0_1StorageHealth"];
-            /** @description Bytes of orphaned blobs awaiting deletion after their grace window. */
-            pendingDeleteBytes: number;
-            /** @description Rooms assigned to this config. */
-            rooms: number;
-            /** @description Present on a `walrus` config. */
-            walrus?: {
-                /** Format: date-time */
-                nextExtensionDueAt?: string;
-                /** @description The Sui address that pays for storage, derived from the VTA account's key. */
-                signerAddress?: string;
-            };
-        };
-        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcStorageConfigsGetV0_1StorageConfigId: string;
-        /** @description The last evidence the community has that a config works. Every member is optional: a config never probed and never used has none. */
-        VtcStorageConfigsGetV0_1StorageHealth: {
-            /**
-             * Format: date-time
-             * @description The last successful deletion (on `walrus`, the last lapse the community observed).
-             */
-            lastDeleteAt?: string;
-            /**
-             * Format: date-time
-             * @description The last successful chunk read.
-             */
-            lastGetAt?: string;
-            /** Format: date-time */
-            lastProbeAt?: string;
-            lastProbeOk?: boolean;
-            /**
-             * Format: date-time
-             * @description The last successful blob write.
-             */
-            lastPutAt?: string;
-        };
-        /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
-        VtcStorageConfigsGetV0_1StorageSettings: components["schemas"]["VtcStorageConfigsGetV0_1LocalSettings"] | components["schemas"]["VtcStorageConfigsGetV0_1S3Settings"] | components["schemas"]["VtcStorageConfigsGetV0_1GcsSettings"] | components["schemas"]["VtcStorageConfigsGetV0_1WalrusSettings"];
-        VtcStorageConfigsGetV0_1WalrusSettings: {
+        VtcStorageConfigsCreateV0_3StorageSettings: components["schemas"]["VtcStorageConfigsCreateV0_3LocalSettings"] | components["schemas"]["VtcStorageConfigsCreateV0_3S3Settings"] | components["schemas"]["VtcStorageConfigsCreateV0_3GcsSettings"] | components["schemas"]["VtcStorageConfigsCreateV0_3WalrusSettings"];
+        VtcStorageConfigsCreateV0_3WalrusSettings: {
             /**
              * Format: uri
              * @description The Walrus aggregator the community reads through.
@@ -8611,194 +13564,6 @@ export interface components {
         /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
         VtcStorageConfigsGetV0_2StorageSettings: components["schemas"]["VtcStorageConfigsGetV0_2LocalSettings"] | components["schemas"]["VtcStorageConfigsGetV0_2S3Settings"] | components["schemas"]["VtcStorageConfigsGetV0_2GcsSettings"] | components["schemas"]["VtcStorageConfigsGetV0_2WalrusSettings"];
         VtcStorageConfigsGetV0_2WalrusSettings: {
-            /**
-             * Format: uri
-             * @description The Walrus aggregator the community reads through.
-             */
-            aggregatorUrl: string;
-            /** @description Storage epochs to buy when a blob is registered. Walrus sells storage in epochs (two weeks on mainnet) and caps one purchase at 53. */
-            epochs: number;
-            /** @description How many epochs before a live blob's end epoch the community extends it. A blob that has become an orphan is not extended, and lapses: the Walrus form of deletion. */
-            extendBeforeEpochs: number;
-            /** @enum {unknown} */
-            kind: "walrus";
-            /**
-             * Format: uri
-             * @description The Walrus upload relay the community writes through. The community never runs a publisher: a publisher holds a hot wallet in its own configuration, which is the long-lived secret these tasks exist to avoid.
-             */
-            relayUrl: string;
-        };
-        /** @description One config and what it holds. */
-        VtcStorageConfigsListV0_1ConfigItem: {
-            config: components["schemas"]["VtcStorageConfigsListV0_1StorageConfig"];
-            facts: components["schemas"]["VtcStorageConfigsListV0_1StorageConfigFacts"];
-        };
-        /**
-         * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
-         * @enum {string}
-         */
-        VtcStorageConfigsListV0_1ConfigState: "active" | "draining" | "retired";
-        /** @description Whether a config can authenticate now, and how — never the credential. `status`: `vta-account`, `ambient` and `sealed` are usable; `required` means the config cannot store until a credential is provided (a `sealed` config never set, or set before a restore, which carries no credential); `none` is a `local` config. */
-        VtcStorageConfigsListV0_1CredentialState: {
-            account?: components["schemas"]["VtcStorageConfigsListV0_1ExternalAccountId"];
-            context?: components["schemas"]["VtcStorageConfigsListV0_1ExternalAccountContextId"];
-            fingerprint?: components["schemas"]["VtcStorageConfigsListV0_1DigestMultibase"];
-            /** @description Present with `vta-account`: how many rooms the community currently holds a live room-scoped credential for. */
-            roomsHoldingCredentials?: number;
-            /**
-             * Format: date-time
-             * @description Present with `sealed`: when the stored credential was last set.
-             */
-            setAt?: string;
-            /** @enum {string} */
-            status: "vta-account" | "ambient" | "sealed" | "required" | "none";
-        };
-        /**
-         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
-         *
-         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
-         *
-         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
-         *
-         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
-         */
-        VtcStorageConfigsListV0_1DigestMultibase: string;
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcStorageConfigsListV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
-        VtcStorageConfigsListV0_1ExternalAccountContextId: string;
-        /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
-        VtcStorageConfigsListV0_1ExternalAccountId: string;
-        VtcStorageConfigsListV0_1GcsSettings: {
-            /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
-            bucket: string;
-            /** @enum {unknown} */
-            kind: "gcs";
-            prefix?: components["schemas"]["VtcStorageConfigsListV0_1ObjectPrefix"];
-        };
-        VtcStorageConfigsListV0_1LocalSettings: {
-            /** @enum {unknown} */
-            kind: "local";
-            /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
-            root: string;
-        };
-        /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
-        VtcStorageConfigsListV0_1ObjectPrefix: string;
-        VtcStorageConfigsListV0_1Response: {
-            ext?: components["schemas"]["VtcStorageConfigsListV0_1Ext"];
-            items: components["schemas"]["VtcStorageConfigsListV0_1ConfigItem"][];
-            /** @description Present when more remain; pass it as `cursor`. */
-            nextCursor?: string;
-        };
-        VtcStorageConfigsListV0_1S3Settings: {
-            /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
-            bucket: string;
-            /**
-             * Format: uri
-             * @description The S3 API endpoint, for a store other than AWS (R2, B2, MinIO). Absent means AWS S3 in `region`. HTTPS only.
-             */
-            endpoint?: string;
-            /** @enum {unknown} */
-            kind: "s3";
-            /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
-            pathStyle?: boolean;
-            prefix?: components["schemas"]["VtcStorageConfigsListV0_1ObjectPrefix"];
-            /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
-            region: string;
-        };
-        /**
-         * @description How the community authenticates to a config's backend. Absent on a `local` config, which needs none.
-         *
-         *     `vta-account` (RECOMMENDED): an external account in the community's VTA, named by the context that owns it and its identifier there. The VTA holds the long-lived authority; the community holds nothing that outlives a credential lifetime, and asks for credentials scoped to one room's prefix for at most 15 minutes, every issuance audited at the VTA. Required for a `walrus` config other than a `sealed` one, since the VTA's `sui-signer` account signs its storage transactions.
-         *
-         *     `ambient`: the cloud identity of the machine the community runs on (an instance role, workload identity), downscoped to one room's prefix by the community itself. Not audited or rate-limited by the VTA, and usable by anything on that machine that reaches the metadata endpoint. Not valid for `walrus`.
-         *
-         *     `sealed` (discouraged): a long-lived credential stored by the community, set with vtc/storage/credentials/set. Protects against every administrator through every surface the community offers; does not protect against whoever operates the machine.
-         */
-        VtcStorageConfigsListV0_1StorageAuth: {
-            account: components["schemas"]["VtcStorageConfigsListV0_1ExternalAccountId"];
-            context: components["schemas"]["VtcStorageConfigsListV0_1ExternalAccountContextId"];
-            /** @enum {unknown} */
-            mode: "vta-account";
-        } | {
-            /** @enum {unknown} */
-            mode: "ambient";
-        } | {
-            /** @enum {unknown} */
-            mode: "sealed";
-        };
-        /** @description One storage config as the community holds it. Carries no secret. */
-        VtcStorageConfigsListV0_1StorageConfig: {
-            auth?: components["schemas"]["VtcStorageConfigsListV0_1StorageAuth"];
-            /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
-            capacityBytes?: number;
-            /** Format: date-time */
-            createdAt: string;
-            createdBy: string;
-            id: components["schemas"]["VtcStorageConfigsListV0_1StorageConfigId"];
-            /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
-            isDefault?: boolean;
-            /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
-            label: string;
-            settings: components["schemas"]["VtcStorageConfigsListV0_1StorageSettings"];
-            state: components["schemas"]["VtcStorageConfigsListV0_1ConfigState"];
-            /** Format: date-time */
-            updatedAt?: string;
-            updatedBy?: string;
-        };
-        /** @description What a config holds and whether it works, computed at the time of the read. Ciphertext bytes throughout. */
-        VtcStorageConfigsListV0_1StorageConfigFacts: {
-            /** @description Their total size. Counts against `capacityBytes` until the backend deletion has actually happened, unlike room and member usage, which stop counting an orphaned blob at once. */
-            bytes: number;
-            credential: components["schemas"]["VtcStorageConfigsListV0_1CredentialState"];
-            /** @description Blobs stored on this config that are not yet deleted, wherever their rooms are now assigned. */
-            files: number;
-            health: components["schemas"]["VtcStorageConfigsListV0_1StorageHealth"];
-            /** @description Bytes of orphaned blobs awaiting deletion after their grace window. */
-            pendingDeleteBytes: number;
-            /** @description Rooms assigned to this config. */
-            rooms: number;
-            /** @description Present on a `walrus` config. */
-            walrus?: {
-                /** Format: date-time */
-                nextExtensionDueAt?: string;
-                /** @description The Sui address that pays for storage, derived from the VTA account's key. */
-                signerAddress?: string;
-            };
-        };
-        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcStorageConfigsListV0_1StorageConfigId: string;
-        /** @description The last evidence the community has that a config works. Every member is optional: a config never probed and never used has none. */
-        VtcStorageConfigsListV0_1StorageHealth: {
-            /**
-             * Format: date-time
-             * @description The last successful deletion (on `walrus`, the last lapse the community observed).
-             */
-            lastDeleteAt?: string;
-            /**
-             * Format: date-time
-             * @description The last successful chunk read.
-             */
-            lastGetAt?: string;
-            /** Format: date-time */
-            lastProbeAt?: string;
-            lastProbeOk?: boolean;
-            /**
-             * Format: date-time
-             * @description The last successful blob write.
-             */
-            lastPutAt?: string;
-        };
-        /**
-         * @description Which backend a config stores to. `local`: plain files in a directory on the community's own host. `s3`: an S3-compatible object store (AWS S3, Cloudflare R2, Backblaze B2, MinIO). `gcs`: native Google Cloud Storage. `walrus`: the Walrus decentralised store, where every blob is public ciphertext and deletion is a lapse, not an erasure.
-         * @enum {string}
-         */
-        VtcStorageConfigsListV0_1StorageKind: "local" | "s3" | "gcs" | "walrus";
-        /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
-        VtcStorageConfigsListV0_1StorageSettings: components["schemas"]["VtcStorageConfigsListV0_1LocalSettings"] | components["schemas"]["VtcStorageConfigsListV0_1S3Settings"] | components["schemas"]["VtcStorageConfigsListV0_1GcsSettings"] | components["schemas"]["VtcStorageConfigsListV0_1WalrusSettings"];
-        VtcStorageConfigsListV0_1WalrusSettings: {
             /**
              * Format: uri
              * @description The Walrus aggregator the community reads through.
@@ -9035,193 +13800,68 @@ export interface components {
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
         VtcStorageConfigsProbeV0_1StorageConfigId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcStorageConfigsRetireV0_1Ext: {
+        VtcStorageConfigsRetireV0_3Ext: {
             [key: string]: unknown;
         };
-        VtcStorageConfigsRetireV0_1Response: {
+        VtcStorageConfigsRetireV0_3Response: {
             blobsRemaining: number;
-            configId: components["schemas"]["VtcStorageConfigsRetireV0_1StorageConfigId"];
-            ext?: components["schemas"]["VtcStorageConfigsRetireV0_1Ext"];
+            configId: components["schemas"]["VtcStorageConfigsRetireV0_3StorageConfigId"];
+            ext?: components["schemas"]["VtcStorageConfigsRetireV0_3Ext"];
             /** @enum {string} */
             state: "draining" | "retired";
         };
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcStorageConfigsRetireV0_1StorageConfigId: string;
-        /**
-         * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
-         * @enum {string}
-         */
-        VtcStorageConfigsUpdateV0_1ConfigState: "active" | "draining" | "retired";
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcStorageConfigsUpdateV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
-        VtcStorageConfigsUpdateV0_1ExternalAccountContextId: string;
-        /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
-        VtcStorageConfigsUpdateV0_1ExternalAccountId: string;
-        VtcStorageConfigsUpdateV0_1GcsSettings: {
-            /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
-            bucket: string;
-            /** @enum {unknown} */
-            kind: "gcs";
-            prefix?: components["schemas"]["VtcStorageConfigsUpdateV0_1ObjectPrefix"];
-        };
-        VtcStorageConfigsUpdateV0_1LocalSettings: {
-            /** @enum {unknown} */
-            kind: "local";
-            /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
-            root: string;
-        };
-        /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
-        VtcStorageConfigsUpdateV0_1ObjectPrefix: string;
-        /** @description Change a storage config's label, settings that do not locate stored blobs, authentication, capacity or default flag. Never a secret. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcStorageConfigsUpdateV0_1Payload: {
-            auth?: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageAuth"];
-            /** @description Total ciphertext bytes the community will store on this config across every room. Absent means none set. */
-            capacityBytes?: number;
-            configId: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageConfigId"];
-            ext?: components["schemas"]["VtcStorageConfigsUpdateV0_1Ext"];
-            /** @description Make this the config rooms are assigned to when neither policy nor creator names one. */
-            isDefault?: boolean;
-            /** @description A display name for administrators and, with the kind, for a room's creator. */
-            label?: string;
-            /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
-            reason: string;
-            settings?: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageSettings"];
-        };
-        VtcStorageConfigsUpdateV0_1Response: {
-            config: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageConfig"];
-            ext?: components["schemas"]["VtcStorageConfigsUpdateV0_1Ext"];
-        };
-        VtcStorageConfigsUpdateV0_1S3Settings: {
-            /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
-            bucket: string;
-            /**
-             * Format: uri
-             * @description The S3 API endpoint, for a store other than AWS (R2, B2, MinIO). Absent means AWS S3 in `region`. HTTPS only.
-             */
-            endpoint?: string;
-            /** @enum {unknown} */
-            kind: "s3";
-            /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
-            pathStyle?: boolean;
-            prefix?: components["schemas"]["VtcStorageConfigsUpdateV0_1ObjectPrefix"];
-            /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
-            region: string;
-        };
-        /**
-         * @description How the community authenticates to a config's backend. Absent on a `local` config, which needs none.
-         *
-         *     `vta-account` (RECOMMENDED): an external account in the community's VTA, named by the context that owns it and its identifier there. The VTA holds the long-lived authority; the community holds nothing that outlives a credential lifetime, and asks for credentials scoped to one room's prefix for at most 15 minutes, every issuance audited at the VTA. Required for a `walrus` config other than a `sealed` one, since the VTA's `sui-signer` account signs its storage transactions.
-         *
-         *     `ambient`: the cloud identity of the machine the community runs on (an instance role, workload identity), downscoped to one room's prefix by the community itself. Not audited or rate-limited by the VTA, and usable by anything on that machine that reaches the metadata endpoint. Not valid for `walrus`.
-         *
-         *     `sealed` (discouraged): a long-lived credential stored by the community, set with vtc/storage/credentials/set. Protects against every administrator through every surface the community offers; does not protect against whoever operates the machine.
-         */
-        VtcStorageConfigsUpdateV0_1StorageAuth: {
-            account: components["schemas"]["VtcStorageConfigsUpdateV0_1ExternalAccountId"];
-            context: components["schemas"]["VtcStorageConfigsUpdateV0_1ExternalAccountContextId"];
-            /** @enum {unknown} */
-            mode: "vta-account";
-        } | {
-            /** @enum {unknown} */
-            mode: "ambient";
-        } | {
-            /** @enum {unknown} */
-            mode: "sealed";
-        };
-        /** @description One storage config as the community holds it. Carries no secret. */
-        VtcStorageConfigsUpdateV0_1StorageConfig: {
-            auth?: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageAuth"];
-            /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
-            capacityBytes?: number;
-            /** Format: date-time */
-            createdAt: string;
-            createdBy: string;
-            id: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageConfigId"];
-            /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
-            isDefault?: boolean;
-            /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
-            label: string;
-            settings: components["schemas"]["VtcStorageConfigsUpdateV0_1StorageSettings"];
-            state: components["schemas"]["VtcStorageConfigsUpdateV0_1ConfigState"];
-            /** Format: date-time */
-            updatedAt?: string;
-            updatedBy?: string;
-        };
-        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcStorageConfigsUpdateV0_1StorageConfigId: string;
-        /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
-        VtcStorageConfigsUpdateV0_1StorageSettings: components["schemas"]["VtcStorageConfigsUpdateV0_1LocalSettings"] | components["schemas"]["VtcStorageConfigsUpdateV0_1S3Settings"] | components["schemas"]["VtcStorageConfigsUpdateV0_1GcsSettings"] | components["schemas"]["VtcStorageConfigsUpdateV0_1WalrusSettings"];
-        VtcStorageConfigsUpdateV0_1WalrusSettings: {
-            /**
-             * Format: uri
-             * @description The Walrus aggregator the community reads through.
-             */
-            aggregatorUrl: string;
-            /** @description Storage epochs to buy when a blob is registered. Walrus sells storage in epochs (two weeks on mainnet) and caps one purchase at 53. */
-            epochs: number;
-            /** @description How many epochs before a live blob's end epoch the community extends it. A blob that has become an orphan is not extended, and lapses: the Walrus form of deletion. */
-            extendBeforeEpochs: number;
-            /** @enum {unknown} */
-            kind: "walrus";
-            /**
-             * Format: uri
-             * @description The Walrus upload relay the community writes through. The community never runs a publisher: a publisher holds a hot wallet in its own configuration, which is the long-lived secret these tasks exist to avoid.
-             */
-            relayUrl: string;
-        };
+        VtcStorageConfigsRetireV0_3StorageConfigId: string;
         /** @description The ARN of an AWS IAM role, in any AWS partition (`arn:aws:`, `arn:aws-cn:`, `arn:aws-us-gov:`). Validated here because the community passes it to STS AssumeRole and derives the partition of the session policy's resources from it; it must never carry anything but a role ARN. */
-        VtcStorageConfigsUpdateV0_2AwsRoleArn: string;
+        VtcStorageConfigsUpdateV0_3AwsRoleArn: string;
         /**
          * @description `active`: accepts new rooms and new uploads. `draining`: retired by an administrator while blobs still name it — refuses new rooms and new uploads, keeps serving reads, and becomes `retired` when a migration has emptied it. `retired`: refuses new rooms and new uploads and holds no blob. A config is never deleted while a blob names it.
          * @enum {string}
          */
-        VtcStorageConfigsUpdateV0_2ConfigState: "active" | "draining" | "retired";
+        VtcStorageConfigsUpdateV0_3ConfigState: "active" | "draining" | "retired";
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcStorageConfigsUpdateV0_2Ext: {
+        VtcStorageConfigsUpdateV0_3Ext: {
             [key: string]: unknown;
         };
         /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
-        VtcStorageConfigsUpdateV0_2ExternalAccountContextId: string;
+        VtcStorageConfigsUpdateV0_3ExternalAccountContextId: string;
         /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
-        VtcStorageConfigsUpdateV0_2ExternalAccountId: string;
-        VtcStorageConfigsUpdateV0_2GcsSettings: {
+        VtcStorageConfigsUpdateV0_3ExternalAccountId: string;
+        VtcStorageConfigsUpdateV0_3GcsSettings: {
             /** @description The bucket name. Validated against GCS naming rules here, because it is placed in a Credential Access Boundary condition and must never carry anything but a name. */
             bucket: string;
             /** @enum {unknown} */
             kind: "gcs";
-            prefix?: components["schemas"]["VtcStorageConfigsUpdateV0_2ObjectPrefix"];
+            prefix?: components["schemas"]["VtcStorageConfigsUpdateV0_3ObjectPrefix"];
         };
-        VtcStorageConfigsUpdateV0_2LocalSettings: {
+        VtcStorageConfigsUpdateV0_3LocalSettings: {
             /** @enum {unknown} */
             kind: "local";
             /** @description Absolute path of the directory the community writes blobs under, on its own host. Created owner-only. Not carried by the community's backup: back it up beside it. */
             root: string;
         };
         /** @description A key prefix inside the bucket, ending in `/`, under which the config's `rooms/` tree is placed. Restricted to the S3 safe-character set so that it can be placed in a downscoped policy without escaping. */
-        VtcStorageConfigsUpdateV0_2ObjectPrefix: string;
+        VtcStorageConfigsUpdateV0_3ObjectPrefix: string;
         /** @description Change a storage config's label, settings that do not locate stored blobs, authentication, capacity or default flag. Never a secret. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcStorageConfigsUpdateV0_2Payload: {
-            auth?: components["schemas"]["VtcStorageConfigsUpdateV0_2StorageAuth"];
+        VtcStorageConfigsUpdateV0_3Payload: {
+            auth?: components["schemas"]["VtcStorageConfigsUpdateV0_3StorageAuth"];
             /** @description Total ciphertext bytes the community will store on this config across every room. Absent means none set. */
             capacityBytes?: number;
-            configId: components["schemas"]["VtcStorageConfigsUpdateV0_2StorageConfigId"];
-            ext?: components["schemas"]["VtcStorageConfigsUpdateV0_2Ext"];
+            configId: components["schemas"]["VtcStorageConfigsUpdateV0_3StorageConfigId"];
+            ext?: components["schemas"]["VtcStorageConfigsUpdateV0_3Ext"];
             /** @description Make this the config rooms are assigned to when neither policy nor creator names one. */
             isDefault?: boolean;
             /** @description A display name for administrators and, with the kind, for a room's creator. */
             label?: string;
             /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
             reason: string;
-            settings?: components["schemas"]["VtcStorageConfigsUpdateV0_2StorageSettings"];
+            settings?: components["schemas"]["VtcStorageConfigsUpdateV0_3StorageSettings"];
         };
-        VtcStorageConfigsUpdateV0_2Response: {
-            config: components["schemas"]["VtcStorageConfigsUpdateV0_2StorageConfig"];
-            ext?: components["schemas"]["VtcStorageConfigsUpdateV0_2Ext"];
+        VtcStorageConfigsUpdateV0_3Response: {
+            config: components["schemas"]["VtcStorageConfigsUpdateV0_3StorageConfig"];
+            ext?: components["schemas"]["VtcStorageConfigsUpdateV0_3Ext"];
         };
-        VtcStorageConfigsUpdateV0_2S3Settings: {
+        VtcStorageConfigsUpdateV0_3S3Settings: {
             /** @description The bucket name. Validated against S3 naming rules here, because it is placed in downscoped session policies and must never carry anything but a name. */
             bucket: string;
             /**
@@ -9233,7 +13873,7 @@ export interface components {
             kind: "s3";
             /** @description Address the bucket in the path rather than the host name, as MinIO usually needs. Absent means virtual-hosted style. */
             pathStyle?: boolean;
-            prefix?: components["schemas"]["VtcStorageConfigsUpdateV0_2ObjectPrefix"];
+            prefix?: components["schemas"]["VtcStorageConfigsUpdateV0_3ObjectPrefix"];
             /** @description The bucket's region, as the store names it (`eu-west-1`; `auto` for R2). */
             region: string;
         };
@@ -9248,43 +13888,43 @@ export interface components {
          *
          *     `ambient` and `sealed` are host-operator choices: a community MAY refuse either by its own host configuration, whatever its administrators ask.
          */
-        VtcStorageConfigsUpdateV0_2StorageAuth: {
-            account: components["schemas"]["VtcStorageConfigsUpdateV0_2ExternalAccountId"];
-            context: components["schemas"]["VtcStorageConfigsUpdateV0_2ExternalAccountContextId"];
+        VtcStorageConfigsUpdateV0_3StorageAuth: {
+            account: components["schemas"]["VtcStorageConfigsUpdateV0_3ExternalAccountId"];
+            context: components["schemas"]["VtcStorageConfigsUpdateV0_3ExternalAccountContextId"];
             /** @enum {unknown} */
             mode: "vta-account";
         } | {
             /** @enum {unknown} */
             mode: "ambient";
-            roleArn?: components["schemas"]["VtcStorageConfigsUpdateV0_2AwsRoleArn"];
+            roleArn?: components["schemas"]["VtcStorageConfigsUpdateV0_3AwsRoleArn"];
         } | {
             /** @enum {unknown} */
             mode: "sealed";
         };
         /** @description One storage config as the community holds it. Carries no secret. */
-        VtcStorageConfigsUpdateV0_2StorageConfig: {
-            auth?: components["schemas"]["VtcStorageConfigsUpdateV0_2StorageAuth"];
+        VtcStorageConfigsUpdateV0_3StorageConfig: {
+            auth?: components["schemas"]["VtcStorageConfigsUpdateV0_3StorageAuth"];
             /** @description Total ciphertext bytes the community will store on this config, across every room assigned to it. A capacity, not a policy: an upload that would cross it is refused with scope `storage`. Absent means no capacity set. */
             capacityBytes?: number;
             /** Format: date-time */
             createdAt: string;
             createdBy: string;
-            id: components["schemas"]["VtcStorageConfigsUpdateV0_2StorageConfigId"];
+            id: components["schemas"]["VtcStorageConfigsUpdateV0_3StorageConfigId"];
             /** @description True for the config a room is assigned to when neither the community's policy nor its creator names one. */
             isDefault?: boolean;
             /** @description A display name for administrators (`EU — S3 (main account)`). Shown to a room's creator with the config's kind when the community lets them choose. */
             label: string;
-            settings: components["schemas"]["VtcStorageConfigsUpdateV0_2StorageSettings"];
-            state: components["schemas"]["VtcStorageConfigsUpdateV0_2ConfigState"];
+            settings: components["schemas"]["VtcStorageConfigsUpdateV0_3StorageSettings"];
+            state: components["schemas"]["VtcStorageConfigsUpdateV0_3ConfigState"];
             /** Format: date-time */
             updatedAt?: string;
             updatedBy?: string;
         };
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcStorageConfigsUpdateV0_2StorageConfigId: string;
+        VtcStorageConfigsUpdateV0_3StorageConfigId: string;
         /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
-        VtcStorageConfigsUpdateV0_2StorageSettings: components["schemas"]["VtcStorageConfigsUpdateV0_2LocalSettings"] | components["schemas"]["VtcStorageConfigsUpdateV0_2S3Settings"] | components["schemas"]["VtcStorageConfigsUpdateV0_2GcsSettings"] | components["schemas"]["VtcStorageConfigsUpdateV0_2WalrusSettings"];
-        VtcStorageConfigsUpdateV0_2WalrusSettings: {
+        VtcStorageConfigsUpdateV0_3StorageSettings: components["schemas"]["VtcStorageConfigsUpdateV0_3LocalSettings"] | components["schemas"]["VtcStorageConfigsUpdateV0_3S3Settings"] | components["schemas"]["VtcStorageConfigsUpdateV0_3GcsSettings"] | components["schemas"]["VtcStorageConfigsUpdateV0_3WalrusSettings"];
+        VtcStorageConfigsUpdateV0_3WalrusSettings: {
             /**
              * Format: uri
              * @description The Walrus aggregator the community reads through.
@@ -9303,10 +13943,10 @@ export interface components {
             relayUrl: string;
         };
         /** @description Whether a config can authenticate now, and how — never the credential. `status`: `vta-account`, `ambient` and `sealed` are usable; `required` means the config cannot store until a credential is provided (a `sealed` config never set, or set before a restore, which carries no credential); `notAllowed` means the config's mode is one the community's host configuration no longer permits, so it cannot store until its `auth` is changed; `none` is a `local` config. */
-        VtcStorageCredentialsSetV0_2CredentialState: {
-            account?: components["schemas"]["VtcStorageCredentialsSetV0_2ExternalAccountId"];
-            context?: components["schemas"]["VtcStorageCredentialsSetV0_2ExternalAccountContextId"];
-            fingerprint?: components["schemas"]["VtcStorageCredentialsSetV0_2DigestMultibase"];
+        VtcStorageCredentialsSetV0_3CredentialState: {
+            account?: components["schemas"]["VtcStorageCredentialsSetV0_3ExternalAccountId"];
+            context?: components["schemas"]["VtcStorageCredentialsSetV0_3ExternalAccountContextId"];
+            fingerprint?: components["schemas"]["VtcStorageCredentialsSetV0_3DigestMultibase"];
             /** @description Present with `vta-account`, `ambient` and `sealed`: how many rooms the community currently holds a live room-scoped credential for. */
             roomsHoldingCredentials?: number;
             /**
@@ -9326,38 +13966,38 @@ export interface components {
          *
          *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
          */
-        VtcStorageCredentialsSetV0_2DigestMultibase: string;
+        VtcStorageCredentialsSetV0_3DigestMultibase: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcStorageCredentialsSetV0_2Ext: {
+        VtcStorageCredentialsSetV0_3Ext: {
             [key: string]: unknown;
         };
         /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
-        VtcStorageCredentialsSetV0_2ExternalAccountContextId: string;
+        VtcStorageCredentialsSetV0_3ExternalAccountContextId: string;
         /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
-        VtcStorageCredentialsSetV0_2ExternalAccountId: string;
+        VtcStorageCredentialsSetV0_3ExternalAccountId: string;
         /** @description Store a `sealed` storage config's long-lived credential, sealed end to end to the community. Write-only: no task returns it. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcStorageCredentialsSetV0_2Payload: {
-            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
-            digestMultibase: components["schemas"]["VtcStorageCredentialsSetV0_2DigestMultibase"];
-            ext?: components["schemas"]["VtcStorageCredentialsSetV0_2Ext"];
+        VtcStorageCredentialsSetV0_3Payload: {
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_3StorageConfigId"];
+            digestMultibase: components["schemas"]["VtcStorageCredentialsSetV0_3DigestMultibase"];
+            ext?: components["schemas"]["VtcStorageCredentialsSetV0_3Ext"];
             /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
             reason: string;
             /** @description OpenPGP-style ASCII-armored `sealed_transfer` ciphertext of the credential. HPKE base mode, X25519-HKDF-SHA256 KEM, ChaCha20-Poly1305 AEAD, info string `vta-sealed-transfer/v1`; recipient the X25519 derivation of the community DID's Ed25519 key. */
             sealed: string;
         };
-        VtcStorageCredentialsSetV0_2Response: {
-            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
-            credentialState: components["schemas"]["VtcStorageCredentialsSetV0_2CredentialState"];
-            ext?: components["schemas"]["VtcStorageCredentialsSetV0_2Ext"];
+        VtcStorageCredentialsSetV0_3Response: {
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_3StorageConfigId"];
+            credentialState: components["schemas"]["VtcStorageCredentialsSetV0_3CredentialState"];
+            ext?: components["schemas"]["VtcStorageCredentialsSetV0_3Ext"];
             /** @description Present when the community probed the config with the new credential. */
             probeOk?: boolean;
         };
-        VtcStorageCredentialsSetV0_2SealedCredentialCleartext: components["schemas"]["VtcStorageCredentialsSetV0_2SealedStorageCredential"];
+        VtcStorageCredentialsSetV0_3SealedCredentialCleartext: components["schemas"]["VtcStorageCredentialsSetV0_3SealedStorageCredential"];
         /** @description The cleartext inside the sealed block of vtc/storage/credentials/set/0.2, discriminated by `kind`, which must equal the config's kind. It names the config it is for inside the seal, so that a block captured on its way to one config cannot be replayed into another: a community MUST refuse a block whose `configId` differs from the request's. Never appears on the wire outside a seal, and is never returned. A `local` config has no credential. */
-        VtcStorageCredentialsSetV0_2SealedStorageCredential: {
+        VtcStorageCredentialsSetV0_3SealedStorageCredential: {
             /** @description The access key's identifier. */
             accessKeyId: string;
-            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_3StorageConfigId"];
             /** @enum {unknown} */
             kind: "s3";
             /** @description The secret half. */
@@ -9365,7 +14005,7 @@ export interface components {
             /** @description Present when the pair is a temporary one that needs it. A temporary pair stops working at its own expiry, after which the config reports failures until another is set; it is accepted for evaluation, never recommended. */
             sessionToken?: string;
         } | {
-            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_3StorageConfigId"];
             /** @enum {unknown} */
             kind: "gcs";
             /** @description The service-account key exactly as Google issues it — the JSON key file, as an object, its member names carried verbatim in Google's own snake_case. Members beyond the four required (`project_id`, `client_id`, `token_uri`, `universe_domain` and the rest) are permitted, and a community MAY discard them: it authenticates with `client_email`, `private_key_id` and `private_key` alone, against Google's own token endpoint, and never against a `token_uri` the key file names. */
@@ -9380,14 +14020,14 @@ export interface components {
                 [key: string]: unknown;
             };
         } | {
-            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_3StorageConfigId"];
             /** @enum {unknown} */
             kind: "walrus";
             /** @description The private key in Sui's Bech32 `suiprivkey` encoding (SIP-15), which carries its signature scheme. */
             suiPrivateKey: string;
         };
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
-        VtcStorageCredentialsSetV0_2StorageConfigId: string;
+        VtcStorageCredentialsSetV0_3StorageConfigId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcVettingVettersGrantV0_1Ext: {
             [key: string]: unknown;

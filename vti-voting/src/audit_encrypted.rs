@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
-use trust_tasks_rs::specs::voting::{
+use vti_specs::voting::{
     ballot::cast::v0_1 as cast,
-    election::register::v0_1::{Manifest, Question, SecrecyLevel},
+    election::register::v0_4::{Manifest, Question, SecrecyLevel},
 };
 
 use super::{AuditFailure, canonical};
@@ -265,7 +265,7 @@ impl<'a> Recount<'a> {
                 }
                 self.closing = Some(Closing {
                     index,
-                    at: entry["at"].as_str().unwrap_or_default().to_string(),
+                    at: entry["occurredAt"].as_str().unwrap_or_default().to_string(),
                     targets,
                 });
             }

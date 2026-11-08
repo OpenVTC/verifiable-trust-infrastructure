@@ -20,9 +20,9 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::rooms::keys::profile::{read as spec_read, write as spec_write};
 use vti_common::acl::Capability;
 use vti_common::error::AppError;
+use vti_specs::rooms::keys::profile::{read as spec_read, write as spec_write};
 
 use crate::auth::AuthClaims;
 use crate::operations::room_groups::{self, Member};
@@ -32,7 +32,9 @@ use crate::operations::room_profile::{self as profile, ReadAt, Rejected, Rejecti
 use crate::server::AppState;
 
 use super::TrustTaskOutcome;
-use super::helpers::{app_error_to_reject, parse_payload, reject_with_code, success_response};
+use super::helpers::{
+    app_error_to_reject, parse_payload, reject_with, reject_with_code, success_response,
+};
 use super::room_group::{declared, record};
 
 /// How many epochs a read walks down before it stops of its own accord and says so in
@@ -192,7 +194,7 @@ impl<'a> Speaker<'a> {
         }
         let info = self
             .send(
-                vti_rooms::wire::ROOMS_INFO_TYPE,
+                vti_rooms::wire::ROOMS_INFO_V3_TYPE,
                 serde_json::json!({ "roomId": self.room_id() }),
                 "read",
             )
@@ -303,16 +305,17 @@ impl<'a> Speaker<'a> {
 
     /// The host's head version, from a listing narrowed to `key` — what the next write's
     /// version is predicted from.
+    #[allow(deprecated)] // list/0.5 on purpose: only the head is read, which list/0.6 serves identically, and every host serves 0.5
     async fn head_version(&self, key: &str) -> Result<u64, ProfileError> {
         let reply = self
             .send(
-                vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
                 serde_json::json!({ "roomId": self.room_id(), "prefix": key, "limit": 1 }),
                 "read",
             )
             .await
             .map_err(|e| host_error(self.host, e))?;
-        let listing: vti_rooms::wire::ListRecordsResponse =
+        let listing: vti_specs::rooms::records::list::v0_5::Response =
             serde_json::from_value(reply).map_err(|e| {
                 ProfileError::App(AppError::Internal(format!(
                     "room host `{}` served a listing this agent cannot read: {e}",
@@ -321,14 +324,17 @@ impl<'a> Speaker<'a> {
             })?;
         // Without a tree the host names no head; the newest version of the location itself
         // is then the best floor there is, and a miss is corrected by the version race.
-        Ok(listing.head_version.unwrap_or_else(|| {
-            listing
-                .records
-                .iter()
-                .filter_map(|r| r.get("version").and_then(Value::as_u64))
-                .max()
-                .unwrap_or(0)
-        }))
+        Ok(listing.head_version.map_or_else(
+            || {
+                listing
+                    .records
+                    .iter()
+                    .map(|r| r.version.get())
+                    .max()
+                    .unwrap_or(0)
+            },
+            |h| h.0,
+        ))
     }
 
     /// The `verification` member `rooms/keys/read` gives a record, for this one.
@@ -763,7 +769,7 @@ pub(super) async fn write(
             payload["expectedVersion"] = serde_json::json!(v);
         }
         let reply = sp
-            .send(vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE, payload, "write")
+            .send(vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE, payload, "write")
             .await
             .map_err(|e| host_error(sp.host, e))?;
         let put: vti_rooms::wire::PutRecordResponse =
@@ -880,6 +886,18 @@ pub(super) async fn handle_write(
     // its one-of `profile` / `clear`.
     if let Err(resp) = parse_payload::<spec_write::v0_1::Payload>(&doc) {
         return resp;
+    }
+    // The bounds the generated type does not carry (`recordMembers` a non-empty set): a
+    // profile every reader would refuse is not written.
+    if let Some(p) = doc.payload.get("profile")
+        && !profile::profile_meets_its_schema(p)
+    {
+        return reject_with(
+            &doc,
+            trust_tasks_rs::RejectReason::MalformedRequest {
+                reason: "`profile` is not a RoomProfile its readers accept".into(),
+            },
+        );
     }
     let (Some(room_id), Some(host)) = (
         doc.payload.get("roomId").and_then(Value::as_str),

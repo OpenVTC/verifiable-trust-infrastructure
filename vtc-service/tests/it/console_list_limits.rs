@@ -7,7 +7,7 @@
 //! `admin-ui/src/lib/list-limits.json`; its vitest census
 //! (`list-limits.test.ts`) holds every page size it sends to that table, and
 //! its signer refuses an over-limit page before signing. This test is the
-//! other half: the table must say what `trust_tasks_rs::schema_index` says, and
+//! other half: the table must say what `vti_specs::schema_index` says, and
 //! must cover every listing the console names whose schema caps `limit`. The
 //! admission-criteria page asked for 200 against a maximum of 50 and read
 //! nothing (#1921); with the table drifting from the schemas, the census would
@@ -22,7 +22,7 @@ const TABLE: &str = include_str!("../../admin-ui/src/lib/list-limits.json");
 
 /// The `limit` maximum `type_uri`'s payload schema declares, if any.
 fn schema_maximum(type_uri: &str) -> Option<u64> {
-    let schema: Value = serde_json::from_str(trust_tasks_rs::schema_index::schema_for(type_uri)?)
+    let schema: Value = serde_json::from_str(vti_specs::schema_index::schema_for(type_uri)?)
         .expect("a generated schema is JSON");
     schema
         .pointer("/properties/limit/maximum")

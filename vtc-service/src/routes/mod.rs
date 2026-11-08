@@ -34,16 +34,12 @@ pub mod vetting_hidden;
 #[cfg(feature = "website")]
 pub(crate) mod website;
 
-use std::sync::Arc;
-
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{any, delete, get, post};
 use ipnetwork::IpNetwork;
-use tower_governor::GovernorLayer;
-use tower_governor::governor::GovernorConfigBuilder;
 
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
@@ -96,9 +92,8 @@ use crate::server::AppState;
         crate::git_ns::admin_reads::GitNsProjection,
         crate::git_ns::admin_reads::GitNsAccountList,
         crate::git_ns::admin_reads::GitNsActivity,
-        // A repository's drift, as `git-ns/view/0.5`'s `repos[].sync` carries it.
-        vta_sdk::openapi::GitNsView01DriftItem,
-        acl::AclListResponse,
+        // A repository's drift, as `git-ns/view/0.6`'s `repos[].sync` carries it.
+        vta_sdk::openapi::GitNsView06DriftItem,
         acl::AclEntryEnvelope,
         vta_sdk::openapi::VetterList01Payload,
         vta_sdk::openapi::VetterList01Response,
@@ -107,42 +102,36 @@ use crate::server::AppState;
         vta_sdk::openapi::EndorsementTypeDelete01Response,
         // The operational verbs the console signs (`trust_tasks::admin_tasks`).
         health::DiagnosticsResponse,
-        vta_sdk::openapi::RegistrySyncJobsList01Response,
+        vta_sdk::openapi::RegistrySyncJobsList02Response,
         vta_sdk::openapi::RegistrySyncJobsRetry02Response,
         vta_sdk::openapi::RegistrySyncJobsDiscard01Response,
-        vta_sdk::openapi::RegistryRecordsList01Response,
+        vta_sdk::openapi::RegistryRecordsList02Response,
         // The room-hosting administrator's reads and limit override
         // (`trust_tasks::room_admin_tasks`), signed documents only.
-        vta_sdk::openapi::RoomsGet01Response,
-        vta_sdk::openapi::RoomsGet02Response,
+        vta_sdk::openapi::RoomsGet03Response,
         vta_sdk::openapi::RoomsUsage01Payload,
         vta_sdk::openapi::RoomsUsage01Response,
         vta_sdk::openapi::RoomsLimitsSet01Payload,
         vta_sdk::openapi::RoomsLimitsSet01Response,
         // Rooms the community itself owns (`trust_tasks::community_room_tasks`),
         // signed documents only.
-        vta_sdk::openapi::RoomsCommunityCreate01Payload,
-        vta_sdk::openapi::RoomsCommunityCreate01Response,
-        vta_sdk::openapi::RoomsCommunityList01Response,
-        vta_sdk::openapi::RoomsCommunityGet01Response,
-        // 0.2 — each room's description, tags and who last changed them — and the
-        // update that changes them.
-        vta_sdk::openapi::RoomsCommunityCreate02Payload,
-        vta_sdk::openapi::RoomsCommunityCreate02Response,
-        vta_sdk::openapi::RoomsCommunityList02Payload,
-        vta_sdk::openapi::RoomsCommunityList02Response,
-        vta_sdk::openapi::RoomsCommunityGet02Response,
-        vta_sdk::openapi::RoomsCommunityUpdate01Payload,
-        vta_sdk::openapi::RoomsCommunityUpdate01Response,
-        // 0.3 / 0.2: the label and description also written into the room as its profile.
-        vta_sdk::openapi::RoomsCommunityCreate03Payload,
-        vta_sdk::openapi::RoomsCommunityCreate03Response,
-        vta_sdk::openapi::RoomsCommunityUpdate02Payload,
-        vta_sdk::openapi::RoomsCommunityUpdate02Response,
-        vta_sdk::openapi::RoomsCommunityMembersAdd01Payload,
-        vta_sdk::openapi::RoomsCommunityMembersAdd01Response,
-        vta_sdk::openapi::RoomsCommunityMembersRemove01Payload,
-        vta_sdk::openapi::RoomsCommunityMembersRemove01Response,
+        vta_sdk::openapi::RoomsCommunityCreate04Payload,
+        vta_sdk::openapi::RoomsCommunityCreate04Response,
+        vta_sdk::openapi::RoomsCommunityList04Payload,
+        vta_sdk::openapi::RoomsCommunityList04Response,
+        vta_sdk::openapi::RoomsCommunityGet04Response,
+        vta_sdk::openapi::RoomsCommunityArchive01Payload,
+        vta_sdk::openapi::RoomsCommunityArchive01Response,
+        vta_sdk::openapi::RoomsCommunityUnarchive01Payload,
+        vta_sdk::openapi::RoomsCommunityUnarchive01Response,
+        vta_sdk::openapi::RoomsCommunityRemove01Payload,
+        vta_sdk::openapi::RoomsCommunityRemove01Response,
+        vta_sdk::openapi::RoomsCommunityRemovalCancel01Payload,
+        vta_sdk::openapi::RoomsCommunityRemovalCancel01Response,
+        vta_sdk::openapi::RoomsCommunityUpdate03Payload,
+        vta_sdk::openapi::RoomsCommunityUpdate03Response,
+        vta_sdk::openapi::RoomsCommunityMembersAdd02Payload,
+        vta_sdk::openapi::RoomsCommunityMembersAdd02Response,
         vta_sdk::openapi::RoomsCommunityMembersRemove02Payload,
         vta_sdk::openapi::RoomsCommunityMembersRemove02Response,
         // The member directory the console administers (`trust_tasks::directory_tasks`).
@@ -156,8 +145,8 @@ use crate::server::AppState;
         vta_sdk::openapi::DirectoryFieldsRetire01Response,
         vta_sdk::openapi::DirectoryCardAssert01Payload,
         vta_sdk::openapi::DirectoryCardAssert01Response,
-        vta_sdk::openapi::DirectoryEntriesList01Payload,
-        vta_sdk::openapi::DirectoryEntriesList01Response,
+        vta_sdk::openapi::DirectoryEntriesList02Payload,
+        vta_sdk::openapi::DirectoryEntriesList02Response,
         vta_sdk::openapi::DirectoryEntriesShow01Payload,
         vta_sdk::openapi::DirectoryEntriesShow01Response,
         vta_sdk::openapi::DirectoryCardShow01Payload,
@@ -180,22 +169,118 @@ use crate::server::AppState;
         vta_sdk::openapi::GroupsUpdate01Response,
         vta_sdk::openapi::GroupsDelete01Payload,
         vta_sdk::openapi::GroupsDelete01Response,
-        vta_sdk::openapi::GroupsList01Payload,
-        vta_sdk::openapi::GroupsList01Response,
+        vta_sdk::openapi::GroupsList02Payload,
+        // A community's network memberships (`trust_tasks::network_tasks`), signed
+        // documents only.
+        vta_sdk::openapi::NetworksList02Payload,
+        vta_sdk::openapi::NetworksList02Response,
+        vta_sdk::openapi::NetworksShow02Payload,
+        vta_sdk::openapi::NetworksShow02Response,
+        vta_sdk::openapi::NetworksPreview01Payload,
+        vta_sdk::openapi::NetworksPreview01Response,
+        vta_sdk::openapi::NetworksJoin02Payload,
+        vta_sdk::openapi::NetworksJoin02Response,
+        vta_sdk::openapi::NetworksLeave02Payload,
+        vta_sdk::openapi::NetworksLeave02Response,
+        vta_sdk::openapi::NetworksRepudiate02Payload,
+        vta_sdk::openapi::NetworksRepudiate02Response,
+        vta_sdk::openapi::GroupsList02Response,
         vta_sdk::openapi::GroupsShow01Payload,
         vta_sdk::openapi::GroupsShow01Response,
         vta_sdk::openapi::GroupsMembersAdd01Payload,
         vta_sdk::openapi::GroupsMembersAdd01Response,
         vta_sdk::openapi::GroupsMembersRemove01Payload,
         vta_sdk::openapi::GroupsMembersRemove01Response,
-        vta_sdk::openapi::GroupsMembersList01Payload,
-        vta_sdk::openapi::GroupsMembersList01Response,
+        vta_sdk::openapi::GroupsMembersList02Payload,
+        vta_sdk::openapi::GroupsMembersList02Response,
         vta_sdk::openapi::GroupsJoin01Payload,
         vta_sdk::openapi::GroupsJoin01Response,
         vta_sdk::openapi::GroupsLeave01Payload,
         vta_sdk::openapi::GroupsLeave01Response,
-        vta_sdk::openapi::GroupsRequestsList01Payload,
-        vta_sdk::openapi::GroupsRequestsList01Response,
+        vta_sdk::openapi::BoardsCreate01Payload,
+        vta_sdk::openapi::BoardsCreate01Response,
+        vta_sdk::openapi::BoardsUpdate01Payload,
+        vta_sdk::openapi::BoardsUpdate01Response,
+        vta_sdk::openapi::BoardsDelete01Payload,
+        vta_sdk::openapi::BoardsDelete01Response,
+        vta_sdk::openapi::BoardsFacilitatorsAdd01Payload,
+        vta_sdk::openapi::BoardsFacilitatorsAdd01Response,
+        vta_sdk::openapi::BoardsFacilitatorsRemove01Payload,
+        vta_sdk::openapi::BoardsFacilitatorsRemove01Response,
+        vta_sdk::openapi::BoardsFacilitatorsList01Payload,
+        vta_sdk::openapi::BoardsFacilitatorsList01Response,
+        vta_sdk::openapi::BoardsList01Payload,
+        vta_sdk::openapi::BoardsList01Response,
+        vta_sdk::openapi::BoardsShow01Payload,
+        vta_sdk::openapi::BoardsShow01Response,
+        vta_sdk::openapi::BoardsIdeasPropose01Payload,
+        vta_sdk::openapi::BoardsIdeasPropose01Response,
+        vta_sdk::openapi::BoardsIdeasUpdate01Payload,
+        vta_sdk::openapi::BoardsIdeasUpdate01Response,
+        vta_sdk::openapi::BoardsIdeasWithdraw01Payload,
+        vta_sdk::openapi::BoardsIdeasWithdraw01Response,
+        vta_sdk::openapi::BoardsIdeasDecide01Payload,
+        vta_sdk::openapi::BoardsIdeasDecide01Response,
+        vta_sdk::openapi::BoardsIdeasSelect01Payload,
+        vta_sdk::openapi::BoardsIdeasSelect01Response,
+        vta_sdk::openapi::BoardsNotesAdd01Payload,
+        vta_sdk::openapi::BoardsNotesAdd01Response,
+        vta_sdk::openapi::BoardsNotesList01Payload,
+        vta_sdk::openapi::BoardsNotesList01Response,
+        vta_sdk::openapi::BoardsNotesWithdraw01Payload,
+        vta_sdk::openapi::BoardsNotesWithdraw01Response,
+        vta_sdk::openapi::BoardsNotesHide01Payload,
+        vta_sdk::openapi::BoardsNotesHide01Response,
+        vta_sdk::openapi::BadgesSettingsShow01Payload,
+        vta_sdk::openapi::BadgesSettingsShow01Response,
+        vta_sdk::openapi::BadgesSettingsUpdate01Payload,
+        vta_sdk::openapi::BadgesSettingsUpdate01Response,
+        vta_sdk::openapi::BadgesCreate01Payload,
+        vta_sdk::openapi::BadgesCreate01Response,
+        vta_sdk::openapi::BadgesUpdate01Payload,
+        vta_sdk::openapi::BadgesUpdate01Response,
+        vta_sdk::openapi::BadgesRetire01Payload,
+        vta_sdk::openapi::BadgesRetire01Response,
+        vta_sdk::openapi::BadgesPromote01Payload,
+        vta_sdk::openapi::BadgesPromote01Response,
+        vta_sdk::openapi::BadgesList01Payload,
+        vta_sdk::openapi::BadgesList01Response,
+        vta_sdk::openapi::BadgesShow01Payload,
+        vta_sdk::openapi::BadgesShow01Response,
+        vta_sdk::openapi::BadgesImagesUpload01Payload,
+        vta_sdk::openapi::BadgesImagesUpload01Response,
+        vta_sdk::openapi::BadgesImagesGet01Payload,
+        vta_sdk::openapi::BadgesImagesGet01Response,
+        vta_sdk::openapi::BadgesAwardsOffer01Payload,
+        vta_sdk::openapi::BadgesAwardsOffer01Response,
+        vta_sdk::openapi::BadgesAwardsWithdraw01Payload,
+        vta_sdk::openapi::BadgesAwardsWithdraw01Response,
+        vta_sdk::openapi::BadgesAwardsRevoke01Payload,
+        vta_sdk::openapi::BadgesAwardsRevoke01Response,
+        vta_sdk::openapi::BadgesAwardsList01Payload,
+        vta_sdk::openapi::BadgesAwardsList01Response,
+        vta_sdk::openapi::BadgesHoldersList01Payload,
+        vta_sdk::openapi::BadgesHoldersList01Response,
+        vta_sdk::openapi::BadgesWallShow01Payload,
+        vta_sdk::openapi::BadgesWallShow01Response,
+        vta_sdk::openapi::BadgesMineList01Payload,
+        vta_sdk::openapi::BadgesMineList01Response,
+        vta_sdk::openapi::BadgesMineAccept01Payload,
+        vta_sdk::openapi::BadgesMineAccept01Response,
+        vta_sdk::openapi::BadgesMineDecline01Payload,
+        vta_sdk::openapi::BadgesMineDecline01Response,
+        vta_sdk::openapi::BadgesMineHide01Payload,
+        vta_sdk::openapi::BadgesMineHide01Response,
+        vta_sdk::openapi::BadgesMineShow01Payload,
+        vta_sdk::openapi::BadgesMineShow01Response,
+        vta_sdk::openapi::BadgesMineArrange01Payload,
+        vta_sdk::openapi::BadgesMineArrange01Response,
+        vta_sdk::openapi::BadgesKudosGive01Payload,
+        vta_sdk::openapi::BadgesKudosGive01Response,
+        vta_sdk::openapi::BadgesKudosList01Payload,
+        vta_sdk::openapi::BadgesKudosList01Response,
+        vta_sdk::openapi::GroupsRequestsList02Payload,
+        vta_sdk::openapi::GroupsRequestsList02Response,
         vta_sdk::openapi::GroupsRequestsDecide01Payload,
         vta_sdk::openapi::GroupsRequestsDecide01Response,
         vta_sdk::openapi::GroupsManagersAdd01Payload,
@@ -214,38 +299,30 @@ use crate::server::AppState;
         vta_sdk::openapi::DirectoryCardPresent01Response,
         vta_sdk::openapi::DirectoryNotesAppend01Payload,
         vta_sdk::openapi::DirectoryNotesAppend01Response,
-        vta_sdk::openapi::DirectoryNotesList01Payload,
-        vta_sdk::openapi::DirectoryNotesList01Response,
+        vta_sdk::openapi::DirectoryNotesList02Payload,
+        vta_sdk::openapi::DirectoryNotesList02Response,
         vta_sdk::openapi::DirectoryNotesExport01Payload,
         vta_sdk::openapi::DirectoryNotesExport01Response,
-        vta_sdk::openapi::DirectoryExport01Payload,
-        vta_sdk::openapi::DirectoryExport01Response,
-        vta_sdk::openapi::RoomsCommunityMembersList01Payload,
-        vta_sdk::openapi::RoomsCommunityMembersList01Response,
+        vta_sdk::openapi::DirectoryExport02Payload,
+        vta_sdk::openapi::DirectoryExport02Response,
+        vta_sdk::openapi::RoomsCommunityMembersList02Payload,
+        vta_sdk::openapi::RoomsCommunityMembersList02Response,
         // Where rooms' files are kept (`trust_tasks::storage_tasks`), signed
         // documents only.
-        vta_sdk::openapi::RoomsStorageAssign01Payload,
-        vta_sdk::openapi::RoomsStorageAssign01Response,
-        vta_sdk::openapi::RoomsStorageMigrate01Payload,
-        vta_sdk::openapi::RoomsStorageMigrate01Response,
-        vta_sdk::openapi::RoomsStorageMigrate02Payload,
-        vta_sdk::openapi::RoomsStorageMigrate02Response,
-        vta_sdk::openapi::StorageConfigsList01Response,
-        vta_sdk::openapi::StorageConfigsGet01Response,
-        vta_sdk::openapi::StorageConfigsCreate01Payload,
-        vta_sdk::openapi::StorageConfigsCreate01Response,
-        vta_sdk::openapi::StorageConfigsUpdate01Payload,
-        vta_sdk::openapi::StorageConfigsUpdate01Response,
+        vta_sdk::openapi::RoomsStorageAssign02Payload,
+        vta_sdk::openapi::RoomsStorageAssign02Response,
+        vta_sdk::openapi::RoomsStorageMigrate03Payload,
+        vta_sdk::openapi::RoomsStorageMigrate03Response,
         vta_sdk::openapi::StorageConfigsList02Response,
         vta_sdk::openapi::StorageConfigsGet02Response,
-        vta_sdk::openapi::StorageConfigsCreate02Payload,
-        vta_sdk::openapi::StorageConfigsCreate02Response,
-        vta_sdk::openapi::StorageCredentialsSet02Payload,
-        vta_sdk::openapi::StorageCredentialsSet02Response,
-        vta_sdk::openapi::StorageCredentialsSet02Cleartext,
-        vta_sdk::openapi::StorageConfigsUpdate02Payload,
-        vta_sdk::openapi::StorageConfigsUpdate02Response,
-        vta_sdk::openapi::StorageConfigsRetire01Response,
+        vta_sdk::openapi::StorageConfigsCreate03Payload,
+        vta_sdk::openapi::StorageConfigsCreate03Response,
+        vta_sdk::openapi::StorageCredentialsSet03Payload,
+        vta_sdk::openapi::StorageCredentialsSet03Response,
+        vta_sdk::openapi::StorageCredentialsSet03Cleartext,
+        vta_sdk::openapi::StorageConfigsUpdate03Payload,
+        vta_sdk::openapi::StorageConfigsUpdate03Response,
+        vta_sdk::openapi::StorageConfigsRetire03Response,
         vta_sdk::openapi::StorageConfigsProbe01Response,
         audit::AuditListResponse,
         crate::config_store::EffectiveConfig,
@@ -468,6 +545,14 @@ pub fn router_with(
     router_with_inner(routing, website_state, &[])
 }
 
+/// The router, with the per-IP limiters attributing clients through
+/// `trust_xff_cidrs`.
+///
+/// # Panics
+///
+/// If `trust_xff_cidrs` holds a range covering every address (`0.0.0.0/0`,
+/// `::/0`). Configuration loading refuses one, so only a list built in code
+/// can reach this.
 #[cfg(feature = "website")]
 pub fn router_with_xff(
     routing: &RoutingConfig,
@@ -482,6 +567,14 @@ pub fn router_with(routing: &RoutingConfig) -> Router<AppState> {
     router_with_inner(routing, &[])
 }
 
+/// The router, with the per-IP limiters attributing clients through
+/// `trust_xff_cidrs`.
+///
+/// # Panics
+///
+/// If `trust_xff_cidrs` holds a range covering every address (`0.0.0.0/0`,
+/// `::/0`). Configuration loading refuses one, so only a list built in code
+/// can reach this.
 #[cfg(not(feature = "website"))]
 pub fn router_with_xff(routing: &RoutingConfig, trust_xff_cidrs: &[IpNetwork]) -> Router<AppState> {
     router_with_inner(routing, trust_xff_cidrs)
@@ -599,7 +692,7 @@ fn build_api_chain(
     // super-admin role.
     // Phase 3 M3.10 — cross-community session mint. The Trust
     // Task declaration moved to `build_unauth_routes` so the
-    // handler sits behind the tower-governor + the 64 KB body
+    // handler sits behind the per-IP limiter + the 64 KB body
     // cap — it's an unauthenticated endpoint that does DID
     // resolution + outbound HTTP fetch + Rego policy eval +
     // session-JWT mint, all driven by attacker-controlled VAC/VMC
@@ -631,7 +724,7 @@ fn build_api_chain(
         .routes(routes!(status_lists::show))
         // Auth routes. `POST /v1/auth/{challenge,authenticate,refresh}`
         // are unauthenticated and live in `build_unauth_routes` so the
-        // tower-governor + tighter body cap apply. The two
+        // per-IP limiter + tighter body cap apply. The two
         // session-management endpoints below are authenticated and
         // stay on the main chain.
         //
@@ -742,7 +835,7 @@ fn build_api_chain(
         // revoke's bearer REST route had no caller once the spine dispatched
         // it (#1809) and was removed.
         // Phase 4 M4.6 — the VRC trust-graph member list
-        // (`vtc/relationships/list/0.2`) is a signed document only; its
+        // (`vtc/relationships/list/0.3`) is a signed document only; its
         // bearer REST route lost its last caller (the admin console) when
         // that console moved onto the signed door and was removed.
         // #1215 — the membership pair's bodies for one member
@@ -893,11 +986,10 @@ fn build_api_chain(
 /// - [`UNAUTH_BODY_SIZE`] body cap (tighter than the 1 MiB main
 ///   API cap — generous enough for a JWE / sealed-transfer
 ///   envelope, small enough to reject blob floods).
-/// - Per-IP `tower-governor` via [`TrustedProxyKeyExtractor`] (or the peer
-///   address when `trust_xff_cidrs` is empty): a burst of 10, then one
-///   request every 5 s. `per_second(5)` is a replenishment *interval*, not a
-///   rate — a bigger number is a tighter limit. A refusal is a `429` in the
-///   shape [`crate::routing::rate_limit`] defines, reporting limiter `unauth`.
+/// - Per-IP limit keyed by [`TrustedProxyKeyExtractor`] (the peer address
+///   when `trust_xff_cidrs` is empty, an IPv6 client's `/64`): a burst of 10,
+///   then one request every 5 s. A refusal is a `429` in the shape
+///   [`crate::routing::rate_limit`] defines, reporting limiter `unauth`.
 fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
     //
@@ -912,7 +1004,7 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
     // unauthenticated; step-up authenticates the caller inside the
     // handler, which is why both live on this chain.
     // Phase 3 M3.10 — cross-community session mint. Sits in the
-    // unauth chain (not the main API chain) so the tower-governor
+    // unauth chain (not the main API chain) so the per-IP limiter
     // + 64 KB body cap apply: the handler runs DID resolution,
     // outbound HTTP fetch of the foreign `statusListCredential`
     // URL, Rego policy eval, and a session JWT mint, all driven by
@@ -957,15 +1049,15 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // bound what an unauthenticated caller can make it verify.
         .routes(tt(
             routes!(credential_exchange::request),
-            <trust_tasks_rs::specs::credential_exchange::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <vti_specs::credential_exchange::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ))
-        // `auth/challenge/0.1` and `auth/authenticate/0.1`'s dedicated,
+        // `auth/challenge/0.1` and `auth/authenticate/0.3`'s dedicated,
         // `Trust-Task`-header-gated REST mounts had no caller left once
         // `vta_sdk::auth_light` (shared by the VTA client and `cnm
         // vetting`'s bearer-session login, `VtcClient::connect`) switched to
-        // signing `auth/challenge/0.1` / `authenticate/0.2` documents against
+        // signing `auth/challenge/0.1` / `authenticate/0.3` documents against
         // `POST /v1/trust-tasks` instead (#1858) — the same door
-        // `trust_tasks::auth_tasks` already dispatched `0.2`/`0.3` on. See
+        // `trust_tasks::auth_tasks` dispatches `0.3` on. See
         // that module's doc for the pre-session dispatch this family gets.
         // VTA-wallet login surface. The browser wallet extension drives
         // the SIOPv2 round-trip itself and posts to `<base>/auth/challenge`
@@ -985,16 +1077,16 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // round-trip on every access-token expiry instead. Same handler; the
         // op `type` rides in the body exactly as it does on `/wallet/auth/`.
         .route("/wallet/auth/refresh", post(auth::refresh))
-        // `auth/refresh/0.1`'s dedicated REST mount stays: it is also the
+        // `auth/refresh/0.2`'s dedicated REST mount stays: it is also the
         // admin console's own **cookie**-bound session renewal
         // (`vtc_admin_refresh`), which has no signed-document equivalent — a
-        // browser cookie carries no DID key to sign with. `auth/refresh/0.2`
-        // (`trust_tasks::auth_tasks`) adds the signed-document path beside
-        // it for TSP/DIDComm/HTTPS callers that hold a key; see that
+        // browser cookie carries no DID key to sign with. The spine's
+        // `auth/refresh/0.2` (`trust_tasks::auth_tasks`) is the signed-document
+        // path beside it for TSP/DIDComm/HTTPS callers that hold a key; see that
         // module's doc for the full argument.
         .routes(tt(
             routes!(auth::refresh),
-            "https://trusttasks.org/spec/auth/refresh/0.1",
+            "https://trusttasks.org/spec/auth/refresh/0.2",
         ))
         // Sign-out ends the browser's cookie session: it clears the cookie
         // pair `auth/admin-session` set, which no Trust Task describes. It had
@@ -1097,31 +1189,27 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
 
     // One extractor covers both cases: with an empty CIDR list
     // `TrustedProxyKeyExtractor` trusts nothing and so keys on the socket
-    // peer, which is exactly `PeerIpKeyExtractor`. Branching on the list only
+    // peer, which is exactly peer-address keying. Branching on the list only
     // to pick between two behaviours that already coincide is a chance to get
     // the arms the wrong way round for no gain.
-    let cfg = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(5)
-            .burst_size(10)
-            .key_extractor(TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()))
-            .finish()
-            .expect("governor config values are static and non-zero"),
-    );
-    // `/trust-tasks` is not behind the tower layer: it charges a document to
-    // one of several budgets depending on who signed it
+    let extractor = TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec())
+        .expect("trust_xff_cidrs holds no catch-all range");
+    // A burst of 10, then one request every 5 s, per address.
+    let unauth =
+        affinidi_rate_limit::RateLimiterState::per_period(std::time::Duration::from_secs(5), 10)
+            .with_source(crate::routing::rate_limit::RATE_LIMIT_SOURCE)
+            .with_limiter_name(crate::routing::rate_limit::UNAUTH_LIMITER);
+    // `/trust-tasks` is not behind this layer: it charges a document to one
+    // of several budgets depending on who signed it
     // (`routing::trust_task_admission`). Anonymous documents still pay this
-    // governor's own limiter state, so an address has one anonymous budget
-    // across the whole chain, not one here and another on `/trust-tasks`.
-    let limits = crate::routing::trust_task_admission::TrustTaskLimits::new(
-        cfg.limiter().clone(),
-        TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
-    );
+    // limiter's own state, so an address has one anonymous budget across the
+    // whole chain, not one here and another on `/trust-tasks`.
+    let limits = crate::routing::trust_task_admission::TrustTaskLimits::new(unauth, extractor);
     let unauth_router = unauth_router
-        .layer(
-            GovernorLayer::new(cfg)
-                .error_handler(crate::routing::rate_limit::governor_error_response),
-        )
+        .layer(axum::middleware::from_fn_with_state(
+            limits.clone(),
+            crate::routing::trust_task_admission::unauthenticated,
+        ))
         .merge(
             OpenApiRouter::<AppState>::new()
                 .routes(routes!(trust_tasks::dispatch))
@@ -1192,6 +1280,17 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
         .route(
             "/group-dids/{id}/did.jsonl",
             get(crate::groups::identity::serve_group_did_log),
+        )
+        // The public artefacts of a badge its holders may show outside (VTI-BDG-051):
+        // the Achievement document and the picture its credentials name. Public, like
+        // the identity logs above; a badge kept inside answers 404.
+        .route(
+            "/badges/{id}",
+            get(crate::badges::public::serve_achievement),
+        )
+        .route(
+            "/badges/{id}/image",
+            get(crate::badges::public::serve_image),
         )
         // API surface — existing TrustTaskRouter result nested at
         // the configured mount.
@@ -1308,6 +1407,17 @@ pub fn assemble_with_website(
         .route(
             "/group-dids/{id}/did.jsonl",
             get(crate::groups::identity::serve_group_did_log),
+        )
+        // The public artefacts of a badge its holders may show outside (VTI-BDG-051):
+        // the Achievement document and the picture its credentials name. Public, like
+        // the identity logs above; a badge kept inside answers 404.
+        .route(
+            "/badges/{id}",
+            get(crate::badges::public::serve_achievement),
+        )
+        .route(
+            "/badges/{id}/image",
+            get(crate::badges::public::serve_image),
         )
         .nest(&routing.api.mount, api);
     app = app.nest(&routing.admin_ui.mount, admin);
@@ -1524,15 +1634,15 @@ mod openapi_tests {
     // allowlist — making the P0.5 regression class impossible to land silently.
 
     /// Unauthenticated operations that ride the governed chain
-    /// (`build_unauth_routes`): tower-governor rate limit + [`UNAUTH_BODY_SIZE`]
+    /// (`build_unauth_routes`): per-IP rate limit + [`UNAUTH_BODY_SIZE`]
     /// body cap. Attacker-driven crypto / IO belongs here.
     const GOVERNED_UNAUTH: &[(&str, &str)] = &[
-        // `auth/refresh/0.1` keeps its dedicated mount: it is also the admin
+        // `auth/refresh/0.2` keeps its dedicated mount: it is also the admin
         // console's cookie-bound session renewal, which has no
         // signed-document equivalent. `auth/challenge/0.1` and
-        // `auth/authenticate/0.1` lost theirs — `vta_sdk::auth_light` (and
+        // `auth/authenticate/0.3` lost theirs — `vta_sdk::auth_light` (and
         // `cnm vetting`'s bearer-session login through it) now signs
-        // `auth/challenge/0.1` / `authenticate/0.2` documents against the
+        // `auth/challenge/0.1` / `authenticate/0.3` documents against the
         // single Trust Task endpoint below instead (#1858). First-admin
         // onboarding (`install/claim/*`, `admin/bootstrap`) and
         // cross-community recognition (`auth/recognise/*`) moved there too —

@@ -35,7 +35,7 @@ import {
   type GitNsSelfGrantWaived,
   type Tone,
 } from "./model";
-import { activeElementOf } from "@/components/Protected";
+import { Protected, activeElementOf } from "@/components/Protected";
 
 /** Where the plugin is mounted (`src/plugins/index.ts`). */
 export const REPOS_PATH = "/repos";
@@ -88,8 +88,8 @@ export function BreakGlassChip({ mark }: { mark: GitNsBreakGlassMark | null | un
   if (!mark || !state) return null;
   const title =
     state === "ratified"
-      ? `Self-granted ${formatDay(mark.at)}, ratified ${formatDay(mark.ratifiedAt)}`
-      : `Self-granted ${formatDay(mark.at)} — awaiting another administrator's ratification or revocation. Justification: ${mark.justification}`;
+      ? `Self-granted ${formatDay(mark.recordedAt)}, ratified ${formatDay(mark.ratifiedAt)}`
+      : `Self-granted ${formatDay(mark.recordedAt)} — awaiting another administrator's ratification or revocation. Justification: ${mark.justification}`;
   return (
     <span className={state === "ratified" ? "chip" : "chip danger gitns-breakglass"} title={title}>
       <Siren aria-hidden="true" size={12} /> {BREAK_GLASS_STATE_LABEL[state]}
@@ -322,8 +322,8 @@ export function useModal(
   closeRef.current = onClose;
 
   useEffect(() => {
-    // The page is drawn in a shadow tree (a protected plugin), where
-    // `document.activeElement` is the host rather than the opener.
+    // The dialog is drawn in a shadow tree (out of the theme's reach), where
+    // `document.activeElement` can be a host rather than the opener.
     const opener = (
       surfaceRef.current ? activeElementOf(surfaceRef.current) : document.activeElement
     ) as HTMLElement | null;
@@ -374,8 +374,22 @@ export function useModal(
  * operator should discover whose DID they are about to grant ownership to.
  * A destructive task needs its confirmation box ticked before it sends, and
  * the dialog cannot be dismissed while a send is in flight.
+ *
+ * What is signed, for whom, and the send are drawn out of the community
+ * theme's reach (`vtc/community/theme/show/0.1`, client item 2); the scrim and
+ * the dialog paint their own opaque ground. `Protected` wraps the surface, not
+ * the other way round: it portals its children a render after it mounts, so a
+ * `useModal` above it would run before the dialog exists.
  */
-export function SignTaskDialog({
+export function SignTaskDialog(props: Parameters<typeof SignTaskDialogSurface>[0]) {
+  return (
+    <Protected ground="none">
+      <SignTaskDialogSurface {...props} />
+    </Protected>
+  );
+}
+
+function SignTaskDialogSurface({
   task,
   onClose,
   onSent,
@@ -529,13 +543,13 @@ export function SignTaskDialog({
         )}
 
         {signing && destructive && !unavailable && (
-          <label className="gitns-radio">
+          <label className="checkbox">
             <input
               type="checkbox"
               checked={confirmed}
               onChange={(e) => setConfirmed(e.target.checked)}
             />
-            <span>I understand this is destructive and want to sign it.</span>
+            <span className="checkbox-text">I understand this is destructive and want to sign it.</span>
           </label>
         )}
 

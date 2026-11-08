@@ -16,7 +16,7 @@
 //! The census is **derived, not hand-maintained**. Its scope is the sweep's
 //! dispatched ∩ published URI set ([`super::conformance::resolved_uris`]), and
 //! each URI's declared codes come from
-//! `trust_tasks_rs::schema_index::error_codes_for`, generated from the
+//! `vti_specs::schema_index::error_codes_for`, generated from the
 //! specification's `errorCodes` front matter.
 //!
 //! A code is **witnessed** when a test in this crate (a `#[cfg(test)]` module
@@ -45,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use trust_tasks_rs::DeclaredErrorCode;
-use trust_tasks_rs::schema_index::error_codes_for;
+use vti_specs::schema_index::error_codes_for;
 
 use super::conformance::resolved_uris;
 
@@ -54,31 +54,40 @@ use super::conformance::resolved_uris;
 /// Typed paths, not strings: a code the specification stops declaring is a
 /// compile error here, not a stale row.
 fn unwitnessed() -> Vec<DeclaredErrorCode> {
-    use trust_tasks_rs::specs as s;
+    use vti_specs as s;
     vec![
         // BASELINE-BEGIN — generated from this test's own failure output.
-        s::acl::change_role::v0_1::error_codes::ROLE_NOT_RECOGNIZED,
-        s::acl::change_role::v0_1::error_codes::STATE_MISMATCH,
-        s::acl::grant::v0_1::error_codes::ROLE_NOT_RECOGNIZED,
-        s::acl::revoke::v0_1::error_codes::LAST_AUTHORITY_PROTECTED,
-        s::acl::revoke::v0_1::error_codes::SUBJECT_NOT_PRESENT,
+        // AclEntry 0.2 codes for bounds the shared operations still answer as
+        // `permissionDenied` (the granter-bound checks, VTI-ACL-053), and the
+        // last-authority guard, which self-modification refusal makes
+        // unreachable at a VTA (an unrestricted admin cannot remove itself).
+        s::acl::change_role::v0_2::error_codes::ADDITIVE_WITHIN_CEILING,
+        s::acl::change_role::v0_2::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        s::acl::grant::v0_2::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
+        s::acl::grant::v0_2::error_codes::APPROVE_WIDER_THAN_GRANTER,
+        s::acl::grant::v0_2::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        s::acl::revoke::v0_2::error_codes::LAST_AUTHORITY_PROTECTED,
         s::acl::swap_key::v0_1::error_codes::LINK_PROOF_INVALID,
         s::acl::swap_key::v0_1::error_codes::LINK_PROOF_REQUIRED,
         s::acl::swap_key::v0_1::error_codes::NOT_HOLDER,
         s::acl::swap_key::v0_1::error_codes::SUBJECT_ALREADY_IN_USE,
         s::acl::swap_key::v0_1::error_codes::SUBJECT_NOT_FOUND,
-        s::acl::update::v0_1::error_codes::NARROWING_NOT_PERMITTED,
-        s::acl::update::v0_1::error_codes::NOT_FOUND,
-        s::acl::update::v0_1::error_codes::ROLE_CHANGE_NOT_PERMITTED,
-        s::audit::list::v0_1::error_codes::INVALID_CURSOR,
+        s::acl::update::v0_2::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
+        s::acl::update::v0_2::error_codes::APPROVE_WIDER_THAN_GRANTER,
+        s::acl::update::v0_2::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        // The spine's schema check refuses a `role` member first (update item 2).
+        s::acl::update::v0_2::error_codes::ROLE_CHANGE_NOT_PERMITTED,
+        s::audit::list::v0_2::error_codes::INVALID_CURSOR,
         s::auth::revoke_session::v0_2::error_codes::SESSION_NOT_FOUND,
-        s::auth::step_up::approve_response::v0_3::error_codes::ACR_UNSATISFIED,
-        s::auth::step_up::approve_response::v0_3::error_codes::APPROVER_UNAUTHORIZED,
-        s::auth::step_up::approve_response::v0_3::error_codes::ASSERTION_INVALID,
-        s::auth::step_up::approve_response::v0_3::error_codes::CHALLENGE_EXPIRED,
-        s::auth::step_up::approve_response::v0_3::error_codes::CHALLENGE_UNKNOWN,
-        s::auth::step_up::approve_response::v0_3::error_codes::NO_GATE,
-        s::auth::step_up::approve_response::v0_3::error_codes::SUBJECT_MISMATCH,
+        s::auth::step_up::approve_response::v0_7::error_codes::ACR_UNSATISFIED,
+        s::auth::step_up::approve_response::v0_7::error_codes::APPROVER_NOT_BOUND,
+        s::auth::step_up::approve_response::v0_7::error_codes::APPROVER_UNAUTHORIZED,
+        s::auth::step_up::approve_response::v0_7::error_codes::ASSERTION_INVALID,
+        s::auth::step_up::approve_response::v0_7::error_codes::CHALLENGE_EXPIRED,
+        s::auth::step_up::approve_response::v0_7::error_codes::CHALLENGE_UNKNOWN,
+        s::auth::step_up::approve_response::v0_7::error_codes::NO_GATE,
+        s::auth::step_up::approve_response::v0_7::error_codes::STATEMENT_INVALID,
+        s::auth::step_up::approve_response::v0_7::error_codes::SUBJECT_MISMATCH,
         s::auth::whoami::v0_1::error_codes::NO_SESSION,
         s::consent::approver_list::v1_0::error_codes::NOT_AUTHORIZED,
         s::consent::approver_set::v1_0::error_codes::INVALID_BINDING,
@@ -86,7 +95,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::consent::decision::v1_0::error_codes::CHALLENGE_MISMATCH,
         s::consent::decision::v1_0::error_codes::NOT_AUTHORIZED,
         s::consent::decision::v1_0::error_codes::SUBJECT_INVALID,
-        s::consent::list::v1_0::error_codes::NOT_AUTHORIZED,
+        s::consent::list::v1_1::error_codes::NOT_AUTHORIZED,
         s::consent::request::v1_0::error_codes::NO_APPROVER,
         s::consent::request::v1_0::error_codes::RATE_LIMITED,
         s::consent::request::v1_0::error_codes::SUBJECT_INVALID,
@@ -101,28 +110,28 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::credential_exchange::query::v0_1::error_codes::NO_MATCH,
         s::device::disable::v0_1::error_codes::ALREADY_DISABLED,
         s::device::disable::v0_1::error_codes::NOT_FOUND,
-        s::device::heartbeat::v0_1::error_codes::NOT_REGISTERED,
-        s::device::register::v0_1::error_codes::ALREADY_REGISTERED,
-        s::device::register::v0_1::error_codes::ATTESTATION_FAILED,
-        s::device::register::v0_1::error_codes::HPKE_KEY_INVALID,
-        s::device::register::v0_1::error_codes::NO_PENDING_ENROLMENT,
-        s::device::set_wake::v0_1::error_codes::GATEWAY_UNREACHABLE,
-        s::device::set_wake::v0_1::error_codes::INVALID_HANDLE,
-        s::device::set_wake::v0_1::error_codes::NOT_REGISTERED,
-        s::device::wipe::v0_1::error_codes::NOT_FOUND,
-        s::device::wipe::v0_1::error_codes::WIPE_PARTIAL,
-        s::external::accounts::archive::v0_1::error_codes::INVALID_TRANSITION,
-        s::external::accounts::bindings::grant::v0_1::error_codes::CEILING_NOT_APPLICABLE,
-        s::external::accounts::bindings::revoke::v0_1::error_codes::NO_SUCH_BINDING,
+        s::device::heartbeat::v0_3::error_codes::NOT_REGISTERED,
+        s::device::register::v0_2::error_codes::ALREADY_REGISTERED,
+        s::device::register::v0_2::error_codes::ATTESTATION_FAILED,
+        s::device::register::v0_2::error_codes::HPKE_KEY_INVALID,
+        s::device::register::v0_2::error_codes::NO_PENDING_ENROLMENT,
+        s::device::set_wake::v0_2::error_codes::GATEWAY_UNREACHABLE,
+        s::device::set_wake::v0_2::error_codes::INVALID_HANDLE,
+        s::device::set_wake::v0_2::error_codes::NOT_REGISTERED,
+        s::device::wipe::v0_2::error_codes::NOT_FOUND,
+        s::device::wipe::v0_2::error_codes::WIPE_PARTIAL,
+        s::external::accounts::archive::v0_2::error_codes::INVALID_TRANSITION,
+        s::external::accounts::bindings::grant::v0_2::error_codes::CEILING_NOT_APPLICABLE,
+        s::external::accounts::bindings::revoke::v0_2::error_codes::NO_SUCH_BINDING,
         s::external::accounts::delete::v0_1::error_codes::INVALID_TRANSITION,
-        s::external::accounts::keys::rotate::v0_1::error_codes::NO_ROTATION_PENDING,
-        s::external::accounts::keys::rotate::v0_1::error_codes::NOT_KEY_MODEL,
-        s::external::accounts::keys::rotate::v0_1::error_codes::PROBE_FAILED,
-        s::external::accounts::keys::rotate::v0_1::error_codes::ROTATION_PENDING,
-        s::external::accounts::restore::v0_1::error_codes::INVALID_TRANSITION,
-        s::external::accounts::resume::v0_1::error_codes::INVALID_TRANSITION,
+        s::external::accounts::keys::rotate::v0_2::error_codes::NO_ROTATION_PENDING,
+        s::external::accounts::keys::rotate::v0_2::error_codes::NOT_KEY_MODEL,
+        s::external::accounts::keys::rotate::v0_2::error_codes::PROBE_FAILED,
+        s::external::accounts::keys::rotate::v0_2::error_codes::ROTATION_PENDING,
+        s::external::accounts::restore::v0_2::error_codes::INVALID_TRANSITION,
+        s::external::accounts::resume::v0_2::error_codes::INVALID_TRANSITION,
         s::external::accounts::secret::set::v0_1::error_codes::NOT_STATIC_MODEL,
-        s::external::accounts::suspend::v0_1::error_codes::INVALID_TRANSITION,
+        s::external::accounts::suspend::v0_2::error_codes::INVALID_TRANSITION,
         s::external::credentials::issue::v0_3::error_codes::NO_KEY_AGREEMENT,
         s::external::credentials::issue::v0_3::error_codes::NOT_BROKERED,
         s::external::credentials::issue::v0_3::error_codes::NOT_ACTIVE,
@@ -162,11 +171,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::persona::disclosure::preview::v1_0::error_codes::NOT_BOUND,
         s::persona::disclosure::preview::v1_0::error_codes::RENDERER_CANNOT_CARRY,
         s::persona::disclosure::preview::v1_0::error_codes::RENDERER_UNAVAILABLE,
-        s::persona::facet::delete::v1_0::error_codes::VERSION_CONFLICT,
-        s::persona::facet::list::v1_0::error_codes::INVALID_CURSOR,
-        s::persona::facet::put::v1_0::error_codes::FACE_ALREADY_PLACED,
-        s::persona::facet::put::v1_0::error_codes::UNRESOLVED_REFERENCE,
-        s::persona::facet::put::v1_0::error_codes::VERSION_CONFLICT,
         s::persona::local::binding::set::v1_0::error_codes::NOT_LOCAL_PROFILE,
         s::persona::local::binding::set::v1_0::error_codes::PROFILE_RETIRED,
         s::persona::local::binding::set::v1_0::error_codes::UNTIL_NOT_FUTURE,
@@ -192,10 +196,10 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::policy::delete::v0_1::error_codes::VERSION_CONFLICT,
         s::policy::delete::v0_1::error_codes::WOULD_ORPHAN_CONTEXTS,
         s::policy::get::v0_1::error_codes::NOT_FOUND,
-        s::policy::upsert::v0_2::error_codes::CONTEXT_NOT_FOUND,
-        s::policy::upsert::v0_2::error_codes::NOT_FOUND,
-        s::policy::upsert::v0_2::error_codes::REGO_INVALID,
-        s::policy::upsert::v0_2::error_codes::VERSION_CONFLICT,
+        s::policy::upsert::v0_3::error_codes::CONTEXT_NOT_FOUND,
+        s::policy::upsert::v0_3::error_codes::NOT_FOUND,
+        s::policy::upsert::v0_3::error_codes::REGO_INVALID,
+        s::policy::upsert::v0_3::error_codes::VERSION_CONFLICT,
         s::provision::integration::v0_3::error_codes::ASSERTION_UNSUPPORTED,
         s::provision::integration::v0_3::error_codes::CONTEXT_NOT_FOUND,
         s::provision::integration::v0_3::error_codes::ENVELOPE_UNSUPPORTED,
@@ -204,9 +208,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::provision::integration::v0_3::error_codes::TEMPLATE_NOT_FOUND,
         s::provision::integration::v0_3::error_codes::TEMPLATE_VARS_INVALID,
         s::rooms::keys::backfill::v0_2::error_codes::NOT_A_MEMBER,
-        s::rooms::keys::browse::v0_1::error_codes::HOST_REFUSED,
-        s::rooms::keys::browse::v0_1::error_codes::HOST_UNREACHABLE,
-        s::rooms::keys::browse::v0_1::error_codes::NOT_A_MEMBER,
         s::rooms::keys::chain::v0_2::error_codes::NOT_A_MEMBER,
         s::rooms::keys::commit::v0_1::error_codes::COMMIT_INVALID,
         s::rooms::keys::commit::v0_1::error_codes::EPOCH_GAP,
@@ -214,7 +215,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::rooms::keys::key_package::v0_2::error_codes::NOT_INVITED,
         s::rooms::keys::open::v0_2::error_codes::DID_NOT_OPEN,
         s::rooms::keys::present::v0_2::error_codes::ACTION_NOT_HELD,
-        s::rooms::keys::read::v0_1::error_codes::NOT_A_MEMBER,
         s::rooms::keys::welcome::v0_1::error_codes::NOT_INVITED,
         s::rooms::owner::anchor::v0_1::error_codes::HOST_REFUSED,
         s::rooms::owner::anchor::v0_1::error_codes::HOST_UNREACHABLE,
@@ -224,10 +224,14 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::rooms::owner::issue_authority::v0_2::error_codes::EMPTY_ACTIONS,
         s::rooms::owner::issue_authority::v0_2::error_codes::NO_SIGNING_KEY,
         s::rooms::owner::issue_membership::v0_1::error_codes::NO_SIGNING_KEY,
-        s::task_consent::decision::v0_1::error_codes::CHALLENGE_MISMATCH,
-        s::task_consent::decision::v0_1::error_codes::NO_PENDING,
-        s::task_consent::decision::v0_1::error_codes::NOT_AN_APPROVER,
-        s::task_consent::decision::v0_1::error_codes::REQUESTER_EXCLUDED,
+        s::task_consent::decision::v0_2::error_codes::CHALLENGE_MISMATCH,
+        // This VTA states no evidence policy, so it never asks for a kind
+        // (`evidenceRequired`); and it offers no `approverSigned` gate, so the
+        // two approver-statement codes above are unreachable here.
+        s::task_consent::decision::v0_2::error_codes::EVIDENCE_REQUIRED,
+        s::task_consent::decision::v0_2::error_codes::NO_PENDING,
+        s::task_consent::decision::v0_2::error_codes::NOT_AN_APPROVER,
+        s::task_consent::decision::v0_2::error_codes::REQUESTER_EXCLUDED,
         s::vault::credentials::archive::v0_1::error_codes::NOT_ACTIVE,
         s::vault::credentials::archive::v0_1::error_codes::NOT_FOUND,
         s::vault::credentials::delete::v0_1::error_codes::ALREADY_DELETED,
@@ -314,8 +318,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::vta::backup::put_chunk::v1_0::error_codes::NOT_FOUND,
         s::vta::backup::put_chunk::v1_0::error_codes::TERMINAL_STATE,
         s::vta::contexts::create::v1_0::error_codes::PARENT_NOT_FOUND,
-        s::vta::contexts::delete::v1_0::error_codes::NOT_FOUND,
-        s::vta::contexts::get::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::preview_delete::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::secrets::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::secrets::v1_0::error_codes::NOT_RELEASABLE,
@@ -378,30 +380,30 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // Declared for an engine that does not serve every level's cast task. This one
         // serves `vta/pcs/vote` and `vta/pcs/vote-encrypted`, so every level registers and
         // the code cannot occur here (trust-tasks-tf #845).
-        s::vta::pcs::voter::register::v0_1::error_codes::UNSUPPORTED_SECRECY,
-        s::vta::services::disable::v1_0::error_codes::NOT_AUTHORIZED,
-        s::vta::services::disable::v1_0::error_codes::NOT_FOUND,
+        s::vta::pcs::voter::register::v0_3::error_codes::UNSUPPORTED_SECRECY,
+        s::vta::services::disable::v1_1::error_codes::NOT_AUTHORIZED,
+        s::vta::services::disable::v1_1::error_codes::NOT_FOUND,
         s::vta::services::drain::cancel::v1_0::error_codes::CONFLICT,
         s::vta::services::drain::cancel::v1_0::error_codes::NOT_AUTHORIZED,
         s::vta::services::drain::cancel::v1_0::error_codes::NOT_FOUND,
-        s::vta::services::enable::v1_0::error_codes::CONFLICT,
-        s::vta::services::enable::v1_0::error_codes::NOT_AUTHORIZED,
-        s::vta::services::enable::v1_0::error_codes::VALIDATION_FAILED,
-        s::vta::services::get::v1_0::error_codes::NOT_FOUND,
-        s::vta::services::report::v0_1::error_codes::INVALID_WINDOW,
-        s::vta::services::rollback::v1_1::error_codes::CONFLICT,
-        s::vta::services::rollback::v1_1::error_codes::NOT_AUTHORIZED,
-        s::vta::services::rollback::v1_1::error_codes::NOT_FOUND,
-        s::vta::services::update::v1_1::error_codes::NOT_AUTHORIZED,
-        s::vta::services::update::v1_1::error_codes::NOT_FOUND,
-        s::vta::services::update::v1_1::error_codes::VALIDATION_FAILED,
+        s::vta::services::enable::v1_1::error_codes::CONFLICT,
+        s::vta::services::enable::v1_1::error_codes::NOT_AUTHORIZED,
+        s::vta::services::enable::v1_1::error_codes::VALIDATION_FAILED,
+        s::vta::services::get::v1_1::error_codes::NOT_FOUND,
+        s::vta::services::report::v0_2::error_codes::INVALID_WINDOW,
+        s::vta::services::rollback::v1_2::error_codes::CONFLICT,
+        s::vta::services::rollback::v1_2::error_codes::NOT_AUTHORIZED,
+        s::vta::services::rollback::v1_2::error_codes::NOT_FOUND,
+        s::vta::services::update::v1_2::error_codes::NOT_AUTHORIZED,
+        s::vta::services::update::v1_2::error_codes::NOT_FOUND,
+        s::vta::services::update::v1_2::error_codes::VALIDATION_FAILED,
         s::vta::webvh::agent_name::disable::v1_0::error_codes::NOT_FOUND,
         s::vta::webvh::agent_name::enable::v1_0::error_codes::NOT_FOUND,
-        s::vta::webvh::agent_name::list::v1_0::error_codes::NOT_FOUND,
+        s::vta::webvh::agent_name::list::v1_1::error_codes::NOT_FOUND,
         s::vta::webvh::agent_name::remove::v1_0::error_codes::NOT_FOUND,
         s::vta::webvh::agent_name::set::v1_0::error_codes::NOT_FOUND,
-        s::vta::webvh::dids::create::v1_1::error_codes::PATH_TAKEN,
-        s::vta::webvh::dids::create::v1_1::error_codes::TEMPLATE_NOT_FOUND,
+        s::vta::webvh::dids::create::v1_2::error_codes::PATH_TAKEN,
+        s::vta::webvh::dids::create::v1_2::error_codes::TEMPLATE_NOT_FOUND,
         s::vta::webvh::dids::delete::v1_0::error_codes::NOT_FOUND,
         s::vta::webvh::dids::get::v1_0::error_codes::NOT_FOUND,
         s::vta::webvh::dids::realign_keys::v1_0::error_codes::CONFLICT,
@@ -422,7 +424,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // `-p vta-service` run skips these rows (out of scope there).
         s::vta::attestation::config_report::v0_1::error_codes::EVIDENCE_UNAVAILABLE,
         s::vta::attestation::config_report::v0_1::error_codes::NOT_ATTESTED,
-        s::vta::attestation::mnemonic_status::v0_1::error_codes::NOT_AVAILABLE,
+        s::vta::attestation::mnemonic_status::v0_2::error_codes::NOT_AVAILABLE,
         s::vta::attestation::report::v0_1::error_codes::EVIDENCE_UNAVAILABLE,
         s::vta::attestation::report::v0_1::error_codes::NOT_ATTESTED,
         s::vta::attestation::status::v0_1::error_codes::NOT_ATTESTED,
@@ -433,7 +435,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The ceiling [`unwitnessed`]'s length may never exceed — a ratchet, not a
 /// count. Only *growing* the baseline past it needs an edit, which always
 /// wants a human decision.
-const UNWITNESSED_CEILING: usize = 371;
+const UNWITNESSED_CEILING: usize = 373;
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.
 fn declared_in_scope() -> BTreeMap<&'static str, (&'static str, DeclaredErrorCode)> {
@@ -561,7 +563,7 @@ fn asserted(sources: &[(PathBuf, String)]) -> Asserted {
                     .unwrap_or(after.len());
                 out.constant_paths.push(format!(
                     "{}::error_codes::{}",
-                    rest[start..at].trim_start_matches("trust_tasks_rs::specs::"),
+                    rest[start..at].trim_start_matches("vti_specs::"),
                     &after[..end]
                 ));
                 rest = &after[end..];

@@ -15,10 +15,10 @@ use webauthn_rs::prelude::{
     CreationChallengeResponse, PublicKeyCredential, RequestChallengeResponse,
 };
 
-use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite_spec;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish_spec;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start_spec;
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as approve_response_spec;
+use vti_specs::auth::passkey::enroll::invite::v0_3 as invite_spec;
+use vti_specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish_spec;
+use vti_specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start_spec;
+use vti_specs::auth::step_up::approve_response::v0_7 as approve_response_spec;
 
 use vtc_service::acl::bound_step_up::{self, ApproveError, Approved, Gate};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
@@ -32,7 +32,7 @@ use crate::common::webauthn_harness::SoftEd25519Authenticator;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 /// The operation these tests bind gestures to. Which task it is does not
 /// matter to any assertion here — only who may answer for the subject does.
-const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.1";
+const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.2";
 
 /// A distinct payload per gesture — `redeem_or_request` keys its mark on the
 /// digest of type + payload, so reusing one across calls in the same test

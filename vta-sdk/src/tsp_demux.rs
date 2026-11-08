@@ -230,7 +230,7 @@ mod tests {
     fn response(thread_id: &str) -> String {
         json!({
             "id": "urn:uuid:reply",
-            "type": "https://trusttasks.org/spec/messaging/ping/0.1#response",
+            "type": "https://trusttasks.org/spec/messaging/ping/0.2#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "threadId": thread_id,
             "payload": { "ok": true },

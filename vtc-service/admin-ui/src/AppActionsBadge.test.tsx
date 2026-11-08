@@ -15,7 +15,7 @@ const WHOAMI: WhoamiResponse = {
   roles: ["admin"],
   scopes: [],
 };
-const LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+const LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
 
 const reads = vi.hoisted(() => ({
   waiting: 2,

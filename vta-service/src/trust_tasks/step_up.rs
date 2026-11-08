@@ -1,4 +1,4 @@
-//! AAL step-up gate verification (`auth/step-up/approve-response/0.1`).
+//! AAL step-up gate verification (`auth/step-up/approve-response/0.7`).
 //!
 //! The relying party (this VTA) elevates a session only when the approve-
 //! response carries exactly one verifiable cryptographic gate, per the spec's
@@ -9,19 +9,22 @@
 //!   `verificationMethod` DID equals the subject. [`verify_did_signed_gate`].
 //! - **webauthn** — the carried assertion verifies per WebAuthn L2 §7.2 against
 //!   the bound challenge (handled by the approve-response handler reusing
-//!   `verify_passkey_login`).
+//!   `verify_passkey_login`), by a passkey verification method of the
+//!   approver's own DID, with user verification.
 //!
-//! Every approve-response, approved or denied and whichever gate it carries,
-//! is the approver's own attestation: its proof must be made for
-//! `assertionMethod` with a key the approver lists under `assertionMethod`
+//! A proof, wherever one is carried, is the approver's own attestation: made
+//! for `assertionMethod` with a key the approver lists under `assertionMethod`
 //! ([`crate::auth::verify_approval_proof`]), as the did-hosting RP's
 //! `verify_approval` requires. A proof made for `authentication` is refused.
+//! 0.7 requires one on a `didSigned` answer and on every denial; a `webauthn`
+//! approval may carry none, its assertion being the evidence, and then decides
+//! nothing the assertion and this VTA's own state do not (consumer item 4a).
 //!
 //! This module is the did-signed verifier; the handler that consumes the
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
 //!
-//! The *request* leg (`auth/step-up/approve-request/0.2`, minted by
+//! The *request* leg (`auth/step-up/approve-request/0.5`, minted by
 //! [`mint_pending_step_up`]) is **signed by this VTA** — `eddsa-jcs-2022`,
 //! `authentication` by its operational key, issuer DID == the proof's
 //! `verificationMethod` DID —
@@ -42,17 +45,17 @@ use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_1 as approve_response;
-use vta_sdk::trust_tasks as uris;
+use vti_specs::auth::step_up::approve_request::v0_5 as approve_request;
+use vti_specs::auth::step_up::approve_response::v0_7 as approve_response;
 // Only the DIDComm sends name the envelope; TSP carries the document bytes
 // directly, so this is unused when the binding is compiled out. Imported from the
 // binding crate rather than copied — one source, no local literals (#900).
 #[cfg(feature = "didcomm")]
 use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
-#[cfg(feature = "didcomm")]
-use trust_tasks_rs::specs::push::wake::v0_2 as push_wake;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use uuid::Uuid;
+#[cfg(feature = "didcomm")]
+use vti_specs::push::wake::v0_2 as push_wake;
 
 use crate::audit::audit;
 use crate::auth::AuthClaims;
@@ -153,13 +156,13 @@ fn acr_rank(acr: &str) -> u8 {
 
 fn gate_err_to_reject(e: GateError) -> RejectReason {
     match e {
-        GateError::NoGate => step_up_failure("auth/step-up/approve-response:noGate"),
+        // Only reached with a proof present, so a missing one is the
+        // framework's `proofRequired` (0.7 consumer item 1a), never `noGate`.
+        GateError::NoGate => RejectReason::ProofRequired,
         GateError::SubjectMismatch => {
             step_up_failure("auth/step-up/approve-response:subjectMismatch")
         }
-        GateError::ProofInvalid(_) => {
-            step_up_failure("auth/step-up/approve-response:proof_invalid")
-        }
+        GateError::ProofInvalid(reason) => RejectReason::ProofInvalid { reason },
     }
 }
 
@@ -248,14 +251,15 @@ async fn verify_webauthn_gate(
         .map_err(|_| invalid())
 }
 
-/// Handler for `auth/step-up/approve-response/0.1` **and** `/0.2`.
+/// Handler for `auth/step-up/approve-response/0.7`.
 ///
 /// Consumes the approver's ratification of a pending step-up and, on a verified
-/// gate, elevates the *subject's* session `amr`/`acr`. Follows the spec's
-/// relying-party conformance rules; the bearer JWT (`auth`) identifies the
-/// caller (the approver, who signs and submits the document as itself), and the
-/// approve-response's gate (did-signed proof or webauthn assertion) is the
-/// second factor.
+/// gate, elevates the *subject's* session `amr`/`acr` — or, for a step-up bound
+/// to one operation, records the approval against it and elevates nothing.
+/// Follows the spec's relying-party conformance rules; the bearer JWT (`auth`)
+/// identifies the caller (the approver, who signs and submits the document as
+/// itself), and the approve-response's gate (did-signed proof or webauthn
+/// assertion) is the second factor.
 ///
 /// Self **and** delegated: the document `issuer`/signer is the *approver*, which
 /// is the subject in self step-up (`issuer == subject`) or a distinct party in
@@ -264,37 +268,30 @@ async fn verify_webauthn_gate(
 /// issuer is authorized against the recorded approver before the subject's
 /// session is elevated.
 ///
-/// Dual-accept: 0.2 differs from 0.1 only in the `evidence.kind` discriminator
-/// value (`did-signed`→`didSigned`). Because the approver signs the payload,
-/// the document MUST NOT be mutated; instead the typed (v0_1) parse runs over a
-/// down-converted *copy*, while proof verification and the echoed response use
-/// the original `doc` — so a 0.2 request verifies against its 0.2 bytes and
-/// receives a `…/0.2#response`. (`kebabize` is idempotent on already-kebab
-/// values, so the down-convert is a no-op for a genuine 0.1 request — one code
-/// path serves both versions.)
+/// 0.1–0.6 are no longer served. The `approverSigned` gate is never offered
+/// by this VTA, so it is refused as `noGate` like any gate not offered.
+///
+/// The proof is settled before the pending step-up is consumed (0.7 consumer
+/// item 1a), so a document refused for its proof leaves the challenge for the
+/// approver's own answer.
 pub(super) async fn handle_approve_response(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // 1. Parse the typed payload from a version-normalised copy (see above).
-    let payload: approve_response::Payload = {
-        let mut payload_value = doc.payload.clone();
-        super::wire_v0_2::kebabize_paths(&mut payload_value, &["evidence.kind"]);
-        match serde_json::from_value(payload_value) {
-            Ok(p) => p,
-            Err(e) => {
-                return reject_with(
-                    &doc,
-                    RejectReason::MalformedRequest {
-                        reason: format!("payload parse: {e}"),
-                    },
-                );
-            }
+    // 1. Parse the typed payload.
+    let payload: approve_response::Payload = match serde_json::from_value(doc.payload.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("payload parse: {e}"),
+                },
+            );
         }
     };
     let subject = payload.subject.to_string();
-    let session_id = payload.session_id.to_string();
     let challenge = payload.challenge.to_string();
 
     // 2. Signer self-consistency: the approver signs the document and submits it
@@ -316,6 +313,25 @@ pub(super) async fn handle_approve_response(
                 reason: "the approve-response issuer must be the authenticated caller".to_string(),
             },
         );
+    }
+
+    // 2a. The proof, before anything is consulted (0.7 consumer item 1a). A
+    //     proof, when carried, must be the approver's own — made for
+    //     `assertionMethod` by the issuer. Only a `webauthn` approval may come
+    //     without one: a `didSigned` answer's proof is its evidence, and a
+    //     refusal is a statement the assertion could not make.
+    let proved = doc.proof.is_some();
+    let webauthn_approval = payload.decision == approve_response::PayloadDecision::Approved
+        && matches!(
+            payload.evidence,
+            Some(approve_response::Evidence::Webauthn { .. })
+        );
+    if proved {
+        if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
+            return reject_with(&doc, gate_err_to_reject(e));
+        }
+    } else if !webauthn_approval {
+        return reject_with(&doc, RejectReason::ProofRequired);
     }
 
     // 3. Locate + consume the pending step-up by echoed challenge (single use).
@@ -343,12 +359,18 @@ pub(super) async fn handle_approve_response(
             );
         }
     };
-    if pending.subject != subject || pending.session_id != session_id {
+    // Echoes: `sessionId` is present exactly when the pending step-up has a
+    // session, and equals it when present (0.4 let a bound approval carry none).
+    let pending_session = (!pending.session_id.is_empty()).then_some(pending.session_id.as_str());
+    if pending.subject != subject
+        || payload.session_id.as_deref().map(String::as_str) != pending_session
+    {
         return reject_with(
             &doc,
             step_up_failure("auth/step-up/approve-response:subjectMismatch"),
         );
     }
+    let session_id = pending.session_id.clone();
 
     // 4b. Authorize the signer. The gate (4/5) proves the proof VM == issuer;
     //     this ties that issuer to the step-up the relying party minted.
@@ -399,12 +421,10 @@ pub(super) async fn handle_approve_response(
         }
     }
 
-    // 4. A `denied` decision is a signed refusal — verify the did-signed gate
-    //    (against the approver/issuer key), audit, and elevate nothing.
+    // 4. A `denied` decision is a signed refusal — its proof, by the
+    //    approver/issuer key, was verified in 2a — so audit, and elevate
+    //    nothing.
     if payload.decision == approve_response::PayloadDecision::Denied {
-        if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
-            return reject_with(&doc, gate_err_to_reject(e));
-        }
         audit!(
             "auth.step_up_denied",
             actor = &subject,
@@ -436,7 +456,8 @@ pub(super) async fn handle_approve_response(
     // this binary does not recognise was never offered either.
     let evidence_kind = match payload.evidence.as_ref() {
         None | Some(approve_response::Evidence::DidSigned) => Some("did-signed"),
-        Some(approve_response::Evidence::Webauthn(_)) => Some("webauthn"),
+        Some(approve_response::Evidence::Webauthn { .. }) => Some("webauthn"),
+        // `approverSigned` is never offered by this VTA.
         Some(_) => None,
     };
     if !evidence_kind.is_some_and(|k| pending.acceptable_evidence.iter().any(|e| e == k)) {
@@ -446,26 +467,12 @@ pub(super) async fn handle_approve_response(
         );
     }
     let factor: &str = match payload.evidence.as_ref() {
-        None | Some(approve_response::Evidence::DidSigned) => {
-            if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
-                return reject_with(&doc, gate_err_to_reject(e));
-            }
-            "did"
-        }
-        Some(approve_response::Evidence::Webauthn(assertion)) => {
-            // The passkey assertion is the gate, but the document is still the
-            // approver's attestation: its proof must be an `assertionMethod`
-            // proof by the approver, like every approve-response. A missing
-            // proof here is an invalid document, not a missing gate.
-            if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
-                let e = match e {
-                    GateError::NoGate => GateError::ProofInvalid(
-                        "an approve-response must carry the approver's proof".to_string(),
-                    ),
-                    other => other,
-                };
-                return reject_with(&doc, gate_err_to_reject(e));
-            }
+        // The proof, verified in 2a, is the gate.
+        None | Some(approve_response::Evidence::DidSigned) => "did",
+        Some(approve_response::Evidence::Webauthn { assertion }) => {
+            // The assertion is the gate, by a passkey of the issuer's own DID
+            // (the approver, authorized above), with user verification. Any
+            // proof beside it was verified in 2a.
             match verify_webauthn_gate(state, &issuer, &challenge, assertion).await {
                 Ok(()) => "passkey",
                 Err(reason) => return reject_with(&doc, reason),
@@ -491,7 +498,14 @@ pub(super) async fn handle_approve_response(
 
     // 6. AAL ceiling/floor: elevate to the requested targetAcr, which MUST be
     //    ≤ the approver's grantedAcr (default aal2). Otherwise `acr_unsatisfied`.
-    let granted = payload.granted_acr.as_deref().unwrap_or("aal2");
+    //    `grantedAcr` is the approver's claim, read only from a document the
+    //    approver proved; an unproved `webauthn` answer demonstrates what a
+    //    user-verified passkey does — aal2 — whatever it says (0.7 item 4a).
+    let granted = if proved {
+        payload.granted_acr.as_deref().unwrap_or("aal2")
+    } else {
+        "aal2"
+    };
     let target = pending.target_acr.as_str();
     if acr_rank(target) > acr_rank(granted) {
         return reject_with(
@@ -534,30 +548,16 @@ pub(super) async fn handle_approve_response(
             }
         }
 
-        // 7b. And, if the approver asked in 0.3, it elevates NOTHING.
-        //
-        // This is the whole reason 0.3 exists. An approval taken to disclose a
-        // card number is not a reason to raise the session's assurance for
-        // everything else it can reach, and #1304 could only elevate anyway
-        // because 0.2's acknowledgement has exactly two statuses: `elevated`
-        // was untrue and `rejected` was worse, since the approval *had* been
-        // applied.
-        //
-        // The version is read from the REQUEST, not chosen. A response's type
-        // is the request's type plus `#response`, so an approver that minted
-        // 0.2 must be answered in 0.2 — and 0.2 still has no word for this. So
-        // a 0.1/0.2 bound approval falls through and elevates, exactly as
-        // before; only a 0.3 one gets the honest answer. That is the cutover,
-        // and it moves per approver rather than per deployment.
-        if doc.type_uri.to_string() == uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3 {
-            audit!(
-                "auth.step_up.recorded",
-                actor = &pending.subject,
-                resource = preview_id,
-                outcome = "success"
-            );
-            return success_response(&doc, json!({ "status": "recorded", "boundTo": preview_id }));
-        }
+        // 7b. And it elevates NOTHING. An approval taken to disclose a card
+        // number is not a reason to raise the session's assurance for
+        // everything else it can reach: the acknowledgement is `recorded`.
+        audit!(
+            "auth.step_up.recorded",
+            actor = &pending.subject,
+            resource = preview_id,
+            outcome = "success"
+        );
+        return success_response(&doc, json!({ "status": "recorded", "boundTo": preview_id }));
     }
 
     // 7. Elevate the session, conditional on the row as stored: one signed out
@@ -717,14 +717,15 @@ async fn subject_has_passkey(_state: &AppState, _did: &str) -> bool {
 }
 
 /// Mint a pending step-up and build the **signed**
-/// `auth/step-up/approve-request/0.2` document the AAL1 caller hands to its
-/// approver (wallet / VTA). 0.2 differs from 0.1 only in the type URI and the
-/// `acceptableEvidence` spelling (`did-signed` → `didSigned`); every fielded
-/// receiver (vta-mobile-core, the browser plugin) accepts both request
-/// flavors, so the mint moved cleanly to 0.2 (#870's deferred follow-up).
+/// `auth/step-up/approve-request/0.5` document the AAL1 caller hands to its
+/// approver (wallet / VTA) — the version the did-hosting RP and vtc-service
+/// mint too, so an approver speaks one request whoever asks. Over 0.2 that is
+/// `acceptableEvidence` → a required `accepts` and `ttl` → `ttlSeconds`; the
+/// payload is built through the generated type, so the request this VTA signs
+/// is one the specification admits.
 ///
 /// A fresh challenge is bound server-side to the caller's
-/// `{session_id, subject, targetAcr=aal2, acceptableEvidence}` via the
+/// `{session_id, subject, targetAcr=aal2, accepts}` via the
 /// pending-step-up store; the approver's `approve-response` is later consumed by
 /// [`handle_approve_response`]. One caller: [`initiate_self_step_up`], reached
 /// from the gate's `requireStepUp` disposition — the two floor-driven wrappers
@@ -770,7 +771,7 @@ async fn mint_pending_step_up(
 ) -> Result<Value, ()> {
     // The *stored* pending record keeps the kebab canonical form
     // (`did-signed`) that `vti_common::auth::step_up` documents — it's internal
-    // state, not wire. The 0.2 wire spelling is camelCase (`didSigned`).
+    // state, not wire. The wire spelling is camelCase (`didSigned`).
     let (acceptable, acceptable_wire) = if approver_has_passkey {
         (vec!["webauthn".to_string()], vec!["webauthn".to_string()])
     } else {
@@ -807,20 +808,25 @@ async fn mint_pending_step_up(
         return Err(());
     }
 
+    let payload = match approve_request_payload(
+        subject,
+        session_id,
+        &challenge,
+        reason,
+        &acceptable_wire,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "step-up approve-request does not conform to its specification");
+            return Err(());
+        }
+    };
     let mut doc = json!({
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "type": STEP_UP_APPROVE_REQUEST_TYPE,
         "issuer": vta_did,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "payload": {
-            "subject": subject,
-            "sessionId": session_id,
-            "challenge": challenge,
-            "reason": reason,
-            "targetAcr": STEP_UP_TARGET_ACR,
-            "acceptableEvidence": acceptable_wire,
-            "ttl": STEP_UP_TTL_SECS,
-        },
+        "payload": payload,
     });
     // Address the request to the approver for `self`/`delegated`; `delegated-any`
     // has no single recipient (any qualifying admin may ratify), so the field is
@@ -863,9 +869,8 @@ async fn mint_pending_step_up(
     Ok(doc)
 }
 
-/// Trust Task `type` of a step-up approve-request. 0.2 — both fielded approver
-/// stacks (vta-mobile-core #871, the browser plugin) accept 0.1 and 0.2 request
-/// URIs.
+/// Trust Task `type` of a step-up approve-request, from the generated module
+/// the payload is built with.
 ///
 /// This is the **document's** type, and only that. It is no longer the DIDComm
 /// message type: that is `trust_tasks_didcomm::ENVELOPE_TYPE`, and naming this
@@ -874,7 +879,32 @@ async fn mint_pending_step_up(
 /// this name cannot drift apart — which is why the gate came off, the mint site
 /// not being DIDComm-specific.
 const STEP_UP_APPROVE_REQUEST_TYPE: &str =
-    "https://trusttasks.org/spec/auth/step-up/approve-request/0.2";
+    <approve_request::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The approve-request payload, built as JSON and read back through the
+/// generated type's schema check — the same shape as vtc-service's
+/// `approve_request_payload`. `sessionId` is present: this is a session
+/// step-up, whose response echoes it (`handle_approve_response`).
+fn approve_request_payload(
+    subject: &str,
+    session_id: &str,
+    challenge: &str,
+    reason: &str,
+    accepts: &[String],
+) -> Result<approve_request::Payload, String> {
+    use trust_tasks_rs::validate::ValidatedPayload as _;
+    let value = json!({
+        "subject": subject,
+        "sessionId": session_id,
+        "challenge": challenge,
+        "reason": reason,
+        "targetAcr": STEP_UP_TARGET_ACR,
+        "accepts": accepts,
+        "ttlSeconds": STEP_UP_TTL_SECS,
+    });
+    approve_request::Payload::validate_value(&value).map_err(|e| e.to_string())?;
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
 
 /// How long [`approver_mediator`] will wait to read an approver's DID document
 /// before giving up on the push. Deliberately short: the caller is on a request
@@ -1020,6 +1050,21 @@ pub(super) async fn push_to_device(
     document: &Value,
     deliver_by: Duration,
 ) -> DevicePush {
+    push_to_device_with(state, recipient, document, deliver_by, true).await
+}
+
+/// [`push_to_device`], ringing the doorbell only when `wake`. A document whose
+/// specification asks the sender not to wake the device itself
+/// (`rooms/keys/changed/0.1` Producer item 5: the waiting document is what the
+/// recipient's mediator wakes it for) is pushed the same way, without one.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(super) async fn push_to_device_with(
+    state: &AppState,
+    recipient: &str,
+    document: &Value,
+    deliver_by: Duration,
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))] wake: bool,
+) -> DevicePush {
     // Cloned out so the config read-lock is released before the route decision:
     // resolving a routable recipient's DID document is network I/O, and holding
     // the lock across it stalls every config writer for that long.
@@ -1061,7 +1106,9 @@ pub(super) async fn push_to_device(
     // next voluntary pickup. Contentless by design — the wake says only "you
     // have mail", never what the task is or who is asking.
     #[cfg(feature = "didcomm")]
-    trigger_gateway_wake(state, recipient, &mediator).await;
+    if wake {
+        trigger_gateway_wake(state, recipient, &mediator).await;
+    }
     DevicePush::Queued { push, mediator }
 }
 
@@ -1546,18 +1593,28 @@ mod tests {
 
         assert_eq!(
             v["approveRequest"]["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-request/0.2"
+            "https://trusttasks.org/spec/auth/step-up/approve-request/0.5"
         );
         assert_eq!(v["approveRequest"]["issuer"], vta_did);
         assert_eq!(v["approveRequest"]["recipient"], "did:key:zHolder");
         assert_eq!(v["approveRequest"]["payload"]["sessionId"], "sess-9");
         assert_eq!(v["approveRequest"]["payload"]["targetAcr"], "aal2");
         assert_eq!(v["approveRequest"]["payload"]["reason"], "rotate keys");
-        // 0.2 wire spelling: camelCase `didSigned` (0.1 said `did-signed`).
+        // 0.5: `accepts`, camelCase `didSigned`; `ttl` is `ttlSeconds`.
         assert_eq!(
-            v["approveRequest"]["payload"]["acceptableEvidence"],
+            v["approveRequest"]["payload"]["accepts"],
             json!(["didSigned", "webauthn"])
         );
+        assert!(
+            v["approveRequest"]["payload"]
+                .get("acceptableEvidence")
+                .is_none()
+        );
+        assert_eq!(
+            v["approveRequest"]["payload"]["ttlSeconds"],
+            json!(STEP_UP_TTL_SECS)
+        );
+        assert!(v["approveRequest"]["payload"].get("ttl").is_none());
         let challenge = v["approveRequest"]["payload"]["challenge"]
             .as_str()
             .expect("challenge string");
@@ -1714,7 +1771,7 @@ mod tests {
         // P: Payload, which Value isn't) — proofless, ready to sign.
         let doc_json = json!({
             "id": "approve-resp-1",
-            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "issuer": subject,
             "recipient": "did:web:vta.example",
@@ -1856,7 +1913,7 @@ mod tests {
     // (`noGate`) even if a stale or bypassing client sends it anyway. A
     // subject with no passkey keeps the original did-signed-or-webauthn offer.
 
-    /// Build a signed `auth/step-up/approve-response/0.2` document over an
+    /// Build a signed `auth/step-up/approve-response/0.7` document over an
     /// arbitrary `payload` — [`signed_doc_for`] generalised: that helper
     /// fixes the payload shape (no `evidence`, a hardcoded challenge), which
     /// the passkey-gate tests need to vary (a real minted challenge,
@@ -1869,7 +1926,7 @@ mod tests {
     ) -> TrustTask<Value> {
         let doc_json = json!({
             "id": format!("urn:uuid:{}", Uuid::new_v4()),
-            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.2",
+            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "issuer": issuer_did,
             "recipient": "did:web:vta.example",
@@ -1963,7 +2020,7 @@ mod tests {
         .await
         .expect("mint succeeds");
 
-        assert_eq!(doc["payload"]["acceptableEvidence"], json!(["webauthn"]));
+        assert_eq!(doc["payload"]["accepts"], json!(["webauthn"]));
 
         let challenge = doc["payload"]["challenge"]
             .as_str()
@@ -2126,7 +2183,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(req1["payload"]["acceptableEvidence"], json!(["webauthn"]));
+        assert_eq!(req1["payload"]["accepts"], json!(["webauthn"]));
         let challenge1 = req1["payload"]["challenge"].as_str().unwrap().to_string();
 
         let did_signed_payload = json!({
@@ -2202,6 +2259,96 @@ mod tests {
         assert!(
             body2.contains("\"elevated\""),
             "a passkey holder's webauthn approve-response must be accepted, got: {body2}"
+        );
+        let elevated = vti_common::auth::session::get_session(&state.sessions_ks, session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(elevated.acr, "aal2");
+        assert!(elevated.amr.iter().any(|m| m == "passkey"));
+
+        // -- 3. approve-response 0.7: the assertion alone is the evidence. --
+        vti_common::auth::session::store_session(
+            &state.sessions_ks,
+            &fresh_session(session_id, &subject_did),
+        )
+        .await
+        .unwrap();
+        let req3 = mint_pending_step_up(
+            &state.sessions_ks,
+            &vta_did2,
+            &secret2,
+            &subject_did,
+            &subject_did,
+            false,
+            session_id,
+            "reason",
+            None,
+            None,
+            approver_has_passkey,
+        )
+        .await
+        .unwrap();
+        let challenge3 = req3["payload"]["challenge"].as_str().unwrap().to_string();
+        let unsigned = |payload: Value| -> TrustTask<Value> {
+            serde_json::from_value(json!({
+                "id": format!("urn:uuid:{}", Uuid::new_v4()),
+                "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "issuer": subject_did,
+                "recipient": "did:web:vta.example",
+                "payload": payload,
+            }))
+            .unwrap()
+        };
+
+        // A refusal without the approver's proof is `proofRequired` (consumer
+        // item 1a) — and, refused before the lookup, it leaves the challenge.
+        let denied = unsigned(json!({
+            "subject": subject_did,
+            "sessionId": session_id,
+            "challenge": challenge3,
+            "decision": "denied",
+            "deniedReason": "no",
+        }));
+        let out = handle_approve_response(&state, &auth, denied).await;
+        assert!(
+            body_text(&out).contains("proofRequired"),
+            "an unproved denial: {}",
+            body_text(&out)
+        );
+
+        // An unproved `webauthn` approval is accepted, and decides nothing the
+        // assertion does not (item 4a): its `grantedAcr` is ignored, so an
+        // `aal1` claim cannot fail the step-up, and the level is the
+        // passkey's.
+        let webauthn_challenge_b64 = general_purpose::URL_SAFE_NO_PAD.encode(challenge3.as_bytes());
+        let assertion = authenticator.assert(RP_ID, ORIGIN, &webauthn_challenge_b64, true);
+        let approved = unsigned(json!({
+            "subject": subject_did,
+            "sessionId": session_id,
+            "challenge": challenge3,
+            "decision": "approved",
+            "grantedAcr": "aal1",
+            "evidence": {
+                "kind": "webauthn",
+                "assertion": {
+                    "id": assertion.credential_id,
+                    "rawId": assertion.credential_id,
+                    "type": "public-key",
+                    "response": {
+                        "authenticatorData": assertion.authenticator_data,
+                        "clientDataJSON": assertion.client_data_json,
+                        "signature": assertion.signature,
+                    },
+                },
+            },
+        }));
+        let out = handle_approve_response(&state, &auth, approved).await;
+        assert!(
+            body_text(&out).contains("\"elevated\""),
+            "an unproved webauthn approval: {}",
+            body_text(&out)
         );
         let elevated = vti_common::auth::session::get_session(&state.sessions_ks, session_id)
             .await

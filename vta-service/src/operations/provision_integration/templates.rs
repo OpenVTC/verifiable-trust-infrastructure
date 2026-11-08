@@ -32,7 +32,8 @@ pub(super) async fn resolve_admin_template(
         .map_err(|e| match e {
             AppError::NotFound(_) => AppError::Validation(format!(
                 "admin template '{name}' is not registered on this VTA. Register it via \
-                 'pnm did-templates create {name} --file <path>' then retry, or use \
+                 'pnm did-templates create --file <path> --context {context}' (the file's \
+                 `name` must be '{name}') then retry, or use \
                  the built-in 'vta-admin' template."
             )),
             other => other,

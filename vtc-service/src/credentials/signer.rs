@@ -330,6 +330,31 @@ impl LocalSigner {
         Ok(())
     }
 
+    /// Sign `doc` with the primary key for `proofPurpose: authentication` — proof of control
+    /// of this VTC's DID, as a sign-in challenge asks for. Unlike
+    /// [`sign_operational_doc`](Self::sign_operational_doc) it seals no Trust Task envelope,
+    /// so it signs any JSON object as it stands.
+    pub async fn sign_authentication_doc(
+        &self,
+        doc: &mut serde_json::Value,
+    ) -> Result<(), AppError> {
+        let obj = doc
+            .as_object_mut()
+            .ok_or_else(|| AppError::Internal("document is not a JSON object".into()))?;
+        obj.remove("proof");
+        let proof_value = self
+            .proof_value_from(
+                std::slice::from_ref(self.primary()),
+                &*doc,
+                SignOptions::new().with_proof_purpose("authentication"),
+            )
+            .await?;
+        doc.as_object_mut()
+            .expect("checked above")
+            .insert("proof".into(), proof_value);
+        Ok(())
+    }
+
     pub async fn sign_doc(&self, doc: &mut serde_json::Value) -> Result<(), AppError> {
         let obj = doc
             .as_object_mut()
@@ -497,7 +522,7 @@ mod multi_key_tests {
         let doc = vti_common::capability_client::build_document(
             DID,
             "did:web:registry.example",
-            "https://trusttasks.org/spec/registry/record/put/0.1",
+            "https://trusttasks.org/spec/registry/record/put/0.3",
             serde_json::json!({}),
         );
         let mut doc = serde_json::to_value(&doc).unwrap();
@@ -528,7 +553,7 @@ mod multi_key_tests {
         let doc = vti_common::capability_client::build_document(
             DID,
             "did:web:registry.example",
-            "https://trusttasks.org/spec/registry/record/put/0.1",
+            "https://trusttasks.org/spec/registry/record/put/0.3",
             serde_json::json!({}),
         );
         let mut doc = serde_json::to_value(&doc).unwrap();

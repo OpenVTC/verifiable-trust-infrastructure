@@ -304,7 +304,7 @@ fn signed_doc(
     serde_json::to_value(&doc).expect("envelope serialises")
 }
 
-/// `trust-task-discovery/0.1` answers from the dispatch table.
+/// `trust-task-discovery/0.3` answers from the dispatch table.
 ///
 /// The property worth pinning is not that it returns *something* but that it
 /// returns the tasks this service actually routes — a discovery response
@@ -327,7 +327,7 @@ async fn trust_task_discovery_reports_dispatched_tasks() {
             signed_doc(
                 &ctx,
                 "urn:uuid:4c3d5e6f-7081-4293-a4b5-c6d7e8f90123",
-                "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                "https://trusttasks.org/spec/trust-task-discovery/0.3",
                 json!({ "patterns": ["acl/*"] }),
             ),
         ))
@@ -348,7 +348,7 @@ async fn trust_task_discovery_reports_dispatched_tasks() {
     // admits no PATCH.
     assert_eq!(
         body["payload"]["frameworkVersion"],
-        vti_common::trust_task::discovery::FRAMEWORK_VERSION_MAJOR_MINOR
+        vti_common::trust_task::discovery::FRAMEWORK_VERSION
     );
 }
 
@@ -393,10 +393,19 @@ async fn vti_trn_047_discovery_0_3_advertises_the_window_the_vta_enforces() {
         vti_common::trust_task::discovery::FRAMEWORK_VERSION
     );
     let types = payload["supportedTypes"].as_array().expect("an array");
-    for version in ["0.1", "0.3"] {
-        let uri = format!("https://trusttasks.org/spec/trust-task-discovery/{version}");
-        assert!(types.iter().any(|t| *t == uri), "{uri} listed: {types:?}");
-    }
+    // Only the current version is served (0.1 is retired), and discovery
+    // lists itself.
+    let current = "https://trusttasks.org/spec/trust-task-discovery/0.3";
+    assert!(
+        types.iter().any(|t| *t == current),
+        "{current} listed: {types:?}"
+    );
+    assert!(
+        !types.iter().any(|t| t
+            .as_str()
+            .is_some_and(|s| s.ends_with("/trust-task-discovery/0.1"))),
+        "a retired version is not listed: {types:?}"
+    );
     let max_age = payload["acceptanceWindow"]["maxAgeSeconds"]
         .as_i64()
         .unwrap_or_else(|| panic!("a response-level window: {body}"));
@@ -475,7 +484,7 @@ async fn trust_task_discovery_defaults_to_everything() {
             signed_doc(
                 &ctx,
                 "urn:uuid:5d4e6f70-8192-43a4-b5c6-d7e8f9012345",
-                "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                "https://trusttasks.org/spec/trust-task-discovery/0.3",
                 json!({}),
             ),
         ))
@@ -490,7 +499,7 @@ async fn trust_task_discovery_defaults_to_everything() {
     assert!(
         types
             .iter()
-            .any(|t| t == "https://trusttasks.org/spec/trust-task-discovery/0.1"),
+            .any(|t| t == "https://trusttasks.org/spec/trust-task-discovery/0.3"),
         "discovery must advertise itself"
     );
 }
@@ -983,7 +992,7 @@ async fn create_test_webvh_did(
     context_id: &str,
 ) -> (String, String, String) {
     let token = setup_webvh_context(app, ctx, context_id).await;
-    // `POST /webvh/dids` is gone — `webvh/dids/create/1.0` on `/trust-tasks` is
+    // `POST /webvh/dids` is gone — `webvh/dids/create/1.2` on `/trust-tasks` is
     // the only way in now, on every transport.
     let (status, body) = app
         .request(post_auth(
@@ -992,7 +1001,7 @@ async fn create_test_webvh_did(
             signed_doc(
                 ctx,
                 &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-                vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+                vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
                 json!({
                     "contextId": context_id,
                     "url": "https://example.com/.well-known/did/did.jsonl",
@@ -1102,6 +1111,228 @@ async fn webvh_dids_update_with_new_document_rotates_keys() {
         "auth keys rotated to 1 fresh key"
     );
     assert!(body["newVersionId"].as_str().unwrap().starts_with("2-"));
+}
+
+// ── vta/webvh/dids/update/1.1: the did:scid alias of an existing log ───
+
+#[cfg(feature = "webvh")]
+const TASK_UPDATE_1_1: &str = vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1;
+
+/// The `alsoKnownAs` of the entry an update response published.
+#[cfg(feature = "webvh")]
+fn published_aliases(payload: &Value) -> Vec<String> {
+    let entry: Value =
+        serde_json::from_str(payload["newLogEntry"].as_str().expect("newLogEntry")).unwrap();
+    entry["state"]["alsoKnownAs"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// VTI-KEY-164: `scidAlsoKnownAs` removes and lists the alias of a log, the
+/// VTA deriving the DID URL; each change publishes an entry and rotates the
+/// update key, and asking for what the log already has is `noChange`.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn vti_key_164_update_1_1_removes_and_lists_the_scid_alias() {
+    let (app, ctx) = TestApp::new().await;
+    let (_token, _scid, did) = create_test_webvh_did(&app, &ctx, "alias-toggle").await;
+    let (_, url) = vta_sdk::did_scid::scid_forms(&did).unwrap();
+
+    // Created under the default `[dids] scid_also_known_as = true`: listed.
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE_1_1,
+        json!({ "did": did, "scidAlsoKnownAs": true }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["payload"]["code"], "vta/webvh/dids/update:noChange",
+        "listing an already-listed alias publishes nothing: {body}"
+    );
+
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE_1_1,
+        json!({ "did": did, "scidAlsoKnownAs": false, "label": "drop alias" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "remove: {body}");
+    let p = &body["payload"];
+    serde_json::from_value::<vti_specs::vta::webvh::dids::update::v1_1::Response>(p.clone())
+        .unwrap_or_else(|e| panic!("a valid update/1.1 response: {e}: {p}"));
+    assert_eq!(p["scidAlsoKnownAs"], false, "{p}");
+    assert_eq!(
+        p["scidDidUrl"],
+        url.as_str(),
+        "reported even when not listed: {p}"
+    );
+    assert!(!published_aliases(p).contains(&url), "{p}");
+    assert!(p["newVersionId"].as_str().unwrap().starts_with("2-"), "{p}");
+    assert_eq!(p["updateKeysCount"], 1, "the update key rotates: {p}");
+
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE_1_1,
+        json!({ "did": did, "scidAlsoKnownAs": false }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["payload"]["code"], "vta/webvh/dids/update:noChange",
+        "{body}"
+    );
+
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE_1_1,
+        json!({ "did": did, "scidAlsoKnownAs": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "list: {body}");
+    let p = &body["payload"];
+    assert_eq!(p["scidAlsoKnownAs"], true, "{p}");
+    assert_eq!(published_aliases(p), vec![url.clone()], "{p}");
+    assert!(p["newVersionId"].as_str().unwrap().starts_with("3-"), "{p}");
+
+    // Once listed again, the did:scid DID names this log again (VTI-KEY-164).
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        "https://trusttasks.org/spec/vta/webvh/dids/get/1.0",
+        json!({ "did": vta_sdk::did_scid::scid_forms(&did).unwrap().0 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "get by did:scid: {body}");
+}
+
+/// A 1.0 request cannot ask for the alias (its closed schema refuses the
+/// member), and a 1.1 request that does not name it still reports both forms.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn update_1_0_refuses_the_alias_and_1_1_always_reports_it() {
+    let (app, ctx) = TestApp::new().await;
+    let (_token, _scid, did) = create_test_webvh_did(&app, &ctx, "alias-versions").await;
+
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE,
+        json!({ "did": did, "scidAlsoKnownAs": false }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "1.0 has no scidAlsoKnownAs: {body}");
+
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE_1_1,
+        json!({ "did": did, "preRotationCount": 0 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let p = &body["payload"];
+    assert_eq!(p["scidAlsoKnownAs"], true, "{p}");
+    assert_eq!(
+        p["scidDidUrl"],
+        vta_sdk::did_scid::scid_forms(&did).unwrap().1.as_str(),
+        "{p}"
+    );
+
+    // 1.0's response stays as its closed schema has it.
+    let (status, body) =
+        webvh_task(&app, &ctx, TASK_UPDATE, json!({ "did": did, "ttl": 600 })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["payload"].get("scidDidUrl").is_none(), "{body}");
+}
+
+/// VTI-KEY-166: an identity presented as its did:scid keeps its alias —
+/// `scidAlsoKnownAs: false` and a document dropping it are both
+/// `scidAliasRequired`, and nothing is published.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn vti_key_166_a_presented_did_scid_keeps_its_alias() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "alias-presented").await;
+    let (status, body) = app
+        .request(post_auth(
+            "/trust-tasks",
+            &token,
+            signed_doc(
+                &ctx,
+                &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
+                json!({
+                    "contextId": "alias-presented",
+                    "url": "https://presented.example.com/.well-known/did/did.jsonl",
+                    "setPrimary": false,
+                    "didMethod": "scid",
+                }),
+            ),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "create: {body}");
+    let scid_did = body["payload"]["did"].as_str().unwrap().to_string();
+    let webvh_did = body["payload"]["webvhDid"].as_str().unwrap().to_string();
+
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE_1_1,
+        json!({ "did": scid_did, "scidAlsoKnownAs": false }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["payload"]["code"], "vta/webvh/dids/update:scidAliasRequired",
+        "{body}"
+    );
+
+    // A document without the alias, with no `scidAlsoKnownAs` at all.
+    let bare = json!({ "@context": ["https://www.w3.org/ns/did/v1"], "id": webvh_did });
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE_1_1,
+        json!({ "did": webvh_did, "document": bare }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["payload"]["code"], "vta/webvh/dids/update:scidAliasRequired",
+        "{body}"
+    );
+
+    // The same document under 1.0 is refused too, with 1.0's own vocabulary.
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE,
+        json!({ "did": webvh_did, "document": bare }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert!(body.to_string().contains("scidAliasRequired"), "{body}");
+
+    // Listing it with the document is the way to change the document.
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE_1_1,
+        json!({ "did": webvh_did, "document": bare, "scidAlsoKnownAs": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["payload"]["scidAlsoKnownAs"], true, "{body}");
 }
 
 #[cfg(feature = "webvh")]

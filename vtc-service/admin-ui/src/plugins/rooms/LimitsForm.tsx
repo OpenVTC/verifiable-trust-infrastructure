@@ -104,26 +104,26 @@ export function LimitsForm({
   }
 
   return (
-    <form className="rooms-limits-form" onSubmit={submit}>
-      <fieldset className="rooms-limits-mode">
+    <form className="form-stack" onSubmit={submit}>
+      <fieldset className="choice-group inline">
         <legend className="field-label">Change</legend>
-        <label>
+        <label className="checkbox">
           <input
             type="radio"
             name="limits-mode"
             checked={mode === "set"}
             onChange={() => setMode("set")}
-          />{" "}
-          Set these limits
+          />
+          <span className="checkbox-text">Set these limits</span>
         </label>
-        <label>
+        <label className="checkbox">
           <input
             type="radio"
             name="limits-mode"
             checked={mode === "clear"}
             onChange={() => setMode("clear")}
-          />{" "}
-          Clear the override, back to the default
+          />
+          <span className="checkbox-text">Clear the override, back to the default</span>
         </label>
       </fieldset>
 
@@ -177,8 +177,8 @@ export function LimitsForm({
         />
       </Field>
 
-      <div className="rooms-form-actions">
-        <button type="submit" disabled={!valid || busy}>
+      <div className="form-actions">
+        <button className="primary" type="submit" disabled={!valid || busy}>
           {busy ? "Saving…" : mode === "clear" ? "Clear override" : "Save limits"}
         </button>
         <button type="button" className="secondary" onClick={onDone} disabled={busy}>

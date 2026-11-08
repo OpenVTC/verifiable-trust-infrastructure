@@ -89,7 +89,7 @@ fn default_true() -> bool {
 
 // ─── Export ──────────────────────────────────────────────────────────────
 
-/// `spec/vta/backup/initiate-export/1.0` payload.
+/// `spec/vta/backup/initiate-export/1.1` `stream` payload.
 /// Auth: super-admin.
 #[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -122,7 +122,7 @@ impl std::fmt::Debug for InitiateExportBody {
     }
 }
 
-/// `spec/vta/backup/initiate-export/1.0` response body.
+/// `spec/vta/backup/initiate-export/1.1` `stream` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -160,7 +160,7 @@ pub struct CompleteExportResultBody {
 
 // ─── Import ──────────────────────────────────────────────────────────────
 
-/// `spec/vta/backup/initiate-import/1.0` payload.
+/// `spec/vta/backup/initiate-import/1.1` `stream` payload.
 /// Auth: super-admin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -181,7 +181,7 @@ pub struct InitiateImportBody {
     pub algorithm: String,
 }
 
-/// `spec/vta/backup/initiate-import/1.0` response body.
+/// `spec/vta/backup/initiate-import/1.1` `stream` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
@@ -191,7 +191,7 @@ pub struct InitiateImportResultBody {
     pub completion_hint: String,
 }
 
-/// `spec/vta/backup/finalize-import/1.0` payload. Applies the
+/// `spec/vta/backup/finalize-import/1.1` payload. Applies the
 /// uploaded bytes after the client has POSTed them to the blob
 /// endpoint. Two-phase: `confirm: false` runs validation in preview
 /// mode (no state mutation), `confirm: true` commits.
@@ -269,7 +269,7 @@ impl FinalizeImportBody {
     }
 }
 
-/// `spec/vta/backup/finalize-import/1.0` response body. The
+/// `spec/vta/backup/finalize-import/1.1` response body. The
 /// shape mirrors the legacy `ImportResult` minus `status` which
 /// becomes a structured `"preview" | "committed"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

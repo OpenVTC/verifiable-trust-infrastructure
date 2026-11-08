@@ -46,9 +46,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::warn;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1 as attest;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_specs::auth::step_up::approver::attest::v0_1 as attest;
 
 use crate::server::AppState;
 
@@ -413,7 +413,7 @@ pub async fn record_use(ks: &KeyspaceHandle, approver_did: &str) -> Result<(), A
 #[derive(Debug, Clone, Copy)]
 pub enum ExpectedApprover<'a> {
     /// A live approver bound to the subject, and one of those the relying
-    /// party offered when it minted the challenge (approve-response 0.6 step
+    /// party offered when it minted the challenge (approve-response 0.7 step
     /// 4.2). For `stepUp` and `decision`.
     BoundAmong(&'a [String]),
     /// The approver the carrying task is enrolling, not yet bound to anyone.
@@ -444,7 +444,7 @@ pub enum StatementError {
     /// `statementInvalid`. The reason is for the log only.
     Invalid(&'static str),
     /// Signed by a DID that is not a live, distinct approver of the subject
-    /// that was offered — approve-response 0.6's `approverNotBound`.
+    /// that was offered — approve-response 0.7's `approverNotBound`.
     NotBound,
     Internal(AppError),
 }
@@ -488,7 +488,7 @@ impl VerifiedApproverStatement {
     }
 }
 
-/// Constant-time equality, for the challenge (approve-response 0.6 step 3).
+/// Constant-time equality, for the challenge (approve-response 0.7 step 3).
 fn ct_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
@@ -564,11 +564,10 @@ pub async fn verify_statement(
             AppError::Config("this VTC has no DID; it cannot be an audience".into())
         })?;
     let now = Utc::now();
-    let window = vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW;
-    if doc
-        .validate_freshness(now, &window.freshness_policy().requiring_issued_at())
-        .is_err()
-    {
+    let freshness = vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
+        .freshness_policy()
+        .requiring_issued_at();
+    if doc.validate_freshness(now, &freshness).is_err() {
         return Err(invalid("outside its acceptance window"));
     }
     if doc.validate_basic(now, &vtc_did).is_err() || doc.recipient.as_deref() != Some(&vtc_did) {
@@ -637,7 +636,13 @@ pub async fn verify_statement(
         {
             return Err(invalid("statement id already spent"));
         }
-        let until = issued_at + window.max_age + window.clock_skew + skew;
+        // Until the statement's acceptance end plus the skew (VTI-OPS-029): a
+        // stated `expiresAt` is honoured up to thirty days (VTI-OPS-028), and
+        // a statement still acceptable after its id is forgotten is spent
+        // twice. `requiring_issued_at` means there is always an end.
+        let until = vti_trust_task_server::retain_until(&freshness, &doc, now)
+            .ok_or_else(|| invalid("no acceptance end"))?
+            + skew;
         ks.insert(key, &until.timestamp()).await?;
     }
 

@@ -14,9 +14,9 @@
 //! tasks give each a fixed schema and a fixed disclosure policy.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vta::health::details::v0_1 as health_spec;
-use trust_tasks_rs::specs::vta::restore::status::v0_1 as restore_spec;
 use trust_tasks_rs::{RejectReason, TrustTask};
+use vti_specs::vta::health::details::v0_1 as health_spec;
+use vti_specs::vta::restore::status::v0_1 as restore_spec;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, success_response,

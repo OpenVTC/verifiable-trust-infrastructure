@@ -14,7 +14,7 @@
 //! The required commit-trust check (`requiredCheck`) is what keeps untrusted
 //! commits out of a governed repository, and nothing here weakens or replaces
 //! it. The gate fails **open**: a VTC or bridge that is down, a bridge that
-//! does not take job 0.5, or a policy this VTC cannot read leaves a pull
+//! does not take job 0.6, or a policy this VTC cannot read leaves a pull
 //! request open, and nothing the required check refuses can be merged through
 //! it. A pull request the gate did not close is never treated as approved.
 //!
@@ -69,7 +69,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
-use trust_tasks_rs::specs::git_ns::bridge::event::v0_4 as event_wire;
+use vti_specs::git_ns::bridge::event::v0_6 as event_wire;
 
 use crate::acl::VtcRole;
 use crate::server::AppState;
@@ -652,11 +652,12 @@ pub async fn on_pull_request_opened(
     let Some(bridge_did) = ns.bridge_did.clone() else {
         return Ok(());
     };
-    // 6.4: never to a bridge that has not listed job 0.5. What it last said
+    // 6.4: never to a bridge that has not listed a job version with
+    // `closePullRequest` (the VTC sends only 0.6). What it last said
     // decides here; a bridge not yet asked is asked by the dispatcher, which
     // drops the job if it says no.
     match bridge::cached_job_support(state, &bridge_did).await {
-        Some(s) if !s.takes_v0_5 => {
+        Some(s) if !s.closes_pull_requests() => {
             note_unenforced(state, &ns.id, &bridge_did).await;
             return Ok(());
         }
@@ -822,7 +823,7 @@ pub async fn note_unenforced(state: &AppState, namespace_id: &str, bridge_did: &
         namespace = %namespace_id,
         bridge = %bridge_did,
         "the pull-request policy is configured but the bridge does not take \
-         git-ns/bridge/job 0.5, so it cannot close pull requests; upgrade the bridge"
+         git-ns/bridge/job 0.7, so it cannot close pull requests; upgrade the bridge"
     );
     let resource = super::store::get_namespace(&state.git_ns.ks, namespace_id)
         .await
@@ -851,7 +852,7 @@ pub async fn clear_unenforced(state: &AppState, namespace_id: &str) {
 }
 
 /// Whether a namespace's administrators have been told its bridge cannot
-/// enforce the pull-request policy, and not since seen it take job 0.5.
+/// enforce the pull-request policy, and not since seen it take job 0.6.
 #[cfg(test)]
 pub(crate) async fn is_unenforced(state: &AppState, namespace_id: &str) -> bool {
     matches!(

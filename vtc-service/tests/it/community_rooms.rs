@@ -1,6 +1,6 @@
 //! Rooms the community owns (`docs/05-design-notes/data-rooms-files.md` §8.4):
-//! `vtc/rooms/community/{create,list,get}/{0.1,0.2}`, `vtc/rooms/community/update/0.1`,
-//! `vtc/rooms/community/members/{add,remove,list}/0.1` and `vtc/rooms/offers/list/{0.1,0.2}`
+//! `vtc/rooms/community/create/0.4`, `vtc/rooms/community/{list,get,update}/0.3`,
+//! `vtc/rooms/community/members/{add,list}/0.1`, `vtc/rooms/community/members/remove/0.2` and `vtc/rooms/offers/list/{0.1,0.2}`
 //! and `vtc/rooms/offers/accept/0.1`, driven through the signed-document door as an
 //! administrator's and a member's clients do.
 //!
@@ -36,36 +36,37 @@ use crate::common::second_party::Gesturer;
 use crate::common::signed::{error_code, post, seed_role, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.1";
-const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.1";
-const ADD: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
-const REMOVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.1";
+const CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4";
+const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.3";
+const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3";
+const ADD: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2";
+const REMOVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
 const MEMBERS: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
-const OFFERS: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1";
-const CREATE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.2";
-const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.2";
-const GET_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2";
-const UPDATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.1";
-const OFFERS_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
+const OFFERS: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4";
+const UPDATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3";
 const ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
 const MEMBERSHIPS: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1";
 
-const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
+const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.2";
 const GROUP_CREATE: &str = "https://trusttasks.org/spec/rooms/owner/group/create/0.1";
 const GROUP_ADD: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.3";
-const GROUP_REMOVE: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
-const GROUP_REMOVE_V0_3: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.3";
+const GROUP_REMOVE: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.4";
 const OWNER_REVOKE: &str = "https://trusttasks.org/spec/rooms/owner/revoke/0.1";
-const REMOVE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
 const INVITE: &str = "https://trusttasks.org/spec/rooms/owner/invite/0.1";
 const ISSUE_MEMBERSHIP: &str = "https://trusttasks.org/spec/rooms/owner/issue-membership/0.1";
 const ISSUE_AUTHORITY: &str = "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
 const RECEIVE: &str = "https://trusttasks.org/spec/vault/credentials/receive/0.1";
-const CREATE_V0_3: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.3";
-const UPDATE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.2";
 const PROFILE_READ: &str = "https://trusttasks.org/spec/rooms/keys/profile/read/0.1";
 const PROFILE_WRITE: &str = "https://trusttasks.org/spec/rooms/keys/profile/write/0.1";
+const DID_DELETE: &str = "https://trusttasks.org/spec/vta/webvh/dids/delete/1.0";
+const GET_V4: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.4";
+const LIST_V4: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.4";
+const MEMBERS_V2: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.2";
+const MEMBERSHIPS_V2: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.2";
+const ARCHIVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/archive/0.1";
+const UNARCHIVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/unarchive/0.1";
+const REMOVE_ROOM: &str = "https://trusttasks.org/spec/vtc/rooms/community/remove/0.1";
+const CANCEL_REMOVAL: &str = "https://trusttasks.org/spec/vtc/rooms/community/removal/cancel/0.1";
 
 /// A `trust-task-error` reply's code — the census reads witnesses by this name.
 fn tt_error_code(doc: &Value) -> Option<&str> {
@@ -217,7 +218,28 @@ impl FakeVta {
     /// Sign the room's next list withdrawing `subject`, as the room, and put it in force at
     /// the community (the room's host). Returns the list, its head and the `revokedAt`.
     async fn withdraw(&self, room_id: &str, subject: &str) -> (Value, Value, String) {
-        use vti_rooms::revocation::{Entry, HeldList, RevocationList, held, next_unsigned, store};
+        let now = Utc::now();
+        self.withdraw_entries(
+            room_id,
+            vec![vti_rooms::revocation::Entry::Subject {
+                subject: subject.to_string(),
+                revoked_at: now,
+                until: None,
+            }],
+            now,
+        )
+        .await
+    }
+
+    /// Sign the room's next list carrying `entries`, as the room, and put it in force at the
+    /// community (the room's host).
+    async fn withdraw_entries(
+        &self,
+        room_id: &str,
+        entries: Vec<vti_rooms::revocation::Entry>,
+        now: chrono::DateTime<Utc>,
+    ) -> (Value, Value, String) {
+        use vti_rooms::revocation::{HeldList, RevocationList, held, next_unsigned, store};
         let room = self.room_key(room_id);
         let host = self
             .0
@@ -230,17 +252,7 @@ impl FakeVta {
             .await
             .unwrap()
             .map(|h| RevocationList::parse(&h.list, room_id).unwrap());
-        let now = Utc::now();
-        let unsigned = next_unsigned(
-            room_id,
-            current.as_ref(),
-            &[Entry::Subject {
-                subject: subject.to_string(),
-                revoked_at: now,
-                until: None,
-            }],
-            now,
-        );
+        let unsigned = next_unsigned(room_id, current.as_ref(), &entries, now);
         let list = vti_rooms_dtg::test_support::sign_as(&room, unsigned).await;
         store(
             &host,
@@ -262,9 +274,26 @@ impl FakeVta {
     async fn serve(&self, type_uri: &str, p: &Value) -> Result<Value, (&'static str, String)> {
         match type_uri {
             OWNER_REVOKE => {
+                use vti_rooms::revocation::Entry;
                 let room = p["roomId"].as_str().unwrap();
-                let subject = p["withdraw"][0]["subject"].as_str().unwrap();
-                let (list, head, _) = self.withdraw(room, subject).await;
+                let now = Utc::now();
+                let entries: Vec<Entry> = p["withdraw"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|w| match w["kind"].as_str() {
+                        Some("room") => Entry::Room {
+                            revoked_at: now,
+                            until: None,
+                        },
+                        _ => Entry::Subject {
+                            subject: w["subject"].as_str().unwrap().to_string(),
+                            revoked_at: now,
+                            until: None,
+                        },
+                    })
+                    .collect();
+                let (list, head, _) = self.withdraw_entries(room, entries, now).await;
                 Ok(json!({
                     "roomId": room, "list": list, "head": head,
                     "deliveries": [{
@@ -273,7 +302,8 @@ impl FakeVta {
                     }],
                 }))
             }
-            GROUP_REMOVE_V0_3 => {
+            // An attributed room's removal: it names the room's signing key.
+            GROUP_REMOVE if p.get("signingKeyId").is_some() => {
                 let room = p["roomId"].as_str().unwrap().to_string();
                 let member = p["member"].as_str().unwrap().to_string();
                 if !self.group(&room).is_some_and(|(m, _)| m.contains(&member)) {
@@ -287,7 +317,7 @@ impl FakeVta {
                 group.0.retain(|m| *m != member);
                 group.1 += 1;
                 Ok(json!({
-                    "roomId": room, "member": member, "revocation": head,
+                    "roomId": room, "member": member, "withdrawn": true, "revocation": head,
                     "revokedAt": revoked_at, "epoch": group.1,
                 }))
             }
@@ -408,6 +438,7 @@ impl FakeVta {
                     "welcome": welcome,
                 }))
             }
+            // A private room's removal: the group alone, nothing withdrawn.
             GROUP_REMOVE => {
                 let room = p["roomId"].as_str().unwrap().to_string();
                 let member = p["member"].as_str().unwrap().to_string();
@@ -421,7 +452,14 @@ impl FakeVta {
                 st.admitted.remove(&room);
                 let group = st.groups.get_mut(&room).expect("a group");
                 group.1 += 1;
-                Ok(json!({ "roomId": room, "member": member, "epoch": group.1 }))
+                Ok(json!({
+                    "roomId": room, "member": member, "withdrawn": false, "epoch": group.1,
+                }))
+            }
+            DID_DELETE => {
+                let did = p["did"].as_str().unwrap_or_default().to_string();
+                self.0.lock().unwrap().rooms.remove(&did);
+                Ok(json!({ "did": did, "deleted": true }))
             }
             other => Err(("unsupportedType", format!("{other} is not served here"))),
         }
@@ -496,6 +534,7 @@ fn config() -> CommunityRoomsConfig {
         mediator_did: Some("did:example:mediator".into()),
         authority_valid_days: None,
         authority_renew_within_days: None,
+        removal_grace_days: None,
     }
 }
 
@@ -635,7 +674,15 @@ async fn an_open_community_room_from_creation_to_use_to_removal() {
     // Steps 1–3 at the VTA, in order; an open room has no group.
     assert_eq!(
         fix.vta.types_called(),
-        vec![MINT, ISSUE_MEMBERSHIP, RECEIVE, ISSUE_AUTHORITY, RECEIVE],
+        vec![
+            MINT,
+            ISSUE_MEMBERSHIP,
+            RECEIVE,
+            ISSUE_AUTHORITY,
+            RECEIVE,
+            PROFILE_READ,
+            PROFILE_WRITE
+        ],
     );
     let calls = fix.vta.calls();
     assert_eq!(calls[0].1["template"], "room");
@@ -705,7 +752,7 @@ async fn an_open_community_room_from_creation_to_use_to_removal() {
     let put = call_as(
         &fix,
         &alice,
-        vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
         json!({
             "roomId": room, "key": "minutes", "presentation": presentation,
             "cleartext": { "body": "the board met" },
@@ -782,7 +829,9 @@ async fn a_sealed_community_room_admits_and_removes_through_the_vta() {
             ISSUE_MEMBERSHIP,
             RECEIVE,
             ISSUE_AUTHORITY,
-            RECEIVE
+            RECEIVE,
+            PROFILE_READ,
+            PROFILE_WRITE
         ],
     );
     assert_eq!(fix.vta.calls()[1].1["member"], TEST_VTC_DID);
@@ -1246,6 +1295,7 @@ async fn vtc_rooms_community_reads_answer_not_found() {
         record_retention: None,
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
     };
     vti_rooms::storage::create_room(&fix.vtc.state.rooms_ks, &hosted)
         .await
@@ -1362,13 +1412,14 @@ async fn vtc_rooms_community_members_refuse_with_their_declared_codes() {
         "{members}"
     );
 
-    // An open offer is withdrawn without the VTA.
+    // An open offer is withdrawn, its credentials at the host too: the VTA revokes them
+    // and nothing else (`members/remove/0.2`).
     let bob = member(&fix).await;
     add_member(&mut fix, &room, &bob.did, &in_a_year()).await;
     fix.vta.clear_calls();
     let (_, r) = admin_call(&mut fix, REMOVE, remove(&room, &bob.did)).await;
     assert_eq!(r["payload"]["member"]["state"], "removed", "{r}");
-    assert!(fix.vta.calls().is_empty());
+    assert_eq!(fix.vta.types_called(), vec![OWNER_REVOKE]);
     let accept = call_as(
         &fix,
         &bob,
@@ -1552,7 +1603,7 @@ async fn owed(fix: &Fixture) -> Vec<(String, String, DepartureCause)> {
 /// the departure itself — before the VTA is asked anything. The worker removes them as an
 /// administrator's `members/remove/0.2` does (trust-tasks-tf #804): the open room's
 /// admission and the offer are withdrawn at the host (`rooms/owner/revoke`), and the sealed
-/// room's withdrawn and advanced past them (`rooms/owner/group/remove/0.3`), each at the
+/// room's withdrawn and advanced past them (`rooms/owner/group/remove/0.4`), each at the
 /// VTA before it is recorded; each is audited as the community's own act, naming the
 /// departure. Rejoining re-adds nothing.
 #[tokio::test]
@@ -1610,15 +1661,11 @@ async fn a_member_who_leaves_is_removed_from_every_community_room() {
     // The sealed room's group was asked once, withdrawing first; the open room and the
     // offer were withdrawn at the host.
     let mut types = fix.vta.types_called();
-    types.retain(|t| t == GROUP_REMOVE_V0_3 || t == OWNER_REVOKE);
+    types.retain(|t| t == GROUP_REMOVE || t == OWNER_REVOKE);
     types.sort();
-    assert_eq!(types, vec![GROUP_REMOVE_V0_3, OWNER_REVOKE, OWNER_REVOKE]);
+    assert_eq!(types, vec![GROUP_REMOVE, OWNER_REVOKE, OWNER_REVOKE]);
     let calls = fix.vta.calls();
-    let call = &calls
-        .iter()
-        .find(|(t, _)| t == GROUP_REMOVE_V0_3)
-        .unwrap()
-        .1;
+    let call = &calls.iter().find(|(t, _)| t == GROUP_REMOVE).unwrap().1;
     assert_eq!(call["member"], alice.did);
     assert_eq!(call["host"], TEST_VTC_DID);
     assert_eq!(call["reason"], DepartureCause::Left.reason());
@@ -1786,7 +1833,7 @@ async fn an_unreachable_vta_is_retried_until_the_removal_completes() {
     )
     .await;
 
-    fix.vta.script(GROUP_REMOVE_V0_3, Script::Silent);
+    fix.vta.script(GROUP_REMOVE, Script::Silent);
     let left = call_as(&fix, &alice, SELF_REMOVE, json!({})).await;
     assert_eq!(
         left["payload"]["removed"], true,
@@ -1816,7 +1863,7 @@ async fn an_unreachable_vta_is_retried_until_the_removal_completes() {
     assert!(fix.vta.calls().is_empty());
 
     // Due: the VTA removes them, and the answer is lost.
-    fix.vta.script(GROUP_REMOVE_V0_3, Script::ServeThenSilent);
+    fix.vta.script(GROUP_REMOVE, Script::ServeThenSilent);
     let t1 = t0 + departures::backoff(1);
     let report = departures::run_once(&fix.vtc.state, t1).await.unwrap();
     assert_eq!(report.retrying, 1, "{report:?}");
@@ -1842,7 +1889,7 @@ async fn owed_removals_survive_a_restart_and_yield_to_a_manual_removal() {
     let mut fix = fixture().await;
     let alice = member(&fix).await;
     let (sealed, open, offered) = in_three_rooms(&mut fix, &alice).await;
-    fix.vta.script(GROUP_REMOVE_V0_3, Script::Silent);
+    fix.vta.script(GROUP_REMOVE, Script::Silent);
     call_as(&fix, &alice, SELF_REMOVE, json!({})).await;
     // The sealed room's VTA does not answer. Every removal asks the VTA now — the open
     // room's and the offer's withdraw their credentials at the host — so the pass stops at
@@ -1942,7 +1989,7 @@ async fn host_admin_only(fix: &Fixture) -> Party {
 async fn create_described(fix: &mut Fixture, label: &str, tags: Value) -> String {
     let (status, reply) = admin_call(
         fix,
-        CREATE_V0_2,
+        CREATE,
         json!({
             "label": label, "visibility": "open", "reason": "the board's papers",
             "description": "Papers for the board's meetings.", "tags": tags,
@@ -1997,7 +2044,7 @@ fn row_details(row: &Value) -> Value {
     find(row).expect("a detailsUpdated event")
 }
 
-/// `vtc/rooms/community/update/0.1` items 3–6: each detail given replaces the stored one
+/// `vtc/rooms/community/update/0.3` items 3–6: each detail given replaces the stored one
 /// and the rest are left alone, `tags: []` clears, `removeDescription` removes, a request
 /// that changes nothing writes nothing — no details, no `detailsUpdated*`, no audit row —
 /// and every change is one audit row with each changed detail's previous and new value.
@@ -2028,8 +2075,19 @@ async fn vtc_rooms_community_update_replaces_what_it_names_and_nothing_else() {
     let first_change = after["detailsUpdatedAt"].clone();
     assert!(first_change.is_string());
 
-    // Item 8: nothing reached the VTA, and the host record did not move.
-    assert!(fix.vta.calls().is_empty(), "{:?}", fix.vta.types_called());
+    // Item 8: only the profile — the label and description — reached the VTA (item 10),
+    // never the tags, and the host record did not move.
+    assert_eq!(
+        fix.vta.types_called(),
+        vec![PROFILE_READ, PROFILE_WRITE],
+        "{:?}",
+        fix.vta.calls()
+    );
+    assert!(
+        !fix.vta.calls()[1].1.to_string().contains("finance"),
+        "{:?}",
+        fix.vta.calls()
+    );
     let hosted_after = vti_rooms::storage::get_room(&fix.vtc.state.rooms_ks, &room)
         .await
         .unwrap();
@@ -2145,6 +2203,7 @@ async fn vtc_rooms_community_update_answers_not_found_for_a_room_it_only_hosts()
         record_retention: None,
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
     };
     vti_rooms::storage::create_room(&fix.vtc.state.rooms_ks, &hosted)
         .await
@@ -2199,42 +2258,29 @@ async fn vtc_rooms_community_update_answers_not_found_for_a_room_it_only_hosts()
     assert_eq!(got["payload"]["room"]["label"], "Board pack");
 }
 
-/// 0.1 keeps exactly the shape it published; 0.2 carries the details. `list/0.2`'s `tag`
-/// lists only the rooms carrying it, paged within the filter.
+/// The reads carry each room's details, and its host record's instants as RFC 3339
+/// strings (`vtc/_shared/0.3/community-room`). `list`'s `tag` lists only the rooms carrying
+/// it, paged within the filter.
 #[tokio::test]
-async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
+async fn vtc_rooms_community_reads_carry_the_details_and_rfc3339_instants() {
     let mut fix = fixture().await;
     let board = create_described(&mut fix, "Board pack", json!(["board"])).await;
     let library = create_described(&mut fix, "Library", json!(["library"])).await;
     let plain = create_room(&mut fix, "open").await;
 
-    // 0.1: no description, tags or `detailsUpdated*`, whatever the room has.
     let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": board })).await;
-    for absent in [
-        "description",
-        "tags",
-        "detailsUpdatedAt",
-        "detailsUpdatedBy",
-    ] {
+    for instant in ["createdAt", "updatedAt", "epochExpiresAt"] {
+        let at = got["payload"]["room"]["room"][instant]
+            .as_str()
+            .unwrap_or_else(|| panic!("{instant} is a string: {got}"));
         assert!(
-            got["payload"]["room"].get(absent).is_none(),
-            "{absent}: {got}"
+            chrono::DateTime::parse_from_rfc3339(at).is_ok(),
+            "{instant}: {got}"
         );
     }
-    let listed = call_as(&fix, &fix.admin, LIST, json!({})).await;
-    assert_eq!(listed["payload"]["items"].as_array().unwrap().len(), 3);
-    assert!(
-        listed["payload"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|i| i.get("tags").is_none())
-    );
-
-    // 0.2.
-    let got = call_as(&fix, &fix.admin, GET_V0_2, json!({ "roomId": board })).await;
+    let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": board })).await;
     assert_eq!(got["payload"]["room"]["tags"], json!(["board"]), "{got}");
-    let got = call_as(&fix, &fix.admin, GET_V0_2, json!({ "roomId": plain })).await;
+    let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": plain })).await;
     assert!(got["payload"]["room"].get("tags").is_none(), "{got}");
     assert!(got["payload"]["room"].get("description").is_none(), "{got}");
 
@@ -2246,11 +2292,11 @@ async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
             .map(|i| i["room"]["roomId"].as_str().unwrap().to_string())
             .collect()
     };
-    let all = call_as(&fix, &fix.admin, LIST_V0_2, json!({})).await;
+    let all = call_as(&fix, &fix.admin, LIST, json!({})).await;
     assert_eq!(ids(&all).len(), 3, "{all}");
-    let tagged = call_as(&fix, &fix.admin, LIST_V0_2, json!({ "tag": "board" })).await;
+    let tagged = call_as(&fix, &fix.admin, LIST, json!({ "tag": "board" })).await;
     assert_eq!(ids(&tagged), vec![board.clone()], "{tagged}");
-    let none = call_as(&fix, &fix.admin, LIST_V0_2, json!({ "tag": "nothing" })).await;
+    let none = call_as(&fix, &fix.admin, LIST, json!({ "tag": "nothing" })).await;
     assert_eq!(none["payload"]["items"], json!([]), "{none}");
 
     // Paging within the filter: tag both, one per page.
@@ -2266,7 +2312,7 @@ async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
     let page1 = call_as(
         &fix,
         &fix.admin,
-        LIST_V0_2,
+        LIST,
         json!({ "tag": "shared", "limit": 1 }),
     )
     .await;
@@ -2275,7 +2321,7 @@ async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
     let page2 = call_as(
         &fix,
         &fix.admin,
-        LIST_V0_2,
+        LIST,
         json!({ "tag": "shared", "cursor": next, "limit": 1 }),
     )
     .await;
@@ -2288,8 +2334,8 @@ async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
     assert_eq!(both, want);
 }
 
-/// `vtc/rooms/offers/list/0.2` item 4: the room's current label and description — a rename
-/// reaches an open offer — and never its tags. 0.1 shows the label only.
+/// `vtc/rooms/offers/list/0.4`: the room's current label and description — a rename
+/// reaches an open offer — and never its tags.
 #[tokio::test]
 async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() {
     let mut fix = fixture().await;
@@ -2307,7 +2353,7 @@ async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() 
     )
     .await;
 
-    let offers = call_as(&fix, &alice, OFFERS_V0_2, json!({})).await;
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
     let offer = &offers["payload"]["items"][0];
     assert_eq!(offer["label"], "Board pack — 2027", "{offers}");
     assert_eq!(
@@ -2316,14 +2362,9 @@ async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() 
     );
     assert!(offer.get("tags").is_none(), "{offer}");
     assert!(!offers.to_string().contains("\"board\""), "{offers}");
-
-    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
-    let offer = &offers["payload"]["items"][0];
-    assert_eq!(offer["label"], "Board pack — 2027");
-    assert!(offer.get("description").is_none(), "{offer}");
 }
 
-// ─── the room's own profile (create 0.3, update 0.2) ────────────────────
+// ─── the room's own profile (create, update) ─────────────────────────
 
 /// The `rooms/keys/profile/write` requests the stand-in received, in order.
 fn profile_writes(fix: &Fixture) -> Vec<Value> {
@@ -2338,7 +2379,7 @@ fn profile_writes(fix: &Fixture) -> Vec<Value> {
 async fn create_v0_3(fix: &mut Fixture, label: &str, visibility: &str) -> Value {
     let (status, reply) = admin_call(
         fix,
-        CREATE_V0_3,
+        CREATE,
         json!({
             "label": label, "visibility": visibility, "reason": "the board's papers",
             "description": "Papers for the board's meetings.", "tags": ["board", "finance"],
@@ -2349,7 +2390,7 @@ async fn create_v0_3(fix: &mut Fixture, label: &str, visibility: &str) -> Value 
     reply
 }
 
-/// `vtc/rooms/community/create/0.3` step 5 and items 8–9: once the room is stored, the
+/// `vtc/rooms/community/create/0.4` step 5 and items 8–9: once the room is stored, the
 /// community's own VTA is asked to write the label as the profile's `name` and the
 /// description as its `description` — **never the tags** — as the community, with this
 /// community as the host; the answer is `written`, and the room's `get` says so.
@@ -2385,7 +2426,7 @@ async fn vtc_rooms_community_create_0_3_writes_label_and_description_as_the_room
         "{types:?}"
     );
 
-    let (_, got) = admin_call(&mut fix, GET_V0_2, json!({ "roomId": room })).await;
+    let (_, got) = admin_call(&mut fix, GET, json!({ "roomId": room })).await;
     assert_eq!(
         got["payload"]["ext"]["org.openvtc"]["roomProfile"]["state"], "written",
         "{got}"
@@ -2426,7 +2467,7 @@ async fn vtc_rooms_community_create_0_3_answers_pending_and_the_sweeper_writes_i
             .unwrap()
             .is_some()
     );
-    let (_, got) = admin_call(&mut fix, GET_V0_2, json!({ "roomId": room })).await;
+    let (_, got) = admin_call(&mut fix, GET, json!({ "roomId": room })).await;
     let state = &got["payload"]["ext"]["org.openvtc"]["roomProfile"];
     assert_eq!(state["state"], "pending", "{got}");
     assert_eq!(state["attempts"], 1);
@@ -2448,7 +2489,7 @@ async fn vtc_rooms_community_create_0_3_answers_pending_and_the_sweeper_writes_i
         .unwrap();
     assert_eq!(report.written, vec![room.clone()]);
     assert_eq!(fix.vta.profile(&room).unwrap()["name"], "Board pack");
-    let (_, got) = admin_call(&mut fix, GET_V0_2, json!({ "roomId": room })).await;
+    let (_, got) = admin_call(&mut fix, GET, json!({ "roomId": room })).await;
     assert_eq!(
         got["payload"]["ext"]["org.openvtc"]["roomProfile"]["state"], "written",
         "{got}"
@@ -2461,7 +2502,7 @@ async fn vtc_rooms_community_create_0_3_answers_pending_and_the_sweeper_writes_i
     assert!(report.written.is_empty() && profile_writes(&fix).is_empty());
 }
 
-/// `vtc/rooms/community/update/0.2` items 10–11: a rename writes the profile again,
+/// `vtc/rooms/community/update/0.3` items 10–11: a rename writes the profile again,
 /// carrying over the tags and emoji a curator set in the room; a change of the
 /// administrators' tags alone writes nothing (`unchanged`); and the change to the
 /// community's own record stands whatever the VTA answers.
@@ -2484,7 +2525,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "label": "Board pack — 2027", "reason": "the 2027 cycle" }),
     )
     .await;
@@ -2502,7 +2543,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "tags": ["archive"], "reason": "filed" }),
     )
     .await;
@@ -2514,7 +2555,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "label": "Board pack — 2027", "reason": "again" }),
     )
     .await;
@@ -2530,7 +2571,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "removeDescription": true, "reason": "named a supplier" }),
     )
     .await;
@@ -2541,7 +2582,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "tags": ["archive", "minutes"], "reason": "refiled" }),
     )
     .await;
@@ -2551,33 +2592,28 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     assert!(written.get("description").is_none(), "{written}");
 }
 
-/// Item 10: a room made before create 0.3 has never had its profile written, so the first
-/// update 0.2 writes it even when it changes nothing — and audits no change. Update 0.1
-/// never reaches the VTA.
+/// Item 10: a room made before create 0.3 (by an older VTC) has never had its profile
+/// written, so the first update writes it even when it changes nothing — and audits no
+/// change.
 #[tokio::test]
-async fn vtc_rooms_community_update_0_2_writes_the_profile_of_a_room_made_before_create_0_3() {
+async fn vtc_rooms_community_update_writes_the_profile_of_a_room_made_before_create_0_3() {
     let mut fix = fixture().await;
     let room = create_described(&mut fix, "Board pack", json!(["board"])).await;
+    // As an older VTC left it: no profile record at all.
+    fix.vtc
+        .state
+        .community_rooms
+        .keyspace()
+        .remove(format!("room-profile:{room}").into_bytes())
+        .await
+        .unwrap();
     fix.vta.clear_calls();
-
-    let r = call_as(
-        &fix,
-        &fix.admin,
-        UPDATE,
-        json!({ "roomId": room, "label": "Board pack", "reason": "nothing" }),
-    )
-    .await;
-    assert!(r["payload"].get("roomProfile").is_none(), "{r}");
-    assert!(
-        fix.vta.calls().is_empty(),
-        "0.1 keeps the details out of the VTA"
-    );
 
     let audited = details_rows(&fix).await.len();
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "label": "Board pack", "reason": "nothing" }),
     )
     .await;
@@ -2594,7 +2630,7 @@ async fn vtc_rooms_community_update_0_2_writes_the_profile_of_a_room_made_before
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "label": "Board pack", "reason": "nothing" }),
     )
     .await;
@@ -2623,7 +2659,7 @@ async fn read_as(fix: &Fixture, who: &Party, room: &str, presentation: &Value) -
     call_as(
         fix,
         who,
-        vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
         json!({ "roomId": room, "presentation": presentation }),
     )
     .await
@@ -2646,7 +2682,7 @@ async fn removal_0_2_on_an_open_room_withdraws_the_member_at_the_host() {
     fix.vta.clear_calls();
     let (status, removed) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2667,7 +2703,7 @@ async fn removal_0_2_on_an_open_room_withdraws_the_member_at_the_host() {
     assert_eq!(error_code(&refused), Some("permissionDenied"), "{refused}");
 }
 
-/// Item 2, `attributed`: `rooms/owner/group/remove` at 0.3 — withdraw first, then advance.
+/// Item 2, `attributed`: `rooms/owner/group/remove/0.4` — withdraw first, then advance.
 #[tokio::test]
 async fn removal_0_2_on_an_attributed_room_withdraws_then_advances() {
     let mut fix = fixture().await;
@@ -2685,7 +2721,7 @@ async fn removal_0_2_on_an_attributed_room_withdraws_then_advances() {
     fix.vta.clear_calls();
     let (_, removed) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2693,7 +2729,7 @@ async fn removal_0_2_on_an_attributed_room_withdraws_then_advances() {
     assert_eq!(p["epoch"], 3, "{removed}");
     assert_eq!(p["revocation"]["sequence"], 1);
     assert!(p["revokedAt"].is_string());
-    assert_eq!(fix.vta.types_called(), vec![GROUP_REMOVE_V0_3]);
+    assert_eq!(fix.vta.types_called(), vec![GROUP_REMOVE]);
     let call = &fix.vta.calls()[0].1;
     assert_eq!(call["host"], TEST_VTC_DID);
     assert!(call["signingKeyId"].is_string());
@@ -2714,7 +2750,7 @@ async fn removal_0_2_withdraws_an_open_offers_credentials() {
     fix.vta.clear_calls();
     let (_, removed) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "changed our minds" }),
     )
     .await;
@@ -2740,7 +2776,7 @@ async fn removal_0_2_records_nothing_until_the_withdrawal_is_accepted() {
     );
     let (_, refused) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2753,7 +2789,7 @@ async fn removal_0_2_records_nothing_until_the_withdrawal_is_accepted() {
     fix.vta.script(OWNER_REVOKE, Script::Silent);
     let (_, silent) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2774,7 +2810,7 @@ async fn a_member_removed_at_0_2_can_be_admitted_again() {
     let (room, alice, _) = admitted_on_open_room(&mut fix).await;
     admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2811,7 +2847,45 @@ async fn joined_on_attributed_room(fix: &mut Fixture) -> (String, Party) {
     (room, alice)
 }
 
-/// `rooms/owner/group/remove/0.3` item 8.2: the VTA gave up an earlier removal it was
+/// The `attributed` counterpart of [`a_member_removed_at_0_2_can_be_admitted_again`], on
+/// the community's side: a member removed from a sealed room (withdrawn and dropped from
+/// the group) is offered admission again and accepts with a fresh KeyPackage, and the
+/// record says `admitted`. The member's own key holder accepting that second Welcome —
+/// the old group a prior membership, not `alreadyJoined` (`rooms/keys/welcome/0.1`) — is
+/// the VTA's, and is held end to end against a real MLS group in `vta-service`
+/// (`room_owner_group::a_member_removed_from_an_attributed_room_is_admitted_again_and_reads_on`):
+/// this harness's VTA is scripted and holds no group.
+#[tokio::test]
+async fn a_member_removed_from_an_attributed_room_can_be_admitted_again() {
+    let mut fix = fixture().await;
+    let (room, alice) = joined_on_attributed_room(&mut fix).await;
+    let (_, removed) = admin_call(
+        &mut fix,
+        REMOVE,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    assert!(removed["payload"]["epoch"].is_number(), "{removed}");
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "removed");
+
+    fix.vta.0.lock().unwrap().issue_from_now = true;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
+    let accepted = call_as(
+        &fix,
+        &alice,
+        ACCEPT,
+        json!({ "roomId": room, "keyPackage": "S1B" }),
+    )
+    .await;
+    assert!(
+        accepted["payload"]["welcome"].is_string(),
+        "a Welcome for the re-admission: {accepted}"
+    );
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "admitted");
+}
+
+/// `rooms/owner/group/remove/0.4` item 8.2: the VTA gave up an earlier removal it was
 /// settling and did nothing of this one. The administrator is told so — and what to do —
 /// nothing is recorded, and repeating the removal proceeds.
 #[tokio::test]
@@ -2819,12 +2893,12 @@ async fn an_earlier_removal_the_vta_gave_up_is_surfaced_and_nothing_is_recorded(
     let mut fix = fixture().await;
     let (room, alice) = joined_on_attributed_room(&mut fix).await;
     fix.vta.script(
-        GROUP_REMOVE_V0_3,
+        GROUP_REMOVE,
         Script::Refuse("rooms/owner/group/remove:earlierRemovalRefused"),
     );
     let (_, refused) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2846,7 +2920,7 @@ async fn an_earlier_removal_the_vta_gave_up_is_surfaced_and_nothing_is_recorded(
 
     let (_, removed) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2911,21 +2985,20 @@ async fn an_acceptance_after_an_earlier_removal_the_vta_gave_up_is_refused_and_r
 const BINDINGS_ADD: &str = "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1";
 const BINDINGS_REMOVE: &str = "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1";
 const BINDINGS_LIST: &str = "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1";
-const OFFERS_V0_3: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3";
 const BINDINGS_ADD_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::add::v0_1::error_codes::NOT_FOUND.code;
 const BINDINGS_ADD_ERR_ROOM_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::ROOM_NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::add::v0_1::error_codes::ROOM_NOT_FOUND.code;
 const BINDINGS_ADD_ERR_BINDING_EXISTS: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::BINDING_EXISTS.code;
+    vti_specs::vtc::groups::bindings::add::v0_1::error_codes::BINDING_EXISTS.code;
 const BINDINGS_ADD_ERR_TOO_MANY_BINDINGS: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::TOO_MANY_BINDINGS.code;
+    vti_specs::vtc::groups::bindings::add::v0_1::error_codes::TOO_MANY_BINDINGS.code;
 const BINDINGS_REMOVE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::remove::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::remove::v0_1::error_codes::NOT_FOUND.code;
 const BINDINGS_REMOVE_ERR_BINDING_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::remove::v0_1::error_codes::BINDING_NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::remove::v0_1::error_codes::BINDING_NOT_FOUND.code;
 const BINDINGS_LIST_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::list::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::list::v0_1::error_codes::NOT_FOUND.code;
 
 /// A closed static group stored directly, with `members` in it.
 async fn a_group_with(fix: &Fixture, members: &[&Party]) -> String {
@@ -3001,7 +3074,7 @@ async fn reconcile(fix: &Fixture) -> vtc_service::groups::bindings::Report {
 
 /// A room binding offers every member of the group admission; they accept as from any
 /// offer; before their authority lapses the community renews it into
-/// `offers/list/0.3`'s `renewals`; and leaving the group owes their removal.
+/// `offers/list/0.4`'s `renewals`; and leaving the group owes their removal.
 #[tokio::test]
 async fn a_room_binding_admits_renews_and_withdraws_a_groups_members() {
     let mut fix = fixture().await;
@@ -3017,7 +3090,7 @@ async fn a_room_binding_admits_renews_and_withdraws_a_groups_members() {
     assert_eq!(report.offered, vec![(room.clone(), alice.did.clone())]);
     assert!(reconcile(&fix).await.offered.is_empty(), "offered once");
 
-    let offers = call_as(&fix, &alice, OFFERS_V0_3, json!({})).await;
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
     assert_eq!(
         offers["payload"]["items"][0]["roomId"],
         room.as_str(),
@@ -3043,10 +3116,10 @@ async fn a_room_binding_admits_renews_and_withdraws_a_groups_members() {
         vec![ISSUE_MEMBERSHIP.to_string(), ISSUE_AUTHORITY.to_string()],
         "a renewal is a membership and an authority, never an invitation"
     );
-    let offers = call_as(&fix, &alice, OFFERS_V0_3, json!({})).await;
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
     let renewal = &offers["payload"]["renewals"][0];
     assert_eq!(renewal["roomId"], room.as_str(), "{offers}");
-    assert_eq!(renewal["renews"], old_until.as_str());
+    assert_eq!(renewal["renewsAt"], old_until.as_str());
     assert!(renewal["credentials"]["authority"].is_string());
     assert!(renewal["credentials"].get("invitation").is_none());
     let record = rooms.member(&room, &alice.did).await.unwrap().unwrap();
@@ -3055,10 +3128,6 @@ async fn a_room_binding_admits_renews_and_withdraws_a_groups_members() {
         renewal["validUntil"].as_str().unwrap(),
         "the renewed expiry is the admission's own"
     );
-    // 0.2 never shows a renewal.
-    let older = call_as(&fix, &alice, OFFERS_V0_2, json!({})).await;
-    assert!(older["payload"].get("renewals").is_none());
-
     // Leaving the group: nothing else covers her, so her removal is owed.
     vtc_service::groups::remove_membership(
         fix.vtc.state.directory.ks(),
@@ -3267,5 +3336,606 @@ async fn vtc_groups_bindings_list_refuses_what_its_specification_declares() {
         tt_error_code(&doc),
         Some(BINDINGS_LIST_ERR_NOT_FOUND),
         "{doc}"
+    );
+}
+
+// ─── archive, unarchive, remove (`rooms::community_lifecycle`) ──────────
+
+/// Offer `who` admission to an open room, have them accept, and answer the credentials
+/// the offer handed them as a presentation.
+async fn admit_open(fix: &mut Fixture, room: &str, who: &Party) -> Value {
+    let added = add_member(fix, room, &who.did, &in_a_year()).await;
+    assert_eq!(added["payload"]["member"]["state"], "offered", "{added}");
+    let offers = call_as(fix, who, OFFERS, json!({})).await;
+    let offer = offers["payload"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["roomId"] == room)
+        .cloned()
+        .expect("the offer");
+    let accepted = call_as(fix, who, ACCEPT, json!({ "roomId": room })).await;
+    assert_eq!(accepted["payload"]["state"], "admitted", "{accepted}");
+    json!({
+        "membership": offer["credentials"]["membership"],
+        "authority": [offer["credentials"]["authority"]],
+    })
+}
+
+async fn put_record(fix: &Fixture, who: &Party, room: &str, key: &str, p: &Value) -> Value {
+    call_as(
+        fix,
+        who,
+        vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+        json!({
+            "roomId": room, "key": key, "presentation": p,
+            "cleartext": { "body": "the board met" },
+        }),
+    )
+    .await
+}
+
+async fn get_record(fix: &Fixture, who: &Party, room: &str, key: &str, p: &Value) -> Value {
+    call_as(
+        fix,
+        who,
+        vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
+        json!({ "roomId": room, "key": key, "presentation": p }),
+    )
+    .await
+}
+
+fn is_refused(reply: &Value) -> bool {
+    reply["type"]
+        .as_str()
+        .is_some_and(|t| t.contains("trust-task-error"))
+}
+
+async fn status_of(fix: &Fixture, room: &str) -> Value {
+    let got = call_as(fix, &fix.admin, GET_V4, json!({ "roomId": room })).await;
+    got["payload"]["room"]["status"].clone()
+}
+
+/// Run the lifecycle worker as if `ahead` had passed, so every backoff and grace period
+/// shorter than that is due.
+async fn worker(fix: &Fixture, ahead: chrono::Duration) {
+    vtc_service::rooms::community_lifecycle::run_once(&fix.vtc.state, Utc::now() + ahead)
+        .await
+        .expect("a lifecycle pass");
+}
+
+/// Archived read-only: the host refuses every member write and keeps serving reads, nobody
+/// is admitted, open offers are withdrawn — and unarchiving undoes all of it but the offers.
+#[tokio::test]
+async fn a_room_archived_read_only_keeps_reads_and_refuses_writes() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "open").await;
+    let alice = member(&fix).await;
+    let p = admit_open(&mut fix, &room, &alice).await;
+    let put = put_record(&fix, &alice, &room, "minutes", &p).await;
+    assert_eq!(put["payload"]["version"], 1, "{put}");
+    // An open offer, withdrawn by the archival.
+    let bob = member(&fix).await;
+    add_member(&mut fix, &room, &bob.did, &in_a_year()).await;
+
+    fix.vta.clear_calls();
+    let (status, archived) = admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "readOnly", "reason": "the cycle closed" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{archived}");
+    let a = &archived["payload"];
+    assert_eq!(a["changed"], true);
+    assert_eq!(a["withdrawnOffers"], 1);
+    assert_eq!(a["room"]["status"]["state"], "archived");
+    assert_eq!(a["room"]["status"]["access"], "readOnly");
+    assert_eq!(a["room"]["status"]["changedBy"], fix.admin.did);
+    // Bob's offer's credentials were withdrawn at the host (item 4); nothing else.
+    assert_eq!(fix.vta.types_called(), vec![OWNER_REVOKE]);
+    assert_eq!(
+        fix.vta.calls()[0].1["withdraw"],
+        json!([{ "kind": "subject", "subject": bob.did }])
+    );
+    assert!(a.get("revokedAt").is_some(), "{archived}");
+    assert_eq!(
+        call_as(&fix, &bob, OFFERS, json!({})).await["payload"]["items"],
+        json!([])
+    );
+
+    // Reads work; writes do not, whatever the credentials confer.
+    let read = get_record(&fix, &alice, &room, "minutes", &p).await;
+    assert_eq!(
+        read["payload"]["cleartext"]["body"], "the board met",
+        "{read}"
+    );
+    let refused = put_record(&fix, &alice, &room, "agenda", &p).await;
+    assert!(is_refused(&refused), "{refused}");
+    assert!(refused.to_string().contains("archived"), "{refused}");
+
+    // Nobody is admitted.
+    let carol = member(&fix).await;
+    let r = add_member(&mut fix, &room, &carol.did, &in_a_year()).await;
+    assert_eq!(tt_error_code(&r), Some(ADD_WRONG_STATE), "{r}");
+    assert_eq!(r["payload"]["details"]["state"], "archived");
+
+    // A repeat changes nothing.
+    let (_, again) = admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "readOnly", "reason": "again" }),
+    )
+    .await;
+    assert_eq!(again["payload"]["changed"], false, "{again}");
+
+    // Unarchived: writes again.
+    let (_, un) = admin_call(
+        &mut fix,
+        UNARCHIVE,
+        json!({ "roomId": room, "reason": "reopened" }),
+    )
+    .await;
+    assert_eq!(un["payload"]["room"]["status"]["state"], "active", "{un}");
+    let put = put_record(&fix, &alice, &room, "agenda", &p).await;
+    assert_eq!(put["payload"]["version"], 2, "{put}");
+    // Unarchiving an active room changes nothing.
+    let (_, un) = admin_call(
+        &mut fix,
+        UNARCHIVE,
+        json!({ "roomId": room, "reason": "again" }),
+    )
+    .await;
+    assert_eq!(un["payload"]["changed"], false, "{un}");
+
+    let audit = audit_rows(&fix).await;
+    assert!(audit.contains("\"archived\"") && audit.contains("\"unarchived\""));
+}
+
+/// No access: the room is reset — every credential withdrawn at the host, the community's
+/// own re-issued after it — its members suspended; unarchived, each is restored with fresh
+/// credentials they collect as a renewal, which the host honours.
+#[tokio::test]
+async fn no_access_resets_the_room_and_unarchiving_restores_its_members() {
+    let mut fix = fixture().await;
+    fix.vta.0.lock().unwrap().issue_from_now = true;
+    let room = create_room(&mut fix, "open").await;
+    let alice = member(&fix).await;
+    let p = admit_open(&mut fix, &room, &alice).await;
+    put_record(&fix, &alice, &room, "minutes", &p).await;
+
+    fix.vta.clear_calls();
+    let (status, archived) = admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "noAccess", "reason": "kept, no longer read" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{archived}");
+    // Reset first, then the community's own credentials, issued after it.
+    assert_eq!(
+        fix.vta.types_called(),
+        vec![
+            OWNER_REVOKE,
+            ISSUE_MEMBERSHIP,
+            RECEIVE,
+            ISSUE_AUTHORITY,
+            RECEIVE
+        ]
+    );
+    assert_eq!(
+        fix.vta.calls()[0].1["withdraw"],
+        json!([{ "kind": "room" }])
+    );
+    assert_eq!(fix.vta.calls()[1].1["subject"], TEST_VTC_DID);
+    let a = &archived["payload"];
+    assert_eq!(a["room"]["status"]["access"], "noAccess", "{archived}");
+    assert_eq!(a["room"]["suspended"], 1);
+    assert_eq!(a["room"]["admitted"], 0);
+    assert!(a.get("revokedAt").is_some());
+
+    // The host refuses the member's every task, reads included.
+    let read = get_record(&fix, &alice, &room, "minutes", &p).await;
+    assert!(is_refused(&read), "{read}");
+
+    // Suspended in 0.2; still admitted in 0.1, which has no other word for it.
+    let m2 = call_as(&fix, &fix.admin, MEMBERS_V2, json!({ "roomId": room })).await;
+    assert_eq!(m2["payload"]["items"][0]["state"], "suspended", "{m2}");
+    assert!(m2["payload"]["items"][0].get("suspendedAt").is_some());
+    let m1 = call_as(&fix, &fix.admin, MEMBERS, json!({ "roomId": room })).await;
+    assert_eq!(m1["payload"]["items"][0]["state"], "admitted", "{m1}");
+    let mine = call_as(&fix, &alice, MEMBERSHIPS_V2, json!({})).await;
+    let entry = &mine["payload"]["items"][0];
+    assert_eq!(entry["state"], "suspended", "{mine}");
+    assert_eq!(entry["roomState"], "archived");
+    assert_eq!(entry["roomAccess"], "noAccess");
+    let mine = call_as(&fix, &alice, MEMBERSHIPS, json!({})).await;
+    assert_eq!(mine["payload"]["items"][0]["state"], "admitted", "{mine}");
+
+    // Unarchived: the worker restores her, with the same actions and expiry.
+    let (_, un) = admin_call(
+        &mut fix,
+        UNARCHIVE,
+        json!({ "roomId": room, "reason": "reopened" }),
+    )
+    .await;
+    assert_eq!(un["payload"]["room"]["status"]["restoring"], 1, "{un}");
+    worker(&fix, chrono::Duration::zero()).await;
+    let m2 = call_as(&fix, &fix.admin, MEMBERS_V2, json!({ "roomId": room })).await;
+    assert_eq!(m2["payload"]["items"][0]["state"], "admitted", "{m2}");
+    assert!(status_of(&fix, &room).await.get("restoring").is_none());
+
+    // The renewal she collects is honoured by the host.
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
+    let renewal = offers["payload"]["renewals"]
+        .as_array()
+        .and_then(|r| r.first())
+        .cloned()
+        .expect("a renewal");
+    let fresh = json!({
+        "membership": renewal["credentials"]["membership"],
+        "authority": [renewal["credentials"]["authority"]],
+    });
+    let read = get_record(&fix, &alice, &room, "minutes", &fresh).await;
+    assert_eq!(
+        read["payload"]["cleartext"]["body"], "the board met",
+        "{read}"
+    );
+    let audit = audit_rows(&fix).await;
+    assert!(audit.contains("memberRestored"));
+}
+
+/// A reset the host accepted whose re-issue did not land is never reported as done and
+/// never forgotten: the room shows a pending change, and the worker finishes it without
+/// resetting the room again.
+#[tokio::test]
+async fn a_reset_whose_reissue_failed_is_finished_by_the_worker() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "open").await;
+    fix.vta.clear_calls();
+    fix.vta.script(ISSUE_MEMBERSHIP, Script::Silent);
+    let (_, r) = admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "noAccess", "reason": "closed" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&r),
+        Some(ARCHIVE_KEY_HOLDER_UNAVAILABLE),
+        "{r}"
+    );
+    let status = status_of(&fix, &room).await;
+    assert_eq!(status["state"], "active", "{status}");
+    assert_eq!(status["pendingChange"]["state"], "archived");
+    assert_eq!(status["pendingChange"]["access"], "noAccess");
+
+    worker(&fix, chrono::Duration::hours(2)).await;
+    let status = status_of(&fix, &room).await;
+    assert_eq!(status["state"], "archived", "{status}");
+    assert!(status.get("pendingChange").is_none());
+    let resets = fix
+        .vta
+        .types_called()
+        .iter()
+        .filter(|t| *t == OWNER_REVOKE)
+        .count();
+    assert_eq!(resets, 1, "the room is reset once");
+}
+
+/// Removal starts from archived; scheduled, it waits out its grace period and can be
+/// cancelled back to archived with no access.
+#[tokio::test]
+async fn a_removal_is_scheduled_from_archived_and_can_be_cancelled() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "open").await;
+    let (_, r) = admin_call(
+        &mut fix,
+        REMOVE_ROOM,
+        json!({ "roomId": room, "reason": "done" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(REMOVE_ROOM_WRONG_STATE), "{r}");
+    assert_eq!(r["payload"]["details"]["state"], "active");
+    assert!(r.to_string().contains("archive it first"), "{r}");
+
+    admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "readOnly", "reason": "closed" }),
+    )
+    .await;
+    fix.vta.clear_calls();
+    let (status, removed) = admin_call(
+        &mut fix,
+        REMOVE_ROOM,
+        json!({ "roomId": room, "graceDays": 30, "reason": "no longer needed" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    let st = &removed["payload"]["room"]["status"];
+    assert_eq!(st["state"], "removalScheduled", "{removed}");
+    assert_eq!(st["access"], "noAccess");
+    let purge_at = chrono::DateTime::parse_from_rfc3339(st["purgeAt"].as_str().unwrap()).unwrap();
+    assert!(purge_at.with_timezone(&Utc) > Utc::now() + chrono::Duration::days(29));
+    // A read-only room is reset as it is scheduled.
+    assert_eq!(fix.vta.types_called()[0], OWNER_REVOKE);
+
+    // Not yet due: nothing is purged.
+    worker(&fix, chrono::Duration::days(1)).await;
+    assert_eq!(status_of(&fix, &room).await["state"], "removalScheduled");
+    assert!(
+        vti_rooms::storage::get_room(&fix.vtc.state.rooms_ks, &room)
+            .await
+            .is_ok()
+    );
+
+    // Not unarchivable while scheduled; cancelled, archived with no access, no gesture.
+    let (_, r) = admin_call(
+        &mut fix,
+        UNARCHIVE,
+        json!({ "roomId": room, "reason": "x" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(UNARCHIVE_WRONG_STATE), "{r}");
+    assert_eq!(r["payload"]["details"]["state"], "removalScheduled");
+    let cancelled = call_as(
+        &fix,
+        &fix.admin,
+        CANCEL_REMOVAL,
+        json!({ "roomId": room, "reason": "removed by mistake" }),
+    )
+    .await;
+    let st = &cancelled["payload"]["room"]["status"];
+    assert_eq!(st["state"], "archived", "{cancelled}");
+    assert_eq!(st["access"], "noAccess");
+    let again = call_as(
+        &fix,
+        &fix.admin,
+        CANCEL_REMOVAL,
+        json!({ "roomId": room, "reason": "again" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&again),
+        Some(REMOVAL_CANCEL_WRONG_STATE),
+        "{again}"
+    );
+    let audit = audit_rows(&fix).await;
+    assert!(audit.contains("removalScheduled") && audit.contains("removalCancelled"));
+}
+
+/// An instant removal: the content is purged — records, the host record, the community's
+/// keeping of it — the room's DID retired at the VTA, and a tombstone kept that the 0.4
+/// reads show and the 0.3 reads do not.
+#[tokio::test]
+async fn an_instant_removal_purges_the_room_and_keeps_a_tombstone() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "open").await;
+    let alice = member(&fix).await;
+    let p = admit_open(&mut fix, &room, &alice).await;
+    put_record(&fix, &alice, &room, "minutes", &p).await;
+    admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "noAccess", "reason": "closed" }),
+    )
+    .await;
+    let (_, removed) = admin_call(
+        &mut fix,
+        REMOVE_ROOM,
+        json!({ "roomId": room, "graceDays": 0, "reason": "remove it now" }),
+    )
+    .await;
+    assert_eq!(
+        removed["payload"]["room"]["status"]["state"], "purging",
+        "{removed}"
+    );
+
+    fix.vta.clear_calls();
+    worker(&fix, chrono::Duration::zero()).await;
+    assert!(fix.vta.types_called().contains(&DID_DELETE.to_string()));
+    let got = call_as(&fix, &fix.admin, GET_V4, json!({ "roomId": room })).await;
+    let r = &got["payload"]["room"];
+    assert_eq!(r["status"]["state"], "removed", "{got}");
+    assert!(r["status"].get("removedAt").is_some());
+    // The host record as it last stood.
+    assert_eq!(r["room"]["roomId"], room);
+    assert_eq!(r["label"], "Board pack");
+    assert!(
+        got["payload"]["ext"]["org.openvtc"]["lifecycle"]["didRetirement"]
+            .as_str()
+            .unwrap()
+            .starts_with("retired"),
+        "{got}"
+    );
+
+    // Gone from the host.
+    assert!(
+        vti_rooms::storage::get_room(&fix.vtc.state.rooms_ks, &room)
+            .await
+            .is_err()
+    );
+    let raw = vti_rooms::storage::list_records(&fix.vtc.state.room_records_ks, &room, None, None)
+        .await
+        .unwrap();
+    assert!(raw.is_empty(), "the room's records are purged");
+
+    // Members' records stay, removed, without credentials.
+    let m2 = call_as(&fix, &fix.admin, MEMBERS_V2, json!({ "roomId": room })).await;
+    assert_eq!(m2["payload"]["items"][0]["state"], "removed", "{m2}");
+
+    // 0.3 has no word for it.
+    let r = call_as(&fix, &fix.admin, GET, json!({ "roomId": room })).await;
+    assert_eq!(tt_error_code(&r), Some(GET_NOT_FOUND), "{r}");
+    let l3 = call_as(&fix, &fix.admin, LIST, json!({})).await;
+    assert_eq!(l3["payload"]["items"], json!([]), "{l3}");
+    // 0.4 lists it only when asked.
+    let l4 = call_as(&fix, &fix.admin, LIST_V4, json!({})).await;
+    assert_eq!(l4["payload"]["items"], json!([]), "{l4}");
+    let l4 = call_as(&fix, &fix.admin, LIST_V4, json!({ "states": ["removed"] })).await;
+    assert_eq!(l4["payload"]["items"].as_array().unwrap().len(), 1, "{l4}");
+
+    // Nothing of it is left to change.
+    let (_, r) = admin_call(
+        &mut fix,
+        UPDATE,
+        json!({ "roomId": room, "label": "x", "reason": "x" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(UPDATE_NOT_FOUND), "{r}");
+    let (_, r) = admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "readOnly", "reason": "x" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(ARCHIVE_WRONG_STATE), "{r}");
+    assert_eq!(r["payload"]["details"]["state"], "removed");
+    let (_, r) = admin_call(
+        &mut fix,
+        REMOVE_ROOM,
+        json!({ "roomId": room, "reason": "x" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(REMOVE_ROOM_WRONG_STATE), "{r}");
+
+    let audit = audit_rows(&fix).await;
+    for event in ["removedNow", "\"removed\""] {
+        assert!(audit.contains(event), "{event} is audited");
+    }
+}
+
+/// The lifecycle tasks' remaining declared refusals.
+#[tokio::test]
+async fn vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes() {
+    let mut fix = fixture().await;
+    let nobody = json!({ "roomId": "did:key:z6MkNobody", "reason": "r" });
+    let (_, r) = admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": "did:key:z6MkNobody", "access": "readOnly", "reason": "r" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(ARCHIVE_NOT_FOUND), "{r}");
+    let (_, r) = admin_call(&mut fix, UNARCHIVE, nobody.clone()).await;
+    assert_eq!(tt_error_code(&r), Some(UNARCHIVE_NOT_FOUND), "{r}");
+    let (_, r) = admin_call(&mut fix, REMOVE_ROOM, nobody.clone()).await;
+    assert_eq!(tt_error_code(&r), Some(REMOVE_ROOM_NOT_FOUND), "{r}");
+    let r = call_as(&fix, &fix.admin, CANCEL_REMOVAL, nobody.clone()).await;
+    assert_eq!(tt_error_code(&r), Some(REMOVAL_CANCEL_NOT_FOUND), "{r}");
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        GET_V4,
+        json!({ "roomId": "did:key:z6MkNobody" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(GET_V4_NOT_FOUND), "{r}");
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        MEMBERS_V2,
+        json!({ "roomId": "did:key:z6MkNobody" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(MEMBERS_LIST_V2_NOT_FOUND), "{r}");
+    let stranger = Party::new();
+    let r = call_as(&fix, &stranger, MEMBERSHIPS_V2, json!({})).await;
+    assert_eq!(
+        tt_error_code(&r),
+        Some(MEMBERSHIPS_LIST_V2_NOT_A_MEMBER),
+        "{r}"
+    );
+
+    // The VTA refuses the reset outright: nothing is pending.
+    let room = create_room(&mut fix, "open").await;
+    fix.vta.script(
+        OWNER_REVOKE,
+        Script::Refuse("rooms/owner/revoke:noAuthority"),
+    );
+    let (_, r) = admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "noAccess", "reason": "r" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(ARCHIVE_KEY_HOLDER_REFUSED), "{r}");
+    assert!(status_of(&fix, &room).await.get("pendingChange").is_none());
+
+    // Removal from read-only resets the room: refused and unanswered alike.
+    admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "readOnly", "reason": "r" }),
+    )
+    .await;
+    fix.vta.script(
+        OWNER_REVOKE,
+        Script::Refuse("rooms/owner/revoke:noAuthority"),
+    );
+    let (_, r) = admin_call(
+        &mut fix,
+        REMOVE_ROOM,
+        json!({ "roomId": room, "reason": "r" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&r),
+        Some(REMOVE_ROOM_KEY_HOLDER_REFUSED),
+        "{r}"
+    );
+    fix.vta.script(OWNER_REVOKE, Script::Silent);
+    let (_, r) = admin_call(
+        &mut fix,
+        REMOVE_ROOM,
+        json!({ "roomId": room, "reason": "r2" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&r),
+        Some(REMOVE_ROOM_KEY_HOLDER_UNAVAILABLE),
+        "{r}"
+    );
+    // Pending now; an unarchive finishes it first, and cannot while the VTA does not answer.
+    assert_eq!(
+        status_of(&fix, &room).await["pendingChange"]["state"],
+        "removalScheduled"
+    );
+    fix.vta.script(OWNER_REVOKE, Script::Silent);
+    let (_, r) = admin_call(
+        &mut fix,
+        UNARCHIVE,
+        json!({ "roomId": room, "reason": "r3" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&r),
+        Some(UNARCHIVE_KEY_HOLDER_UNAVAILABLE),
+        "{r}"
+    );
+    fix.vta.script(
+        OWNER_REVOKE,
+        Script::Refuse("rooms/owner/revoke:noAuthority"),
+    );
+    let (_, r) = admin_call(
+        &mut fix,
+        UNARCHIVE,
+        json!({ "roomId": room, "reason": "r4" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some(UNARCHIVE_KEY_HOLDER_REFUSED), "{r}");
+    // Archive while pending is refused too, both ways.
+    fix.vta.script(OWNER_REVOKE, Script::Silent);
+    let (_, r) = admin_call(
+        &mut fix,
+        ARCHIVE,
+        json!({ "roomId": room, "access": "noAccess", "reason": "r5" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&r),
+        Some(ARCHIVE_KEY_HOLDER_UNAVAILABLE),
+        "{r}"
     );
 }

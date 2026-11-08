@@ -65,8 +65,8 @@ async fn seed(state: &AppState, did: &str) {
         .expect("install default policies");
 }
 
-/// The namespaces a `git-ns/view/0.4` answer lists, as `forge/owner`.
-fn listed(view: &specs::view::v0_4::Response) -> Vec<String> {
+/// The namespaces a `git-ns/view/0.6` answer lists, as `forge/owner`.
+fn listed(view: &specs::view::v0_6::Response) -> Vec<String> {
     let v = serde_json::to_value(view).unwrap();
     v["namespaces"]
         .as_array()
@@ -98,7 +98,7 @@ async fn bind_view_refuse_unbind(client: &VtcClient, key: &HolderKey, over: &str
         .to_string();
 
     let view = client
-        .git_ns_view_v4(None, key)
+        .git_ns_view(None, false, false, key)
         .await
         .unwrap_or_else(|e| panic!("view over {over}: {e}"));
     assert_eq!(listed(&view), ["github.com/acme"], "over {over}");
@@ -123,14 +123,14 @@ async fn bind_view_refuse_unbind(client: &VtcClient, key: &HolderKey, over: &str
         .unwrap_or_else(|e| panic!("repo/list over {over}: {e}"));
     assert_eq!(repos["repos"], serde_json::json!([]), "over {over}");
     let admin_view = client
-        .git_ns_view_v5(None, true, false, key)
+        .git_ns_view(None, true, false, key)
         .await
-        .unwrap_or_else(|e| panic!("view 0.5 (administrator) over {over}: {e}"));
+        .unwrap_or_else(|e| panic!("view (administrator) over {over}: {e}"));
     assert_eq!(listed(&admin_view), ["github.com/acme"], "over {over}");
     let break_glass = client
-        .git_ns_view_v5(None, true, true, key)
+        .git_ns_view(None, true, true, key)
         .await
-        .unwrap_or_else(|e| panic!("view 0.5 (break-glass) over {over}: {e}"));
+        .unwrap_or_else(|e| panic!("view (break-glass) over {over}: {e}"));
     assert!(
         listed(&break_glass).is_empty(),
         "over {over}: no break-glass, no namespace"
@@ -161,7 +161,7 @@ async fn bind_view_refuse_unbind(client: &VtcClient, key: &HolderKey, over: &str
         .git_ns_send_signed(unbind_type, &doc)
         .await
         .unwrap_or_else(|e| panic!("unbind over {over}: {e}"));
-    let view = client.git_ns_view_v4(None, key).await.unwrap();
+    let view = client.git_ns_view(None, false, false, key).await.unwrap();
     assert!(listed(&view).is_empty(), "over {over}: {:?}", listed(&view));
 }
 
@@ -171,7 +171,7 @@ async fn another_signer_is_refused_on_a_session(client: &VtcClient, over: &str) 
     let (other_did, other_key) = did_key_from_seed(0x77);
     let other = HolderKey::from_did_key(&other_did, &other_key).unwrap();
     let err = client
-        .git_ns_view_v4(None, &other)
+        .git_ns_view(None, false, false, &other)
         .await
         .expect_err("a document signed as another DID does not ride this session");
     assert!(matches!(err, VtcError::Signing(_)), "over {over}: {err}");

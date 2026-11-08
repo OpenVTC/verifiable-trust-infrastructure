@@ -19,10 +19,10 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::rooms::owner::revoke::v0_1 as spec;
 use vti_common::acl::Capability;
 use vti_common::error::AppError;
 use vti_rooms::revocation::Entry;
+use vti_specs::rooms::owner::revoke::v0_1 as spec;
 
 use crate::auth::AuthClaims;
 use crate::operations::room_revocation as revocation;

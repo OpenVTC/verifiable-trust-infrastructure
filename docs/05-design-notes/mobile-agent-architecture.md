@@ -155,7 +155,7 @@ This callback is the seam **every** signing flow is built on. Port it first.
 
 | Function | Signature | Returns |
 |---|---|---|
-| `parse_step_up_request` | `(json: String) -> Result<StepUpRequest>` | Deserialises & structurally validates an inbound `auth/step-up/approve-request/0.1` and surfaces the consent-UI fields. |
+| `parse_step_up_request` | `(json: String) -> Result<StepUpRequest>` | Deserialises & structurally validates an inbound `auth/step-up/approve-request/0.5` and surfaces the consent-UI fields. |
 
 ```
 StepUpRequest {
@@ -508,9 +508,9 @@ Pinned details:
   denied/`denied_reason` is modelled).
 - `granted_acr` is the AAL the approver believes it demonstrated, e.g.
   **`"aal2"`**.
-- `subject`, `session_id`, `challenge` are echoed verbatim from the request.
-- The request's `acceptableEvidence` constrains which gate(s) the RP accepts;
-  empty = any supported. `reason` is shown to the user **verbatim** (consent
+- `subject`, `session_id`, `challenge` are echoed verbatim from the request
+  (`session_id` is empty when the request names no session).
+- The request's required `accepts` lists the gate(s) the RP takes. `reason` is shown to the user **verbatim** (consent
   integrity).
 
 ### 4.7 WebAuthn / passkeys

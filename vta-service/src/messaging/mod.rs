@@ -9,6 +9,9 @@
 //! (routing, handlers, drain windows, the mediator registry, protocol
 //! management) stays `didcomm`-only and is simply absent from a TSP-only build.
 pub mod auth;
+/// The connections the VTA holds for the principal's persona DIDs
+/// (VTI-NTF-080 – 093). One session — one socket — per identifier.
+pub mod collector;
 #[cfg(feature = "didcomm")]
 pub mod drain_store;
 #[cfg(feature = "didcomm")]
@@ -49,3 +52,6 @@ pub mod tsp_reach;
 pub mod tsp_relationship_store;
 #[cfg(feature = "tsp")]
 pub mod tsp_transport;
+/// The connections the VTA receives at for the room watches it holds
+/// (`rooms/keys/watch/0.1`): one per watch's address.
+pub mod watch_addresses;

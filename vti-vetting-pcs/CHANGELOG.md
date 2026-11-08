@@ -2,6 +2,110 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.17.0...vti-vetting-pcs-v0.18.0) — 2026-11-05
+
+
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.16.0...vti-vetting-pcs-v0.17.0) — 2026-11-05
+
+
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.15.0...vti-vetting-pcs-v0.16.0) — 2026-11-05
+
+
+## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.14.0...vti-vetting-pcs-v0.15.0) — 2026-11-04
+
+
+## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.13.0...vti-vetting-pcs-v0.14.0) — 2026-11-04
+
+
+## [0.13.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.12.0...vti-vetting-pcs-v0.13.0) — 2026-11-04
+
+
+## [0.12.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.11.0...vti-vetting-pcs-v0.12.0) — 2026-11-03
+
+
+### Added
+
+- **vetting**: Recover or reset a lost hidden-vetting key (pcs-binding/show, pcs-binding/reset, vta/pcs/vetter/recover) ([#2406](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2406))
+
+* feat(vtc): recover or reset a lost hidden-vetting key (pcs-binding/show, pcs-binding/reset)
+
+  A vetter is bound to the PCS identifier of their first enrolment, and a
+  second identifier is refused with pcs-root:identifierRebound. The binding
+  was never cleared, so a vetter whose key was lost was locked out of hidden
+  vetting for as long as they stayed a member; revoking and re-granting the
+  role did not help.
+
+  - vtc/vetting/vetters/pcs-binding/show/0.1: a member reads their own
+    binding (identifier, enrolled labels, any pending reset), so their client
+    can recover the matching key. Membership is the entitlement;
+    notAMember otherwise.
+  - vtc/vetting/vetters/pcs-binding/reset/0.1: an administrator holding
+    vtc.vetting.manage (as vetters/grant) resets a member's binding with a
+    reason. Idempotent; notBound for a member who never enrolled. Audited as
+    HiddenVetterBindingReset, never with the identifier.
+  - Enrolment after a reset: the recorded identifier cancels it
+    (HiddenVetterResetCancelled); a new one is refused (identifierRebound)
+    while any label the old one enrolled under is live, judged at each
+    request against the caller's configuration and the stored one under the
+    enrolment lock, and bound once none is (HiddenVetterRebound) with its
+    labels afresh. The old labels are retired on the record.
+  - vtc/vetting/hidden/publish refuses to make a retired label live again,
+    checked before the consent gate and again under the enrolment lock
+    before the write. publish/0.1 declares no code for it, so it is a
+    validation refusal.
+  - Admin console: a "Reset a hidden-vetting key" card under Vetting ->
+    Vetters, shown when discovery lists the task.
+  - EnrolmentRecord gains optional reset and retiredLabels members; rows
+    without them read and write as before.
+
+  The two specifications are pinned from a locally built registry ahead of
+  their publication; trust-tasks.lock records that registry until they are
+  re-pinned against trusttasks.org.
+
+
+
+## [0.11.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.10.0...vti-vetting-pcs-v0.11.0) — 2026-11-02
+
+
+## [0.10.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.9.0...vti-vetting-pcs-v0.10.0) — 2026-10-30
+
+
+## [0.9.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.8.0...vti-vetting-pcs-v0.9.0) — 2026-10-30
+
+
+## [0.8.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.7.0...vti-vetting-pcs-v0.8.0) — 2026-10-28
+
+
+### Chore
+
+- **deps**: Trust-tasks-rs 0.36, affinidi-tdk 0.36, affinidi-messaging-sdk 0.44, mediator 0.48 ([#2319](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2319))
+
+One trust-tasks-rs in the graph again, at 0.36.1 — the first release
+  carrying vta/contexts/delete/1.1 (trust-tasks-tf #967). TDK moved in
+  lockstep (affinidi-tdk-rs #978: affinidi-tdk 0.36, affinidi-messaging-sdk
+  0.44) and so did the mediator (affinidi-messaging-mediator #46, released as
+  0.48.0: test-mediator, mediator-admin, mediator-tui).
+
+  trust-tasks-rs 0.36 emits trust-task-error/0.6, which adds the
+  unsupportedExtension and indeterminate standard codes (framework 0.7,
+  SPEC §8.3). Both services' framework_error_type_uri() move to 0.6 so an
+  unrouted refusal speaks the same version as a routed one — the drift
+  unrouted_and_routed_errors_agree_on_the_type_uri exists to catch — and the
+  fixtures standing in for this workspace's own refusals follow, keeping
+  one error version in vtc-service's binding census. Fixtures for foreign
+  peers (a DID host) keep 0.5: a consumer still accepts it (SPEC §5.2).
+  vta-sdk and the admin console recognise any trust-task-error/ version.
+
+  0.36 also marks every prebuilt spec module deprecated in favour of
+  trust-tasks-build. The workspace already allows `deprecated`;
+  vta-external, vti-vetting-pcs and vta-persona did not inherit the
+  workspace lints, and now do.
+
+
+
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.6.0...vti-vetting-pcs-v0.7.0) — 2026-10-27
+
+
 ## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.5.0...vti-vetting-pcs-v0.6.0) — 2026-10-26
 
 

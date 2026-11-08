@@ -27,8 +27,8 @@ use vtc_service::members::{Member, get_member, store_member};
 use vtc_service::test_support::TestVtc;
 
 const VTC_DID: &str = "did:webvh:scidvtc:vtc.example.com";
-const AUTH_TYPE: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
-const REFRESH_TYPE: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+const AUTH_TYPE: &str = "https://trusttasks.org/spec/auth/authenticate/0.3";
+const REFRESH_TYPE: &str = "https://trusttasks.org/spec/auth/refresh/0.2";
 
 fn holder_identity(seed: u8) -> (SigningKey, String, String) {
     let sk = SigningKey::from_bytes(&[seed; 32]);

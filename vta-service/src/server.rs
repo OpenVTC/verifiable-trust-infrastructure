@@ -214,6 +214,10 @@ pub struct AppState {
     /// reply converges on the first execution instead of producing a second
     /// durable effect.
     pub idempotency_ks: KeyspaceHandle,
+    /// The record of accepted Trust Task document identifiers (VTI-OPS-025 …
+    /// 027, SPEC §7.2 item 11), shared by every binding. Read through
+    /// [`Self::accepted_ids`].
+    pub accepted_ids_ks: KeyspaceHandle,
     /// In-flight backup-bundle records for the descriptor-pattern
     /// export/import slice (see
     /// `docs/05-design-notes/backup-descriptor-pattern.md`). Holds
@@ -274,6 +278,19 @@ pub struct AppState {
     /// Witnessed sessions in flight (`vta/witness/*`), one record per session —
     /// see [`crate::keyspaces::WITNESS_SESSIONS`].
     pub witness_sessions_ks: KeyspaceHandle,
+    /// The notifications held for the principal (`vta/notifications/*`) — see
+    /// [`crate::keyspaces::NOTIFICATIONS`].
+    pub notifications_ks: KeyspaceHandle,
+    /// Collection claims, conflicts and the setting's last applied value — see
+    /// [`crate::keyspaces::COLLECTION`].
+    pub collection_ks: KeyspaceHandle,
+    /// Who collects for each persona DID: the handle the `vta/collection/*`
+    /// handlers and the collector share (`operations::collection`).
+    pub collection: Arc<crate::operations::collection::CollectionControl>,
+    /// The watches armed for the principal's clients (`rooms/keys/watch/0.1`) and the
+    /// connections receiving at their addresses — see
+    /// [`crate::keyspaces::ROOM_KEY_WATCHES`].
+    pub room_key_watches: Arc<crate::operations::room_key_watch::RoomKeyWatches>,
     /// A member's MLS group for each room they belong to. Group secrets — see
     /// [`crate::keyspaces::ROOM_GROUPS`].
     pub room_groups_ks: KeyspaceHandle,
@@ -438,6 +455,12 @@ impl AppState {
         }
     }
 
+    /// The accepted-document-id record over [`Self::accepted_ids_ks`]: the one
+    /// every binding claims a document's `id` in before executing it.
+    pub fn accepted_ids(&self) -> vti_trust_task_server::StoreAcceptedIds {
+        vti_trust_task_server::StoreAcceptedIds::new(self.accepted_ids_ks.clone())
+    }
+
     /// The resolver Trust Task Data-Integrity proofs are verified with.
     ///
     /// Carries the configured DID cache, so a proof by any DID that names a key
@@ -585,6 +608,9 @@ pub async fn build_app_state(
     // may hold response bodies — a `Keyed` record carries the original response
     // verbatim, which is caller data even when it is not secret material.
     let idempotency_ks = apply_encryption(store.keyspace(crate::keyspaces::IDEMPOTENCY)?);
+    // The accepted-document-id record. Encrypted for the same reason: a row
+    // carries the first execution's response.
+    let accepted_ids_ks = apply_encryption(store.keyspace(crate::keyspaces::ACCEPTED_IDS)?);
     let backup_bundles_ks = apply_encryption(store.keyspace(crate::keyspaces::BACKUP_BUNDLES)?);
     // Stage `.vtabak` blobs under `{data_dir}/backups`. Created lazily
     // by the op layer at first `initiate-*` call (so a VTA that never
@@ -613,6 +639,12 @@ pub async fn build_app_state(
     // Witnessed sessions: a session record holds the session document, which names
     // both relationship DIDs — encrypted at rest like the rest of the vault's state.
     let witness_sessions_ks = apply_encryption(store.keyspace(crate::keyspaces::WITNESS_SESSIONS)?);
+    // Held notifications: each names who the principal belongs to, so it is
+    // encrypted at rest like the vault.
+    let notifications_ks = apply_encryption(store.keyspace(crate::keyspaces::NOTIFICATIONS)?);
+    let collection_ks = apply_encryption(store.keyspace(crate::keyspaces::COLLECTION)?);
+    // Watches: each record holds its address's private keys.
+    let room_key_watches_ks = apply_encryption(store.keyspace(crate::keyspaces::ROOM_KEY_WATCHES)?);
     // Encrypted alongside the key store where a TEE deployment provides a storage key: a
     // group snapshot decrypts every record its room holds, which is the same class of
     // material as a derived key and deserves the same treatment.
@@ -717,6 +749,7 @@ pub async fn build_app_state(
         service_state_ks,
         sealed_nonces_ks,
         idempotency_ks,
+        accepted_ids_ks,
         backup_bundles_ks,
         backup_blob_dir,
         #[cfg(feature = "webvh")]
@@ -735,6 +768,14 @@ pub async fn build_app_state(
         ),
         pcs_engine_ks,
         witness_sessions_ks,
+        notifications_ks,
+        collection_ks,
+        collection: Arc::new(crate::operations::collection::CollectionControl::new(
+            config.collection.suspend,
+        )),
+        room_key_watches: Arc::new(crate::operations::room_key_watch::RoomKeyWatches::new(
+            room_key_watches_ks,
+        )),
         room_groups_ks,
         room_invitations_ks,
         app_state_ks,
@@ -1218,10 +1259,15 @@ pub async fn run(
         let storage_acl_ks = acl_ks.clone();
         let storage_consent_ks = consent_ks.clone();
         let storage_idempotency_ks = idempotency_ks.clone();
+        let storage_accepted_ids_ks =
+            apply_encryption(store.keyspace(crate::keyspaces::ACCEPTED_IDS)?);
         let storage_task_consent_ks = task_consent_ks.clone();
         let storage_vault_ks = vault_ks.clone();
         let storage_witness_sessions_ks =
             apply_encryption(store.keyspace(crate::keyspaces::WITNESS_SESSIONS)?);
+        let storage_notifications_ks =
+            apply_encryption(store.keyspace(crate::keyspaces::NOTIFICATIONS)?);
+        let storage_notifications_retain_days = config.notifications.retain_lapsed_days;
         let storage_room_groups_ks =
             apply_encryption(store.keyspace(crate::keyspaces::ROOM_GROUPS)?);
         let storage_pcs_engine_ks = apply_encryption(store.keyspace(crate::keyspaces::PCS_ENGINE)?);
@@ -1389,6 +1435,35 @@ pub async fn run(
                     &chrono::Utc::now().to_rfc3339(),
                 )
                 .await?;
+            }
+
+            // A rule naming a task version this VTA no longer serves would never
+            // match again, leaving the task it gated ungated: move it to the
+            // successor (`vta_policy::approvals::RETIRED_TASK_TYPES`). A move
+            // that cannot be made (rules for both versions) is reported loudly
+            // rather than stopping the VTA, which would leave the operator no
+            // online way to fix the rules.
+            match vta_policy::approvals::migrate_retired_task_types(
+                &app_state.policy_ks,
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .await
+            {
+                Ok(moved) => {
+                    for (old, new) in moved {
+                        tracing::warn!(
+                            from = %old,
+                            to = %new,
+                            "approval rule moved from a retired task version to its successor"
+                        );
+                    }
+                }
+                Err(e) => tracing::error!(
+                    error = %e,
+                    security_alert = true,
+                    "approval rules name a retired task version and could not be moved; the \
+                     task they gate runs ungated until the rules are edited"
+                ),
             }
 
             // Enforcement is opt-in and stays off by default (flipping it would
@@ -1620,6 +1695,26 @@ pub async fn run(
             }
         }
 
+        // The collector: the connections the VTA holds for the principal's
+        // persona DIDs (VTI-NTF-080 – 098). It runs whether or not the
+        // operator has suspended collection, so engaging or lifting the
+        // suspension is audited at this boot, and integrations provisioned
+        // before `provisioned:` records existed are recorded before anything is
+        // opened.
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        let collector_handle = tokio::spawn(crate::messaging::collector::run(
+            app_state.clone(),
+            didcomm_shutdown.clone(),
+        ));
+        // The room watches' addresses (`rooms/keys/watch/0.1`): one connection per watch
+        // held, and the sweep that forgets lapsed watches and those whose caller lost
+        // standing.
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        let watch_addresses_handle = tokio::spawn(crate::messaging::watch_addresses::run(
+            app_state.clone(),
+            didcomm_shutdown.clone(),
+        ));
+
         // TSP inbound is no longer a standalone websocket. The delivery-layer
         // `DidCommTransport` built above multiplexes TSP frames off its single
         // mediator websocket (`Inbound.message.protocol` tags DIDComm vs TSP);
@@ -1702,9 +1797,12 @@ pub async fn run(
                     storage_acl_ks,
                     storage_consent_ks,
                     storage_idempotency_ks,
+                    storage_accepted_ids_ks,
                     storage_task_consent_ks,
                     storage_vault_ks,
                     storage_witness_sessions_ks,
+                    storage_notifications_ks,
+                    storage_notifications_retain_days,
                     storage_room_groups_ks,
                     storage_pcs_engine_ks,
                     storage_app_state_ks,
@@ -1756,6 +1854,26 @@ pub async fn run(
                     let _ = shutdown_tx.send(true);
                     is_restart = true;
                 }
+            }
+        }
+
+        // The collector's connections are closed before this generation ends,
+        // so a soft restart never opens a persona's socket while the last
+        // generation's is still up (one socket per DID).
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        {
+            didcomm_shutdown.cancel();
+            if tokio::time::timeout(std::time::Duration::from_secs(30), collector_handle)
+                .await
+                .is_err()
+            {
+                warn!("the collector did not close its connections within 30s");
+            }
+            if tokio::time::timeout(std::time::Duration::from_secs(30), watch_addresses_handle)
+                .await
+                .is_err()
+            {
+                warn!("the room watch addresses did not close their connections within 30s");
             }
         }
 
@@ -1889,9 +2007,12 @@ fn run_storage_thread(
     acl_ks: KeyspaceHandle,
     consent_ks: KeyspaceHandle,
     idempotency_ks: KeyspaceHandle,
+    accepted_ids_ks: KeyspaceHandle,
     task_consent_ks: KeyspaceHandle,
     vault_ks: KeyspaceHandle,
     witness_sessions_ks: KeyspaceHandle,
+    notifications_ks: KeyspaceHandle,
+    notifications_retain_days: u32,
     room_groups_ks: KeyspaceHandle,
     pcs_engine_ks: KeyspaceHandle,
     app_state_ks: KeyspaceHandle,
@@ -1954,6 +2075,20 @@ fn run_storage_thread(
                         // this one logs rather than propagating, and why it is
                         // not audited (retry bookkeeping, not a security event).
                         crate::idempotency_sweeper::sweep_expired_logged(&idempotency_ks).await;
+                        // The accepted-document-id record, the same way: a claim
+                        // treats an expired row as absent, so a missed pass costs
+                        // space only. Its rows live minutes, so one tick's worth
+                        // is the steady-state size.
+                        match vti_trust_task_server::accepted_store::sweep_expired(
+                            &accepted_ids_ks,
+                            chrono::Utc::now(),
+                        )
+                        .await
+                        {
+                            Ok(n) if n > 0 => debug!("accepted-id sweeper pruned {n} rows"),
+                            Ok(_) => {}
+                            Err(e) => warn!("accepted-id sweeper error: {e}"),
+                        }
                         // Same for task-execution consent: an unanswered pending
                         // would otherwise sit in the keyspace forever, since the
                         // gate only expires one lazily when its digest is re-read.
@@ -2053,6 +2188,20 @@ fn run_storage_thread(
                             Ok(n) if n > 0 => debug!(removed = n, "witness session sweeper"),
                             Ok(_) => {}
                             Err(e) => warn!("witness session sweeper error: {e}"),
+                        }
+                        // Discard held notifications that lapsed or were withdrawn
+                        // longer ago than `[notifications] retain_lapsed_days`
+                        // (VTI-NTF-052).
+                        match crate::operations::notifications::sweep_lapsed(
+                            &notifications_ks,
+                            notifications_retain_days,
+                            chrono::Utc::now(),
+                        )
+                        .await
+                        {
+                            Ok(n) if n > 0 => debug!(removed = n, "notification sweeper"),
+                            Ok(_) => {}
+                            Err(e) => warn!("notification sweeper error: {e}"),
                         }
                         // Discard every retained admission past its 24 hours
                         // (`rooms/owner/group/add/0.3` item 8). Reads already refuse
@@ -3793,17 +3942,16 @@ mod rest_ingress_tests {
         assert_eq!(trust.warning, None);
 
         // End to end: the parent's X-Forwarded-For names the client.
-        use axum::extract::ConnectInfo;
-        use tower_governor::key_extractor::KeyExtractor;
         let mut req = axum::http::Request::builder()
             .header("x-forwarded-for", "203.0.113.9")
             .body(())
             .unwrap();
-        req.extensions_mut()
-            .insert(ConnectInfo(vti_common::rate_limit::VSOCK_PARENT_PEER));
-        let extractor = vti_common::rate_limit::TrustedProxyKeyExtractor::new(trust.cidrs);
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            vti_common::rate_limit::VSOCK_PARENT_PEER,
+        ));
+        let extractor = vti_common::rate_limit::TrustedProxyKeyExtractor::new(trust.cidrs).unwrap();
         assert_eq!(
-            extractor.extract(&req).unwrap(),
+            extractor.client_of(&req).unwrap().ip,
             "203.0.113.9".parse::<std::net::IpAddr>().unwrap()
         );
     }
@@ -4360,7 +4508,7 @@ mod unenforced_policy_tests {
         vta_policy::seed_declarative_approvals(
             &ks,
             &[vta_sdk::approvals::ApprovalRule::reauth(
-                "https://trusttasks.org/spec/acl/grant/0.1",
+                "https://trusttasks.org/spec/acl/grant/0.2",
             )],
             &Default::default(),
             now,

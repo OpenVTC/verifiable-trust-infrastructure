@@ -65,7 +65,7 @@ const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
 /// Member seed shared by `applicant_pair` (so a `LocalSigner` over the
 /// same seed signs reciprocal VCs that verify against the member did:key).
 const MEMBER_SEED: [u8; 32] = [0xCD; 32];
-const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 
 const ADMIN_DID: &str = "did:key:zAdmin1";
@@ -462,6 +462,53 @@ async fn rest_submit_dedups_an_open_request_for_the_same_applicant() {
     // `pending` here, not `deferred`: the default policy refers this request to
     // an admin, so it is the community that owes the next move.
     assert_eq!(body2.pointer("/payload/details/status").unwrap(), "pending");
+}
+
+#[tokio::test]
+async fn rest_submit_refuses_a_current_member_before_review() {
+    // A current (ACL-present) member applying again is refused at submit with
+    // the consumer-minted `alreadyMember`, and nothing is queued: before this,
+    // the request reached an administrator and failed only when they approved
+    // it (`approve_409_when_duplicate_acl_exists`).
+    let fix = build_fixture().await;
+    let (_sk, applicant_did) = applicant_pair();
+    let now = vtc_service::auth::session::now_epoch();
+    store_acl_entry(
+        &fix.acl_ks,
+        &VtcAclEntry {
+            did: applicant_did.clone(),
+            role: VtcRole::Member,
+            label: None,
+            admin: VtcRole::Member.implied_authority(),
+            delegated_by: None,
+            created_at: now,
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+            resource_grants: Vec::new(),
+            group_grants: Vec::new(),
+            label_set_by_subject: false,
+            suspension: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let (_did, doc) = submit_doc(&json!({ "type": "VerifiablePresentation" })).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "got {body}");
+    assert_eq!(
+        tt_error_code(&body),
+        vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_ERR_ALREADY_MEMBER
+    );
+    assert!(
+        vtc_service::join::orchestrate::find_open_request(&fix.join_requests_ks, &applicant_did)
+            .await
+            .unwrap()
+            .is_none(),
+        "a refused member's application must not be queued for review"
+    );
 }
 
 #[tokio::test]
@@ -4472,7 +4519,7 @@ async fn requested_attributes_are_published_enforced_and_kept_with_the_request()
 // test looks at the constant it claims to.
 // ---------------------------------------------------------------------------
 
-use trust_tasks_rs::specs::vtc as spec;
+use vti_specs::vtc as spec;
 
 const DECIDE_ERR_NOT_FOUND: &str = spec::join_requests::decide::v0_1::error_codes::NOT_FOUND.code;
 const DECIDE_ERR_NOT_PENDING: &str =

@@ -127,12 +127,21 @@ pub struct InstallTokenClaims {
     /// candidate `did:key` signature without trusting the wire
     /// shape of the ceremony alone.
     pub epubkey: String,
-    /// Admin DID this invite materialises an ACL entry + passkey for.
-    /// Carried in the JWT so `claim_finish` doesn't have to derive
-    /// the DID from the passkey — the passkey can be any algorithm
-    /// (ES256, RS256, EdDSA), matching what platform authenticators
-    /// produce. Modelled on `affinidi-webvh-service::Enrollment::did`.
+    /// The administrator DID a **wallet** invitation names — the DID whose
+    /// control `vtc/install/claim/finish/0.3` proves. Empty on a **passkey**
+    /// invitation: `vtc/install/claim/passkey/finish/0.1` derives the DID from
+    /// the passkey's own key and never takes it from the token (item 5).
+    #[serde(default)]
     pub admin_did: String,
+}
+
+impl InstallTokenClaims {
+    /// Whether the token names an administrator DID — a wallet invitation,
+    /// claimed with `vtc/install/claim/{start,finish}/0.3`. A passkey
+    /// invitation names none.
+    pub fn names_did(&self) -> bool {
+        !self.admin_did.is_empty()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +349,18 @@ pub fn mint_install_token(
         ephemeral_signing_key: ephemeral_bytes,
         expires_at_unix: exp,
     })
+}
+
+/// Mint a **passkey** install token: one that names no administrator DID,
+/// because `vtc/install/claim/passkey/finish/0.1` derives it from the passkey
+/// the installer registers. Record it with
+/// [`super::InstallTokenStore::record_issued_passkey`].
+pub fn mint_passkey_install_token(
+    signer: &InstallTokenSigner,
+    issuer_did: &str,
+    ttl_seconds: u64,
+) -> Result<MintedInstallToken, AppError> {
+    mint_install_token(signer, issuer_did, "", ttl_seconds)
 }
 
 /// Verify + decode an install token. Thin wrapper over

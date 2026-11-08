@@ -10,6 +10,13 @@
 //! `update` — a room's label, description and tags are the community's own record and
 //! reach no key holder. Every one needs `vtc.rooms.manage` on this profile's entry.
 //!
+//! A room is closed in two deliberate steps (`vtc/rooms/community/{archive,unarchive,
+//! remove,removal/cancel}/0.1`): `archive` (read-only, or no access — reversible with
+//! `unarchive`), then `remove`, which purges the content after a grace period that
+//! `cancel-removal` calls off, or at once with `--now`. `archive`, `unarchive` and `remove`
+//! take a passkey gesture; `cancel-removal` takes none, so stopping a mistaken removal is
+//! never harder than making it. `list` and `get` show each room's state (`get`/`list` 0.4).
+//!
 //! Members collect and accept their offers with their own DID (`vtc/rooms/offers/*`), from
 //! the member portal or their wallet — not from an administrator's profile.
 
@@ -61,11 +68,17 @@ pub enum RoomsCommands {
         #[arg(long)]
         reason: String,
     },
-    /// The rooms the community owns.
+    /// The rooms the community owns — every state but removed, unless asked.
     List {
         /// Only the rooms filed under this tag.
         #[arg(long)]
         tag: Option<String>,
+        /// Only the rooms in this state (repeat).
+        #[arg(long = "state", value_enum, conflicts_with = "all")]
+        states: Vec<RoomStateArg>,
+        /// Every room, removed ones included.
+        #[arg(long)]
+        all: bool,
         #[arg(long)]
         limit: Option<u32>,
         #[arg(long)]
@@ -98,6 +111,56 @@ pub enum RoomsCommands {
         #[arg(long)]
         clear_tags: bool,
         /// Why — recorded in the audit trail with the earlier values.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Archive a room: it admits no one, its open offers are withdrawn, and its host
+    /// accepts no writes. `read-only` keeps members reading; `no-access` withdraws every
+    /// credential the room issued (a reset) and keeps the content. Reversible with
+    /// `unarchive`. On an archived room, moves it to the other access.
+    Archive {
+        /// The room's DID.
+        room: String,
+        #[arg(long, value_enum)]
+        access: AccessArg,
+        /// Why — recorded in the audit trail.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Reopen an archived room. Members suspended by `no-access` are restored: the room
+    /// re-issues their credentials, which they collect as a renewal.
+    Unarchive {
+        /// The room's DID.
+        room: String,
+        /// Why — recorded in the audit trail.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Remove an archived room: everyone's access is withdrawn and its content is purged
+    /// after a grace period (the community's default unless given), or at once with
+    /// `--now`. The purge cannot be undone; until it starts, `cancel-removal` calls it off.
+    Remove {
+        /// The room's DID.
+        room: String,
+        /// Days to keep the content before purging it (0–365).
+        #[arg(long, conflicts_with = "now")]
+        grace_days: Option<u32>,
+        /// Purge at once: no grace period, and nothing to cancel.
+        #[arg(long)]
+        now: bool,
+        /// The room's label, typed exactly, to confirm which room is removed.
+        #[arg(long)]
+        confirm: String,
+        /// Why — recorded in the audit trail.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Call off a scheduled removal before its purge begins. The room stays archived
+    /// with no access. Takes no passkey.
+    CancelRemoval {
+        /// The room's DID.
+        room: String,
+        /// Why — recorded in the audit trail.
         #[arg(long)]
         reason: String,
     },
@@ -184,7 +247,47 @@ pub enum ActionArg {
 pub enum StateArg {
     Offered,
     Admitted,
+    Suspended,
     Removed,
+}
+
+/// A room's state in its owner's lifecycle (`RoomState`).
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Debug)]
+pub enum RoomStateArg {
+    Active,
+    Archived,
+    RemovalScheduled,
+    Purging,
+    Removed,
+}
+
+impl RoomStateArg {
+    /// As the wire names it.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Archived => "archived",
+            Self::RemovalScheduled => "removalScheduled",
+            Self::Purging => "purging",
+            Self::Removed => "removed",
+        }
+    }
+}
+
+/// What an archived room's members may still do (`ArchiveAccess`).
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Debug)]
+pub enum AccessArg {
+    ReadOnly,
+    NoAccess,
+}
+
+impl AccessArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "readOnly",
+            Self::NoAccess => "noAccess",
+        }
+    }
 }
 
 impl VisibilityArg {
@@ -212,6 +315,7 @@ impl StateArg {
         match self {
             Self::Offered => "offered",
             Self::Admitted => "admitted",
+            Self::Suspended => "suspended",
             Self::Removed => "removed",
         }
     }
@@ -251,7 +355,12 @@ fn hint(code: &str) -> &'static str {
             "\nThe community's `rooms` policy decides which tiers it may own a room at; \
              `private` is off until an operator uploads a policy that permits it."
         }
-        "vtc/rooms/community/update:notFound" | "vtc/rooms/community/get:notFound" => {
+        "vtc/rooms/community/update:notFound"
+        | "vtc/rooms/community/get:notFound"
+        | "vtc/rooms/community/archive:notFound"
+        | "vtc/rooms/community/unarchive:notFound"
+        | "vtc/rooms/community/remove:notFound"
+        | "vtc/rooms/community/removal/cancel:notFound" => {
             "\nThis community owns no room with that DID. A room it only hosts belongs to its \
              member owner, and its name is theirs: `cnm rooms list` shows the community's own."
         }
@@ -264,8 +373,227 @@ fn hint(code: &str) -> &'static str {
             "\nThe community's VTA did not answer; nothing was recorded. Run the same \
              command again."
         }
+        "vtc/rooms/community/archive:keyHolderUnavailable"
+        | "vtc/rooms/community/unarchive:keyHolderUnavailable"
+        | "vtc/rooms/community/remove:keyHolderUnavailable" => {
+            "\nThe community's VTA did not answer. If the room's credentials were already \
+             reset, `rooms get` shows a pending change: the VTC finishes it by itself, and \
+             running the same command again finishes it too."
+        }
         _ => "",
     }
+}
+
+/// The state a lifecycle refusal names, read from its message — `room `…` is <state>` from
+/// the lifecycle tasks, or `members/add`'s wording. The refusal's `details.state` says the
+/// same, but a change's error reaches this command as text.
+fn refused_state(message: &str) -> Option<RoomStateArg> {
+    let m = message;
+    if m.contains(" is removalScheduled") || m.contains("scheduled for removal") {
+        Some(RoomStateArg::RemovalScheduled)
+    } else if m.contains(" is purging") || m.contains("being purged") {
+        Some(RoomStateArg::Purging)
+    } else if m.contains(" is removed") || m.contains(" was removed") {
+        Some(RoomStateArg::Removed)
+    } else if m.contains(" is archived") {
+        Some(RoomStateArg::Archived)
+    } else if m.contains(" is active") {
+        Some(RoomStateArg::Active)
+    } else {
+        None
+    }
+}
+
+/// The command that fixes a lifecycle refusal on `room`, verbatim — `None` when there is
+/// none to give.
+fn lifecycle_fix(code: &str, message: &str, room: &str) -> Option<String> {
+    if !code.ends_with(":wrongState") {
+        return None;
+    }
+    let bin = bin_name();
+    let room = terminal_safe(room);
+    let task = code
+        .strip_prefix("vtc/rooms/community/")?
+        .strip_suffix(":wrongState")?;
+    let state = refused_state(message)?;
+    match (task, state) {
+        ("remove", RoomStateArg::Active) => Some(format!(
+            "\nA room is removed only once it is archived. Archive it first:\n  \
+             {bin} rooms archive {room} --access no-access --reason \"…\""
+        )),
+        ("archive" | "unarchive", RoomStateArg::RemovalScheduled) => Some(format!(
+            "\nIts removal is scheduled. Call it off first (it stays archived with no access):\n  \
+             {bin} rooms cancel-removal {room} --reason \"…\""
+        )),
+        ("members/add", RoomStateArg::Archived) => Some(format!(
+            "\nAn archived room admits no one. Reopen it first:\n  \
+             {bin} rooms unarchive {room} --reason \"…\""
+        )),
+        (_, RoomStateArg::Purging | RoomStateArg::Removed) => {
+            Some("\nIts content is being or has been deleted; that cannot be undone.".to_string())
+        }
+        ("removal/cancel", RoomStateArg::Archived) => {
+            Some("\nNo removal is scheduled: the room is archived.".to_string())
+        }
+        _ => None,
+    }
+}
+
+/// `change`, with the room-exact command for a lifecycle refusal appended.
+async fn change_on_room(
+    client: &VtcClient,
+    base: &str,
+    type_uri: &str,
+    payload: Value,
+    did: &str,
+    key: &HolderKey,
+    room: &str,
+) -> CliResult<Value> {
+    change(client, base, type_uri, payload, did, key)
+        .await
+        .map_err(|e| {
+            let text = e.to_string();
+            let fix = refused_code(&text).and_then(|code| {
+                let message = text.split_once("): ").map(|(_, m)| m).unwrap_or_default();
+                lifecycle_fix(code, message, room)
+            });
+            match fix {
+                Some(f) => format!("{text}{f}").into(),
+                None => e,
+            }
+        })
+}
+
+/// What archiving with `access` does, and does not — said before anything is signed
+/// (`archive/0.1` producer item 1).
+fn archive_preview(access: AccessArg) -> &'static str {
+    match access {
+        AccessArg::ReadOnly => {
+            "Archiving read-only: members keep reading; the room's host refuses every write, \
+             upload and curation; nobody new is admitted and every open offer is withdrawn. \
+             It recalls nothing anyone already read, and on a sealed tier removes nobody from \
+             the room's group. `rooms unarchive` reopens it."
+        }
+        AccessArg::NoAccess => {
+            "Archiving with no access: the room is reset — every credential it issued, from \
+             everyone, is withdrawn at its host — and every admitted member is suspended; every \
+             open offer is withdrawn. The content is kept. It recalls nothing anyone already \
+             read or saved, and on a sealed tier removes nobody from the room's group. \
+             `rooms unarchive` reopens it and restores suspended members."
+        }
+    }
+}
+
+/// `--confirm` must name the room's label exactly.
+fn confirm_label(label: &str, confirm: &str, room: &str) -> CliResult {
+    if confirm == label {
+        return Ok(());
+    }
+    Err(format!(
+        "--confirm does not match this room's label, so nothing was sent. To remove `{}`, \
+         confirm with its label exactly:\n  --confirm {}",
+        terminal_safe(room),
+        shell_quote(label)
+    )
+    .into())
+}
+
+/// `s` quoted for a POSIX shell.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", terminal_safe(s).replace('\'', "'\\''"))
+}
+
+/// The `states` of a `list/0.4` request: the ones named, every state for `--all`, or none
+/// (the community lists every state but `removed`).
+fn list_states(states: &[RoomStateArg], all: bool) -> Option<Vec<&'static str>> {
+    if all {
+        return Some(vec![
+            "active",
+            "archived",
+            "removalScheduled",
+            "purging",
+            "removed",
+        ]);
+    }
+    if states.is_empty() {
+        return None;
+    }
+    let mut out: Vec<&'static str> = Vec::new();
+    for s in states {
+        if !out.contains(&s.as_str()) {
+            out.push(s.as_str());
+        }
+    }
+    Some(out)
+}
+
+/// A room's `status` (`RoomStatus`), in words — the lines under its heading.
+fn status_lines(room: &Value) -> Vec<String> {
+    let st = &room["status"];
+    let Some(state) = st["state"].as_str() else {
+        return Vec::new();
+    };
+    let t = |k: &str| st[k].as_str().map(terminal_safe);
+    let mut out = Vec::new();
+    let head = match state {
+        "active" => None,
+        "archived" => Some(match st["access"].as_str() {
+            Some("readOnly") => "archived, read-only: members read; nobody writes".to_string(),
+            _ => "archived, no access: every member's credentials withdrawn; content kept"
+                .to_string(),
+        }),
+        "removalScheduled" => Some(format!(
+            "removal scheduled: content purged at {} (`rooms cancel-removal` calls it off)",
+            t("purgeAt").unwrap_or_default()
+        )),
+        "purging" => Some("being purged: its content is being deleted".to_string()),
+        "removed" => Some(format!(
+            "removed {}: only this record remains",
+            t("removedAt").unwrap_or_default()
+        )),
+        other => Some(terminal_safe(other)),
+    };
+    if let Some(h) = head {
+        let since = match (t("changedAt"), t("changedBy")) {
+            (Some(at), Some(by)) if state != "removed" => format!(" (since {at}, by {by})"),
+            _ => String::new(),
+        };
+        out.push(format!("{h}{since}"));
+    }
+    if state == "purging" {
+        let p = &st["purge"];
+        let mut line = format!("purge attempts {}", p["attempts"]);
+        if let Some(next) = p["nextAttemptAt"].as_str() {
+            line.push_str(&format!(", next {}", terminal_safe(next)));
+        }
+        if let Some(e) = p["lastError"].as_str() {
+            line.push_str(&format!(" (last: {})", terminal_safe(e)));
+        }
+        out.push(line);
+    }
+    if let Some(p) = st.get("pendingChange").filter(|p| p.is_object()) {
+        let mut line = format!(
+            "a change to {}{} begun {} has not finished; the VTC finishes it, and repeating \
+             the command finishes it too",
+            terminal_safe(p["state"].as_str().unwrap_or_default()),
+            p["access"]
+                .as_str()
+                .map(|a| format!(" ({})", terminal_safe(a)))
+                .unwrap_or_default(),
+            terminal_safe(p["beganAt"].as_str().unwrap_or_default()),
+        );
+        if let Some(e) = p["lastError"].as_str() {
+            line.push_str(&format!(" (last: {})", terminal_safe(e)));
+        }
+        out.push(line);
+    }
+    if let Some(n) = st["restoring"].as_u64() {
+        out.push(format!(
+            "restoring {n} suspended member(s): each collects re-issued credentials as a \
+             renewal (`pnm rooms offers renew`)"
+        ));
+    }
+    out
 }
 
 fn explain(err: VtcError) -> Box<dyn std::error::Error> {
@@ -287,30 +615,6 @@ fn unsupported(err: &VtcError) -> bool {
         .is_some_and(|(code, _)| matches!(code.as_str(), "unsupportedType" | "unsupportedVersion"))
 }
 
-/// A signed read at 0.2, the version that carries each room's description and tags — and,
-/// from a VTC that does not serve it yet, the same read at 0.1 when `fallback` is given.
-async fn read_v0_2(
-    client: &VtcClient,
-    type_uri: &str,
-    payload: Value,
-    fallback: Option<(&str, Value)>,
-    key: &HolderKey,
-) -> CliResult<Value> {
-    let doc = client.git_ns_sign(type_uri, &payload, key).await?;
-    match client.git_ns_send_signed::<Value>(type_uri, &doc).await {
-        Ok(v) => Ok(v),
-        Err(e) if unsupported(&e) => match fallback {
-            Some((uri, p)) => read(client, uri, p, key).await,
-            None => Err(format!(
-                "{}\nThis VTC does not serve {type_uri} yet: upgrade it to filter by tag.",
-                explain(e)
-            )
-            .into()),
-        },
-        Err(e) => Err(explain(e)),
-    }
-}
-
 /// A signed read: no step-up.
 async fn read(
     client: &VtcClient,
@@ -319,10 +623,15 @@ async fn read(
     key: &HolderKey,
 ) -> CliResult<Value> {
     let doc = client.git_ns_sign(type_uri, &payload, key).await?;
-    client
-        .git_ns_send_signed::<Value>(type_uri, &doc)
-        .await
-        .map_err(explain)
+    match client.git_ns_send_signed::<Value>(type_uri, &doc).await {
+        Ok(v) => Ok(v),
+        Err(e) if unsupported(&e) => Err(format!(
+            "{}\nThis VTC does not serve {type_uri}: upgrade it.",
+            explain(e)
+        )
+        .into()),
+        Err(e) => Err(explain(e)),
+    }
 }
 
 /// A change: through the passkey gesture it asks for. A refusal is rewritten with its fix
@@ -349,33 +658,8 @@ async fn change(
     }
 }
 
-/// [`change`] at the newest of `versions` (task URI and payload, newest first) the VTC
-/// serves: a refusal saying it does not serve one (`unsupportedType` /
-/// `unsupportedVersion`) asks again at the next. The first was never routed, so asking
-/// again is not a retry of the change.
-async fn change_at_newest(
-    client: &VtcClient,
-    base: &str,
-    versions: Vec<(&str, Value)>,
-    did: &str,
-    key: &HolderKey,
-) -> CliResult<Value> {
-    let last = versions.len().saturating_sub(1);
-    for (i, (type_uri, payload)) in versions.into_iter().enumerate() {
-        match change(client, base, type_uri, payload, did, key).await {
-            Err(e)
-                if i < last
-                    && refused_code(&e.to_string())
-                        .is_some_and(|c| matches!(c, "unsupportedType" | "unsupportedVersion")) => {
-            }
-            other => return other,
-        }
-    }
-    Err("no version of this task to send".into())
-}
-
-/// What `roomProfile` in a create 0.3 / update 0.2 answer means, in words — `None` when it
-/// was not sent (an older VTC) or needs no comment.
+/// What `roomProfile` in a create or update answer means, in words — `None` when it needs
+/// no comment.
 fn room_profile_said(v: &Value) -> Option<&'static str> {
     match v["roomProfile"].as_str()? {
         "written" => Some(
@@ -401,8 +685,8 @@ async fn vta_fix(client: &VtcClient, key: &HolderKey, code: &str, message: &str)
     if !may_be_vta_permission(code) {
         return None;
     }
-    let type_uri = <spec::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-    let payload = typed::<spec::list::v0_1::Payload>(json!({ "limit": 1 })).ok()?;
+    let type_uri = <spec::list::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    let payload = typed::<spec::list::v0_4::Payload>(json!({ "limit": 1 })).ok()?;
     let listed = read(client, type_uri, payload, key).await.ok()?;
     let access = listed.pointer("/ext/org.openvtc/communityRooms/vtaAccess")?;
     pick_fix(access, code, message).map(render_fix)
@@ -489,10 +773,17 @@ fn print_room(room: &Value) {
     if let Some(d) = room["description"].as_str() {
         println!("  {}", terminal_safe(d));
     }
+    for line in status_lines(room) {
+        println!("  {BOLD}{line}{RESET}");
+    }
     println!(
-        "  {DIM}admitted {} · offered {} · storage {} · the community's authority until {}{RESET}",
+        "  {DIM}admitted {} · offered {}{} · storage {} · the community's authority until {}{RESET}",
         room["admitted"],
         room["offered"],
+        room["suspended"]
+            .as_u64()
+            .map(|n| format!(" · suspended {n}"))
+            .unwrap_or_default(),
         terminal_safe(room["storageConfig"].as_str().unwrap_or("-")),
         room["ownerAuthorityValidUntil"].as_str().unwrap_or("-"),
     );
@@ -546,7 +837,7 @@ fn room_tags(room: &Value) -> Vec<&str> {
         .collect()
 }
 
-/// `vtc/rooms/community/update/0.1`'s payload. `None` when nothing would change.
+/// `vtc/rooms/community/update/0.3`'s payload; an error when it would name no change.
 #[allow(clippy::too_many_arguments)]
 fn update_payload(
     room: &str,
@@ -578,7 +869,7 @@ fn update_payload(
                 .into(),
         );
     }
-    typed::<spec::update::v0_1::Payload>(payload)
+    typed::<spec::update::v0_3::Payload>(payload)
 }
 
 /// Tags as a set, in the order first given.
@@ -649,33 +940,16 @@ async fn run_task(
             if let Some(c) = storage_config {
                 payload["storageConfig"] = json!(c);
             }
-            // 0.3, which also writes the label and description into the room as its profile;
-            // a VTC that predates it gets 0.2 — and 0.1 when there is nothing only 0.2 carries.
-            let v0_1 = typed::<spec::create::v0_1::Payload>(payload.clone())?;
-            let plain = description.is_none() && tags.is_empty();
             if let Some(d) = description {
                 payload["description"] = json!(d);
             }
             if !tags.is_empty() {
                 payload["tags"] = json!(dedup(tags));
             }
-            let mut versions = vec![
-                (
-                    <spec::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    typed::<spec::create::v0_3::Payload>(payload.clone())?,
-                ),
-                (
-                    <spec::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    typed::<spec::create::v0_2::Payload>(payload)?,
-                ),
-            ];
-            if plain {
-                versions.push((
-                    <spec::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    v0_1,
-                ));
-            }
-            let v = change_at_newest(client, &target.base, versions, &did, &key).await?;
+            // 0.4: the label and description are also written into the room as its profile.
+            let type_uri = <spec::create::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let payload = typed::<spec::create::v0_4::Payload>(payload)?;
+            let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -691,28 +965,30 @@ async fn run_task(
             );
             Ok(())
         }
-        RoomsCommands::List { tag, limit, cursor } => {
+        RoomsCommands::List {
+            tag,
+            states,
+            all,
+            limit,
+            cursor,
+        } => {
             let mut payload = json!({});
+            if let Some(s) = list_states(&states, all) {
+                payload["states"] = json!(s);
+            }
             if let Some(l) = limit {
                 payload["limit"] = json!(l);
             }
             if let Some(c) = cursor {
                 payload["cursor"] = json!(c);
             }
-            // Without a tag, a VTC that serves only 0.1 still lists its rooms.
-            let fallback = match &tag {
-                Some(_) => None,
-                None => Some((
-                    <spec::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    typed::<spec::list::v0_1::Payload>(payload.clone())?,
-                )),
-            };
             if let Some(t) = &tag {
                 payload["tag"] = json!(t);
             }
-            let payload = typed::<spec::list::v0_2::Payload>(payload)?;
-            let type_uri = <spec::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-            let v = read_v0_2(client, type_uri, payload, fallback, &key).await?;
+            // 0.4: each room's state in its owner's lifecycle (`status`).
+            let payload = typed::<spec::list::v0_4::Payload>(payload)?;
+            let type_uri = <spec::list::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v = read(client, type_uri, payload, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -745,6 +1021,7 @@ async fn run_task(
             if items.is_empty() {
                 match &tag {
                     Some(t) => println!("No room is filed under `{}`.", terminal_safe(t)),
+                    None if !states.is_empty() => println!("No room is in that state."),
                     None => println!("The community owns no rooms."),
                 }
             }
@@ -762,13 +1039,9 @@ async fn run_task(
             Ok(())
         }
         RoomsCommands::Get { room } => {
-            let payload = typed::<spec::get::v0_2::Payload>(json!({ "roomId": room }))?;
-            let type_uri = <spec::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-            let fallback = (
-                <spec::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                typed::<spec::get::v0_1::Payload>(json!({ "roomId": room }))?,
-            );
-            let v = read_v0_2(client, type_uri, payload, Some(fallback), &key).await?;
+            let payload = typed::<spec::get::v0_4::Payload>(json!({ "roomId": room }))?;
+            let type_uri = <spec::get::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v = read(client, type_uri, payload, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -776,6 +1049,161 @@ async fn run_task(
             if let Some(state) = v.pointer("/ext/org.openvtc/roomProfile") {
                 println!("  {DIM}{}{RESET}", room_profile_state(state));
             }
+            if let Some(d) = v
+                .pointer("/ext/org.openvtc/lifecycle/didRetirement")
+                .and_then(Value::as_str)
+            {
+                println!("  {DIM}the room's DID: {}{RESET}", terminal_safe(d));
+            }
+            Ok(())
+        }
+        RoomsCommands::Archive {
+            room,
+            access,
+            reason,
+        } => {
+            let payload = typed::<spec::archive::v0_1::Payload>(json!({
+                "roomId": room,
+                "access": access.as_str(),
+                "reason": reason,
+            }))?;
+            if !is_json_output() {
+                eprintln!("{}", archive_preview(access));
+            }
+            let type_uri = <spec::archive::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v =
+                change_on_room(client, &target.base, type_uri, payload, &did, &key, &room).await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            print_room(&v["room"]);
+            if v["changed"] == true {
+                println!("Archived.");
+            } else {
+                println!("Nothing changed: the room was already archived that way.");
+            }
+            if let Some(n) = v["withdrawnOffers"].as_u64() {
+                println!("{n} open offer(s) withdrawn.");
+            }
+            if let Some(at) = v["revokedAt"].as_str() {
+                println!(
+                    "The room's host refuses the withdrawn credentials from {} (revocation list {}).",
+                    terminal_safe(at),
+                    v["revocation"]["sequence"]
+                );
+            }
+            Ok(())
+        }
+        RoomsCommands::Unarchive { room, reason } => {
+            let payload = typed::<spec::unarchive::v0_1::Payload>(json!({
+                "roomId": room,
+                "reason": reason,
+            }))?;
+            let type_uri = <spec::unarchive::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v =
+                change_on_room(client, &target.base, type_uri, payload, &did, &key, &room).await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            print_room(&v["room"]);
+            if v["changed"] == true {
+                println!(
+                    "Unarchived. Open offers withdrawn by the archive are not restored: make them again."
+                );
+            } else {
+                println!("Nothing changed: the room is already active.");
+            }
+            if let Some(n) = v.pointer("/room/status/restoring").and_then(Value::as_u64) {
+                println!(
+                    "{n} suspended member(s) are being restored: the room re-issues their \
+                     credentials, which each collects as a renewal (`pnm rooms offers renew`)."
+                );
+            }
+            Ok(())
+        }
+        RoomsCommands::Remove {
+            room,
+            grace_days,
+            now,
+            confirm,
+            reason,
+        } => {
+            // Which room, by the label administrators know it by — checked before anything
+            // is signed (`remove/0.1` producer item).
+            let get = typed::<spec::get::v0_4::Payload>(json!({ "roomId": room }))?;
+            let get_uri = <spec::get::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let current = read(client, get_uri, get, &key).await?;
+            let label = current["room"]["label"].as_str().unwrap_or_default();
+            confirm_label(label, &confirm, &room)?;
+            let mut payload = json!({ "roomId": room, "reason": reason });
+            if now {
+                payload["graceDays"] = json!(0);
+            } else if let Some(d) = grace_days {
+                payload["graceDays"] = json!(d);
+            }
+            let payload = typed::<spec::remove::v0_1::Payload>(payload)?;
+            if !is_json_output() {
+                if now {
+                    eprintln!(
+                        "{BOLD}Removing now:{RESET} everyone's access is withdrawn and the \
+                         room's content is deleted at once. This cannot be undone. It recalls \
+                         nothing anyone already read or saved."
+                    );
+                } else {
+                    eprintln!(
+                        "Removing: everyone's access is withdrawn and the content is kept until \
+                         the grace period ends, then deleted. `rooms cancel-removal` calls it off \
+                         until then. It recalls nothing anyone already read or saved."
+                    );
+                }
+            }
+            let type_uri = <spec::remove::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v =
+                change_on_room(client, &target.base, type_uri, payload, &did, &key, &room).await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            print_room(&v["room"]);
+            match v.pointer("/room/status/state").and_then(Value::as_str) {
+                Some("removalScheduled") => println!(
+                    "Removal scheduled: the content is purged at {}. To call it off before then:\n  \
+                     {} rooms cancel-removal {} --reason \"…\"",
+                    terminal_safe(
+                        v.pointer("/room/status/purgeAt")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                    bin_name(),
+                    terminal_safe(&room),
+                ),
+                Some("purging") | Some("removed") => println!(
+                    "The purge has begun. `{} rooms get {}` shows when it finishes.",
+                    bin_name(),
+                    terminal_safe(&room),
+                ),
+                _ => {}
+            }
+            Ok(())
+        }
+        RoomsCommands::CancelRemoval { room, reason } => {
+            let payload = typed::<spec::removal::cancel::v0_1::Payload>(json!({
+                "roomId": room,
+                "reason": reason,
+            }))?;
+            let type_uri =
+                <spec::removal::cancel::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v =
+                change_on_room(client, &target.base, type_uri, payload, &did, &key, &room).await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            print_room(&v["room"]);
+            println!(
+                "The removal is called off. The room stays archived with no access; \
+                 `{} rooms unarchive {}` reopens it.",
+                bin_name(),
+                terminal_safe(&room)
+            );
             Ok(())
         }
         RoomsCommands::Update {
@@ -796,19 +1224,9 @@ async fn run_task(
                 clear_tags,
                 reason,
             )?;
-            // 0.2 writes a new label or description into the room as its profile too; a VTC
-            // that predates it gets 0.1, which takes the same request.
-            let versions = vec![
-                (
-                    <spec::update::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    typed::<spec::update::v0_2::Payload>(payload.clone())?,
-                ),
-                (
-                    <spec::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    payload,
-                ),
-            ];
-            let v = change_at_newest(client, &target.base, versions, &did, &key).await?;
+            // A new label or description is written into the room as its profile too.
+            let type_uri = <spec::update::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -840,7 +1258,8 @@ async fn run_task(
                     }
                 }
                 let until = valid_until(valid_for.as_deref(), until.as_deref())?;
-                let payload = typed::<spec::members::add::v0_1::Payload>(json!({
+                // 0.2: an archived room, or one on its way out, admits no one (`wrongState`).
+                let payload = typed::<spec::members::add::v0_2::Payload>(json!({
                     "roomId": room,
                     "member": member,
                     "actions": acts,
@@ -848,8 +1267,9 @@ async fn run_task(
                     "reason": reason,
                 }))?;
                 let type_uri =
-                    <spec::members::add::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-                let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
+                    <spec::members::add::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+                let v = change_on_room(client, &target.base, type_uri, payload, &did, &key, &room)
+                    .await?;
                 if is_json_output() {
                     return Ok(print_json(&v)?);
                 }
@@ -919,9 +1339,10 @@ async fn run_task(
                 if let Some(c) = cursor {
                     payload["cursor"] = json!(c);
                 }
-                let payload = typed::<spec::members::list::v0_1::Payload>(payload)?;
+                // 0.2: `suspended` — withdrawn while the room is closed to its members.
+                let payload = typed::<spec::members::list::v0_2::Payload>(payload)?;
                 let type_uri =
-                    <spec::members::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+                    <spec::members::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
                 let v = read(client, type_uri, payload, &key).await?;
                 if is_json_output() {
                     return Ok(print_json(&v)?);
@@ -981,12 +1402,12 @@ mod tests {
 
     #[test]
     fn a_payload_outside_the_specification_is_caught_before_signing() {
-        let ok = typed::<spec::members::add::v0_1::Payload>(json!({
+        let ok = typed::<spec::members::add::v0_2::Payload>(json!({
             "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember",
             "actions": ["read"], "validUntil": "2027-10-01T00:00:00Z", "reason": "r",
         }));
         assert!(ok.is_ok());
-        let admin = typed::<spec::members::add::v0_1::Payload>(json!({
+        let admin = typed::<spec::members::add::v0_2::Payload>(json!({
             "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember",
             "actions": ["admin"], "validUntil": "2027-10-01T00:00:00Z", "reason": "r",
         }));
@@ -1109,6 +1530,122 @@ mod tests {
             bad_tag.is_err(),
             "a tag outside the specification is caught before signing"
         );
+    }
+
+    #[test]
+    fn a_lifecycle_refusal_names_the_command_that_fixes_it() {
+        let room = "did:webvh:example.com:rooms:board";
+        let fix = lifecycle_fix(
+            "vtc/rooms/community/remove:wrongState",
+            "room `did:webvh:example.com:rooms:board` is active — archive it first",
+            room,
+        )
+        .unwrap();
+        assert!(fix.contains(&format!("rooms archive {room} --access no-access --reason")));
+        let fix = lifecycle_fix(
+            "vtc/rooms/community/archive:wrongState",
+            "room `x` is removalScheduled — its removal is scheduled",
+            room,
+        )
+        .unwrap();
+        assert!(fix.contains(&format!("rooms cancel-removal {room}")));
+        let fix = lifecycle_fix(
+            "vtc/rooms/community/unarchive:wrongState",
+            "room `x` is removalScheduled",
+            room,
+        )
+        .unwrap();
+        assert!(fix.contains("rooms cancel-removal"));
+        let fix = lifecycle_fix(
+            "vtc/rooms/community/members/add:wrongState",
+            "room `x` is archived: it admits no one until it is unarchived",
+            room,
+        )
+        .unwrap();
+        assert!(fix.contains(&format!("rooms unarchive {room}")));
+        assert!(
+            lifecycle_fix(
+                "vtc/rooms/community/remove:wrongState",
+                "room `x` is purging — its content is being or has been deleted",
+                room
+            )
+            .unwrap()
+            .contains("cannot be undone")
+        );
+        assert!(lifecycle_fix("vtc/rooms/community/remove:notFound", "is active", room).is_none());
+        assert!(
+            hint("vtc/rooms/community/archive:keyHolderUnavailable").contains("pending change")
+        );
+        assert!(hint("vtc/rooms/community/remove:notFound").contains("cnm rooms list"));
+    }
+
+    #[test]
+    fn removal_is_confirmed_by_the_rooms_exact_label() {
+        assert!(confirm_label("Board pack", "Board pack", "did:x").is_ok());
+        let err = confirm_label("Board pack", "board pack", "did:x")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nothing was sent"), "{err}");
+        assert!(err.contains("--confirm 'Board pack'"), "{err}");
+        let quoted = confirm_label("Bob's room", "x", "did:x")
+            .unwrap_err()
+            .to_string();
+        assert!(quoted.contains(r"--confirm 'Bob'\''s room'"), "{quoted}");
+    }
+
+    #[test]
+    fn the_state_filter_maps_to_the_wire_names() {
+        assert_eq!(list_states(&[], false), None);
+        assert_eq!(
+            list_states(
+                &[
+                    RoomStateArg::Archived,
+                    RoomStateArg::RemovalScheduled,
+                    RoomStateArg::Archived
+                ],
+                false
+            ),
+            Some(vec!["archived", "removalScheduled"])
+        );
+        assert_eq!(list_states(&[], true).unwrap().len(), 5);
+        assert!(list_states(&[], true).unwrap().contains(&"removed"));
+        let p = typed::<spec::list::v0_4::Payload>(json!({
+            "states": list_states(&[RoomStateArg::Purging], false),
+        }));
+        assert!(p.is_ok(), "{p:?}");
+    }
+
+    #[test]
+    fn a_rooms_state_is_said_in_words() {
+        assert!(status_lines(&json!({ "status": { "state": "active" } })).is_empty());
+        let ro = status_lines(&json!({ "status": {
+            "state": "archived", "access": "readOnly",
+            "changedAt": "2026-11-02T10:00:00Z", "changedBy": "did:key:zA",
+        } }));
+        assert!(
+            ro[0].contains("read-only") && ro[0].contains("did:key:zA"),
+            "{ro:?}"
+        );
+        let scheduled = status_lines(&json!({ "status": {
+            "state": "removalScheduled", "access": "noAccess", "purgeAt": "2026-12-02T10:00:00Z",
+        } }));
+        assert!(
+            scheduled[0].contains("2026-12-02T10:00:00Z"),
+            "{scheduled:?}"
+        );
+        let purging = status_lines(&json!({ "status": {
+            "state": "purging", "purge": { "attempts": 2, "lastError": "storage down" },
+        } }));
+        assert!(purging[1].contains("storage down"), "{purging:?}");
+        let pending = status_lines(&json!({ "status": {
+            "state": "active",
+            "pendingChange": { "state": "archived", "access": "noAccess", "beganAt": "t" },
+            "restoring": 3,
+        } }));
+        assert!(pending[0].contains("has not finished"), "{pending:?}");
+        assert!(pending[1].contains("restoring 3"), "{pending:?}");
+        assert!(archive_preview(AccessArg::NoAccess).contains("suspended"));
+        assert!(archive_preview(AccessArg::ReadOnly).contains("members keep reading"));
     }
 
     #[test]

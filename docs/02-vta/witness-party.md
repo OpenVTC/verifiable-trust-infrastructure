@@ -53,7 +53,7 @@ evidence beside it, in `vtc/members/personhood/assert/0.2`'s
 
 ## Reading back what was stored
 
-`vta/witness/list/0.1` (trust-tasks-tf #800) returns the VWCs `accept` stored, each
+`vta/witness/list/0.2` (trust-tasks-tf #800) returns the VWCs `accept` stored, each
 with its evidence **exactly as stored** — never rebuilt or re-signed — so a client
 that stopped before recording `accept`'s answer, or a second device of the same
 principal, can rebuild its record of a witnessing at any time.
@@ -64,9 +64,10 @@ principal, can rebuild its record of a witnessing at any time.
 - **Scope**: only active vault entries `accept` stored (under any version), in a
   context the caller may act in. A DID this VTA does not hold and one held where
   the caller cannot act answer the same empty page, never a refusal.
-- **Paging**: oldest first (`acceptedAt`, then `credentialId`), `pageSize` 1–100
-  (default 100), `truncated` with an opaque `cursor` to continue; a cursor the VTA
-  cannot honour is `vta/witness/list:cursorInvalid` — list again from the start.
+- **Paging**: oldest first (`acceptedAt`, then `credentialId`), `limit` 1–100
+  (default 100); a page that stops before the last match carries an opaque
+  `nextCursor`, sent back as `cursor` to continue; a cursor the VTA cannot honour
+  is `vta/witness/list:cursorInvalid` — list again from the start.
 - Gated on `witness-request` like the rest of the family; audited with the caller
   and the count.
 

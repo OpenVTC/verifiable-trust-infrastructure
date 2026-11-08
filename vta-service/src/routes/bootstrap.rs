@@ -864,7 +864,16 @@ mod tests {
     /// (VTI-ACL-056, VTI-CLT-017).
     #[tokio::test]
     async fn claim_did_rolls_over_onto_a_permanent_client_minted_admin() {
-        use vta_sdk::protocols::acl_management::entry::AclEntry as WireAclEntry;
+        use vta_sdk::protocols::acl_management::v0_2 as w;
+        let successor = |did: &str| {
+            w::AclEntry::new(
+                did,
+                "admin",
+                w::AuthorityScope::All,
+                w::KeyScope::All,
+                w::CapabilityScope::Ceiling,
+            )
+        };
 
         let (seed, claim_pub) = generate_ed25519_keypair();
         let state = claim_state(Some(&claim_pub)).await;
@@ -883,10 +892,10 @@ mod tests {
         let long_term = affinidi_crypto::did_key::ed25519_pub_to_did_key(&long_term_pub);
 
         // An expiry on the successor is refused, not silently replaced.
-        let mut with_expiry = WireAclEntry::new(long_term.clone(), "admin".into(), Vec::new());
+        let mut with_expiry = successor(&long_term);
         with_expiry.expires_at = Some(chrono::Utc::now() + chrono::Duration::hours(1));
         assert!(matches!(
-            crate::operations::acl::rollover_from_entry(
+            crate::operations::acl_v0_2::rollover(
                 &state.acl_ks,
                 &state.audit_sink,
                 &state.contexts_ks,
@@ -895,15 +904,17 @@ mod tests {
                 "test",
             )
             .await,
-            Err(AppError::Validation(_))
+            Err(crate::operations::acl_v0_2::V02Error::App(
+                AppError::Validation(_)
+            ))
         ));
 
-        crate::operations::acl::rollover_from_entry(
+        crate::operations::acl_v0_2::rollover(
             &state.acl_ks,
             &state.audit_sink,
             &state.contexts_ks,
             &auth,
-            WireAclEntry::new(long_term.clone(), "admin".into(), Vec::new()),
+            successor(&long_term),
             "test",
         )
         .await

@@ -32,7 +32,7 @@ use crate::join::{JoinStatus, get_join_request};
 use crate::members::{get_member, store_member};
 use crate::server::AppState;
 
-use trust_tasks_rs::specs::vtc::members::vmc::v0_1::error_codes as vmc_codes;
+use vti_specs::vtc::members::vmc::v0_1::error_codes as vmc_codes;
 
 /// `vtc/members/vmc:subjectMismatch` — `credentialSubject.id` is not this
 /// community.

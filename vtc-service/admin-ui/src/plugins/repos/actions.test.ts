@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -52,7 +52,7 @@ describe("signed git-ns tasks", () => {
       },
       new Date("2026-09-23T00:00:00.000Z"),
     );
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/right/grant/0.3");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/right/grant/0.4");
     expect(t.payload).toEqual({
       subject: BOB,
       right: "git.commit.sign",
@@ -105,7 +105,7 @@ describe("signed git-ns tasks", () => {
       consent: "elevated",
     });
     expect(archiveTask("github.com/acme/x")).toMatchObject({
-      taskUri: "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
+      taskUri: "https://trusttasks.org/spec/git-ns/repo/archive/0.3",
       command: "cnm git archive github.com/acme/x",
     });
     const c = createTask({
@@ -116,7 +116,7 @@ describe("signed git-ns tasks", () => {
       description: "Gadget tools",
       personal: false,
     });
-    expect(c.taskUri).toBe("https://trusttasks.org/spec/git-ns/repo/create/0.3");
+    expect(c.taskUri).toBe("https://trusttasks.org/spec/git-ns/repo/create/0.4");
     expect(c.payload).toEqual({
       namespace: "ns_1",
       name: "gadgets",
@@ -149,7 +149,7 @@ describe("signed git-ns tasks", () => {
       "  Alice left on 2026-09-20; Bob owns most repos and agreed.  ",
     );
     expect(t.action).toBe("namespace.reseat");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.3");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/namespace/reseat/0.4");
     // Exactly the spec's three fields, statement trimmed; nothing else.
     expect(t.payload).toEqual({
       namespace: "ns_acme",
@@ -171,7 +171,7 @@ describe("signed git-ns tasks", () => {
       maintain: "maintain",
       commit: "none",
     });
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.3");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.4");
     expect(t.payload).toEqual({
       resource: "github.com/acme/widgets",
       action: "revert",
@@ -227,7 +227,7 @@ describe("signed git-ns tasks", () => {
 
   it("builds a re-projection of a namespace or a repository", () => {
     const ns = reprojectTask("github.com/acme", " map changed ");
-    expect(ns.taskUri).toBe("https://trusttasks.org/spec/git-ns/roles/reproject/0.1");
+    expect(ns.taskUri).toBe("https://trusttasks.org/spec/git-ns/roles/reproject/0.2");
     expect(ns.payload).toEqual({ resource: "github.com/acme", reason: "map changed" });
     expect(ns.consent).toBe("normal");
     expect(ns.effect).toMatch(/every active or orphaned repository/);
@@ -239,7 +239,7 @@ describe("signed git-ns tasks", () => {
 
   it("builds a drift adopt carrying the selector and the member who receives the right", () => {
     const t = driftAdoptTask("github.com/acme/widgets", ROLE_ADDED, BOB, "git.repo.maintain", "on the team");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.3");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/drift/resolve/0.4");
     expect(t.payload).toEqual({
       resource: "github.com/acme/widgets",
       action: "adopt",
@@ -444,10 +444,20 @@ const HOSTILE = [
 
 const SHELL_HOME = mkdtempSync(join(tmpdir(), "vtc-shellquote-"));
 
-/** The argv `args` (a string of shell words) gives a program in `shell`,
- *  read back through an external printf so no shell's builtin differs. */
+/** Writes its argv back, NUL-terminated. Node reads no option after the script
+ *  path; an external `printf` does — uutils' (Ubuntu 26.04) takes a `--help`
+ *  argument as its own flag and prints its help instead. */
+const ARGV_ECHO = join(SHELL_HOME, "argv.cjs");
+writeFileSync(
+  ARGV_ECHO,
+  'process.stdout.write(process.argv.slice(2).map((a) => a + "\\0").join(""));\n',
+);
+
+/** The argv `args` (a string of shell words) gives a program in `shell`, read
+ *  back through an external program so no shell's builtin differs. */
 function argvIn(shell: string, args: string): string[] {
-  const out = execFileSync(shell, ["-c", `env printf '%s\\0' ${args}`], {
+  const echo = `'${process.execPath}' '${ARGV_ECHO}'`;
+  const out = execFileSync(shell, ["-c", `${echo} ${args}`], {
     encoding: "utf8",
     // A throwaway HOME: no user rc file runs, and fish has somewhere to write.
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: SHELL_HOME },

@@ -356,10 +356,18 @@ pub enum InForce {
     /// Temporarily ineffective. Reversible, and the only non-`Yes` state that
     /// is.
     Suspended { since: DateTime<Utc> },
-    /// Displaced by a later artifact, named by digest.
-    Superseded { at: DateTime<Utc>, by: String },
-    /// Withdrawn. Terminal.
-    Withdrawn { at: DateTime<Utc> },
+    /// Displaced by a later artifact, named by digest. `endedAt` on the wire
+    /// (`vtc/_shared/0.4/relationship-lifecycle`): when it stopped being in force.
+    Superseded {
+        #[serde(rename = "endedAt")]
+        at: DateTime<Utc>,
+        by: String,
+    },
+    /// Withdrawn. Terminal. `endedAt` on the wire, as for `Superseded`.
+    Withdrawn {
+        #[serde(rename = "endedAt")]
+        at: DateTime<Utc>,
+    },
     /// The artifact's own window could not be read, so no honest answer is
     /// available.
     ///

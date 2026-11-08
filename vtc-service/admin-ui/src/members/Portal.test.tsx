@@ -115,6 +115,63 @@ describe("member portal", () => {
     ).toBe("/");
   });
 
+  it("opened to join (?join), words the wallet code for joining and offers no member-only option", async () => {
+    stubFetch((url) =>
+      url.endsWith("/public-profile")
+        ? json(200, { name: "Acme Guild" })
+        : json(401, { message: "not signed in" }),
+    );
+    window.history.pushState({}, "", "/members/?join");
+    try {
+      renderPortal();
+      expect(await screen.findByRole("heading", { name: /join acme guild/i })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: /join with your wallet/i })).toBeTruthy();
+      expect(screen.getByText(/an administrator reviews each request/i)).toBeTruthy();
+      // Passkeys and the older sign-in need a membership: not offered here.
+      expect(screen.queryByRole("button", { name: /sign in with a passkey/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /sign in with your vta/i })).toBeNull();
+      // A newcomer needs the wallet, so its install guide is on the page.
+      expect(screen.getByText(/install the vta wallet browser extension/i)).toBeTruthy();
+      expect(screen.getByRole("link", { name: /^sign in$/i }).getAttribute("href")).toBe("/members/");
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("opened to join while signed in, still shows the join page, saying who is signed in", async () => {
+    // Joining again with a separate identity starts from the join page's code;
+    // a session must not route a member past it to their own pages.
+    stubFetch((url) =>
+      url === "/v1/member/me"
+        ? json(200, ME)
+        : url.endsWith("/public-profile")
+          ? json(200, { name: "Acme Guild" })
+          : json(404, {}),
+    );
+    window.history.pushState({}, "", "/members/?join");
+    try {
+      renderPortal();
+      expect(await screen.findByRole("heading", { name: /join with your wallet/i })).toBeTruthy();
+      expect(screen.getByTestId("join-signed-in").textContent).toContain(ME.did);
+      expect(screen.getByRole("link", { name: /go to your member pages/i }).getAttribute("href")).toBe(
+        "/members/",
+      );
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("links a visitor who isn't a member yet to the join page", async () => {
+    stubFetch((url) =>
+      url.endsWith("/public-profile")
+        ? json(200, { name: "Acme Guild" })
+        : json(401, { message: "not signed in" }),
+    );
+    renderPortal();
+    const link = await screen.findByRole("link", { name: /join this community/i });
+    expect(link.getAttribute("href")).toBe("/members/?join");
+  });
+
   it("enables VTA sign-in and folds the guide away when the wallet can proxy", async () => {
     (window as { vtaWallet?: unknown }).vtaWallet = {
       login: vi.fn(),
@@ -356,8 +413,18 @@ describe("portal routes", () => {
     expect(routeOf("#/directory")).toEqual({ page: "directory" });
     expect(routeOf("#/card")).toEqual({ page: "card" });
     expect(routeOf("#/groups")).toEqual({ page: "groups" });
+    expect(routeOf("#/badges")).toEqual({ page: "badges" });
+    expect(routeOf("#/badges/new")).toEqual({ page: "make-badge" });
+    expect(routeOf("#/badges/bdg_W5k2N8xRb3Qz7TpLAAAAAA")).toEqual({
+      page: "badge",
+      badgeId: "bdg_W5k2N8xRb3Qz7TpLAAAAAA",
+    });
+    expect(routeOf("#/badges/not-a-badge")).toEqual({ page: "home" });
     expect(routeOf("#/repos")).toEqual({ page: "repos" });
     expect(routeOf("#/repos/github.com")).toEqual({ page: "home" });
+    expect(routeOf("#/elections")).toEqual({ page: "elections" });
+    expect(routeOf("#/elections/agm-2027")).toEqual({ page: "election", electionId: "agm-2027" });
+    expect(routeOf("#/elections/..%2Fx")).toEqual({ page: "home" });
     expect(routeOf("#/groups/grp_W5k2N8xRb3Qz7TpLAAAAAA")).toEqual({
       page: "group",
       groupId: "grp_W5k2N8xRb3Qz7TpLAAAAAA",

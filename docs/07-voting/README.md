@@ -110,7 +110,7 @@ allowed        = ["did:webvh:Qm…:vtc.example.org"]
 
 | Key | Meaning |
 |---|---|
-| `data_dir` | The journal: one directory per election, named by a digest of the community and election (no caller-supplied string becomes a path). Back it up; it **is** the boards. |
+| `data_dir` | The journal: one directory per election, named by a digest of the community and election (no caller-supplied string becomes a path). Back it up; it **is** the boards. With `[identity]`, `data_dir/store` also keeps the service's TSP relationships, so a restart does not forget the communities it talks to. |
 | `listen` | Where the HTTPS binding is served. Terminate TLS in front of it, at the host `https_url` names. |
 | `operator_vta_did` | The VTA that minted the identity. The service never answers as it. |
 | `resolver_url` | Optional DID resolver sidecar. |
@@ -130,6 +130,10 @@ vti-voting-service run --config /etc/vti-voting/config.toml
 
 - **Opens the identity's mediator session.** It waits until the DID resolves over the network,
   connects with capped, jittered backoff, and supervises the session as the witness does.
+  TSP relationships are kept in `data_dir/store`, not in memory: TSP drops, unanswered, every
+  frame from a party it holds no relationship with, and a community keeps its half across the
+  service's restart. Kept in memory, a restart left every community's registrations waiting
+  forever (a VTC now also re-forms the relationship when a reply times out).
 - **Serves HTTPS on `listen`.**
 
 SIGINT or SIGTERM closes both.
@@ -137,6 +141,24 @@ SIGINT or SIGTERM closes both.
 **Put a reverse proxy in front of `listen`.** It terminates TLS for `https_url`, and should
 rate-limit and cap request sizes per source. The cast door is anonymous by design, and the
 service itself does neither.
+
+### Health checks
+
+Two unauthenticated `GET`s on the same listener, each answering JSON with `status`, the
+service's `did` and `messaging` (`connected`, `notConnected`, or `disabled` without an
+`[identity]`):
+
+| Path | Answers | Use it for |
+|---|---|---|
+| `/health` | always `200` while the process serves | the load balancer or proxy upstream check. Casts arrive over HTTPS and keep working while the mediator is away, so this never pulls the cast door. |
+| `/health/ready` | `200` only while the mediator session is connected; `503` otherwise, and always without an `[identity]` | alerting. While it is `503`, communities cannot register, close or cancel elections. |
+
+`messaging` is the session supervisor's live report: it turns `notConnected` when the socket
+drops and back when it reconnects, never latched at the first connect.
+
+```sh
+curl -fsS http://127.0.0.1:8740/health/ready
+```
 
 ## Letting a community use it
 
@@ -174,6 +196,21 @@ From there, [Community elections](../03-vtc/elections.md) is the community's gui
 An election a caller may not read is answered `electionUnknown`, exactly as one that does not
 exist.
 
+**Versions.** `voting/election/register` and `show` are served at 0.4, 0.3 and 0.2,
+`voting/board/read` at 0.2, every other task at 0.1; any other version is refused
+`unsupportedVersion`, naming the ones served. 0.4 (voting/_shared/0.4) adds the `credential`
+roll rule — the holders of a membership credential for the one DID `roll.memberOf` names
+(VTI-VOT-025). The ballot box only stores and serves that roll: who may vote is the
+community's to decide, at each ticket claim. A 0.3 or 0.2 registration carrying one fails its
+schema (`malformedRequest`), and a 0.3 or 0.2 `show` of such an election is refused
+`unsupportedVersion`, naming 0.4. Register and show differ between 0.2 and 0.3 only in the manifest's least
+`textReleaseThreshold` — the counted ballots before any written answer is disclosed: 10 under
+0.2, 1 under 0.3 (VTI-VOT-065). The ballot box never refuses 1 – 9 at 0.3. A 0.2 registration
+below 10 fails its schema (`malformedRequest`), and a 0.2 `show` of an election below 10 is
+refused `unsupportedVersion`, naming 0.3, rather than answered in a shape 0.2 forbids. An
+election registered at either version is one election, read at either where its threshold
+allows.
+
 Each trustee step goes on the board as the trustee's signed request, as received
 (`trusteeStep`). That lets anyone check who took it, and stops a ballot box dealing in a
 trustee's name to hold the election key itself. `voting/trustees/status` returns those steps
@@ -207,12 +244,15 @@ one), fewer than `limit` where entries are large; `next` says where to continue.
 A public poll is the shortest path to see it work. With the service running and the VTC trusting
 it:
 
-1. Write a manifest:
-   - `"secrecy": "open"`, `"board": { "visibility": "public", "auditors": [] }`;
-   - `"ballotBox"` set to this service's DID;
-   - `votingOpens` a couple of minutes ahead, so the registration lands first.
-2. Create it, then check it registered:
+1. Write a manifest — the console's **New election** builds one, or from the command line:
    ```sh
+   cnm elections manifest init --ballot-box <this service's DID> --out poll.json
+   ```
+   The starter is an open poll with a public board. Set the question, and move
+   `votingOpensAt` to a couple of minutes ahead so the registration lands first.
+2. Check it offline, create it, then check it registered:
+   ```sh
+   cnm elections manifest check poll.json
    cnm elections create poll.json
    cnm elections show <id>        # expect "registered"
    ```

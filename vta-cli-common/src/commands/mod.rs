@@ -4,6 +4,8 @@ pub mod agent_names;
 /// consent, and who may approve.
 pub mod approvals;
 pub mod audit;
+pub mod boards;
+pub mod collection;
 pub mod config;
 pub mod contexts;
 pub mod cred_vault;
@@ -15,6 +17,7 @@ pub mod elections_trustee;
 pub mod external;
 pub mod keys;
 pub mod memory;
+pub mod notifications;
 /// Raw Rego policy management over the canonical `policy/*` family.
 pub mod persona;
 pub mod policy;

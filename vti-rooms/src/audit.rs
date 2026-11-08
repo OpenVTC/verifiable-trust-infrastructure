@@ -233,6 +233,7 @@ mod tests {
                 actions: vec!["read".into(), "write".into()],
                 member: Some(presenter.to_string()),
                 presented: Default::default(),
+                valid_until: None,
             })
         }
     }
@@ -254,6 +255,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         };
         let presentation = AuthorityPresentation {
             membership: "vmc".into(),

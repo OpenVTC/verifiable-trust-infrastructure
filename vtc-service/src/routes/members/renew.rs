@@ -51,7 +51,7 @@ use crate::status_list;
 
 /// `vtc/members/renew:notMember` — the caller is not a member.
 pub const RENEW_ERR_NOT_MEMBER: &str =
-    trust_tasks_rs::specs::vtc::members::renew::v0_1::error_codes::NOT_MEMBER.code;
+    vti_specs::vtc::members::renew::v0_1::error_codes::NOT_MEMBER.code;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -31,7 +31,7 @@ const nextStep = (overrides: Record<string, unknown> = {}) => ({
     expects: [
       { typeUri: ACTIONS_SHOW_TASK, hint: { actionId: "act-9" }, reason: "await approval" },
     ],
-    inResponseTo: { id: "urn:uuid:req", typeUri: "https://trusttasks.org/spec/acl/grant/0.1" },
+    inResponseTo: { id: "urn:uuid:req", typeUri: "https://trusttasks.org/spec/acl/grant/0.2" },
     message: MESSAGE,
     ext: {
       "org.openvtc": {
@@ -49,7 +49,7 @@ const nextStep = (overrides: Record<string, unknown> = {}) => ({
 
 const SIGNED = {
   id: "urn:uuid:req",
-  type: "https://trusttasks.org/spec/acl/grant/0.1",
+  type: "https://trusttasks.org/spec/acl/grant/0.2",
   issuer: "did:key:z6MkConsole",
   recipient: "did:webvh:x:vtc",
   issuedAt: "2026-10-02T10:00:00Z",
@@ -70,20 +70,25 @@ describe("recognising the next-step reply", () => {
     expect(parked.threshold).toBe(1);
     expect(parked.approvers).toBe(2);
     expect(parked.kind).toBe("acl.grant.authority");
-    expect(parked.typeUri).toBe("https://trusttasks.org/spec/acl/grant/0.1");
+    expect(parked.typeUri).toBe("https://trusttasks.org/spec/acl/grant/0.2");
     expect(parked.path).toBe("/actions?action=act-9");
   });
 
-  it("names show/0.2, and still reads an older VTC's show/0.1 hint", () => {
-    expect(ACTIONS_SHOW_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/show/0.2");
+  it("names show/0.3, and reads no other version's hint", () => {
+    expect(ACTIONS_SHOW_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/show/0.3");
+    const parked = parkedActionFromDocument(
+      nextStep({ ext: {}, expects: [{ typeUri: ACTIONS_SHOW_TASK, hint: { actionId: "act-7" } }] }),
+    );
+    expect(parked?.actionId).toBe("act-7");
     for (const typeUri of [
       "https://trusttasks.org/spec/vtc/admin/actions/show/0.2",
       "https://trusttasks.org/spec/vtc/admin/actions/show/0.1",
     ]) {
-      const parked = parkedActionFromDocument(
-        nextStep({ ext: {}, expects: [{ typeUri, hint: { actionId: "act-7" } }] }),
-      );
-      expect(parked?.actionId).toBe("act-7");
+      expect(
+        parkedActionFromDocument(
+          nextStep({ ext: {}, expects: [{ typeUri, hint: { actionId: "act-7" } }] }),
+        ),
+      ).toBeNull();
     }
     expect(
       parkedActionFromDocument(

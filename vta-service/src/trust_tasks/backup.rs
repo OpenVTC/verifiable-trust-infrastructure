@@ -36,7 +36,7 @@ const INITIATE_IMPORT_SLUG: &str = "vta/backup/initiate-import";
 /// Refuse an `initiate-*` with the specification's own
 /// `<slug>:transportUnavailable` code.
 ///
-/// Both `initiate-export/1.0` and `initiate-import/1.0` require it of a
+/// Both `initiate-export/1.1` and `initiate-import/1.1` require it of a
 /// recipient with no address at which the bytes can move — the
 /// DIDComm/TSP-only VTA, whose `public_url` is unset. This used to surface as
 /// `internalError`, which tells the producer "not your fault, retry", when the
@@ -187,9 +187,9 @@ fn refuse_hop_by_hop(doc: &TrustTask<Value>, what: &str) -> Result<(), TrustTask
     }
 }
 
-/// `spec/vta/backup/initiate-export/1.0` — mint an export bundle.
-/// Auth: super-admin.
-pub(super) async fn handle_initiate_export(
+/// The `stream` algorithm of `spec/vta/backup/initiate-export/1.1` — mint an
+/// export bundle fetched from the blob route. Auth: super-admin.
+async fn initiate_export_stream(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
@@ -268,9 +268,9 @@ pub(super) async fn handle_complete_export(
     }
 }
 
-/// `spec/vta/backup/initiate-import/1.0` — mint an upload slot.
-/// Auth: super-admin.
-pub(super) async fn handle_initiate_import(
+/// The `stream` algorithm of `spec/vta/backup/initiate-import/1.1` — mint an
+/// upload slot on the blob route. Auth: super-admin.
+async fn initiate_import_stream(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
@@ -311,10 +311,11 @@ pub(super) async fn handle_initiate_import(
     }
 }
 
-/// `spec/vta/backup/finalize-import/1.0` — apply uploaded bytes
-/// (preview or commit). Auth: super-admin (must match the
-/// initiator's DID).
-pub(super) async fn handle_finalize_import(
+/// Apply the uploaded bytes of a `spec/vta/backup/finalize-import/1.1`
+/// (preview or commit), once [`handle_finalize_import_1_1`] has checked the
+/// caller, the channel and a chunked upload's completeness. Auth: super-admin
+/// (must match the initiator's DID).
+async fn finalize_import_apply(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
@@ -323,27 +324,6 @@ pub(super) async fn handle_finalize_import(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    // This carries the password: entitlement first, then the channel.
-    if let Err(e) = auth.require_super_admin() {
-        return app_error_to_reject(&doc, e);
-    }
-    if let Err(resp) = refuse_hop_by_hop(&doc, "import") {
-        return resp;
-    }
-    // A chunked upload is assembled and verified here, before the password is
-    // used; a no-op for a stream bundle. 1.0 declares none of the chunked codes,
-    // so its refusals ride out as general failures — 1.1 renders them properly.
-    if let Err(e) = chunked::finalize_precheck(&state.backup_bundles_ks, auth, &req.bundle_id).await
-    {
-        return match e {
-            chunked::ChunkedError::App(app) => app_error_to_reject(&doc, app),
-            chunked::ChunkedError::NotFound => app_error_to_reject(
-                &doc,
-                AppError::NotFound(format!("bundle not found: {}", req.bundle_id)),
-            ),
-            other => app_error_to_reject(&doc, AppError::Conflict(other.to_string())),
-        };
-    }
     let committer = state.backup_access().committer().await;
     let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     match descriptors::finalize_import(&deps, auth, req).await {
@@ -430,12 +410,12 @@ pub(super) async fn handle_abort(
 // ─── The `chunkedTrustTask` algorithm (1.1 initiators, get/put-chunk) ────────
 //
 // Specified in `vta/backup/initiate-export/1.1` § Chunked transfer. A `stream`
-// request to a 1.1 initiator is served by the 1.0 path unchanged — the two
-// shapes are wire-identical — and only `chunkedTrustTask` takes the new ops.
+// request to a 1.1 initiator is served by the stream path (the shape 1.0 had),
+// and only `chunkedTrustTask` takes the new ops.
 //
-// These handlers await the 1.0 handler (or a full state export) inline. They
+// These handlers await the stream path (or a full state export) inline. They
 // used to `Box::pin` those awaits, because `dispatch_typed` matched every
-// handler inline and this handler — awaiting the whole 1.0 handler plus a full
+// handler inline and this handler — awaiting the whole stream path plus a full
 // export — became its largest arm, overflowing the debug worker stack on the
 // first chunked export. That boxing moved to the dispatch seam itself
 // (`dispatch_typed` now `Box::pin`s every arm), so each handler's future is
@@ -532,7 +512,7 @@ fn is_chunked(algorithm: Option<&str>) -> bool {
     algorithm == Some(ALGORITHM_CHUNKED)
 }
 
-/// `spec/vta/backup/initiate-export/1.1` — `stream` exactly as 1.0, or a
+/// `spec/vta/backup/initiate-export/1.1` — a `stream` bundle, or a
 /// `chunkedTrustTask` bundle whose chunks are pulled with `get-chunk`. The
 /// chunked path needs no `public_url`, which is the point of it.
 pub(super) async fn handle_initiate_export_1_1(
@@ -548,7 +528,7 @@ pub(super) async fn handle_initiate_export_1_1(
     if !is_chunked(algorithm) {
         // The recipient returns what was asked for or refuses; a `stream`
         // request never receives a chunked descriptor.
-        return handle_initiate_export(state, auth, doc).await;
+        return initiate_export_stream(state, auth, doc).await;
     }
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
@@ -598,7 +578,7 @@ pub(super) async fn handle_initiate_export_1_1(
     }
 }
 
-/// `spec/vta/backup/initiate-import/1.1` — `stream` exactly as 1.0, or a
+/// `spec/vta/backup/initiate-import/1.1` — a `stream` slot, or a
 /// `chunkedTrustTask` slot for the manifest the request pre-commits.
 pub(super) async fn handle_initiate_import_1_1(
     state: &AppState,
@@ -628,7 +608,7 @@ pub(super) async fn handle_initiate_import_1_1(
                 ),
             );
         }
-        return handle_initiate_import(state, auth, doc).await;
+        return initiate_import_stream(state, auth, doc).await;
     }
     let Some(manifest) = req.chunks else {
         return chunked_reject(
@@ -679,9 +659,9 @@ pub(super) async fn handle_initiate_import_1_1(
     }
 }
 
-/// `spec/vta/backup/finalize-import/1.1` — as 1.0, with a chunked upload's
-/// completeness and assembled digest checked first, answered with the codes 1.1
-/// declares, before the password is used.
+/// `spec/vta/backup/finalize-import/1.1` — apply the uploaded bytes, with a
+/// chunked upload's completeness and assembled digest checked first, answered
+/// with the codes 1.1 declares, before the password is used.
 pub(super) async fn handle_finalize_import_1_1(
     state: &AppState,
     auth: &AuthClaims,
@@ -703,7 +683,7 @@ pub(super) async fn handle_finalize_import_1_1(
     {
         return chunked_reject(&doc, e);
     }
-    handle_finalize_import(state, auth, doc).await
+    finalize_import_apply(state, auth, doc).await
 }
 
 /// `spec/vta/backup/get-chunk/1.0` — one chunk of a chunked export, by index.
@@ -816,11 +796,11 @@ mod tests {
     fn transport_unavailable_uses_the_specified_extended_code() {
         for (uri, slug) in [
             (
-                vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0,
+                vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1,
                 INITIATE_EXPORT_SLUG,
             ),
             (
-                vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0,
+                vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1,
                 INITIATE_IMPORT_SLUG,
             ),
         ] {
@@ -956,32 +936,18 @@ mod tests {
         assert!(initiate["payload"]["descriptor"].is_null(), "{initiate}");
         assert!(initiate.to_string().contains("hop-by-hop"), "{initiate}");
 
-        for uri in [
-            vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0,
+        let finalize = run_over(
+            HopByHop,
             vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1,
-        ] {
-            let finalize = run_over(
-                HopByHop,
-                uri,
-                serde_json::json!({
-                    "bundleId": uuid::Uuid::new_v4().to_string(),
-                    "password": "import-test-password",
-                    "confirm": false,
-                }),
-                |st, a, d| async move {
-                    if d.type_uri.to_string().ends_with("/1.1") {
-                        handle_finalize_import_1_1(&st, &a, d).await
-                    } else {
-                        handle_finalize_import(&st, &a, d).await
-                    }
-                },
-            )
-            .await;
-            assert!(
-                finalize.to_string().contains("hop-by-hop"),
-                "{uri}: {finalize}"
-            );
-        }
+            serde_json::json!({
+                "bundleId": uuid::Uuid::new_v4().to_string(),
+                "password": "import-test-password",
+                "confirm": false,
+            }),
+            |st, a, d| async move { handle_finalize_import_1_1(&st, &a, d).await },
+        )
+        .await;
+        assert!(finalize.to_string().contains("hop-by-hop"), "{finalize}");
     }
 
     /// Over an end-to-end channel an import slot is minted.

@@ -595,7 +595,7 @@ mod keyring_vti_09_27 {
     use crate::test_support::{build_signing_test_app_state, did_for_seed, sign_as};
     use serde_json::{Value, json};
 
-    const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+    const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
 
     /// Send `document` wrapped in the TSP binding envelope from `sender` and
     /// return the document inside the reply's envelope.

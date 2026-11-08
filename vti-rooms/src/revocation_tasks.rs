@@ -21,10 +21,10 @@
 
 use chrono::Utc;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::rooms::revocations::get::v0_1 as get_spec;
-use trust_tasks_rs::specs::rooms::revocations::put::v0_1 as put_spec;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_specs_rooms::rooms::revocations::get::v0_1 as get_spec;
+use vti_specs_rooms::rooms::revocations::put::v0_1 as put_spec;
 
 use crate::Room;
 use crate::authz::{self, AuthorizedAction, ChainVerifier, Gate};

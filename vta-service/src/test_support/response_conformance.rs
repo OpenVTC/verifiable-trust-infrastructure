@@ -272,7 +272,7 @@ fn check(status: axum::http::StatusCode, body: &[u8]) -> Option<String> {
     // spine is a better vantage point than middleware: nothing has to be
     // threaded in alongside the bytes.
     let ty = doc.get("type")?.as_str()?;
-    let schema = trust_tasks_rs::schema_index::schema_for(ty)?;
+    let schema = vti_specs::schema_index::schema_for(ty)?;
     let payload = doc.get("payload")?;
     let Err(e) = trust_tasks_rs::validate::against_schema(schema, payload) else {
         return None;
@@ -289,7 +289,7 @@ fn check(status: axum::http::StatusCode, body: &[u8]) -> Option<String> {
 pub fn checkable_tasks() -> Vec<&'static str> {
     crate::trust_tasks::dispatched_uris()
         .into_iter()
-        .filter(|u| trust_tasks_rs::schema_index::schema_for(&format!("{u}#response")).is_some())
+        .filter(|u| vti_specs::schema_index::schema_for(&format!("{u}#response")).is_some())
         .collect()
 }
 
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn a_non_conforming_payload_is_reported() {
         let body = br#"{
-            "type": "https://trusttasks.org/spec/vault/list/0.1#response",
+            "type": "https://trusttasks.org/spec/vault/list/0.4#response",
             "payload": {"nope": 1}
         }"#;
         let out = check(StatusCode::OK, body);
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn an_error_outcome_is_exempt() {
         let body = br#"{
-            "type": "https://trusttasks.org/spec/vault/list/0.1#response",
+            "type": "https://trusttasks.org/spec/vault/list/0.4#response",
             "payload": {"nope": 1}
         }"#;
         assert!(
@@ -414,7 +414,7 @@ mod tests {
     fn a_violation_replaces_the_response() {
         clear_violations();
         let body = br#"{
-            "type": "https://trusttasks.org/spec/vault/list/0.1#response",
+            "type": "https://trusttasks.org/spec/vault/list/0.4#response",
             "payload": {"nope": 1}
         }"#;
         let out = observe(StatusCode::OK, body).expect("a violation must be fatal");
@@ -437,7 +437,7 @@ mod tests {
     /// A conforming response passes through untouched.
     #[test]
     fn a_conforming_response_is_not_replaced() {
-        // `messaging/ping/0.1` is bound and published; an empty payload object
+        // `messaging/ping/0.2` is bound and published; an empty payload object
         // is not valid for it, so use a task whose response really does pass:
         // the exemption paths are covered above, so assert the shape that
         // matters here — no violation, no replacement.
@@ -463,7 +463,7 @@ mod tests {
         );
         for (uri, why) in KNOWN_VIOLATIONS {
             assert!(
-                trust_tasks_rs::schema_index::schema_for(&format!("{uri}#response")).is_some(),
+                vti_specs::schema_index::schema_for(&format!("{uri}#response")).is_some(),
                 "{uri} has no published response schema, so it cannot be \
                  violating one — the entry is stale"
             );

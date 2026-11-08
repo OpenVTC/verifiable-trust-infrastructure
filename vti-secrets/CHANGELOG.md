@@ -2,6 +2,42 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.33.0...vti-secrets-v0.34.0) — 2026-11-05
+
+
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.32.0...vti-secrets-v0.33.0) — 2026-11-05
+
+
+## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.31.0...vti-secrets-v0.32.0) — 2026-11-05
+
+
+## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.30.0...vti-secrets-v0.31.0) — 2026-11-04
+
+
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.29.0...vti-secrets-v0.30.0) — 2026-11-04
+
+
+## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.28.0...vti-secrets-v0.29.0) — 2026-11-04
+
+
+## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.27.0...vti-secrets-v0.28.0) — 2026-11-03
+
+
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.26.0...vti-secrets-v0.27.0) — 2026-11-02
+
+
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.25.0...vti-secrets-v0.26.0) — 2026-10-30
+
+
+## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.24.0...vti-secrets-v0.25.0) — 2026-10-30
+
+
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.23.0...vti-secrets-v0.24.0) — 2026-10-28
+
+
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.22.0...vti-secrets-v0.23.0) — 2026-10-27
+
+
 ## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.21.0...vti-secrets-v0.22.0) — 2026-10-26
 
 

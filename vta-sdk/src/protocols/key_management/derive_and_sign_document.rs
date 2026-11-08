@@ -10,7 +10,7 @@ use crate::keys::KeyType;
 ///
 /// This is the DI-signing counterpart of `derive-and-sign` (which signs raw
 /// bytes). It lets a fleet manager whose fleet seed *is* this VTA's seed obtain
-/// a properly DI-signed document (e.g. an `auth/authenticate/0.1` Trust Task)
+/// a properly DI-signed document (e.g. an `auth/authenticate/0.3` Trust Task)
 /// signed by a per-VTA super-admin at `m/26'/9'/<idx>'`, so the seed never
 /// leaves the VTA. The proof is produced with the same crate a verifier uses,
 /// so it's correct by construction.

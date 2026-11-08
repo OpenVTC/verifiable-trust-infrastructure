@@ -44,13 +44,13 @@ export const FIELDS_DEFINE_TASK = "https://trusttasks.org/spec/vtc/directory/fie
 export const FIELDS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/directory/fields/update/0.1";
 export const FIELDS_RETIRE_TASK = "https://trusttasks.org/spec/vtc/directory/fields/retire/0.1";
 export const CARD_ASSERT_TASK = "https://trusttasks.org/spec/vtc/directory/card/assert/0.1";
-export const ENTRIES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/entries/list/0.1";
+export const ENTRIES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/entries/list/0.2";
 export const ENTRIES_SHOW_TASK = "https://trusttasks.org/spec/vtc/directory/entries/show/0.1";
 export const DISCLOSURE_TASK = "https://trusttasks.org/spec/vtc/directory/disclosure/0.1";
 export const NOTES_APPEND_TASK = "https://trusttasks.org/spec/vtc/directory/notes/append/0.1";
-export const NOTES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/notes/list/0.1";
+export const NOTES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/notes/list/0.2";
 export const NOTES_EXPORT_TASK = "https://trusttasks.org/spec/vtc/directory/notes/export/0.1";
-export const EXPORT_TASK = "https://trusttasks.org/spec/vtc/directory/export/0.1";
+export const EXPORT_TASK = "https://trusttasks.org/spec/vtc/directory/export/0.2";
 export const IMAGES_GET_TASK = "https://trusttasks.org/spec/vtc/directory/images/get/0.1";
 
 /** `entries/list`'s largest page (`list-limits.json`). */

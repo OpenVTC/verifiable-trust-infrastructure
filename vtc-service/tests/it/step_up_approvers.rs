@@ -27,15 +27,14 @@ use crate::common::signed::{
 use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const INVITE: &str = "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1";
+const INVITE: &str = "https://trusttasks.org/spec/auth/step-up/approver/invite/0.2";
 const REDEEM_START: &str = "https://trusttasks.org/spec/auth/step-up/approver/redeem/start/0.1";
 const REDEEM_FINISH: &str = "https://trusttasks.org/spec/auth/step-up/approver/redeem/finish/0.1";
 const ENROLL: &str = "https://trusttasks.org/spec/auth/step-up/approver/enroll/0.1";
 const LIST: &str = "https://trusttasks.org/spec/auth/step-up/approver/list/0.1";
 const REVOKE: &str = "https://trusttasks.org/spec/auth/step-up/approver/revoke/0.1";
 const ATTEST: &str = "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1";
-const APPROVE_V06: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
-const APPROVE_V04: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
+const APPROVE_V06: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
 
 async fn vtc() -> TestVtc {
     TestVtc::builder()
@@ -94,7 +93,7 @@ async fn step_up_statement(
     .await
 }
 
-/// The approve-response 0.6 `signer` sends for `request`, carrying `statement`.
+/// The approve-response 0.7 `signer` sends for `request`, carrying `statement`.
 async fn answer(
     vtc: &TestVtc,
     signer: &Party,
@@ -227,7 +226,7 @@ async fn audited(vtc: &TestVtc) -> Vec<(String, Option<String>)> {
     out.into_iter().map(|(_, s, v)| (s, v)).collect()
 }
 
-// ── the gate (approve-request 0.4, approve-response 0.6) ─────────────────────
+// ── the gate (approve-request 0.4, approve-response 0.7) ─────────────────────
 
 /// VTI-APV-015: a wallet administrator with no passkey steps up with their
 /// approver. The request accepts only `approverSigned` and names the approver;
@@ -433,7 +432,7 @@ async fn vti_apv_015_a_statement_is_refused_unless_it_is_the_bound_approvers_ove
 
 /// The answer's own proof must be the subject's own DID: a console key — a
 /// delegation acting for them — is refused before the step-up is looked up,
-/// and the step-up stays answerable (approve-response 0.6 item 1a).
+/// and the step-up stays answerable (approve-response 0.7 item 1a).
 #[tokio::test]
 async fn vti_apv_015_a_console_key_cannot_sign_an_approver_answer() {
     let vtc = vtc().await;
@@ -473,7 +472,7 @@ async fn vti_apv_015_a_console_key_cannot_sign_an_approver_answer() {
     let st = step_up_statement(&vtc, &approver, &admin.did, &request).await;
     let (_, out) = answer(&vtc, &console, &request, st.clone()).await;
     // Refused at the spine, before the step-up is looked up, under the code
-    // approve-response 0.6 declares for it.
+    // approve-response 0.7 declares for it.
     assert_eq!(
         error_code(&out),
         Some("auth/step-up/approve-response:subjectMismatch"),
@@ -532,7 +531,7 @@ async fn a_dedicated_factor_supersedes_the_subjects_session_passkeys() {
     let (_, out) = call(
         &vtc,
         &admin,
-        APPROVE_V04,
+        APPROVE_V06,
         json!({
             "subject": admin.did,
             "challenge": request["challenge"],
@@ -682,7 +681,7 @@ async fn an_invite_is_refused_before_any_step_up_for_self_strangers_and_long_ttl
         ),
         (
             &admin,
-            json!({ "subject": member.did, "ttl": 86401 }),
+            json!({ "subject": member.did, "ttlSeconds": 86401 }),
             "auth/step-up/approver/invite:ttlTooLong",
         ),
         (&member, json!({ "subject": admin.did }), "permissionDenied"),
@@ -1122,7 +1121,7 @@ async fn an_administrator_revokes_a_members_last_approver_and_it_answers_nothing
 
     // A step-up the member's approver was offered, still pending when it is
     // revoked: liveness is checked when the statement arrives, not when it was
-    // listed (approve-response 0.6, *Approver liveness at use*).
+    // listed (approve-response 0.7, *Approver liveness at use*).
     let (_, pending) = call(
         &vtc,
         &member,

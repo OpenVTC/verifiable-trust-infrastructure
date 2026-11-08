@@ -6,7 +6,7 @@
 //! uses the returned `jws` as it is, since the JSON inside it is not
 //! byte-for-byte what was sent.
 
-pub use trust_tasks_rs::specs::keys::sign_jws::v0_1::{
+pub use vti_specs::keys::sign_jws::v0_1::{
     Payload as SignJwsPayload, Response as SignJwsResponse, ResponseAlg as SignJwsAlg, error_codes,
 };
 

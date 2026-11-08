@@ -830,7 +830,7 @@ impl DIDCommSession {
     }
 
     /// Receive the next **unsolicited** inbound DIDComm message — e.g. an
-    /// `auth/step-up/approve-request/0.1` the VTA pushed to this holder via the
+    /// `auth/step-up/approve-request/0.5` the VTA pushed to this holder via the
     /// mediator. Polls the mediator's live stream for up to `timeout_secs`;
     /// returns `Ok(None)` if nothing arrived in time.
     ///

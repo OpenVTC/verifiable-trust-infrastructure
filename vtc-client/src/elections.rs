@@ -1,5 +1,12 @@
-//! Community elections: `vtc/elections/{create,list,show,close,cancel,certify}/0.1` and
-//! `vtc/elections/tickets/issue/0.1` (VTI-VOT-001 – 100).
+//! Community elections: `vtc/elections/create/0.5`, `list/0.5`, `show/0.6`,
+//! `{close,cancel,certify}/0.1`, `vtc/elections/tickets/issue/0.3` and
+//! `vtc/elections/ballot-boxes/list/0.1` (VTI-VOT-001 – 100).
+//!
+//! A presentation — what a `show` of an election put to a member party's members, or a ticket
+//! under a credential roll, carries (VTI-VOT-015, VTI-VOT-025) — is bound to the request
+//! document's `id` and made by the member's agent, so a request carrying one is built and
+//! signed by the member's VTA (`vta/pcs/voter/{read,register}`) and sent with
+//! [`VtcClient::send_signed_document`], never by these methods.
 //!
 //! Signed Trust Tasks sent the way every `acl/*` call goes ([`crate::acl`]): over the client's
 //! DIDComm or TSP session when it holds one, otherwise signed with a [`HolderKey`] and posted to
@@ -16,9 +23,11 @@ use crate::{HolderKey, VtcClient, VtcError};
 
 /// The generated wire types, re-exported so a caller names the reply types without depending
 /// on `trust-tasks-rs` itself.
-pub use trust_tasks_rs::specs::vtc::elections::{
-    cancel::v0_1 as cancel, certify::v0_1 as certify, close::v0_1 as close, create::v0_1 as create,
-    list::v0_1 as list, show::v0_1 as show, tickets::issue::v0_1 as tickets_issue,
+pub use vti_specs::vtc::elections::{
+    ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
+    certify::v0_1 as certify, close::v0_1 as close, create::v0_5 as create, list::v0_5 as list,
+    show::v0_6 as show, tickets::issue::v0_3 as tickets_issue,
+    tombstones::show::v0_1 as tombstone_show,
 };
 
 /// The Type URI of each task, read off the generated payloads.
@@ -32,10 +41,12 @@ pub mod task {
     pub const CANCEL: &str = <super::cancel::Payload as Payload>::TYPE_URI;
     pub const CERTIFY: &str = <super::certify::Payload as Payload>::TYPE_URI;
     pub const TICKETS_ISSUE: &str = <super::tickets_issue::Payload as Payload>::TYPE_URI;
+    pub const BALLOT_BOXES_LIST: &str = <super::ballot_boxes_list::Payload as Payload>::TYPE_URI;
+    pub const TOMBSTONE_SHOW: &str = <super::tombstone_show::Payload as Payload>::TYPE_URI;
 }
 
 impl VtcClient {
-    /// `vtc/elections/create/0.1` — create an election from `manifest`, sent as given (its
+    /// `vtc/elections/create/0.5` — create an election from `manifest`, sent as given (its
     /// digest is taken over these bytes).
     ///
     /// # Errors
@@ -52,7 +63,7 @@ impl VtcClient {
             .await
     }
 
-    /// `vtc/elections/list/0.1` — the elections the caller may see, optionally only those in
+    /// `vtc/elections/list/0.5` — the elections the caller may see, optionally only those in
     /// `state`.
     ///
     /// # Errors
@@ -78,10 +89,12 @@ impl VtcClient {
         self.acl_task(task::LIST, payload, key, &[]).await
     }
 
-    /// `vtc/elections/show/0.1` — one election, with its parameters and disclosure.
+    /// `vtc/elections/show/0.6` — one election, with its parameters and disclosure, read without
+    /// a presentation.
     ///
     /// # Errors
-    /// `electionUnknown` for an election the caller may not see; the VTC's refusal otherwise.
+    /// `electionUnknown` for an election the caller may not see; `indeterminate` (retryable)
+    /// when a check the community makes could not be completed; the VTC's refusal otherwise.
     pub async fn elections_show(
         &self,
         election_id: &str,
@@ -90,6 +103,28 @@ impl VtcClient {
         let payload = checked::<show::Payload>(json!({ "electionId": election_id }))?;
         self.acl_task(task::SHOW, payload, key, show::ERROR_CODES)
             .await
+    }
+
+    /// `vtc/elections/tombstones/show/0.1` — what the community keeps of an election on a deleted
+    /// board (VTI-BRD-009): identifier, manifest digest, ballot box and the board heads it kept,
+    /// each in the ballot box's signed document, to check a receipt against.
+    ///
+    /// # Errors
+    /// [`VtcError::InvalidPayload`] out of schema; the VTC's refusal otherwise
+    /// (`electionUnknown` for no tombstone, or one the caller may not read).
+    pub async fn elections_tombstone(
+        &self,
+        election_id: &str,
+        key: &HolderKey,
+    ) -> Result<tombstone_show::Response, VtcError> {
+        let payload = checked::<tombstone_show::Payload>(json!({ "electionId": election_id }))?;
+        self.acl_task(
+            task::TOMBSTONE_SHOW,
+            payload,
+            key,
+            tombstone_show::ERROR_CODES,
+        )
+        .await
     }
 
     /// `vtc/elections/close/0.1` — close an election early, where its manifest allows it.
@@ -145,8 +180,24 @@ impl VtcClient {
             .await
     }
 
-    /// `vtc/elections/tickets/issue/0.1` — ask for a ticket: `request` is the blinded request a
-    /// member's VTA built (`vta/pcs/voter/register`), carried as it came.
+    /// `vtc/elections/ballot-boxes/list/0.1` — the voting services this community trusts
+    /// (VTI-VOT-082): exactly the list `create` checks a manifest's `ballotBox` against, each
+    /// with what members are told about it.
+    ///
+    /// # Errors
+    /// `permissionDenied` without `vtc.elections.manage`; the VTC's refusal otherwise.
+    pub async fn elections_ballot_boxes(
+        &self,
+        key: &HolderKey,
+    ) -> Result<ballot_boxes_list::Response, VtcError> {
+        let payload = checked::<ballot_boxes_list::Payload>(json!({}))?;
+        self.acl_task(task::BALLOT_BOXES_LIST, payload, key, &[])
+            .await
+    }
+
+    /// `vtc/elections/tickets/issue/0.3` — ask for a ticket: `request` is the blinded request a
+    /// member's VTA built (`vta/pcs/voter/register`), carried as it came. Carries no
+    /// presentation, so under a credential roll the VTA's `ticketDocument` is sent instead.
     ///
     /// # Errors
     /// The VTC's refusal.

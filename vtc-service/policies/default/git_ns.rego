@@ -88,10 +88,10 @@ import rego.v1
 # community may have its bridge close those whose author it does not allow.
 # This is hygiene, not the merge gate: the required commit-trust check still
 # decides what can be merged, and the gate fails open (VTC or bridge down, a
-# bridge without job 0.5, an unreadable setting — the pull request stays open).
+# bridge without job 0.6, an unreadable setting — the pull request stays open).
 # Owners and maintainers of the repository (a namespace admin included) and the
 # bridge's own account are always allowed, and a reopen by an owner or
-# maintainer is never closed again. The bridge must take git-ns/bridge/job 0.5
+# maintainer is never closed again. The bridge must take git-ns/bridge/job 0.6
 # and, on GitHub, its App needs "Pull requests: write".
 #   pr_open            who may open one: "anyone" (default — no gate),
 #                      "members" (a linked account of a current member),

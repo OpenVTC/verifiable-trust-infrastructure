@@ -15,7 +15,7 @@ out of one never spends another.
 | Limiter (`x-rate-limit-scope`) | Routes | Default |
 |---|---|---|
 | `auth` | **Anonymous** `POST /trust-tasks` requests other than the two below — `auth/challenge/0.1` and the public Trust Tasks (`vta/attestation/{status,report,config-report}/0.1`) — plus passkey login start/finish and `POST /bootstrap/request`. Authenticated `/trust-tasks` calls stay off every limiter | burst 10, then 1 token every 5 s |
-| `auth-authenticate` | Anonymous `POST /trust-tasks` carrying `auth/authenticate/0.2` or `0.3` | same quota as `auth` |
+| `auth-authenticate` | Anonymous `POST /trust-tasks` carrying `auth/authenticate/0.3` | same quota as `auth` |
 | `auth-refresh` | Anonymous `POST /trust-tasks` carrying `auth/refresh/0.2` | same quota as `auth` |
 | `did-log` | `GET /.well-known/did.jsonl`, the canonical `GET /<path>/did.jsonl` for a pathful self-hosted DID (and every other unmatched `GET`, which answers 404), `GET /did/{did}/log`, and under TEE `GET /attestation/did-log` | burst 60, then 1 token every 1 s |
 | `backup-blob` | `GET` / `POST /backup/blob/{bundle_id}` (token-gated, not JWT-gated) | same quota as `auth` |
@@ -186,9 +186,23 @@ proxy's address and every client shares its bucket again.
 > clients share **one** bucket per limiter. Ten logins from anywhere in the
 > world then exhaust the `auth` burst for everyone.
 
-Everything uncertain falls back to the peer rather than guessing: a request
-with no peer address at all is refused outright, and a malformed or absurdly
-long chain is charged to the peer.
+A request with no peer address at all is refused outright. A chain from a
+trusted proxy that cannot be read — a malformed entry where the proxies wrote,
+or more than 64 entries — is refused with `400` rather than charged to the
+proxy, which would give its sender the proxy's bucket as well as its own. A
+range covering every address (`0.0.0.0/0`, `::/0`) fails to load. The rule is
+`affinidi-rate-limit`'s, shared with the mediator and the DID hosting
+service.
+
+An IPv6 client is charged as its `/64`, the block one host is normally given,
+so a host cannot buy a fresh bucket by rotating addresses inside it. The
+address itself is still what logs and handlers see. IPv4 clients are charged
+as their address.
+
+Each limiter holds at most 250,000 client buckets and drops the ones that
+have fully refilled every minute. If it is ever full of clients that have
+not, a client it has not seen is refused with `429` (`retry-after: 60`)
+until room is made; clients it already tracks are unaffected.
 
 `trust_xff_cidrs` is read when the REST router is built: changing it needs a
 restart (`POST /vta/restart` or a process restart). The quotas below do not.

@@ -331,7 +331,7 @@ async fn an_ext_only_request_is_malformed() {
 /// a one-line detail, an empty tag set.
 #[tokio::test]
 async fn the_schema_refuses_what_it_declares() {
-    let schema = trust_tasks_rs::schema_index::schema_for(LABEL).expect("label is indexed");
+    let schema = vti_specs::schema_index::schema_for(LABEL).expect("label is indexed");
     for bad in [
         json!({ "roomId": ROOM, "member": "did:key:z" }),
         json!({ "roomId": ROOM, "member": "did:key:z", "label": "x", "removeLabel": true }),

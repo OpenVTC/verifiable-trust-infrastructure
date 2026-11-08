@@ -1,4 +1,4 @@
-// The community's repositories, as a member sees them (`git-ns/view/0.4`), and
+// The community's repositories, as a member sees them (`git-ns/view/0.6`), and
 // the member's own forge accounts.
 //
 // Reads are signed by this browser's portal key for the member, which the
@@ -6,7 +6,7 @@
 // sign-in, as the directory pages are. Nothing else under `git-ns` is: linking
 // or unlinking an account binds what the forge then relies on as the member's,
 // and every right change confers or withdraws authority, so the portal key may
-// sign neither (`auth/oob/grant/0.2` consumer item 6). Linking and unlinking go
+// sign neither (`auth/oob/grant/0.3` consumer item 6). Linking and unlinking go
 // through the member's wallet (`window.vtaWallet.git`), which signs as the
 // member after asking them, and shows the forge's authorisation page and code
 // in its own window — the page never sees the code. A member without it is
@@ -21,12 +21,12 @@ import type {
 
 import { send } from "./directory-api";
 
-export const VIEW_TASK = "https://trusttasks.org/spec/git-ns/view/0.4";
+export const VIEW_TASK = "https://trusttasks.org/spec/git-ns/view/0.6";
 export const LINK_STATUS_TASK = "https://trusttasks.org/spec/git-ns/account/link-status/0.1";
 
 /** A recorded right, as 0.4 marks one its holder gave themselves. */
 export type MemberRight = GitNsRightRecord & {
-  breakGlass?: { by: string; at: string; justification: string; ratifiedBy?: string; ratifiedAt?: string };
+  breakGlass?: { by: string; recordedAt: string; justification: string; ratifiedBy?: string; ratifiedAt?: string };
 };
 
 export interface LinkedAccount {
@@ -34,7 +34,7 @@ export interface LinkedAccount {
   linkedAt: string;
 }
 
-/** `git-ns/view/0.4#response`: 0.1's members, every record's `breakGlass`,
+/** `git-ns/view/0.6#response`: 0.1's members, every record's `breakGlass`,
  *  each namespace's `kind` once known, and the member's linked accounts. */
 export interface MemberGitView {
   namespaces: (GitNsViewNamespace & { kind?: "organization" | "user" })[];

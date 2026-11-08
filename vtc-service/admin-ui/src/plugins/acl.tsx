@@ -63,11 +63,11 @@ import { useViewerDid } from "@/lib/viewer";
 import { canMakeMembership, membershipOf } from "@/lib/member-admission";
 import { MakeMembershipButton } from "@/plugins/members/Admission";
 
-// The ACL verbs are signed documents (`lib/acl.ts`); the invites are REST.
+// The ACL verbs are signed documents (`lib/acl.ts`); so are the invites.
 const TRUST_TASK_INVITES_LIST =
-  "https://trusttasks.org/spec/vtc/admin/invites/list/0.1";
+  "https://trusttasks.org/spec/vtc/admin/invites/list/0.2";
 const TRUST_TASK_INVITES_CREATE =
-  "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
+  "https://trusttasks.org/spec/vtc/admin/invites/create/0.2";
 const TRUST_TASK_INVITES_REVOKE =
   "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1";
 
@@ -113,8 +113,13 @@ async function patchAclLabel(args: {
 
 // ── Admin invites ────────────────────────────────────────────
 
+/**
+ * `vtc/admin/invites/create/0.2`. With `did` it is a wallet invitation, claimed
+ * by signing as that DID; without, a passkey invitation, whose administrator's
+ * DID is derived from the passkey they register when they claim it.
+ */
 interface CreateInviteRequest {
-  did: string;
+  did?: string;
   ttlSeconds?: number;
   label?: string;
 }
@@ -125,7 +130,9 @@ async function fetchInvites(): Promise<InvitesListResponse> {
 
 /**
  * Mint an admin invite, a signed document. Inviting someone who is not an
- * admin yet writes a community-administrator entry, so it costs what
+ * admin yet — by wallet for a DID with no entry, or by passkey, which always
+ * makes a new administrator when it is claimed — confers a
+ * community-administrator entry, so it costs what
  * `acl/grant` of one costs: a passkey gesture bound to this invite — asked for
  * with `confirmGesture` when the VTC refuses for want of one — and another
  * community administrator's approval (VTI-APV-018), for which the invite is
@@ -580,18 +587,22 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
   });
 
   const regenerate = useMutation({
-    mutationFn: async (args: { oldJti: string; targetDid: string }) => {
+    mutationFn: async (args: { oldJti: string; targetDid?: string }) => {
       // Mint a fresh invite first so a failure here leaves the
       // existing invite intact — the operator can retry without
       // losing access to a working URL. Only after the new invite
       // is in hand do we revoke the old one.
-      const fresh = await createInvite({ did: args.targetDid }, confirmGesture);
+      // A passkey invitation names no DID: its replacement names none either.
+      const fresh = await createInvite(
+        args.targetDid === undefined ? {} : { did: args.targetDid },
+        confirmGesture,
+      );
       try {
         await revokeInvite(args.oldJti);
       } catch (err) {
         // Surface the warning but keep the new invite: the worst
-        // case is two valid invites for the same DID, which is
-        // not a security regression (the new code is required to
+        // case is two valid invites for the same administrator, which
+        // is not a security regression (the new code is required to
         // claim either one).
         toast.push(
           "info",
@@ -603,7 +614,12 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
       return fresh;
     },
     onSuccess: (fresh, args) => {
-      toast.push("success", `Regenerated invite for ${args.targetDid}`);
+      toast.push(
+        "success",
+        args.targetDid
+          ? `Regenerated invite for ${args.targetDid}`
+          : "Regenerated passkey invite",
+      );
       void queryClient.invalidateQueries({ queryKey: ["admin-invites"] });
       setRegenerated(fresh);
     },
@@ -618,9 +634,12 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
         <div className="toolbar">
           <h3 className="acl-invites-title">Admin invites</h3>
           <p className="lead acl-invites-lead">
-            Mint one-shot install URLs for new community administrators.
-            Each invite grants its <code>did</code> the community-admin
-            role on first passkey claim.
+            Mint a one-shot install URL and claim code that makes someone a
+            community administrator. Invite them <strong>by passkey</strong> if
+            they will sign in with a passkey on their device — their DID is
+            created from it when they claim the invite — or{" "}
+            <strong>by wallet</strong> if they already have a DID in a VTA
+            wallet, which they claim it with.
           </p>
           <button
             type="button"
@@ -654,7 +673,8 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
       <section className="card">
         <DataTable
           columns={[
-            { key: "target-did", label: "Target DID" },
+            { key: "kind", label: "Kind" },
+            { key: "target-did", label: "Administrator DID" },
             { key: "jti", label: "JTI" },
             { key: "status", label: "Status" },
             { key: "expires-consumed", label: "Expires / consumed" },
@@ -663,12 +683,12 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
         >
           {query.isPending && (
             <tr>
-              <td colSpan={5}>Loading…</td>
+              <td colSpan={6}>Loading…</td>
             </tr>
           )}
           {!query.isPending && invites.length === 0 && (
             <tr>
-              <td colSpan={5}>
+              <td colSpan={6}>
                 <EmptyState icon={Mail} title="No outstanding invites">
                   Use <strong>Invite admin</strong> to mint an install URL.
                 </EmptyState>
@@ -677,9 +697,17 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
           )}
           {invites.map((i) => (
             <tr key={i.jti}>
+              <td>{i.kind === "passkey" ? "Passkey" : "Wallet"}</td>
               <td>
                 {i.targetDid ? (
                   <code title={i.targetDid}>{shortenDid(i.targetDid)}</code>
+                ) : i.kind === "passkey" ? (
+                  <span
+                    className="muted"
+                    title="A passkey invite's DID is created from the passkey when the invite is claimed"
+                  >
+                    created when claimed
+                  </span>
                 ) : (
                   <span className="muted">unknown</span>
                 )}
@@ -709,26 +737,32 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
                     disabled={
                       regenerate.isPending ||
                       i.status === "consumed" ||
-                      !i.targetDid
+                      (i.kind === "wallet" && !i.targetDid)
                     }
                     title={
                       i.status === "consumed"
                         ? "Consumed invites cannot be regenerated"
-                        : !i.targetDid
-                          ? "Legacy invite — no stored target DID, revoke instead"
-                          : "Revoke this invite and mint a fresh URL + claim code for the same DID"
+                        : i.kind === "passkey"
+                          ? "Revoke this invite and mint a fresh passkey invite: a new URL + claim code"
+                          : !i.targetDid
+                            ? "Legacy invite — no stored target DID, revoke instead"
+                            : "Revoke this invite and mint a fresh URL + claim code for the same DID"
                     }
                     onClick={async () => {
-                      if (!i.targetDid) return;
+                      if (i.kind === "wallet" && !i.targetDid) return;
                       const ok = await confirm({
-                        title: `Regenerate invite for ${i.targetDid}?`,
+                        title:
+                          i.kind === "passkey"
+                            ? "Regenerate passkey invite?"
+                            : `Regenerate invite for ${i.targetDid}?`,
                         message: `Revokes ${shorten(i.jti)} and mints a fresh URL + claim code. The old install URL stops working immediately.`,
                         confirmLabel: "Regenerate",
                       });
                       if (ok) {
                         regenerate.mutate({
                           oldJti: i.jti,
-                          targetDid: i.targetDid,
+                          targetDid:
+                            i.kind === "passkey" ? undefined : (i.targetDid ?? undefined),
                         });
                       }
                     }}
@@ -779,7 +813,10 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
   );
 }
 
+type InviteKind = "passkey" | "wallet";
+
 function CreateInviteForm({ onClose }: { onClose: () => void }) {
+  const [kind, setKind] = useState<InviteKind>("passkey");
   const [did, setDid] = useState("");
   const [label, setLabel] = useState("");
   const [ttlMinutes, setTtlMinutes] = useState("15");
@@ -801,9 +838,11 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
       setIssued(resp);
       toast.push(
         "success",
-        resp.aclEntryCreated
-          ? `Invited ${did} (ACL admin grant created)`
-          : `Invited ${did} (ACL already had admin grant)`,
+        resp.kind === "passkey"
+          ? "Passkey invite minted"
+          : resp.aclEntryCreated
+            ? `Invited ${did} (ACL admin grant created)`
+            : `Invited ${did} (ACL already had admin grant)`,
       );
     },
     onError: (err) => {
@@ -816,12 +855,14 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // The request is signed over its JCS form, which refuses an `undefined`
+    // member, so an option not given is left out rather than set undefined.
+    const req: CreateInviteRequest = {};
+    if (kind === "wallet") req.did = did.trim();
     const ttl = Number(ttlMinutes);
-    mutation.mutate({
-      did: did.trim(),
-      ttlSeconds: Number.isFinite(ttl) && ttl > 0 ? ttl * 60 : undefined,
-      label: label.trim() === "" ? undefined : label.trim(),
-    });
+    if (Number.isFinite(ttl) && ttl > 0) req.ttlSeconds = ttl * 60;
+    if (label.trim() !== "") req.label = label.trim();
+    mutation.mutate(req);
   };
 
   if (issued) {
@@ -832,8 +873,13 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
           Send the install URL and claim code to the new admin{" "}
           <strong>through separate channels</strong> (URL via Slack,
           code via Signal — whatever doesn't share the same
-          attacker view). Both are required to claim the passkey.
+          attacker view). Both are required to claim the invite.
           Expires <strong>{formatIso(issued.expiresAt)}</strong>.
+        </p>
+        <p className="lead">
+          {issued.kind === "passkey"
+            ? "They open the URL, enter the code and register a passkey; whoever does so becomes an administrator, so treat the URL and code as a password."
+            : "They open the URL, enter the code and sign with the wallet that holds their DID."}
         </p>
         <Field label="Install URL">
           <input type="text" readOnly value={issued.installUrl} />
@@ -885,19 +931,52 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
     <form onSubmit={onSubmit} className="card form-stack">
       <h3>Invite a new admin</h3>
       <p className="lead">
-        Mirrors the <code>vtc admin invite</code> CLI: ensures a
-        community-admin grant for the DID, then mints a single-use install
-        URL the recipient claims with a passkey.
+        Mints a single-use install URL and claim code. Whoever claims it
+        becomes a community administrator with full authority. Mirrors the{" "}
+        <code>vtc admin invite</code> CLI.
       </p>
-      <Field label="DID">
-        <input
-          type="text"
-          placeholder="did:key:z6Mk…"
-          value={did}
-          onChange={(e) => setDid(e.target.value)}
-          required
-        />
-      </Field>
+      <fieldset className="choice-group">
+        <legend className="field-label">How will they sign in?</legend>
+        <label className="checkbox">
+          <input
+            type="radio"
+            name="invite-kind"
+            value="passkey"
+            checked={kind === "passkey"}
+            onChange={() => setKind("passkey")}
+          />
+          <span className="checkbox-text">
+            <strong>With a passkey</strong> — they register a passkey on their
+            device when they claim the invite, and their DID is created from it.
+            You don’t need to know their DID.
+          </span>
+        </label>
+        <label className="checkbox">
+          <input
+            type="radio"
+            name="invite-kind"
+            value="wallet"
+            checked={kind === "wallet"}
+            onChange={() => setKind("wallet")}
+          />
+          <span className="checkbox-text">
+            <strong>With a wallet</strong> — they already have a DID in a VTA
+            wallet, and claim the invite by signing as it. Their admin access is
+            granted to that DID now.
+          </span>
+        </label>
+      </fieldset>
+      {kind === "wallet" && (
+        <Field label="Their DID">
+          <input
+            type="text"
+            placeholder="did:webvh:… or did:key:z6Mk…"
+            value={did}
+            onChange={(e) => setDid(e.target.value)}
+            required
+          />
+        </Field>
+      )}
       <Field label="Label (optional)">
         <input
           type="text"
@@ -942,7 +1021,7 @@ function RegeneratedInviteCard({
         invite has been revoked. Deliver these to the new admin
         through <strong>separate channels</strong> (URL via Slack,
         code via Signal — whatever doesn't share the same attacker
-        view). Both are required to claim the passkey. Expires{" "}
+        view). Both are required to claim the invite. Expires{" "}
         <strong>{formatIso(invite.expiresAt)}</strong>.
       </p>
       <Field label="Install URL">

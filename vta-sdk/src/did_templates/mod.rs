@@ -410,11 +410,48 @@ pub struct DidTemplateRecord {
     pub template: DidTemplate,
     pub scope: Scope,
     /// UTC unix-epoch seconds. Displayed in the operator's local timezone.
+    ///
+    /// On the wire an RFC 3339 instant (`vta/_shared/0.7`, `did-templates/*`
+    /// 3.1); an integer is still read, so a record stored before 3.1 loads.
+    #[serde(with = "instant_secs")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub created_at: u64,
-    /// UTC unix-epoch seconds. Displayed in the operator's local timezone.
+    /// UTC unix-epoch seconds, written and read as [`Self::created_at`] is.
+    #[serde(with = "instant_secs")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub updated_at: u64,
     /// DID of the admin who last wrote this template.
     pub created_by: String,
+}
+
+/// Unix seconds carried as an RFC 3339 instant (`2026-07-29T09:00:01Z`), the
+/// form `vta/_shared/0.7`'s `DidTemplateRecord` declares. Reads either form: a
+/// record persisted before `did-templates/*` 3.1 holds the integer.
+mod instant_secs {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    pub fn serialize<S: Serializer>(secs: &u64, s: S) -> Result<S::Ok, S::Error> {
+        let dt = i64::try_from(*secs)
+            .ok()
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .ok_or_else(|| serde::ser::Error::custom("instant out of range"))?;
+        s.serialize_str(&dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Instant {
+            Secs(u64),
+            Rfc3339(String),
+        }
+        match Instant::deserialize(d)? {
+            Instant::Secs(n) => Ok(n),
+            Instant::Rfc3339(s) => chrono::DateTime::parse_from_rfc3339(&s)
+                .map_err(D::Error::custom)
+                .and_then(|dt| u64::try_from(dt.timestamp()).map_err(D::Error::custom)),
+        }
+    }
 }
 
 /// Errors from template parsing, validation, and rendering.

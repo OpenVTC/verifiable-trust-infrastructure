@@ -3,11 +3,11 @@
 // Every read here is a signed Trust Task: the namespaces, the repositories,
 // the break-glass records, the rights lists, the bridge job queue, the Trust
 // Registry projection, the linked-account roster and the activity feed are
-// `git-ns/namespace/list/0.1`, `git-ns/repo/list/0.1`, `git-ns/view/0.5`
-// (`scope: administrator`, `breakGlass: true`), `git-ns/right/list/0.1`,
-// `git-ns/right/issued-by-departed/0.1`, `git-ns/bridge/job/list/0.2`,
-// `git-ns/projection/show/0.1`, `git-ns/account/list/0.1` and
-// `git-ns/activity/list/0.1` — signed with this browser's console key and
+// `git-ns/namespace/list/0.2`, `git-ns/repo/list/0.2`, `git-ns/view/0.6`
+// (`scope: administrator`, `breakGlass: true`), `git-ns/right/list/0.3`,
+// `git-ns/right/issued-by-departed/0.3`, `git-ns/bridge/job/list/0.4`,
+// `git-ns/projection/show/0.3`, `git-ns/account/list/0.2` and
+// `git-ns/activity/list/0.3` — signed with this browser's console key and
 // posted to `/v1/trust-tasks`, the same documents `cnm git` sends over TSP or
 // DIDComm. The daemon answers each to the entitlement its own specification
 // names (the community-administrator capability for the four
@@ -51,18 +51,18 @@ const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.2";
 // the other six (trustoverip/dtgwg-trust-tasks-tf#686). No TypeScript binding
 // is published for either, so the URIs and the view response shape below stay
 // hand-written here, matching the spec.
-export const TASK_NAMESPACE_LIST = "https://trusttasks.org/spec/git-ns/namespace/list/0.1";
-export const TASK_REPO_LIST = "https://trusttasks.org/spec/git-ns/repo/list/0.1";
-export const TASK_VIEW = "https://trusttasks.org/spec/git-ns/view/0.5";
-export const TASK_RIGHT_LIST = "https://trusttasks.org/spec/git-ns/right/list/0.1";
+export const TASK_NAMESPACE_LIST = "https://trusttasks.org/spec/git-ns/namespace/list/0.2";
+export const TASK_REPO_LIST = "https://trusttasks.org/spec/git-ns/repo/list/0.2";
+export const TASK_VIEW = "https://trusttasks.org/spec/git-ns/view/0.6";
+export const TASK_RIGHT_LIST = "https://trusttasks.org/spec/git-ns/right/list/0.3";
 export const TASK_RIGHT_ISSUED_BY_DEPARTED =
-  "https://trusttasks.org/spec/git-ns/right/issued-by-departed/0.1";
-export const TASK_BRIDGE_JOB_LIST = "https://trusttasks.org/spec/git-ns/bridge/job/list/0.2";
-export const TASK_PROJECTION_SHOW = "https://trusttasks.org/spec/git-ns/projection/show/0.1";
-export const TASK_ACCOUNT_LIST = "https://trusttasks.org/spec/git-ns/account/list/0.1";
-export const TASK_ACTIVITY_LIST = "https://trusttasks.org/spec/git-ns/activity/list/0.1";
+  "https://trusttasks.org/spec/git-ns/right/issued-by-departed/0.3";
+export const TASK_BRIDGE_JOB_LIST = "https://trusttasks.org/spec/git-ns/bridge/job/list/0.4";
+export const TASK_PROJECTION_SHOW = "https://trusttasks.org/spec/git-ns/projection/show/0.3";
+export const TASK_ACCOUNT_LIST = "https://trusttasks.org/spec/git-ns/account/list/0.2";
+export const TASK_ACTIVITY_LIST = "https://trusttasks.org/spec/git-ns/activity/list/0.3";
 
-/** The parts of a `git-ns/view/0.5#response` the break-glass list and the drift read. */
+/** The parts of a `git-ns/view/0.6#response` the break-glass list and the drift read. */
 interface GitNsViewAnswer {
   namespaces: { id: string; forge: string; owner: string }[];
   repos?: {
@@ -114,7 +114,7 @@ export const gitNsKeys = {
 };
 
 /** The namespaces this administrator administers — every one, for a
- *  community administrator (`git-ns/namespace/list/0.1`). */
+ *  community administrator (`git-ns/namespace/list/0.2`). */
 export const fetchNamespaces = (): Promise<GitNsNamespaceList> =>
   postSignedRead<GitNsNamespaceList>(TASK_NAMESPACE_LIST, {});
 
@@ -125,19 +125,19 @@ export const fetchRepos = (): Promise<GitNsRepoList> =>
   postSignedRead<GitNsRepoList>(TASK_REPO_LIST, {});
 
 /** Live rights, recorded and role-derived, across every namespace
- *  (`git-ns/right/list/0.1`; the community-administrator capability). */
+ *  (`git-ns/right/list/0.3`; the community-administrator capability). */
 export const fetchRights = (): Promise<GitNsRightList> =>
   postSignedRead<GitNsRightList>(TASK_RIGHT_LIST, {});
 
 /** Recorded rights whose granter has since left, grouped by granter
- *  (`git-ns/right/issued-by-departed/0.1`; the community-administrator
+ *  (`git-ns/right/issued-by-departed/0.3`; the community-administrator
  *  capability). */
 export const fetchIssuedByDeparted = (): Promise<GitNsDepartedGrants> =>
   postSignedRead<GitNsDepartedGrants>(TASK_RIGHT_ISSUED_BY_DEPARTED, {});
 
 /**
  * Every repository whose forge differs from the projection, in the namespaces
- * the caller administers: `git-ns/view/0.5` with `scope: administrator`,
+ * the caller administers: `git-ns/view/0.6` with `scope: administrator`,
  * whose `repos[].sync` is the drift the bridge last reported. The same answer
  * lists the self-grants single-administrator mode waived, which the people
  * tables flag (`SelfGrantWaivedChip`), so they come with it rather than as a
@@ -161,18 +161,18 @@ export function driftRows(view: GitNsViewAnswer): GitNsDriftRow[] {
 }
 
 /** Bridge jobs in the namespaces the caller administers
- *  (`git-ns/bridge/job/list/0.2` — 0.1 leaves out `closePullRequest` jobs,
+ *  (`git-ns/bridge/job/list/0.4` — 0.1 leaves out `closePullRequest` jobs,
  *  which its job-kind list cannot name). */
 export const fetchJobs = (): Promise<GitNsJobList> =>
   postSignedRead<GitNsJobList>(TASK_BRIDGE_JOB_LIST, {});
 
 /** What is published to the Trust Registry, and how far it is from what the
- *  VTC's records currently call for (`git-ns/projection/show/0.1`; the
+ *  VTC's records currently call for (`git-ns/projection/show/0.3`; the
  *  community-administrator capability). */
 export const fetchProjection = (): Promise<GitNsProjection> =>
   postSignedRead<GitNsProjection>(TASK_PROJECTION_SHOW, {});
 
-/** Members' linked forge accounts (`git-ns/account/list/0.1`; the
+/** Members' linked forge accounts (`git-ns/account/list/0.2`; the
  *  community-administrator capability). `id` is authoritative; `login` is
  *  display only — logins are renamed and re-registered. */
 export const fetchAccounts = (): Promise<GitNsAccountList> =>
@@ -181,7 +181,7 @@ export const fetchAccounts = (): Promise<GitNsAccountList> =>
 /**
  * What happened in one namespace, newest first: rights changes, drift and
  * bridge jobs, read from the git-ns audit rows and the job queue
- * (`git-ns/activity/list/0.1`).
+ * (`git-ns/activity/list/0.3`).
  *
  * Narrowed server-side to namespaces the *caller* administers, so a community
  * administrator who holds no `git.ns.admin` there is refused
@@ -198,7 +198,7 @@ export const fetchActivity = (namespace: string, limit = 100): Promise<GitNsActi
  * `git-ns/view:notAdministrator` for anyone else. Ratified ones included, as
  * their history.
  *
- * `git-ns/view/0.5` with `scope: administrator` and `breakGlass: true`,
+ * `git-ns/view/0.6` with `scope: administrator` and `breakGlass: true`,
  * shaped here into the list the screens render: each record with its
  * namespace and its state, unratified and delayed first, newest first.
  *
@@ -236,7 +236,7 @@ export function breakGlassItems(view: GitNsViewAnswer, now = Date.now()): GitNsB
   return items.sort(
     (a, b) =>
       Number(a.state === "ratified") - Number(b.state === "ratified") ||
-      b.breakGlass.at.localeCompare(a.breakGlass.at),
+      b.breakGlass.recordedAt.localeCompare(a.breakGlass.recordedAt),
   );
 }
 

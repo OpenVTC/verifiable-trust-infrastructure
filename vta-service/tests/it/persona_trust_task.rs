@@ -37,10 +37,8 @@ use vti_common::auth::session::{Session, SessionState, now_epoch, store_session}
 const ATTR_PUT: &str = "https://trusttasks.org/spec/persona/attribute/put/1.1";
 const ATTR_LIST: &str = "https://trusttasks.org/spec/persona/attribute/list/1.0";
 const ATTR_GET: &str = "https://trusttasks.org/spec/persona/attribute/get/1.0";
-const WORLD_PUT: &str = "https://trusttasks.org/spec/persona/world/put/1.1";
 const WORLD_LIST: &str = "https://trusttasks.org/spec/persona/world/list/1.0";
 const FACET_PUT: &str = "https://trusttasks.org/spec/persona/facet/put/1.0";
-const FACET_LIST: &str = "https://trusttasks.org/spec/persona/facet/list/1.0";
 const ATTR_DELETE: &str = "https://trusttasks.org/spec/persona/attribute/delete/1.0";
 const ATTR_PURGE_VERSION: &str = "https://trusttasks.org/spec/persona/attribute/purge-version/1.0";
 const ATTR_PROMOTE: &str = "https://trusttasks.org/spec/persona/attribute/promote/1.1";
@@ -48,7 +46,7 @@ const PROFILE_COMPOSE: &str = "https://trusttasks.org/spec/persona/profile/compo
 const PROFILE_RETIRE: &str = "https://trusttasks.org/spec/persona/profile/retire/1.0";
 const PROFILE_REINSTATE: &str = "https://trusttasks.org/spec/persona/profile/reinstate/1.0";
 const PROFILE_USAGE: &str = "https://trusttasks.org/spec/persona/profile/usage/1.0";
-const PROFILE_TIMELINE: &str = "https://trusttasks.org/spec/persona/profile/timeline/1.0";
+const PROFILE_TIMELINE: &str = "https://trusttasks.org/spec/persona/profile/timeline/1.1";
 const PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/profile/put/1.1";
 const PROFILE_GET: &str = "https://trusttasks.org/spec/persona/profile/get/1.0";
 const PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/profile/list/1.0";
@@ -56,7 +54,7 @@ const PROFILE_DELETE: &str = "https://trusttasks.org/spec/persona/profile/delete
 const BINDING_SET: &str = "https://trusttasks.org/spec/persona/binding/set/1.0";
 const BINDING_GET: &str = "https://trusttasks.org/spec/persona/binding/get/1.0";
 const BINDING_LIST: &str = "https://trusttasks.org/spec/persona/binding/list/1.0";
-const CORRELATION: &str = "https://trusttasks.org/spec/persona/correlation/analyze/1.0";
+const CORRELATION: &str = "https://trusttasks.org/spec/persona/correlation/analyze/1.2";
 const RENDERERS: &str = "https://trusttasks.org/spec/persona/renderers/list/1.0";
 const CLAIM_TYPES: &str = "https://trusttasks.org/spec/persona/claim-types/list/1.0";
 const DISCLOSURE_HISTORY: &str = "https://trusttasks.org/spec/persona/disclosure/history/1.0";
@@ -1819,7 +1817,7 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
     // exactly what `sharedWithProfileCount` was) fails here with the offending
     // name in the message.
     let payload = payload_of(&body).clone();
-    let typed: trust_tasks_rs::specs::persona::correlation::analyze::v1_0::Response =
+    let typed: vti_specs::persona::correlation::analyze::v1_2::Response =
         serde_json::from_value(payload.clone()).unwrap_or_else(|e| {
             panic!("the response does not match the published schema: {e}\n{payload:#}")
         });
@@ -1834,9 +1832,9 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
     // holder reads it. `sharedWith` is keyed on profiles and bindings, so it
     // cannot restate a count of attributes.
     assert!(
-        finding.why.contains("1 other attribute"),
+        finding.reason.contains("1 other attribute"),
         "the finding no longer says how many other attributes hold the value: {}",
-        finding.why.as_str()
+        finding.reason.as_str()
     );
 
     let reached = finding
@@ -1867,8 +1865,7 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
 // 5. `release: stepUp` — a fresh approval per disclosure
 // ---------------------------------------------------------------------------
 
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.2";
-const APPROVE_RESPONSE_0_3: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.3";
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
 
 /// Build the face, bind it, preview it, and return `(scoped token, previewId)`.
 ///
@@ -2082,12 +2079,10 @@ async fn a_step_up_claim_needs_an_approval_bound_to_that_preview() {
 /// preview of the same face is gated exactly as the first was, with no memory
 /// of the approval the holder just gave.
 ///
-/// And it asserts it **against an elevated session**, which is the sharp part.
-/// The step-up ceremony raises the session to `aal2` as it does for every
-/// other caller, so a gate that read `acr` — the obvious way to write one, and
-/// the way every other step-up-gated operation in this service works — would
-/// wave this second disclosure straight through. "Each time" survives only
-/// because the gate reads the preview.
+/// A bound approval (`auth/step-up/approve-response/0.7`) is acknowledged
+/// `recorded` and raises no session, so a gate that read `acr` would refuse the
+/// second disclosure here too; the property this pins is that the approval is
+/// spent with its preview rather than remembered anywhere else.
 #[tokio::test]
 async fn an_approval_does_not_carry_to_the_next_disclosure() {
     let (router, ctx) = build_provisionable_test_app().await;
@@ -2124,7 +2119,7 @@ async fn an_approval_does_not_carry_to_the_next_disclosure() {
     assert!(!refused(status, &body), "approve-response: {status} {body}");
     assert_eq!(
         payload_of(&body)["status"],
-        "elevated",
+        "recorded",
         "the ceremony did not complete, so nothing below tests what it means to: {body}"
     );
 
@@ -2158,14 +2153,17 @@ async fn an_approval_does_not_carry_to_the_next_disclosure() {
         .expect("previewId")
         .to_string();
 
-    let stored = vti_common::auth::session::get_session(&ctx.sessions_ks, &session_id)
-        .await
-        .unwrap()
-        .expect("the session is still there");
-    assert_eq!(
-        stored.acr, "aal2",
-        "the session is not elevated, so the refusal below would prove nothing: {stored:?}"
-    );
+    // Elevate the session as any other step-up would, so the refusal below
+    // proves the gate reads the preview and never `acr`: a gate that read the
+    // session would wave this second disclosure straight through.
+    vti_common::auth::session::update_session_with(&ctx.sessions_ks, &session_id, |session| {
+        session.acr = "aal2".to_string();
+        session.acr_expires_at = Some(u64::MAX);
+        true
+    })
+    .await
+    .unwrap()
+    .expect("the session is still there");
 
     let (status, body) = post_to(
         &router,
@@ -2525,16 +2523,16 @@ async fn the_registry_is_readable_by_scoped_and_unscoped_callers_alike() {
     }
 }
 
-/// A 0.3 bound approval authorises the disclosure and elevates **nothing**.
+/// A bound approval authorises the disclosure and elevates **nothing**.
 ///
-/// This is what `auth/step-up/approve-response/0.3` was added for, and the
-/// close of #1304's one stated compromise. The two halves both matter:
+/// This is what `auth/step-up/approve-response/0.3` added (carried into 0.6),
+/// and the close of #1304's one stated compromise. The two halves both matter:
 ///
 /// - the disclosure goes through, so the approval was really applied;
 /// - the session stays at `aal1`, so an approval taken to release a card
 ///   number buys nothing else in the assurance window.
 #[tokio::test]
-async fn a_bound_approval_asked_in_0_3_records_without_elevating() {
+async fn a_bound_approval_records_without_elevating() {
     let (router, ctx) = build_provisionable_test_app().await;
     let (scoped, preview_id) =
         preview_a_face_holding(&router, &ctx, "rec", "payment.card", "4242424242424242").await;
@@ -2557,7 +2555,7 @@ async fn a_bound_approval_asked_in_0_3_records_without_elevating() {
         &router,
         &scoped,
         &ctx.vta_did,
-        APPROVE_RESPONSE_0_3,
+        APPROVE_RESPONSE,
         json!({
             "subject": holder_did(),
             "sessionId": session_id,
@@ -2569,12 +2567,12 @@ async fn a_bound_approval_asked_in_0_3_records_without_elevating() {
     .await;
     assert!(
         !refused(status, &body),
-        "approve-response/0.3: {status} {body}"
+        "approve-response/0.7: {status} {body}"
     );
     let p = payload_of(&body);
     assert_eq!(
         p["status"], "recorded",
-        "a bound approval asked in 0.3 must be acknowledged `recorded`: {body}"
+        "a bound approval must be acknowledged `recorded`: {body}"
     );
     assert_eq!(p["boundTo"], preview_id, "{body}");
     assert!(
@@ -2607,73 +2605,6 @@ async fn a_bound_approval_asked_in_0_3_records_without_elevating() {
         !refused(status, &body),
         "recorded, but the disclosure it authorised was still refused: {status} {body}"
     );
-}
-
-/// A 0.2 approver still gets the old behaviour, and that is deliberate.
-///
-/// The cutover moves per approver, not per deployment: a response's type is the
-/// request's type plus `#response`, so an approver that minted 0.2 must be
-/// answered in 0.2 — which has no word for "applied, nothing elevated". Until
-/// that approver moves, elevating is the only honest thing left.
-///
-/// Asserted so the fallback is a decision rather than an accident: if this
-/// starts returning `recorded` to a 0.2 request, the response no longer
-/// validates against the version the approver asked in.
-#[tokio::test]
-async fn a_bound_approval_asked_in_0_2_still_elevates() {
-    let (router, ctx) = build_provisionable_test_app().await;
-    let (scoped, preview_id) =
-        preview_a_face_holding(&router, &ctx, "old", "payment.card", "4242424242424242").await;
-
-    let (_, body) = post_to(
-        &router,
-        &scoped,
-        &ctx.vta_did,
-        PRESENT,
-        json!({ "contextId": CTX, "previewId": preview_id }),
-    )
-    .await;
-    let ar = payload_of(&body)["details"]["approveRequest"].clone();
-    let session_id = ar["payload"]["sessionId"]
-        .as_str()
-        .expect("sessionId")
-        .to_string();
-
-    let (status, body) = post_to(
-        &router,
-        &scoped,
-        &ctx.vta_did,
-        APPROVE_RESPONSE,
-        json!({
-            "subject": holder_did(),
-            "sessionId": session_id,
-            "challenge": ar["payload"]["challenge"],
-            "decision": "approved",
-            "grantedAcr": "aal2",
-        }),
-    )
-    .await;
-    assert!(
-        !refused(status, &body),
-        "approve-response/0.2: {status} {body}"
-    );
-    assert_eq!(
-        payload_of(&body)["status"],
-        "elevated",
-        "0.2 has no `recorded`, so answering with one would not validate against the version \
-         the approver asked in: {body}"
-    );
-
-    // "Each time" survives the elevation regardless — a second preview of the
-    // same face is still gated, because the gate reads the preview and never
-    // the session. That is asserted at length in
-    // `an_approval_does_not_carry_to_the_next_disclosure`; this is the version
-    // that still elevates, so it is worth knowing the property holds here too.
-    let stored = vti_common::auth::session::get_session(&ctx.sessions_ks, &session_id)
-        .await
-        .unwrap()
-        .expect("session still there");
-    assert_eq!(stored.acr, "aal2", "{stored:?}");
 }
 
 /// Two context-local faces typing the same value are one finding, and
@@ -2754,9 +2685,9 @@ async fn two_local_faces_sharing_a_value_are_a_finding_and_profile_id_narrows() 
                 "correlation/analyze: {status} {body}"
             );
             let payload = payload_of(&body).clone();
-            serde_json::from_value::<
-                trust_tasks_rs::specs::persona::correlation::analyze::v1_0::Response,
-            >(payload.clone())
+            serde_json::from_value::<vti_specs::persona::correlation::analyze::v1_2::Response>(
+                payload.clone(),
+            )
             .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"))
         }
     };
@@ -2942,9 +2873,9 @@ async fn a_name_change_is_answerable_end_to_end() {
                 "disclosure/history: {status} {body}"
             );
             let payload = payload_of(&body).clone();
-            serde_json::from_value::<
-                trust_tasks_rs::specs::persona::disclosure::history::v1_0::Response,
-            >(payload.clone())
+            serde_json::from_value::<vti_specs::persona::disclosure::history::v1_0::Response>(
+                payload.clone(),
+            )
             .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
             payload
         }
@@ -2967,10 +2898,8 @@ async fn a_name_change_is_answerable_end_to_end() {
     .await;
     assert!(!refused(status, &body), "attribute/put: {status} {body}");
     let put = payload_of(&body).clone();
-    serde_json::from_value::<trust_tasks_rs::specs::persona::attribute::put::v1_1::Response>(
-        put.clone(),
-    )
-    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{put:#}"));
+    serde_json::from_value::<vti_specs::persona::attribute::put::v1_1::Response>(put.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{put:#}"));
     assert_eq!(
         put["refreshed"],
         json!([{ "profileId": live, "contextId": CTX, "personaDid": persona }]),
@@ -3030,10 +2959,8 @@ async fn a_face_names_itself_by_slot_and_only_once() {
     .await;
     assert!(!refused(status, &body), "profile/get: {status} {body}");
     let payload = payload_of(&body).clone();
-    serde_json::from_value::<trust_tasks_rs::specs::persona::profile::get::v1_0::Response>(
-        payload.clone(),
-    )
-    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
+    serde_json::from_value::<vti_specs::persona::profile::get::v1_0::Response>(payload.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
     let named: Vec<&Value> = payload["resolved"]
         .as_array()
         .unwrap()
@@ -3201,10 +3128,8 @@ async fn a_pinned_name_survives_a_rename_until_the_holder_purges_it() {
     let (status, body) = post(&router, &holder, ATTR_LIST, json!({})).await;
     assert!(!refused(status, &body), "attribute/list: {status} {body}");
     let payload = payload_of(&body).clone();
-    serde_json::from_value::<trust_tasks_rs::specs::persona::attribute::list::v1_0::Response>(
-        payload.clone(),
-    )
-    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
+    serde_json::from_value::<vti_specs::persona::attribute::list::v1_0::Response>(payload.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
     let row = payload["attributes"]
         .as_array()
         .unwrap()
@@ -3241,9 +3166,9 @@ async fn a_pinned_name_survives_a_rename_until_the_holder_purges_it() {
     .await;
     assert!(!refused(status, &body), "purge-version: {status} {body}");
     let out = payload_of(&body).clone();
-    serde_json::from_value::<
-        trust_tasks_rs::specs::persona::attribute::purge_version::v1_0::Response,
-    >(out.clone())
+    serde_json::from_value::<vti_specs::persona::attribute::purge_version::v1_0::Response>(
+        out.clone(),
+    )
     .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
     assert_eq!(out["purged"], json!([v1]));
     assert_eq!(
@@ -3265,7 +3190,7 @@ async fn a_pinned_name_survives_a_rename_until_the_holder_purges_it() {
 /// `persona-context-first.md` §2.1, §5.3.
 #[tokio::test]
 async fn a_face_composed_in_a_context_stays_there_until_promoted() {
-    use trust_tasks_rs::specs::persona::{attribute::promote, profile::compose};
+    use vti_specs::persona::{attribute::promote, profile::compose};
 
     let (router, ctx) = build_test_app().await;
     let holder = authed_holder(&ctx, "compose", &[]).await;
@@ -3473,7 +3398,7 @@ async fn a_face_composed_in_a_context_stays_there_until_promoted() {
 /// far it has spoken. Design note `persona-context-first.md` §9.4, §9.5.
 #[tokio::test]
 async fn a_face_is_retired_kept_and_reinstated_and_a_binding_can_end_on_its_own() {
-    use trust_tasks_rs::specs::persona::profile::{get, retire};
+    use vti_specs::persona::profile::{get, retire};
 
     let (router, ctx) = build_test_app().await;
     let holder = authed_holder(&ctx, "lifecycle", &[]).await;
@@ -3634,7 +3559,7 @@ async fn a_face_is_retired_kept_and_reinstated_and_a_binding_can_end_on_its_own(
 /// Design note `persona-context-first.md` §5.4, §9.6.
 #[tokio::test]
 async fn a_face_goes_only_where_its_reach_allows_and_its_timeline_says_what_it_did() {
-    use trust_tasks_rs::specs::persona::profile::{timeline, usage};
+    use vti_specs::persona::profile::{timeline, usage};
 
     let (router, ctx) = build_test_app().await;
     let holder = authed_holder(&ctx, "reach", &[]).await;
@@ -3735,7 +3660,7 @@ async fn a_face_goes_only_where_its_reach_allows_and_its_timeline_says_what_it_d
     .await;
     assert!(!refused(status, &body), "timeline: {status} {body}");
     let out = payload_of(&body).clone();
-    serde_json::from_value::<timeline::v1_0::Response>(out.clone())
+    serde_json::from_value::<timeline::v1_1::Response>(out.clone())
         .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
     let kinds: Vec<&str> = out["events"]
         .as_array()
@@ -4282,20 +4207,14 @@ async fn one_attribute_is_read_by_name_and_says_what_it_withheld() {
     );
 }
 
-/// A world is the same record whichever spelling asks for it, and each response
-/// answers in the words of the task that was sent.
-///
-/// `persona/facet/*` is retired in favour of `persona/world/*` and kept routable
-/// for a release: a document already issued against the old specification still
-/// validates, and refusing it would break a client for a rename that costs it
-/// nothing. This is what the alias window has to hold — one store, two
-/// spellings, no translation the caller can see.
+/// `persona/facet/*` is retired in favour of `persona/world/*`, and its alias
+/// window has closed: the old spelling is refused rather than routed, so a
+/// client still sending it learns to move instead of being answered in words
+/// the registry no longer uses.
 #[tokio::test]
-async fn a_world_answers_to_its_retired_name_in_that_names_words() {
+async fn the_retired_world_spelling_is_refused() {
     let (router, ctx) = build_test_app().await;
     let holder = authed_holder(&ctx, "alias", &[]).await;
-
-    // Made under the retired spelling, which answers with `facetId`.
     let (status, body) = post(
         &router,
         &holder,
@@ -4303,45 +4222,16 @@ async fn a_world_answers_to_its_retired_name_in_that_names_words() {
         json!({ "name": "Work", "colour": "teal" }),
     )
     .await;
-    assert!(!refused(status, &body), "facet/put: {status} {body}");
-    let made = payload_of(&body);
     assert!(
-        made.get("worldId").is_none(),
-        "the retired spelling was answered in the new words: {made}"
+        refused(status, &body),
+        "facet/put was served: {status} {body}"
     );
-    let id = made["facetId"].as_str().expect("facetId").to_string();
-
-    // The same record, read under the new spelling, in the new words.
-    let (status, body) = post(&router, &holder, WORLD_LIST, json!({})).await;
-    assert!(!refused(status, &body), "world/list: {status} {body}");
-    let worlds = payload_of(&body)["worlds"].as_array().unwrap().clone();
-    assert_eq!(worlds.len(), 1, "{body}");
-    assert_eq!(worlds[0]["worldId"], id.as_str());
-    assert_eq!(worlds[0]["name"], "Work");
-
-    // And under the retired one, in its words.
-    let (status, body) = post(&router, &holder, FACET_LIST, json!({})).await;
-    assert!(!refused(status, &body), "facet/list: {status} {body}");
-    let facets = payload_of(&body)["facets"].as_array().unwrap().clone();
-    assert_eq!(facets.len(), 1, "{body}");
-    assert_eq!(facets[0]["facetId"], id.as_str());
-    assert!(
-        facets[0].get("worldId").is_none(),
-        "a retired listing carried the new member: {body}"
-    );
-
-    // A world put replaces the same record rather than making a second.
-    let (status, body) = post(
-        &router,
-        &holder,
-        WORLD_PUT,
-        json!({ "worldId": id, "name": "Work", "colour": "moss" }),
-    )
-    .await;
-    assert!(!refused(status, &body), "world/put: {status} {body}");
     let (_, body) = post(&router, &holder, WORLD_LIST, json!({})).await;
-    assert_eq!(payload_of(&body)["worlds"].as_array().unwrap().len(), 1);
-    assert_eq!(payload_of(&body)["worlds"][0]["colour"], "moss");
+    assert_eq!(
+        payload_of(&body)["worlds"].as_array().map(Vec::len),
+        Some(0),
+        "the refused write made a world: {body}"
+    );
 }
 
 // ─── Contacts 1.1: the holder's annotations, and their lists ─────────────

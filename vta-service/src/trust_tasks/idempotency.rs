@@ -49,13 +49,14 @@ use super::helpers::{TrustTaskOutcome, reject_with};
 /// The document member carrying the key.
 pub(crate) const IDEMPOTENCY_KEY_MEMBER: &str = "idempotencyKey";
 
-/// How long an in-flight claim is honoured before a retry may reclaim it.
+/// How long an in-flight claim is reported as running (`unavailable`, ask
+/// again) before it is reported as abandoned (outcome unknown).
 ///
-/// Only reached when a process died between claiming and completing — a live
-/// request is bounded by its own handler timeout, and the longest of those is
-/// 60s. Too short and a slow-but-live operation gets double-dispatched, which
-/// is the failure this module exists to prevent; too long and a genuine crash
-/// blocks the retry that would have recovered from it.
+/// Past this the claiming attempt cannot still be running — a live request is
+/// bounded by its own handler timeout, and the longest of those is 60s — so it
+/// died. The key is still never reclaimed: the attempt may have committed its
+/// effect before dying, and a re-run would be the second effect VTI-OPS-061
+/// forbids (#2402). The grace only decides which answer the retry gets.
 const IN_FLIGHT_GRACE_MINS: i64 = 10;
 
 /// Largest response body kept for replay, in bytes.
@@ -70,7 +71,9 @@ const MAX_CACHED_BODY: usize = 64 * 1024;
 /// Suggested wait before retrying a request whose first attempt is running.
 const IN_FLIGHT_RETRY_AFTER_SECS: i64 = 2;
 
-/// The class every keyed Trust Task is recorded under.
+/// The class every keyed Trust Task is recorded under: the floor of its
+/// retention. The record is kept longer when a document under the key is
+/// acceptable for longer (VTI-OPS-066, see [`claim`]).
 ///
 /// Always `NonDestructive`, including for tasks that destroy something. The
 /// `Destructive` class exists for HTTP routes whose idempotency key *is* the
@@ -124,17 +127,27 @@ pub(crate) enum Claim {
     Proceed { key: String, safety: RetrySafety },
     /// Answer with this instead of dispatching.
     Answer(Box<TrustTaskOutcome>),
-    /// Not keyed, not a task worth keying, or the store is unavailable.
-    /// Dispatch normally and record nothing.
+    /// Not keyed, or not a task worth keying. Dispatch normally and record
+    /// nothing.
     Skip,
 }
 
 /// Claim `(actor, key)` for this request, or report what already happened to it.
 ///
-/// A store error never blocks the request. Idempotency is an improvement on the
-/// status quo, not a precondition for it — failing closed here would turn a
-/// storage blip into an outage of every keyed operation, in order to prevent a
-/// duplicate that only matters when a reply is *also* lost.
+/// A store error answers `unavailable` rather than dispatching unguarded. A
+/// keyed request is one whose repeat matters, and a node MUST perform it at
+/// most once per key (VTI-OPS-061); without the claim nothing stops a retry
+/// arriving after the store recovers from running it a second time. The
+/// refusal is transient, so `VtaClient::idempotent` retries it under the same
+/// key.
+///
+/// The record is kept until this document's acceptance end plus the skew, or
+/// the class TTL if that is later, and a repeat under the key extends it to
+/// the repeat's own acceptance end (**VTI-OPS-066**). The attempts at one
+/// operation are separate documents, and one stating an `expiresAt` is
+/// acceptable for up to thirty days (VTI-OPS-028): a record kept only for the
+/// 24-hour TTL would let the attempt arriving on the second day perform the
+/// operation again.
 pub(crate) async fn claim(
     ks: &vti_common::store::KeyspaceHandle,
     actor: &str,
@@ -166,14 +179,29 @@ pub(crate) async fn claim(
     let principal = Principal::Did(actor.to_string()).hash();
     let grace = chrono::Duration::minutes(IN_FLIGHT_GRACE_MINS);
 
+    let retain_until = super::retain_until(doc, chrono::Utc::now());
     let outcome = match store
-        .claim(&principal, &key, payload_hash(doc), CLASS, grace)
+        .claim_retained(
+            &principal,
+            &key,
+            payload_hash(doc),
+            CLASS,
+            grace,
+            retain_until,
+        )
         .await
     {
         Ok(o) => o,
         Err(e) => {
-            tracing::warn!(error = %e, actor, key, "idempotency claim failed; dispatching unguarded");
-            return Claim::Skip;
+            tracing::warn!(error = %e, actor, key, %type_uri, "idempotency claim failed; refusing the keyed request rather than running it unguarded");
+            let retry_after =
+                chrono::Utc::now() + chrono::Duration::seconds(IN_FLIGHT_RETRY_AFTER_SECS);
+            return Claim::Answer(Box::new(reject_with(
+                doc,
+                RejectReason::Unavailable {
+                    retry_after: Some(retry_after),
+                },
+            )));
         }
     };
 
@@ -194,6 +222,39 @@ pub(crate) async fn claim(
                 },
             )))
         }
+        ClaimOutcome::Abandoned { claimed_at } => {
+            // The attempt that claimed this key died without recording an
+            // outcome, and may or may not have taken effect. Running it again
+            // could be the duplicate the key exists to prevent, so the answer
+            // is "unknown" — terminal, not transient: the same key can never
+            // be answered differently while the record lives.
+            tracing::warn!(
+                actor,
+                key,
+                %type_uri,
+                claimed_at = %claimed_at.to_rfc3339(),
+                "keyed request's earlier attempt was abandoned with its outcome unknown; not re-running it"
+            );
+            Claim::Answer(Box::new(reject_with(
+                doc,
+                RejectReason::TaskFailed {
+                    reason: "outcome unknown: an earlier attempt under this idempotency key \
+                             did not finish"
+                        .to_string(),
+                    details: Some(serde_json::json!({
+                        "idempotencyKey": key,
+                        "task": type_uri,
+                        "claimedAt": claimed_at.to_rfc3339(),
+                        "reason": "an earlier attempt under this key was interrupted before \
+                                   its outcome was recorded, so whether it took effect is \
+                                   unknown, and it is not run again because that could \
+                                   duplicate it. Check whether the effect exists with the \
+                                   corresponding read operation; if it does not and is still \
+                                   wanted, send the request under a new key",
+                    })),
+                },
+            )))
+        }
         ClaimOutcome::Conflict => Claim::Answer(Box::new(reject_with(
             doc,
             RejectReason::TaskFailed {
@@ -211,6 +272,14 @@ pub(crate) async fn claim(
         ClaimOutcome::Completed(entry) => {
             Claim::Answer(Box::new(replay(doc, &entry, &key, &type_uri)))
         }
+        // `ClaimOutcome` is non-exhaustive. An outcome this build does not
+        // know is not a licence to run the task: refuse it.
+        _ => Claim::Answer(Box::new(reject_with(
+            doc,
+            RejectReason::InternalError {
+                reason: "unrecognised idempotency claim outcome".to_string(),
+            },
+        ))),
     }
 }
 
@@ -296,7 +365,7 @@ pub(crate) async fn record_outcome(
     });
 
     if let Err(e) = store.complete(&principal, key, response).await {
-        tracing::warn!(error = %e, actor, key, "failed to record an idempotent outcome; a retry may re-run this task");
+        tracing::warn!(error = %e, actor, key, "failed to record an idempotent outcome; a retry under this key will be answered outcome-unknown");
     }
 }
 
@@ -367,6 +436,76 @@ mod tests {
                 Claim::Answer(_)
             ),
             "a new attempt under the same key is answered, not performed again"
+        );
+    }
+
+    /// **VTI-OPS-066.** The record of a key outlasts the latest acceptance end
+    /// of any document accepted under it. The first attempt states a 20-day
+    /// expiry, so its record lasts 20 days, not the 24-hour TTL; a new attempt
+    /// stating 25 days extends it to that.
+    #[tokio::test]
+    async fn vti_ops_066_the_record_lasts_until_the_latest_acceptance_end() {
+        use chrono::{SubsecRound, TimeDelta, Utc};
+        use vti_common::config::StoreConfig;
+        use vti_common::idempotency::{IdempotencyStore, Principal};
+        use vti_common::store::Store;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::IDEMPOTENCY).unwrap();
+        let actor = "did:example:caller";
+        let key = "urn:uuid:long-lived";
+        let now = Utc::now().trunc_subsecs(0);
+        let attempt = |id: &str, days: i64| {
+            let mut d = doc_with(
+                trust_tasks::TASK_KEYS_CREATE_0_1,
+                serde_json::json!({ "keyType": "ed25519" }),
+                Some(key),
+            );
+            d.id = id.into();
+            d.issued_at = Some(now);
+            d.expires_at = Some(now + TimeDelta::days(days));
+            d
+        };
+        let record = || async {
+            IdempotencyStore::new(ks.clone())
+                .get(&Principal::Did(actor.to_string()).hash(), key)
+                .await
+                .unwrap()
+                .expect("the key has a record")
+        };
+        let skew = trust_tasks_rs::DEFAULT_SKEW;
+
+        let Claim::Proceed { key: k, safety } =
+            claim(&ks, actor, &attempt("urn:uuid:a1", 20)).await
+        else {
+            panic!("the first attempt runs");
+        };
+        assert_eq!(record().await.expires_at, now + TimeDelta::days(20) + skew);
+        record_outcome(
+            &ks,
+            actor,
+            &k,
+            safety,
+            &TrustTaskOutcome {
+                status: axum::http::StatusCode::OK,
+                body: b"{}".to_vec(),
+                restart: false,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            claim(&ks, actor, &attempt("urn:uuid:a2", 25)).await,
+            Claim::Answer(_)
+        ));
+        assert_eq!(
+            record().await.expires_at,
+            now + TimeDelta::days(25) + skew,
+            "the later attempt's acceptance end extends the record"
         );
     }
 
@@ -456,7 +595,7 @@ mod tests {
             None,
         );
         let b = doc_with(
-            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
             serde_json::json!({}),
             None,
         );
@@ -468,7 +607,7 @@ mod tests {
     #[test]
     fn only_keyed_tasks_are_worth_a_record() {
         assert!(
-            retry_safety(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0)
+            retry_safety(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2)
                 .expect("classified")
                 .needs_key()
         );

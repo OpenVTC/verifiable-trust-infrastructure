@@ -15,15 +15,12 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
-import { csrfToken, postSignedRead, signedDocument } from "./api";
-import { TASK_DISCOVERY } from "./hidden-vetting";
+import { csrfToken, signedDocument } from "./api";
 import {
   ALL_TOPICS,
-  LIVE_V0_1,
+  LIVE,
   LiveEvents,
-  liveVersionFor,
   type LiveStatus,
-  type LiveVersion,
   type SignedSubscribe,
   type Topic,
 } from "./live-events";
@@ -127,19 +124,6 @@ export function useLivePollMs(topic?: Topic): number {
   return live ? LIVE_POLL_MS : OFFLINE_POLL_MS;
 }
 
-/** The version to subscribe at: the newest discovery lists, else 0.1 — and
- * 0.1 when discovery cannot be read. */
-export async function chooseLiveVersion(): Promise<LiveVersion> {
-  try {
-    const res = await postSignedRead<{ supportedTypes?: unknown[] }>(TASK_DISCOVERY, {
-      patterns: ["vtc/admin/events/*"],
-    });
-    return liveVersionFor(res.supportedTypes ?? []);
-  } catch {
-    return LIVE_V0_1;
-  }
-}
-
 /**
  * Hold the session's one subscription while `enabled` (signed in, with a
  * key that signs). Every topic the console renders goes in it; the community
@@ -149,31 +133,22 @@ export function useLiveEvents(enabled: boolean): void {
   const qc = useQueryClient();
   useEffect(() => {
     if (!enabled) return;
-    let client: LiveEvents | null = null;
-    let cancelled = false;
-    void chooseLiveVersion().then((version) => {
-      if (cancelled) return;
-      const live: LiveEvents = new LiveEvents(
-        ALL_TOPICS,
-        {
-          onHint: (topic) => invalidateTopics(qc, [topic]),
-          onResync: (topics) => invalidateTopics(qc, topics),
-          onStatus: (s) => setLiveStatus(s, live.effectiveTopics),
-        },
-        {
-          sign: async (payload) =>
-            (await signedDocument(version.subscribe, payload)) as unknown as SignedSubscribe,
-          fetch: (input, init) => fetch(input, init),
-          csrf: csrfToken,
-        },
-        version,
-      );
-      client = live;
-      live.start();
-    });
-    return () => {
-      cancelled = true;
-      client?.stop();
-    };
+    const live: LiveEvents = new LiveEvents(
+      ALL_TOPICS,
+      {
+        onHint: (topic) => invalidateTopics(qc, [topic]),
+        onResync: (topics) => invalidateTopics(qc, topics),
+        onStatus: (s) => setLiveStatus(s, live.effectiveTopics),
+      },
+      {
+        sign: async (payload) =>
+          (await signedDocument(LIVE.subscribe, payload)) as unknown as SignedSubscribe,
+        fetch: (input, init) => fetch(input, init),
+        csrf: csrfToken,
+      },
+      LIVE,
+    );
+    live.start();
+    return () => live.stop();
   }, [enabled, qc]);
 }

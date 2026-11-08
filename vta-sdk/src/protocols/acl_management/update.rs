@@ -18,7 +18,7 @@ use serde_json::Value;
 /// components rather than flattening into five loosely-related members.
 ///
 /// Carries no `role`: canonical gives the role transition its own
-/// task (`acl/change-role/0.1`) so it can be compare-and-swapped
+/// task (`acl/change-role/0.2`) so it can be compare-and-swapped
 /// against the subject's current role, which is what stops two admins
 /// on a stale read from silently overwriting one another on the one
 /// attribute where that is a privilege change.

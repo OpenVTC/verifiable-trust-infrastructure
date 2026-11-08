@@ -9,10 +9,8 @@
 //! verify_vp_token` exactly as the (now-removed) REST route did.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::auth::recognise::{
-    challenge::v0_2 as recognise_challenge, v0_3 as recognise,
-};
 use trust_tasks_rs::{Payload, TrustTask};
+use vti_specs::vtc::auth::recognise::{challenge::v0_2 as recognise_challenge, v0_3 as recognise};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, success_response, task_error_to_reject,

@@ -272,7 +272,7 @@ pub struct RemovedMembersResponse {
 
 /// `vtc/members/show:notFound` — no member with that DID in this community.
 pub const SHOW_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::members::show::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::members::show::v0_1::error_codes::NOT_FOUND.code;
 
 /// GET /members/{did} — single member. Auth: Admin.
 pub(crate) async fn show_member(state: &AppState, did: &str) -> Result<MemberEnvelope, TaskError> {

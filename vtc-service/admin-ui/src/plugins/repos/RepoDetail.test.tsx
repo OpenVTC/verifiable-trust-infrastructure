@@ -143,7 +143,7 @@ describe("Repo detail", () => {
     );
     const doc = JSON.parse(within(sign).getByLabelText("Document").textContent!);
     expect(doc).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/right/revoke/0.3",
+      type: "https://trusttasks.org/spec/git-ns/right/revoke/0.4",
       payload: { subject: HANA, right: "git.repo.maintain", resource: WIDGETS.resource },
     });
     fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
@@ -285,7 +285,7 @@ describe("Repo detail", () => {
       `cnm git drift resolve ${DOCS.resource} adopt --type=roleAdded --account-id=1003 --account-login=hsato --observed=maintain --subject=${HANA} --reason='Hana'"'"'s role'`,
     );
     expect(JSON.parse(within(sign).getByLabelText("Document").textContent!)).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
+      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.4",
       payload: {
         resource: DOCS.resource,
         action: "adopt",
@@ -446,7 +446,7 @@ describe("Repo detail", () => {
     );
     const doc = JSON.parse(within(sign).getByLabelText("Document").textContent!);
     expect(doc).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
+      type: "https://trusttasks.org/spec/git-ns/drift/resolve/0.4",
       payload: {
         resource: DOCS.resource,
         action: "revert",
@@ -565,7 +565,7 @@ describe("Repo detail", () => {
     fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
     await waitFor(() =>
       expect(postSignedTrustTask).toHaveBeenCalledWith(
-        "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
+        "https://trusttasks.org/spec/git-ns/repo/archive/0.3",
         { resource: WIDGETS.resource },
       ),
     );
@@ -583,7 +583,7 @@ describe("Repo detail", () => {
               { step: "workflow", outcome: "unchanged" },
               { step: "ruleset", outcome: "failed", detail: "422 from the forge" },
             ],
-            lastCheck: { conclusion: "success", at: "2026-09-20T00:00:00Z", sha: "abcdef0123456789" } as never,
+            lastCheck: { conclusion: "success", concludedAt: "2026-09-20T00:00:00Z", sha: "abcdef0123456789" } as never,
           },
         ],
       }),

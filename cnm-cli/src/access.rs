@@ -10,8 +10,8 @@
 //! whose ceiling `--capability` may narrow, optionally to a resource
 //! (`git.repo.manage@git-ns:github.com/acme`). `list`, `show`, `grant` and
 //! `update` speak `acl/*/0.2`; `change-role` moves the **community** role
-//! (`member`, `moderator`, `issuer`, `admin`) at 0.1, and `revoke` removes an
-//! entry.
+//! (`member`, `moderator`, `issuer`, `admin`) with `vtc/members/role/set/0.1`,
+//! and `revoke` removes an entry.
 //!
 //! Every verb is a canonical `acl/*` Trust Task, signed with this profile's own
 //! key. They reach the VTC over TSP when it advertises it, else DIDComm, else
@@ -25,7 +25,7 @@ use clap::Subcommand;
 use serde_json::Value;
 use vta_cli_common::render::{DIM, GREEN, RESET, YELLOW, bin_name, is_json_output, print_json};
 use vta_sdk::session::TransportChoice;
-use vtc_client::acl::{AclGrantV02, AclListFilterV02, AclUpdateV02};
+use vtc_client::acl::{AclGrant, AclListFilter, AclUpdate};
 use vtc_client::{HolderKey, VtcError};
 
 use crate::auth;
@@ -35,6 +35,42 @@ type CliResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Subcommand)]
 pub enum AccessCommands {
+    /// Authorize another key — your AI assistant's `vtc-mcp` bridge, say — to
+    /// act with your administrative standing, as a signing-key delegation of
+    /// this profile's identity (`auth/signing-key/authorize/0.1`).
+    ///
+    /// Prints the signed authorization, which the key's holder sends inside
+    /// its own `auth/signing-key/enroll/0.2` (`vtc_enrol_signing_key` in
+    /// vtc-mcp). It creates no access-control entry and confers nothing of its
+    /// own: the key acts with this identity's standing, read at every call,
+    /// never approves anything or answers a step-up, expires within 30 days,
+    /// and is revoked on its own. Single-use, and only the holder of that key
+    /// can use it. Makes no network call.
+    ///
+    ///   cnm access authorize-key did:key:z6Mk… --label "vtc-mcp laptop"
+    AuthorizeKey {
+        /// The `did:key` of the key to authorize (the bridge prints its own:
+        /// `vtc_enrol_signing_key` with no authorization, or `vtc_status`).
+        signing_key_did: String,
+        /// A label for the key, shown in the console's list of your keys.
+        #[arg(long)]
+        label: Option<String>,
+        /// Ask for the delegation to lapse after this long: N[s|m|h|d|w]. The
+        /// community caps it at 30 days, and uses its default when omitted.
+        #[arg(long)]
+        expires: Option<String>,
+        /// Revoke this active key of yours in the same step (for an identity at
+        /// the community's cap on active keys).
+        #[arg(long)]
+        replaces: Option<String>,
+        /// How long the authorization itself may wait before the key's holder
+        /// sends it: N[s|m|h|d|w], default 1h.
+        #[arg(long, default_value = "1h")]
+        valid_for: String,
+        /// Write it to this file (0600) instead of stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// List the entries you may see.
     List {
         /// Only entries with this administrative role (`member` for none).
@@ -127,8 +163,8 @@ pub enum AccessCommands {
         reason: Option<String>,
     },
     /// Move a subject's community role (member, moderator, issuer, admin) —
-    /// with the administrative role it implies; `--from` must be its current
-    /// role.
+    /// with the administrative role it implies — with
+    /// `vtc/members/role/set/0.1`; `--from` must be its current role.
     ChangeRole {
         /// The subject DID.
         subject: String,
@@ -222,10 +258,136 @@ pub async fn run(
     target: &VtcTarget,
     transport: TransportChoice,
 ) -> CliResult {
+    // Signing an authorization needs this profile's key and the community's
+    // DID, and no connection.
+    if let AccessCommands::AuthorizeKey {
+        signing_key_did,
+        label,
+        expires,
+        replaces,
+        valid_for,
+        out,
+    } = command
+    {
+        let key = signing_key(keyring_key)?;
+        let doc = authorize_key_document(
+            &key,
+            &target.did,
+            &signing_key_did,
+            label.as_deref(),
+            expires.as_deref(),
+            replaces.as_deref(),
+            &valid_for,
+            chrono::Utc::now(),
+        )
+        .await?;
+        let text = serde_json::to_string_pretty(&doc)?;
+        match out {
+            Some(path) => {
+                write_private(&path, &text)?;
+                eprintln!(
+                    "Authorization for {signing_key_did} to act as {} written to {}.\nHand it to \
+                     the key's holder (vtc-mcp: vtc_enrol_signing_key with this file). It is \
+                     single-use and only that key can use it.",
+                    key.holder_did(),
+                    path.display()
+                );
+            }
+            None => println!("{text}"),
+        }
+        return Ok(());
+    }
     let vtc = vtc_target::connect_for_tasks(keyring_key, target, transport).await?;
     let outcome = run_command(command, &vtc, keyring_key).await;
     vtc.client.shutdown().await;
     outcome
+}
+
+/// `auth/signing-key/authorize/0.1`'s Type URI.
+const AUTHORIZE_TYPE: &str = "https://trusttasks.org/spec/auth/signing-key/authorize/0.1";
+
+/// A duration flag: N followed by s, m, h, d or w.
+fn parse_duration(s: &str) -> CliResult<chrono::TimeDelta> {
+    let s = s.trim();
+    let (n, unit) = s.split_at(s.len().saturating_sub(1));
+    let n: i64 = n
+        .parse()
+        .map_err(|_| format!("`{s}` is not a duration: N followed by s, m, h, d or w"))?;
+    Ok(match unit {
+        "s" => chrono::TimeDelta::seconds(n),
+        "m" => chrono::TimeDelta::minutes(n),
+        "h" => chrono::TimeDelta::hours(n),
+        "d" => chrono::TimeDelta::days(n),
+        "w" => chrono::TimeDelta::weeks(n),
+        _ => return Err(format!("`{s}` is not a duration: N followed by s, m, h, d or w").into()),
+    })
+}
+
+/// The identity's signed terms of one signing-key enrolment: exactly the
+/// payload the key's `enroll/0.2` will carry beside it. The document states
+/// its own `expiresAt` so it is still accepted after the time it takes to
+/// reach the key's holder (the community honours a stated expiry up to its
+/// 30-day horizon, in place of its ten-minute maximum age).
+#[allow(clippy::too_many_arguments)]
+async fn authorize_key_document(
+    key: &HolderKey,
+    vtc_did: &str,
+    signing_key_did: &str,
+    label: Option<&str>,
+    expires: Option<&str>,
+    replaces: Option<&str>,
+    valid_for: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> CliResult<serde_json::Value> {
+    if !signing_key_did.starts_with("did:key:") {
+        return Err(format!(
+            "`{signing_key_did}` is not a did:key; a signing key is named by its own did:key"
+        )
+        .into());
+    }
+    if signing_key_did == key.holder_did() {
+        return Err("a key cannot be authorized to act as itself".into());
+    }
+    let mut terms = serde_json::json!({
+        "identityDid": key.holder_did(),
+        "signingKeyDid": signing_key_did,
+        "scope": "console",
+    });
+    if let Some(label) = label {
+        terms["deviceLabel"] = serde_json::json!(label);
+    }
+    if let Some(expires) = expires {
+        let at = now + parse_duration(expires)?;
+        terms["expiresAt"] =
+            serde_json::json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    }
+    if let Some(replaces) = replaces {
+        terms["replaces"] = serde_json::json!(replaces);
+    }
+    let mut doc =
+        vta_sdk::trust_task_sign::build_unsigned(AUTHORIZE_TYPE, terms, key.holder_did(), vtc_did)
+            .map_err(|e| format!("could not build the authorization: {e}"))?;
+    doc.issued_at = Some(now);
+    doc.expires_at = Some(now + parse_duration(valid_for)?);
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, key)
+        .await
+        .map_err(|e| format!("could not sign the authorization: {e}"))?;
+    Ok(serde_json::to_value(&doc)?)
+}
+
+/// Write `text` to `path`, owner-only.
+fn write_private(path: &std::path::Path, text: &str) -> CliResult {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(text.as_bytes())?;
+    Ok(())
 }
 
 /// This profile's key, as the signer of `acl/*` documents.
@@ -244,6 +406,8 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
     let key = signing_key(keyring_key)?;
     let fail = |e: VtcError| access_error(vtc, e);
     match command {
+        // Handled in `run`, before any connection.
+        AccessCommands::AuthorizeKey { .. } => {}
         AccessCommands::List {
             admin_role,
             capability,
@@ -255,7 +419,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 (Some(_), None) => Some("actingIn".to_string()),
                 (_, d) => d,
             };
-            let filter = AclListFilterV02 {
+            let filter = AclListFilter {
                 role: admin_role,
                 capability,
                 resource,
@@ -263,11 +427,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 subject_prefix,
                 ..Default::default()
             };
-            let entries = vtc
-                .client
-                .acl_list_all_v0_2(&filter, &key)
-                .await
-                .map_err(fail)?;
+            let entries = vtc.client.acl_list_all(&filter, &key).await.map_err(fail)?;
             let values: Vec<Value> = entries
                 .iter()
                 .map(serde_json::to_value)
@@ -283,11 +443,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
             }
         }
         AccessCommands::Show { subject } => {
-            let shown = vtc
-                .client
-                .acl_show_v0_2(&subject, &key)
-                .await
-                .map_err(fail)?;
+            let shown = vtc.client.acl_show(&subject, &key).await.map_err(fail)?;
             let shown = serde_json::to_value(&shown)?;
             if shown["entry"].is_null() && !is_json_output() {
                 println!("{DIM}{subject} holds no entry{RESET}");
@@ -306,7 +462,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
             expires,
             reason,
         } => {
-            let grant = AclGrantV02 {
+            let grant = AclGrant {
                 subject,
                 admin_role,
                 // No --capability: the role's full ceiling. Approve-only: none.
@@ -322,11 +478,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 expires_at: expires.as_deref().map(expiry_from_now).transpose()?,
                 reason,
             };
-            let granted = vtc
-                .client
-                .acl_grant_v0_2(&grant, &key)
-                .await
-                .map_err(fail)?;
+            let granted = vtc.client.acl_grant(&grant, &key).await.map_err(fail)?;
             report(&serde_json::to_value(&granted)?, "granted")?;
         }
         AccessCommands::Update {
@@ -340,7 +492,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
             permanent,
             reason,
         } => {
-            let update = AclUpdateV02 {
+            let update = AclUpdate {
                 subject,
                 label: if clear_label {
                     Some(None)
@@ -364,11 +516,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 },
                 reason,
             };
-            let updated = vtc
-                .client
-                .acl_update_v0_2(&update, &key)
-                .await
-                .map_err(fail)?;
+            let updated = vtc.client.acl_update(&update, &key).await.map_err(fail)?;
             report(&serde_json::to_value(&updated)?, "updated")?;
         }
         AccessCommands::ChangeRole {
@@ -379,7 +527,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
         } => {
             let changed = vtc
                 .client
-                .acl_change_role(&subject, &from_role, &to_role, reason.as_deref(), &key)
+                .members_role_set(&subject, &from_role, &to_role, reason.as_deref(), &key)
                 .await
                 .map_err(fail)?;
             report(&serde_json::to_value(&changed)?, "role changed")?;
@@ -398,7 +546,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                     .await
             } else {
                 vtc.client
-                    .acl_revoke(&subject, None, reason.as_deref(), &key)
+                    .acl_revoke(&subject, reason.as_deref(), &key)
                     .await
             }
             .map_err(fail)?;
@@ -522,6 +670,75 @@ fn access_error(vtc: &Connected, err: VtcError) -> Box<dyn std::error::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn profile_key(seed: u8) -> HolderKey {
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let did = format!(
+            "did:key:{}",
+            vta_sdk::did_key::ed25519_multibase_pubkey(&signing.verifying_key().to_bytes())
+        );
+        let private = multibase::encode(multibase::Base::Base58Btc, signing.to_bytes());
+        HolderKey::from_did_key(&did, private).unwrap()
+    }
+
+    /// The authorization is the identity's signed terms, addressed to the
+    /// community, alive long enough to reach the key's holder, and exactly
+    /// the payload an `enroll/0.2` for that key carries.
+    #[tokio::test]
+    async fn an_authorization_is_the_identitys_signed_terms() {
+        let identity = profile_key(1);
+        let bridge = profile_key(2);
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-07T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let doc = authorize_key_document(
+            &identity,
+            "did:web:vtc.example.com",
+            bridge.holder_did(),
+            Some("vtc-mcp laptop"),
+            Some("30d"),
+            None,
+            "1h",
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(doc["type"], AUTHORIZE_TYPE);
+        assert_eq!(doc["issuer"], identity.holder_did());
+        assert_eq!(doc["recipient"], "did:web:vtc.example.com");
+        assert_eq!(doc["expiresAt"], "2026-11-07T01:00:00Z");
+        assert!(doc["proof"].is_object());
+        let terms = &doc["payload"];
+        assert_eq!(terms["identityDid"], identity.holder_did());
+        assert_eq!(terms["signingKeyDid"], bridge.holder_did());
+        assert_eq!(terms["scope"], "console");
+        assert_eq!(terms["deviceLabel"], "vtc-mcp laptop");
+        assert_eq!(terms["expiresAt"], "2026-12-07T00:00:00Z");
+        assert!(terms.get("replaces").is_none());
+        // The terms satisfy the specification's schema for the enrolment.
+        vti_specs::schema_index::schema_for(AUTHORIZE_TYPE)
+            .map(|s| trust_tasks_rs::validate::against_schema(s, terms).unwrap())
+            .expect("authorize/0.1 is pinned");
+    }
+
+    #[tokio::test]
+    async fn an_authorization_refuses_what_could_never_enrol() {
+        let identity = profile_key(1);
+        let now = chrono::Utc::now();
+        for (did, why) in [
+            ("did:webvh:abc:example.com:x", "not a did:key"),
+            (identity.holder_did(), "act as itself"),
+        ] {
+            let err =
+                authorize_key_document(&identity, "did:web:v", did, None, None, None, "1h", now)
+                    .await
+                    .unwrap_err()
+                    .to_string();
+            assert!(err.contains(why), "{err}");
+        }
+        assert!(parse_duration("30x").is_err());
+        assert_eq!(parse_duration("2w").unwrap(), chrono::TimeDelta::weeks(2));
+    }
 
     /// `--now` proceeds only on the subject's DID typed back — or, landing an
     /// open cooling-off, its action id (`vtc-action-list.md` §8.5).

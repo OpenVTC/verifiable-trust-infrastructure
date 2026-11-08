@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 /// `server_id`, where the DID location comes from the `URL` itself).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 // camelCase, because the discriminator VALUE is part of the wire contract just
-// as much as a member name is. `vta/webvh/dids/create/1.0` spells the variants
+// as much as a member name is. `vta/webvh/dids/create` spells the variants
 // `wellKnown` / `explicit` / `autoAssign`, and a `oneOf` keyed on `mode` refuses
 // `auto_assign` outright — it matches no branch, so the whole payload is
 // malformed rather than merely oddly-spelled. `alias` keeps the previous
@@ -223,13 +223,13 @@ pub struct CreateDidWebvhBody {
     pub template_vars: Option<std::collections::HashMap<String, serde_json::Value>>,
     /// The identity the new log is presented as: its `did:webvh` DID, or its
     /// `did:scid:vh:1` DID (`vta/webvh/dids/create/1.2`, VTI-KEY-165). Absent →
-    /// the VTA's `[dids] default_did_method`. 1.0 and 1.1 refuse it.
+    /// the VTA's `[dids] default_did_method`.
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "did_method")]
     pub did_method: Option<crate::did_scid::DidMethod>,
     /// Whether the first log entry lists the did:scid DID URL in `alsoKnownAs`
     /// (`create/1.2`, VTI-KEY-166). Absent → the VTA's
     /// `[dids] scid_also_known_as`. `false` with `did_method: scid` is refused
-    /// with `scidAliasRequired`. 1.0 and 1.1 refuse it.
+    /// with `scidAliasRequired`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -249,7 +249,7 @@ pub struct CreateDidWebvhResultBody {
     pub server_id: Option<String>,
     /// Whether no hosting server was published to: the VTA holds the log and
     /// the DID does not resolve until the caller serves `logEntry` at its URL
-    /// (`vta/webvh/dids/create/1.1`, Keyring VTI-20).
+    /// (`vta/webvh/dids/create`, Keyring VTI-20).
     ///
     /// `None` when the answer predates it: a `create/1.0` response, or a sealed
     /// bundle written before 1.1. Read [`Self::is_serverless`], which falls back
@@ -325,16 +325,6 @@ impl CreateDidWebvhResultBody {
     #[must_use]
     pub fn log_did(&self) -> &str {
         self.webvh_did.as_deref().unwrap_or(&self.did)
-    }
-
-    /// Strip the `create/1.2` members, for a 1.0 or 1.1 answer: those
-    /// responses refuse members they do not define.
-    pub fn without_1_2_members(mut self) -> Self {
-        self.did_method = None;
-        self.scid_also_known_as = None;
-        self.webvh_did = None;
-        self.scid_did_url = None;
-        self
     }
 
     /// Whether this DID was minted serverless and so does not resolve until

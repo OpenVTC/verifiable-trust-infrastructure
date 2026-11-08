@@ -447,8 +447,7 @@ async fn public_profile_returns_404_when_not_initialised() {
 // ---------------------------------------------------------------------------
 
 const PROFILE_UPDATE_ERR_VALIDATION_FAILED: &str =
-    trust_tasks_rs::specs::vtc::community::profile::update::v0_1::error_codes::VALIDATION_FAILED
-        .code;
+    vti_specs::vtc::community::profile::update::v0_1::error_codes::VALIDATION_FAILED.code;
 
 /// The error code carried by a `trust-task-error` payload.
 fn tt_error_code(payload: &Value) -> &str {

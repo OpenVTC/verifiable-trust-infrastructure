@@ -5,7 +5,7 @@
 //! `task-consent/request/0.1` to each approver and hands the same documents
 //! back to the requester in its refusal (`details.consentRequests`). An approver
 //! whose `pnm` profile is in the set takes the relayed request and answers it
-//! here; the decision is this profile's signed `task-consent/decision/0.1`.
+//! here; the decision is this profile's signed `task-consent/decision/0.2`.
 //! What is shown and the code comparison approval requires are shared with
 //! `cnm consent` ([`vta_cli_common::consent_approve`]).
 

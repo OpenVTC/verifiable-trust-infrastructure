@@ -97,7 +97,7 @@ pub enum Requires {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalRule {
     /// The Trust Task Type URI to gate, e.g.
-    /// `https://trusttasks.org/spec/acl/grant/0.1`.
+    /// `https://trusttasks.org/spec/acl/grant/0.2`.
     ///
     /// Any URI — unlike the step-up floors this replaces, which could only name
     /// one of eleven hardcoded op-classes.
@@ -442,7 +442,7 @@ pub fn synthesize_rego(rules: &[ApprovalRule]) -> String {
 mod tests {
     use super::*;
 
-    const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+    const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
     const WEBVH_UPDATE: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
 
     fn sets(name: &str, members: &[&str]) -> ApproverSets {
@@ -475,7 +475,7 @@ mod tests {
         assert!(rego.starts_with("package vta.policy\n\nimport rego.v1\n\n"));
         assert!(rego.contains(
             "decision := {\n\t\"decision\": \"requireStepUp\",\n} if input.request.typeUri == \
-             \"https://trusttasks.org/spec/acl/grant/0.1\"\n"
+             \"https://trusttasks.org/spec/acl/grant/0.2\"\n"
         ));
         assert!(rego.contains(
             "\t\"requireConsent\": {\"approverSet\": \"webvh-approvers\", \"minApprovals\": 1, \

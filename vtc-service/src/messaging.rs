@@ -1905,7 +1905,7 @@ mod tests {
     fn a_tsp_reply_is_recognised_bare_and_enveloped() {
         let doc = json!({
             "id": "urn:uuid:reply",
-            "type": "https://trusttasks.org/spec/registry/record/put/0.1#response",
+            "type": "https://trusttasks.org/spec/registry/record/put/0.3#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "threadId": "urn:uuid:request",
             "payload": { "ok": true, "created": true },
@@ -1938,7 +1938,7 @@ mod tests {
         // census checks every one of them — including the ones in tests.
         let request = serde_json::to_vec(&json!({
             "id": "urn:uuid:req",
-            "type": "https://trusttasks.org/spec/registry/record/query/0.1",
+            "type": "https://trusttasks.org/spec/registry/record/query/0.3",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {},
         }))
@@ -1949,7 +1949,7 @@ mod tests {
         // either — completing a waiter needs the thread id.
         let unthreaded = serde_json::to_vec(&json!({
             "id": "urn:uuid:resp",
-            "type": "https://trusttasks.org/spec/registry/record/put/0.1#response",
+            "type": "https://trusttasks.org/spec/registry/record/put/0.3#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "ok": true },
         }))
@@ -2009,7 +2009,7 @@ mod tests {
             vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),
             json!({
                 "id": "urn:uuid:stray-doc",
-                "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+                "type": "https://trusttasks.org/spec/messaging/message/status/0.2#response",
                 "threadId": "urn:uuid:long-gone",
                 "payload": {}
             }),
@@ -2024,7 +2024,7 @@ mod tests {
     /// profile ask and its git-ns view can be told apart in the log.
     #[test]
     fn the_request_log_names_the_enveloped_task() {
-        const VIEW: &str = "https://trusttasks.org/spec/git-ns/view/0.4";
+        const VIEW: &str = "https://trusttasks.org/spec/git-ns/view/0.6";
         let enveloped = Message::build(
             "m1".to_string(),
             vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),

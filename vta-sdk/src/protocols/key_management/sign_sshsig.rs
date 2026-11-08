@@ -7,7 +7,7 @@
 //! builds it from the request and signs that — never bytes the caller chose —
 //! and a client verifying the answer rebuilds it the same way.
 
-pub use trust_tasks_rs::specs::keys::sign_sshsig::v0_1::{
+pub use vti_specs::keys::sign_sshsig::v0_1::{
     Payload as SignSshsigPayload, PayloadAlgorithm as SignSshsigAlgorithm,
     PayloadHashAlgorithm as SshsigHashAlgorithm, Response as SignSshsigResponse,
     ResponseAlgorithm as SignSshsigResponseAlgorithm, error_codes,

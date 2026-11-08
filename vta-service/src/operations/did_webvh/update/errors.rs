@@ -86,6 +86,21 @@ pub enum UpdateDidWebvhError {
     #[error("persistence error: {0}")]
     Persistence(String),
 
+    /// The update would remove the did:scid alias of an identity this VTA
+    /// presents in the did:scid form — `scidAlsoKnownAs: false`, or a
+    /// `document` that drops it. That form exists only while the did:webvh
+    /// document lists it (VTI-KEY-166). `vta/webvh/dids/update/1.1` answers
+    /// with its declared `scidAliasRequired`.
+    #[error("scidAliasRequired: {0}")]
+    ScidAliasRequired(String),
+
+    /// A `scidAlsoKnownAs` update whose resulting document and parameters equal
+    /// the latest entry's. Nothing is published and the update key is not
+    /// rotated. `vta/webvh/dids/update/1.1` answers with its declared
+    /// `noChange`.
+    #[error("noChange: {0}")]
+    NoChange(String),
+
     /// Failed to publish the new log entry to the webvh hosting server.
     /// The local log was written successfully; the operator can retry
     /// publication independently.
@@ -106,6 +121,12 @@ impl From<UpdateDidWebvhError> for AppError {
             UpdateDidWebvhError::InvalidDocument(msg)
             | UpdateDidWebvhError::InvalidWitness(msg)
             | UpdateDidWebvhError::InvalidWatcher(msg) => AppError::Validation(msg),
+            // Kept as the variant's own text: the declared code leads it, so an
+            // operator on a path that cannot answer with the code (a 1.0
+            // request, a consent dry-run) still reads which refusal it was.
+            e @ (UpdateDidWebvhError::ScidAliasRequired(_) | UpdateDidWebvhError::NoChange(_)) => {
+                AppError::Validation(e.to_string())
+            }
             UpdateDidWebvhError::Library(msg)
             | UpdateDidWebvhError::Publish(msg)
             | UpdateDidWebvhError::Persistence(msg) => AppError::Internal(msg),

@@ -15,9 +15,9 @@ import type {
 
 import { send } from "./directory-api";
 
-export const GROUPS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/list/0.1";
+export const GROUPS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/list/0.2";
 export const GROUPS_SHOW_TASK = "https://trusttasks.org/spec/vtc/groups/show/0.1";
-export const GROUPS_MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/members/list/0.1";
+export const GROUPS_MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/members/list/0.2";
 export const GROUPS_JOIN_TASK = "https://trusttasks.org/spec/vtc/groups/join/0.1";
 export const GROUPS_LEAVE_TASK = "https://trusttasks.org/spec/vtc/groups/leave/0.1";
 

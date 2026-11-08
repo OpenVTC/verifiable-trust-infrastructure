@@ -379,6 +379,109 @@ pub async fn cmd_webvh_did_edit(
     Ok(())
 }
 
+/// List (`list == true`) or remove the did:scid alias of an existing did:webvh
+/// DID (`vta/webvh/dids/update/1.1`, `scidAlsoKnownAs`; VTI-KEY-164).
+///
+/// The VTA derives the `did:scid:vh:1:<scid>?src=<source>` DID URL itself, so
+/// the operator never writes it. The update is pinned to the version read here
+/// (`expectedVersionId`), so a concurrent edit is refused rather than
+/// overwritten. Like any document change it publishes an entry and **rotates
+/// the DID's update key** — the confirmation says so before anything is sent.
+pub async fn cmd_webvh_did_scid_alias(
+    client: &VtaClient,
+    did: &str,
+    list: bool,
+    label: Option<String>,
+    no_confirm: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let log = client.get_did_webvh_log(did).await?;
+    let log_str = log.log.ok_or_else(|| -> Box<dyn std::error::Error> {
+        "DID has no published log on the VTA — nothing to update".into()
+    })?;
+    let expected_version_id = super::webvh_edit::extract_latest_version_id(&log_str).ok();
+
+    let verb = if list { "List" } else { "Remove" };
+    eprintln!("{verb} the did:scid alias of {did}.");
+    eprintln!(
+        "  This publishes a new log entry and ROTATES the DID's update key: the current \
+         update key stops being able to authorize further changes."
+    );
+    if !list {
+        eprintln!(
+            "  Without the alias the did:webvh and did:scid forms are no longer one subject \
+             (VTI-KEY-164). A DID this VTA presents as its did:scid is refused."
+        );
+    }
+    if !no_confirm {
+        let go = dialoguer::Confirm::new()
+            .with_prompt("Publish?")
+            .default(false)
+            .interact()?;
+        if !go {
+            eprintln!("Cancelled. Nothing was published.");
+            return Ok(());
+        }
+    }
+
+    let body = vta_sdk::protocols::did_management::update::UpdateDidWebvhBody {
+        scid_also_known_as: Some(list),
+        expected_version_id,
+        label: Some(label.unwrap_or_else(|| {
+            if list {
+                "list the did:scid alias".into()
+            } else {
+                "remove the did:scid alias".into()
+            }
+        })),
+        ..Default::default()
+    };
+    // The same payload on every attempt, so a consent grant (bound to its
+    // digest) is consumed rather than re-asked.
+    let result = match crate::consent::with_consent(|| {
+        let body = body.clone();
+        async move { client.update_did_webvh_by_did(did, body).await }
+    })
+    .await?
+    {
+        Ok(result) => result,
+        Err(crate::consent::ConsentOutcome::Resolved) => {
+            eprintln!("Not approved — the request was denied or expired. Nothing was published.");
+            return Ok(());
+        }
+        Err(crate::consent::ConsentOutcome::TimedOut) => {
+            eprintln!(
+                "Gave up waiting. The request is still pending, so approving on your device and \
+                 re-running this command will publish it."
+            );
+            return Ok(());
+        }
+    };
+    println!(
+        "did:scid alias {}.",
+        match result.scid_also_known_as {
+            Some(true) => "listed",
+            Some(false) => "removed",
+            None => "updated",
+        }
+    );
+    println!("  DID:             {}", result.did);
+    if let Some(url) = &result.scid_did_url {
+        println!("  did:scid DID:    {url}");
+    }
+    println!("  New version ID:  {}", result.new_version_id);
+    println!(
+        "  Update keys:     {} (rotated — the previous update key no longer authorizes changes)",
+        result.update_keys_count
+    );
+    println!("  Pre-rotation:    {}", result.pre_rotation_key_count);
+    if client.vta_did() == Some(result.did.as_str()) {
+        crate::commands::services::print_serverless_hint(result.serverless, &result.did);
+    } else {
+        crate::commands::services::print_redeploy_hint(result.serverless, &result.did);
+    }
+    Ok(())
+}
+
 // ── DID commands ────────────────────────────────────────────────────
 
 pub async fn cmd_webvh_did_create(

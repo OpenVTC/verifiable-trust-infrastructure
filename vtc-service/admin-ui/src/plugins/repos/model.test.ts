@@ -498,7 +498,7 @@ describe("single-administrator mode's waived self-grants (VTI-APV-022)", () => {
     right: "git.repo.own",
     resource: DOCS.resource,
     at: "2026-10-03T12:00:00Z",
-    task: "https://trusttasks.org/spec/git-ns/right/grant/0.3",
+    task: "https://trusttasks.org/spec/git-ns/right/grant/0.4",
   };
 
   it("reads the view's ext.org.openvtc.selfGrantWaived, dropping what is not a record", () => {

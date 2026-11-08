@@ -305,7 +305,7 @@ fn presign_with(
 }
 
 /// One operation of a batch as SigV4 parts: method, signed query, signed
-/// headers — exactly the specification's table (`issue/0.2` item 10), and
+/// headers — exactly the specification's table (`issue/0.3` item 10), and
 /// nothing else.
 /// A signed query or header list: names fixed by the table, values validated.
 type Signed = Vec<(&'static str, String)>;
@@ -481,7 +481,7 @@ impl ExternalAuthDriver for S3StaticPresign {
             "Statement": [{
                 "Effect": "Allow",
                 // Multipart writes are PutObject; ListParts and AbortMultipartUpload are
-                // their own actions (`external/credentials/issue/0.2`, direct uploads).
+                // their own actions (`external/credentials/issue/0.3`, direct uploads).
                 "Action": [
                     "s3:PutObject",
                     "s3:GetObject",
@@ -654,7 +654,7 @@ async fn probe_with(
     let report = |steps: Vec<Value>| {
         let ok = !steps.is_empty() && steps.iter().all(|s| s["ok"] == true);
         let complete = steps.iter().any(|s| s["step"] == "delete");
-        json!({ "at": rfc3339(now), "ok": ok, "complete": complete, "steps": steps })
+        json!({ "probedAt": rfc3339(now), "ok": ok, "complete": complete, "steps": steps })
     };
 
     // sign: build the three presigned requests.
@@ -845,7 +845,7 @@ mod tests {
     }
 
     /// Every operation is signed with exactly the table's method, query and headers
-    /// (`issue/0.2` item 10): the signature covers them, any other value fails, and
+    /// (`issue/0.3` item 10): the signature covers them, any other value fails, and
     /// nothing else is signed.
     #[test]
     fn a_batch_signs_exactly_the_specifications_headers_and_query() {

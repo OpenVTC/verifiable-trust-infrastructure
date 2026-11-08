@@ -26,7 +26,7 @@ use vtc_service::test_support::TestVtc;
 
 const SPEC: &str = "https://trusttasks.org/spec/vtc/";
 const POLICY_GET: &str = "https://trusttasks.org/spec/policy/get/0.1";
-const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const VETTER_GRANT: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
 const VETTER_SHOW: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1";
 
@@ -97,7 +97,7 @@ fn translate(
             ok,
         ),
         ("GET", ["policies"]) => (
-            "https://trusttasks.org/spec/policy/list/0.2".into(),
+            "https://trusttasks.org/spec/policy/list/0.3".into(),
             page(),
             ok,
         ),
@@ -333,7 +333,7 @@ pub async fn send_json(
     let (_, doc) = super::signed::call(vtc, party, &task, payload).await;
     let payload = doc["payload"].clone();
     if super::signed::error_code(&doc).is_none() {
-        if task == POLICY_UPSERT && payload["created"] == false {
+        if task == POLICY_UPSERT && payload["wasCreated"] == false {
             return (StatusCode::OK, payload);
         }
         return (success, payload);

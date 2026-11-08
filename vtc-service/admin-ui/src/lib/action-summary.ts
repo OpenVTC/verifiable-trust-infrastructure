@@ -40,7 +40,7 @@ export const KIND_OPERATOR_WRITE = "operator.offlineWrite";
  * document type (payload `{command, dids, host, at}`), never a task anybody
  * sends.
  */
-export const OPERATOR_OFFLINE_WRITE_URI = "https://trusttasks.org/spec/vtc/operator/offline-write/0.1";
+export const OPERATOR_OFFLINE_WRITE_URI = "https://trusttasks.org/spec/vtc/operator/offline-write/0.2";
 
 /** The `typeUri` the boot-time ACL migration's acknowledge item is recorded under. */
 export const OPERATOR_ACL_MIGRATION_URI = "urn:openvtc:vtc:operator:acl-migration";
@@ -106,22 +106,22 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmNWjHGRwDCfUsvVFxx6o6eXczqjQTepMEKwkS3qqNo1N6",
   [pinKey("acl.reduce.authority", `${SPEC}/acl/change-role/0.2`)]:
     "zQmaAjJC1L9w3pbUTEbWfhzfBdUpv8pofDZvL6mWSpU2eWk",
-  [pinKey("acl.grant.authority", `${SPEC}/acl/grant/0.1`)]:
-    "zQmPrXgyRpZ57y4AekuZPspEkunnEbEhxvZuqrfoxrgsvr4",
-  [pinKey("acl.grant.authority", `${SPEC}/acl/update/0.1`)]:
-    "zQmbvgey1akTyTq74Vhe4fuXGvpTKKTVw34mo3y4hVEKSEQ",
+  // `acl/change-role/0.1` is no longer served; kept so a move parked under it
+  // still renders in the history.
   [pinKey("acl.grant.authority", `${SPEC}/acl/change-role/0.1`)]:
     "zQmQX9Dx7cDqLtcoTNuDSWWo5nJTGecB9CqRLKgpd4es1c9",
+  // A community-role move (`vtc/members/role/set/0.1`).
+  [pinKey("acl.grant.authority", `${SPEC}/vtc/members/role/set/0.1`)]:
+    "zQmeeEJA8obiMqBSq33xo2prbmZcPzPd3SfenmT58Km7LRZ",
+  [pinKey("acl.reduce.authority", `${SPEC}/vtc/members/role/set/0.1`)]:
+    "zQmPDwBktx52yrW3HneQuL8AbdZ44d6bq5K5WkU51jN38jD",
   [pinKey("admin.invite.create", `${SPEC}/vtc/admin/invites/create/0.1`)]:
     "zQmSXC2GaMpizs4kKRhz4nBchZikWjqHAoeDfA5D7fVizgp",
-  [pinKey("acl.reduce.authority", `${SPEC}/acl/revoke/0.1`)]:
-    "zQmbvSkPZnzCqq5idfR5DKfFyiHFRCeimT48C4c6jtZfG1Z",
+  // create 0.2: a passkey invitation names no DID, so the title names none.
+  [pinKey("admin.invite.create", `${SPEC}/vtc/admin/invites/create/0.2`)]:
+    "zQmXg9RsQh74pTGLccB8ENC4trXmhB5MfYzN8VG7Mzb6Zuw",
   [pinKey("acl.reduce.authority", `${SPEC}/acl/change-role/0.1`)]:
     "zQmfHspRZaXfEPkeAyqcFkpgqYT2RCqXjjnXVZmFhsaJQcu",
-  [pinKey("acl.reduce.authority", `${SPEC}/acl/update/0.1`)]:
-    "zQmXcYLQhsgDQEgDZuf2mvmkxDDKEd1c9C47tmRAGLofPgM",
-  [pinKey("acl.reduce.authority", `${SPEC}/acl/grant/0.1`)]:
-    "zQmVrvxot9bAts7S22CfXQgqR8vC5aZHWQz97UjfMWveT7o",
   [pinKey("acl.reduce.authority", `${SPEC}/vtc/members/admin-remove/0.1`)]:
     "zQmc2FGMz27Bqiu3CPpy5BrVBWyst3RkfWhfk322QWzu6mR",
   [pinKey("config.threshold.lower", `${SPEC}/config/patch/0.1`)]:
@@ -136,12 +136,18 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
   // Creating a binding election (VTI-VOT-081).
   [pinKey("election.binding.create", `${SPEC}/vtc/elections/create/0.1`)]:
     "zQmRruPSiJx9JHEBJCdQiH1qXMTdqf2Dy6yL1WmUJqTU8mX",
+  [pinKey("election.binding.create", `${SPEC}/vtc/elections/create/0.3`)]:
+    "zQmSCbudt2Arz4PCwpWmzhMhA4gLfVjxmAd5UMZi8bef7hq",
+  [pinKey("election.binding.create", `${SPEC}/vtc/elections/create/0.4`)]:
+    "zQmR79wDEhh2mEJLRAbTgWiYWgtEby8xcwzEQFQQJ63mqZs",
+  [pinKey("election.binding.create", `${SPEC}/vtc/elections/create/0.5`)]:
+    "zQmVDaP58EusQDuDEKJ9TU289EvDHpbQwdYbzZhZoF5BSEE",
   // Widening a member-directory field (VTI-DIR-024).
   [pinKey("directory.field.widen", `${SPEC}/vtc/directory/fields/update/0.1`)]:
     "zQmafxMMkTfH4kb9QgoUQEJtUs4tuZFvqM8nxhjEawj6vYZ",
   // Replacing or activating the personhood policy (VTI-APV-023).
-  [pinKey("policy.recognition.change", `${SPEC}/policy/upsert/0.2`)]:
-    "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",
+  [pinKey("policy.recognition.change", `${SPEC}/policy/upsert/0.3`)]:
+    "zQmbvZxPwfxKg7j3MNguVQNJXVwVcfrRbBQZiWrWyfszTm3",
   [pinKey("policy.recognition.change", `${SPEC}/policy/activate/0.1`)]:
     "zQmSdYoQSJ79w1Di8LMr3QJKcjLt47c2DdH2F9gbfoLF6hv",
   // Publishing or withdrawing hidden vetting on a join criterion (VTI-APV-023).
@@ -154,13 +160,13 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmbgGnKd4rpcj5dPZsKGTrL48wFiL5jGnyyUe9o3JcP5mr",
   [pinKey("join.criteria.change", `${SPEC}/vtc/schemas/accepts/delete/0.1`)]:
     "zQmaKTFtV3fF3hBkeWwduWohd35nePzqcEvBP95HLa3e7Pu",
-  [pinKey("policy.authority.change", `${SPEC}/policy/upsert/0.2`)]:
-    "zQma1zFb7cvRpSH7erp14W83wYZW5vP7cke1yLwcwQZdEie",
+  [pinKey("policy.authority.change", `${SPEC}/policy/upsert/0.3`)]:
+    "zQmTE3m6nY2PUjccPc1kXE8E3qUg1B44XhN2Tvgy5JHNPLv",
   [pinKey("policy.authority.change", `${SPEC}/policy/activate/0.1`)]:
     "zQmTqKd5UoQZfTy7giJU9KFWFyhUbqxAtr5XWoUB9BLncBL",
   // An operator's offline write, raised for acknowledgement (VTI-VTC-023).
   [pinKey(KIND_OPERATOR_WRITE, OPERATOR_OFFLINE_WRITE_URI)]:
-    "zQmQZTPg2MeWt1C8oAvoLMGJNY9DpxvB6bRjvQwJT7ns9Ah",
+    "zQmaFWSdUF1Ais5qw1yGuSM6oxkarq9VQ4ZKd52ikKXiRcR",
   [pinKey(KIND_OPERATOR_WRITE, OPERATOR_ACL_MIGRATION_URI)]:
     "zQmcx336K693LHuAKosCP9avuLZWauw1vome6VBxWBFDiqK",
   // Custom administrative roles (`vtc-admin-roles.md` §6.2).
@@ -207,6 +213,20 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmTzhrbBfZEaijm2CMzMvNzeYzPBA4RW1DBJRWPTwJc3XL",
   [pinKey("rooms.storage.migrate", `${SPEC}/vtc/rooms/storage/migrate/0.2`)]:
     "zQmR7m9q28aLudzaema3wPTgyt9VJnPAVoSykoCL14YiVAN",
+  // The current versions the community parks storage operations under; the
+  // versions above stay pinned so an action recorded under one still renders.
+  [pinKey("storage.config.create", `${SPEC}/vtc/storage/configs/create/0.3`)]:
+    "zQmPUm3o1m98v5TKrsQ6RsAXMRWw1fqSDnwN3iFrJK5Awrx",
+  [pinKey("storage.config.update", `${SPEC}/vtc/storage/configs/update/0.3`)]:
+    "zQmc2DLfT3ZNgo31ctpTvACDFoy1yiWAbdEBmtAbswkFfKT",
+  [pinKey("storage.credential.set", `${SPEC}/vtc/storage/credentials/set/0.3`)]:
+    "zQmf4q7oZzgLTPjF4bavNePfvEhwPdG53CG2XVMgYfKHYex",
+  [pinKey("storage.config.retire", `${SPEC}/vtc/storage/configs/retire/0.3`)]:
+    "zQmdCZnjZerPoDQQaiDinpjZbxKPkB1d5MLLwV1iYDbt75M",
+  [pinKey("rooms.storage.assign", `${SPEC}/vtc/rooms/storage/assign/0.2`)]:
+    "zQmer3KKgKaxJV2UUTH3jyEVyQeaQ2MuBHZvfYxAerEka2L",
+  [pinKey("rooms.storage.migrate", `${SPEC}/vtc/rooms/storage/migrate/0.3`)]:
+    "zQmdLkFUd8giwGZH79H1htDfCrSxJWE9mKwpSSkbhhQRjGy",
 });
 
 function pinKey(kind: string, typeUri: string): string {

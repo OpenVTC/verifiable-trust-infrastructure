@@ -213,7 +213,7 @@ async fn load(
     consent_approve::load(path, &approver, &target.did, bin_name()).await
 }
 
-/// Send the decision to the VTC as a signed `task-consent/decision/0.1` Trust
+/// Send the decision to the VTC as a signed `task-consent/decision/0.2` Trust
 /// Task — over TSP when the VTC advertises it, else DIDComm, else a signed
 /// document over HTTPS ([`vtc::connect_for_tasks`]); `transport`
 /// (`--transport`) pins one. The session is closed on every path out.
@@ -279,7 +279,7 @@ mod tests {
         (did, multibase::encode(multibase::Base::Base58Btc, &buf))
     }
 
-    /// A valid `task-consent/decision/0.1` payload and the digest it echoes.
+    /// A valid `task-consent/decision/0.2` payload and the digest it echoes.
     fn approve_decision() -> (decision::Payload, String) {
         let mut mh = vec![0x12, 0x20];
         mh.extend_from_slice(&[7u8; 32]);
@@ -311,7 +311,7 @@ mod tests {
             .and(path("/v1/trust-tasks"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
-                "type": "https://trusttasks.org/spec/task-consent/decision/0.1#response",
+                "type": "https://trusttasks.org/spec/task-consent/decision/0.2#response",
                 "payload": { "status": "granted", "payloadDigest": digest },
             })))
             .mount(&server)

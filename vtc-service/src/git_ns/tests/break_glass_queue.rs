@@ -15,7 +15,7 @@ const WIDGETS: &str = "github.com/acme/widgets";
 /// Carol breaks the glass on widgets; the one ratification item it raised.
 async fn carol_breaks_glass(f: &Fixture) -> (Value, ActionRecord) {
     let body = ok(&break_glass(f, &f.carol, "git.repo.own", WIDGETS).await);
-    let at = body["right"]["breakGlass"]["at"].clone();
+    let at = body["right"]["breakGlass"]["recordedAt"].clone();
     let items = items_of_kind(&f.vtc.state, KIND_BREAK_GLASS_REVIEW).await;
     assert_eq!(items.len(), 1, "one ratification item per break-glass");
     (at, items.into_iter().next().unwrap())
@@ -67,7 +67,7 @@ async fn a_break_glass_raises_a_queue_item_for_the_other_administrators() {
         &f.vtc.state,
         &f.bob,
         "right/revoke",
-        "0.3",
+        "0.4",
         json!({ "subject": f.bob.did, "right": "git.repo.own", "resource": WIDGETS }),
     )
     .await;
@@ -189,7 +189,7 @@ async fn ratifying_through_git_ns_closes_the_item_naming_who_did() {
         &f.vtc.state,
         &f.admin,
         "right/ratify",
-        "0.1",
+        "0.2",
         json!({
             "subject": f.carol.did,
             "right": "git.repo.own",
@@ -216,7 +216,7 @@ async fn revoking_through_git_ns_closes_the_item_as_declined() {
         &f.vtc.state,
         &f.admin,
         "right/revoke",
-        "0.3",
+        "0.4",
         json!({ "subject": f.carol.did, "right": "git.repo.own", "resource": WIDGETS }),
     )
     .await);

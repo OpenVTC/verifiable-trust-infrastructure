@@ -27,10 +27,10 @@ use vti_rooms_dtg::test_support::Party;
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::test_support::{MockVtcTransport, ReplyOutcome, TestTspPeer};
 
-const SHOW: &str = "https://trusttasks.org/spec/acl/show/0.1";
-const LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
-const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const SHOW: &str = "https://trusttasks.org/spec/acl/show/0.2";
+const LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
+const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.2";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -149,9 +149,10 @@ async fn acl_show_answers_alike_on_every_transport() {
         assert_eq!(doc["payload"]["entry"]["role"], "moderator", "{t}");
         answers.push(doc["payload"].clone());
 
+        // 0.2: an absent subject is a successful `entry: null`.
         let missing = send(&h, t, SHOW, json!({ "subject": "did:key:z6MkNobody" })).await;
-        assert!(is_error(&missing), "{t}: {missing}");
-        assert_eq!(missing["payload"]["details"]["reason"], "not_found", "{t}");
+        assert!(!is_error(&missing), "{t}: {missing}");
+        assert!(missing["payload"]["entry"].is_null(), "{t}: {missing}");
     }
     assert!(answers.windows(2).all(|w| w[0] == w[1]), "{answers:?}");
     h.tsp.shutdown().await;
@@ -174,7 +175,8 @@ async fn acl_list_answers_alike_on_every_transport() {
             .map(|e| e["subject"].as_str().unwrap())
             .collect();
         assert_eq!(subjects, vec!["did:key:z6MkListB"], "{t}");
-        assert_eq!(doc["payload"]["truncated"], false, "{t}");
+        // 0.3: the last page carries no `nextCursor`.
+        assert!(doc["payload"].get("nextCursor").is_none(), "{t}");
         answers.push(doc["payload"].clone());
     }
     assert!(answers.windows(2).all(|w| w[0] == w[1]), "{answers:?}");
@@ -229,18 +231,30 @@ async fn acl_revoke_reduces_removes_and_refuses_alike_on_every_transport() {
             &h,
             t,
             REVOKE,
-            json!({ "subject": subject, "scopes": ["ctx-b"] }),
+            json!({ "subject": subject, "revocation": { "kind": "entry" }, "scopes": ["ctx-b"] }),
         )
         .await;
         assert!(is_error(&reduced), "{t}: {reduced}");
         assert!(stored(&h, &subject).await.is_some(), "{t}");
 
-        let removed = send(&h, t, REVOKE, json!({ "subject": subject })).await;
+        let removed = send(
+            &h,
+            t,
+            REVOKE,
+            json!({ "subject": subject , "revocation": { "kind": "entry" }}),
+        )
+        .await;
         assert!(!is_error(&removed), "{t}: {removed}");
         assert!(removed["payload"]["entry"].is_null(), "{t}: {removed}");
         assert!(stored(&h, &subject).await.is_none(), "{t}");
 
-        let again = send(&h, t, REVOKE, json!({ "subject": subject })).await;
+        let again = send(
+            &h,
+            t,
+            REVOKE,
+            json!({ "subject": subject , "revocation": { "kind": "entry" }}),
+        )
+        .await;
         assert_eq!(
             again["payload"]["code"], "acl/revoke:subjectNotPresent",
             "{t}: {again}"

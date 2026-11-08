@@ -863,6 +863,11 @@ pub struct ProfileEdit {
     pub description: Change<String>,
     pub tags: Change<Vec<String>>,
     pub emoji: Change<String>,
+    /// `recordMembers`: the optional record members the room's writers may use
+    /// (`kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`), and the
+    /// record kinds they may write (`memberProfile`: a member's name), as a set.
+    /// List one only once every reader the room expects accepts it.
+    pub record_members: Change<Vec<String>>,
 }
 
 /// The profile `edit` makes of `current` (the room's profile now, as JSON, if it has one):
@@ -899,14 +904,13 @@ fn edited_profile(
     };
     apply("description", map(edit.description));
     apply("emoji", map(edit.emoji));
-    apply(
-        "tags",
-        match edit.tags {
-            Change::Keep => Change::Keep,
-            Change::Set(t) => Change::Set(serde_json::json!(t)),
-            Change::Drop => Change::Drop,
-        },
-    );
+    let list = |c: Change<Vec<String>>| match c {
+        Change::Keep => Change::Keep,
+        Change::Set(v) => Change::Set(serde_json::json!(v)),
+        Change::Drop => Change::Drop,
+    };
+    apply("tags", list(edit.tags));
+    apply("recordMembers", list(edit.record_members));
     Ok(p)
 }
 
@@ -933,6 +937,13 @@ fn print_profile(room_id: &str, resp: &serde_json::Value) {
                     .filter_map(|t| t.as_str().map(inert_line))
                     .collect();
                 println!("  tags: {}", tags.join(", "));
+            }
+            if let Some(members) = p["recordMembers"].as_array().filter(|m| !m.is_empty()) {
+                let members: Vec<String> = members
+                    .iter()
+                    .filter_map(|m| m.as_str().map(inert_line))
+                    .collect();
+                println!("  writers may use: {}", members.join(", "));
             }
             println!(
                 "  named by {} at {}{}",
@@ -1084,6 +1095,7 @@ mod tests {
                 description: Change::Keep,
                 tags: Change::Keep,
                 emoji: Change::Drop,
+                record_members: Change::Keep,
             },
         )
         .unwrap();
@@ -1098,6 +1110,7 @@ mod tests {
                 description: Change::Drop,
                 tags: Change::Set(vec!["a".into(), "b".into()]),
                 emoji: Change::Keep,
+                record_members: Change::Keep,
             },
         )
         .unwrap();
@@ -1113,11 +1126,47 @@ mod tests {
                     description: Change::Set("x".into()),
                     tags: Change::Keep,
                     emoji: Change::Keep,
+                    record_members: Change::Keep,
                 },
             )
             .is_err(),
             "a room with no profile needs a name"
         );
+    }
+
+    /// `--record-members` sets the room's `recordMembers`, which a later edit carries over
+    /// and `--no-record-members` drops.
+    #[test]
+    fn a_profile_edit_sets_carries_and_drops_record_members() {
+        let edit = |record_members| ProfileEdit {
+            name: None,
+            description: Change::Keep,
+            tags: Change::Keep,
+            emoji: Change::Keep,
+            record_members,
+        };
+        let current = serde_json::json!({ "name": "Deal room" });
+        let set = edited_profile(
+            Some(&current),
+            edit(Change::Set(vec!["kind".into(), "writtenAt".into()])),
+        )
+        .unwrap();
+        assert_eq!(
+            set,
+            serde_json::json!({ "name": "Deal room", "recordMembers": ["kind", "writtenAt"] })
+        );
+        assert_eq!(
+            edited_profile(Some(&set), edit(Change::Keep)).unwrap(),
+            set,
+            "carried over"
+        );
+        assert_eq!(
+            edited_profile(Some(&set), edit(Change::Drop)).unwrap(),
+            current
+        );
+        // The result is a profile the SDK sends.
+        serde_json::from_value::<vti_specs::rooms::keys::profile::write::v0_1::RoomProfile>(set)
+            .expect("a RoomProfile");
     }
 
     /// Another member's text never drives the terminal.

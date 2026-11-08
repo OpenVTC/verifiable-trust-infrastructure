@@ -14,7 +14,7 @@ use vti_common::vault::{SecretKind, StoredVaultEntry, VaultSecret, put_stored_va
 
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
-use crate::trust_tasks::wire_v0_2::{WireVersion, camelize_paths};
+use crate::trust_tasks::wire_v0_2::camelize_paths;
 
 /// M2A.3 release TTL ceiling (seconds). A higher client hint silently caps
 /// rather than rejecting.
@@ -58,7 +58,6 @@ pub(crate) async fn release_secret(
     holder_did: &str,
     mut stored: StoredVaultEntry,
     ttl_hint: Option<u32>,
-    wire: WireVersion,
     channel: &str,
 ) -> Result<ReleasedSecret, AppError> {
     let ttl_seconds = ttl_hint
@@ -70,7 +69,7 @@ pub(crate) async fn release_secret(
     // discriminator and `loginConfig.format` to camelCase; this body rides
     // inside the opaque JWE, so the edge transform can't reach it — we emit the
     // version-appropriate casing here.
-    let secret_body = secret_cleartext_for_wire(&stored.secret, wire)?;
+    let secret_body = secret_cleartext(&stored.secret)?;
 
     let jwe = super::authcrypt_to_holder(
         atm,
@@ -132,19 +131,18 @@ pub(crate) async fn release_secret(
 }
 
 /// Serialise a `VaultSecret` into the cleartext JSON that goes inside the JWE,
-/// in the casing the negotiated wire version requires.
+/// in `vault/release/0.2`'s casing.
 ///
-/// `VaultSecret` always serialises its 0.1 (kebab) form; for a 0.2 release we
-/// up-convert the enum values the 0.2 spec renamed — the `kind` discriminator
-/// and (on `password` entries) `loginConfig.format`. Pure + synchronous so the
-/// casing is unit-testable without an ATM or a real JWE.
-fn secret_cleartext_for_wire(secret: &VaultSecret, wire: WireVersion) -> Result<Value, AppError> {
+/// `VaultSecret` serialises kebab-case enum values (its storage form); the 0.2
+/// spec spells the `kind` discriminator and (on `password` entries)
+/// `loginConfig.format` in camelCase, so those are up-converted here — the edge
+/// transform cannot reach ciphertext. Pure + synchronous so the casing is
+/// unit-testable without an ATM or a real JWE.
+fn secret_cleartext(secret: &VaultSecret) -> Result<Value, AppError> {
     let mut body = serde_json::to_value(secret).map_err(|e| {
         AppError::Internal(format!("vault/release: failed to serialise secret: {e}"))
     })?;
-    if wire == WireVersion::V0_2 {
-        camelize_paths(&mut body, &["kind", "loginConfig.format"]);
-    }
+    camelize_paths(&mut body, &["kind", "loginConfig.format"]);
     Ok(body)
 }
 
@@ -152,20 +150,6 @@ fn secret_cleartext_for_wire(secret: &VaultSecret, wire: WireVersion) -> Result<
 mod tests {
     use super::*;
     use vti_common::vault::{PasswordLoginConfig, PasswordLoginFormat};
-
-    #[test]
-    fn v0_1_release_keeps_kebab_kind_and_format() {
-        let secret = VaultSecret::OauthTokens {
-            provider: "google".into(),
-            refresh_token: "r".into(),
-            access_token: None,
-            access_token_expires_at: None,
-            scopes: vec![],
-            secure_notes: None,
-        };
-        let body = secret_cleartext_for_wire(&secret, WireVersion::V0_1).unwrap();
-        assert_eq!(body["kind"], "oauth-tokens");
-    }
 
     #[test]
     fn v0_2_release_camelizes_kind_and_login_config_format() {
@@ -185,13 +169,9 @@ mod tests {
             secure_notes: None,
             custom_fields: vec![],
         };
-        // 0.1 stays kebab.
-        let v01 = secret_cleartext_for_wire(&secret, WireVersion::V0_1).unwrap();
-        assert_eq!(v01["kind"], "password");
-        assert_eq!(v01["loginConfig"]["format"], "form-urlencoded");
-        // 0.2 up-converts the renamed values; the single-word `kind`
-        // (`password`) is unchanged either way.
-        let v02 = secret_cleartext_for_wire(&secret, WireVersion::V0_2).unwrap();
+        // 0.2 spells the multi-word values in camelCase; the single-word
+        // `kind` (`password`) is unchanged.
+        let v02 = secret_cleartext(&secret).unwrap();
         assert_eq!(v02["kind"], "password");
         assert_eq!(v02["loginConfig"]["format"], "formUrlencoded");
     }
@@ -203,7 +183,7 @@ mod tests {
             signing_key_id: "did:webvh:x#k".into(),
             secure_notes: None,
         };
-        let v02 = secret_cleartext_for_wire(&secret, WireVersion::V0_2).unwrap();
+        let v02 = secret_cleartext(&secret).unwrap();
         assert_eq!(v02["kind"], "didSelfIssued");
         // Variant fields are already camelCase (serde `rename_all`) and untouched.
         assert_eq!(v02["signingKeyId"], "did:webvh:x#k");

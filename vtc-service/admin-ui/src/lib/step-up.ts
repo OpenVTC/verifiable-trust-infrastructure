@@ -1,7 +1,7 @@
 /** Elevating this session with a passkey user-verification gesture.
  *
  * Shared because the daemon's gate is shared: since #1645 every path that
- * confers the `admin` role — promoting a member (`acl/change-role`) and adding
+ * confers the `admin` role — promoting a member (`vtc/members/role/set`) and adding
  * an admin ACL entry outright (`acl/grant`) — requires a **live** elevation on
  * the caller's session. A console screen that offers one of those operations
  * without running this first can only ever answer `step_up_required`.

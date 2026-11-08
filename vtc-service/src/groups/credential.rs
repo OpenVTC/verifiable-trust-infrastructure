@@ -32,6 +32,13 @@ pub struct Issued {
 
 /// Issue `member_did` its credential of `group`, signed by the VTA as the group.
 pub async fn issue(state: &AppState, group: &Group, member_did: &str) -> Result<Issued, Failure> {
+    // A badge group issues the badge credential (VTI-BDG-060), never a membership one.
+    if group.badge_id.is_some()
+        && let Some(issued) =
+            crate::badges::credential::issue_for_group(state, group, member_did, None).await?
+    {
+        return Ok(issued);
+    }
     let setup = identity::setup(state)
         .await
         .map_err(|why| Failure::Holder(HolderError::Unavailable(why), None))?;

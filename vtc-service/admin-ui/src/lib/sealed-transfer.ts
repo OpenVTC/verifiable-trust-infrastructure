@@ -1,7 +1,7 @@
 // Sealing to the community in this browser: the workspace's one secret-bearing
 // wire format (`vta_sdk::sealed_transfer`), sealing side only.
 //
-// `vtc/storage/credentials/set/0.2` requires the administrator's own client to seal
+// `vtc/storage/credentials/set/0.3` requires the administrator's own client to seal
 // a `sealed` config's credential to the community before it leaves the page, so
 // no transport, relay or log between here and the community can read it. This is
 // that client. It produces byte-for-byte the framing the Rust producer does, and

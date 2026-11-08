@@ -327,6 +327,33 @@ pub(crate) enum Commands {
         command: MemoryCommands,
     },
 
+    /// The notifications this VTA holds for you — an election you were told of, and who
+    /// passed it on.
+    ///
+    /// Backed by the `vta/notifications/{list,show,dismiss,deposit}/0.1` Trust Tasks
+    /// (VTI-NTF-050). A notification is no evidence that you may take part: open the thing
+    /// it points at from its holder, when you choose to. Listing, reading and dismissing tell
+    /// nobody anything.
+    #[command(name = "notifications")]
+    Notifications {
+        #[command(subcommand)]
+        command: NotificationsCommands,
+    },
+
+    /// Who collects your personas' messages at their mediator — this VTA, one of your
+    /// clients under a claim, or nobody and why.
+    ///
+    /// Backed by the `vta/collection/{claim,release,list}/0.1` and
+    /// `vta/collection/settings/{show,set}/0.1` Trust Tasks (VTI-NTF-080 – 098). A mediator
+    /// permits one connection per DID, so a client that collects for a persona itself claims
+    /// it first and connects only once the claim is granted. The VTA collects for every
+    /// unclaimed persona of a context unless collection by default is disabled there.
+    #[command(name = "collection")]
+    Collection {
+        #[command(subcommand)]
+        command: CollectionCommands,
+    },
+
     /// Manage the external accounts this VTA holds at clouds and third-party
     /// services, and the integrations bound to them.
     ///
@@ -369,6 +396,17 @@ pub(crate) enum Commands {
         command: ElectionCommands,
     },
 
+    /// Take part in your community's boards: propose ideas, leave notes, and take the tickets
+    /// for the ideas put to a vote. Your VTA signs every request as your identity at the
+    /// community (`vault/sign-trust-task`); voting on an idea is `pnm elections`.
+    ///
+    /// Needs the `SignTrustTask` capability, and `pcsVoter` for `take-tickets`.
+    #[command(name = "boards")]
+    Boards {
+        #[command(subcommand)]
+        command: BoardCommands,
+    },
+
     /// Operate an Affinidi messaging mediator as a DID this VTA manages.
     #[command(name = "messaging")]
     Messaging {
@@ -392,6 +430,137 @@ pub(crate) struct ElectionTarget {
     /// The VTA context that persona lives in; your voter keys are derived there.
     #[arg(long)]
     pub(crate) context: String,
+}
+
+/// The community a member uses boards at, and who they are there.
+#[derive(clap::Args)]
+pub(crate) struct BoardTarget {
+    /// Base URL of the community's Trust Task endpoint (e.g. `https://vtc.example.com/v1`).
+    #[arg(long)]
+    pub(crate) vtc: String,
+    /// The community's DID.
+    #[arg(long)]
+    pub(crate) vtc_did: String,
+    /// Your membership DID at the community: the identity your VTA's vault entry for it holds.
+    #[arg(long)]
+    pub(crate) member: String,
+    /// The vault entry to sign as. Default: your one active entry for the community as
+    /// `--member`.
+    #[arg(long)]
+    pub(crate) entry: Option<String>,
+}
+
+/// What an idea says: its title, what it covers, and where it is filed.
+#[derive(clap::Args, Default)]
+pub(crate) struct IdeaText {
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+    /// What the idea covers, and who should come.
+    #[arg(long)]
+    pub(crate) description: Option<String>,
+    /// One of the board's formats (e.g. Discussion, Talk, Workshop), where it states them.
+    #[arg(long)]
+    pub(crate) format: Option<String>,
+    /// One of the board's topics, where it states them.
+    #[arg(long)]
+    pub(crate) topic: Option<String>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BoardCommands {
+    /// The boards you can see.
+    List {
+        /// Only boards in this status: open, closed or archived.
+        #[arg(long)]
+        status: Option<String>,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// One board and its ideas, lane by lane, with each open idea's election.
+    Show {
+        board_id: String,
+        /// Only ideas in these states (proposed, open, selected, notSelected, declined, merged,
+        /// withdrawn). Repeat for several.
+        #[arg(long = "state")]
+        states: Vec<String>,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Propose an idea while the board takes proposals. It is shown under your name.
+    Propose {
+        board_id: String,
+        #[command(flatten)]
+        idea: IdeaText,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Change your idea while it is still proposed.
+    Update {
+        idea_id: String,
+        #[command(flatten)]
+        idea: IdeaText,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Withdraw your idea while it is still proposed.
+    Withdraw {
+        idea_id: String,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// The notes on a board, or on one of its ideas.
+    Notes {
+        board_id: String,
+        /// Only this idea's notes.
+        #[arg(long)]
+        idea: Option<String>,
+        /// Every note on the board, its ideas' included.
+        #[arg(long, conflicts_with = "idea")]
+        all: bool,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Add a note to a board, or to one of its ideas. It is shown under your name.
+    Note {
+        board_id: String,
+        text: String,
+        #[arg(long)]
+        idea: Option<String>,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Withdraw one of your notes.
+    WithdrawNote {
+        note_id: String,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+    /// Take your ticket for every idea open for votes, each in its own request a few seconds
+    /// apart. Vote later, one idea at a time, with `pnm elections vote`.
+    TakeTickets {
+        board_id: String,
+        /// The VTA context your membership persona lives in; your voter keys are derived there.
+        #[arg(long)]
+        context: String,
+        #[command(flatten)]
+        target: BoardTarget,
+    },
+}
+
+/// A membership credential you choose to present, for an election whose roll is the holders of
+/// a membership credential (VTI-VOT-025). Presenting it shows the community that you are a
+/// member of the party that issued it.
+#[derive(clap::Args, Default)]
+pub(crate) struct MembershipPresenting {
+    /// The membership credential's handle in your VTA's vault. `ticket` presents it when it
+    /// claims the ticket; `show` presents it in the read, to see an election put to the members
+    /// of a party that is itself a member of the community, which it shows nobody else.
+    #[arg(long)]
+    pub(crate) membership_credential: Option<String>,
+    /// The DID you were told the election's roll names. Your VTA presents the credential only
+    /// where that DID issued it (VTI-VOT-016); `ticket` with it also presents in its read.
+    #[arg(long, requires = "membership_credential")]
+    pub(crate) member_of: Option<String>,
 }
 
 /// The election a trustee serves, and who the trustee is.
@@ -448,6 +617,8 @@ pub(crate) enum ElectionCommands {
         election_id: String,
         #[command(flatten)]
         target: ElectionTarget,
+        #[command(flatten)]
+        presenting: MembershipPresenting,
     },
     /// Take your ticket for an election, and nothing else.
     ///
@@ -457,6 +628,8 @@ pub(crate) enum ElectionCommands {
         election_id: String,
         #[command(flatten)]
         target: ElectionTarget,
+        #[command(flatten)]
+        presenting: MembershipPresenting,
     },
     /// Vote with the ticket your VTA holds.
     ///
@@ -480,6 +653,17 @@ pub(crate) enum ElectionCommands {
         /// Send the cast at once rather than after a random pause of up to 20 seconds.
         #[arg(long)]
         no_delay: bool,
+        #[command(flatten)]
+        target: ElectionTarget,
+    },
+    /// After voting closes, check that each cast you made is in the board the community kept at
+    /// close (VTI-VOT-053) — also once the board the election was opened on is deleted.
+    ///
+    /// Your VTA keeps your receipts; the proof that each is on the board comes from the ballot
+    /// box over this connection, never through your VTA or the community. A missing cast is
+    /// reported and the command fails: your VTA keeps the receipt as evidence.
+    Verify {
+        election_id: String,
         #[command(flatten)]
         target: ElectionTarget,
     },
@@ -570,6 +754,8 @@ pub(crate) enum GrantRole {
 /// action it performs — `read` for list/get, `write` for put, `curate` for
 /// curate, `admin` for renew — so a member who holds less is refused by their
 /// own VTA rather than by the host.
+// Parsed once per invocation; `Put`'s flags are what make it large.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum RoomCommands {
     /// List the room's records. Metadata only — never bodies.
@@ -599,6 +785,24 @@ pub(crate) enum RoomCommands {
         limit: Option<usize>,
     },
 
+    /// Read several records at once through your VTA (`rooms/keys/read/0.2`): it
+    /// fetches each from the host as you, checks it, and opens it, and answers each key on
+    /// its own — the record, or why that key was not read.
+    Read {
+        /// Record keys, in the order to show them.
+        #[arg(required = true)]
+        keys: Vec<String>,
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the host storing the room. Unused by this command, which reaches the
+        /// host through your VTA; accepted so a `get` line can be turned into a `read`.
+        #[arg(long)]
+        host: Option<String>,
+        /// The host's DID. Your VTA resolves it and reads as you.
+        #[arg(long)]
+        host_did: String,
+    },
+
     /// Read one record, decrypting through your VTA when it is sealed.
     Get {
         /// Record key.
@@ -619,8 +823,9 @@ pub(crate) enum RoomCommands {
         /// be descriptive.
         key: String,
         /// The record body (markdown — written for a human, recalled by an
-        /// agent).
-        body: String,
+        /// agent). With `--react`, the reaction is the body.
+        #[arg(required_unless_present = "react", conflicts_with = "react")]
+        body: Option<String>,
         #[arg(long = "room")]
         room_id: String,
         #[arg(long)]
@@ -661,6 +866,81 @@ pub(crate) enum RoomCommands {
         /// Readers hide it after that; it is not deleted.
         #[arg(long)]
         valid_until: Option<String>,
+        /// What kind of record this is: `message`, `note`, … (lowerCamelCase). Only where
+        /// the room's profile lists `kind` in its record members.
+        #[arg(long, conflicts_with = "react")]
+        kind: Option<String>,
+        /// The record this one answers: `KEY`, or `KEY@VERSION`. Only where the room's
+        /// profile lists `inReplyTo`.
+        #[arg(long, value_name = "KEY[@VERSION]", conflicts_with = "react")]
+        reply_to: Option<String>,
+        /// React to `--to` with this (an emoji, a word): a record of kind `reaction`
+        /// answering it. Only where the room's profile lists `kind` and `inReplyTo`.
+        #[arg(long, value_name = "VALUE", requires = "to")]
+        react: Option<String>,
+        /// The record `--react` reacts to: `KEY`, or `KEY@VERSION`.
+        #[arg(
+            long,
+            value_name = "KEY[@VERSION]",
+            requires = "react",
+            conflicts_with = "body"
+        )]
+        to: Option<String>,
+    },
+
+    /// Your name in a room — what the room's other members see beside your records. A
+    /// record of kind `memberProfile`, written by you into the room (sealed on `attributed`
+    /// and `private` rooms), and only where the room's profile lists `kind` and
+    /// `memberProfile` in its record members. It names you in this room only, and is your
+    /// own claim: nobody verifies it.
+    Name {
+        #[command(subcommand)]
+        command: RoomNameCommands,
+    },
+
+    /// Watch rooms: your VTA asks the host for one content-free signal the first time each
+    /// room moves past `--since`, at an address of its own, and passes it on to this
+    /// client (`rooms/keys/changed`), then nothing until you watch again — so a wallet
+    /// learns a room changed without polling, and needs no address of its own. Needs
+    /// `read`.
+    ///
+    /// The signal says only that the room moved; read the room to learn what. With
+    /// `--via-host`, the host signals `--address` instead — a DID you receive at — and your
+    /// VTA only completes the request as the member (`rooms/keys/act/0.12`).
+    Watch {
+        /// A room to watch; repeat for up to 64 rooms at one host.
+        #[arg(long = "room", required = true)]
+        room_ids: Vec<String>,
+        /// Base URL of the host storing the room. Needed with `--via-host`; otherwise used
+        /// only to find your member in an `open` room.
+        #[arg(long, required_if_eq("via_host", "true"))]
+        host: Option<String>,
+        /// The host's DID: the request's recipient, and who the signal comes from.
+        #[arg(long)]
+        host_did: String,
+        /// The member to watch as. Omitted, the one your VTA lists for the rooms.
+        #[arg(long, conflicts_with = "via_host")]
+        member: Option<String>,
+        /// Arm the host's watch yourself, at `--address`, instead of asking your VTA to
+        /// watch for you.
+        #[arg(long, requires = "address")]
+        via_host: bool,
+        /// With `--via-host`: the DID the signal is sent to — one you receive at, reached
+        /// through its mediator, and use for watches only; never your own DID, your VTA's
+        /// or the member's. On a `private` room, one you use for that one watch.
+        #[arg(long, requires = "via_host")]
+        address: Option<String>,
+        /// The highest version of the room you have read to. Omitted, the host takes the
+        /// room's latest, and a change made since your last read is not signalled.
+        #[arg(long, conflicts_with = "cancel")]
+        since: Option<u64>,
+        /// How long the watch lasts if it does not fire, such as `7d` or `12h` (at least
+        /// 60 seconds, at most 30 days). The host may grant less.
+        #[arg(long, conflicts_with = "cancel")]
+        lease: Option<String>,
+        /// End the watches on these rooms instead.
+        #[arg(long)]
+        cancel: bool,
     },
 
     /// Change a record's standing. Needs `curate`, which `write` does not imply.
@@ -799,9 +1079,10 @@ pub(crate) enum RoomCommands {
     },
 
     /// Every room the community has offered you and where each stands — offered,
-    /// joined, accepted but not finished, or removed — as your member portal and
+    /// joined, accepted but not finished, suspended or removed, and whether the room
+    /// itself is archived or being removed — as your member portal and
     /// OpenVTC show it too: the community's record (`vtc/rooms/memberships/list`),
-    /// signed as you by your VTA (`rooms/keys/act/0.6`), beside your VTA's own
+    /// signed as you by your VTA (`rooms/keys/act/0.10`), beside your VTA's own
     /// (`rooms/keys/list`).
     Memberships {
         /// Base URL of the community's Trust Task endpoint (e.g.
@@ -984,12 +1265,10 @@ pub(crate) enum ExternalCommands {
         prefix: Option<String>,
         #[arg(long = "action")]
         actions: Vec<String>,
-        #[arg(long)]
-        object_key: Option<String>,
         /// A presign batch (`external/credentials/issue/0.3`, `PresignBatch`) as
         /// JSON, or `@file` to read it: up to 64 operations on one object of an
-        /// `s3-static-presign` account. Replaces `--prefix`/`--action`/`--object-key`.
-        #[arg(long, conflicts_with_all = ["prefix", "actions", "object_key"])]
+        /// `s3-static-presign` account. Replaces `--prefix`/`--action`.
+        #[arg(long, conflicts_with_all = ["prefix", "actions"])]
         presign: Option<String>,
         #[arg(long, default_value_t = 900)]
         ttl: u32,
@@ -1165,13 +1444,13 @@ pub(crate) enum RoomOwnerCommands {
         #[arg(long)]
         out: std::path::PathBuf,
     },
-    /// Remove a member from the room (`rooms/owner/group/remove`). With
-    /// `--signing-key` (0.3, or 0.2 on an older VTA) your VTA first withdraws their credentials at the
-    /// host — signed as the room, refused from then on, and anything they
-    /// delegated with them — and then removes their leaf and advances the room. A
-    /// private room cannot withdraw one member, so there it removes the leaf alone
-    /// (0.1), as it does without `--signing-key`. It recalls nothing they
-    /// already read.
+    /// Remove a member from the room (`rooms/owner/group/remove/0.4`). On an
+    /// attributed room your VTA first withdraws their credentials at the host —
+    /// signed as the room with `--signing-key`, refused from then on, and anything
+    /// they delegated with them — and then removes their leaf and advances the
+    /// room. A private room cannot withdraw one member, so there it removes the
+    /// leaf alone and their credentials stay valid until they expire. It recalls
+    /// nothing they already read.
     GroupRemove {
         #[arg(long = "room")]
         room_id: String,
@@ -1182,8 +1461,8 @@ pub(crate) enum RoomOwnerCommands {
         #[arg(long)]
         member: String,
         /// The room's signing key id, to withdraw their credentials at the host as
-        /// the room. Without it the removal is group-only and their credentials stay
-        /// valid until they expire.
+        /// the room. Required on an attributed room; not needed on a private one,
+        /// where nothing is withdrawn.
         #[arg(long = "signing-key")]
         signing_key_id: Option<String>,
         /// Another host serving the room (a mirror), delivered the withdrawal too.
@@ -1287,7 +1566,7 @@ pub(crate) enum RoomOffersCommands {
         #[arg(long)]
         key_package: Option<String>,
     },
-    /// Collect a renewal of a room you are in (`vtc/rooms/offers/list/0.3`): store its
+    /// Collect a renewal of a room you are in (`vtc/rooms/offers/list/0.4`): store its
     /// membership and authority in your VTA in place of the ones they renew.
     Renew {
         /// The room's DID.
@@ -1444,6 +1723,35 @@ pub(crate) enum RoomKeysCommands {
     },
 }
 
+/// `pnm rooms name …` — your own name in a room (`memberProfile`).
+#[derive(Subcommand)]
+pub(crate) enum RoomNameCommands {
+    /// Set your name in the room: one line, at most 64 characters. Writes a new version
+    /// of the name record you already hold, or your first one.
+    Set {
+        /// The name the room's other members should call you.
+        name: String,
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the host storing the room.
+        #[arg(long)]
+        host: String,
+        /// The host's DID. Needed to read the room's profile, which must permit names.
+        #[arg(long)]
+        host_did: Option<String>,
+    },
+    /// Withdraw your name in the room: a new version of your name record with an empty
+    /// name, after which readers show you as they would had you written none.
+    Clear {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+    },
+}
+
 /// `pnm rooms profile …` — the room's own profile.
 #[derive(Subcommand)]
 pub(crate) enum RoomProfileCommands {
@@ -1490,6 +1798,21 @@ pub(crate) enum RoomProfileCommands {
         /// Drop the emoji.
         #[arg(long)]
         no_emoji: bool,
+        /// The optional record members the room's writers may use, comma separated:
+        /// `kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`,
+        /// and `memberProfile` (with `kind`: members may write their names — `pnm rooms
+        /// name set`). Replaces the current list. List one only once every reader the room
+        /// expects accepts it — a reader that predates a member refuses records
+        /// carrying it, and one that predates this list refuses the profile.
+        #[arg(
+            long = "record-members",
+            value_delimiter = ',',
+            conflicts_with = "no_record_members"
+        )]
+        record_members: Vec<String>,
+        /// Drop the list: writers may use none of the optional record members.
+        #[arg(long)]
+        no_record_members: bool,
         #[arg(long)]
         member: Option<String>,
     },
@@ -1548,7 +1871,7 @@ pub(crate) enum RoomRecordsCommands {
 #[derive(Subcommand)]
 pub(crate) enum RoomRetentionCommands {
     /// Show the record retention in force and the room's latest prune
-    /// (`rooms/info/0.2`). Needs `read`.
+    /// (`rooms/info/0.3`). Needs `read`.
     Show {
         #[arg(long = "room")]
         room_id: String,
@@ -1586,11 +1909,14 @@ pub(crate) enum RoomRetentionCommands {
 /// `pnm rooms file …`.
 #[derive(Subcommand)]
 pub(crate) enum RoomFileCommands {
-    /// Put a file in a sealed room: seal it, upload the ciphertext, and write a
-    /// record whose signed, sealed body names it.
+    /// Put a file in a room: seal it, upload the ciphertext, and write a record
+    /// that names it.
     ///
-    /// The file's name, type, size and digest are inside the sealed body; the
-    /// host learns only that the record has a file, and its ciphertext size.
+    /// On `attributed` and `private` the file's name, type, size and digest are
+    /// inside the signed, sealed body; the host learns only that the record has a
+    /// file, and its ciphertext size. On `open` the file is sealed under a key
+    /// minted for it alone, and the record states the file and that key in the
+    /// clear: the host and every member can open it, the storage cannot.
     Put {
         /// The file to put.
         path: std::path::PathBuf,
@@ -1600,10 +1926,10 @@ pub(crate) enum RoomFileCommands {
         host: String,
         #[arg(long)]
         host_did: Option<String>,
-        /// A title for the record, sealed with it.
+        /// A title for the record, sealed with it (in the clear on `open`).
         #[arg(long)]
         title: Option<String>,
-        /// A one-line description, sealed with it.
+        /// A one-line description, sealed with it (in the clear on `open`).
         #[arg(long)]
         description: Option<String>,
         /// A tag, sealed with the record. Repeatable.
@@ -1655,6 +1981,134 @@ pub(crate) enum RoomFileCommands {
         /// Where to write the file. Must not exist.
         #[arg(long)]
         out: std::path::PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum CollectionCommands {
+    /// Show a context's collection-by-default setting — who last changed it and when, and
+    /// whether the operator has suspended collection — with a count of its personas by who
+    /// collects for them.
+    Status {
+        /// TARGET SCOPE: the context to show.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Enable collection by default for a context: the VTA collects for every persona there
+    /// no client has claimed, including any it had stopped for a conflict. Needs
+    /// administrative authority over the context.
+    Enable {
+        /// TARGET SCOPE: the context to change (not its ancestors or descendants).
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Disable collection by default for a context: the VTA stops collecting for every
+    /// unclaimed persona there and closes those connections before it answers. Do this
+    /// while a client that collects without claiming is in use. Claims still work. Needs
+    /// administrative authority over the context.
+    Disable {
+        /// TARGET SCOPE: the context to change (not its ancestors or descendants).
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Claim a persona DID — or renew your claim — so that you, not the VTA, collect for it
+    /// until the granted end. Connect only after this succeeds.
+    Claim {
+        /// TARGET SCOPE: the context the persona belongs to.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// The persona DID to collect for.
+        #[arg(long, value_name = "DID")]
+        identifier: String,
+        /// How long the claim should last, in seconds (60–2592000; the VTA may grant less).
+        /// Twenty-four hours (86400) is the recommended lease.
+        #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(60..=2_592_000))]
+        duration: Option<i64>,
+    },
+    /// Release the claim for a persona DID: yours ends at once (stop collecting first);
+    /// another client's ends at its stated end without renewal.
+    Release {
+        /// TARGET SCOPE: the context the persona belongs to.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// The persona DID whose claim to release.
+        #[arg(long, value_name = "DID")]
+        identifier: String,
+    },
+    /// List who collects for each persona DID of a context.
+    List {
+        /// TARGET SCOPE: the context to list.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// Only this identifier.
+        #[arg(long, value_name = "DID")]
+        identifier: Option<String>,
+        /// Only identifiers with this collector.
+        #[arg(long, value_parser = ["vta", "client", "none"])]
+        collector: Option<String>,
+        /// The most items to return (1–200).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Continue from a previous page's cursor (same filters).
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum NotificationsCommands {
+    /// List the notifications held in a context, most recently received first.
+    List {
+        /// TARGET SCOPE: the context whose notifications to list.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// Only notifications of this kind (e.g. `election`).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only notifications whose thing is held by this DID (e.g. one community).
+        #[arg(long = "held-by", value_name = "DID")]
+        held_by: Option<String>,
+        /// Also list dismissed ones.
+        #[arg(long)]
+        include_dismissed: bool,
+        /// Also list withdrawn and lapsed ones still held.
+        #[arg(long)]
+        include_lapsed: bool,
+        /// The most items to return (1–200).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Continue from a previous page's cursor (same filters).
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Show one held notification with the document that delivered it, as received.
+    Show {
+        /// The record identifier `list` printed.
+        record_id: String,
+        /// TARGET SCOPE: the context it is held in.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Dismiss one held notification: it leaves the default list, and nobody is told.
+    Dismiss {
+        /// The record identifier `list` printed.
+        record_id: String,
+        /// TARGET SCOPE: the context it is held in.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Hand the VTA a notification received for one of its DIDs elsewhere — a persona DID
+    /// whose mediator socket another client holds — exactly as received
+    /// (`vta/notifications/deposit/0.1`). The VTA verifies it and decides by its own
+    /// acceptance policy, as for a direct delivery; the answer is the same receipt whatever
+    /// it decided.
+    Deposit {
+        /// A file holding the `notifications/notify` or `notifications/relay` document as
+        /// received (`-` for stdin). Never edit it: its proofs cover it as it is.
+        file: String,
+        /// TARGET SCOPE: the context the addressed DID belongs to.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
     },
 }
 
@@ -2187,7 +2641,7 @@ pub(crate) enum VtaCommands {
     },
     /// Restart the VTA service (soft restart — reloads config and reconnects)
     Restart,
-    /// Open a sealed `vta/attestation/mnemonic-export/1.0` backup bundle.
+    /// Open a sealed `vta/attestation/mnemonic-export/1.1` backup bundle.
     Mnemonic {
         #[command(subcommand)]
         command: MnemonicCommands,
@@ -2380,6 +2834,36 @@ pub(crate) enum WebvhCommands {
         label: Option<String>,
         /// Skip the final "Publish?" confirmation prompt. Useful
         /// for scripted runs.
+        #[arg(long)]
+        no_confirm: bool,
+    },
+    /// List or remove the did:scid alias of an existing DID
+    /// (`vta/webvh/dids/update/1.1`).
+    ///
+    /// Every did:webvh log is also `did:scid:vh:1:<scid>`; the two are one
+    /// subject only while the document lists `did:scid:vh:1:<scid>?src=…` in
+    /// `alsoKnownAs` (VTI-KEY-164). The VTA derives the DID URL. Like any
+    /// document change this publishes an entry and ROTATES the DID's update
+    /// key. A DID this VTA presents as its did:scid cannot lose its alias.
+    #[command(group(
+        clap::ArgGroup::new("alias")
+            .required(true)
+            .args(["list", "remove"])
+    ))]
+    ScidAliasDid {
+        /// The DID (its did:webvh or did:scid form).
+        #[arg(long)]
+        did: String,
+        /// List the did:scid DID URL in `alsoKnownAs`.
+        #[arg(long, visible_alias = "on")]
+        list: bool,
+        /// Remove every did:scid entry for this log from `alsoKnownAs`.
+        #[arg(long, visible_alias = "off")]
+        remove: bool,
+        /// Audit label for this update.
+        #[arg(long)]
+        label: Option<String>,
+        /// Skip the "Publish?" confirmation prompt.
         #[arg(long)]
         no_confirm: bool,
     },
@@ -2757,6 +3241,36 @@ pub(crate) enum DidMgmtDidCommands {
         #[arg(long)]
         no_confirm: bool,
     },
+    /// List or remove the did:scid alias of an existing DID
+    /// (`vta/webvh/dids/update/1.1`).
+    ///
+    /// Every did:webvh log is also `did:scid:vh:1:<scid>`; the two are one
+    /// subject only while the document lists `did:scid:vh:1:<scid>?src=…` in
+    /// `alsoKnownAs` (VTI-KEY-164). The VTA derives the DID URL. Like any
+    /// document change this publishes an entry and ROTATES the DID's update
+    /// key. A DID this VTA presents as its did:scid cannot lose its alias.
+    #[command(group(
+        clap::ArgGroup::new("alias")
+            .required(true)
+            .args(["list", "remove"])
+    ))]
+    ScidAlias {
+        /// The DID (its did:webvh or did:scid form).
+        #[arg(long)]
+        did: String,
+        /// List the did:scid DID URL in `alsoKnownAs`.
+        #[arg(long, visible_alias = "on")]
+        list: bool,
+        /// Remove every did:scid entry for this log from `alsoKnownAs`.
+        #[arg(long, visible_alias = "off")]
+        remove: bool,
+        /// Audit label for this update.
+        #[arg(long)]
+        label: Option<String>,
+        /// Skip the "Publish?" confirmation prompt.
+        #[arg(long)]
+        no_confirm: bool,
+    },
     /// Register an existing serverless DID with a registered
     /// DID-hosting server.
     ///
@@ -2945,6 +3459,19 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     ttl,
                     watchers,
                     no_watchers,
+                    label,
+                    no_confirm,
+                },
+                DidMgmtDidCommands::ScidAlias {
+                    did,
+                    list,
+                    remove,
+                    label,
+                    no_confirm,
+                } => WebvhCommands::ScidAliasDid {
+                    did,
+                    list,
+                    remove,
                     label,
                     no_confirm,
                 },
@@ -3364,6 +3891,13 @@ pub(crate) enum ContextCommands {
         /// hidden aliases.
         #[arg(long = "yes", short = 'y', alias = "force", short_alias = 'f')]
         yes: bool,
+        /// Finish the deletion even if a DID's hosting server cannot confirm
+        /// removing its published log (down, refusing, or no longer
+        /// registered). Those DIDs may keep resolving and removing them is
+        /// then up to you. Without it you are shown them and asked; `--yes`
+        /// does not answer that question.
+        #[arg(long)]
+        abandon_host_copies: bool,
     },
     /// Create a context and mint a sealed admin credential for its first admin.
     ///
@@ -3733,7 +4267,7 @@ pub(crate) enum ApprovalsCommands {
     /// Require approval for a task type (replaces any existing rule for it).
     Require {
         /// Trust Task Type URI, e.g.
-        /// `https://trusttasks.org/spec/acl/grant/0.1`.
+        /// `https://trusttasks.org/spec/acl/grant/0.2`.
         task_type: String,
         /// Require the caller to re-authenticate (AAL2) — no third party.
         #[arg(long, conflicts_with = "consent")]
@@ -4309,9 +4843,9 @@ pub(crate) enum KeyCommands {
         /// Maximum number of keys to return
         #[arg(long, default_value = "50")]
         limit: u64,
-        /// Number of keys to skip
-        #[arg(long, default_value = "0")]
-        offset: u64,
+        /// Continue from a previous page: the `nextCursor` it printed
+        #[arg(long)]
+        cursor: Option<String>,
         /// FILTER: only keys with this status (`active` or `revoked`).
         #[arg(long)]
         status: Option<String>,

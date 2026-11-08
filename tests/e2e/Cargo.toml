@@ -19,7 +19,7 @@ autobins = false
 
 [dev-dependencies]
 # Embedded mediator fixture from affinidi-tdk-rs.
-affinidi-messaging-test-mediator = { version = "0.46", features = ["tsp"] }
+affinidi-messaging-test-mediator = { version = "0.50", features = ["tsp"] }
 
 # VTA: enable the `test-support` feature so we can stand up complete VTA
 # state (in-memory keyspaces, default `AppConfig`, bootstrap helpers)
@@ -35,11 +35,19 @@ vti-common = { path = "../../vti-common" }
 vti-voting = { path = "../../vti-voting" }
 vti-voting-service = { path = "../../vti-voting-service" }
 vta-cli-common = { path = "../../vta-cli-common" }
+# Room watches through a real mediator, for `room_key_watch`: a room host reachable at the
+# mediator (`didcomm`), the room's storage it is seeded through, and a room's own identity.
+room-host = { path = "../../room-host", features = ["didcomm", "test-support"] }
+vti-rooms = { path = "../../vti-rooms" }
+vti-rooms-dtg = { path = "../../vti-rooms-dtg", features = ["test-support"] }
 axum = { workspace = true }
 serde_json_canonicalizer = { workspace = true }
 
 # `TrustTask<Value>` — the document type `vta_sdk::trust_task_sign` signs.
 trust-tasks-rs = { workspace = true }
+# The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
+# "Pinning a task version").
+vti-specs = { path = "../../vti-specs", version = "0.10" }
 
 affinidi-tdk = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }

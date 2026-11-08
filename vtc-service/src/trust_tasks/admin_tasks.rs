@@ -5,13 +5,13 @@
 //! | task | signed by | authority (the signer's ACL row, read now) |
 //! |---|---|---|
 //! | `vtc/registry/diagnostics/0.1` | an administrator | `Admin` |
-//! | `vtc/registry/sync-jobs/{list,retry,discard}/0.1` | an administrator | `Admin` |
-//! | `vtc/registry/records/list/0.1` | an administrator | `Admin` |
-//! | `audit/list/0.1`, `audit/verify/0.1` | an unrestricted administrator | `Admin`, no context scope |
+//! | `vtc/registry/sync-jobs/{list,retry}/0.2`, `vtc/registry/sync-jobs/discard/0.1` | an administrator | `Admin` |
+//! | `vtc/registry/records/list/0.2` | an administrator | `Admin` |
+//! | `audit/list/0.2`, `audit/verify/0.1` | an unrestricted administrator | `Admin`, no context scope |
 //! | `config/show/0.1` | an administrator | `Admin` |
 //! | `config/{patch,reload,restart}/0.1` | an unrestricted administrator | `Admin`, no context scope: the configuration is the whole community's, and it holds the unrestricted-admin consent threshold |
-//! | `vtc/admin/invites/{list,revoke}/0.1` | an unrestricted administrator | `Admin`, no context scope: an admin invite confers unrestricted authority, so only an unrestricted admin manages them |
-//! | `vtc/admin/invites/create/0.1` | an unrestricted administrator | `Admin`, no context scope; writing the invitee's unrestricted entry also takes the inviter's passkey gesture bound to this invite, and another unrestricted admin's consent |
+//! | `vtc/admin/invites/list/0.2`, `vtc/admin/invites/revoke/0.1` | an unrestricted administrator | `Admin`, no context scope: an admin invite confers unrestricted authority, so only an unrestricted admin manages them |
+//! | `vtc/admin/invites/create/0.2` | an unrestricted administrator | `Admin`, no context scope; writing the invitee's unrestricted entry — or issuing a passkey invite, which confers one at its claim — also takes the inviter's passkey gesture bound to this invite, and another unrestricted admin's consent |
 //! | `auth/sessions/list/0.1` | any member | their own sessions, and those of every subject whose access they could withdraw |
 //! | `auth/revoke-session/0.2` | any member | the same rule |
 //!
@@ -29,23 +29,23 @@
 //! instead bound to this one document ([`crate::acl::bound_step_up`]).
 
 use serde_json::Value;
-use trust_tasks_rs::specs::audit::{list::v0_1 as audit_list, verify::v0_1 as audit_verify};
-use trust_tasks_rs::specs::auth::revoke_session::v0_2 as revoke_session;
-use trust_tasks_rs::specs::auth::sessions::list::v0_1 as sessions_list;
-use trust_tasks_rs::specs::config::{
+use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use vti_common::auth::extractor::AuthClaims;
+use vti_specs::audit::{list::v0_2 as audit_list, verify::v0_1 as audit_verify};
+use vti_specs::auth::revoke_session::v0_2 as revoke_session;
+use vti_specs::auth::sessions::list::v0_1 as sessions_list;
+use vti_specs::config::{
     patch::v0_1 as config_patch, reload::v0_1 as config_reload, restart::v0_1 as config_restart,
     show::v0_1 as config_show,
 };
-use trust_tasks_rs::specs::vtc::admin::invites::{
-    create::v0_1 as invite_create, list::v0_1 as invite_list, revoke::v0_1 as invite_revoke,
+use vti_specs::vtc::admin::invites::{
+    create::v0_2 as invite_create, list::v0_2 as invite_list, revoke::v0_1 as invite_revoke,
 };
-use trust_tasks_rs::specs::vtc::registry::{
-    diagnostics::v0_1 as diagnostics, records::list::v0_1 as records_list,
-    sync_jobs::discard::v0_1 as sync_discard, sync_jobs::list::v0_1 as sync_list,
-    sync_jobs::retry::v0_1 as sync_retry, sync_jobs::retry::v0_2 as sync_retry_0_2,
+use vti_specs::vtc::registry::{
+    diagnostics::v0_1 as diagnostics, records::list::v0_2 as records_list,
+    sync_jobs::discard::v0_1 as sync_discard, sync_jobs::list::v0_2 as sync_list,
+    sync_jobs::retry::v0_2 as sync_retry,
 };
-use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::auth::extractor::AuthClaims;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, reject_with_code,
@@ -59,7 +59,6 @@ use crate::server::AppState;
 pub(crate) const DIAGNOSTICS_TYPE: &str = <diagnostics::Payload as Payload>::TYPE_URI;
 pub(crate) const SYNC_JOBS_LIST_TYPE: &str = <sync_list::Payload as Payload>::TYPE_URI;
 pub(crate) const SYNC_JOBS_RETRY_TYPE: &str = <sync_retry::Payload as Payload>::TYPE_URI;
-pub(crate) const SYNC_JOBS_RETRY_0_2_TYPE: &str = <sync_retry_0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const SYNC_JOBS_DISCARD_TYPE: &str = <sync_discard::Payload as Payload>::TYPE_URI;
 pub(crate) const RECORDS_LIST_TYPE: &str = <records_list::Payload as Payload>::TYPE_URI;
 pub(crate) const AUDIT_LIST_TYPE: &str = <audit_list::Payload as Payload>::TYPE_URI;
@@ -79,7 +78,6 @@ pub(crate) const URIS: &[&str] = &[
     DIAGNOSTICS_TYPE,
     SYNC_JOBS_LIST_TYPE,
     SYNC_JOBS_RETRY_TYPE,
-    SYNC_JOBS_RETRY_0_2_TYPE,
     SYNC_JOBS_DISCARD_TYPE,
     RECORDS_LIST_TYPE,
     AUDIT_LIST_TYPE,
@@ -110,7 +108,6 @@ pub(super) async fn dispatch(
         DIAGNOSTICS_TYPE => handle_diagnostics(state, ctx, doc).await,
         SYNC_JOBS_LIST_TYPE => handle_sync_jobs_list(state, ctx, doc).await,
         SYNC_JOBS_RETRY_TYPE => handle_sync_jobs_retry(state, ctx, doc).await,
-        SYNC_JOBS_RETRY_0_2_TYPE => handle_sync_jobs_retry_0_2(state, ctx, doc).await,
         SYNC_JOBS_DISCARD_TYPE => handle_sync_jobs_discard(state, ctx, doc).await,
         RECORDS_LIST_TYPE => handle_records_list(state, ctx, doc).await,
         AUDIT_LIST_TYPE => handle_audit_list(state, ctx, doc).await,
@@ -232,24 +229,6 @@ async fn handle_sync_jobs_retry(
     }
 }
 
-async fn handle_sync_jobs_retry_0_2(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let (actor, payload) =
-        match capable_with::<sync_retry_0_2::Payload>(state, ctx, &doc, Capability::RegistryAdmin)
-            .await
-        {
-            Ok(p) => p,
-            Err(reject) => return reject,
-        };
-    match crate::routes::registry_admin::sync_jobs_retry_v0_2(state, &actor.did, payload).await {
-        Ok(response) => success_response(&doc, response),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
-}
-
 async fn handle_sync_jobs_discard(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -288,7 +267,7 @@ async fn handle_records_list(
 
 // ─── the audit log ───────────────────────────────────────────────────────
 
-/// `audit/list/0.1`. Unrestricted administrators only: the envelopes carry
+/// `audit/list/0.2`. Unrestricted administrators only: the envelopes carry
 /// plaintext actor and target DIDs, the audit keyspace's own tier.
 async fn handle_audit_list(
     state: &AppState,
@@ -467,10 +446,11 @@ async fn handle_invites_list(
     }
 }
 
-/// `vtc/admin/invites/create/0.1`. Every check that decides the invite runs
-/// first ([`crate::routes::admin::invites::check_invite`]). An invite for a DID
-/// the community holds no entry for writes an **unrestricted** admin entry, so
-/// it costs what an unrestricted `acl/grant` costs on this door: the
+/// `vtc/admin/invites/create/0.2`. Every check that decides the invite runs
+/// first ([`crate::routes::admin::invites::check_invite`]). A wallet invite for
+/// a DID the community holds no entry for writes an **unrestricted** admin
+/// entry, and a passkey invite (no `did`) confers one when it is claimed, so
+/// either costs what an unrestricted `acl/grant` costs on this door: the
 /// inviter's passkey gesture bound to this document, then another
 /// unrestricted admin's consent. Without the gesture the answer is
 /// `permissionDenied` with the ceremony inline as `details.stepUpRequest`, and
@@ -524,20 +504,34 @@ async fn handle_invites_create(
         // What a community administrator holds that confers authority: what
         // the inviter's fellow holders must approve (VTI-APV-018).
         let stake = crate::acl::AdminAuthority::community_admin().conferring();
+        // A passkey invitation always grants (create 0.2 item 4), for a DID
+        // that does not exist until it is claimed.
+        let (subject, reason, summary) = match request.did.as_deref() {
+            Some(did) => (
+                did,
+                format!("Invite {did} to become a community administrator of this community"),
+                crate::routes::acl::unrestricted_grant_summary(did),
+            ),
+            None => (
+                crate::routes::admin::invites::PASSKEY_INVITATION_SUBJECT,
+                "Invite a new community administrator, who will sign in with a passkey".to_string(),
+                "Invite a new unrestricted administrator by passkey: whoever claims the \
+                 invitation's install URL and claim code becomes one, under their passkey's own \
+                 DID"
+                .to_string(),
+            ),
+        };
         let gate = admin_consent::gesture_then_consent(
             state,
             &actor.did,
-            &request.did,
+            subject,
             &stake,
             Operation {
                 type_uri: &type_uri,
                 payload: &doc.payload,
             },
-            &format!(
-                "Invite {} to become a community administrator of this community",
-                request.did
-            ),
-            &crate::routes::acl::unrestricted_grant_summary(&request.did),
+            &reason,
+            &summary,
         )
         .await;
         let ready = match gate {

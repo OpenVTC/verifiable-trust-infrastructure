@@ -99,7 +99,7 @@ fn assert_conforms(captured: &[(String, Value)]) {
     );
 
     for (uri, payload) in captured {
-        let Some(schema) = trust_tasks_rs::schema_index::schema_for(uri) else {
+        let Some(schema) = vti_specs::schema_index::schema_for(uri) else {
             assert!(
                 UNPUBLISHED.iter().any(|(u, _)| u == uri),
                 "no published payload schema for `{uri}`, and it is not \
@@ -130,7 +130,9 @@ fn assert_conforms(captured: &[(String, Value)]) {
 #[tokio::test]
 async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
     // ── keys ─────────────────────────────────────────────────────────
-    assert_conforms(&captured(|c| async move { drop(c.list_keys(0, 50, None, None).await) }).await);
+    assert_conforms(
+        &captured(|c| async move { drop(c.list_keys(None, 50, None, None).await) }).await,
+    );
     assert_conforms(
         &captured(|c| async move {
             drop(
@@ -275,7 +277,7 @@ async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
                         "id": "secret-1",
                         "contextId": "openvtc",
                         // `SiteTarget` is a `kind`-tagged union, not a bare URL.
-                        "targets": [{"kind": "web-origin", "origin": "https://example.test"}],
+                        "targets": [{"kind": "webOrigin", "origin": "https://example.test"}],
                         "label": "example login",
                         "secretKind": "password",
                     }),
@@ -303,7 +305,7 @@ async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
     // ── services (vta/services/*) ────────────────────────────────────
     //
     // These were bespoke REST routes until the SDK moved onto the Trust Tasks;
-    // each builds its `config` by hand and inserts `drainTtlSecs` only when
+    // each builds its `config` by hand and inserts `drainTtlSeconds` only when
     // asked, which is exactly the shape this census exists for.
     use vta_sdk::protocol::services as svc;
     use vta_sdk::protocol::{
@@ -465,7 +467,7 @@ fn every_unpublished_entry_is_still_unpublished() {
             "{uri}: an UNPUBLISHED entry must state why no schema exists"
         );
         assert!(
-            trust_tasks_rs::schema_index::schema_for(uri).is_none(),
+            vti_specs::schema_index::schema_for(uri).is_none(),
             "`{uri}` now HAS a published payload schema, so the census can \
              validate it. Remove the UNPUBLISHED entry — leaving it there \
              silently skips a task that is now checkable."

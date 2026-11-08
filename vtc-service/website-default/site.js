@@ -113,26 +113,59 @@ function showTransports(transports) {
 }
 
 /**
- * Show the community DID as a QR code for a wallet to scan.
- *
- * The daemon renders it (`/v1/community/did-qr.svg`) from the same DID as
- * the text beside it, and it carries the bare DID and nothing else. The
- * image, its caption and the hero hint stay hidden until it has loaded, so
- * a VTC whose profile is not initialised yet (404) shows the text alone
- * rather than a broken image.
+ * Whether this device has a touch screen, and so may be the one Keyring
+ * runs on. `any-pointer`, not `pointer`: an iPad with a trackpad or
+ * keyboard reports a fine primary pointer. iPadOS can also present itself
+ * as a Mac, which only `maxTouchPoints` gives away.
  */
-function showDidQr() {
-  const frame = document.getElementById("pass-qr");
+const HAS_TOUCH =
+  window.matchMedia("(any-pointer: coarse)").matches ||
+  navigator.maxTouchPoints > 1;
+
+/**
+ * Whether touch is the primary input (a phone, a tablet on its own): there
+ * the code can only help another device, so it starts folded.
+ */
+const TOUCH_FIRST = window.matchMedia(
+  "(hover: none) and (pointer: coarse)",
+).matches;
+
+/**
+ * Show the community DID as a QR code for a wallet to scan, and as a link
+ * for a wallet on this device.
+ *
+ * The daemon renders the code (`/v1/community/did-qr.svg`) from the same
+ * DID as the text beside it, and it carries the bare DID and nothing else.
+ * The code and the hero hint stay hidden until it has loaded, so a VTC
+ * whose profile is not initialised yet (404) shows the text alone rather
+ * than a broken image.
+ *
+ * "Join in Keyring" links to the same DID, so a tap does what a scan would.
+ * It shows on a touch device as soon as the DID is known, so a code that
+ * fails to load does not take it away. It opens the wallet's join flow, not
+ * sign-in, hence the label and the note beside it. The link is set only for
+ * a value that is a DID, so the page never puts another scheme
+ * (`javascript:`, `https:`) behind a button that says it opens a wallet.
+ */
+function showDidQr(did) {
+  const fold = document.getElementById("pass-fold");
   const img = document.getElementById("pass-qr-img");
-  if (!frame || !img || img.getAttribute("src")) return;
+  if (!fold || !img || img.getAttribute("src")) return;
+  const open = document.getElementById("pass-open");
+  const linkable = typeof did === "string" && /^did:[a-z0-9]+:\S+$/.test(did);
+  if (open && linkable && HAS_TOUCH) {
+    open.href = did;
+    open.hidden = false;
+    const note = document.getElementById("pass-open-note");
+    if (note) note.hidden = false;
+  }
+  if (TOUCH_FIRST) fold.open = false;
   img.addEventListener(
     "load",
     () => {
-      frame.hidden = false;
-      for (const id of ["pass-caption", "pass-hint"]) {
-        const el = document.getElementById(id);
-        if (el) el.hidden = false;
-      }
+      fold.hidden = false;
+      const hint = document.getElementById("pass-hint");
+      if (hint) hint.hidden = false;
     },
     { once: true },
   );
@@ -289,7 +322,7 @@ async function refresh() {
       // window before the profile is initialised.
       if (profile.communityDid) {
         setText("community-did", profile.communityDid);
-        showDidQr();
+        showDidQr(profile.communityDid);
       }
       if (profile.description) {
         setText("community-description", profile.description);

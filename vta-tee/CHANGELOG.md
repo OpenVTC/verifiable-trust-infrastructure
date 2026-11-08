@@ -2,6 +2,36 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.37.0...vta-tee-v0.38.0) — 2026-11-05
+
+
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.36.0...vta-tee-v0.37.0) — 2026-11-05
+
+
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.33.0...vta-tee-v0.36.0) — 2026-11-04
+
+
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.32.0...vta-tee-v0.33.0) — 2026-11-04
+
+
+## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.31.0...vta-tee-v0.32.0) — 2026-11-03
+
+
+## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.30.0...vta-tee-v0.31.0) — 2026-11-03
+
+
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.29.0...vta-tee-v0.30.0) — 2026-11-02
+
+
+## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.27.0...vta-tee-v0.29.0) — 2026-10-30
+
+
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.26.0...vta-tee-v0.27.0) — 2026-10-28
+
+
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.25.0...vta-tee-v0.26.0) — 2026-10-27
+
+
 ## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.24.0...vta-tee-v0.25.0) — 2026-10-26
 
 

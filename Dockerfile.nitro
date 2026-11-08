@@ -151,14 +151,25 @@ COPY vta-service/ vta-service/
 COPY vta-enclave/ vta-enclave/
 COPY vtc-client/ vtc-client/
 COPY vtc-service/ vtc-service/
+COPY vtc-mcp/ vtc-mcp/
 COPY vti-common/ vti-common/
+COPY vti-mcp-common/ vti-mcp-common/
 COPY vti-rooms/ vti-rooms/
 COPY vti-rooms-dtg/ vti-rooms-dtg/
 COPY vti-rooms-wasm/ vti-rooms-wasm/
 COPY vti-secrets/ vti-secrets/
+COPY vti-specs/ vti-specs/
+COPY vti-specs-core/ vti-specs-core/
+COPY vti-specs-rooms/ vti-specs-rooms/
+COPY vti-specs-vta/ vti-specs-vta/
+COPY vti-specs-vtc/ vti-specs-vtc/
+COPY vti-specs-vtn/ vti-specs-vtn/
+COPY vti-trust-task-server/ vti-trust-task-server/
+COPY vti-oob-server/ vti-oob-server/
 COPY vti-vetting-pcs/ vti-vetting-pcs/
 COPY vti-voting/ vti-voting/
 COPY vti-voting-service/ vti-voting-service/
+COPY vti-vtn/ vti-vtn/
 COPY vti-webauthn/ vti-webauthn/
 COPY vti-witness/ vti-witness/
 

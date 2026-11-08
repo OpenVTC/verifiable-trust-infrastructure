@@ -34,7 +34,7 @@ import { attestApproverWithWallet, signWithWallet, walletApproverDid } from "./w
 
 export const APPROVER_LIST_TASK = "https://trusttasks.org/spec/auth/step-up/approver/list/0.1";
 export const APPROVER_REVOKE_TASK = "https://trusttasks.org/spec/auth/step-up/approver/revoke/0.1";
-export const APPROVER_INVITE_TASK = "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1";
+export const APPROVER_INVITE_TASK = "https://trusttasks.org/spec/auth/step-up/approver/invite/0.2";
 export const APPROVER_ENROLL_TASK = "https://trusttasks.org/spec/auth/step-up/approver/enroll/0.1";
 export const APPROVER_REDEEM_START_TASK = "https://trusttasks.org/spec/auth/step-up/approver/redeem/start/0.1";
 export const APPROVER_REDEEM_FINISH_TASK = "https://trusttasks.org/spec/auth/step-up/approver/redeem/finish/0.1";
@@ -128,7 +128,7 @@ export function revokeApprover(
 /** Invite `subject` to enrol an approver (an administrator, never for
  *  themselves), behind the inviting administrator's own bound step-up. */
 export function inviteApprover(
-  args: { subject: string; label?: string; ttl?: number },
+  args: { subject: string; label?: string; ttlSeconds?: number },
   confirmGesture: ConfirmGesture,
 ): Promise<ApproverInvite> {
   return postSignedWithStepUp<ApproverInvite>(
@@ -136,7 +136,7 @@ export function inviteApprover(
     {
       subject: args.subject,
       ...(args.label ? { label: args.label } : {}),
-      ...(args.ttl ? { ttl: args.ttl } : {}),
+      ...(args.ttlSeconds ? { ttlSeconds: args.ttlSeconds } : {}),
     },
     confirmGesture,
   );

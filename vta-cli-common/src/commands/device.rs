@@ -2,7 +2,7 @@
 //!
 //! Thin wrappers over the `VtaClient::device_*` methods. A personal AI agent
 //! (open-claw / nano-claw / hermes) is a Service consumer
-//! (`consumerKind.serviceKind = "ai-agent"`); these commands enroll, list, and
+//! (`consumerKind.serviceKind = "aiAgent"`); these commands enroll, list, and
 //! retire its `DeviceBinding`. See `docs/02-vta/personal-ai-agents.md`.
 
 use serde_json::{Value, json};
@@ -22,8 +22,27 @@ fn print_result(label: &str, value: &Value) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// The camelCase spelling `device/_shared/0.2` gives an enum value
+/// (`ai-agent` → `aiAgent`, `cache-and-keys` → `cacheAndKeys`), so an operator
+/// who types the 0.1 spelling is not refused by the VTA's schema.
+fn camel(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut upper = false;
+    for ch in value.chars() {
+        match ch {
+            '-' => upper = true,
+            c if upper => {
+                out.extend(c.to_uppercase());
+                upper = false;
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// `device list` — list the caller's registered devices. `service_kind` filters
-/// to a single Service consumer kind (e.g. `ai-agent`) when supplied.
+/// to a single Service consumer kind (e.g. `aiAgent`) when supplied.
 pub async fn cmd_device_list(
     client: &VtaClient,
     service_kind: Option<String>,
@@ -31,7 +50,7 @@ pub async fn cmd_device_list(
     let mut filters = json!({});
     if let Some(sk) = service_kind {
         filters["consumerKindFilter"] = json!("service");
-        filters["serviceKindFilter"] = json!(sk);
+        filters["serviceKindFilter"] = json!(camel(&sk));
     }
     let result = client.device_list(filters).await?;
     print_result("Registered devices:", &result)
@@ -46,7 +65,7 @@ pub async fn cmd_device_register(
     platform: Option<String>,
     hpke_public_key: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let consumer_kind = json!({ "kind": "service", "serviceKind": service_kind });
+    let consumer_kind = json!({ "kind": "service", "serviceKind": camel(&service_kind) });
     let result = client
         .device_register(
             consumer_kind,
@@ -71,7 +90,7 @@ pub async fn cmd_device_disable(
 }
 
 /// `device wipe` — remotely wipe a lost/compromised device. Marks it wiped +
-/// disabled and records the reason. `scope` is `cache`, `cache-and-keys`, or
+/// disabled and records the reason. `scope` is `cache`, `cacheAndKeys`, or
 /// `full`.
 pub async fn cmd_device_wipe(
     client: &VtaClient,
@@ -79,6 +98,7 @@ pub async fn cmd_device_wipe(
     reason: String,
     scope: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = camel(&scope);
     let result = client.device_wipe(&device_id, &reason, &scope).await?;
     println!("{DIM}Device {device_id} wiped (scope: {scope}).{RESET}");
     print_result("Result:", &result)

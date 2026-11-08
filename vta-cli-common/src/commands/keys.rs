@@ -423,13 +423,18 @@ pub async fn cmd_key_rename(
 
 pub async fn cmd_key_list(
     client: &VtaClient,
-    offset: u64,
+    cursor: Option<String>,
     limit: u64,
     status: Option<String>,
     context_id: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client
-        .list_keys(offset, limit, status.as_deref(), context_id.as_deref())
+        .list_keys(
+            cursor.as_deref(),
+            limit,
+            status.as_deref(),
+            context_id.as_deref(),
+        )
         .await?;
 
     if crate::render::is_json_output() {
@@ -442,11 +447,9 @@ pub async fn cmd_key_list(
         return Ok(());
     }
 
-    let end = (offset + resp.keys.len() as u64).min(resp.total);
-
     if is_full_display() {
         print_full_list_title(
-            &format!("Keys (showing {}..{} of {}", offset + 1, end, resp.total),
+            &format!("Keys ({} on this page", resp.keys.len()),
             resp.keys.len(),
         );
         for key in &resp.keys {
@@ -467,6 +470,7 @@ pub async fn cmd_key_list(
                 ("Created", &created),
             ]);
         }
+        print_next_cursor(resp.next_cursor.as_deref());
         return Ok(());
     }
 
@@ -520,15 +524,23 @@ pub async fn cmd_key_list(
         })
         .collect();
 
-    let title = format!(" Keys ({}\u{2013}{} of {}) ", offset + 1, end, resp.total);
+    let title = format!(" Keys ({}) ", resp.keys.len());
 
     let table = Table::new(rows, [Constraint::Min(1)])
         .block(Block::bordered().title(title).border_style(dim));
 
     let height = (resp.keys.len() as u16 * 3).saturating_sub(1) + 2;
     print_widget(table, height);
+    print_next_cursor(resp.next_cursor.as_deref());
 
     Ok(())
+}
+
+/// Tell the operator how to fetch the next page, when there is one.
+fn print_next_cursor(next: Option<&str>) {
+    if let Some(next) = next {
+        println!("More keys remain: pass --cursor {next} for the next page.");
+    }
 }
 
 pub async fn cmd_seeds_list(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
@@ -767,7 +779,7 @@ pub async fn cmd_key_secrets(
             "provide key IDs as arguments, or use --context to export all active keys in a context",
         )?;
         let resp = client
-            .list_keys(0, 10000, Some("active"), Some(ctx))
+            .list_keys(None, 10000, Some("active"), Some(ctx))
             .await?;
         resp.keys.into_iter().map(|k| k.key_id).collect()
     } else {

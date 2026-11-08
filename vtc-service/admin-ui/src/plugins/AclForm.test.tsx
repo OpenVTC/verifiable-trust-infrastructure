@@ -22,7 +22,7 @@ vi.mock("@/lib/signed-act", async (original) => ({
 }));
 
 const GRANT = "https://trusttasks.org/spec/acl/grant/0.2";
-const LIST = "https://trusttasks.org/spec/acl/list/0.2";
+const LIST = "https://trusttasks.org/spec/acl/list/0.3";
 
 // The payload schema types `label` and `expiresAt` as strings, so a blank
 // optional field must be absent from the request, never `null` (a 400).
@@ -200,7 +200,7 @@ describe("Access control — roles and capabilities", () => {
 describe("Access control — your own entry (VTI-ACL-052)", () => {
   const ME = "did:example:me";
   const UPDATE = "https://trusttasks.org/spec/acl/update/0.2";
-  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
   const whoami = {
     session: {
       id: "s1",
@@ -287,8 +287,8 @@ describe("Access control — your own entry (VTI-ACL-052)", () => {
 // gesture bound to the immediate removal.
 describe("Access control — suspension and remove now", () => {
   const OTHER = "did:example:other";
-  const REVOKE = "https://trusttasks.org/spec/acl/revoke/0.1";
-  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+  const REVOKE = "https://trusttasks.org/spec/acl/revoke/0.2";
+  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
   const LANDS_AT = "2026-10-05T09:00:00Z";
   const other = (suspended = false) => ({
     subject: OTHER,
@@ -351,6 +351,7 @@ describe("Access control — suspension and remove now", () => {
     await waitFor(() => expect(sentPayloads(requests, REVOKE)).toHaveLength(1));
     expect(sentPayloads(requests, REVOKE)[0]).toEqual({
       subject: OTHER,
+      revocation: { kind: "entry" },
       ext: { "org.openvtc": { immediate: { confirm: OTHER } } },
     });
   });
@@ -369,9 +370,78 @@ describe("Access control — forms opened from the URL", () => {
   it("opens Invite a new admin for ?invite=1", async () => {
     mockFetch([
       taskRoute(LIST, { entries: [], truncated: false }),
-      taskRoute("https://trusttasks.org/spec/vtc/admin/invites/list/0.1", { invites: [] }),
+      taskRoute("https://trusttasks.org/spec/vtc/admin/invites/list/0.2", { invites: [] }),
     ]);
     renderWithProviders(<Acl />, { route: "/acl?invite=1", path: "/acl" });
     expect(await screen.findByRole("heading", { name: "Invite a new admin" })).toBeTruthy();
+  });
+});
+
+// `vtc/admin/invites/create/0.2`: an invite is a passkey invitation unless the
+// administrator chooses a wallet one, and only a wallet invitation names a DID.
+describe("Admin invites — passkey or wallet", () => {
+  const INVITES_LIST = "https://trusttasks.org/spec/vtc/admin/invites/list/0.2";
+  const INVITES_CREATE = "https://trusttasks.org/spec/vtc/admin/invites/create/0.2";
+  const issued = (kind: "passkey" | "wallet") => ({
+    jti: "0b6f2a9e-4c1d-4e8f-9a2b-3c4d5e6f7a8b",
+    kind,
+    installUrl: "https://vtc.example/admin/install?token=t",
+    claimCode: "K7QF-2M9D-XR4T",
+    expiresAt: "2026-10-30T10:00:00Z",
+    aclEntryCreated: kind === "wallet",
+  });
+
+  it("mints a passkey invitation, naming no DID, by default", async () => {
+    const requests = mockFetch([
+      taskRoute(LIST, { entries: [], truncated: false }),
+      taskRoute(INVITES_LIST, { invites: [] }),
+      taskRoute(INVITES_CREATE, issued("passkey")),
+    ]);
+    renderWithProviders(<Acl />, { route: "/acl?invite=1", path: "/acl" });
+    await screen.findByRole("heading", { name: "Invite a new admin" });
+    expect(screen.queryByPlaceholderText("did:webvh:… or did:key:z6Mk…")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /mint invite/i }));
+
+    await waitFor(() => expect(sentPayloads(requests, INVITES_CREATE)).toHaveLength(1));
+    const payload = sentPayloads(requests, INVITES_CREATE)[0] as Record<string, unknown>;
+    expect("did" in payload).toBe(false);
+    expect(await screen.findByText(/register a passkey/)).toBeTruthy();
+  });
+
+  it("mints a wallet invitation for the DID given", async () => {
+    const requests = mockFetch([
+      taskRoute(LIST, { entries: [], truncated: false }),
+      taskRoute(INVITES_LIST, { invites: [] }),
+      taskRoute(INVITES_CREATE, issued("wallet")),
+    ]);
+    renderWithProviders(<Acl />, { route: "/acl?invite=1", path: "/acl" });
+    await screen.findByRole("heading", { name: "Invite a new admin" });
+    fireEvent.click(screen.getByRole("radio", { name: /with a wallet/i }));
+    fireEvent.change(screen.getByPlaceholderText("did:webvh:… or did:key:z6Mk…"), {
+      target: { value: "did:example:bob" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /mint invite/i }));
+
+    await waitFor(() => expect(sentPayloads(requests, INVITES_CREATE)).toHaveLength(1));
+    expect(sentPayloads(requests, INVITES_CREATE)[0]).toMatchObject({ did: "did:example:bob" });
+  });
+
+  it("lists a passkey invitation by its kind, its DID not yet created", async () => {
+    mockFetch([
+      taskRoute(LIST, { entries: [], truncated: false }),
+      taskRoute(INVITES_LIST, {
+        invites: [
+          {
+            jti: "0b6f2a9e-4c1d-4e8f-9a2b-3c4d5e6f7a8b",
+            kind: "passkey",
+            status: "issued",
+            expiresAt: "2026-10-30T10:00:00Z",
+          },
+        ],
+      }),
+    ]);
+    renderWithProviders(<Acl />, { route: "/acl", path: "/acl" });
+    expect(await screen.findByText("created when claimed")).toBeTruthy();
+    expect(screen.getByText("Passkey")).toBeTruthy();
   });
 });

@@ -15,7 +15,7 @@
 // Values other members typed are rendered as text, never as markup, and a
 // picture is shown only once its bytes match the digest its card names.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookUser, Contact, Copy, ExternalLink, Globe, ImagePlus, Pencil, Search, Star, Trash2 } from "lucide-react";
 
@@ -35,6 +35,7 @@ import {
   updateCard,
   uploadImage,
 } from "./directory-api";
+import { WallSection } from "./Badges";
 import { PictureError, prepare, toBase64Url } from "./picture";
 import {
   Crumbs,
@@ -480,6 +481,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
               </ul>
             </section>
           )}
+          <WallSection entryId={entryId} name={name} own={own} />
           {(rest.length > 0 || text(f.did)) && (
             <section className="profile-section">
               <h2>Details</h2>
@@ -533,6 +535,7 @@ function YourMarks({ entryId, marks }: { entryId: string; marks: Marks }) {
   const newList = useNewList();
   const [petname, setPetname] = useState(mark?.petname ?? "");
   const [listName, setListName] = useState("");
+  const petnameId = useId();
   useEffect(() => setPetname(mark?.petname ?? ""), [mark?.petname]);
   const onLists = new Set(mark?.lists ?? []);
   const toggle = (listId: string) => {
@@ -545,7 +548,7 @@ function YourMarks({ entryId, marks }: { entryId: string; marks: Marks }) {
     <section className="profile-section">
       <h2>Only you see this</h2>
       <form
-        className="stack"
+        className="card-form"
         onSubmit={(e) => {
           e.preventDefault();
           const p = petname.trim();
@@ -553,29 +556,36 @@ function YourMarks({ entryId, marks }: { entryId: string; marks: Marks }) {
           set.mutate(p ? { entryId, petname: p } : { entryId, removePetname: true });
         }}
       >
-        <label>
-          Your name for them
-          <input value={petname} maxLength={128} onChange={(e) => setPetname(e.target.value)} />
-        </label>
-        <button type="submit" className="btn btn-ghost btn-sm" disabled={set.isPending}>
-          Save
-        </button>
+        <div className="card-field">
+          <label htmlFor={petnameId}>Your name for them</label>
+          <div className="form-row">
+            <input
+              id={petnameId}
+              value={petname}
+              maxLength={128}
+              onChange={(e) => setPetname(e.target.value)}
+            />
+            <button type="submit" className="btn btn-ghost btn-sm" disabled={set.isPending}>
+              Save
+            </button>
+          </div>
+        </div>
       </form>
-      <fieldset className="stack">
+      <fieldset className="card-field">
         <legend>Your lists</legend>
         {marks.lists.map((l) => (
-          <label key={l.listId}>
+          <label key={l.listId} className="check">
             <input
               type="checkbox"
               checked={onLists.has(l.listId)}
               disabled={set.isPending}
               onChange={() => toggle(l.listId)}
-            />{" "}
-            {l.name}
+            />
+            <span>{l.name}</span>
           </label>
         ))}
         <form
-          className="inline-form"
+          className="form-row"
           onSubmit={(e) => {
             e.preventDefault();
             const n = listName.trim();

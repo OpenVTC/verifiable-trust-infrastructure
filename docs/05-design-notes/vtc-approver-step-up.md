@@ -127,7 +127,7 @@ user's approver device. Rejected as the end state because the VTC cannot see
 that the VTA enforced anything — it sees one signature, by a key the caller
 already holds, which is the case APV-015 names as not satisfying the step-up.
 It would also need the VTA's rules to match on the type of the document being
-signed rather than on `vault/sign-trust-task/0.1`, or every console signature
+signed rather than on `vault/sign-trust-task/0.2`, or every console signature
 would need approval.
 
 **(c) Route the step-up through `task-consent/*` with the requester's devices
@@ -167,7 +167,7 @@ label, enrolled_at, enrolled_via, last_used_at }`, `subject:<did>` → list.
 
 ```
 console ──(1) signed acl/grant (console key)──────────────▶ VTC gate
-        ◀─(2) stepUpRequired: approve-request 0.4
+        ◀─(2) stepUpRequired: approve-request 0.5
               {subject, challenge, wireDigest,
                accepts: [approverSigned, webauthn?],
                approvers: [did:key:…]}───────────────────── parks a pending mark
@@ -176,7 +176,7 @@ console ──(3) approveStepUp(request, operation)──▶ plugin
                  renders the operation, user gesture unwraps the approver key,
                  approver signs the step-up statement
         ◀────────── evidence {kind: approverSigned, statement} ──
-console ──(4) approve-response 0.6 {subject, challenge, decision: approved,
+console ──(4) approve-response 0.7 {subject, challenge, decision: approved,
               evidence}, signed by the SUBJECT DID
               (wallet signTrustTask {asDid: subject})──────▶ VTC verifies both,
         ◀─(5) {status: recorded, boundTo}─────────────────── records the mark
@@ -286,8 +286,9 @@ enforces for step-up passkeys).
 
 ### 6b. R1 — at install, for the founding administrator
 
-Today `vtc/install/claim/{start,finish}/0.2` registers a passkey and derives the
-first administrator's `did:key` from it. A wallet founder needs a claim *under
+The passkey install (`vtc/install/claim/{start,finish}/0.2` when this was
+written, now `vtc/install/claim/passkey/{start,finish}/0.1`) registers a passkey
+and derives the first administrator's `did:key` from it. A wallet founder needs a claim *under
 a DID they already control* — which the install route's own documentation
 names as "a future version rather than approximated". This is that version:
 
@@ -303,7 +304,7 @@ choice when they claim.
 
 ### 6c. R2 — invited by another administrator
 
-The step-up passkey invite (`auth/passkey/enroll/invite/0.2`, `purpose:
+The step-up passkey invite (`auth/passkey/enroll/invite/0.3`, `purpose:
 stepUp`) already has every property needed: issued only by a community
 administrator behind their own bound step-up, never to themselves, single use,
 TTL-capped, token in the URL and claim code delivered separately, hashes only,

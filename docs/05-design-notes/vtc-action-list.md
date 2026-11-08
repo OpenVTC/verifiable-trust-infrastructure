@@ -791,7 +791,7 @@ not backed up), then `inEffect` if it is on. Written before the recorded value
 is updated, so a crash re-audits rather than loses the change; a start that
 cannot write them does not proceed.
 
-**Git separation of duties.** Fixed rule 7 of `git-ns/right/grant/0.3` (nobody
+**Git separation of duties.** Fixed rule 7 of `git-ns/right/grant/0.4` (nobody
 records an elevated git right for themselves) is a second-party control of the
 same kind, and its escape hatch — break-glass — needs another administrator to
 ratify. So the mode reaches it too (`git_ns::single_admin`), on the same terms:

@@ -26,13 +26,11 @@ use crate::common::second_party::Gesturer;
 use crate::common::signed::{error_code, post, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const LIST_1: &str = "https://trusttasks.org/spec/vtc/storage/configs/list/0.1";
-const GET_1: &str = "https://trusttasks.org/spec/vtc/storage/configs/get/0.1";
 const LIST: &str = "https://trusttasks.org/spec/vtc/storage/configs/list/0.2";
 const GET: &str = "https://trusttasks.org/spec/vtc/storage/configs/get/0.2";
-const CREATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/create/0.2";
-const UPDATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/update/0.2";
-const SET: &str = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.2";
+const CREATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/create/0.3";
+const UPDATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/update/0.3";
+const SET: &str = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3";
 
 const ROLE: &str = "arn:aws:iam::123456789012:role/northwind-rooms-writer";
 const SECRET: &str = "example-secret-not-a-real-one";
@@ -211,10 +209,9 @@ async fn action_text(fix: &Fixture) -> String {
 // ─── the flows ───────────────────────────────────────────────────────────
 
 /// On a host permitting `ambient`, a config naming the role it assumes lands on
-/// approval; 0.2 readers see the role, 0.1 readers the config without it (0.1's
-/// `ambient` is closed).
+/// approval, and a reader sees the role.
 #[tokio::test]
-async fn an_ambient_config_names_its_role_and_a_0_1_reader_is_answered_in_0_1s_shape() {
+async fn an_ambient_config_names_its_role() {
     let mut fix = fixture(permits(true, false)).await;
     let a = requester(&mut fix).await;
     let b = admin(&fix).await;
@@ -246,24 +243,10 @@ async fn an_ambient_config_names_its_role_and_a_0_1_reader_is_answered_in_0_1s_s
         got["payload"]["facts"]["credential"]["roomsHoldingCredentials"],
         0
     );
-
-    let old = send(&fix, &a, GET_1, json!({ "configId": "eu-s3-instance" })).await;
-    assert!(old["type"].as_str().unwrap().starts_with(GET_1), "{old}");
-    assert_eq!(
-        old["payload"]["config"]["auth"],
-        json!({ "mode": "ambient" })
-    );
-    let old = send(&fix, &a, LIST_1, json!({ "kind": "s3" })).await;
-    assert!(
-        old["payload"]["items"][0]["config"]["auth"]
-            .get("roleArn")
-            .is_none(),
-        "{old}"
-    );
 }
 
-/// A host that no longer permits a mode keeps the config, reports it `notAllowed` at
-/// 0.2 (`required`, never usable, at 0.1), and accepts an update moving it to a
+/// A host that no longer permits a mode keeps the config, reports it `notAllowed`, and
+/// accepts an update moving it to a
 /// permitted mode (`update/0.2` item 8).
 #[tokio::test]
 async fn a_mode_the_host_withdrew_reads_not_allowed_and_can_be_moved_off() {
@@ -284,7 +267,7 @@ async fn a_mode_the_host_withdrew_reads_not_allowed_and_can_be_moved_off() {
         json!({ "status": "notAllowed" }),
         "{got}"
     );
-    let listed = send(&fix, &a, LIST_1, json!({})).await;
+    let listed = send(&fix, &a, LIST, json!({})).await;
     let item = listed["payload"]["items"]
         .as_array()
         .unwrap()
@@ -292,7 +275,10 @@ async fn a_mode_the_host_withdrew_reads_not_allowed_and_can_be_moved_off() {
         .find(|i| i["config"]["id"] == "eu-amb")
         .unwrap()
         .clone();
-    assert_eq!(item["facts"]["credential"]["status"], "required", "{item}");
+    assert_eq!(
+        item["facts"]["credential"]["status"], "notAllowed",
+        "{item}"
+    );
 
     // A label alone is accepted on a config whose mode is withdrawn.
     let (status, reply) = through(
@@ -371,11 +357,7 @@ async fn vtc_storage_configs_list_v0_2_refuses_a_foreign_cursor() {
     let fix = fixture(permits(false, false)).await;
     let a = admin(&fix).await;
     let reply = send(&fix, &a, LIST, json!({ "cursor": "not-ours" })).await;
-    assert_eq!(
-        tt_error_code(&reply),
-        Some(LIST_V0_2_INVALID_CURSOR),
-        "{reply}"
-    );
+    assert_eq!(tt_error_code(&reply), Some(LIST_INVALID_CURSOR), "{reply}");
 }
 
 #[tokio::test]
@@ -383,7 +365,7 @@ async fn vtc_storage_configs_get_v0_2_answers_not_found() {
     let fix = fixture(permits(false, false)).await;
     let a = admin(&fix).await;
     let reply = send(&fix, &a, GET, json!({ "configId": "nowhere" })).await;
-    assert_eq!(tt_error_code(&reply), Some(GET_V0_2_NOT_FOUND), "{reply}");
+    assert_eq!(tt_error_code(&reply), Some(GET_NOT_FOUND), "{reply}");
 }
 
 /// `create/0.2`'s codes, and `authNotAllowed`'s three reasons, each refused before
@@ -407,7 +389,7 @@ async fn vtc_storage_configs_create_v0_2_refuses_with_its_declared_codes() {
         create("local", json!({ "kind": "local", "root": "/x/y" }), None),
     )
     .await;
-    assert_eq!(tt_error_code(&reply), Some(CREATE_V0_2_EXISTS), "{reply}");
+    assert_eq!(tt_error_code(&reply), Some(CREATE_EXISTS), "{reply}");
 
     let reply = send(
         &fix,
@@ -418,7 +400,7 @@ async fn vtc_storage_configs_create_v0_2_refuses_with_its_declared_codes() {
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(CREATE_V0_2_INVALID_SETTINGS),
+        Some(CREATE_INVALID_SETTINGS),
         "{reply}"
     );
 
@@ -435,7 +417,7 @@ async fn vtc_storage_configs_create_v0_2_refuses_with_its_declared_codes() {
         let reply = send(&fix, &a, CREATE, create("amb", settings, auth)).await;
         assert_eq!(
             tt_error_code(&reply),
-            Some(CREATE_V0_2_AUTH_NOT_ALLOWED),
+            Some(CREATE_AUTH_NOT_ALLOWED),
             "{reply}"
         );
         assert_eq!(
@@ -460,11 +442,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
         json!({ "configId": "nowhere", "label": "x", "reason": "x" }),
     )
     .await;
-    assert_eq!(
-        tt_error_code(&reply),
-        Some(UPDATE_V0_2_NOT_FOUND),
-        "{reply}"
-    );
+    assert_eq!(tt_error_code(&reply), Some(UPDATE_NOT_FOUND), "{reply}");
 
     let reply = send(
         &fix,
@@ -475,7 +453,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(UPDATE_V0_2_KIND_IMMUTABLE),
+        Some(UPDATE_KIND_IMMUTABLE),
         "{reply}"
     );
 
@@ -488,7 +466,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(UPDATE_V0_2_INVALID_SETTINGS),
+        Some(UPDATE_INVALID_SETTINGS),
         "{reply}"
     );
 
@@ -502,7 +480,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(UPDATE_V0_2_AUTH_NOT_ALLOWED),
+        Some(UPDATE_AUTH_NOT_ALLOWED),
         "{reply}"
     );
     assert_eq!(reply["payload"]["details"]["reason"], "disabledByHost");
@@ -527,11 +505,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
         json!({ "configId": "eu-amb", "capacityBytes": 5, "reason": "x" }),
     )
     .await;
-    assert_eq!(
-        tt_error_code(&reply),
-        Some(UPDATE_V0_2_NOT_ACTIVE),
-        "{reply}"
-    );
+    assert_eq!(tt_error_code(&reply), Some(UPDATE_NOT_ACTIVE), "{reply}");
 }
 
 /// A blob is found where it was written: the bucket cannot move under it.
@@ -567,7 +541,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_to_move_a_config_holding_blobs(
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(UPDATE_V0_2_LOCATION_IMMUTABLE),
+        Some(UPDATE_LOCATION_IMMUTABLE),
         "{reply}"
     );
 }

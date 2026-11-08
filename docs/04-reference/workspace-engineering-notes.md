@@ -15,8 +15,9 @@ goes **red on your PR** (it runs only on a PR labelled `semver-report`; the
 Release PR's `release bump is large enough` job enforces the same check). It is doing its job: it compares the crate's public
 API against the version on crates.io, so a PR that adds a struct member or
 renames a `pub const` *should* turn it red. The red is the report, not a
-defect, and the fix is not a version bump in your branch — release-plz reads
-the same signal and puts the bump in the Release PR.
+defect, and the fix is not a version bump in your branch — a `!` in the PR
+title, so release-plz proposes the breaking bump; and if the `!` is missed, the
+Release PR's guard finds the break and raises the bump there.
 
 Worth stating because the failure mode is not "someone ignored the rule". It
 is reading a red check as a thing to fix, bumping the crate, watching the

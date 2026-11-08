@@ -24,7 +24,7 @@ use vta_sdk::client::{ChunkedDownload, SurfaceTransport, TransferProgress, VtaCl
 use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::error::VtaError;
 use vta_sdk::protocols::backup_management::chunked::initiate_export_1_1;
-use vta_sdk::trust_tasks::{TASK_BACKUP_INITIATE_EXPORT_1_0, TASK_BACKUP_INITIATE_EXPORT_1_1};
+use vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1;
 use vta_service::test_support::MockVta;
 
 mod common;
@@ -232,10 +232,9 @@ async fn chunk_tasks_over_didcomm() {
     mock.shutdown().await;
 }
 
-/// The 1.0 initiator is unchanged, and a 1.1 request that does not name
-/// `chunkedTrustTask` takes the same path: on a VTA with no public HTTPS address
-/// both refuse `stream` with `transportUnavailable` rather than substituting the
-/// chunked algorithm the producer did not ask for.
+/// A 1.1 request that does not name `chunkedTrustTask` is a `stream` request: on
+/// a VTA with no public HTTPS address it is refused with `transportUnavailable`
+/// rather than answered with the chunked algorithm the producer did not ask for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stream_requests_are_never_answered_with_chunks() {
     common::init_tracing();
@@ -243,10 +242,8 @@ async fn stream_requests_are_never_answered_with_chunks() {
     let mock = MockVta::start().await;
     let client = mock.signing_client(0x83, "admin", Vec::new()).await;
 
-    for uri in [
-        TASK_BACKUP_INITIATE_EXPORT_1_0,
-        TASK_BACKUP_INITIATE_EXPORT_1_1,
-    ] {
+    {
+        let uri = TASK_BACKUP_INITIATE_EXPORT_1_1;
         let err = client
             .post_trust_task::<_, Value>(uri, json!({ "password": PASSWORD }))
             .await

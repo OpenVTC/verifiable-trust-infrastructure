@@ -1,5 +1,5 @@
 //! Telling a member a step-up passkey was enrolled for them or revoked from
-//! them (`spec/vtc/members/step-up-passkey-notice/0.1`).
+//! them (`spec/vtc/members/step-up-passkey-notice/0.2`).
 //!
 //! A step-up passkey is ordinarily self-service
 //! ([`crate::step_up_passkey::redeem_finish`],
@@ -46,8 +46,8 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tracing::{info, warn};
-use trust_tasks_rs::specs::vtc::members::step_up_passkey_notice::v0_1 as notice;
 use vti_common::capability_client::build_document;
+use vti_specs::vtc::members::step_up_passkey_notice::v0_2 as notice;
 
 use crate::error::AppError;
 use crate::server::AppState;
@@ -136,6 +136,11 @@ async fn try_send(
     let doc = build_document(&vtc_did, did, type_uri, payload);
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise step-up passkey notice: {e}")))?;
+    vti_common::trust_task_push::state_delivery_expiry(
+        &mut doc_value,
+        crate::server::EXCHANGE_DELIVER_BY,
+        chrono::Utc::now(),
+    )?;
     signer.sign_operational_doc(&mut doc_value).await?;
 
     // Over whichever transport the member speaks — TSP, DIDComm or REST —
@@ -170,7 +175,7 @@ fn notice_payload(
         "did": did,
         "credentialId": credential_id,
         "by": by,
-        "at": at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "occurredAt": at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     });
     // An absent reason and an empty one are different claims to the member;
     // only the former is sent as absent on the wire.
@@ -213,7 +218,7 @@ mod tests {
                 "did": "did:key:zCarol",
                 "credentialId": "c3RlcHVwLWNyZWQtY2Fyb2w",
                 "by": "did:key:zDana",
-                "at": "2026-09-25T09:00:01Z",
+                "occurredAt": "2026-09-25T09:00:01Z",
                 "reason": "Replacing the device Carol reported lost.",
             }),
             "by differs from did: an administrator acted, and the recipient must see both"

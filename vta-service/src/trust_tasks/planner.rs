@@ -74,7 +74,9 @@ pub(super) async fn plan_task(
     payload: &Value,
 ) -> Result<Option<TaskPlan>, AppError> {
     #[cfg(feature = "webvh")]
-    if type_uri == vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0 {
+    if type_uri == vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0
+        || type_uri == vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1
+    {
         return plan_webvh_update(state, auth, payload).await.map(Some);
     }
 

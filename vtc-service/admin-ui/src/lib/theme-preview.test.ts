@@ -42,14 +42,14 @@ describe("read classification", () => {
   it.each([
     "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
     "https://trusttasks.org/spec/vtc/members/list/0.2#request",
-    "https://trusttasks.org/spec/trust-task-discovery/0.1",
+    "https://trusttasks.org/spec/trust-task-discovery/0.3",
   ])("%s is a read", (uri) => expect(isReadTask(uri)).toBe(true));
 
   it.each([
     "https://trusttasks.org/spec/vtc/community/profile/update/0.1",
     "https://trusttasks.org/spec/acl/grant/0.2",
     "https://trusttasks.org/spec/vtc/admin/actions/approve/0.1",
-    "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
     "https://example.org/spec/vtc/community/profile/show/0.1",
     "not a uri",
   ])("%s is not", (uri) => expect(isReadTask(uri)).toBe(false));

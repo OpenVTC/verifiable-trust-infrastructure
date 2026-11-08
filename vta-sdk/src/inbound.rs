@@ -176,7 +176,7 @@ mod tests {
         let doc = json!({
             "id": "urn:uuid:3",
             "threadId": "urn:uuid:1",
-            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.6",
             "payload": {"code": "malformed_request"},
         });
         assert_eq!(
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn an_unthreaded_error_is_still_never_answered() {
         let doc =
-            json!({"id": "urn:uuid:4", "type": "https://trusttasks.org/spec/trust-task-error/0.5"});
+            json!({"id": "urn:uuid:4", "type": "https://trusttasks.org/spec/trust-task-error/0.6"});
         assert_eq!(classify(&doc), Inbound::Error);
         assert!(!classify(&doc).may_answer());
     }
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn a_reply_is_named_by_its_type_not_its_threading() {
         let response = json!({
-            "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+            "type": "https://trusttasks.org/spec/messaging/message/status/0.2#response",
             "threadId": "urn:uuid:1"
         });
         assert!(names_a_reply(&response));
@@ -226,7 +226,7 @@ mod tests {
             json!({"type": format!("{TRUST_TASK_ERROR_PREFIX}0.5"), "threadId": "urn:uuid:1"});
         assert!(names_a_reply(&error));
         let approval = json!({
-            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.3",
+            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
             "threadId": "urn:uuid:1"
         });
         assert!(!names_a_reply(&approval));
