@@ -4,7 +4,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { BUILDER_COLOURS, BadgeBuilder, bannerText } from "./BadgeBuilder";
+import { BUILDER_COLOURS, BadgeBuilder, bannerText, findIcons, iconLabel } from "./BadgeBuilder";
+import { icons } from "./badge-icons";
 
 function art(): SVGSVGElement {
   return screen.getByRole("img", { name: /^Preview/ }) as unknown as SVGSVGElement;
@@ -56,6 +57,39 @@ describe("the badge picture builder", () => {
   it("asks for a name before a banner can show one", () => {
     render(<BadgeBuilder name="  " onUse={() => undefined} draw={async () => new Blob()} />);
     expect(screen.getByText("Give the badge a name to show it on the banner.")).toBeTruthy();
+  });
+
+  it("finds any icon of the whole set by name, and draws the one chosen", async () => {
+    const draw = vi.fn(async () => new Blob([], { type: "image/png" }));
+    render(<BadgeBuilder name="Bug hunter" onUse={() => undefined} draw={draw} />);
+    expect(screen.queryByLabelText("Bug")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Find an icon"), { target: { value: "bug" } });
+    fireEvent.click(await screen.findByLabelText("Bug"));
+    expect(art().querySelector("svg")?.getAttribute("class")).toContain("lucide-bug");
+    expect(screen.getByText(/icons? match/)).toBeTruthy();
+    // Clearing the search goes back to the icons offered first, keeping the choice.
+    fireEvent.change(screen.getByLabelText("Find an icon"), { target: { value: "" } });
+    expect(screen.getByLabelText("Tools")).toBeTruthy();
+    expect(screen.getByText("Chosen: Bug. Search to choose from all of them.")).toBeTruthy();
+    expect(art().querySelector("svg")?.getAttribute("class")).toContain("lucide-bug");
+  });
+
+  it("says when nothing matches", async () => {
+    render(<BadgeBuilder name="x" onUse={() => undefined} draw={async () => new Blob()} />);
+    fireEvent.change(screen.getByLabelText("Find an icon"), { target: { value: "zzqx" } });
+    expect(await screen.findByText("No icon matches “zzqx”.")).toBeTruthy();
+  });
+
+  it("names lucide's icons in words, and caps a broad search", () => {
+    expect(iconLabel("BadgeCheck")).toBe("Badge check");
+    expect(iconLabel("AArrowDown")).toBe("A arrow down");
+    expect(Object.keys(icons).length).toBeGreaterThan(1000);
+    // Every word must be in the name; the offered names ("Tools") count too.
+    expect(findIcons(icons, "tools").matches[0]?.name).toBe("Tools");
+    expect(findIcons(icons, "arrow down").matches.every((i) => /arrow/i.test(i.name) && /down/i.test(i.name))).toBe(true);
+    const broad = findIcons(icons, "a", 10);
+    expect(broad.matches).toHaveLength(10);
+    expect(broad.total).toBeGreaterThan(10);
   });
 
   it("shortens a long name on a banner", () => {

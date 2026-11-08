@@ -87,3 +87,11 @@
 .badge-builder .muted {
   margin: 0;
 }
+.badge-builder-search {
+  width: 100%;
+  max-width: 20rem;
+  margin-bottom: 0.35rem;
+}
+.badge-builder .badge-builder-status {
+  margin: 0 0 0.35rem;
+}

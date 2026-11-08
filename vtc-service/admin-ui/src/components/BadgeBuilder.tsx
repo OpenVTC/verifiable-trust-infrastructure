@@ -7,7 +7,7 @@
 // community re-encodes it like any other picture (VTI-BDG-050). Nothing here
 // is a new kind of picture, and nothing about how it was made is sent.
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   Award,
   BookOpen,
@@ -42,9 +42,17 @@ export const BUILDER_COLOURS = [
   { name: "Slate", value: "#334155" },
 ] as const;
 
-/** The icons offered, by the name read out for each. */
-export const BUILDER_ICONS: readonly { name: string; Icon: LucideIcon }[] = [
-  { name: "Award", Icon: Award },
+/** An icon the builder offers, by the name read out for it. */
+export interface BuilderIcon {
+  name: string;
+  Icon: LucideIcon;
+}
+
+const FIRST: BuilderIcon = { name: "Award", Icon: Award };
+
+/** The icons offered before anyone searches, by the name read out for each. */
+export const BUILDER_ICONS: readonly BuilderIcon[] = [
+  FIRST,
   { name: "Star", Icon: Star },
   { name: "Trophy", Icon: Trophy },
   { name: "Heart", Icon: Heart },
@@ -61,6 +69,60 @@ export const BUILDER_ICONS: readonly { name: string; Icon: LucideIcon }[] = [
   { name: "Sprout", Icon: Sprout },
   { name: "Coffee", Icon: Coffee },
 ];
+
+/** The most icons a search shows at once. */
+export const SEARCH_LIMIT = 60;
+
+/** The name read out for a lucide icon: `BadgeCheck` is "Badge check". */
+export function iconLabel(key: string): string {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * The icons of `all` whose name holds every word of `query`, the offered ones
+ * (whose names may differ, "Tools" for the wrench) first, at most `limit`.
+ */
+export function findIcons(
+  all: Record<string, LucideIcon>,
+  query: string,
+  limit = SEARCH_LIMIT,
+): { matches: BuilderIcon[]; total: number } {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const fits = (name: string) => {
+    const n = name.toLowerCase();
+    return words.every((w) => n.includes(w));
+  };
+  const seen = new Set<LucideIcon>();
+  const found: BuilderIcon[] = [];
+  for (const i of BUILDER_ICONS) {
+    if (fits(i.name)) {
+      seen.add(i.Icon);
+      found.push(i);
+    }
+  }
+  for (const [key, Icon] of Object.entries(all)) {
+    const name = iconLabel(key);
+    if (!seen.has(Icon) && fits(name)) {
+      seen.add(Icon);
+      found.push({ name, Icon });
+    }
+  }
+  return { matches: found.slice(0, limit), total: found.length };
+}
+
+/** Loads the whole set, once, the first time someone searches. */
+let allIcons: Promise<Record<string, LucideIcon>> | null = null;
+function loadAllIcons(): Promise<Record<string, LucideIcon>> {
+  allIcons ??= import("./badge-icons").then((m) => m.icons as Record<string, LucideIcon>);
+  allIcons.catch(() => {
+    allIcons = null;
+  });
+  return allIcons;
+}
 
 export type BuilderShape = "square" | "banner";
 
@@ -200,11 +262,41 @@ export function BadgeBuilder({
   const id = useId();
   const [shape, setShape] = useState<BuilderShape>("banner");
   const [colour, setColour] = useState<string>(BUILDER_COLOURS[0].value);
-  const [icon, setIcon] = useState<string>("Award");
+  const [icon, setIcon] = useState<BuilderIcon>(FIRST);
+  const [query, setQuery] = useState("");
+  const [all, setAll] = useState<Record<string, LucideIcon> | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drawing, setDrawing] = useState(false);
   const svg = useRef<SVGSVGElement>(null);
-  const Icon = BUILDER_ICONS.find((i) => i.name === icon)?.Icon ?? Award;
+  const Icon = icon.Icon;
+  const searching = query.trim() !== "";
+
+  useEffect(() => {
+    if (!searching || all) return;
+    let live = true;
+    loadAllIcons().then(
+      (icons) => live && setAll(icons),
+      () => live && setLoadError(true),
+    );
+    return () => {
+      live = false;
+    };
+  }, [searching, all]);
+
+  const found = searching && all ? findIcons(all, query) : null;
+  const shown = searching ? (found?.matches ?? []) : BUILDER_ICONS;
+  const status = !searching
+    ? null
+    : loadError
+      ? "The full set of icons couldn't be loaded."
+      : !found
+        ? "Loading the icons…"
+        : found.total === 0
+          ? `No icon matches “${query.trim()}”.`
+          : found.total > found.matches.length
+            ? `Showing ${found.matches.length} of ${found.total} icons: add a word to narrow it.`
+            : `${found.total} ${found.total === 1 ? "icon matches" : "icons match"}.`;
 
   const use = async () => {
     if (!svg.current) return;
@@ -255,18 +347,32 @@ export function BadgeBuilder({
       </fieldset>
       <fieldset className="badge-builder-group">
         <legend>Icon</legend>
+        <input
+          type="search"
+          className="badge-builder-search"
+          aria-label="Find an icon"
+          placeholder={`Find an icon, such as “bug”`}
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setLoadError(false);
+          }}
+        />
+        <p className="muted badge-builder-status" aria-live="polite">
+          {status ?? `Chosen: ${icon.name}. Search to choose from all of them.`}
+        </p>
         <div className="badge-builder-row">
-          {BUILDER_ICONS.map(({ name: label, Icon: I }) => (
-            <label key={label} className="badge-builder-icon" title={label}>
+          {shown.map((choice) => (
+            <label key={choice.name} className="badge-builder-icon" title={choice.name}>
               <input
                 type="radio"
                 name={`${id}-icon`}
-                aria-label={label}
-                checked={icon === label}
-                onChange={() => setIcon(label)}
+                aria-label={choice.name}
+                checked={icon.Icon === choice.Icon}
+                onChange={() => setIcon(choice)}
               />
               <span aria-hidden="true">
-                <I size={20} />
+                <choice.Icon size={20} />
               </span>
             </label>
           ))}
