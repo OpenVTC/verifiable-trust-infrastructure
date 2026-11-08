@@ -280,7 +280,7 @@ impl ApproveScope {
 /// `additive: true` on the AclEntry 0.2 wire. Mirrors
 /// `vti_common::acl::ADDITIVE_CAPABILITIES`; a `vti-common` test pins the two
 /// equal.
-pub const ADDITIVE_CAPABILITIES: &[&str] = &["persona-holder"];
+pub const ADDITIVE_CAPABILITIES: &[&str] = &["persona-holder", "context-create"];
 
 /// The capability **ceiling** each VTA role carries, as kebab-case names —
 /// mirrors `vti_common::acl::derived_capabilities_for_role`, pinned equal by a
