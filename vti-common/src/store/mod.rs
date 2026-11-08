@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use tracing::info;
 
 pub mod counter;
+pub mod flusher;
 
 #[cfg(feature = "encryption")]
 pub(crate) mod encryption;
@@ -1011,6 +1012,9 @@ pub struct LocalStore {
     db: fjall::Database,
     write_locks: WriteLocks,
     writes: generation::Generations,
+    /// Keeps fjall's memtables flushed (see [`flusher`]). Shared with every
+    /// keyspace handle, so it runs as long as anything can still write.
+    _flusher: std::sync::Arc<flusher::Flusher>,
 }
 
 #[derive(Clone)]
@@ -1041,6 +1045,8 @@ pub struct LocalKeyspaceHandle {
     writes: std::sync::Arc<generation::KeyspaceWrites>,
     #[cfg(feature = "encryption")]
     encryption_key: Option<std::sync::Arc<zeroize::Zeroizing<[u8; 32]>>>,
+    /// See [`LocalStore`]'s field of the same name.
+    _flusher: std::sync::Arc<flusher::Flusher>,
 }
 
 /// Acquire a write lock inside a blocking closure, recovering from
@@ -1117,13 +1123,11 @@ impl LocalStore {
         }
         if let Some(bytes) = tuning.write_buffer {
             // `Builder::max_write_buffer_size` is `#[doc(hidden)]` and
-            // `#[deprecated = "todo"]` upstream (fjall 3.1) — it is still
-            // the only way to cap the total memtable budget across every
-            // keyspace a process opens (see `KeyspaceCreateOptions::
-            // max_memtable_size`'s own doc, which points back at it), and
-            // it remains fully wired (`WriteBufferManager`, checked on
-            // every insert/remove). Re-check this note against fjall's
-            // changelog when bumping past 3.1 in case a replacement lands.
+            // `#[deprecated = "todo"]` upstream, and in fjall 3.1.12/3.1.13
+            // the value is stored but never read: nothing enforces it.
+            // The limit is enforced by [`flusher`] instead (same value);
+            // it is still passed through here so a fjall release that
+            // starts honouring it picks it up.
             #[allow(deprecated)]
             {
                 builder = builder.max_write_buffer_size(Some(bytes));
@@ -1139,10 +1143,19 @@ impl LocalStore {
         );
 
         let db = builder.open()?;
+        // fjall 3.1 never flushes keyspaces below 64 MiB each and ignores
+        // its write-buffer limit, so without this every write stays in
+        // memory for the life of the process (see [`flusher`]).
+        let flusher = flusher::Flusher::spawn(
+            db.clone(),
+            flusher::FlushPolicy::from_write_buffer(tuning.write_buffer),
+        )
+        .map_err(AppError::Io)?;
         Ok(Self {
             db,
             write_locks: WriteLocks::default(),
             writes: generation::Generations::default(),
+            _flusher: std::sync::Arc::new(flusher),
         })
     }
 
@@ -1164,6 +1177,7 @@ impl LocalStore {
             writes: self.writes.for_keyspace(name),
             #[cfg(feature = "encryption")]
             encryption_key: None,
+            _flusher: self._flusher.clone(),
         })
     }
 
