@@ -28,6 +28,7 @@
 
 pub mod credential;
 pub mod public;
+pub mod registry;
 pub mod share;
 
 use std::collections::{BTreeMap, BTreeSet};
