@@ -36,7 +36,7 @@ operator guides describe, and the action list.
 | `vtc_supported_tasks` | What the connected community serves (`trust-task-discovery/0.4`) | read-only |
 | `vtc_whoami` | What the community knows of this identity (`auth/whoami`), beside the configured identity | read-only |
 | `vtc_status` | What this bridge is: identity, community, transport, policy, counters, recent calls | read-only |
-| `group_setup`, `board_create`, `election_create`, `room_open`, `member_admit`, `admin_grant` | The six workflows as thin orchestrators: each sends its steps in order, **every step through the bridge's policy under its own operation**, stops at the first step that is refused or parked, and reports how far it got with each step's answer | per step |
+| `group_setup`, `board_create`, `election_create`, `room_open`, `member_admit`, `admin_grant`, `badge_create` | The workflows as thin orchestrators: each sends its steps in order, **every step through the bridge's policy under its own operation**, stops at the first step that is refused or parked, and reports how far it got with each step's answer | per step |
 | `vtc_actions_list`, `vtc_actions_show` | The community's action list as this identity sees it; an action's summary re-derived from the payload that would run and verified, with the match code | read-only |
 | `vtc_actions_decide` | Approve or deny a parked action as this identity. **Always** asks the operator, whatever `--confirm` says (§2.4) | sensitive |
 | `vtc_actions_cancel` | Cancel an action this identity requested | mutating |
@@ -55,6 +55,7 @@ built against:
 | `vtc://guide/admission`, `vtc://guide/lifecycle`, `vtc://guide/vetting` | [Join criteria](join-criteria.md), [Membership lifecycle](community-lifecycle.md), [Vetting](vetting.md) |
 | `vtc://guide/directory` | [Member directory](member-directory.md) |
 | `vtc://guide/admin-access` | [Administrators, roles and consent](admin-access.md) |
+| `vtc://guide/badges` | [Member badges](badges.md) |
 
 **Prompts.** One per multi-step job, each an ordered brief: the preconditions
 to check, the tasks to send in order, which of them **park** on the action
@@ -70,6 +71,8 @@ to the pinned index).
 | `open-data-room` | `label`, `members` |
 | `admit-member` | `subject`, `role` |
 | `grant-administration` | `subject`, `role` |
+| `create-badge` | `name`, `kind` |
+| `my-badges` | `code` |
 
 Every tool carries MCP **tool annotations**; a test asserts each agrees with
 the shared classifier's verdict on the operation the tool sends, so they cannot
