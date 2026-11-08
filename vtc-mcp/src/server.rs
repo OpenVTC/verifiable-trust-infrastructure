@@ -218,7 +218,7 @@ pub struct BridgeIdentity {
     pub transport_choice: String,
     /// Set when the agent key was used with another community before
     /// (`key_reuse`): what the operator should be told about it.
-    pub key_reuse_warning: Option<String>,
+    pub reuse_warning: Option<String>,
 }
 
 impl BridgeIdentity {
@@ -231,7 +231,7 @@ impl BridgeIdentity {
             // Always: this bridge has no rung that replays an operator login.
             "dedicatedAgent": true,
         });
-        if let Some(w) = &self.key_reuse_warning {
+        if let Some(w) = &self.reuse_warning {
             v["keyReuseWarning"] = json!(w);
         }
         v
@@ -998,7 +998,7 @@ mod tests {
             agent_did: Some("did:key:zAgent".into()),
             vtc_did: Some(VTC_DID.into()),
             transport_choice: "auto".into(),
-            key_reuse_warning: None,
+            reuse_warning: None,
         }
     }
 

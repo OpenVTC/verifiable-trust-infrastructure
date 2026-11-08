@@ -241,7 +241,7 @@ fn warn_about_argv_secrets() {
 /// as used with this one (`key_reuse`). A warning, logged and reported by
 /// `vtc_whoami`/`vtc_status`; never a refusal. A note that cannot be kept is
 /// logged and otherwise ignored, since it only ever warns.
-fn key_reuse_warning(agent_did: Option<&str>, vtc_did: &str) -> Option<String> {
+fn reuse_warning(agent_did: Option<&str>, vtc_did: &str) -> Option<String> {
     let agent_did = agent_did?;
     let Some(path) = key_reuse::default_path() else {
         tracing::debug!("no state directory: the agent-key reuse note is not kept");
@@ -310,7 +310,7 @@ async fn main() -> anyhow::Result<()> {
         agent_did: None,
         vtc_did: args.vtc_did.clone(),
         transport_choice: args.transport.label().into(),
-        key_reuse_warning: None,
+        reuse_warning: None,
     };
     let rung = match ladder(&args) {
         Ok(Some(rung)) => rung,
@@ -345,7 +345,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     if !args.no_key_reuse_check {
-        identity.key_reuse_warning = key_reuse_warning(identity.agent_did.as_deref(), vtc_did);
+        identity.reuse_warning = reuse_warning(identity.agent_did.as_deref(), vtc_did);
     }
 
     tracing::info!(

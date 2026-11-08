@@ -1340,7 +1340,7 @@ mod tests {
                 agent_did: Some("did:key:zAgent".into()),
                 vtc_did: Some(VTC_DID.into()),
                 transport_choice: "rest".into(),
-                key_reuse_warning: None,
+                reuse_warning: None,
             },
             guard,
             Arc::new(Recorder::default()),
