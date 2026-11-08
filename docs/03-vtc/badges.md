@@ -79,6 +79,43 @@ The badge group's own paths give and end the badge the same way:
 Whenever the holding ends, any share of it stops and the credential's status is revoked
 where it carries one (VTI-BDG-063), as a take-back does.
 
+## Automatic badges and their counts
+
+An automatic badge's rule reads verified facts as any dynamic group's does — role, an
+administrator- or credential-sourced field, personhood, the join date — and, a badge's alone,
+three counts the community keeps of its own records (VTI-BDG-015), each compared with
+`atLeast` and a `count`:
+
+| Fact | Counts |
+|---|---|
+| `kudosReceived` | Kudos awards the member accepted |
+| `ideasSelected` | Ideas they proposed that a board selected |
+| `electionTickets` | Elections in which the community issued them a ticket — never whether a ballot was cast, which the community never knows |
+
+```json
+{ "all": [ { "fact": "kudosReceived", "op": "atLeast", "count": 10 } ] }
+```
+
+The counts are read whenever the rule is evaluated: the groups' sweeper recomputes every few
+minutes and at once after a kudos is accepted, an idea is selected or a ticket is issued. Any
+other group's rule refuses them (`ruleInvalid`). In the console, *Given automatically by a
+rule* offers them beside the other facts.
+
+## Claim codes for events
+
+A badge's owner, or a holder of `vtc.badges.admin`, issues a **claim code** for a community
+badge — to hand out at an event — with what it is for, when it stops admitting anyone (at
+most 90 days ahead) and how many claims it admits (`vtc/badges/claims/create`,
+VTI-BDG-025). The code is 256 random bits, shown to the issuer once; the community keeps only
+its digest. A member who enters it (`vtc/badges/claims/redeem`) holds the badge at once — the
+redemption is their consent — with an award whose giver is the issuer, the credential issued
+first (VTI-BDG-026). A code that is unknown, past its time, out of claims, withdrawn or for a
+retired badge is refused alike; nobody claims one code twice, and a badge held once is not
+claimed again. The owners list a badge's codes with their claims (`claims/list`, never a
+code) and withdraw one (`claims/withdraw`); claims already made stand, and retiring the
+badge withdraws its codes (VTI-BDG-027). In the console: *Claim codes* on a community badge's
+page; in the portal: *Have a code?* on the badges page.
+
 ## The credential
 
 A badge group issues each holder an Open Badges 3.0 `OpenBadgeCredential` in place of a
@@ -220,6 +257,7 @@ reference — the badge, the award, the entries — never a note or a picture.
 The `badges` keyspace (backed up): the settings, each badge, each award (indexed by badge,
 recipient and giver, with its share where there is one), each holder's preferences, each
 holder's status slot for a badge shown outside (`bslot:`), the credential last issued to them
-in that regime (`bcred:`), each share token (`bshare:`), and the badge issuer records the
+in that regime (`bcred:`), each share token (`bshare:`), each claim code's record
+(`bclaim:`, indexed by badge and by the code's digest, with who redeemed it), and the badge issuer records the
 trust registry accepted (`breg:`). Pictures in `badge_images` (backed up).
 The badge group, its DID, its authority credential and its memberships are the groups'.

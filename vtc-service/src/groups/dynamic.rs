@@ -120,10 +120,45 @@ fn test(got: Option<&Value>, op: &str, value: Option<&Value>, values: Option<&Va
     }
 }
 
+/// The counts a badge group's rule may read (VTI-BDG-015), each from the
+/// community's own records: kudos the member accepted, ideas of theirs a board
+/// selected, elections it issued them a ticket in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub kudos_received: u64,
+    pub ideas_selected: u64,
+    pub election_tickets: u64,
+}
+
+/// The facts only a badge group's rule reads (VTI-BDG-015).
+pub const COUNT_FACTS: [&str; 3] = ["kudosReceived", "ideasSelected", "electionTickets"];
+
+/// Whether `rule` reads any of [`COUNT_FACTS`].
+pub fn reads_counts(rule: &Value) -> bool {
+    rule.get("all").and_then(Value::as_array).is_some_and(|cs| {
+        cs.iter().any(|c| {
+            c.get("fact")
+                .and_then(Value::as_str)
+                .is_some_and(|f| COUNT_FACTS.contains(&f))
+        })
+    })
+}
+
 /// Whether `rule` admits `subject` now, reading the field schema as it stands:
 /// a condition on a field that is no longer an active `admin`- or
-/// `credential`-sourced one holds for nobody. A malformed rule admits nobody.
+/// `credential`-sourced one holds for nobody. A malformed rule admits nobody, and
+/// a count holds for nobody here: only [`admits_counting`] reads one.
 pub fn admits(rule: &Value, subject: &Subject, schema: &[FieldDef]) -> bool {
+    admits_counting(rule, subject, schema, None)
+}
+
+/// [`admits`], with the subject's badge counts where the group is a badge's.
+pub fn admits_counting(
+    rule: &Value,
+    subject: &Subject,
+    schema: &[FieldDef],
+    counts: Option<&Counts>,
+) -> bool {
     let Some(conditions) = rule
         .get("all")
         .and_then(Value::as_array)
@@ -154,6 +189,20 @@ pub fn admits(rule: &Value, subject: &Subject, schema: &[FieldDef]) -> bool {
                     return subject.personhood;
                 }
                 Some(&personhood)
+            }
+            Some(fact @ ("kudosReceived" | "ideasSelected" | "electionTickets")) => {
+                let Some(counts) = counts else {
+                    return false;
+                };
+                let n = match fact {
+                    "kudosReceived" => counts.kudos_received,
+                    "ideasSelected" => counts.ideas_selected,
+                    _ => counts.election_tickets,
+                };
+                return op == "atLeast"
+                    && c.get("count")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|v| n >= v);
             }
             Some("field") => {
                 let key = c.get("field").and_then(Value::as_str).unwrap_or_default();
@@ -316,10 +365,19 @@ pub async fn recompute(
     let schema = crate::directory::fields::schema(ks).await?;
     let excluded = opt_outs(ks, &group.group_id).await?;
     let subjects = crate::directory::read::subjects(state).await?;
+    // A badge group's rule may read counts of the community's own records (VTI-BDG-015).
+    let counts = if group.badge_id.is_some() && reads_counts(rule) {
+        crate::badges::rule_counts(state, &subjects).await?
+    } else {
+        HashMap::new()
+    };
     let wanted: BTreeSet<String> = subjects
         .iter()
         .filter(|s| s.active && !excluded.contains(&s.card.entry_id))
-        .filter(|s| admits(rule, s, &schema))
+        .filter(|s| {
+            let c = counts.get(&s.card.entry_id).copied().unwrap_or_default();
+            admits_counting(rule, s, &schema, Some(&c))
+        })
         .map(|s| s.card.entry_id.clone())
         .collect();
     let held: HashMap<String, Membership> = super::members_of(ks, &group.group_id)

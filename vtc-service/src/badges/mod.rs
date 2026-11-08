@@ -26,6 +26,7 @@
 //! sent. The badge group, its DID, its authority credential and its memberships are the
 //! groups subsystem's.
 
+pub mod claims;
 pub mod credential;
 pub mod public;
 pub mod registry;
@@ -936,6 +937,56 @@ pub async fn on_group_exit(
     }
     credential::revoke_holder(state, badge_id, entry_id).await?;
     Ok(closed.len())
+}
+
+// ─── the counts an automatic badge's rule reads ─────────────────────────
+
+/// Each subject's counts for an automatic badge's rule (VTI-BDG-015), from the community's
+/// own records, keyed by entry: kudos awards they accepted, ideas of theirs a board
+/// selected, and elections in which the community issued them a ticket — counted against
+/// the member's current DID. Never whether a ballot was cast: the community never knows.
+pub async fn rule_counts(
+    state: &crate::server::AppState,
+    subjects: &[crate::directory::project::Subject],
+) -> Result<std::collections::HashMap<String, crate::groups::dynamic::Counts>, AppError> {
+    use std::collections::HashMap;
+    let kudos: BTreeSet<String> = all_badges(&state.badges_ks)
+        .await?
+        .into_iter()
+        .filter(|b| b.kind == BadgeKind::Kudos)
+        .map(|b| b.badge_id)
+        .collect();
+    let mut ideas: HashMap<String, u64> = HashMap::new();
+    for idea in crate::boards::all_ideas(&state.boards_ks).await? {
+        if idea.state == crate::boards::StoredIdeaState::Selected {
+            *ideas.entry(idea.proposer).or_default() += 1;
+        }
+    }
+    let mut tickets: HashMap<String, u64> = HashMap::new();
+    let eks = state.elections.ks();
+    for rec in crate::elections::store::all(eks).await? {
+        for t in crate::elections::store::tickets(eks, &rec.election_id).await? {
+            *tickets.entry(t.signer).or_default() += 1;
+        }
+    }
+    let mut out = HashMap::new();
+    for s in subjects {
+        let entry = &s.card.entry_id;
+        let kudos_received = awards_to(&state.badges_ks, entry)
+            .await?
+            .iter()
+            .filter(|a| a.is_accepted() && kudos.contains(&a.badge_id))
+            .count() as u64;
+        out.insert(
+            entry.clone(),
+            crate::groups::dynamic::Counts {
+                kudos_received,
+                ideas_selected: ideas.get(entry).copied().unwrap_or_default(),
+                election_tickets: tickets.get(&s.card.did).copied().unwrap_or_default(),
+            },
+        );
+    }
+    Ok(out)
 }
 
 // ─── departure ───────────────────────────────────────────────────────────

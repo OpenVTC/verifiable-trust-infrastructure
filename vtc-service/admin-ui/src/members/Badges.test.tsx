@@ -21,6 +21,7 @@ import {
   BADGES_LIST_TASK,
   BADGES_SETTINGS_TASK,
   BADGES_SHOW_TASK,
+  CLAIMS_REDEEM_TASK,
   MINE_ACCEPT_TASK,
   MINE_ARRANGE_TASK,
   MINE_DECLINE_TASK,
@@ -159,6 +160,32 @@ describe("the portal's badges page", () => {
     fireEvent.click(screen.getByRole("button", { name: "Hide Clamp whisperer" }));
     await waitFor(() => expect(sent(MINE_HIDE_TASK)).toEqual([{ badgeId: KUDOS_ID }]));
     expect(await screen.findByText(/Hidden from your card/)).toBeTruthy();
+  });
+
+  it("claims a badge with an event's code, and says when a code admits no one", async () => {
+    const { DirectoryError } = await import("./directory-api");
+    let claimed = false;
+    answer({
+      ...BASE,
+      [MINE_LIST_TASK]: () => mine(),
+      [CLAIMS_REDEEM_TASK]: (p: unknown) => {
+        if ((p as { code: string }).code !== "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua") {
+          throw new DirectoryError("vtc/badges/claims/redeem:codeInvalid", "no");
+        }
+        claimed = true;
+        return { award: { awardId: "awd_C7mT9pQx2Lw8Rv5NAAAA", badgeId: BADGE_ID, entryId: ENTRY, state: "accepted", offeredAt: "2026-11-08T11:30:00Z" } };
+      },
+    });
+    renderPage(<BadgesPage />);
+    const input = await screen.findByLabelText("Claim code");
+    fireEvent.change(input, { target: { value: "nonsense-code-0000000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Claim the badge" }));
+    expect(await screen.findByText(/That code admits no one/)).toBeTruthy();
+    fireEvent.change(input, { target: { value: "  Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua " } });
+    fireEvent.click(screen.getByRole("button", { name: "Claim the badge" }));
+    expect(await screen.findByText(/Claimed. The badge is yours/)).toBeTruthy();
+    expect(claimed).toBe(true);
+    expect(sent(CLAIMS_REDEEM_TASK).at(-1)).toEqual({ code: "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua" });
   });
 
   it("shows nothing but a line when the community has badges off", async () => {

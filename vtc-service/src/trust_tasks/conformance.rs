@@ -3284,6 +3284,30 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r#"{"awards": [{"awardId": "awd_Qz7TpLW5k2N8xRb3", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_NoorElSayed00000", "givenBy": "dir_Pr1yaNatarajan00", "note": "Resin pour workshop, 25 October 2026", "state": "offered", "offeredAt": "2026-11-06T18:00:01Z", "expiresAt": "2026-12-06T18:00:01Z"}], "skipped": [{"entryId": "dir_LenaWirth0000000", "reason": "alreadyOffered"}]}"#).unwrap()
         ),
         checked!(
+            s::badges::claims::create::v0_1::Payload,
+            s::badges::claims::create::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "label": "Saturday joinery workshop", "validUntil": "2026-11-08T18:00:00Z", "limit": 40}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"claim": {"claimId": "bcl_T4nQ8mLw2Rx9Kv5Z", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "label": "Saturday joinery workshop", "validUntil": "2026-11-08T18:00:00Z", "limit": 40, "claims": 0, "state": "active", "createdAt": "2026-11-08T09:00:01Z", "createdBy": "dir_Pr1yaNatarajan00"}, "code": "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::claims::list::v0_1::Payload,
+            s::badges::claims::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"claimId": "bcl_T4nQ8mLw2Rx9Kv5Z", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "label": "Saturday joinery workshop", "validUntil": "2026-11-08T18:00:00Z", "limit": 40, "claims": 17, "state": "active", "createdAt": "2026-11-08T09:00:01Z", "createdBy": "dir_Pr1yaNatarajan00"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::claims::withdraw::v0_1::Payload,
+            s::badges::claims::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"claimId": "bcl_T4nQ8mLw2Rx9Kv5Z"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"claim": {"claimId": "bcl_T4nQ8mLw2Rx9Kv5Z", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "label": "Saturday joinery workshop", "validUntil": "2026-11-08T18:00:00Z", "limit": 40, "claims": 17, "state": "withdrawn", "createdAt": "2026-11-08T09:00:01Z", "createdBy": "dir_Pr1yaNatarajan00"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::claims::redeem::v0_1::Payload,
+            s::badges::claims::redeem::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"code": "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_C7mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "state": "accepted", "offeredAt": "2026-11-08T11:30:00Z", "decidedAt": "2026-11-08T11:30:00Z", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-000000000901"}}"#).unwrap()
+        ),
+        checked!(
             s::badges::awards::share::v0_1::Payload,
             s::badges::awards::share::v0_1::Response,
             serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N"}"#).unwrap(),

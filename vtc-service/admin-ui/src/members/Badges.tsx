@@ -50,6 +50,7 @@ import {
   listHolders,
   listMine,
   makeBadgeHref,
+  redeemClaim,
   shareAward,
   showBadge,
   showBadgeAgain,
@@ -117,6 +118,66 @@ function Off() {
   );
 }
 
+// ─── claiming with a code ──────────────────────────────────────────────────
+
+/** A code an event's host handed out (VTI-BDG-026): entering it is claiming the badge. */
+function ClaimForm() {
+  const qc = useQueryClient();
+  const [code, setCode] = useState("");
+  const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
+  const claim = useMutation({
+    mutationFn: () => redeemClaim(code),
+    onSuccess: () => {
+      setCode("");
+      setSaid({ ok: true, text: "Claimed. The badge is yours, and its credential is on its way to your wallet." });
+      void qc.invalidateQueries({ queryKey: MINE_KEY });
+    },
+    onError: (e) => {
+      const c = e instanceof DirectoryError ? e.code : "";
+      setSaid({
+        ok: false,
+        text: c.endsWith(":alreadyClaimed")
+          ? "You have already claimed this code."
+          : c.endsWith(":alreadyHeld")
+            ? "You already hold this badge."
+            : c.endsWith(":codeInvalid")
+              ? "That code admits no one: check it, or ask the host."
+              : e instanceof Error
+                ? e.message
+                : "That did not work. Try again.",
+      });
+    },
+  });
+  return (
+    <section className="bw-section" aria-labelledby="bw-claim">
+      <h2 id="bw-claim">Have a code?</h2>
+      <form
+        className="bw-claim"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (code.trim()) claim.mutate();
+        }}
+      >
+        <input
+          aria-label="Claim code"
+          placeholder="The code from the event"
+          value={code}
+          autoComplete="off"
+          onChange={(e) => setCode(e.target.value)}
+        />
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!code.trim() || claim.isPending}>
+          {claim.isPending ? "Claiming…" : "Claim the badge"}
+        </button>
+      </form>
+      {said && (
+        <p className={said.ok ? "muted" : "error"} role={said.ok ? "status" : "alert"}>
+          {said.text}
+        </p>
+      )}
+    </section>
+  );
+}
+
 // ─── your badges ───────────────────────────────────────────────────────────
 
 export function BadgesPage() {
@@ -160,6 +221,7 @@ export function BadgesPage() {
       {mine.isPending && <p className="muted">Loading…</p>}
       {mine.isError && <Unavailable error={mine.error} />}
       {offers.length > 0 && <Offers offers={offers} />}
+      <ClaimForm />
       {mine.data && <Wall badges={shown} visibility={mine.data.visibility} kudosTotal={mine.data.kudosTotal} />}
       {hidden.length > 0 && <Hidden badges={hidden} />}
       {myKudos.length > 0 && (

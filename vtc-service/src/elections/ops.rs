@@ -741,6 +741,8 @@ pub async fn issue_ticket(
     if !store::put_ticket(ks, &ticket).await? {
         return Err(IssueError::AlreadyIssued);
     }
+    // An automatic badge may count the elections a member took a ticket in (VTI-BDG-015).
+    crate::groups::dynamic::kick();
     rec.tickets_issued = rec.tickets_issued.saturating_add(1);
     store::update(ks, &rec.election_id, |cur| {
         cur.tickets_issued = cur.tickets_issued.saturating_add(1);

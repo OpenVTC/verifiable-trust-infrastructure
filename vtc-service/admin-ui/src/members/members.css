@@ -2246,3 +2246,15 @@ textarea {
   align-items: center;
   gap: 0.5rem;
 }
+
+/* Claiming a badge with an event's code (VTI-BDG-026). */
+.bw-claim {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.bw-claim input {
+  flex: 1 1 16rem;
+  min-width: 0;
+}

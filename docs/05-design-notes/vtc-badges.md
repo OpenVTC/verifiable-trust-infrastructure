@@ -5,7 +5,10 @@ complete** (#2482: the outside credential regime and the embedded community endo
 **phase 3b complete**: the badge's public artefacts (#2484, pinned #2487), sharing (#2489:
 `awards/share|unshare` from trust-tasks-tf #1054, the verification location, the baked PNG,
 and the holder's own awards on `show` from trust-tasks-tf #1057), and the badge groups
-projected to the trust registry as recognised issuers (this PR, `badges::registry`). Specification: VTI Community Badges chapter
+projected to the trust registry as recognised issuers (#2491, `badges::registry`); a badge
+group's own paths giving and ending the badge (#2493); **phase 4 complete** (this PR): the
+rule counts and claim codes (VTI-BDG-015, 025 – 027; dtgwg-vti-spec #108, trust-tasks-tf
+#1059). Specification: VTI Community Badges chapter
 (VTI-BDG-001 – 095). Wire: trust-tasks-tf `specs/vtc/badges/*/0.1`, plus `badgeId` on the shared
 `Group` record. Mockups: the "VTC Member Badges" design canvas (seven screens: a member's page with
 the badge wall, one badge with its holders, the member's own badges, a member making a badge, and
@@ -156,7 +159,10 @@ Requests reuse `vtc/groups/join` and `vtc/groups/requests/{list,decide}`; owners
   credential's issuer is the group. The W3C Bitstring Status List v1.0 Recommendation (May 2025)
   compares no issuers in its validate algorithm and says the two "might differ" (§2.2, and the
   note after §3.2), so the community signs the list and the group signs the credential.
-- **New rule facts** (`electionsVotedIn`, `ideasSelected`, `kudosReceived`) extend `RuleCondition`
-  in the groups family; they are phase 4 and not in the 0.1 badges family.
+- **New rule facts** — settled (phase 4). `RuleCondition` gains `kudosReceived`,
+  `ideasSelected` and `electionTickets` with `atLeast` and a new `count` member (widening
+  `value` would have changed every consumer's type), read only by a badge's group.
+  `electionsVotedIn` became `electionTickets`: the community issues tickets and never learns
+  whether a ballot was cast (VTI-VOT-001).
 - **A leaderboard** is a setting that is off by default and that members join themselves; not in
   phase 1.
