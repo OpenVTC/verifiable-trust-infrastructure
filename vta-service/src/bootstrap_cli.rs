@@ -1030,6 +1030,7 @@ pub async fn run_context_update(
     if clear_did {
         record = crate::operations::contexts::update_context_did(
             &contexts_ks,
+            &cs.keyspace(crate::keyspaces::KEYS)?,
             &cs.keyspace(crate::keyspaces::ACL)?,
             &auth,
             &id,

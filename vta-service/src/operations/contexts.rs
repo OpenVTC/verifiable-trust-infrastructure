@@ -256,13 +256,20 @@ pub async fn update_context(
 ///
 /// The provisioning case: an automated caller holding
 /// [`Capability::ContextCreate`](vti_common::acl::Capability::ContextCreate)
-/// creates a context and must then make it usable — give it a DID, name its
-/// issuer key. Both are one-time acts at the context's birth.
+/// creates a context and must then make it usable — give it a DID. That is a
+/// one-time act at the context's birth.
 ///
 /// **Write-once, deliberately.** The caller may fill a blank field; it may never
-/// change an established one. Re-pointing a context's identity or its signing
-/// key is how an automated process would quietly become something else, and it
-/// is rare enough to be an operator's act. The alternative considered — making
+/// change an established one. Re-pointing a context's identity is how an
+/// automated process would quietly become something else, and it is rare enough
+/// to be an operator's act.
+///
+/// **And bound to a key the context holds.** The DID a provisioner names must be
+/// the `did:key` of an active Ed25519 key that lives in that very context (see
+/// [`require_did_is_a_context_key`]). Reaching a context is not enough to give
+/// it any identity at all: without this a provisioner could name a DID the
+/// context does not control, and a credential issued as that context would then
+/// claim an issuer nothing in it can sign for. The alternative considered — making
 /// the creator an *admin* of what it created — was rejected: a context admin can
 /// write ACL entries scoped to that context, so the authority would accumulate
 /// one context at a time for as long as the process ran.
@@ -282,6 +289,45 @@ async fn may_configure_unset(acl_ks: &KeyspaceHandle, auth: &AuthClaims, context
     ensure_may_create_context(acl_ks, auth).await.is_ok()
 }
 
+/// A provisioner may name only the `did:key` of an active Ed25519 key that lives
+/// in `context_id` itself.
+///
+/// A `did:key` resolves to exactly the key it is derived from, under every
+/// verification relationship, with no document to publish — so naming one the
+/// context holds is the only identity a provisioner can give it that the context
+/// is certain to control. Anything else (another DID method, or a `did:key` of a
+/// key held elsewhere) is an administrator's decision.
+async fn require_did_is_a_context_key(
+    keys_ks: &KeyspaceHandle,
+    context_id: &str,
+    did: &str,
+) -> Result<(), ContextError> {
+    let refuse = |why: String| ContextError::Other(AppError::Forbidden(why));
+    let Some(public_key) = did.strip_prefix("did:key:") else {
+        return Err(refuse(format!(
+            "a provisioner may name only a `did:key` for context `{context_id}`; any other DID \
+             is an administrator's act"
+        )));
+    };
+    let held = keys_ks.prefix_iter_raw("key:").await?;
+    for (_, value) in held {
+        let Ok(record) = serde_json::from_slice::<vta_sdk::keys::KeyRecord>(&value) else {
+            continue;
+        };
+        if record.context_id.as_deref() == Some(context_id)
+            && record.public_key == public_key
+            && record.status == vta_sdk::keys::KeyStatus::Active
+            && record.key_type == vta_sdk::keys::KeyType::Ed25519
+        {
+            return Ok(());
+        }
+    }
+    Err(refuse(format!(
+        "`{did}` is not the did:key of an active Ed25519 key held in context `{context_id}`, so a \
+         provisioner may not name it"
+    )))
+}
+
 /// Update the DID for a context. Requires Admin role with access to the context
 /// (context-scoped admins can update DIDs on their own contexts).
 ///
@@ -290,6 +336,7 @@ async fn may_configure_unset(acl_ks: &KeyspaceHandle, auth: &AuthClaims, context
 /// created. See [`may_configure_unset`].
 pub async fn update_context_did(
     contexts_ks: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     id: &str,
@@ -315,10 +362,13 @@ pub async fn update_context_did(
              provisioning one"
         ))));
     }
-    if provisioning && did.is_none() {
-        return Err(ContextError::Other(AppError::Forbidden(format!(
-            "clearing the DID on context `{id}` is an administrator's act"
-        ))));
+    if provisioning {
+        let Some(ref did) = did else {
+            return Err(ContextError::Other(AppError::Forbidden(format!(
+                "clearing the DID on context `{id}` is an administrator's act"
+            ))));
+        };
+        require_did_is_a_context_key(keys_ks, id, did).await?;
     }
 
     // `None` clears (`update-did/1.1`, `did: null`). Clearing a context that
@@ -1072,8 +1122,10 @@ mod tests {
         create_context(&ks, &super_admin(), "acme", "Acme".into(), None, None, "t")
             .await
             .unwrap();
+        let keys_ks = _s.keyspace(crate::keyspaces::KEYS).unwrap();
         let set = update_context_did(
             &ks,
+            &keys_ks,
             &acl,
             &admin_of("acme"),
             "acme",
@@ -1084,7 +1136,7 @@ mod tests {
         .expect("assign");
         assert_eq!(set.did.as_deref(), Some("did:web:a.example"));
 
-        let cleared = update_context_did(&ks, &acl, &admin_of("acme"), "acme", None, "t")
+        let cleared = update_context_did(&ks, &keys_ks, &acl, &admin_of("acme"), "acme", None, "t")
             .await
             .expect("clear");
         assert_eq!(cleared.did, None);
@@ -1097,7 +1149,7 @@ mod tests {
             "the clear was not stored"
         );
 
-        let again = update_context_did(&ks, &acl, &admin_of("acme"), "acme", None, "t")
+        let again = update_context_did(&ks, &keys_ks, &acl, &admin_of("acme"), "acme", None, "t")
             .await
             .expect("clearing a context with no DID is not an error");
         assert_eq!(again.did, None);
@@ -1856,11 +1908,12 @@ mod tests {
     // may never reconfigure one. Filling a blank field is provisioning;
     // changing an established one is an administrator's act.
 
-    /// A provisioner sets the DID and the issuer key on a fresh context, then
-    /// is refused when it tries to change either.
+    /// A provisioner names the DID of a key the context holds, then is refused
+    /// when it tries to change or clear it.
     #[tokio::test]
     async fn a_provisioner_configures_a_fresh_context_once_and_no_more() {
         let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+        let keys_ks = _s.keyspace(crate::keyspaces::KEYS).unwrap();
         create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
             .await
             .unwrap();
@@ -1876,23 +1929,25 @@ mod tests {
         )
         .await
         .expect("provision the context");
+        seed_key(&keys_ks, "agent-1-key", Some("gw/agent-1")).await;
+        let own_did = format!("did:key:{SEEDED_PUBLIC_KEY}");
 
-        // Fill the DID while unset — allowed.
         let set = update_context_did(
             &ks,
+            &keys_ks,
             &acl_ks,
             &caller,
             "gw/agent-1",
-            Some("did:key:zAgentOne".into()),
+            Some(own_did.clone()),
             "t",
         )
         .await
         .expect("a provisioner may name a context that has no DID");
-        assert_eq!(set.did.as_deref(), Some("did:key:zAgentOne"));
+        assert_eq!(set.did.as_deref(), Some(own_did.as_str()));
 
-        // Change it — refused.
         let err = match update_context_did(
             &ks,
+            &keys_ks,
             &acl_ks,
             &caller,
             "gw/agent-1",
@@ -1906,15 +1961,73 @@ mod tests {
         };
         assert!(err.contains("administrator"), "{err}");
 
-        // Clearing it — also refused: that is a reconfiguration, not a birth.
-        let cleared = update_context_did(&ks, &acl_ks, &caller, "gw/agent-1", None, "t").await;
+        let cleared =
+            update_context_did(&ks, &keys_ks, &acl_ks, &caller, "gw/agent-1", None, "t").await;
         assert!(cleared.is_err(), "a provisioner must not clear a DID");
     }
 
-    /// The same rule for the issuer-key designation.
+    /// A provisioner may name only the `did:key` of a key the context holds.
+    /// Anything else is an administrator's decision, however blank the field.
     #[tokio::test]
-    async fn a_provisioner_designates_an_issuer_key_once_and_no_more() {
+    async fn a_provisioner_may_name_only_a_did_the_context_controls() {
         let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+        let keys_ks = _s.keyspace(crate::keyspaces::KEYS).unwrap();
+        create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
+            .await
+            .unwrap();
+        let caller = provisioner(&acl_ks, "did:key:zProvisioner", "gw").await;
+        for leaf in ["agent-1", "agent-2"] {
+            create_context(
+                &ks,
+                &caller,
+                leaf,
+                leaf.into(),
+                None,
+                Some("gw".to_string()),
+                "t",
+            )
+            .await
+            .unwrap();
+        }
+        seed_key(&keys_ks, "agent-1-key", Some("gw/agent-1")).await;
+        let held_by_agent_1 = format!("did:key:{SEEDED_PUBLIC_KEY}");
+
+        for (what, did) in [
+            (
+                "a did:key nothing in the context holds",
+                "did:key:z6MkNobodyHoldsThis",
+            ),
+            ("a different DID method", "did:web:example.com"),
+            ("a key held by another context", held_by_agent_1.as_str()),
+        ] {
+            let refused = update_context_did(
+                &ks,
+                &keys_ks,
+                &acl_ks,
+                &caller,
+                "gw/agent-2",
+                Some(did.to_string()),
+                "t",
+            )
+            .await;
+            assert!(refused.is_err(), "{what} must be refused");
+            assert_eq!(
+                get_context_op(&ks, &super_admin(), "gw/agent-2", "t")
+                    .await
+                    .unwrap()
+                    .did,
+                None,
+                "{what}: a refused write left a DID behind"
+            );
+        }
+    }
+
+    /// A revoked key, or one that cannot sign `eddsa-jcs-2022`, is not a key the
+    /// context can use as an identity.
+    #[tokio::test]
+    async fn a_provisioner_cannot_name_a_revoked_or_non_ed25519_key() {
+        let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+        let keys_ks = _s.keyspace(crate::keyspaces::KEYS).unwrap();
         create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
             .await
             .unwrap();
@@ -1930,42 +2043,53 @@ mod tests {
         )
         .await
         .unwrap();
+        let did = format!("did:key:{SEEDED_PUBLIC_KEY}");
 
-        // The designation is checked for residency, so the key must be real
-        // and live in the context it is designated for.
-        let keys_ks = _s.keyspace(crate::keyspaces::KEYS).unwrap();
-        seed_key(&keys_ks, "agent-1-key", Some("gw/agent-1")).await;
-
-        set_context_issuer_key(
-            &ks,
+        seed_key_with(
             &keys_ks,
-            &acl_ks,
-            &caller,
-            "gw/agent-1",
-            Some("agent-1-key".to_string()),
-            None,
-            "t",
+            "revoked",
+            Some("gw/agent-1"),
+            vta_sdk::keys::KeyType::Ed25519,
+            vta_sdk::keys::KeyStatus::Revoked,
         )
-        .await
-        .expect("a provisioner may designate a key for a context that has none");
+        .await;
+        assert!(
+            update_context_did(
+                &ks,
+                &keys_ks,
+                &acl_ks,
+                &caller,
+                "gw/agent-1",
+                Some(did.clone()),
+                "t"
+            )
+            .await
+            .is_err(),
+            "a revoked key must not become the context's identity"
+        );
 
-        seed_key(&keys_ks, "agent-1-other", Some("gw/agent-1")).await;
-        let err = match set_context_issuer_key(
-            &ks,
+        seed_key_with(
             &keys_ks,
-            &acl_ks,
-            &caller,
-            "gw/agent-1",
-            Some("agent-1-other".to_string()),
-            None,
-            "t",
+            "revoked",
+            Some("gw/agent-1"),
+            vta_sdk::keys::KeyType::P256,
+            vta_sdk::keys::KeyStatus::Active,
         )
-        .await
-        {
-            Ok(r) => panic!("re-pointing an established designation must be refused: {r:?}"),
-            Err(e) => format!("{e:?}"),
-        };
-        assert!(err.contains("administrator"), "{err}");
+        .await;
+        assert!(
+            update_context_did(
+                &ks,
+                &keys_ks,
+                &acl_ks,
+                &caller,
+                "gw/agent-1",
+                Some(did),
+                "t"
+            )
+            .await
+            .is_err(),
+            "a P-256 key cannot be the did:key of an eddsa-jcs-2022 signer"
+        );
     }
 
     /// Write-once does not widen reach: a provisioner still cannot configure a
@@ -1989,8 +2113,10 @@ mod tests {
         .unwrap();
         let caller = provisioner(&acl_ks, "did:key:zProvisioner", "gw").await;
 
+        let keys_ks = _s.keyspace(crate::keyspaces::KEYS).unwrap();
         let outcome = update_context_did(
             &ks,
+            &keys_ks,
             &acl_ks,
             &caller,
             "other",
@@ -2012,8 +2138,10 @@ mod tests {
         create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
             .await
             .unwrap();
+        let keys_ks = _s.keyspace(crate::keyspaces::KEYS).unwrap();
         update_context_did(
             &ks,
+            &keys_ks,
             &acl_ks,
             &super_admin(),
             "gw",
@@ -2024,6 +2152,7 @@ mod tests {
         .unwrap();
         let changed = update_context_did(
             &ks,
+            &keys_ks,
             &acl_ks,
             &super_admin(),
             "gw",
@@ -2035,16 +2164,33 @@ mod tests {
         assert_eq!(changed.did.as_deref(), Some("did:key:zSecond"));
     }
 
-    /// Store a minimal key record so a designation has something real to point
-    /// at — `set_context_issuer_key` checks the key exists and lives in the
-    /// context.
+    const SEEDED_PUBLIC_KEY: &str = "z6MkTestPublicKey";
+
+    /// Store a minimal active Ed25519 key record in `context_id`.
     async fn seed_key(keys_ks: &KeyspaceHandle, key_id: &str, context_id: Option<&str>) {
+        seed_key_with(
+            keys_ks,
+            key_id,
+            context_id,
+            vta_sdk::keys::KeyType::Ed25519,
+            vta_sdk::keys::KeyStatus::Active,
+        )
+        .await;
+    }
+
+    async fn seed_key_with(
+        keys_ks: &KeyspaceHandle,
+        key_id: &str,
+        context_id: Option<&str>,
+        key_type: vta_sdk::keys::KeyType,
+        status: vta_sdk::keys::KeyStatus,
+    ) {
         let record = vta_sdk::keys::KeyRecord {
             key_id: key_id.to_string(),
             derivation_path: "m/26'/2'/1'/0".to_string(),
-            key_type: vta_sdk::keys::KeyType::Ed25519,
-            status: vta_sdk::keys::KeyStatus::Active,
-            public_key: "z6MkTestPublicKey".to_string(),
+            key_type,
+            status,
+            public_key: SEEDED_PUBLIC_KEY.to_string(),
             label: None,
             context_id: context_id.map(str::to_string),
             seed_id: None,
