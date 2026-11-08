@@ -1328,8 +1328,13 @@ mod tests {
             std::fs::write(path, &json).unwrap();
         }
         let on_disk = std::fs::read_to_string(path).expect("fixture present");
+        // Compared as JSON values, not text: key order in the file is not part
+        // of the vectors, and serde_json's own order changes with its
+        // `preserve_order` feature, which any dependency can turn on.
+        let on_disk: serde_json::Value = serde_json::from_str(&on_disk).expect("fixture is JSON");
+        let built: serde_json::Value = serde_json::from_str(&json).expect("vectors are JSON");
         assert_eq!(
-            on_disk, json,
+            on_disk, built,
             "file vectors drifted; regenerate deliberately"
         );
     }

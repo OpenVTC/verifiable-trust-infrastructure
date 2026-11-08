@@ -1156,7 +1156,7 @@ fn render_roles(
 }
 
 fn digest(roles: &[Value]) -> String {
-    let bytes = serde_json::to_vec(roles).unwrap_or_default();
+    let bytes = serde_json_canonicalizer::to_vec(&roles).unwrap_or_default();
     hex::encode(Sha256::digest(&bytes))
 }
 

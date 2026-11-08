@@ -1022,7 +1022,7 @@ async fn handle_issue(
         return reject;
     }
     let election_id = doc.payload["electionId"].as_str().unwrap_or_default();
-    let doc_digest = match serde_json::to_vec(&doc) {
+    let doc_digest = match serde_json_canonicalizer::to_vec(&doc) {
         Ok(bytes) => hex::encode(Sha256::digest(bytes)),
         Err(e) => return app_error_to_reject(&doc, &AppError::Internal(e.to_string())),
     };
