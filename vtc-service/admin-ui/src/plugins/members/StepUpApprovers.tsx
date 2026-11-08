@@ -99,6 +99,11 @@ export function ApproverDevicesCard({ did, self = false }: { did: string; self?:
         and never signs anyone in. Once one is held, ordinary console passkeys no longer count
         for that confirmation.
       </p>
+      <p className="muted">
+        Use an approver key that is enrolled at no other community. Two communities holding the
+        same approver DID can tell that the same person stands behind both. The VTA browser
+        plugin mints a separate key for each community; a device enrolled by hand may not.
+      </p>
       {list.isPending && <p className="muted">Loading…</p>}
       {list.error && <p className="muted">Could not load: {loadError(list.error)}</p>}
       {!list.isPending && !list.error && (

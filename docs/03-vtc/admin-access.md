@@ -503,6 +503,19 @@ revoked one can never be bound again. A subject holds at most five. Revoking
 the last one is allowed — it costs the ability to step up with it, not the
 subject's authority — and is recovered through another invite.
 
+**Use a different approver key in every community.** An approver DID is given
+to the community it is enrolled at and lands in its records and audit trail.
+Two communities holding the same approver DID — or the same administrator
+`did:key`, or the same delegated signing key — can tell that one person stands
+behind both just by comparing what each recorded. That is a correlation
+attack, and neither community can see it coming: each knows only its own
+records. The VTA browser plugin already mints a fresh approver key for each
+community and refuses to reuse one, and a passkey is bound to one site. The
+risk is a key carried by hand: a `did:key` used as an administrator, an
+approver device enrolled with `enrol-approver --did`, or a `vtc-mcp` agent key
+at more than one community. Give each community its own (VTI-KEY-246); a VTA
+persona per community does that for the identity itself.
+
 Every administrator made by a completed action (§3.2: an `acl/grant`,
 `acl/update`, `acl/change-role` or `vtc/members/role/set` to community-admin) is issued an approver
 enrolment invite automatically. The requester sees it once, on the completed

@@ -176,6 +176,23 @@ process on the machine. The flags stay supported and the bridge warns when it
 sees one; prefer the matching `VTC_MCP_*` environment variable, or a file path
 for `--agent-secrets`.
 
+### 2.7 One agent key per community
+
+An agent key is a DID every community it signs in to records — in its audit
+trail, its list of your signing keys, its delegations. Two communities that
+see the same agent DID can tell that the same assistant, and so the same
+person, stands behind both: a correlation no protocol step prevents, and that
+neither community can see on its own. Mint one key per community
+(`vtc-mcp --mint-did-key`) and never point one at a second `--vtc-did`.
+
+The bridge keeps a local note of the communities each agent DID was used with
+(`$VTC_MCP_STATE_DIR`, else `$XDG_STATE_HOME/vtc-mcp`, else
+`~/.local/state/vtc-mcp`; file `agent-communities.json`, owner-only, DIDs
+only, never key material). When a key it has seen with one community is
+pointed at another, it logs a warning and `vtc_whoami` / `vtc_status` carry it
+as `keyReuseWarning`. It warns rather than refuses, since an operator may mean
+it; `--no-key-reuse-check` (`VTC_MCP_NO_KEY_REUSE_CHECK`) turns the note off.
+
 ---
 
 ## 3. Identity
@@ -333,6 +350,7 @@ regardless, for a diagnosis. `vtc_status` reports which is in use.
 | `--allow <glob>` | `VTC_MCP_ALLOW` | Permit only these slug globs. Repeatable; comma-separated in the env var. When set, everything else is refused |
 | `--deny <glob>` | `VTC_MCP_DENY` | Always refuse these. Checked **before** `--allow` |
 | `--confirm <level>` | `VTC_MCP_CONFIRM` | Which classes need a human: `never`, `destructive` (default), `sensitive`, `always` |
+| `--no-key-reuse-check` | `VTC_MCP_NO_KEY_REUSE_CHECK` | Keep no note of which community each agent key was used with, and so give no warning when one is reused (§2.7) |
 
 Globs are `*`, a family (`vtc/groups/*`), or an exact slug, matched against
 the part after `https://trusttasks.org/spec/`. Confirmation uses MCP

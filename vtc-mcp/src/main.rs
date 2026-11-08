@@ -34,6 +34,7 @@ use vti_mcp_common::guard::{ConfirmLevel, Guard};
 use vti_mcp_common::observability::{self, LogFormat, Recorder};
 
 mod guides;
+mod key_reuse;
 mod server;
 mod signin;
 mod workflows;
@@ -121,6 +122,12 @@ struct Args {
     /// for `VTC_MCP_AGENT_KEY`. Serves no MCP.
     #[arg(long, exclusive = true)]
     mint_did_key: bool,
+
+    /// Do not keep or read the local note of which community each agent key
+    /// was used with, and so do not warn when one key is pointed at a second
+    /// community (`docs/03-vtc/vtc-mcp.md` §2.7).
+    #[arg(long, env = "VTC_MCP_NO_KEY_REUSE_CHECK")]
+    no_key_reuse_check: bool,
 }
 
 /// A fresh Ed25519 `did:key` and its private key, multibase-encoded as the
@@ -230,6 +237,30 @@ fn warn_about_argv_secrets() {
     }
 }
 
+/// Whether this agent key was used with another community before, recorded
+/// as used with this one (`key_reuse`). A warning, logged and reported by
+/// `vtc_whoami`/`vtc_status`; never a refusal. A note that cannot be kept is
+/// logged and otherwise ignored, since it only ever warns.
+fn key_reuse_warning(agent_did: Option<&str>, vtc_did: &str) -> Option<String> {
+    let agent_did = agent_did?;
+    let Some(path) = key_reuse::default_path() else {
+        tracing::debug!("no state directory: the agent-key reuse note is not kept");
+        return None;
+    };
+    match key_reuse::check_and_record(&path, agent_did, vtc_did) {
+        Ok(others) if others.is_empty() => None,
+        Ok(others) => {
+            let warning = key_reuse::warning(agent_did, &others);
+            tracing::warn!("{warning}");
+            Some(warning)
+        }
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "could not keep the agent-key reuse note");
+            None
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -279,6 +310,7 @@ async fn main() -> anyhow::Result<()> {
         agent_did: None,
         vtc_did: args.vtc_did.clone(),
         transport_choice: args.transport.label().into(),
+        key_reuse_warning: None,
     };
     let rung = match ladder(&args) {
         Ok(Some(rung)) => rung,
@@ -311,6 +343,10 @@ async fn main() -> anyhow::Result<()> {
         tracing::error!(error = %message, "serving in degraded mode — tools will report this");
         return serve(VtcMcp::degraded(message, identity, guard, recorder), None).await;
     };
+
+    if !args.no_key_reuse_check {
+        identity.key_reuse_warning = key_reuse_warning(identity.agent_did.as_deref(), vtc_did);
+    }
 
     tracing::info!(
         mode,

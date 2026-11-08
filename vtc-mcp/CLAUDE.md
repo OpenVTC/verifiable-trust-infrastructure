@@ -72,6 +72,11 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
   carries the link, the subject and the community's reason — never the
   inline request's challenge or binding as something to approve. A workflow
   stops at that step. The bridge never reads the handle itself.
+- **An agent key reused at a second community is warned about, never refused**
+  (`src/key_reuse.rs`, VTI-KEY-246): the bridge keeps an owner-only local note
+  of the communities each agent DID signed in to and reports a reuse as
+  `keyReuseWarning` in `vtc_whoami` / `vtc_status`. Only the key holder can see
+  reuse; a community knows only its own records.
 - **Deciding an action always asks the human.** `vtc_actions_decide` re-derives
   the action's summary from the payload that would run (`verify_action`),
   refuses on any mismatch, and puts the summary and match code in front of
