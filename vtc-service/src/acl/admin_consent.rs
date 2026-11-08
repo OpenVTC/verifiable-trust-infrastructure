@@ -23,7 +23,7 @@
 //! approver set fixed by the requirement rather than by a configured rule:
 //!
 //! - **Trigger** ([`newly_conferred`]): an `acl/grant`, `acl/update` or
-//!   `acl/change-role` whose resulting entry holds an authority-conferring
+//!   `vtc/members/role/set` whose resulting entry holds an authority-conferring
 //!   capability, at a covering qualifier, that the entry before it did not.
 //! - **Stake**: the capabilities conferred. **Approvers**: every other live
 //!   entry that holds *and may approve* each of them at a covering qualifier
@@ -128,12 +128,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::warn;
-use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
-use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision_v0_2;
-use trust_tasks_rs::specs::task_consent::request::v0_1 as request;
 use vti_common::audit::AuditEvent;
 use vti_common::error::AppError;
 use vti_common::task_consent::{self, effects::StatePin};
+use vti_specs::task_consent::decision::v0_2 as decision;
+use vti_specs::task_consent::request::v0_1 as request;
 
 use super::{CapRef, Capability, ResourceQualifier, VtcAclEntry, get_acl_entry, list_acl_entries};
 use crate::auth::session::now_epoch;
@@ -149,13 +148,10 @@ pub const APPROVER_SET: &str = "capability-holders";
 /// approver, best-effort, when an action is raised.
 pub(crate) const REQUEST_TYPE: &str = <request::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `task-consent/decision/0.1` — what an approver answers with.
+/// `task-consent/decision/0.2` — what an approver answers with: the decision,
+/// an optional `evidence` factor and an optional `actionId` locator. 0.1 is no
+/// longer served; every 0.1 payload is a valid 0.2 payload.
 pub(crate) const DECISION_TYPE: &str = <decision::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `task-consent/decision/0.2` — 0.1 plus an optional `evidence` factor and
-/// an optional `actionId` locator.
-pub(crate) const DECISION_V0_2_TYPE: &str =
-    <decision_v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The approver set a request to take authority-conferring capabilities away
 /// from another subject names (VTI-APV-019): their holders other than the
@@ -212,8 +208,8 @@ pub enum Act {
     GrantsReview,
     /// A **queue** item (`vtc-action-list.md` §8.2, *Existing queues*): an
     /// unratified git-ns break-glass, for another administrator of the
-    /// namespace to ratify or revoke (`git-ns/right/ratify/0.1`,
-    /// `git-ns/right/revoke/0.3`). The subject is the record's subject, who
+    /// namespace to ratify or revoke (`git-ns/right/ratify/0.2`,
+    /// `git-ns/right/revoke/0.4`). The subject is the record's subject, who
     /// never decides it. A decision, not a consent: it never expires into
     /// acceptance and is never gated (`crate::admin_actions::queues`).
     BreakGlassReview,
@@ -462,19 +458,13 @@ impl Act {
             }
             Self::DirectAdmission => s::KIND_MEMBER_ADMIT,
             Self::ChangeStorage => match type_uri {
-                crate::trust_tasks::storage_tasks::CREATE_TYPE
-                | crate::trust_tasks::storage_tasks::CREATE_V0_2_TYPE => {
-                    s::KIND_STORAGE_CONFIG_CREATE
-                }
+                crate::trust_tasks::storage_tasks::CREATE_TYPE => s::KIND_STORAGE_CONFIG_CREATE,
                 crate::trust_tasks::storage_tasks::CREDENTIALS_SET_TYPE => {
                     s::KIND_STORAGE_CREDENTIAL_SET
                 }
                 crate::trust_tasks::storage_tasks::RETIRE_TYPE => s::KIND_STORAGE_CONFIG_RETIRE,
                 crate::trust_tasks::storage_tasks::ASSIGN_TYPE => s::KIND_ROOM_STORAGE_ASSIGN,
-                crate::trust_tasks::storage_tasks::MIGRATE_TYPE
-                | crate::trust_tasks::storage_tasks::MIGRATE_V2_TYPE => {
-                    s::KIND_ROOM_STORAGE_MIGRATE
-                }
+                crate::trust_tasks::storage_tasks::MIGRATE_TYPE => s::KIND_ROOM_STORAGE_MIGRATE,
                 _ => s::KIND_STORAGE_CONFIG_UPDATE,
             },
             Self::ChangeTrustedWitnesses => s::KIND_WITNESSES_CHANGE,
@@ -989,7 +979,7 @@ pub enum ReductionGate {
 }
 
 /// The gate on removing, demoting or narrowing an **administrator**'s entry —
-/// `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update` or
+/// `acl/revoke`, a downward `vtc/members/role/set`, a narrowing `acl/update` or
 /// `acl/grant` rewrite, `vtc/members/admin-remove` (`vtc-action-list.md` §7b).
 ///
 /// Every such act takes the requester's operation-bound gesture. When the
@@ -2015,17 +2005,17 @@ mod tests {
             (Act::GrantUnrestricted, tt::ACL_GRANT_TYPE),
             (Act::GrantUnrestricted, tt::ACL_CHANGE_ROLE_TYPE),
             (Act::GrantUnrestricted, tt::ACL_UPDATE_TYPE),
-            (Act::GrantUnrestricted, tt::ACL_GRANT_V0_2_TYPE),
-            (Act::GrantUnrestricted, tt::ACL_CHANGE_ROLE_V0_2_TYPE),
-            (Act::GrantUnrestricted, tt::ACL_UPDATE_V0_2_TYPE),
+            (Act::GrantUnrestricted, tt::member_role_tasks::ROLE_SET_TYPE),
             (Act::GrantUnrestricted, tt::admin_tasks::INVITES_CREATE_TYPE),
             (Act::ReduceUnrestricted, tt::ACL_REVOKE_TYPE),
-            (Act::ReduceUnrestricted, tt::ACL_REVOKE_V0_2_TYPE),
             (Act::ReduceUnrestricted, tt::ACL_CHANGE_ROLE_TYPE),
-            (Act::ReduceUnrestricted, tt::ACL_CHANGE_ROLE_V0_2_TYPE),
+            (
+                Act::ReduceUnrestricted,
+                tt::member_role_tasks::ROLE_SET_TYPE,
+            ),
             (Act::ReduceUnrestricted, tt::ACL_UPDATE_TYPE),
-            (Act::ReduceUnrestricted, tt::ACL_UPDATE_V0_2_TYPE),
-            (Act::ReduceUnrestricted, tt::ACL_GRANT_TYPE),
+            // `acl/grant/0.2` never narrows (grant item 6), so it raises no
+            // reduction — unlike 0.1, whose grant could rewrite an entry.
             (Act::ReduceUnrestricted, tt::MEMBER_ADMIN_REMOVE_TYPE),
             (Act::LowerThreshold, tt::admin_tasks::CONFIG_PATCH_TYPE),
             (Act::LowerThreshold, tt::CONFIG_IMPORT_TYPE),

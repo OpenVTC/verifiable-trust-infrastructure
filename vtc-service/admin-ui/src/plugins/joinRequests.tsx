@@ -16,6 +16,7 @@ import { ArrowLeft, ArrowRight, Inbox } from "lucide-react";
 
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { Protected } from "@/components/Protected";
 import { WAITING_COUNT_KEY } from "@/lib/action-badge";
 import { formatIso as formatDate } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
@@ -307,9 +308,15 @@ function JoinRequestDetail() {
             </dl>
           </section>
 
-          <JoinRequestVettingCard id={id} />
+          {/* What the decision rests on, and the decision: out of the
+              community theme's reach (vtc/community/theme/show/0.1, client
+              item 2). The summary and the documents below take the theme. */}
+          <Protected ground="card">
+            <JoinRequestVettingCard id={id} />
+          </Protected>
 
           {query.data.status === "pending" && (
+            <Protected ground="card">
             <section className="card">
               <h3>Decide</h3>
               <p className="lead">
@@ -383,6 +390,7 @@ function JoinRequestDetail() {
                 </button>
               </div>
             </section>
+            </Protected>
           )}
 
           <section className="card">

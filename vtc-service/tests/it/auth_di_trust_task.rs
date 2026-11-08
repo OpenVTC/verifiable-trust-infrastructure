@@ -1,4 +1,4 @@
-//! The VTC's canonical login: a DI-signed `auth/authenticate/0.2` Trust Task,
+//! The VTC's canonical login: a DI-signed `auth/authenticate/0.3` Trust Task,
 //! driven by the *client's own* builder (`vta_sdk::auth_di`), dispatched on
 //! the shared `POST /v1/trust-tasks` door alongside every other verb.
 //!
@@ -39,7 +39,7 @@ async fn vtc_did(mock: &MockVtc) -> String {
         .expect("the mock VTC has a DID")
 }
 
-const AUTHENTICATE_TASK: &str = "https://trusttasks.org/spec/auth/authenticate/0.2";
+const AUTHENTICATE_TASK: &str = "https://trusttasks.org/spec/auth/authenticate/0.3";
 
 fn admin_entry(did: &str) -> VtcAclEntry {
     VtcAclEntry {

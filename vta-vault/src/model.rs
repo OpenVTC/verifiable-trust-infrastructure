@@ -95,6 +95,34 @@ pub enum CredentialFormat {
     Other(String),
 }
 
+/// How a stored body travels on the wire: as the JSON object it is, or as
+/// its bytes, base64url-encoded, for a format whose canonical form is not a
+/// JSON object. `vault/credentials/get/0.2` carries the first as
+/// `credential` and the second as `credentialBase64`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyEncoding {
+    /// The body is a JSON object.
+    Json,
+    /// The body is bytes: an SD-JWT's compact serialisation, an mdoc's CBOR.
+    Bytes,
+}
+
+impl CredentialFormat {
+    /// The OpenID for Verifiable Credentials format identifier for this
+    /// format, and how its body is carried — `None` for a format that has no
+    /// such identifier here ([`Self::Zkp`], which nothing yet stores, and
+    /// [`Self::Other`]). `vault/credentials/get/0.2` names the format with it,
+    /// so a consumer never sniffs the body to learn how to read it.
+    pub fn wire_form(&self) -> Option<(&'static str, BodyEncoding)> {
+        match self {
+            Self::EddsaJcs2022 | Self::Bbs2023 => Some(("ldp_vc", BodyEncoding::Json)),
+            Self::SdJwtVc => Some(("dc+sd-jwt", BodyEncoding::Bytes)),
+            Self::MsoMdoc => Some(("mso_mdoc", BodyEncoding::Bytes)),
+            Self::Zkp | Self::Other(_) => None,
+        }
+    }
+}
+
 /// Lifecycle / validity status of a stored credential. Set to
 /// [`CredentialStatus::Unknown`] at store time (this task does no status
 /// resolution); task 1.6 refreshes it from the status list so search and

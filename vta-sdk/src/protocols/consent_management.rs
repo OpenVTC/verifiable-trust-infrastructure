@@ -68,7 +68,7 @@ pub struct ConsentRevokeBody {
     pub reason: Option<String>,
 }
 
-/// `consent/list/1.0` — enumerate consents, optionally filtered.
+/// `consent/list/1.1` — enumerate consents, optionally filtered.
 ///
 /// Every member is optional: an unfiltered list is the common call and must
 /// serialize to `{}`.

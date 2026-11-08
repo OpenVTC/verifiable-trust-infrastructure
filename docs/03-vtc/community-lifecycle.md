@@ -106,7 +106,7 @@ Both skip the join criteria and vetting, so both are **governed**:
   the entry it seats is bounded by the requester's own authority
   (`vtc-admin-roles.md` §6.3), the rule an invitation's role is held to.
   `admin` is never seated this way — add the member, then promote them
-  with `acl/change-role`, which takes its own step-up and consent. A role
+  with `vtc/members/role/set`, which takes its own step-up and consent. A role
   carrying administrative authority (`moderator`, `issuer`) asks for the
   requester's passkey gesture bound to the one admission.
 - **Whether now.** The community's `admission` policy decides

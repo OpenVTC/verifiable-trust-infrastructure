@@ -143,9 +143,6 @@ async fn seed_signing_entry(
         .expect("seed the signing vault entry");
 }
 
-// Names the deprecated 0.1 URIs on purpose: they are the canonical forms this
-// covers, and they are still dispatched.
-#[allow(deprecated)]
 #[tokio::test]
 async fn release_paths_seal_an_answer_to_the_caller() {
     // A stand-in for the third party. `proxy-login` really does log in — it is
@@ -187,7 +184,7 @@ async fn release_paths_seal_an_answer_to_the_caller() {
 
     client
         .dispatch_trust_task(
-            vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1,
+            vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_2,
             serde_json::json!({ "entryId": "release-cov-1" }),
             30,
         )
@@ -196,7 +193,7 @@ async fn release_paths_seal_an_answer_to_the_caller() {
 
     client
         .dispatch_trust_task(
-            vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1,
+            vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2,
             serde_json::json!({ "entryId": "release-cov-1" }),
             30,
         )
@@ -208,7 +205,7 @@ async fn release_paths_seal_an_answer_to_the_caller() {
     // goes back inside an envelope addressed to the caller.
     client
         .dispatch_trust_task(
-            vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1,
+            vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_2,
             serde_json::json!({
                 "entryId": "sign-cov-1",
                 "unsignedEnvelope": {

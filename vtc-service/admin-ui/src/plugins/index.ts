@@ -12,7 +12,9 @@
 // awkward, the API is wrong.
 
 import {
+  Award,
   BadgeCheck,
+  Bell,
   BookUser,
   ClipboardList,
   Vote,
@@ -23,9 +25,11 @@ import {
   LayoutDashboard,
   ListChecks,
   Network,
+  Waypoints,
   PenLine,
   ScanLine,
   Share2,
+  SquareKanban,
   ShieldCheck,
   Smartphone,
   Tag,
@@ -41,6 +45,8 @@ import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
 import { Actions } from "@/plugins/actions";
 import { Audit } from "@/plugins/audit";
+import { Badges } from "@/plugins/badges";
+import { Boards } from "@/plugins/boards";
 import { Ceremonies } from "@/plugins/ceremonies";
 import { ConsoleKeys } from "@/plugins/consoleKeys";
 import { Dashboard } from "@/plugins/dashboard";
@@ -52,6 +58,8 @@ import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
 import { MyPasskeys } from "@/plugins/myPasskeys";
+import { Networks } from "@/plugins/networks";
+import { Notifications } from "@/plugins/notifications";
 import { Profile } from "@/plugins/profile";
 import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
@@ -81,8 +89,9 @@ export function registerBuiltinPlugins(): void {
     path: "/actions",
     iconComponent: ListChecks,
     reactComponent: Actions,
-    // A deciding page: out of the community theme's reach.
-    protected: true,
+    // Takes the community theme; its decision surfaces (each card that
+    // decides, the confirmations, the dialogs) are drawn out of the theme's
+    // reach where they render (`components/Protected.tsx`).
   });
 
   registerPlugin({
@@ -103,8 +112,9 @@ export function registerBuiltinPlugins(): void {
     path: "/join-requests",
     iconComponent: Inbox,
     reactComponent: JoinRequests,
-    // A deciding page: out of the community theme's reach.
-    protected: true,
+    // Takes the community theme; its decision surfaces (each card that
+    // decides, the confirmations, the dialogs) are drawn out of the theme's
+    // reach where they render (`components/Protected.tsx`).
     capabilities: ["vtc.join.decide"],
   });
 
@@ -115,8 +125,9 @@ export function registerBuiltinPlugins(): void {
     path: "/members",
     iconComponent: Users,
     reactComponent: Members,
-    // A deciding page: out of the community theme's reach.
-    protected: true,
+    // Takes the community theme; its decision surfaces (each card that
+    // decides, the confirmations, the dialogs) are drawn out of the theme's
+    // reach where they render (`components/Protected.tsx`).
     capabilities: ["vtc.members.manage"],
   });
 
@@ -142,6 +153,19 @@ export function registerBuiltinPlugins(): void {
     iconComponent: Vote,
     reactComponent: Elections,
     capabilities: ["vtc.elections.manage"],
+  });
+
+  // Community boards: facilitators (vtc.boards.manage, for every board or
+  // qualified to one) decide ideas, select among them and hide notes. Members
+  // propose and leave notes from the member portal.
+  registerPlugin({
+    id: "boards",
+    group: "governance",
+    label: "Boards",
+    path: "/boards",
+    iconComponent: SquareKanban,
+    reactComponent: Boards,
+    capabilities: ["vtc.boards.manage"],
   });
 
   // The community's groups: every administrator reads them; holders of
@@ -182,6 +206,19 @@ export function registerBuiltinPlugins(): void {
     path: "/relationships",
     iconComponent: Share2,
     reactComponent: Relationships,
+  });
+
+  // Notifications the community holds as their addressee (an election another
+  // community holds, say), and the decision to relay one to members
+  // (vtc/notifications/*, VTI-NTF-070 – 074).
+  registerPlugin({
+    id: "notifications",
+    group: "membership",
+    label: "Notifications",
+    path: "/notifications",
+    iconComponent: Bell,
+    reactComponent: Notifications,
+    capabilities: ["vtc.notifications.read"],
   });
 
   // ── Governance ──
@@ -247,6 +284,34 @@ export function registerBuiltinPlugins(): void {
     capabilities: ["vtc.registry.admin"],
   });
 
+  // The Verifiable Trust Networks this community belongs to (`vtc/networks/*`,
+  // docs/03-vtc/networks.md): join from a network's invitation
+  // (`/admin/networks?join=<url>&network=<did>`), leave, or reject a listing.
+  registerPlugin({
+    id: "networks",
+    group: "community",
+    label: "Networks",
+    path: "/networks",
+    iconComponent: Waypoints,
+    reactComponent: Networks,
+    capabilities: ["vtc.config.admin"],
+  });
+
+  // Member badges (docs/03-vtc/badges.md): holders of vtc.badges.admin define
+  // community badges and give any badge; a badge's owners (the managers of
+  // its badge group, vtc.groups.manage qualified to it) give theirs; holders
+  // of vtc.config.admin turn badges on and set the limits. Members hold,
+  // show and give kudos from the member portal.
+  registerPlugin({
+    id: "badges",
+    group: "community",
+    label: "Badges",
+    path: "/badges",
+    iconComponent: Award,
+    reactComponent: Badges,
+    capabilities: ["vtc.badges.admin", "vtc.groups.manage", "vtc.config.admin"],
+  });
+
   registerPlugin({
     id: "wallet-verifier",
     group: "community",
@@ -278,8 +343,9 @@ export function registerBuiltinPlugins(): void {
     path: "/repos",
     iconComponent: FolderGit2,
     reactComponent: Repos,
-    // A deciding page: out of the community theme's reach.
-    protected: true,
+    // Takes the community theme; its decision surfaces (each card that
+    // decides, the confirmations, the dialogs) are drawn out of the theme's
+    // reach where they render (`components/Protected.tsx`).
     // Git-namespace rights are capabilities on the ACL entry (phase C3): the
     // page is for whoever administers a namespace or manages a repository —
     // at any qualifier — and a community administrator, whose `git.ns.admin`

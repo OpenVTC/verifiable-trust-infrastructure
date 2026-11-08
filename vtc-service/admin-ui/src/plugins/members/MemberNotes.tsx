@@ -12,6 +12,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/ConfirmDialog";
+import { Field } from "@/components/Field";
+import { Protected } from "@/components/Protected";
 import { useToast } from "@/lib/toast";
 import {
   appendNote,
@@ -71,7 +73,10 @@ export function MemberNotesCard({ did }: { did: string }) {
   // Not a notes holder, or no directory entry: nothing to show.
   if (!entryId || notes.isError) return null;
   const items = notes.data?.items ?? [];
+  // Withdrawing a note, and releasing the notes to their member: out of the
+  // community theme's reach (vtc/community/theme/show/0.1, client item 2).
   return (
+    <Protected ground="card">
     <section className="card" aria-labelledby="member-notes-heading">
       <h3 id="member-notes-heading">Administrators&rsquo; notes</h3>
       <p className="muted">
@@ -110,28 +115,29 @@ export function MemberNotesCard({ did }: { did: string }) {
         </ul>
       )}
       <form
-        className="stack"
+        className="form-stack"
         onSubmit={(e) => {
           e.preventDefault();
           if (text.trim()) add.mutate();
         }}
       >
-        <label>
-          <span>Add a note</span>
+        <Field label="Add a note">
           <textarea
+            className="prose"
             aria-label="Add a note"
             value={text}
             maxLength={2000}
             onChange={(e) => setText(e.target.value)}
           />
-        </label>
-        <label>
-          <span>Follow up by (optional)</span>
+        </Field>
+        <Field label="Follow up by" hint="Optional.">
           <input type="date" aria-label="Follow up by" value={followUp} onChange={(e) => setFollowUp(e.target.value)} />
-        </label>
-        <button type="submit" className="btn btn-primary" disabled={!text.trim() || add.isPending}>
-          {add.isPending ? "Adding…" : "Add note"}
-        </button>
+        </Field>
+        <div className="form-actions">
+          <button type="submit" className="primary" disabled={!text.trim() || add.isPending}>
+            {add.isPending ? "Adding…" : "Add note"}
+          </button>
+        </div>
       </form>
       <details>
         <summary>Export these notes for the member&rsquo;s data request</summary>
@@ -140,14 +146,13 @@ export function MemberNotesCard({ did }: { did: string }) {
           the audit log at its highest severity.
         </p>
         <form
-          className="stack"
+          className="toolbar"
           onSubmit={(e) => {
             e.preventDefault();
             if (reason.trim()) exp.mutate();
           }}
         >
-          <label>
-            <span>Why</span>
+          <Field label="Why" inline>
             <input
               aria-label="Why export the notes"
               value={reason}
@@ -155,12 +160,13 @@ export function MemberNotesCard({ did }: { did: string }) {
               placeholder="e.g. the member's subject-access request of 19 October"
               onChange={(e) => setReason(e.target.value)}
             />
-          </label>
-          <button type="submit" className="btn" disabled={!reason.trim() || exp.isPending}>
+          </Field>
+          <button type="submit" className="secondary" disabled={!reason.trim() || exp.isPending}>
             {exp.isPending ? "Exporting…" : "Export notes"}
           </button>
         </form>
       </details>
     </section>
+    </Protected>
   );
 }

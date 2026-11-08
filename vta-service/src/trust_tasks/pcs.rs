@@ -14,15 +14,15 @@
 //!   action, the caller, the context, the community or the application — never an applicant
 //!   identifier, a tag or statement metadata.
 //!
-//! Payloads are validated by parsing into the generated `trust_tasks_rs::specs::vta::pcs`
+//! Payloads are validated by parsing into the generated `vti_specs::vta::pcs`
 //! types, and responses are rendered through the generated response type, so a response that
 //! drifted from its schema fails here rather than at a consumer.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vta::pcs as spec;
 use trust_tasks_rs::{DeclaredErrorCode, RejectReason, TrustTask};
+use vti_specs::vta::pcs as spec;
 
 use vti_common::acl::Capability;
 
@@ -723,6 +723,56 @@ pub(super) async fn handle_vetter_show(
     }
 }
 
+/// `vta/pcs/vetter/recover/0.1`: restore the key the community bound the member to.
+///
+/// Audited as `pcs.vetter.recover` with the community and whether the key changed — never the
+/// identifier, the key, the seed or the path (rule 8). The search itself is audited once by key
+/// custody (`key.pcs_search`).
+pub(super) async fn handle_vetter_recover(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::vetter::recover::v0_1 as t;
+    let (context, community) = match vetter_preamble::<t::Payload>(state, auth, &doc).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    match engine::vetter_recover(
+        state,
+        &caller(auth),
+        &context,
+        &community,
+        str_of(&doc, "memberDid"),
+        str_of(&doc, "boundId"),
+        |ctx| auth.has_context_access(ctx),
+    )
+    .await
+    {
+        Ok((recovered, vetter)) => {
+            if recovered {
+                audit(
+                    state,
+                    "pcs.vetter.recover",
+                    auth,
+                    &community,
+                    &context,
+                    Some("key restored"),
+                )
+                .await;
+            }
+            respond::<t::Response>(&doc, json!({ "recovered": recovered, "vetter": vetter }))
+        }
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::BoundKeyNotFound(_) => Some(t::error_codes::NOT_FOUND),
+            PcsError::HeldInAnotherContext(_) => Some(t::error_codes::HELD_IN_ANOTHER_CONTEXT),
+            PcsError::MemberMismatch => Some(t::error_codes::MEMBER_MISMATCH),
+            PcsError::EngineEnrolled => Some(t::error_codes::ENGINE_ENROLLED),
+            _ => None,
+        }),
+    }
+}
+
 // ─── Voter ───────────────────────────────────────────────────────────────────
 //
 // `vta/pcs/voter/*` and `vta/pcs/vote` (trust-tasks-tf #834, VTI-VOT-020 – 053). Audit names the
@@ -743,32 +793,80 @@ async fn voter_preamble<P: DeserializeOwned>(
     Ok((context, str_of(doc, "community").to_string()))
 }
 
-/// `vta/pcs/voter/read/0.1`: `vtc/elections/list` or `show`, signed as the member (items 3 – 6).
+/// `vta/pcs/voter/read/0.6`: `vtc/elections/list/0.5` or `vtc/elections/show/0.6`, signed as
+/// the member (items 3 – 8), the `show` carrying the member's presentation of
+/// `membershipCredential` where the request names one, issued by `memberOf` where it names
+/// that (VTI-VOT-016); 0.3, which signs `list/0.3` or `show/0.3`; and 0.2, which signs
+/// `list/0.3` or `show/0.2`. The version the request names picks the reads signed.
+#[allow(deprecated)] // vta/pcs/voter/read/0.2 – 0.3 and the reads they sign: still served
 pub(super) async fn handle_voter_read(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::voter::read::v0_1 as t;
-    use trust_tasks_rs::specs::vtc::elections::{list::v0_1 as list, show::v0_1 as show};
+    use spec::voter::read::v0_7 as t;
     use trust_tasks_rs::validate::ValidatedPayload as _;
+    use vti_specs::vtc::elections::{
+        list::v0_3 as list_0_3, list::v0_5 as list, show::v0_2 as show_0_2, show::v0_3 as show_0_3,
+        show::v0_6 as show, tombstones::show::v0_1 as tombstone,
+    };
     let (_context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
     };
+    let named = doc.type_uri.to_string();
+    let is = |uri: &str| named.starts_with(uri);
+    // 0 = 0.7, 6 = 0.6, 3 = 0.3, 2 = 0.2.
+    let version = if is(<spec::voter::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI) {
+        2
+    } else if is(<spec::voter::read::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI) {
+        3
+    } else if is(<spec::voter::read::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI) {
+        6
+    } else {
+        0
+    };
     let read = doc.payload["read"].as_str().unwrap_or_default();
     let payload = value_of(&doc, "payload");
+    // Item 3: only the engine builds a presentation, bound to the document it signs.
+    if payload.get("presentation").is_some() {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: "payload carries a presentation; name membershipCredential and the \
+                         engine presents it"
+                    .into(),
+            },
+        );
+    }
     // Item 3: the read's own payload, against its own schema.
-    let (type_uri, checked) = match read {
-        "list" => (
+    let (type_uri, checked) = match (read, version) {
+        ("list", 0) => (
             <list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             list::Payload::validate_value(&payload).map_err(|e| e.to_string()),
         ),
-        "show" => (
+        ("list", _) => (
+            <list_0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            list_0_3::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+        ),
+        ("show", 2) => (
+            <show_0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            show_0_2::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+        ),
+        ("show", 3) => (
+            <show_0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            show_0_3::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+        ),
+        ("show", _) => (
             <show::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             show::Payload::validate_value(&payload).map_err(|e| e.to_string()),
         ),
-        other => ("", Err(format!("`{other}` is not a read this task signs"))),
+        // Only 0.7 signs a tombstone read (VTI-BRD-009); its schema keeps a presentation out.
+        ("tombstone", 0) => (
+            <tombstone::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            tombstone::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+        ),
+        (other, _) => ("", Err(format!("`{other}` is not a read this task signs"))),
     };
     if let Err(reason) = checked {
         return reject_with(
@@ -779,45 +877,154 @@ pub(super) async fn handle_voter_read(
         );
     }
     let member = doc.payload["member"].as_str().unwrap_or_default();
+    let codes = |e: &PcsError| match e {
+        PcsError::MemberNotHeld(_) => Some(t::error_codes::MEMBER_NOT_HELD),
+        PcsError::MembershipCredentialUnusable => {
+            Some(t::error_codes::MEMBERSHIP_CREDENTIAL_UNUSABLE)
+        }
+        PcsError::MembershipCredentialMismatch => {
+            Some(t::error_codes::MEMBERSHIP_CREDENTIAL_MISMATCH)
+        }
+        _ => None,
+    };
+    // Item 4 before items 5 – 6: an unheld member is refused before its vault is read.
+    if let Err(e) =
+        crate::operations::pcs_voter::PersonaTicketSigner::for_member(state, auth, member).await
+    {
+        return refuse(&doc, e, codes);
+    }
+    // Items 5 – 6 (VTI-VOT-016): the schema admits both only under 0.6, and only with `show`.
+    let presenter = match doc
+        .payload
+        .get("membershipCredential")
+        .and_then(Value::as_str)
+    {
+        None => None,
+        Some(id) => match crate::operations::pcs_voter::MembershipPresenter::check(
+            state,
+            auth,
+            id,
+            member,
+            doc.payload.get("memberOf").and_then(Value::as_str),
+            PcsError::MembershipCredentialMismatch,
+        )
+        .await
+        {
+            Ok(p) => Some(p),
+            Err(e) => return refuse(&doc, e, codes),
+        },
+    };
     match crate::operations::pcs_voter::sign_read(
-        state, auth, member, &community, type_uri, payload,
+        state,
+        auth,
+        member,
+        &community,
+        type_uri,
+        payload,
+        presenter.as_ref(),
     )
     .await
     {
+        // Each version answers through its own response type, naming the reads it signs.
+        Ok(document) if version == 2 => {
+            respond::<spec::voter::read::v0_2::Response>(&doc, json!({ "document": document }))
+        }
+        Ok(document) if version == 3 => {
+            respond::<spec::voter::read::v0_3::Response>(&doc, json!({ "document": document }))
+        }
+        Ok(document) if version == 6 => {
+            respond::<spec::voter::read::v0_6::Response>(&doc, json!({ "document": document }))
+        }
         Ok(document) => respond::<t::Response>(&doc, json!({ "document": document })),
-        Err(e) => refuse(&doc, e, |e| match e {
-            PcsError::MemberNotHeld(_) => Some(t::error_codes::MEMBER_NOT_HELD),
-            _ => None,
-        }),
+        Err(e) => refuse(&doc, e, codes),
     }
 }
 
-/// `vta/pcs/voter/register/0.1`.
+/// `vta/pcs/voter/register/0.5`, whose `ticketDocument` is a `vtc/elections/tickets/issue/0.3`
+/// request carrying, under a credential roll, the member's presentation of
+/// `membershipCredential` (item 9, VTI-VOT-025); and 0.3 and 0.2, whose manifest has no
+/// credential roll and whose `ticketDocument` is a `tickets/issue/0.1` request. The spine holds
+/// each to its own version's schema; each answers through its own response type.
+#[allow(deprecated)] // vta/pcs/voter/register/0.2 – 0.3: still served
 pub(super) async fn handle_voter_register(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::voter::register::v0_1 as t;
+    use crate::operations::pcs_voter::{MembershipPresenter, TicketVersion};
+    use spec::voter::register::v0_5 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
     };
     let manifest = value_of(&doc, "manifest");
+    let current =
+        !doc.type_uri.to_string().starts_with(
+            <spec::voter::register::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ) && !doc.type_uri.to_string().starts_with(
+            <spec::voter::register::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        );
+    let version = if current {
+        TicketVersion::V0_3
+    } else {
+        TicketVersion::V0_1
+    };
+    let codes = |e: &PcsError| match e {
+        PcsError::ElectionChanged => Some(t::error_codes::ELECTION_CHANGED),
+        PcsError::UnsupportedSuite(_) => Some(t::error_codes::UNSUPPORTED_SUITE),
+        PcsError::ParametersInvalid(_) => Some(t::error_codes::PARAMETERS_INVALID),
+        PcsError::UnsupportedSecrecy(_) => Some(t::error_codes::UNSUPPORTED_SECRECY),
+        PcsError::TicketHeld => Some(t::error_codes::TICKET_HELD),
+        PcsError::MemberNotHeld(_) => Some(t::error_codes::MEMBER_NOT_HELD),
+        PcsError::MembershipCredentialRequired => {
+            Some(t::error_codes::MEMBERSHIP_CREDENTIAL_REQUIRED)
+        }
+        PcsError::MembershipCredentialUnusable => {
+            Some(t::error_codes::MEMBERSHIP_CREDENTIAL_UNUSABLE)
+        }
+        _ => None,
+    };
     // Item 9: the member's key is found, and the caller's standing to act as it checked, before
     // anything is allocated.
-    let member = match doc.payload.get("member").and_then(Value::as_str) {
+    let member_did = doc.payload.get("member").and_then(Value::as_str);
+    let member = match member_did {
         None => None,
         Some(did) => {
             match crate::operations::pcs_voter::PersonaTicketSigner::for_member(state, auth, did)
                 .await
             {
                 Ok(s) => Some(s),
-                Err(e) => {
-                    return refuse(&doc, e, |_| Some(t::error_codes::MEMBER_NOT_HELD));
-                }
+                Err(e) => return refuse(&doc, e, codes),
             }
         }
+    };
+    // Item 9 (VTI-VOT-025): under a credential roll the member presents the membership
+    // credential for `roll.memberOf` that they chose; under any other rule, and without
+    // `member`, none is presented. Checked before anything is allocated.
+    let credential = doc
+        .payload
+        .get("membershipCredential")
+        .and_then(Value::as_str);
+    let member_of = manifest["roll"]["memberOf"].as_str();
+    let credential_roll = manifest["roll"]["rule"].as_str() == Some("credential");
+    let presenter = match (credential_roll, member_did, credential) {
+        (true, Some(m), Some(id)) => match MembershipPresenter::check(
+            state,
+            auth,
+            id,
+            m,
+            member_of,
+            PcsError::MembershipCredentialUnusable,
+        )
+        .await
+        {
+            Ok(p) => Some(p),
+            Err(e) => return refuse(&doc, e, codes),
+        },
+        (true, Some(_), None) | (_, None, Some(_)) | (false, _, Some(_)) => {
+            return refuse(&doc, PcsError::MembershipCredentialRequired, codes);
+        }
+        _ => None,
     };
     match crate::operations::pcs_voter::register(
         state,
@@ -829,6 +1036,8 @@ pub(super) async fn handle_voter_register(
         member
             .as_ref()
             .map(|s| s as &dyn crate::operations::pcs_voter::TicketSigner),
+        version,
+        presenter.as_ref(),
     )
     .await
     {
@@ -846,17 +1055,15 @@ pub(super) async fn handle_voter_register(
                 Some(&election),
             )
             .await;
-            respond::<t::Response>(&doc, answer)
+            // Each version answers through its own response type: 0.3's and 0.2's
+            // `ticketDocument` is a tickets/issue/0.1 request.
+            if current {
+                respond::<t::Response>(&doc, answer)
+            } else {
+                respond::<spec::voter::register::v0_3::Response>(&doc, answer)
+            }
         }
-        Err(e) => refuse(&doc, e, |e| match e {
-            PcsError::ElectionChanged => Some(t::error_codes::ELECTION_CHANGED),
-            PcsError::UnsupportedSuite(_) => Some(t::error_codes::UNSUPPORTED_SUITE),
-            PcsError::ParametersInvalid(_) => Some(t::error_codes::PARAMETERS_INVALID),
-            PcsError::UnsupportedSecrecy(_) => Some(t::error_codes::UNSUPPORTED_SECRECY),
-            PcsError::TicketHeld => Some(t::error_codes::TICKET_HELD),
-            PcsError::MemberNotHeld(_) => Some(t::error_codes::MEMBER_NOT_HELD),
-            _ => None,
-        }),
+        Err(e) => refuse(&doc, e, codes),
     }
 }
 
@@ -907,13 +1114,15 @@ pub(super) async fn handle_voter_accept(
     }
 }
 
-/// `vta/pcs/vote/0.1`.
+/// `vta/pcs/vote/0.4`, and 0.3 and 0.2 (a manifest without the credential roll; under 0.2 a
+/// threshold of at least 10), read and answered as 0.4's types once the spine has held the
+/// payload to its own version's schema.
 pub(super) async fn handle_vote(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::vote::v0_1 as t;
+    use spec::vote::v0_4 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -956,6 +1165,38 @@ pub(super) async fn handle_vote(
             PcsError::ParametersInvalid(_) | PcsError::UnsupportedSuite(_) => {
                 Some(t::error_codes::PARAMETERS_INVALID)
             }
+            _ => None,
+        }),
+    }
+}
+
+/// `vta/pcs/voter/receipts/list/0.1`.
+pub(super) async fn handle_voter_receipts_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::voter::receipts::list::v0_1 as t;
+    let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let election = str_of(&doc, "electionId").to_string();
+    match crate::operations::pcs_voter::receipts(state, &context, &community, &election).await {
+        Ok(answer) => {
+            audit(
+                state,
+                "pcs.voter.receipts.list",
+                auth,
+                &community,
+                &context,
+                Some(&election),
+            )
+            .await;
+            respond::<t::Response>(&doc, answer)
+        }
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::NotFound => Some(t::error_codes::NOT_FOUND),
             _ => None,
         }),
     }
@@ -1005,13 +1246,15 @@ pub(super) async fn handle_voter_receipt(
     }
 }
 
-/// `vta/pcs/vote-encrypted/0.2`: the key formed here from the trustees' signed steps.
+/// `vta/pcs/vote-encrypted/0.5`, and 0.4 and 0.3 (a manifest without the credential roll;
+/// under 0.3 a threshold of at least 10): the key formed here from the trustees' signed steps.
+/// Each is read and answered as 0.5's types.
 pub(super) async fn handle_vote_encrypted(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::vote_encrypted::v0_2 as t;
+    use spec::vote_encrypted::v0_5 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1090,13 +1333,14 @@ async fn trustee_audit(
     audit(state, action, auth, community, context, Some(&election)).await;
 }
 
-/// `vta/pcs/trustee/enrol/0.1`.
+/// `vta/pcs/trustee/enrol/0.4`, and 0.3 and 0.2 (a manifest without the credential roll), read
+/// and answered as 0.4's types.
 pub(super) async fn handle_trustee_enrol(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::enrol::v0_1 as t;
+    use spec::trustee::enrol::v0_4 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1125,13 +1369,14 @@ pub(super) async fn handle_trustee_enrol(
     }
 }
 
-/// `vta/pcs/trustee/deal/0.2`.
+/// `vta/pcs/trustee/deal/0.5`, and 0.4 and 0.3 (a manifest without the credential roll),
+/// read and answered as 0.5's types.
 pub(super) async fn handle_trustee_deal(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::deal::v0_2 as t;
+    use spec::trustee::deal::v0_5 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1164,13 +1409,14 @@ pub(super) async fn handle_trustee_deal(
     }
 }
 
-/// `vta/pcs/trustee/keys/0.2`.
+/// `vta/pcs/trustee/keys/0.5`, and 0.4 and 0.3 (a manifest without the credential roll),
+/// read and answered as 0.5's types.
 pub(super) async fn handle_trustee_keys(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::keys::v0_2 as t;
+    use spec::trustee::keys::v0_5 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1203,13 +1449,14 @@ pub(super) async fn handle_trustee_keys(
     }
 }
 
-/// `vta/pcs/trustee/justify/0.2`.
+/// `vta/pcs/trustee/justify/0.5`, and 0.4 and 0.3 (a manifest without the credential roll),
+/// read and answered as 0.5's types.
 pub(super) async fn handle_trustee_justify(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::justify::v0_2 as t;
+    use spec::trustee::justify::v0_5 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1252,19 +1499,35 @@ pub(super) async fn handle_trustee_justify(
     }
 }
 
-/// `vta/pcs/trustee/read/0.1`: `voting/trustees/status` or `voting/election/show`, signed as
-/// the trustee (items 3 – 5). Keeps nothing, so it is not audited, as `voter/read` is not.
+/// `vta/pcs/trustee/read/0.4`: `voting/trustees/status/0.1` or `voting/election/show/0.4`,
+/// signed as the trustee (items 3 – 5); 0.3, which signs `voting/election/show/0.3`; and 0.2,
+/// which signs `voting/election/show/0.2` — the one difference between them. Keeps nothing, so
+/// it is not audited, as `voter/read` is not.
+#[allow(deprecated)] // vta/pcs/trustee/read/0.2 – 0.3 and the voting/election/show they sign: still served
 pub(super) async fn handle_trustee_read(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::read::v0_1 as t;
+    use spec::trustee::read::v0_4 as t;
+    use vti_specs::voting::election::show::{v0_2 as show_0_2, v0_3 as show_0_3, v0_4 as show};
     let (_context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
             Err(r) => return r,
         };
+    let named = doc.type_uri.to_string();
+    let signs_show_0_2 = named
+        .starts_with(<spec::trustee::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI);
+    let signs_show_0_3 = named
+        .starts_with(<spec::trustee::read::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI);
+    let election_show = if signs_show_0_2 {
+        <show_0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    } else if signs_show_0_3 {
+        <show_0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    } else {
+        <show::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    };
     match crate::operations::pcs_trustee::sign_read(
         state,
         auth,
@@ -1273,9 +1536,17 @@ pub(super) async fn handle_trustee_read(
         str_of(&doc, "electionId"),
         str_of(&doc, "ballotBox"),
         str_of(&doc, "read"),
+        election_show,
     )
     .await
     {
+        // Each version answers through its own response type, naming the show it signs.
+        Ok(document) if signs_show_0_2 => {
+            respond::<spec::trustee::read::v0_2::Response>(&doc, json!({ "document": document }))
+        }
+        Ok(document) if signs_show_0_3 => {
+            respond::<spec::trustee::read::v0_3::Response>(&doc, json!({ "document": document }))
+        }
         Ok(document) => respond::<t::Response>(&doc, json!({ "document": document })),
         Err(e) => refuse(&doc, e, |e| match e {
             PcsError::TrusteeNotHeld(_) => Some(t::error_codes::TRUSTEE_NOT_HELD),

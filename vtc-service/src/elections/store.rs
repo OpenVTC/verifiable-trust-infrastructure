@@ -42,12 +42,99 @@ pub struct Delivery {
     pub last_error: Option<String>,
 }
 
+/// A close or cancellation the community has asked for and not yet had answered: the elections
+/// sweeper is its one retry owner (VTI-BRD-006). Written before the ballot box is asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingEnd {
+    pub kind: EndKind,
+    pub reason: String,
+    pub attempts: u32,
+    pub next_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+/// Which end a [`PendingEnd`] asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EndKind {
+    /// Close voting early (VTI-VOT-013): the count as it stands is final.
+    Close,
+    /// Cancel the election.
+    Cancel,
+}
+
+/// What the community keeps of an election on a deleted board (VTI-BRD-007): its identifier,
+/// its manifest's digest and the board heads it kept (VTI-VOT-051) — never its title,
+/// description, roll or tickets. Removed once `remove_at` passes; kept for ever without one
+/// (VTI-BRD-008).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tombstone {
+    pub election_id: String,
+    pub manifest_digest: String,
+    pub ballot_box: String,
+    #[serde(default)]
+    pub checkpoints: Vec<Value>,
+    pub deleted_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_at: Option<DateTime<Utc>>,
+}
+
+impl Tombstone {
+    /// The tombstone of `rec`, removed at `remove_at` (none: kept for ever).
+    #[must_use]
+    pub fn of(
+        rec: &ElectionRecord,
+        deleted_at: DateTime<Utc>,
+        remove_at: Option<DateTime<Utc>>,
+    ) -> Self {
+        Self {
+            election_id: rec.election_id.clone(),
+            manifest_digest: rec.manifest_digest.clone(),
+            ballot_box: rec.ballot_box.clone(),
+            checkpoints: rec.checkpoints.clone(),
+            deleted_at,
+            remove_at,
+        }
+    }
+}
+
 /// What the ballot box said when it refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoxRefusal {
     pub code: String,
     pub message: String,
+}
+
+/// Under a credential roll, what the DID `roll.memberOf` names was to this community when the
+/// election was created (VTI-VOT-026), kept so a claim reads the roll from the community's own
+/// records: a group the community has since deleted is still known as one of its groups, never
+/// mistaken for a party outside it (VTI-VOT-029).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum RollParty {
+    /// The community itself.
+    ThisCommunity,
+    /// One of the community's groups, by its local identifier.
+    #[serde(rename_all = "camelCase")]
+    CommunityGroup { group_id: String },
+    /// A party outside the community that is itself an active member of it.
+    MemberParty,
+}
+
+impl RollParty {
+    /// `RollCredentialDisclosure.memberOfKind`.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            RollParty::ThisCommunity => "thisCommunity",
+            RollParty::CommunityGroup { .. } => "communityGroup",
+            RollParty::MemberParty => "memberParty",
+        }
+    }
 }
 
 /// One election.
@@ -113,9 +200,39 @@ pub struct ElectionRecord {
     /// (CONVENTIONS §9.7).
     #[serde(default)]
     pub decryption_authorized: bool,
+    /// Under a credential roll, what `roll.memberOf` was to the community at creation; absent
+    /// under every other rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll_party: Option<RollParty>,
+    /// The ballot box's published result, verified by the community from the board and its own
+    /// voting key exactly as certification verifies it, but **not certified**: `{result, head,
+    /// verifiedAt}`. Kept for a board's election (`crate::boards`), whose facilitators select
+    /// with the result in view and may not hold `vtc.elections.manage` (VTI-BRD-040). It decides
+    /// nothing and is never shown as a certification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<Value>,
+    /// A close or cancellation asked for by closing the election's board and not yet answered
+    /// (VTI-BRD-006); the elections sweeper retries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_end: Option<PendingEnd>,
 }
 
 impl ElectionRecord {
+    /// The DID a credential roll names, when the roll is one.
+    #[must_use]
+    pub fn roll_member_of(&self) -> Option<&str> {
+        (self.manifest["roll"]["rule"] == "credential")
+            .then(|| self.manifest["roll"]["memberOf"].as_str())
+            .flatten()
+    }
+
+    /// Whether the roll names a member party (VTI-VOT-015 item 3): the election is then shown
+    /// only to managers, the party itself, and a reader who presents its membership.
+    #[must_use]
+    pub fn is_member_party_election(&self) -> bool {
+        matches!(self.roll_party, Some(RollParty::MemberParty))
+    }
+
     /// The state a reader is shown (`RegistrarState`): the record's standing, with the clock
     /// read for a registered election as the ballot box would.
     #[must_use]
@@ -187,12 +304,40 @@ pub async fn get(
     ks.get(election_key(election_id)).await
 }
 
-/// Write `record`.
+/// Write `record` whole. Only for a record nobody else can be writing — one just made, or
+/// one written under [`WRITE_LOCK`]; every change to a stored election goes through
+/// [`update`].
 ///
 /// # Errors
 /// A store failure.
 pub async fn put(ks: &KeyspaceHandle, record: &ElectionRecord) -> Result<(), AppError> {
     ks.insert(election_key(&record.election_id), record).await
+}
+
+/// Every change to a stored election is a read, a change and a write under this lock, so two
+/// writers — a task, the board's closing in the background, the sweeper's tick — never write
+/// over what the other just wrote. Held only from the read to the write, never across a call
+/// to the ballot box (R1.3).
+pub(crate) static WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Apply `change` to the election under `election_id` as it is stored now, and write it:
+/// `None` when there is no such election. `change` sets only the fields its caller decided,
+/// never a whole record read earlier.
+///
+/// # Errors
+/// A store failure.
+pub async fn update<T>(
+    ks: &KeyspaceHandle,
+    election_id: &str,
+    change: impl FnOnce(&mut ElectionRecord) -> T,
+) -> Result<Option<T>, AppError> {
+    let _guard = WRITE_LOCK.lock().await;
+    let Some(mut rec) = get(ks, election_id).await? else {
+        return Ok(None);
+    };
+    let out = change(&mut rec);
+    put(ks, &rec).await?;
+    Ok(Some(out))
 }
 
 /// Write `record` only when no election holds its identifier: `false` when one does.
@@ -298,6 +443,139 @@ pub async fn replace_ticket(ks: &KeyspaceHandle, t: &TicketIssued) -> Result<(),
     ks.insert(ticket_key(&t.election_id, &t.signer), t).await
 }
 
+/// Remove every ticket record of `election_id` — the community's record of the tickets it
+/// issued, which a deleted board's election does not keep (VTI-BRD-007). Returns how many.
+///
+/// # Errors
+/// A store failure.
+pub async fn remove_tickets(ks: &KeyspaceHandle, election_id: &str) -> Result<usize, AppError> {
+    let rows = ks
+        .prefix_iter_raw(format!("{TICKET_PREFIX}{election_id}:"))
+        .await?;
+    let n = rows.len();
+    for (k, _) in rows {
+        ks.remove(k).await?;
+    }
+    Ok(n)
+}
+
+const TOMBSTONE_PREFIX: &str = "tombstone:";
+
+/// Keep `t` (VTI-BRD-007).
+///
+/// # Errors
+/// A store failure.
+pub async fn put_tombstone(ks: &KeyspaceHandle, t: &Tombstone) -> Result<(), AppError> {
+    ks.insert(format!("{TOMBSTONE_PREFIX}{}", t.election_id), t)
+        .await
+}
+
+/// The tombstone of `election_id`, if one is kept.
+///
+/// # Errors
+/// A store failure.
+pub async fn tombstone(
+    ks: &KeyspaceHandle,
+    election_id: &str,
+) -> Result<Option<Tombstone>, AppError> {
+    ks.get(format!("{TOMBSTONE_PREFIX}{election_id}")).await
+}
+
+/// Every tombstone kept.
+///
+/// # Errors
+/// A store failure, or a record that does not parse.
+pub async fn tombstones(ks: &KeyspaceHandle) -> Result<Vec<Tombstone>, AppError> {
+    ks.prefix_iter_raw(TOMBSTONE_PREFIX)
+        .await?
+        .into_iter()
+        .map(|(_, v)| {
+            serde_json::from_slice(&v)
+                .map_err(|e| AppError::Internal(format!("a tombstone does not parse: {e}")))
+        })
+        .collect()
+}
+
+/// Remove the tombstone of `election_id` (VTI-BRD-008).
+///
+/// # Errors
+/// A store failure.
+pub async fn remove_tombstone(ks: &KeyspaceHandle, election_id: &str) -> Result<(), AppError> {
+    ks.remove(format!("{TOMBSTONE_PREFIX}{election_id}")).await
+}
+
+const PRESENTATION_PREFIX: &str = "presented:";
+
+/// A read document whose presentation was accepted (show/0.6 Conformance item 8.1), kept for
+/// the acceptance window so the same document cannot be accepted twice (VTI-CRD-022). Only its
+/// `id`: never the presentation, the credential or a claim of it (VTI-CRD-042).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PresentationAccepted {
+    until: DateTime<Utc>,
+}
+
+fn presentation_key(doc_id: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(doc_id.as_bytes());
+    format!("{PRESENTATION_PREFIX}{}", hex::encode(h.finalize()))
+}
+
+/// Whether a presentation was already accepted in the document `doc_id`, within its window.
+///
+/// # Errors
+/// A store failure.
+pub async fn presentation_accepted(
+    ks: &KeyspaceHandle,
+    doc_id: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, AppError> {
+    let seen: Option<PresentationAccepted> = ks.get(presentation_key(doc_id)).await?;
+    Ok(seen.is_some_and(|s| s.until > now))
+}
+
+/// Record that a presentation was accepted in `doc_id`, until `until`. `false` when one already
+/// was and its window has not passed.
+///
+/// # Errors
+/// A store failure.
+pub async fn accept_presentation(
+    ks: &KeyspaceHandle,
+    doc_id: &str,
+    until: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<bool, AppError> {
+    if presentation_accepted(ks, doc_id, now).await? {
+        return Ok(false);
+    }
+    ks.insert(presentation_key(doc_id), &PresentationAccepted { until })
+        .await?;
+    Ok(true)
+}
+
+/// Forget accepted presentations whose window has passed. Returns how many.
+///
+/// # Errors
+/// A store failure.
+pub async fn prune_presentations(
+    ks: &KeyspaceHandle,
+    now: DateTime<Utc>,
+) -> Result<usize, AppError> {
+    let mut gone = 0;
+    for (key, raw) in ks
+        .prefix_iter_raw(PRESENTATION_PREFIX.as_bytes().to_vec())
+        .await?
+    {
+        let expired =
+            serde_json::from_slice::<PresentationAccepted>(&raw).map_or(true, |p| p.until <= now);
+        if expired {
+            ks.remove(key).await?;
+            gone += 1;
+        }
+    }
+    Ok(gone)
+}
+
 /// A registered election opening tomorrow, for tests.
 #[cfg(all(test, feature = "voting"))]
 pub(crate) fn test_record(now: DateTime<Utc>) -> ElectionRecord {
@@ -336,6 +614,9 @@ mod tests {
             election_key: None,
             ceremony: None,
             decryption_authorized: false,
+            roll_party: None,
+            verified: None,
+            pending_end: None,
         }
     }
 

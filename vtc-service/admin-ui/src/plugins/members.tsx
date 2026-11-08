@@ -12,7 +12,7 @@
 //     membership edge is complete. The graph already computes it, so reading it
 //     here keeps one definition of "complete" rather than a second one drifting
 //     alongside the first.
-//   - `relationships/list/0.2` for the relationship credentials naming this
+//   - `relationships/list/0.3` for the relationship credentials naming this
 //     member, bodies included.
 //
 // The membership credential, role VAC and member-issued VMC *bodies* come from
@@ -61,9 +61,10 @@ import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorOrParked } from "@/components/ParkedNotice";
+import { Protected } from "@/components/Protected";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
-import { changeAclRole } from "@/lib/acl";
+import { setCommunityRole } from "@/lib/acl";
 import { adminRemoveMember } from "@/lib/member-removal";
 import { gestureFromConfirm, type ConfirmGesture } from "@/lib/signed-act";
 
@@ -72,12 +73,12 @@ const TRUST_TASK_LIST =
 const TRUST_TASK_SHOW =
   "https://trusttasks.org/spec/vtc/members/show/0.1";
 // Promotion is a **role transition**, so it goes to the task defined for role
-// transitions. `vtc/members/update` declares `adminRoleForbidden` and refuses
+// transitions, `vtc/members/role/set/0.1`. `vtc/members/update` declares `adminRoleForbidden` and refuses
 // `role: admin` outright (#1645): it is a metadata update, and the step-up it
-// used to carry bounded that one route while `acl/change-role` reached the
+// used to carry bounded that one route while the community-role move reached the
 // same ACL row with none. The gate now sits on the transition — a host
 // invariant in the role-change ceremony — and the passkey gesture below is
-// what satisfies it. It is sent by `changeAclRole` (`lib/acl.ts`).
+// what satisfies it. It is sent by `setCommunityRole` (`lib/acl.ts`).
 const TRUST_TASK_REMOVED =
   "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const TRUST_TASK_PURGE =
@@ -219,13 +220,13 @@ async function promoteToAdmin(args: {
   fromRole: string;
   confirmGesture: ConfirmGesture;
 }): Promise<void> {
-  // A signed `acl/change-role`. The VTC asks for a passkey gesture bound to
+  // A signed `vtc/members/role/set`. The VTC asks for a passkey gesture bound to
   // this one promotion, which the operator confirms as its own click.
   // `fromRole` is a compare-and-swap guard, not decoration: the role we render
   // is a read, and the daemon refuses the change if the row has moved since.
   // A promotion that needs other administrators' approval is parked, and
-  // `changeAclRole` throws it as a `ParkedAction`.
-  await changeAclRole(
+  // `setCommunityRole` throws it as a `ParkedAction`.
+  await setCommunityRole(
     { subject: args.did, fromRole: args.fromRole, toRole: "admin" },
     args.confirmGesture,
   );
@@ -299,7 +300,10 @@ function RemovedMembers() {
     return null;
   }
 
+  // Deleting a record for good: out of the community theme's reach
+  // (vtc/community/theme/show/0.1, client item 2).
   return (
+    <Protected ground="card">
     <section className="card">
       <h3>Removed members</h3>
       <p className="muted">
@@ -341,6 +345,7 @@ function RemovedMembers() {
         </p>
       )}
     </section>
+    </Protected>
   );
 }
 
@@ -593,7 +598,11 @@ function MembersList() {
         }
       />
 
-      {adding && <AddMemberForm onClose={() => setAdding(false)} />}
+      {adding && (
+        <Protected ground="card">
+          <AddMemberForm onClose={() => setAdding(false)} />
+        </Protected>
+      )}
 
       <div className="toolbar list-toolbar members-toolbar" role="search" aria-label="Members">
         <Field label="Search" inline className="members-search">
@@ -781,6 +790,7 @@ function MembersList() {
         )}
       </section>
 
+      {/* Each draws itself out of the theme's reach when it has rows. */}
       <EntriesWithoutMembership />
 
       <RemovedMembers />
@@ -1191,11 +1201,21 @@ function MemberDetail() {
           </section>
 
           <MemberGitCard did={decoded} />
+
+          {/* Every card from here that changes what this member holds, what
+              they can prove with, or releases their notes, is drawn out of
+              the community theme's reach (vtc/community/theme/show/0.1,
+              client item 2). The read-only cards above take the theme. */}
+          {/* Protects itself when shown: it can render nothing. */}
           <MemberNotesCard did={decoded} />
 
-          <StepUpPasskeysCard did={decoded} />
+          <Protected ground="card">
+            <StepUpPasskeysCard did={decoded} />
+          </Protected>
 
-          <ApproverDevicesCard did={decoded} />
+          <Protected ground="card">
+            <ApproverDevicesCard did={decoded} />
+          </Protected>
 
           <section className="card">
             <h3>Disposition + consent</h3>
@@ -1209,6 +1229,7 @@ function MemberDetail() {
             </dl>
           </section>
 
+          <Protected ground="card">
           <section className="card">
             <h3>Vetter role</h3>
             <p className="muted">
@@ -1302,7 +1323,9 @@ function MemberDetail() {
               )}
             </div>
           </section>
+          </Protected>
 
+          <Protected ground="card">
           <section className="card">
             <h3>Admin actions</h3>
             <p className="lead">
@@ -1384,6 +1407,7 @@ function MemberDetail() {
               </button>
             </div>
           </section>
+          </Protected>
         </>
       )}
     </section>

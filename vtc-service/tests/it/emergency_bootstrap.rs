@@ -57,7 +57,7 @@ use vtc_service::server::AppState;
 use vtc_service::setup::VtcKeyBundle;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
+const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/passkey/start/0.1";
 
 fn init_jwt_provider() {
     use std::sync::Once;
@@ -354,6 +354,11 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         room_records_ks: room_records_ks.clone(),
         room_epoch_links_ks: room_epoch_links_ks.clone(),
         room_revocations_ks: room_revocations_ks.clone(),
+        room_watches: std::sync::Arc::new(vti_rooms::watch::RoomWatches::new(
+            store.keyspace("room_watches").unwrap(),
+            rooms_ks.clone(),
+            room_revocations_ks.clone(),
+        )),
         room_files: std::sync::Arc::new(
             vtc_service::rooms::files::open_blob_host(
                 &store,
@@ -392,6 +397,10 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         admin_actions_ks,
         step_up_approvers_ks: store.keyspace("step_up_approvers").unwrap(),
         member_pushes_ks,
+        notifications_ks: store.keyspace("notifications").unwrap(),
+        boards_ks: store.keyspace("boards").unwrap(),
+        badges_ks: store.keyspace("badges").unwrap(),
+        badge_images_ks: store.keyspace("badge_images").unwrap(),
         oid4vp_keys_ks: store.keyspace("oid4vp_keys").unwrap(),
         oid4vp_signers: Arc::new(vtc_service::oid4vp::VerifierSigners::new()),
         oid4vp_sessions_ks: store.keyspace("oid4vp_sessions").unwrap(),
@@ -640,7 +649,7 @@ async fn fresh_install_url_works_for_claim_start_after_emergency_bootstrap() {
     // invites), so the operator types both URL and code at claim
     // time. Without the code the daemon returns 401
     // `claim_secret_required`.
-    // `vtc/install/claim/start/0.2` is a signed document only now
+    // `vtc/install/claim/passkey/start/0.1` is a signed document only
     // (`trust_tasks::install_tasks`) — carries no proof requirement (the
     // install token is the credential), posted to the shared document
     // endpoint.

@@ -109,31 +109,6 @@ impl VtaClient {
         .await
     }
 
-    /// Send `payload` at `current`, and at `previous` when the VTA does not serve
-    /// `current` (`unsupportedType` / `unsupportedVersion`, typed as
-    /// [`VtaError::UnsupportedTaskType`]).
-    ///
-    /// For a version pair whose payloads are identical and whose operation is the same:
-    /// asking again at the older version is not a retry of a failed operation, because the
-    /// first was never routed.
-    async fn dispatch_at_or_before(
-        &self,
-        current: &str,
-        previous: &str,
-        payload: Value,
-    ) -> Result<Value, VtaError> {
-        match self
-            .dispatch_trust_task(current, payload.clone(), ROOM_TT_TIMEOUT)
-            .await
-        {
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                self.dispatch_trust_task(previous, payload, ROOM_TT_TIMEOUT)
-                    .await
-            }
-            other => other,
-        }
-    }
-
     /// `rooms/keys/seal/0.2` — seal one record body under the room's current
     /// epoch, ready for `rooms/records/put`.
     ///
@@ -145,13 +120,14 @@ impl VtaClient {
     /// associated data. The host assigns versions from a room-wide counter, so
     /// a put that lands at another version does not open; the writer re-seals
     /// at the version the host reports and writes again.
+    #[allow(deprecated)] // seal/0.3 is served beside it; this SDK moves to it in a later PR
     pub async fn room_seal(
         &self,
         room_id: &str,
         key: &str,
         version: u64,
         plaintext: &[u8],
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::seal::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::seal::v0_2::Response, VtaError> {
         let payload = json!({
             "roomId": room_id,
             "key": key,
@@ -184,13 +160,14 @@ impl VtaClient {
     /// attributed to the member rather than to this client. An agent acting under an
     /// attenuated chain signs its own body and uses [`VtaClient::room_seal`] instead; the
     /// VTA refuses it this flag.
+    #[allow(deprecated)] // seal/0.3 is served beside it; this SDK moves to it in a later PR
     pub async fn room_seal_as_principal(
         &self,
         room_id: &str,
         key: &str,
         version: u64,
         body: &[u8],
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::seal::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::seal::v0_2::Response, VtaError> {
         let payload = json!({
             "roomId": room_id,
             "key": key,
@@ -215,24 +192,15 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/keys/act/0.4` — have the VTA complete one host-bound room request, or a reply
+    /// `rooms/keys/act/0.10` — have the VTA complete one host-bound room request, or a reply
     /// to a community's offer of a room, **as the member**, and get it back to send.
     ///
-    /// Which versions are asked depends on the document's type, because each version's table
-    /// is closed:
-    ///
-    /// - a **room request** goes at 0.4, then — to a VTA that does not serve that
-    ///   (`unsupportedType` / `unsupportedVersion`) — at 0.3, 0.2 and 0.1 in turn, with the
-    ///   same document;
-    /// - `vtc/rooms/offers/list/0.1` and `vtc/rooms/offers/accept/0.1` go at 0.4, then 0.3,
-    ///   and no earlier: 0.1 and 0.2's schema refuses them;
-    /// - `vtc/rooms/offers/list/0.2` goes at 0.4 **only**, the first version whose table
-    ///   lists it (0.3 would refuse it `typeNotActable`).
-    ///
-    /// A VTA that serves none of the versions a type may go at is reported as
-    /// [`VtaError::UnsupportedTaskType`]; for `offers/list/0.2` that is the cue to list at
-    /// `0.1` instead. Every answer reads as 0.4's, whose response schema is every earlier
-    /// version's.
+    /// Sent at 0.10 only, whose table completes every type a member's client sends —
+    /// the newest version of each host-bound request and of the offer listing among them,
+    /// `rooms/records/put/0.4` and `vtc/rooms/memberships/list/0.2` included. A VTA that
+    /// does not serve 0.10 answers
+    /// [`VtaError::UnsupportedTaskType`], and is upgraded rather than asked at an older
+    /// version.
     ///
     /// For an offer type, `issuer` is required — the DID the offer is addressed to — and an
     /// acceptance's `keyPackage` must be the one this VTA minted for the member and the room
@@ -252,96 +220,42 @@ impl VtaClient {
     ///
     /// **Send the returned `document` to its `recipient` unaltered**, and to nobody else.
     /// Nothing in it names this client: the host records the member.
+    #[allow(deprecated)] // act/0.11 is served beside it; this SDK moves to it in a later PR
     pub async fn room_act(
         &self,
-        document: &trust_tasks_rs::specs::rooms::keys::act::v0_4::UnsignedRoomRequest,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_4::Response, VtaError> {
-        // The request schemas are the same at every version a type may go at (0.3 widened
-        // only the `type` pattern, to admit the offer types; 0.4 changed only the table), so
-        // the same JSON goes at each and any answer reads as 0.4's. Asking again at an older
-        // version is not a retry: the first ask was never routed.
-        let payload = json!({ "document": document });
-        let type_uri = document.type_.as_str();
-        let value = match self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_KEYS_ACT_0_4,
-                payload.clone(),
-                ROOM_TT_TIMEOUT,
-            )
-            .await
-        {
-            Err(e @ VtaError::UnsupportedTaskType { .. }) if needs_act_0_4(type_uri) => {
-                return Err(e);
-            }
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                match self
-                    .dispatch_trust_task(
-                        trust_tasks::TASK_ROOMS_KEYS_ACT_0_3,
-                        payload.clone(),
-                        ROOM_TT_TIMEOUT,
-                    )
-                    .await
-                {
-                    Err(VtaError::UnsupportedTaskType { .. }) if !is_offer_type(type_uri) => {
-                        self.dispatch_at_or_before(
-                            trust_tasks::TASK_ROOMS_KEYS_ACT_0_2,
-                            trust_tasks::TASK_ROOMS_KEYS_ACT_0_1,
-                            payload,
-                        )
-                        .await?
-                    }
-                    other => other?,
-                }
-            }
-            other => other?,
-        };
-        serde_json::from_value(value).map_err(|e| {
-            VtaError::Protocol(format!(
-                "rooms/keys/act response does not match its schema: {e}"
-            ))
-        })
+        document: &vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest,
+    ) -> Result<vti_specs::rooms::keys::act::v0_10::Response, VtaError> {
+        self.act_v0_10(json!({ "document": document })).await
     }
 
-    /// `rooms/keys/act/0.6` — have the VTA complete one of a member's requests to a
+    /// `rooms/keys/act/0.10` — have the VTA complete one of a member's requests to a
     /// community about the rooms it offers them ([`is_community_type`]) **as the member**,
     /// and get it back to send to the community unaltered. Build `document` with
     /// [`unsigned_community_request`].
     ///
-    /// A VTA that does not serve 0.6 is asked at the newest version that completes the
-    /// type, with the same document, and the answer read as 0.5's (0.6's request and
-    /// response schemas are 0.5's; only the table widens): 0.5 for every community type but
-    /// `vtc/rooms/offers/list/0.3`, 0.4 for the offer types and `vtc/rooms/offers/list/0.2`,
-    /// 0.3 for `vtc/rooms/offers/{list,accept}/0.1`. For a type no version it serves
-    /// completes — `vtc/rooms/offers/list/0.3` below 0.6, `vtc/rooms/memberships/list/0.1`
-    /// below 0.5 — it is [`VtaError::UnsupportedTaskType`].
+    /// Sent at 0.10 only: a VTA that does not serve it answers
+    /// [`VtaError::UnsupportedTaskType`], and is upgraded rather than asked at an older
+    /// version.
+    #[allow(deprecated)] // act/0.11 is served beside it; this SDK moves to it in a later PR
     pub async fn room_act_community(
         &self,
-        document: &trust_tasks_rs::specs::rooms::keys::act::v0_5::UnsignedRoomRequest,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_5::Response, VtaError> {
-        let payload = json!({ "document": document });
-        let type_uri = document.type_.as_str();
-        let mut versions = vec![trust_tasks::TASK_ROOMS_KEYS_ACT_0_6];
-        if !needs_act_0_6(type_uri) {
-            versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_5);
-            if is_offer_type(type_uri) {
-                versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_4);
-            }
-            if is_offer_type(type_uri) && !needs_act_0_4(type_uri) {
-                versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_3);
-            }
-        }
-        let mut versions = versions.into_iter().peekable();
-        let value = loop {
-            let task = versions.next().expect("0.6 is always asked");
-            match self
-                .dispatch_trust_task(task, payload.clone(), ROOM_TT_TIMEOUT)
-                .await
-            {
-                // Not a retry: the ask was never routed.
-                Err(VtaError::UnsupportedTaskType { .. }) if versions.peek().is_some() => {}
-                other => break other?,
-            }
-        };
+        document: &vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest,
+    ) -> Result<vti_specs::rooms::keys::act::v0_10::Response, VtaError> {
+        self.act_v0_10(json!({ "document": document })).await
+    }
+
+    #[allow(deprecated)] // act/0.11 is served beside it; this SDK moves to it in a later PR
+    async fn act_v0_10(
+        &self,
+        payload: Value,
+    ) -> Result<vti_specs::rooms::keys::act::v0_10::Response, VtaError> {
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_ACT_0_10,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
         serde_json::from_value(value).map_err(|e| {
             VtaError::Protocol(format!(
                 "rooms/keys/act response does not match its schema: {e}"
@@ -366,7 +280,7 @@ impl VtaClient {
         room_id: &str,
         file_id: &str,
         open_epoch: Option<u64>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::file_key::v0_2::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "fileId": file_id,
@@ -403,7 +317,7 @@ impl VtaClient {
         room_id: &str,
         signing_key_id: &str,
         member: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::create::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::group::create::v0_1::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id, "signingKeyId": signing_key_id });
         if let Some(m) = member {
             payload["member"] = json!(m);
@@ -447,7 +361,7 @@ impl VtaClient {
         member: &str,
         key_package: &str,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::add::v0_3::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::group::add::v0_3::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
@@ -474,85 +388,53 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/owner/group/remove/0.1` — remove `member`'s leaf from a room's group, so
-    /// nothing sealed from then on is readable to them.
+    /// `rooms/owner/group/remove/0.4` — remove `member` from a sealed room, `attributed` or
+    /// `private` (trust-tasks-tf #975).
     ///
-    /// The VTA advances the room's epoch at `host_did` first, and only then its own group.
-    /// It recalls nothing the member already read, and on a `chained` room they keep the
-    /// epochs they were in; their credentials are untouched at the host. On an `open` or
-    /// `attributed` room use [`Self::room_group_remove_v0_3`], which withdraws them
-    /// first; 0.1 is the removal for a `private` room, which 0.3 refuses (`privateRoom`)
-    /// and the specification still sends here. Call this inside [`VtaClient::idempotent`]: the task is `Keyed`, and a
-    /// retry after a lost reply gets the first answer back instead of a `notMember`
-    /// refusal that reads as though the wrong member had been named.
+    /// On an `attributed` room it **withdraws their credentials at the host at once**: the
+    /// VTA signs the room's next revocation list with `signing_key_id` (one `subject` entry
+    /// for `member`), delivers it to `host_did` and to each of `mirrors`, and only then
+    /// removes their leaf and advances the room. From the answer's `revokedAt` the host
+    /// refuses every credential the room issued the member before then — and anything they
+    /// delegated; their fresh credentials, if the room re-admits them, are not affected.
+    /// `signing_key_id` is required there (`noSigningKey` without it).
+    ///
+    /// On a `private` room it removes their leaf and advances the room alone, and answers
+    /// `withdrawn: false`: such a host cannot be told whom to refuse, so the member's
+    /// credentials stay valid there until they expire — opening nothing sealed from the new
+    /// epoch on. `signing_key_id`, `mirrors` and `until` are not needed. Never report
+    /// `withdrawn: false` as a withdrawal; [`Self::room_owner_revoke`] with a `room` entry
+    /// resets every credential the room has issued if that is needed too.
+    ///
+    /// It recalls nothing the member already read. A removal left pending by an earlier
+    /// request is settled safely: when the host refuses its list on redelivery, this request
+    /// is refused `rooms/owner/group/remove:earlierRemovalRefused` (`details`: `member`, the
+    /// host's `code`, `listKept`), does nothing of its own, and can simply be repeated — the
+    /// earlier removal is no longer pending and did not take effect, so remove that member
+    /// again if that is still wanted.
+    ///
+    /// Call inside [`VtaClient::idempotent`]: the task is `Keyed`, and a retry after a lost
+    /// reply gets the first answer back instead of a `notMember` refusal that reads as
+    /// though the wrong member had been named.
+    #[allow(clippy::too_many_arguments)]
     pub async fn room_group_remove(
         &self,
         room_id: &str,
         host_did: &str,
         member: &str,
-        reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_1::Response, VtaError> {
-        let mut payload = json!({
-            "roomId": room_id,
-            "host": host_did,
-            "member": member,
-        });
-        if let Some(r) = reason {
-            payload["reason"] = json!(r);
-        }
-        let value = self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
-                payload,
-                // As for add: an earlier advance settled, then this one.
-                ROOM_TT_TIMEOUT * 4,
-            )
-            .await?;
-        serde_json::from_value(value).map_err(|e| {
-            VtaError::Protocol(format!(
-                "rooms/owner/group/remove response does not match its schema: {e}"
-            ))
-        })
-    }
-
-    /// `rooms/owner/group/remove/0.3` — remove `member` from a room **and withdraw their
-    /// credentials at its host at once**: the VTA signs the room's next revocation list
-    /// with `signing_key_id` (one `subject` entry for `member`), delivers it to `host_did`
-    /// and to each of `mirrors`, and only then removes their leaf and advances the room.
-    ///
-    /// From the answer's `revokedAt` the host refuses every credential the room issued the
-    /// member before then — and anything they delegated — on every task; their fresh
-    /// credentials, if the room re-admits them, are not affected. A `private` room is
-    /// refused `privateRoom`: there a member is removed from the group alone with
-    /// [`Self::room_group_remove`] (0.1), and every credential reset with
-    /// [`Self::room_owner_revoke`] if the room needs that too. Deliberately no silent
-    /// fall back to 0.1 on any other refusal: 0.1 withdraws nothing at the host.
-    ///
-    /// A removal left pending by an earlier request is settled safely: when the host
-    /// refuses its list on redelivery, this request is refused
-    /// `rooms/owner/group/remove:earlierRemovalRefused` (`details`: `member`, the host's
-    /// `code`, `listKept`), does nothing of its own, and can simply be repeated — the
-    /// earlier removal is no longer pending and did not take effect, so remove that member
-    /// again if that is still wanted.
-    ///
-    /// Call inside [`VtaClient::idempotent`]: the task is `Keyed`.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn room_group_remove_v0_3(
-        &self,
-        room_id: &str,
-        host_did: &str,
-        member: &str,
-        signing_key_id: &str,
+        signing_key_id: Option<&str>,
         mirrors: &[String],
         until: Option<chrono::DateTime<chrono::Utc>>,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_3::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::group::remove::v0_4::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
             "member": member,
-            "signingKeyId": signing_key_id,
         });
+        if let Some(k) = signing_key_id {
+            payload["signingKeyId"] = json!(k);
+        }
         if !mirrors.is_empty() {
             payload["mirrors"] = json!(mirrors);
         }
@@ -562,11 +444,12 @@ impl VtaClient {
         if let Some(r) = reason {
             payload["reason"] = json!(r);
         }
-        // An earlier advance settled, the list delivered, the advance, the mirrors.
+        // An earlier advance settled, the tier read, the list delivered, the advance, the
+        // mirrors.
         let timeout = ROOM_TT_TIMEOUT * 6;
         let value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
                 payload,
                 timeout,
             )
@@ -591,9 +474,9 @@ impl VtaClient {
         room_id: &str,
         signing_key_id: &str,
         hosts: &[String],
-        withdraw: &[trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Withdrawal],
+        withdraw: &[vti_specs::rooms::owner::revoke::v0_1::Withdrawal],
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::revoke::v0_1::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "signingKeyId": signing_key_id,
@@ -639,7 +522,7 @@ impl VtaClient {
         room_id: &str,
         host_did: &str,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::renew::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::group::renew::v0_2::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
@@ -685,38 +568,19 @@ impl VtaClient {
     /// caller MUST treat it so: say so rather than present the room as ready. The VTA goes
     /// on delivering a `pending` list on its own; bring the host up to date at once with
     /// [`Self::room_owner_revoke`] naming it and no withdrawal. Never register again to
-    /// repair it. A 0.1 VTA answers no `revocation`: it refuses a delivery that failed, with
-    /// a message saying the room is registered, so its successful answer means the list —
-    /// if it holds one — reached the host.
+    /// repair it. Sent at 0.2 only: a VTA that does not serve it answers
+    /// [`VtaError::UnsupportedTaskType`] and is upgraded rather than asked at 0.1.
     pub async fn room_owner_register(
         &self,
         request: RoomRegistration<'_>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::register::v0_2::Response, VtaError> {
         let payload = serde_json::to_value(room_register_payload(&request)?)?;
         // One host round trip for the registration and one for the room's list, over
         // whatever transport the host speaks.
         let timeout = ROOM_TT_TIMEOUT * 3;
-        // A VTA that does not serve 0.2 never routed the first ask, so asking again at 0.1 is
-        // not a second registration.
-        let value = match self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2,
-                payload.clone(),
-                timeout,
-            )
-            .await
-        {
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                self.dispatch_trust_task(
-                    trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1,
-                    payload,
-                    timeout,
-                )
-                .await?
-            }
-            other => other?,
-        };
-        // 0.1's response is 0.2's without `revocation`.
+        let value = self
+            .dispatch_trust_task(trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, payload, timeout)
+            .await?;
         parse_response(value, "rooms/owner/register")
     }
 
@@ -734,8 +598,8 @@ impl VtaClient {
         signing_key_id: &str,
         subject: &str,
         valid_until: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::invite::v0_1::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::owner::invite::v0_1::Payload;
+    ) -> Result<vti_specs::rooms::owner::invite::v0_1::Response, VtaError> {
+        use vti_specs::rooms::owner::invite::v0_1::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .signing_key_id(signing_key_id)
@@ -762,9 +626,8 @@ impl VtaClient {
         signing_key_id: &str,
         subject: &str,
         valid_until: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::issue_membership::v0_1::Response, VtaError>
-    {
-        use trust_tasks_rs::specs::rooms::owner::issue_membership::v0_1::Payload;
+    ) -> Result<vti_specs::rooms::owner::issue_membership::v0_1::Response, VtaError> {
+        use vti_specs::rooms::owner::issue_membership::v0_1::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .signing_key_id(signing_key_id)
@@ -797,8 +660,7 @@ impl VtaClient {
         subject: &str,
         actions: Vec<RoomAction>,
         valid_until: chrono::DateTime<chrono::Utc>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Response, VtaError>
-    {
+    ) -> Result<vti_specs::rooms::owner::issue_authority::v0_2::Response, VtaError> {
         let payload =
             room_issue_authority_payload(room_id, signing_key_id, subject, actions, valid_until)?;
         let value = self
@@ -828,8 +690,8 @@ impl VtaClient {
         &self,
         room_id: &str,
         invitation: &str,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Payload;
+    ) -> Result<vti_specs::rooms::keys::key_package::v0_2::Response, VtaError> {
+        use vti_specs::rooms::keys::key_package::v0_2::Payload;
         let payload = Payload::builder().room_id(room_id).invitation(invitation);
         let payload = Payload::try_from(payload)
             .map_err(|e| VtaError::Validation(format!("rooms/keys/key-package request: {e}")))?;
@@ -856,8 +718,8 @@ impl VtaClient {
         invitation: &str,
         welcome: &str,
         ratchet_tree: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::welcome::v0_1::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::welcome::v0_1::Payload;
+    ) -> Result<vti_specs::rooms::keys::welcome::v0_1::Response, VtaError> {
+        use vti_specs::rooms::keys::welcome::v0_1::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .invitation(Some(invitation.to_string()))
@@ -888,8 +750,8 @@ impl VtaClient {
         room_id: &str,
         commit: &str,
         mls_epoch: std::num::NonZeroU64,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::commit::v0_1::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::commit::v0_1::Payload;
+    ) -> Result<vti_specs::rooms::keys::commit::v0_1::Response, VtaError> {
+        use vti_specs::rooms::keys::commit::v0_1::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .commit(commit)
@@ -923,8 +785,8 @@ impl VtaClient {
         room_id: &str,
         host_did: &str,
         from_epoch: Option<std::num::NonZeroU64>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Payload;
+    ) -> Result<vti_specs::rooms::keys::backfill::v0_2::Response, VtaError> {
+        use vti_specs::rooms::keys::backfill::v0_2::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .host(host_did)
@@ -951,7 +813,7 @@ impl VtaClient {
         room_id: &str,
         links: &[serde_json::Value],
         epoch_floor: Option<u32>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::chain::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::chain::v0_2::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id });
         if !links.is_empty() {
             payload["links"] = json!(links);
@@ -988,8 +850,8 @@ impl VtaClient {
     pub async fn room_list(
         &self,
         include_personal: bool,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::list::v0_2::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::list::v0_2::Payload;
+    ) -> Result<vti_specs::rooms::keys::list::v0_2::Response, VtaError> {
+        use vti_specs::rooms::keys::list::v0_2::Payload;
         let mut payload = json!({});
         if include_personal {
             payload["includePersonal"] = Value::Bool(true);
@@ -1020,7 +882,7 @@ impl VtaClient {
         room_id: &str,
         member: &str,
         edit: &RoomLabelEdit,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::label::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::label::v0_1::Response, VtaError> {
         let payload = room_label_payload(room_id, member, edit)?;
         let value = self
             .dispatch_trust_task(
@@ -1054,7 +916,7 @@ impl VtaClient {
         room_id: &str,
         host_did: &str,
         member: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::profile::read::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::profile::read::v0_1::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id, "host": host_did });
         name_member(&mut payload, member);
         let value = self
@@ -1080,9 +942,9 @@ impl VtaClient {
         &self,
         room_id: &str,
         host_did: &str,
-        profile: &trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::RoomProfile,
+        profile: &vti_specs::rooms::keys::profile::write::v0_1::RoomProfile,
         member: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id, "host": host_did, "profile": profile });
         name_member(&mut payload, member);
         let value = self
@@ -1103,7 +965,7 @@ impl VtaClient {
         room_id: &str,
         host_did: &str,
         member: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id, "host": host_did, "clear": true });
         name_member(&mut payload, member);
         let value = self
@@ -1153,8 +1015,8 @@ pub fn room_label_payload(
     room_id: &str,
     member: &str,
     edit: &RoomLabelEdit,
-) -> Result<trust_tasks_rs::specs::rooms::keys::label::v0_1::Payload, VtaError> {
-    use trust_tasks_rs::specs::rooms::keys::label::v0_1::Payload;
+) -> Result<vti_specs::rooms::keys::label::v0_1::Payload, VtaError> {
+    use vti_specs::rooms::keys::label::v0_1::Payload;
     let mut payload = json!({ "roomId": room_id, "member": member });
     let pairs = [
         (
@@ -1205,7 +1067,7 @@ pub fn room_label_payload(
         .map_err(|e| VtaError::Validation(format!("rooms/keys/label request: {e}")))?;
     // The rules typify cannot carry (`minProperties`, `uniqueItems`, `const: true`).
     if let Some(schema) =
-        trust_tasks_rs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1)
+        vti_specs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1)
     {
         trust_tasks_rs::validate::against_schema(schema, &serde_json::to_value(&payload)?)
             .map_err(|e| VtaError::Validation(format!("rooms/keys/label request: {e}")))?;
@@ -1215,16 +1077,15 @@ pub fn room_label_payload(
 
 /// One room action a VAC confers — the generated `rooms/owner/issue-authority/0.2`
 /// item type (`read`, `write`, `curate`, `admin`; parse one with `str::parse`).
-pub type RoomAction =
-    trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::PayloadActionsItem;
+pub type RoomAction = vti_specs::rooms::owner::issue_authority::v0_2::PayloadActionsItem;
 
 /// A room's visibility tier, as `rooms/owner/register/0.2` names it (`open`,
 /// `attributed`, `private`; parse one with `str::parse`).
-pub type RoomVisibility = trust_tasks_rs::specs::rooms::owner::register::v0_2::Visibility;
+pub type RoomVisibility = vti_specs::rooms::owner::register::v0_2::Visibility;
 
 /// Whether a room keeps its history readable across a membership change
 /// (`chained`, `fromJoin`; parse one with `str::parse`).
-pub type RoomRetentionPolicy = trust_tasks_rs::specs::rooms::owner::register::v0_2::RetentionPolicy;
+pub type RoomRetentionPolicy = vti_specs::rooms::owner::register::v0_2::RetentionPolicy;
 
 /// What [`VtaClient::room_owner_register`] asks for.
 #[derive(Debug, Clone)]
@@ -1245,8 +1106,8 @@ pub struct RoomRegistration<'a> {
 
 fn room_register_payload(
     r: &RoomRegistration<'_>,
-) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_2::Payload, VtaError> {
-    use trust_tasks_rs::specs::rooms::owner::register::v0_2::Payload;
+) -> Result<vti_specs::rooms::owner::register::v0_2::Payload, VtaError> {
+    use vti_specs::rooms::owner::register::v0_2::Payload;
     let payload = Payload::builder()
         .room_id(r.room_id)
         .host(r.host_did)
@@ -1264,8 +1125,8 @@ fn room_issue_authority_payload(
     subject: &str,
     actions: Vec<RoomAction>,
     valid_until: chrono::DateTime<chrono::Utc>,
-) -> Result<trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Payload, VtaError> {
-    use trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Payload;
+) -> Result<vti_specs::rooms::owner::issue_authority::v0_2::Payload, VtaError> {
+    use vti_specs::rooms::owner::issue_authority::v0_2::Payload;
     // The schema requires at least one action; say so here, in words, rather than
     // letting "confers nothing" travel to the VTA to be refused.
     if actions.is_empty() {
@@ -1391,7 +1252,7 @@ pub fn unsigned_room_request(
     host: &str,
     issuer: Option<&str>,
     payload: Value,
-) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_4::UnsignedRoomRequest, VtaError> {
+) -> Result<vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest, VtaError> {
     if issuer.is_none() && is_offer_type(type_uri) {
         return Err(VtaError::Validation(format!(
             "`{type_uri}` is a reply to a community's offer: name the DID the offer is \
@@ -1418,43 +1279,33 @@ pub fn unsigned_room_request(
         .map_err(|e| VtaError::Validation(format!("not a room request this can complete: {e}")))
 }
 
-/// Whether `type_uri` is an offer type `rooms/keys/act` completes at some version —
-/// `vtc/rooms/offers/list/{0.1,0.2,0.3}` or `vtc/rooms/offers/accept/0.1`, with or without
-/// `#request`.
+/// Whether `type_uri` is an offer type `rooms/keys/act/0.10` completes —
+/// `vtc/rooms/offers/list/{0.1,0.2,0.3,0.4}` or `vtc/rooms/offers/accept/0.1`, with or
+/// without `#request`. 0.8's table is the specification's, so it still names the
+/// superseded listings, though a community serves only 0.4.
+#[allow(deprecated)] // rooms/keys/act/0.8's own table names offers/list 0.1–0.3.
 pub fn is_offer_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::vtc::rooms::offers::{accept, list};
+    use vti_specs::vtc::rooms::offers::{accept, list};
     let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
     bare == list::v0_1::Payload::TYPE_URI
         || bare == list::v0_2::Payload::TYPE_URI
         || bare == list::v0_3::Payload::TYPE_URI
+        || bare == list::v0_4::Payload::TYPE_URI
         || bare == accept::v0_1::Payload::TYPE_URI
 }
 
-/// Whether `type_uri` is one only `rooms/keys/act/0.6` (and later) completes —
-/// `vtc/rooms/offers/list/0.3`, which 0.5's closed table refuses `typeNotActable`.
-fn needs_act_0_6(type_uri: &str) -> bool {
-    use trust_tasks_rs::Payload as _;
-    let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
-    bare == trust_tasks_rs::specs::vtc::rooms::offers::list::v0_3::Payload::TYPE_URI
-}
-
-/// Whether `type_uri` is one only `rooms/keys/act/0.4` (and later) completes —
-/// `vtc/rooms/offers/list/0.2`, which 0.3's closed table refuses `typeNotActable`.
-fn needs_act_0_4(type_uri: &str) -> bool {
-    use trust_tasks_rs::Payload as _;
-    let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
-    bare == trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::Payload::TYPE_URI
-}
-
-/// Whether `type_uri` is one of the community types `rooms/keys/act/0.6` completes —
-/// `vtc/rooms/offers/list/{0.1,0.2,0.3}`, `vtc/rooms/offers/accept/0.1` and
-/// `vtc/rooms/memberships/list/0.1`, with or without `#request`.
+/// Whether `type_uri` is one of the community types `rooms/keys/act/0.10` completes —
+/// the offer types ([`is_offer_type`]) and `vtc/rooms/memberships/list` at 0.1 and 0.2, with
+/// or without `#request`.
+#[allow(deprecated)] // rooms/keys/act/0.10's table still names memberships/list 0.1.
 pub fn is_community_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::vtc::rooms::memberships;
+    use vti_specs::vtc::rooms::memberships;
     let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
-    is_offer_type(bare) || bare == memberships::list::v0_1::Payload::TYPE_URI
+    is_offer_type(bare)
+        || bare == memberships::list::v0_1::Payload::TYPE_URI
+        || bare == memberships::list::v0_2::Payload::TYPE_URI
 }
 
 /// An unsigned request to a community about the rooms it offers the member, for
@@ -1471,7 +1322,7 @@ pub fn unsigned_community_request(
     community: &str,
     issuer: &str,
     payload: Value,
-) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_5::UnsignedRoomRequest, VtaError> {
+) -> Result<vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest, VtaError> {
     if !is_community_type(type_uri) {
         return Err(VtaError::Validation(format!(
             "`{type_uri}` is not a request to a community about the rooms it offers you"
@@ -1570,7 +1421,7 @@ mod act_tests {
         // Nothing else of the vtc family is a room request act completes.
         assert!(
             unsigned_room_request(
-                "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
+                "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2",
                 "did:key:zVtc",
                 Some("did:key:zAlice"),
                 json!({ "roomId": "did:key:zRoom" }),
@@ -1579,15 +1430,17 @@ mod act_tests {
         );
     }
 
-    /// `rooms/keys/act/0.6`: the community types, and nothing else of the `vtc` family.
+    /// `rooms/keys/act/0.10`: the community types, and nothing else of the `vtc` family.
     #[test]
     fn a_community_request_is_one_of_the_community_types() {
         for t in [
             "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
             "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2",
             "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3",
+            "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4",
             "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1",
             "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1",
+            "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.2",
         ] {
             assert!(is_community_type(t), "{t}");
             let payload = if t.ends_with("accept/0.1") {

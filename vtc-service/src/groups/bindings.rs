@@ -402,6 +402,11 @@ async fn reconcile_rooms(state: &AppState, now: DateTime<Utc>) -> Result<Report,
         let Some(room) = state.community_rooms.room(&rb.room_id).await? else {
             continue;
         };
+        // An archived room admits no one (`vtc/rooms/community/archive/0.1`), and one on its
+        // way out never will again: a binding naming it offers nothing until it reopens.
+        if room.status.state != crate::rooms::community_lifecycle::RoomState::Active {
+            continue;
+        }
         for did in members {
             offer_or_cover(state, &holder, &actor, b, &rb, &room, did, now, &mut report).await?;
         }
@@ -416,8 +421,14 @@ async fn reconcile_rooms(state: &AppState, now: DateTime<Utc>) -> Result<Report,
         let Some(room) = state.community_rooms.room(room_id).await? else {
             continue;
         };
+        // Renewals and sources settle only where the room still restores its members: a
+        // room closed to them renews nobody, and its suspended admissions are the lifecycle
+        // worker's (`rooms::community_lifecycle`).
+        if !room.status.restores_members() {
+            continue;
+        }
         for record in state.community_rooms.members(room_id).await? {
-            if record.state == MemberRecord::REMOVED {
+            if record.state == MemberRecord::REMOVED || record.state == MemberRecord::SUSPENDED {
                 continue;
             }
             settle_sources(state, &room, record, &covered, &by_id, now, &mut report).await?;
@@ -508,6 +519,7 @@ async fn offer_or_cover(
         offered_at: rfc3339(now),
         admitted_at: None,
         removed_at: None,
+        suspended_at: None,
         credentials: Some(credentials),
         welcome: None,
         admitted_epoch: None,

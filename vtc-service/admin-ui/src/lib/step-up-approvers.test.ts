@@ -111,10 +111,10 @@ describe("the approver tasks", () => {
   });
 
   it("invites with a label and a lifetime, and nothing when the admin declines", async () => {
-    const payload = { subject: ALICE, label: "Browser plugin", ttl: 900 };
+    const payload = { subject: ALICE, label: "Browser plugin", ttlSeconds: 900 };
     vi.mocked(postSignedTrustTask).mockRejectedValue(refusedFor(APPROVER_INVITE_TASK, payload));
     await expect(
-      inviteApprover({ subject: ALICE, label: "Browser plugin", ttl: 900 }, async () => false),
+      inviteApprover({ subject: ALICE, label: "Browser plugin", ttlSeconds: 900 }, async () => false),
     ).rejects.toThrow(/declined/);
     expect(postSignedTrustTask).toHaveBeenCalledWith(APPROVER_INVITE_TASK, payload);
     expect(answerStepUp).not.toHaveBeenCalled();

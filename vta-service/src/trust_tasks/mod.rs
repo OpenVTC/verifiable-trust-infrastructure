@@ -93,12 +93,16 @@ mod policy;
 mod policy_gate;
 #[cfg(test)]
 mod produced_census;
+// Every Type URI this workspace serves, sends or names is a pinned version
+// (`vti-specs`), or the gates that read the index fail open for it.
 #[cfg(feature = "webvh")]
 mod provision_integration;
 pub(crate) mod received;
 mod room_act;
 mod room_catch_up;
+pub(crate) mod room_changed;
 mod room_group;
+pub(crate) mod room_key_watch;
 mod room_keys;
 mod room_label;
 pub(crate) mod room_list_delivery;
@@ -106,7 +110,10 @@ mod room_owner;
 mod room_owner_group;
 mod room_owner_revoke;
 mod room_profile;
+mod room_read;
 mod seeds;
+#[cfg(test)]
+mod spec_pin_census;
 // `operations::protocol` — every service operation these handlers call — is
 // `#[cfg(feature = "webvh")]`, because advertising a transport means editing
 // the agent's did:webvh document. Without webvh there is no document to edit,
@@ -119,6 +126,9 @@ pub(crate) mod transport;
 // approve-response that elevates a session. What decides a ceremony is needed
 // is [`policy_gate`] and nothing else — the `RequireStepUp` extractor and its
 // per-route op markers are gone with the config floors they read.
+/// `vta/collection/*` and what the VTA answers as a persona it collects for.
+pub(crate) mod collection;
+pub(crate) mod notifications;
 pub(crate) mod step_up;
 mod vault;
 #[cfg(feature = "webvh")]
@@ -146,6 +156,7 @@ use helpers::{body_parse_error_response, method_not_found, reject_with};
 // the didcomm path — keep the import ungated (previously `#[cfg(feature =
 // "didcomm")]`, which broke `--features rest` without `didcomm`).
 use trust_tasks_rs::RejectReason;
+use vti_trust_task_server::Acceptance;
 
 /// URIs that the VTA exposes through dedicated unauth REST routes
 /// rather than the authenticated `/api/trust-tasks` dispatcher.
@@ -181,25 +192,24 @@ const REST_ROUTED: &[&str] = vta_sdk::trust_tasks::REST_ROUTED_URIS;
 // consumed by the dispatcher's test-only parity harness
 // Names deprecated URIs on purpose: this VTA still serves them, and the census
 // is what proves an entry has not outlived its handler.
-#[allow(deprecated)]
 const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // Passkey-VMs slice — requires `webvh` + `didcomm` features. The
     // `dispatch_table!` entries list the same URIs and are tracked by the
     // parity harness when both features are on; this allowlist covers builds
     // where either feature is off.
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
     // The attestation slice — requires `tee`: the mnemonic export and the
     // three public reads.
-    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_1,
     vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
     vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1,
     vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1,
-    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_1,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_2,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -207,15 +217,14 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_SET_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
@@ -234,11 +243,9 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // an entry here without a corresponding dispatcher addition will
     // surface as a parity-harness failure pointing back at this list.
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_REGISTER_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_PUBLISH_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_DELETE_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_ENABLE_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_DISABLE_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_LIST_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_SET_STATE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_LIST_0_2,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_INFO_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_CHECK_NAME_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_CHANGE_OWNER_0_1,
@@ -246,15 +253,15 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_PROBLEM_REPORT_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_CREATE_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_UPDATE_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_DISABLE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_SET_STATE_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_PURGE_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_SET_DEFAULT_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_ASSIGN_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_UNASSIGN_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_REGISTER_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_REGISTER_0_2,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_HEALTH_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_STATS_SYNC_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_2,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1,
 ];
 
@@ -264,7 +271,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
 /// The forward parity harness below asserts every vta-sdk URI is served; the
 /// reverse harness (`every_served_uri_has_a_published_spec_or_is_tracked_debt`)
 /// asserts every *served* URI resolves in the published registry, using the
-/// generated `trust_tasks_rs::schema_index` as the registry's vendored index
+/// generated `vti_specs::schema_index` as the registry's vendored index
 /// (the same source `validate_payload` consults at dispatch time, and the same
 /// one the workspace-wide census in `vtc-service/tests/trust_task_manifest.rs`
 /// checks against — that census counts per *family*; this list is per *URI*,
@@ -364,10 +371,9 @@ macro_rules! dispatch_table {
         /// serve when it knows the family, and `unsupported_type` when it does
         /// not.
         ///
-        /// `#[allow(deprecated)]`: arms match deprecated `*_0_1` URI constants
-        /// on purpose — the VTA keeps serving 0.1 during the migration; 0.2
-        /// counterparts arrive pre-down-converted (see `wire_v0_2`).
-        #[allow(deprecated)]
+        /// `#[allow(deprecated)]`: some arms still match a deprecated URI
+        /// constant on purpose (a version kept for a peer outside this
+        /// workspace).
         async fn dispatch_typed(
             state: &AppState,
             auth: &AuthClaims,
@@ -417,7 +423,7 @@ macro_rules! dispatch_table {
         /// Every dispatch entry MUST carry a class — the macro grammar makes
         /// omission a compile error, so a new handler cannot be added without
         /// a deliberate classification.
-        #[allow(deprecated, dead_code)]
+        #[allow(dead_code)]
         pub(crate) fn class_for(type_uri: &str) -> Option<$crate::policy::TaskClass> {
             match type_uri {
                 $(
@@ -437,14 +443,13 @@ macro_rules! dispatch_table {
         /// contribute only when their cfg is active.
         ///
         /// Available at runtime, not just under `cfg(test)`, because
-        /// `trust-task-discovery/0.1` answers with exactly this set. Deriving
+        /// `trust-task-discovery/0.3` answers with exactly this set. Deriving
         /// the answer from the dispatch table is the whole point: a
         /// hand-maintained list of "what we support" is a second source of
         /// truth, and it goes stale the first time someone adds a handler
         /// without remembering it exists. A discovery response that overstates
         /// the server is worse than none — a client believes a task is
         /// available and finds out otherwise on a live call.
-        #[allow(deprecated)]
         pub(crate) fn dispatched_uris() -> Vec<&'static str> {
             let mut v: Vec<&'static str> = Vec::new();
             $(
@@ -606,7 +611,7 @@ async fn validate_payload(
     type_uri: &str,
     doc: &TrustTask<Value>,
 ) -> Option<TrustTaskOutcome> {
-    let Some(schema) = trust_tasks_rs::schema_index::schema_for(type_uri) else {
+    let Some(schema) = vti_specs::schema_index::schema_for(type_uri) else {
         // No published spec for this task. Many of the tasks this VTA dispatches
         // are in that position, so refusing them outright would break them — but
         // the gap is real, and an operator may prefer to fail closed.
@@ -1567,7 +1572,7 @@ async fn dispatch_trust_task_inner(
 /// |---|---|---|
 /// | `received` | the transport hands bytes to the spine | nothing |
 /// | `validated` | `validate_freshness` → `validate_basic` → payload schema | nothing, or a `trust-task-error` |
-/// | `accepted` | the `ReplayGuard` claim succeeds (`Fresh`) | nothing |
+/// | `accepted` | the accepted-id claim succeeds (`Fresh`) | nothing |
 /// | `executing` | the handler runs | nothing |
 /// | `responded` | `success_response` | `<type>#response` |
 /// | `errored` | `reject_with` | `trust-task-error` |
@@ -1615,7 +1620,7 @@ mod lifecycle_mapping {}
 /// # Why a window at all
 ///
 /// #1126 shipped this without one, leaving the record bounded by
-/// [`InMemoryReplayGuard`]'s capacity. That is not "no expiry so entries live
+/// `trust_tasks_rs::InMemoryReplayGuard`'s capacity. That is not "no expiry so entries live
 /// forever" — it is LRU, which makes the window **load-dependent**: quiet
 /// service, effectively unbounded protection; busy service, an eviction horizon
 /// that can fall *below* any sensible acceptance window, so a replay arriving
@@ -1657,13 +1662,13 @@ mod lifecycle_mapping {}
 /// the principle `a_future_dated_document_is_malformed_not_expired` pins.
 ///
 /// **A document carrying only `expiresAt` has no bounded acceptance window.**
-/// `validate_freshness` accepts it — an `expiresAt` does bound the record —
-/// but the bound is then whatever instant the *producer* chose. `expiresAt =
-/// now + 10 years` is accepted for ten years, and §7.2 makes the replay
-/// record's retention that same bound, so the producer would unilaterally
-/// decide how long this consumer must remember its `id`. Requiring `issuedAt`
-/// makes the last instant any accepted document can return provable —
-/// `issuedAt + max_age + skew` — which is what [`retain_until`] then caps on.
+/// A stated expiry replaces the maximum age (VTI-OPS-024), clamped to thirty
+/// days after `issuedAt` (VTI-OPS-028). With no `issuedAt` there is nothing to
+/// count the thirty days from, so `expiresAt = now + 10 years` would be
+/// accepted for ten years, and §7.2 makes the replay record's retention that
+/// same bound: the producer would decide how long this consumer must remember
+/// its `id`. Requiring `issuedAt` makes the last instant any accepted document
+/// can return provable, which is what [`retain_until`] keeps the record to.
 ///
 /// # What this refuses that a conforming producer may send
 ///
@@ -1693,48 +1698,61 @@ pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
         .requiring_issued_at()
 }
 
-/// How long the duplicate-execution record for `doc` must be kept — the end of
-/// this consumer's willingness to execute it, which SPEC §7.2 makes the same
-/// instant as the end of the record's required retention.
+/// How long the duplicate-execution record for `doc` must be kept: its
+/// acceptance end plus the skew (VTI-OPS-029), which SPEC §7.2 makes the end of
+/// this consumer's willingness to execute it. See
+/// [`vti_trust_task_server::retain_until`].
 ///
-/// `FreshnessPolicy::record_expiry` takes a producer-supplied `expiresAt`
-/// **verbatim**, so a document stamped `expiresAt = now + 10 years` would pin
-/// its `id` in [`REPLAY_GUARD`] for ten years — an entry held long past the
-/// last moment it could be needed, crowding out the records that are, and
-/// re-introducing the load-dependent eviction horizon [`freshness_policy`]
-/// exists to close.
-///
-/// `require_issued_at` above makes the cap provable: `validate_freshness` has
-/// already refused any document without an `issuedAt`, and will refuse this
-/// one once `issuedAt + max_age + skew` has passed. Retention beyond that
-/// instant is retention the guard can never draw on.
-///
-/// The cap only ever moves the instant **earlier than a producer asked for**,
-/// never earlier than the acceptance window. Shortening retention below the
-/// window is the direction §7.2 forbids: a replay arriving while the document
-/// is still acceptable, with its record already dropped, executes twice.
+/// A stated `expiresAt` is honoured up to thirty days after `issuedAt`
+/// (VTI-OPS-028), so this is up to thirty days and never the ten-minute
+/// window alone: a record dropped while its document is still acceptable lets
+/// a replay execute twice. The horizon is what keeps a producer from deciding
+/// how long this node must remember an `id`.
 fn retain_until(
     doc: &TrustTask<Value>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let policy = freshness_policy();
-    let expiry = policy.record_expiry(doc, now)?;
-    match (doc.issued_at, policy.max_age) {
-        (Some(issued_at), Some(max_age)) => Some(expiry.min(issued_at + max_age + policy.skew)),
-        // Unreachable while `require_issued_at` holds; if that ever changes,
-        // over-retaining is the safe direction to fail in.
-        _ => Some(expiry),
-    }
+    vti_trust_task_server::retain_until(&freshness_policy(), doc, now)
 }
 
-/// The duplicate-execution record of SPEC §7.2 item 11.
+/// Apply this node's own §7.2 receipt checks to a document **carried** to it rather than sent
+/// to it — a notification a client deposits (`vta/notifications/deposit/0.1`, VTI-NTF-055):
+/// the acceptance window, `expiresAt`, and the record of accepted document identifiers
+/// (VTI-OPS-024, VTI-OPS-026, VTI-OPS-027, VTI-KEY-107), all at `now`, the time of the
+/// hand-over. The caller has already established that the document is addressed to a DID this
+/// VTA holds keys of; its `recipient` is not compared with the VTA's own DID.
 ///
-/// In-memory and process-local, which is what the retired module was too.
-/// Cross-restart replay is not the threat model: a document old enough to
-/// outlive a restart is refused by the freshness bound above, and the two
-/// bounds are the same bound.
-static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
-    std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
+/// `Ok(Some(claim))`: first seen, and its identifier is now claimed in the same record direct
+/// deliveries are; the caller completes the claim once the document is held, or releases it
+/// when the hand-over failed for a reason the producer may correct and resend. `Ok(None)`: a
+/// repeat of a document already accepted — answered as the original was, never refused (§7.2
+/// *Disposition of a duplicate*). A *different* document under an accepted identifier is
+/// `IdConflict`.
+pub(crate) async fn admit_carried_document(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<vti_trust_task_server::Claim>, RejectReason> {
+    doc.validate_freshness(now, &freshness_policy())?;
+    if let Some(recipient) = doc.recipient.as_deref() {
+        doc.validate_basic(now, recipient)?;
+    }
+    match state
+        .accepted_ids()
+        .claim(doc, retain_until(doc, now), now)
+        .await
+    {
+        Ok(Acceptance::Fresh(claim)) => Ok(Some(claim)),
+        Ok(Acceptance::Duplicate { .. }) => Ok(None),
+        Ok(Acceptance::Conflict) => Err(RejectReason::IdConflict),
+        Err(vti_trust_task_server::AcceptedIdsError::NotDigestible(e)) => {
+            Err(RejectReason::MalformedRequest {
+                reason: format!("cannot canonicalise the carried document: {e}"),
+            })
+        }
+        Err(e) => Err(e.reject_reason()),
+    }
+}
 
 async fn dispatch_trust_task_validated(
     state: &AppState,
@@ -1800,28 +1818,26 @@ async fn dispatch_trust_task_validated(
     // runs, so a crash between claiming and the effect landing leaves a retry
     // refused rather than double-applied — the safe direction for a mutating
     // task.
-    // Kept because `doc` is moved into dispatch below, and closing out the
-    // claim afterwards needs the key it was taken under.
-    let doc_id = doc.id.clone();
-    let digest = match trust_tasks_rs::document_digest(&doc) {
-        Ok(d) => d,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::InternalError {
-                    reason: format!(
-                        "cannot canonicalise the document to key its replay record: {e}"
-                    ),
-                },
-            );
-        }
-    };
-    let retain_until = retain_until(&doc, now);
-    match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc.id, &digest, retain_until, now)
+    // Record-before-dispatch is preserved: the claim happens before the handler
+    // runs, so a crash between claiming and the effect landing leaves a retry
+    // answered as a duplicate rather than double-applied — the safe direction
+    // for a mutating task.
+    //
+    // The record is in the store (`AppState::accepted_ids`), not a process-local
+    // map. VTI-OPS-026 bounds it by the acceptance window, and a restart falls
+    // inside that window as readily as anything else does: a document accepted
+    // a minute before a restart was still acceptable after it, and with the
+    // in-memory guard this replaced its replay executed a second time. A map is
+    // also capacity-evicted, so a burst of distinct documents could push a live
+    // record out before its deadline. VTI-OPS-027 requires one record across
+    // every binding; all three transports reach it through here.
+    let claim = match state
+        .accepted_ids()
+        .claim(&doc, retain_until(&doc, now), now)
         .await
     {
-        Ok(trust_tasks_rs::ReplayVerdict::Fresh) => {}
-        Ok(trust_tasks_rs::ReplayVerdict::Duplicate {
+        Ok(Acceptance::Fresh(claim)) => claim,
+        Ok(Acceptance::Duplicate {
             prior_response,
             in_flight,
         }) => {
@@ -1856,9 +1872,9 @@ async fn dispatch_trust_task_validated(
                     body: Vec::new(),
                     restart: false,
                 },
-                // Fire-and-forget: the specification defines no success
-                // response, so silence is the correct disposition. Never
-                // `taskFailed` — the task did not fail, it already happened.
+                // Fire-and-forget, or a response this service does not keep:
+                // silence is the correct disposition. Never `taskFailed` — the
+                // task did not fail, it already happened.
                 None => TrustTaskOutcome {
                     status: axum::http::StatusCode::NO_CONTENT,
                     body: Vec::new(),
@@ -1866,51 +1882,62 @@ async fn dispatch_trust_task_validated(
                 },
             };
         }
-        Ok(trust_tasks_rs::ReplayVerdict::Conflict) => {
+        Ok(Acceptance::Conflict) => {
             return reject_with(&doc, RejectReason::IdConflict);
         }
         // Fail closed. A consumer that cannot establish whether a document is
-        // a duplicate has not satisfied item 11, so it must not execute — and
-        // `unavailable` is retryable, which is the truthful signal: the
-        // producer should resend the identical document rather than treat this
-        // as a permanent refusal.
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::Unavailable {
-                    // No `retryAfter`: the guard is in-process, so there is no
-                    // outage window to quote. The code alone already says
-                    // "retryable", and inventing a deadline would be a guess
-                    // the producer would act on.
-                    retry_after: {
-                        tracing::error!(error = %e, id = %doc.id, "replay guard unavailable");
-                        None
-                    },
-                },
-            );
-        }
-        // `ReplayVerdict` is `#[non_exhaustive]`. A verdict this build does not
-        // know is refused rather than executed: every variant the enum has
-        // gained so far is a reason *not* to run the task, and guessing the
-        // permissive way on an unknown one is how a duplicate-execution defence
-        // stops defending.
-        Ok(other) => {
-            return reject_with(
-                &doc,
-                RejectReason::Unavailable {
-                    retry_after: {
-                        tracing::error!(
-                            verdict = ?other,
-                            id = %doc.id,
-                            "replay guard returned a verdict this build does not know",
-                        );
-                        None
-                    },
-                },
-            );
-        }
+        // a duplicate has not satisfied item 11, so it must not execute.
+        // `unavailable` (retryable, no `retryAfter` — there is no outage window
+        // to quote) when the record could not be read or written; the document
+        // itself is the problem when it cannot be canonicalised.
+        Err(e) => return reject_with(&doc, e.reject_reason()),
+    };
+
+    let type_uri = doc.type_uri.for_routing().to_string();
+    let outcome = dispatch_claimed(state, auth, doc).await;
+
+    // Close out the claim, on **every** path out of `dispatch_claimed` — the
+    // reason it is a function of its own. Before it was, a document refused
+    // after the claim (schema, spec policy, proof, idempotency) returned early
+    // and left its `id` spent as "in flight" for the rest of the window, so a
+    // corrected resend under the same `id` was answered `202` and never ran.
+    //
+    // - **Succeeded** → record the response, so a §8.4 retry is *answered with
+    //   the result* rather than absorbed in silence.
+    // - **Failed** → release the claim: the effect never happened, and a
+    //   corrected resend under the same `id` must be allowed to run.
+    if outcome.status.is_success() {
+        // A response that discloses a secret (a key's private half, the sealed
+        // root mnemonic) is never kept: the record would hold it in the store
+        // for the whole retention window and hand it to whoever presents the
+        // same document again. A duplicate of such a task is absorbed with no
+        // body instead. The effect still happened once and the claim still
+        // stands, so §7.2 item 11 holds. A member's personal label is not kept
+        // either ([`carries_personal_text`]).
+        let discloses_secret = class_for(&type_uri)
+            .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
+        let recorded = if discloses_secret || carries_personal_text(&type_uri) {
+            None
+        } else {
+            serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
+        };
+        claim.completed(recorded.as_ref()).await;
+    } else {
+        claim.release().await;
     }
 
+    outcome
+}
+
+/// Everything after the §7.2 item 11 claim: the session binding, payload and
+/// spec-policy checks, proof verification, idempotency, the policy gate and
+/// typed dispatch. Its caller settles the claim on whatever this returns, so an
+/// early return here is never a spent `id`.
+async fn dispatch_claimed(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
     // 3. Session-pubkey binding pre-check.
     //
     // Once `AuthClaims` carries `session_pubkey_b58btc` (Phase 3 work,
@@ -1922,17 +1949,10 @@ async fn dispatch_trust_task_validated(
 
     // 4. Dispatch by type URI.
     //
-    // 0.2 dual-accept: bearer-authed specs whose only 0.1→0.2 delta is
-    // enum-value casing are down-converted to their canonical 0.1 form,
-    // dispatched through the existing 0.1 handler, and the response
-    // up-converted back to 0.2 (see `wire_v0_2`). Signed-payload specs are NOT
-    // routed here — they have typed 0.2 arms in `dispatch_typed`.
-    // The negotiated wire version is scoped around `dispatch_typed` via a
-    // `task_local` so the two JWE-sealing handlers (`vault/release`,
-    // `vault/proxy-login`) can serialise the *sealed* cleartext in the right
-    // casing — the edge transform can't reach inside ciphertext. Every other
-    // handler ignores it.
-    use wire_v0_2::{WIRE_VERSION, WireVersion};
+    // The bearer-authed `vault/*` specs whose handlers model the wire with the
+    // kebab-cased storage types have their enum values rewritten at the
+    // declared paths on the way in and out (see `wire_v0_2`). The Type URI is
+    // not rewritten: the dispatch table registers the served version.
     let type_uri = doc.type_uri.for_routing().to_string();
 
     // Name every inbound trust task at the one point all three transports (TSP,
@@ -2001,7 +2021,7 @@ async fn dispatch_trust_task_validated(
     // case `validate_payload` has already decided about, per
     // `policy.require_payload_schema`. Deciding it a second time here, with a
     // different default, would make one of the two answers unreachable.
-    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
+    if let Some(policy) = vti_specs::schema_index::spec_policy_for(&type_uri)
         && let Err(reason) = policy.enforce(&doc)
     {
         tracing::info!(
@@ -2100,8 +2120,8 @@ async fn dispatch_trust_task_validated(
     // concurrent attempts safe: `insert_if_absent` is atomic, so one proceeds
     // and the other is told to wait rather than both passing a check.
     //
-    // This is the layer `replay` (2b above) cannot be. That one keys on the
-    // envelope id and so only catches a byte-identical resubmission; every SDK
+    // This is the layer the accepted-id record (2b, in the caller) cannot be.
+    // That one keys on the document id and so only catches the same document; every SDK
     // path mints a fresh `urn:uuid:` per attempt, so a genuine retry sails past
     // it. The key here is stable across attempts of the same logical operation.
     let idem_claim = match idempotency::claim(&state.idempotency_ks, &auth.did, &doc).await {
@@ -2133,17 +2153,10 @@ async fn dispatch_trust_task_validated(
                 if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
                     let mut doc = doc;
                     wire_v0_2::downconvert_request(&mut doc.payload, spec);
-                    if let Ok(uri_0_1) = spec.uri_0_1.parse() {
-                        doc.type_uri = uri_0_1;
-                    }
-                    let outcome = WIRE_VERSION
-                        .scope(WireVersion::V0_2, dispatch_typed(state, auth, doc))
-                        .await;
-                    wire_v0_2::upconvert_response(outcome, spec, &type_uri)
+                    let outcome = dispatch_typed(state, auth, doc).await;
+                    wire_v0_2::upconvert_response(outcome, spec)
                 } else {
-                    WIRE_VERSION
-                        .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
-                        .await
+                    dispatch_typed(state, auth, doc).await
                 }
             }
         };
@@ -2154,46 +2167,6 @@ async fn dispatch_trust_task_validated(
     // allowed to actually run.
     if let Some((key, safety)) = idem_claim {
         idempotency::record_outcome(&state.idempotency_ks, &auth.did, &key, safety, &outcome).await;
-    }
-
-    // Close out the §7.2 item 11 claim taken at 2b. The same two dispositions
-    // as the idempotency layer above, for the same reason:
-    //
-    // - **Succeeded** → record the response, so a §8.4 retry is *answered with
-    //   the result* rather than absorbed in silence. Without this the guard
-    //   still prevents the second execution, but every legitimate retry gets
-    //   nothing back, which is the outcome §7.2 (*Disposition of a duplicate*)
-    //   asks a consumer to avoid where it defines a success response.
-    // - **Failed** → release the claim. A document refused downstream of the
-    //   claim would otherwise burn its `id`, and a corrected resend under the
-    //   same `id` would come back `idConflict` forever.
-    {
-        let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
-        if outcome.status.is_success() {
-            // A response that discloses a secret (a key's private half, the
-            // sealed root mnemonic) is never kept: the record would hold it in
-            // memory for the whole retention window and hand it to whoever
-            // presents the same document again. A duplicate of such a task is
-            // absorbed with no body instead. The effect still happened once
-            // and the claim still stands, so §7.2 item 11 holds. A member's
-            // personal label is not kept either ([`carries_personal_text`]).
-            let discloses_secret = class_for(&type_uri)
-                .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
-            let recorded = if discloses_secret || carries_personal_text(&type_uri) {
-                None
-            } else {
-                serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
-            };
-            if let Err(e) = guard.record_response(&doc_id, recorded.as_ref()).await {
-                // Not fatal: the effect happened and the claim stands, so item
-                // 11 still holds. Only the *courtesy* of answering a retry with
-                // the result is lost, and saying so beats failing a completed
-                // task.
-                tracing::warn!(error = %e, id = %doc_id, "replay guard: response not recorded");
-            }
-        } else if let Err(e) = guard.release(&doc_id, &digest).await {
-            tracing::warn!(error = %e, id = %doc_id, "replay guard: claim not released");
-        }
     }
 
     outcome
@@ -2265,7 +2238,7 @@ impl DispatchAudit {
         // rather than convenience.
         //
         // The handlers' action vocabulary is hand-chosen and does not follow
-        // the URI: `acl/grant/0.1` audits as `acl.create`, `keys/create/0.1` as
+        // the URI: `acl/grant/0.2` audits as `acl.create`, `keys/create/0.1` as
         // `key.create`, `auth/revoke-session/0.2` as `session.revoke`. There is
         // no derivation, so matching it would need a table keyed by URI — 84
         // entries that go stale invisibly the first time someone adds a task.
@@ -2391,14 +2364,8 @@ dispatch_table! {
     // mutated). Not edge-transformed in `wire_v0_2` because the payload carries
     // the approver's signature.
     //
-    // The REQUEST payloads are field-for-field identical across 0.1/0.2/0.3 —
-    // 0.3 changed only the acknowledgement, adding `recorded`. What differs is
-    // what the handler may ANSWER, and it reads `doc.type_uri` to decide: a
-    // bound approval can be acknowledged honestly only to a 0.3 request,
-    // because a response's type is the request's type plus `#response`.
-    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
-        | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2
-        | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3
+    // A bound approval is acknowledged `recorded` and elevates nothing.
+    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7
         => step_up::handle_approve_response
         [ Mutating None false ],
     // ─── Policy slice (runtime PDP management) ────────────────────
@@ -2406,12 +2373,12 @@ dispatch_table! {
     // control over changes to the gate itself writes a consent rule for
     // `policy/upsert`. The lockout that risks is answered by the offline
     // break-glass, not by making this surface ungateable.
-    vta_sdk::trust_tasks::TASK_POLICY_LIST_0_2 => policy::handle_list
+    vta_sdk::trust_tasks::TASK_POLICY_LIST_0_3 => policy::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_POLICY_GET_0_1 => policy::handle_get
         [ None Metadata false ],
     // Destructive: rewriting policy can remove every gate on this VTA.
-    vta_sdk::trust_tasks::TASK_POLICY_UPSERT_0_2 => policy::handle_upsert
+    vta_sdk::trust_tasks::TASK_POLICY_UPSERT_0_3 => policy::handle_upsert
         [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_POLICY_DELETE_0_1 => policy::handle_delete
         [ Destructive None false ],
@@ -2422,7 +2389,7 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONSENT_REVOKE_1_0 => consent::handle_revoke
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_CONSENT_LIST_1_0 => consent::handle_list
+    vta_sdk::trust_tasks::TASK_CONSENT_LIST_1_1 => consent::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_CONSENT_APPROVER_SET_1_0 => consent::handle_approver_set
         [ Mutating None false ],
@@ -2431,38 +2398,38 @@ dispatch_table! {
     // Task-execution consent decision (PDP requireConsent). Records approver
     // signatures; the gate exempts it from re-gating (see policy_gate) so
     // approving a task can't itself require consent.
-    vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1 => task_consent::handle_decision
+    vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2 => task_consent::handle_decision
         [ Mutating None false ],
     // ─── ACL slice ────────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_ACL_LIST_0_1 => acl::handle_list
+    vta_sdk::trust_tasks::TASK_ACL_LIST_0_3 => acl::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1 => acl::handle_create
+    vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2 => acl::handle_create
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_SHOW_0_1 => acl::handle_get
+    vta_sdk::trust_tasks::TASK_ACL_SHOW_0_2 => acl::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_1 => acl::handle_update
+    vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_2 => acl::handle_update
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1 => acl::handle_change_role
+    vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_2 => acl::handle_change_role
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_1 => acl::handle_delete
+    vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_2 => acl::handle_delete
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_0_1 => acl::handle_swap_key
         [ Destructive None false ],
     // ─── Device slice ─────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1 => device::handle_register
+    vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_2 => device::handle_register
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1 => device::handle_heartbeat
+    vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_3 => device::handle_heartbeat
         [ None None false ],
-    vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1 => device::handle_list
+    vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_3 => device::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_DEVICE_DISABLE_0_1 => device::handle_disable
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DEVICE_WIPE_0_1 => device::handle_wipe
+    vta_sdk::trust_tasks::TASK_DEVICE_WIPE_0_2 => device::handle_wipe
         [ Destructive None false ],
-    vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_1 => device::handle_set_wake
+    vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_2 => device::handle_set_wake
         [ Mutating None false ],
     // ─── Messaging slice ──────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_1 => messaging::handle_ping
+    vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_2 => messaging::handle_ping
         [ None None false ],
     // ─── Services slice ──────────────────────────────────────────
     //
@@ -2471,36 +2438,36 @@ dispatch_table! {
     // messages still in flight through the mediator, which is precisely what
     // the drain window existed to prevent.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_LIST_1_0 => services::handle_list
+    vta_sdk::trust_tasks::TASK_SERVICES_LIST_1_1 => services::handle_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_GET_1_0 => services::handle_get
+    vta_sdk::trust_tasks::TASK_SERVICES_GET_1_1 => services::handle_get
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0 => services::handle_enable
+    vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_1 => services::handle_enable
         [ Mutating None false ],
     // 1.0 and 1.1 share the handler: 1.1 only adds the optional drain window.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0 | vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_1
+    vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_2
         => services::handle_update
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0 => services::handle_disable
+    vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_1 => services::handle_disable
         [ Mutating None false ],
     // 1.0 and 1.1 share the handler: 1.1 only adds the optional drain window.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0 | vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_1
+    vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_2
         => services::handle_rollback
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0 => services::handle_drain_list
+    vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_LIST_1_1 => services::handle_drain_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0 => services::handle_drain_cancel
         [ Destructive None false ],
     // A contact log of other parties' DIDs — metadata, read-only.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_REPORT_0_1 => services::handle_report
+    vta_sdk::trust_tasks::TASK_SERVICES_REPORT_0_2 => services::handle_report
         [ None Metadata false ],
     // ─── Contexts slice ──────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => contexts::handle_list
@@ -2518,16 +2485,17 @@ dispatch_table! {
     // existing keys and mints, rotates and revokes nothing.
     vta_sdk::trust_tasks::TASK_CONTEXTS_SECRETS_1_0 => contexts::handle_secrets
         [ None Secret false ],
-    // 1.0 and 1.1 share the handler: 1.1 only lets `did` be `null` (clear it).
-    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0 | vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1
-        => contexts::handle_update_did
+    // 1.1 lets `did` be `null` (clear it).
+    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1 => contexts::handle_update_did
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => contexts::handle_preview_delete
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0 => contexts::handle_delete
+    // 1.1 settles every host copy before any local record goes, and refuses
+    // (`hostCleanupFailed`) unless the caller chose `abandonHostCopies`.
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1 => contexts::handle_delete
         [ Destructive None false ],
     // ─── Keys slice ──────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_KEYS_LIST_0_1 => keys::handle_list
+    vta_sdk::trust_tasks::TASK_KEYS_LIST_0_2 => keys::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_CREATE_0_1 => keys::handle_create
         [ Mutating None false ],
@@ -2564,7 +2532,7 @@ dispatch_table! {
     // The mnemonic export (end-to-end only) and the three public reads, which
     // any caller may send with no identity (`vta_sdk::trust_tasks::PUBLIC_URIS`).
     #[cfg(feature = "tee")]
-    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0 => attestation::handle_mnemonic_export
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_1 => attestation::handle_mnemonic_export
         [ Mutating Secret false ],
     #[cfg(feature = "tee")]
     vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1 => attestation::handle_status
@@ -2578,7 +2546,7 @@ dispatch_table! {
     // Super-admin only, same as the export it watches over; carries no
     // secret itself.
     #[cfg(feature = "tee")]
-    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_1 => attestation::handle_mnemonic_status
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_2 => attestation::handle_mnemonic_status
         [ None Metadata false ],
     // ─── Metrics slice ────────────────────────────────────────────
     // Admin only: operational counters, not a public read. Was
@@ -2611,7 +2579,7 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_SEEDS_ROTATE_1_0 => seeds::handle_rotate
         [ Destructive None false ],
     // ─── Audit slice ─────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1 => audit::handle_list_logs
+    vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2 => audit::handle_list_logs
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_AUDIT_VERIFY_0_1 => audit::handle_verify_chain
         [ None Metadata false ],
@@ -2620,10 +2588,11 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0 => audit::handle_update_retention
         [ Mutating None false ],
     // ─── Discovery ───────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1 => discovery::handle_trust_task_discovery
+    // Carries the acceptance window this VTA applies (VTI-TRN-047): 0.4 with
+    // its expiry horizon, the superseded 0.3 without.
+    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_4 => discovery::handle_trust_task_discovery
         [ None None false ],
-    // 0.3 adds the acceptance window this VTA applies (VTI-TRN-047).
-    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3 => discovery::handle_trust_task_discovery_v0_3
+    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3 => discovery::handle_trust_task_discovery
         [ None None false ],
     // ─── Credential-exchange: the holder's steps ─────────────────
     //
@@ -2658,20 +2627,20 @@ dispatch_table! {
     vta_sdk::protocols::credential_exchange::PENDING_DENY
         => credential_exchange::handle_pending_deny
         [ Mutating None false ],
-    // ─── Vault slice (public 0.1 spec) ──────────────────────────
-    vta_sdk::trust_tasks::TASK_VAULT_LIST_0_1 => vault::handle_list
+    // ─── Vault slice ───────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_VAULT_LIST_0_4 => vault::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VAULT_GET_0_1 => vault::handle_get
+    vta_sdk::trust_tasks::TASK_VAULT_GET_0_3 => vault::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_1 => vault::handle_upsert
+    vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_4 => vault::handle_upsert
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VAULT_DELETE_0_1 => vault::handle_delete
         [ Destructive None false ],
-    vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1 => vault::handle_release
+    vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_2 => vault::handle_release
         [ Mutating Secret false ],
-    vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1 => vault::handle_proxy_login
+    vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2 => vault::handle_proxy_login
         [ Mutating Secret true ],
-    vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1 => vault::handle_sign_trust_task
+    vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_2 => vault::handle_sign_trust_task
         [ Mutating None true ],
     // Vault archival lifecycle (openvtc extension). `delete` above is now soft.
     vta_sdk::trust_tasks::TASK_VAULT_ARCHIVE_0_1 => vault::handle_archive
@@ -2687,8 +2656,8 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_QUERY_0_1 => cred_vault::handle_query
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1 => cred_vault::handle_get
-        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_2 => cred_vault::handle_get
+        [ None Secret false ],
     // Signs as the credential's subject and records the disclosure (the
     // specification's `mutating` / `secret` / acts-as-subject).
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1 => cred_vault::handle_present
@@ -2715,48 +2684,44 @@ dispatch_table! {
     // of question as "who may act at it". What it discloses is the issuer's
     // holder set rather than any one credential's claims — bodies are never
     // returned — so the exposure class stays `None` too.
-    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_LIST_0_1 => credentials::handle_list
+    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_LIST_0_2 => credentials::handle_list
         [ None None false ],
     // ─── Agent-memory slice (spec/vta/memory/*) ──────────────────
     // Per-context key/value store; gated on context access (require_context),
     // NOT operator step-up.
     // ─── External accounts (`external/*`) ──────────────────────────
     // Classes match each specification's own declarations.
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_1 => external::handle_list
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_2 => external::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_1 => external::handle_get
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_2 => external::handle_get
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_SETUP_0_1 => external::handle_setup
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1 => external::handle_create
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_CREATE_0_2 => external::handle_create
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1 => external::handle_update
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_2 => external::handle_update
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1 => external::handle_secret_set
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1 => external::handle_bindings_grant
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_2 => external::handle_bindings_grant
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1 => external::handle_bindings_revoke
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_2 => external::handle_bindings_revoke
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1 => external::handle_probe
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_PROBE_0_2 => external::handle_probe
         [ Mutating Metadata true ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1 => external::handle_keys_rotate
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_2 => external::handle_keys_rotate
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1 => external::handle_suspend
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2 => external::handle_suspend
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESUME_0_1 => external::handle_resume
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESUME_0_2 => external::handle_resume
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1 => external::handle_archive
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_2 => external::handle_archive
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1 => external::handle_restore
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_2 => external::handle_restore
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_DELETE_0_1 => external::handle_delete
         [ Destructive Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1 => external::handle_issue
-        [ Mutating Secret true ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2 => external::handle_issue_v2
-        [ Mutating Secret true ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3 => external::handle_issue_v3
+    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3 => external::handle_issue
         [ Mutating Secret true ],
     // ─── Hidden-vetting PCS engine (`vta/pcs/*`) ───────────────────
     // Classes match each specification's own declarations. `actsAsSubject` is
@@ -2785,33 +2750,75 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1 => pcs::handle_vetter_show
         [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VETTER_RECOVER_0_1 => pcs::handle_vetter_recover
+        [ Mutating Metadata false ],
     // The voter role (`vta/pcs/voter/*`, `vta/pcs/vote`, trust-tasks-tf #834).
-    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_1 => pcs::handle_voter_register
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_5 => pcs::handle_voter_register
         [ Mutating Metadata true ],
-    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_1 => pcs::handle_voter_read
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_3 => pcs::handle_voter_register
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_2 => pcs::handle_voter_register
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_7 => pcs::handle_voter_read
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_6 => pcs::handle_voter_read
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_3 => pcs::handle_voter_read
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_2 => pcs::handle_voter_read
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1 => pcs::handle_voter_accept
         [ Mutating None true ],
-    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_0_1 => pcs::handle_vote
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_0_4 => pcs::handle_vote
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_0_3 => pcs::handle_vote
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_0_2 => pcs::handle_vote
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1 => pcs::handle_voter_receipt
         [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1 => pcs::handle_voter_receipts_list
+        [ None Metadata false ],
     // The encrypted levels (`vta/pcs/vote-encrypted`, `vta/pcs/trustee/*`,
     // trust-tasks-tf #845): each signs one document as the voter's one-time key or
     // the trustee persona.
-    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2 => pcs::handle_vote_encrypted
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_5 => pcs::handle_vote_encrypted
         [ Mutating Metadata true ],
-    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_1 => pcs::handle_trustee_enrol
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_4 => pcs::handle_vote_encrypted
         [ Mutating Metadata true ],
-    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_2 => pcs::handle_trustee_deal
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_3 => pcs::handle_vote_encrypted
         [ Mutating Metadata true ],
-    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_2 => pcs::handle_trustee_keys
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_4 => pcs::handle_trustee_enrol
         [ Mutating Metadata true ],
-    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2 => pcs::handle_trustee_justify
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_3 => pcs::handle_trustee_enrol
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_2 => pcs::handle_trustee_enrol
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_5 => pcs::handle_trustee_deal
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_4 => pcs::handle_trustee_deal
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_3 => pcs::handle_trustee_deal
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_5 => pcs::handle_trustee_keys
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_4 => pcs::handle_trustee_keys
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_3 => pcs::handle_trustee_keys
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_5 => pcs::handle_trustee_justify
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_4 => pcs::handle_trustee_justify
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_3 => pcs::handle_trustee_justify
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2 => pcs::handle_trustee_decrypt
         [ None Metadata true ],
-    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_1 => pcs::handle_trustee_read
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_4 => pcs::handle_trustee_read
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_3 => pcs::handle_trustee_read
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_2 => pcs::handle_trustee_read
         [ None Metadata true ],
     // ─── Witnessed party (`vta/witness/*`) ─────────────────────────
     // Classes match each specification's own declarations: the VTA acts as the
@@ -2822,8 +2829,57 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2 => witness::handle_accept
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_VTA_WITNESS_LIST_0_1 => witness::handle_list
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_LIST_0_2 => witness::handle_list
         [ None Metadata false ],
+    // ─── Notifications (`notifications/*`, `vta/notifications/*`) ─
+    // notify / relay are counterparty tasks (`notifications::is_counterparty_task`):
+    // the acceptance policy, not the ACL, decides what is kept (VTI-NTF-030). The
+    // reads disclose who originated and relayed each notification — metadata.
+    // ─── Rooms: a watch's signal (`rooms/changed/0.1`) ────────────
+    // A counterparty task (`room_changed::is_counterparty_task`): a room's host signals
+    // the address a member armed a watch with. One-way and content-free. A watch this
+    // VTA arms names an address of its own and is signalled there
+    // (`messaging::watch_addresses`); one addressed to this VTA's DID matches no watch and
+    // is dropped, answered with nothing.
+    vta_sdk::trust_tasks::TASK_ROOMS_CHANGED_0_1 => room_changed::handle_changed
+        [ None None false ],
+    // ─── Rooms: watching for a client (`rooms/keys/watch/0.1`) ────
+    // `actsAsSubject`: arms `rooms/watch` at the host as the member, presenting the
+    // member's own `read`. Mutating: keeps one record per armed watch until it fires, is
+    // cancelled or lapses. Discloses nothing: whether each watch is armed and until when.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1 => room_key_watch::handle_watch
+        [ Mutating None true ],
+    vta_sdk::trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1 => notifications::handle_notify
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_NOTIFICATIONS_RELAY_0_1 => notifications::handle_relay
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_LIST_0_1 => notifications::handle_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_SHOW_0_1 => notifications::handle_show
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_DISMISS_0_1 => notifications::handle_dismiss
+        [ Mutating None false ],
+    // A client hands over what it received for a persona DID (VTI-NTF-054 – 056); held
+    // exactly as a direct delivery would be.
+    vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1 => notifications::handle_deposit
+        [ Mutating None false ],
+    // ─── Collection (`vta/collection/*`, VTI-NTF-080 – 098) ────────
+    // Who holds each persona DID's one mediator connection. Served whether or
+    // not collection by default is on (VTI-NTF-097); the listing discloses
+    // which client collects for which persona — metadata.
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_CLAIM_0_1 => collection::handle_claim
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_RELEASE_0_1 => collection::handle_release
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_LIST_0_1 => collection::handle_list
+        [ None Metadata false ],
+    // Each context's collection-by-default setting (VTI-NTF-094 – 096): read
+    // with standing, changed with administrative authority over the context.
+    // Both disclose who last changed it — metadata.
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1 => collection::handle_settings_show
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SET_0_1 => collection::handle_settings_set
+        [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list
@@ -2874,37 +2930,41 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1 => room_group::handle_read
         [ None Secret true ],
+    // 0.2 adds the host's `createdAt` / `createdBy` / `bodyStoredAt` and the batch form.
+    // `Mutating`, as its specification declares: a repair applies the commits and keeps
+    // the links the host relays, which changes this VTA's key state.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_2 => room_read::handle_read_v0_2
+        [ Mutating Secret true ],
     // Metadata only, and still `actsAsSubject`: the presentation names a member
-    // of the room to the host it is shown to.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1 => room_group::handle_browse
+    // of the room to the host it is shown to. 0.3 adds the room's `lastPrune` (as
+    // `prunedAt`), passed through from list 0.5; 0.1 and 0.2 are not served.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3 => room_group::handle_browse_v0_3
         [ None Metadata true ],
-    // 0.2 adds the room's `lastPrune`, passed through from list 0.3 (trust-tasks-tf #868).
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2 => room_group::handle_browse_v0_2
+    // 0.4: list/0.6's `RecordMetadataV3` rows, passed through exactly as served.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4 => room_group::handle_browse_v0_4
         [ None Metadata true ],
     // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
+    // 0.3 accepts the members a room's `recordMembers` governs, which 0.2 refuses.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2
         [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_3 => room_act::handle_seal_v0_3
+        [ None Metadata true ],
     // Signs a host-bound document as the member and presents their authority; stores
-    // nothing and sends nothing — the caller sends what comes back.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_1 => room_act::handle_act
+    // nothing and sends nothing — the caller sends what comes back. 0.11, whose table adds
+    // `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3`; 0.10, whose community
+    // types add `vtc/rooms/memberships/list/0.2`; 0.9, whose table adds
+    // `rooms/records/put/0.4`; and 0.8, which `pnm-browser-plugin` sends — each with its own
+    // closed table; 0.1–0.7 are not served.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8 => room_act::handle_act_v0_8
         [ None Metadata true ],
-    // 0.2: the member is the subject (`/document/issuer`), for policy and audit.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2 => room_act::handle_act_v0_2
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_9 => room_act::handle_act_v0_9
         [ None Metadata true ],
-    // 0.3: a member's reply to a community's offer of a room, as the DID it is
-    // addressed to; an acceptance only with a KeyPackage this VTA minted.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3 => room_act::handle_act_v0_3
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_10 => room_act::handle_act_v0_10
         [ None Metadata true ],
-    // 0.4: 0.3, and `vtc/rooms/offers/list/0.2` — the offer listing with each room's
-    // description — on the same terms as 0.1 (trust-tasks-tf #810).
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4 => room_act::handle_act_v0_4
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_11 => room_act::handle_act_v0_11
         [ None Metadata true ],
-    // 0.5: also `vtc/rooms/memberships/list/0.1`.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5 => room_act::handle_act_v0_5
-        [ None Metadata true ],
-    // 0.6: also `vtc/rooms/offers/list/0.3`, which carries the renewals of the admissions
-    // a member holds (trust-tasks-tf #843).
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6 => room_act::handle_act_v0_6
+    // 0.12: 0.11, with `rooms/watch/0.1` (`read`) in the table.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_12 => room_act::handle_act_v0_12
         [ None Metadata true ],
     // 0.2: each entry names its member; `includePersonal` adds the member's own label.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2 => room_label::handle_list_v0_2
@@ -2925,8 +2985,6 @@ dispatch_table! {
     // `actsAsSubject`, unlike the issuance verbs beside it: those sign as the
     // room and return the credential to the caller, while this one speaks to a
     // third party as its principal.
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1 => room_owner::handle_register
-        [ Mutating Metadata true ],
     // 0.2: a registration the host accepted answers success whatever became of the room's
     // revocation list, which `revocation` reports; a `pending` list is redelivered by
     // `room_list_delivery`, the one retry owner (trust-tasks-tf #821).
@@ -2946,14 +3004,11 @@ dispatch_table! {
     // `hostUnreachable` carries its `stage` (trust-tasks-tf #824).
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3 => room_owner_group::handle_add_v0_3
         [ Mutating Metadata true ],
-    // The mirror of add: same host, same authority, the other direction.
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1 => room_owner_group::handle_remove
-        [ Mutating Metadata true ],
-    // 0.2: the member's credentials are withdrawn at the host first, then the room
-    // advances (trust-tasks-tf #804). Same host, same authority, and the room's key.
-    // 0.3: a pending removal whose redelivered list the host refuses is settled by what the
-    // refusal shows, and the request refused `earlierRemovalRefused` (trust-tasks-tf #821).
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3 => room_owner_group::handle_remove_v0_3
+    // The mirror of add: same host, same authority, the other direction. On an attributed
+    // room the member's credentials are withdrawn at the host first, signed with the room's
+    // key (trust-tasks-tf #804, #821); on a private room the leaf alone, `withdrawn: false`
+    // (0.4, trust-tasks-tf #975). 0.1 and 0.3 are superseded by 0.4 and not served.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4 => room_owner_group::handle_remove_v0_4
         [ Mutating Metadata true ],
     // Signs as the room and delivers to every host serving it, presenting the
     // principal's `admin` authority — `actsAsSubject`, like the group verbs.
@@ -2973,15 +3028,15 @@ dispatch_table! {
     // once the tombstone is reaped, nothing records the record ever existed.
     vta_sdk::trust_tasks::TASK_VTA_APP_STATE_GET_1_0 => app_state::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_1_0 => app_state::handle_put
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_1_1 => app_state::handle_put
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_LIST_1_0 => app_state::handle_list
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_LIST_1_1 => app_state::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_APP_STATE_DELETE_1_0 => app_state::handle_delete
         [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_VTA_APP_STATE_GET_MANY_1_0 => app_state::handle_get_many
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_0 => app_state::handle_put_many
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_1 => app_state::handle_put_many
         [ Mutating None false ],
     // ─── Persona slice (spec/persona/*) ──────────────────────────
     // The holder's own identity. Eleven of the family's tasks are gated on an
@@ -3015,7 +3070,7 @@ dispatch_table! {
     // Holder-only reads of where a face is worn and what it has done.
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_USAGE_1_0 => persona::handle_profile_usage
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_0 => persona::handle_profile_timeline
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_1 => persona::handle_profile_timeline
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_1 => persona::handle_profile_put
         [ Mutating None false ],
@@ -3033,21 +3088,8 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_WORLD_DELETE_1_0 => persona::handle_world_delete
         [ Destructive None false ],
-    // The retired `persona/facet/*` spellings, routed to the same handlers for
-    // one release. The specifications are retired rather than deleted
-    // (`supersededBy`), so a document already issued against one still
-    // validates; refusing it here would break a client that has not moved yet
-    // for a rename that costs it nothing. The payloads are identical but for
-    // `facetId`, which the handlers read through the generated type of
-    // whichever URI arrived.
     vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_GET_1_0 => persona::handle_attribute_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_FACET_PUT_1_0 => persona::handle_facet_put
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_FACET_LIST_1_0 => persona::handle_facet_list
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_FACET_DELETE_1_0 => persona::handle_facet_delete
-        [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0 => persona::handle_profile_delete
         [ Destructive None false ],
     // The critical gate. Holder-only, and Mutating because it materialises a
@@ -3091,11 +3133,7 @@ dispatch_table! {
     // The only task in the family that releases personal data to a third party.
     vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_PRESENT_1_0 => persona::handle_disclosure_present
         [ Mutating Secret true ],
-    vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_1 => persona::handle_correlation_analyze
-        [ None Metadata false ],
-    // 1.0, retired: the same handler, answering in the words that version
-    // names its members by.
-    vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0 => persona::handle_correlation_analyze
+    vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_2 => persona::handle_correlation_analyze
         [ None Metadata false ],
     // Describes the agent's capabilities, not the holder. Discloses nothing.
     vta_sdk::trust_tasks::TASK_PERSONA_RENDERERS_LIST_1_0 => persona::handle_renderers_list
@@ -3124,18 +3162,11 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0 => management::handle_reload_services
         [ Mutating None false ],
     // ─── Backup slice (descriptor pattern) ───────────────────────
-    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0 => backup::handle_initiate_export
-        [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0 => backup::handle_complete_export
         [ Mutating Secret false ],
-    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0 => backup::handle_initiate_import
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0 => backup::handle_finalize_import
-        [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_BACKUP_ABORT_1_0 => backup::handle_abort
         [ Mutating None false ],
-    // The `chunkedTrustTask` algorithm. The 1.1 initiators serve `stream` through
-    // the 1.0 path unchanged. `get-chunk` releases part of the encrypted export,
+    // The 1.1 initiators serve `stream` and the `chunkedTrustTask` algorithm. `get-chunk` releases part of the encrypted export,
     // so it discloses Secret like `complete-export`; it is Mutating because it
     // records the index as served and slides the bundle's expiry. `put-chunk`
     // stages inert bytes checked against a pre-committed manifest.
@@ -3149,33 +3180,21 @@ dispatch_table! {
         [ Mutating Secret false ],
     vta_sdk::trust_tasks::TASK_BACKUP_PUT_CHUNK_1_0 => backup::handle_put_chunk
         [ Mutating None false ],
-    // ─── DID-templates slice (2.0 — optional contextId selects the
-    // scope; the twelve retired 1.0 URIs now get UnsupportedType) ──
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0 => did_templates::handle_list
+    // ─── DID-templates slice (optional contextId selects the scope).
+    // `delete` and `render` carry no template shape, so they stay on 2.0;
+    // the four that do are served at 3.1 ──
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1 => did_templates::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0 => did_templates::handle_create
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1 => did_templates::handle_create
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0 => did_templates::handle_get
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1 => did_templates::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0 => did_templates::handle_update
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1 => did_templates::handle_update
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_DID_TEMPLATES_DELETE_2_0 => did_templates::handle_delete
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0 => did_templates::handle_render
         [ None Metadata false ],
-    // ─── DID-templates 3.0 — same handlers, wider template schema ──
-    //
-    // Only the four that carry a template shape. `delete` takes a name and
-    // `render` returns a rendered document, so neither is affected by the
-    // `keys` block and neither gained a 3.0 spec.
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_0 => did_templates::handle_list
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0 => did_templates::handle_create
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_0 => did_templates::handle_get
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0 => did_templates::handle_update
-        [ Mutating None false ],
     // ─── Passkey-VMs slice (feature-gated: webvh + didcomm) ─────
     //
     // Canonical 0.1 only — the pre-spec 1.0 aliases were removed (the browser
@@ -3185,7 +3204,7 @@ dispatch_table! {
         => passkey_vms::handle_enroll_challenge
         [ None None false ],
     #[cfg(all(feature = "webvh", feature = "didcomm"))]
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1 => passkey_vms::handle_enroll_submit
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2 => passkey_vms::handle_enroll_submit
         [ Mutating None false ],
     #[cfg(all(feature = "webvh", feature = "didcomm"))]
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1 => passkey_vms::handle_list
@@ -3233,12 +3252,6 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0 => webvh::handle_dids_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0 => webvh::handle_dids_create_1_0
-        [ Mutating None false ],
-    #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1 => webvh::handle_dids_create_1_1
-        [ Mutating None false ],
-    #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2 => webvh::handle_dids_create
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
@@ -3260,6 +3273,13 @@ dispatch_table! {
     // dangerous one, because it is the one nobody asked for.
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0 => webvh::handle_dids_update
+        [ Destructive None false ],
+    // 1.1 extends 1.0 (`scidAlsoKnownAs`) and is the same handler, the same
+    // class and — through `gated_as` — the same approval rules. Listing or
+    // removing the did:scid alias is a document change, so it rotates the
+    // update key exactly as 1.0's `document` does.
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1 => webvh::handle_dids_update
         [ Destructive None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0 => webvh::handle_dids_rotate_keys
@@ -3288,7 +3308,7 @@ dispatch_table! {
     // in the DID document, so `list` is the only way to see one — and `check`
     // is what lets a client report a collision before it signs a new version.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0 => webvh::handle_agent_name_list
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1 => webvh::handle_agent_name_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0 => webvh::handle_agent_name_check
@@ -3335,7 +3355,7 @@ mod tests {
             "no public tasks — the census is vacuous"
         );
         for uri in vta_sdk::trust_tasks::PUBLIC_URIS {
-            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+            let policy = vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} is public but has no published specification"));
             assert!(
                 !policy.is_proof_required,
@@ -3689,17 +3709,16 @@ mod tests {
     /// feeds into PolicyInput, independent of the published registry. An
     /// unknown URI is unclassified so callers apply the fail-safe floor.
     #[test]
-    #[allow(deprecated)]
     fn class_for_carries_authoritative_classification() {
         use crate::policy::{Discloses, SideEffectLevel};
 
-        let release = class_for(vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1)
+        let release = class_for(vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_2)
             .expect("vault/release is classified");
         assert_eq!(release.side_effects, SideEffectLevel::Mutating);
         assert_eq!(release.exposure.discloses, Discloses::Secret);
         assert!(!release.exposure.acts_as_subject);
 
-        let proxy = class_for(vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1)
+        let proxy = class_for(vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2)
             .expect("proxy-login is classified");
         assert!(
             proxy.exposure.acts_as_subject,
@@ -3779,20 +3798,18 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // names the dual-accepted passkey-login 0.1 URIs on purpose
     fn phase_2_uri_registry_present() {
         // Compile-time check: every URI we route in `dispatch_typed`
         // is declared in `vta-sdk::trust_tasks`. If a URI gets renamed
         // or removed in vta-sdk, this stops compiling.
         let _ = vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_2;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2;
     }
 
     /// Cross-crate URI parity harness (mirrors webvh-service's T9
@@ -3823,18 +3840,13 @@ mod tests {
             let in_dispatched = dispatched.contains(declared);
             let in_rest_routed = REST_ROUTED.contains(declared);
             let in_feature_gated = KNOWN_FEATURE_GATED_URIS.contains(declared);
-            // 0.2 dual-accept URIs are served via the `wire_v0_2` edge
-            // transform (down-convert → 0.1 handler → up-convert), not a
-            // dedicated `dispatch_typed` arm, so they're tracked here.
-            let in_wire_v0_2 = wire_v0_2::WIRE_V0_2_URIS.contains(declared);
 
             assert!(
-                in_dispatched || in_rest_routed || in_feature_gated || in_wire_v0_2,
+                in_dispatched || in_rest_routed || in_feature_gated,
                 "vta-sdk declares URI `{declared}` but it is not tracked in this dispatcher — \
                  either (a) add a `dispatch_table!` entry (`URI => slice::handler`), \
                  (b) add it to `REST_ROUTED` if it lives on a dedicated REST route, \
-                 (c) add it to `KNOWN_FEATURE_GATED_URIS` with a comment explaining the gating, or \
-                 (d) register it in `wire_v0_2::WIRE_V0_2_URIS` if it's an edge-transformed 0.2 URI"
+                 or (c) add it to `KNOWN_FEATURE_GATED_URIS` with a comment explaining the gating"
             );
         }
     }
@@ -3855,41 +3867,32 @@ mod tests {
     /// the operation is served by a dedicated REST route rather than the
     /// dispatcher, it belongs in `deprecation::SUPERSEDED` — the route table —
     /// not here.
-    /// The schema index must be a declared dependency, not an inherited one.
+    /// The schema index must answer for the versions this VTA serves.
     ///
-    /// This workspace asks `trust-tasks-rs` for `default-features = false`. It
-    /// received every spec family regardless, because a transitive dependency
-    /// enables the default feature and cargo unions them — so the index that
-    /// `validate_payload` and `spec_policy_for` both read arrived by luck.
-    ///
-    /// Both of those fail *open* when a spec is unknown: `validate_payload`
-    /// dispatches unvalidated unless `require_payload_schema` is set, and
-    /// `spec_policy_for` returning `None` skips SPEC §7.2 entirely. So the day
-    /// that chain changed, this VTA would have quietly stopped checking
-    /// payloads and stopped enforcing proof-REQUIRED, with one `debug!` line
-    /// between it and nobody noticing.
-    ///
-    /// What this test does and does not prove, precisely: it fails when the
-    /// index is empty, which is the outcome that matters. It cannot fail when
-    /// the *declaration* is removed but the transitive path still supplies the
-    /// families — cargo unions features, so the two are indistinguishable from
-    /// inside the build. That is the right coverage anyway: an index populated
-    /// by either route is a working VTA, and this fires on the day neither
-    /// route supplies it.
+    /// `validate_payload` and `spec_policy_for` both read
+    /// `vti_specs::schema_index`, and both fail *open* when a spec is unknown:
+    /// `validate_payload` dispatches unvalidated unless
+    /// `require_payload_schema` is set, and `spec_policy_for` returning `None`
+    /// skips SPEC §7.2 entirely. The index knows exactly the versions the
+    /// `vti-specs-*` locks pin, so an empty or wrongly built index would turn
+    /// both off with one `debug!` line between it and nobody noticing. (It once
+    /// arrived by luck, from a transitive dependency's default features; it is
+    /// generated from committed locks now.) `trust_tasks::spec_pin_census` holds
+    /// every served URI; this holds the mechanism.
     #[test]
     fn the_spec_index_is_populated() {
         for uri in [
-            "https://trusttasks.org/spec/acl/grant/0.1",
-            "https://trusttasks.org/spec/auth/authenticate/0.1",
-            "https://trusttasks.org/spec/vault/list/0.3",
+            "https://trusttasks.org/spec/acl/grant/0.2",
+            "https://trusttasks.org/spec/auth/authenticate/0.3",
+            "https://trusttasks.org/spec/vault/list/0.4",
         ] {
             assert!(
-                trust_tasks_rs::schema_index::schema_for(uri).is_some(),
-                "no schema for `{uri}` — this build's `trust-tasks-rs` carries no spec \
-                 families, so payload validation and SPEC §7.2 enforcement are both off"
+                vti_specs::schema_index::schema_for(uri).is_some(),
+                "no schema for `{uri}` — the `vti-specs` index does not answer for it, \
+                 so payload validation and SPEC §7.2 enforcement are both off"
             );
             assert!(
-                trust_tasks_rs::schema_index::spec_policy_for(uri).is_some(),
+                vti_specs::schema_index::spec_policy_for(uri).is_some(),
                 "no spec policy for `{uri}` — §7.2's recipient/proof/issuedAt checks \
                  cannot fire for it"
             );
@@ -3905,15 +3908,7 @@ mod tests {
                 // Feature-gated arms drop out of `dispatched_uris()` when their
                 // cfg is off; the allowlist is where the parity harness tracks
                 // them, so it is the right second source here too.
-                || KNOWN_FEATURE_GATED_URIS.contains(&task.uri)
-                // An edge-transformed URI never reaches the dispatch table —
-                // it is rewritten to the canonical form first — but it is
-                // served, and its counter does fire: `dispatch_trust_task_core`
-                // reads the superseded row from the URI *as it arrived*,
-                // before the down-convert. So the premise of this test (a row
-                // whose counter can never move) does not apply to it. The
-                // successor half of this pair already accepts them.
-                || wire_v0_2::WIRE_V0_2_URIS.contains(&task.uri);
+                || KNOWN_FEATURE_GATED_URIS.contains(&task.uri);
             assert!(
                 served,
                 "`{}` is marked superseded but nothing dispatches it, so its counter \
@@ -3939,8 +3934,7 @@ mod tests {
         for task in crate::deprecation::superseded_tasks_table() {
             let served = dispatched.contains(&task.successor)
                 || KNOWN_FEATURE_GATED_URIS.contains(&task.successor)
-                || REST_ROUTED.contains(&task.successor)
-                || wire_v0_2::WIRE_V0_2_URIS.contains(&task.successor);
+                || REST_ROUTED.contains(&task.successor);
             assert!(
                 served,
                 "`{}` is advertised as the successor to `{}`, but this VTA does not \
@@ -3951,54 +3945,11 @@ mod tests {
         }
     }
 
-    /// The two tables must agree.
-    ///
-    /// `wire_v0_2::WIRE_SPECS_V0_2` is where a spec is declared dual-accepted;
-    /// `deprecation::SUPERSEDED_TASKS` is where the older form is declared on
-    /// its way out. They are separate because only the second carries a reason
-    /// and only the first carries the enum paths — but a newer form added
-    /// without the matching deprecation row is a task nothing is measuring,
-    /// which is the state #1045 exists to end. Adding one entry now requires
-    /// the other.
-    ///
-    /// Checked per hop, not just for 0.1: a spec accepting 0.1, 0.2 and 0.3
-    /// needs a row for each superseded version, or the middle one is retired
-    /// on no evidence at all.
-    #[test]
-    fn every_dual_accepted_spec_marks_its_older_forms_superseded() {
-        for spec in wire_v0_2::WIRE_SPECS_V0_2 {
-            // Oldest first: the canonical form, then each wire form except the
-            // newest, which is the one nothing supersedes yet.
-            let mut chain = vec![spec.uri_0_1];
-            chain.extend(spec.uris_wire.iter().rev());
-            let newest = chain.pop().expect("a spec has at least one wire form");
-
-            for superseded in chain {
-                let row = crate::deprecation::superseded_task(superseded).unwrap_or_else(|| {
-                    panic!(
-                        "`{superseded}` is superseded (this spec also accepts \
-                             `{newest}`) but it is not in \
-                             `deprecation::SUPERSEDED_TASKS`, so nothing counts the \
-                             callers still on it and it can never be retired on \
-                             evidence"
-                    )
-                });
-                assert!(
-                    spec.uris_wire.contains(&row.successor),
-                    "`{superseded}`'s deprecation row points at `{}`, which this \
-                     spec does not accept on the wire",
-                    row.successor
-                );
-            }
-        }
-    }
-
     /// Reverse parity harness (#854) — the opposite direction of
     /// [`dispatcher_handles_every_vta_sdk_uri`]. Every URI this service
-    /// *serves* — dispatched, REST-routed, feature-gated, or accepted via the
-    /// `wire_v0_2` edge transform — must resolve to a published spec in the
+    /// *serves* — dispatched, REST-routed or feature-gated — must resolve to a published spec in the
     /// Trust-Tasks registry, as vendored by the generated
-    /// `trust_tasks_rs::schema_index` this build validates payloads against.
+    /// `vti_specs::schema_index` this build validates payloads against.
     ///
     /// A URI with no published spec is a live wire contract with no schema,
     /// no registry page, no generated bindings, and no discovery entry. The
@@ -4016,12 +3967,11 @@ mod tests {
         let mut served: std::collections::BTreeSet<&str> = dispatched_uris().into_iter().collect();
         served.extend(REST_ROUTED);
         served.extend(KNOWN_FEATURE_GATED_URIS);
-        served.extend(wire_v0_2::WIRE_V0_2_URIS);
 
         let unspecced: Vec<&&str> = served
             .iter()
             .filter(|uri| {
-                trust_tasks_rs::schema_index::schema_for(uri).is_none()
+                vti_specs::schema_index::schema_for(uri).is_none()
                     && !UNSPECCED_DISPATCHED_URIS.contains(uri)
             })
             .collect();
@@ -4042,7 +3992,7 @@ mod tests {
 
         for uri in UNSPECCED_DISPATCHED_URIS {
             assert!(
-                trust_tasks_rs::schema_index::schema_for(uri).is_none(),
+                vti_specs::schema_index::schema_for(uri).is_none(),
                 "`{uri}` is now published in the registry — remove it from \
                  UNSPECCED_DISPATCHED_URIS so the debt shrinks monotonically"
             );
@@ -4054,21 +4004,28 @@ mod tests {
         }
     }
 
-    /// Passkey-VMs: the canonical `…/0.1` URIs are dispatched. The pre-spec
-    /// `…/1.0` aliases were removed (the browser plugin migrated to 0.1), so a
-    /// 1.0 document now falls through to `UnsupportedType`.
+    /// Passkey-VMs: the canonical URIs are dispatched — `enroll-submit` at 0.2
+    /// (`clientDataJSON`), the rest at 0.1. The pre-spec `…/1.0` aliases were
+    /// removed (the browser plugin migrated), so a 1.0 document now falls
+    /// through to `UnsupportedType`.
     #[test]
-    fn passkey_vms_0_1_dispatched() {
+    fn passkey_vms_current_versions_dispatched() {
         let dispatched = dispatched_uris();
         let tracked = |u: &&str| dispatched.contains(u) || KNOWN_FEATURE_GATED_URIS.contains(u);
-        for v0_1 in [
-            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
-            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
-            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
-            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
+        for (uri, version) in [
+            (
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
+                "/0.1",
+            ),
+            (
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2,
+                "/0.2",
+            ),
+            (vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1, "/0.1"),
+            (vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1, "/0.1"),
         ] {
-            assert!(tracked(&v0_1), "canonical 0.1 URI not dispatched: {v0_1}");
-            assert!(v0_1.ends_with("/0.1"), "version-label mismatch for {v0_1}");
+            assert!(tracked(&uri), "canonical URI not dispatched: {uri}");
+            assert!(uri.ends_with(version), "version-label mismatch for {uri}");
         }
     }
 
@@ -4212,6 +4169,36 @@ mod payload_validation_tests {
         );
     }
 
+    /// `scidAlsoKnownAs` is a 1.1 member: the 1.0 schema refuses it, so a 1.0
+    /// request can never reach the handler asking for the alias, and 1.1
+    /// accepts it (VTI-KEY-164, `vta/webvh/dids/update/1.1`).
+    #[tokio::test]
+    async fn the_scid_alias_is_a_1_1_member_only() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let payload = json!({
+            "did": "did:webvh:QmScid:example.com:acme",
+            "scidAlsoKnownAs": true
+        });
+        assert!(
+            super::validate_payload(&state, WEBVH_UPDATE, &doc(payload.clone()))
+                .await
+                .is_some(),
+            "1.0 is closed and has no scidAlsoKnownAs"
+        );
+        let mut d = doc(payload);
+        d.type_uri = vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1
+            .parse()
+            .expect("1.1 uri");
+        let reject =
+            super::validate_payload(&state, vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1, &d)
+                .await;
+        assert!(
+            reject.is_none(),
+            "1.1 accepts scidAlsoKnownAs, got: {:?}",
+            reject.map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        );
+    }
+
     /// The payload the CLI actually sends for a partial edit must validate.
     ///
     /// Built by **serialising the real wire type**, not by hand-writing the
@@ -4313,7 +4300,7 @@ mod payload_validation_tests {
         let Some(unspecced) = super::UNSPECCED_DISPATCHED_URIS
             .iter()
             .copied()
-            .find(|u| trust_tasks_rs::schema_index::schema_for(u).is_none())
+            .find(|u| vti_specs::schema_index::schema_for(u).is_none())
         else {
             // Every dispatched task is specced. That is the goal, and when it
             // arrives this test has nothing left to say — delete it, and the
@@ -4390,9 +4377,9 @@ mod superseded_task_dispatch_tests {
     }
 
     #[tokio::test]
-    #[allow(deprecated)] // sends a deprecated URI on purpose — that is the subject
+    // Against the test-only stand-in table (`deprecation::TEST_SUPERSEDED_TASKS`).
     async fn a_superseded_task_names_its_successor_in_the_response() {
-        let uri = vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1;
+        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1;
         let doc = dispatch(uri, json!({})).await;
 
         // Non-vacuity: a rejection document would also carry the notice (that
@@ -4408,7 +4395,7 @@ mod superseded_task_dispatch_tests {
         let notice = &doc[DEPRECATION_MEMBER];
         assert_eq!(
             notice["supersededBy"],
-            vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_2,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             "the response must name what to send instead, so a client can act \
              rather than guess; got document: {doc}"
         );
@@ -4419,13 +4406,13 @@ mod superseded_task_dispatch_tests {
     }
 
     #[tokio::test]
-    #[allow(deprecated)] // sends a deprecated URI on purpose — that is the subject
+    // Against the test-only stand-in table (`deprecation::TEST_SUPERSEDED_TASKS`).
     async fn a_rejected_superseded_task_still_names_its_successor() {
         // A client whose request was refused is the client most in need of the
         // successor: it is about to retry, and it can retry onto the right URI.
-        // `device/register/0.1` requires members an empty payload does not
-        // carry, so this is a schema rejection, not a handler failure.
-        let uri = vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1;
+        // `vta/did-templates/create/3.1` requires members an empty payload
+        // does not carry, so this is a schema rejection, not a handler failure.
+        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1;
         let doc = dispatch(uri, json!({})).await;
 
         assert_eq!(
@@ -4434,7 +4421,7 @@ mod superseded_task_dispatch_tests {
         );
         assert_eq!(
             doc[DEPRECATION_MEMBER]["supersededBy"],
-            vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_2,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1,
             "a rejection must carry the successor too: {doc}"
         );
     }
@@ -4457,8 +4444,7 @@ mod superseded_task_dispatch_tests {
         // schema is `additionalProperties: false` and the generated `Response`
         // types are `deny_unknown_fields`. Assert it on a real dispatch, not
         // just on the annotation helper.
-        #[allow(deprecated)]
-        let uri = vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1;
+        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1;
         let doc = dispatch(uri, json!({})).await;
 
         let payload = doc.get("payload").expect("a response carries a payload");
@@ -4646,37 +4632,62 @@ mod record_retention {
         serde_json::from_value(v).expect("a document")
     }
 
-    /// A far-future `expiresAt` is the producer's to choose, and
-    /// `record_expiry` returns it verbatim. The guard must not hold the record
-    /// past the last instant the document could come back.
+    /// The retention the accepted-id record applies when a caller bounds
+    /// nothing must not be shorter than the window this VTA accepts a document
+    /// in — a record dropped while its document is still executable is a replay
+    /// that executes twice.
     #[test]
-    fn a_far_future_expiry_does_not_pin_the_record_past_the_window() {
-        let now = now();
-        let far = (now + TimeDelta::days(3650)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let d = doc(now, Some(&far));
-
-        let uncapped = freshness_policy()
-            .record_expiry(&d, now)
-            .expect("a bounded policy always yields one");
+    fn the_records_fallback_retention_covers_the_acceptance_window() {
+        let policy = freshness_policy();
+        let window = policy.max_age.expect("the window is set") + policy.skew;
         assert!(
-            uncapped > now + TimeDelta::days(3000),
-            "precondition: the library takes the producer's `expiresAt` verbatim"
-        );
-
-        let capped = retain_until(&d, now).expect("a bounded policy always yields one");
-        let window = now + TimeDelta::minutes(10) + trust_tasks_rs::DEFAULT_SKEW;
-        assert_eq!(
-            capped, window,
-            "retention past the acceptance window is retention the guard can \
-             never draw on, and it evicts records that are still needed"
+            chrono::TimeDelta::seconds(vti_trust_task_server::FALLBACK_RETENTION_SECS) >= window,
+            "FALLBACK_RETENTION_SECS must cover freshness_policy()'s window"
         );
     }
 
-    /// The cap must never move retention *earlier* than the window: a replay
-    /// arriving while the document is still acceptable, with its record already
-    /// dropped, executes a second time.
+    /// **VTI-OPS-028 / VTI-OPS-029.** A far-future `expiresAt` is clamped to
+    /// the horizon: the document is acceptable for thirty days, so the record
+    /// is kept that long (plus the skew), and no longer.
     #[test]
-    fn a_near_expiry_is_left_alone() {
+    fn vti_ops_029_a_far_future_expiry_is_retained_to_the_horizon() {
+        let now = now();
+        let far = (now + TimeDelta::days(3650)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let d = doc(now, Some(&far));
+        assert_eq!(
+            retain_until(&d, now).expect("a bounded policy always yields one"),
+            now + vti_common::trust_task::acceptance::EXPIRY_HORIZON + trust_tasks_rs::DEFAULT_SKEW,
+        );
+    }
+
+    /// **VTI-OPS-029.** A stated expiry inside the horizon is the acceptance
+    /// end, whatever the maximum age: a document that stands for a day is
+    /// remembered for the day, plus the skew. A record kept for the ten-minute
+    /// window would let a replay an hour later execute twice.
+    #[test]
+    fn vti_ops_029_a_stated_expiry_is_retained_past_the_maximum_age() {
+        let now = now();
+        let day = now + TimeDelta::days(1);
+        let d = doc(
+            now,
+            Some(&day.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        );
+        assert!(
+            d.validate_freshness(now + TimeDelta::hours(1), &freshness_policy())
+                .is_ok(),
+            "precondition: an hour on, the document is still acceptable"
+        );
+        assert_eq!(
+            retain_until(&d, now).expect("a bounded policy always yields one"),
+            day + trust_tasks_rs::DEFAULT_SKEW,
+        );
+    }
+
+    /// A stated expiry shorter than the maximum age is the acceptance end too:
+    /// the document is refused after it, so the record may go then (plus the
+    /// skew), not at the end of the ten-minute window.
+    #[test]
+    fn a_near_expiry_ends_the_record() {
         let now = now();
         let soon = now + TimeDelta::minutes(2);
         let d = doc(
@@ -4685,14 +4696,13 @@ mod record_retention {
         );
         assert_eq!(
             retain_until(&d, now).expect("a bounded policy always yields one"),
-            soon,
-            "an expiry inside the window is the tighter bound and stands"
+            soon + trust_tasks_rs::DEFAULT_SKEW,
         );
     }
 
-    /// With no `expiresAt` the retention is the window itself, unchanged by
-    /// the cap: since trust-tasks-rs 0.33.2 `record_expiry` already includes
-    /// the skew allowance the document is accepted inside.
+    /// With no `expiresAt` the retention is the window itself: since
+    /// trust-tasks-rs 0.33.2 `record_expiry` already includes the skew
+    /// allowance the document is accepted inside.
     #[test]
     fn without_an_expiry_the_window_is_the_retention() {
         let now = now();
@@ -4766,10 +4776,10 @@ mod replay_guard {
              already happened"
         );
         // Answered with the first execution's result, not merely absorbed:
-        // that is what `record_response` buys, and what a §8.4 retry needs.
+        // that is what completing the claim with the response buys, and what a §8.4 retry needs.
         //
-        // Compared as documents, not as bytes. `ReplayGuard::record_response`
-        // takes an `Option<&Value>`, so a recorded response makes a round trip
+        // Compared as documents, not as bytes. `Claim::completed` takes an
+        // `Option<&Value>`, so a recorded response makes a round trip
         // through `serde_json::Value` and comes back with its object keys in
         // alphabetical order rather than the handler's insertion order. The
         // spine keeps `TrustTaskOutcome.body` as raw bytes precisely to avoid
@@ -4779,7 +4789,7 @@ mod replay_guard {
         // re-ordered document verifies identically.
         //
         // And compared **without the proof**, which is the part that made this
-        // test flaky: `record_response` is called inside
+        // test flaky: the claim is completed inside
         // `dispatch_trust_task_inner`, while `sign_response` runs in the
         // outer `dispatch_trust_task` — so the guard caches the *unsigned*
         // response and every delivery, first or duplicate, is signed afresh on
@@ -4940,25 +4950,25 @@ mod response_coverage {
     /// ignored — the rule both 1.1 specifications state.
     #[cfg(feature = "webvh")]
     #[tokio::test]
-    async fn services_1_1_refuses_a_drain_on_an_unmediated_transport() {
+    async fn services_refuses_a_drain_on_an_unmediated_transport() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
         for (uri, service, payload) in [
             (
-                t::TASK_SERVICES_UPDATE_1_1,
+                t::TASK_SERVICES_UPDATE_1_2,
                 "rest",
                 json!({ "service": "rest", "config": { "url": "https://vta.example.com" },
-                        "drainTtlSecs": 60 }),
+                        "drainTtlSeconds": 60 }),
             ),
             (
-                t::TASK_SERVICES_ROLLBACK_1_1,
+                t::TASK_SERVICES_ROLLBACK_1_2,
                 "rest",
-                json!({ "service": "rest", "drainTtlSecs": 60 }),
+                json!({ "service": "rest", "drainTtlSeconds": 60 }),
             ),
             (
-                t::TASK_SERVICES_ROLLBACK_1_1,
+                t::TASK_SERVICES_ROLLBACK_1_2,
                 "webauthn",
-                json!({ "service": "webauthn", "drainTtlSecs": 60 }),
+                json!({ "service": "webauthn", "drainTtlSeconds": 60 }),
             ),
         ] {
             let body = signed_body(uri, &vta_did, payload);
@@ -5119,7 +5129,7 @@ mod response_coverage {
         )
         .await;
 
-        ok(&state, t::TASK_MESSAGING_PING_0_1, json!({})).await;
+        ok(&state, t::TASK_MESSAGING_PING_0_2, json!({})).await;
         // `auth/revoke-session` has its own test with real session rows:
         // `revoke_all_ends_the_callers_sessions_and_all_false_is_malformed`.
     }
@@ -5158,7 +5168,7 @@ mod response_coverage {
         a_context(&state, "cov-update-did").await;
         ok(
             &state,
-            t::TASK_CONTEXTS_UPDATE_DID_1_0,
+            t::TASK_CONTEXTS_UPDATE_DID_1_1,
             json!({ "id": "cov-update-did", "did": "did:key:z6MkCovContextDid" }),
         )
         .await;
@@ -5166,14 +5176,14 @@ mod response_coverage {
 
     /// `update-did/1.1`: `did: null` clears the context's DID and the record
     /// comes back with `did` absent — not `null`, not `""` — and clearing again
-    /// succeeds. 1.0 is still served by the same handler.
+    /// succeeds.
     #[tokio::test]
     async fn contexts_update_did_1_1_clears() {
         let (state, _dir) = build_signing_test_app_state().await;
         a_context(&state, "cov-clear-did").await;
         ok(
             &state,
-            t::TASK_CONTEXTS_UPDATE_DID_1_0,
+            t::TASK_CONTEXTS_UPDATE_DID_1_1,
             json!({ "id": "cov-clear-did", "did": "did:key:z6MkCovContextDid" }),
         )
         .await;
@@ -5302,7 +5312,7 @@ mod response_coverage {
             }),
         )
         .await;
-        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_2, json!({})).await;
+        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_3, json!({})).await;
         ok(&state, t::TASK_DEVICE_SET_WAKE_0_2, json!({})).await;
     }
 
@@ -5346,7 +5356,7 @@ mod response_coverage {
         let now = crate::test_support::javascript_whole_second_now();
         let mut doc = json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": t::TASK_MESSAGING_PING_0_1,
+            "type": t::TASK_MESSAGING_PING_0_2,
             "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": now,
@@ -5391,7 +5401,7 @@ mod response_coverage {
         let v: Value = serde_json::from_slice(&outcome.body).expect("a response");
         assert_eq!(
             v["type"],
-            format!("{}#response", t::TASK_MESSAGING_PING_0_1),
+            format!("{}#response", t::TASK_MESSAGING_PING_0_2),
             "{v}"
         );
         assert_ne!(v["payload"]["code"], "proofInvalid", "{v}");
@@ -5422,7 +5432,7 @@ mod response_coverage {
         let now = crate::test_support::javascript_whole_second_now();
         let mut doc = json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1,
+            "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2,
             "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": now,
@@ -5491,7 +5501,7 @@ mod response_coverage {
         let now = crate::test_support::javascript_whole_second_now();
         let mut doc = json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            "type": vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
             "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": now,
@@ -5518,22 +5528,13 @@ mod response_coverage {
         assert_eq!(v["payload"]["code"], "proofInvalid", "{v}");
     }
 
-    /// The same family at its **canonical** 0.1 URIs, plus the two ends of the
-    /// lifecycle that have no 0.2 form.
-    ///
-    /// Not a duplicate of the 0.2 walk above. A 0.2 request is down-converted
-    /// to the 0.1 handler and its response up-converted back, so driving 0.2
-    /// never produces a `…/0.1#response` and never exercises the branch that
-    /// answers a caller who asked in the canonical form. Those are two
-    /// different paths through the spine, and only one of them was tested.
+    /// The whole device lifecycle, through to the wipe and the disable the
+    /// walk above stops short of.
     ///
     /// Its own `AppState` because `device/register` refuses a second binding
     /// for the same DID, and both walks register as the super-admin.
-    // Names the deprecated 0.1 URIs on purpose: they are what this test exists
-    // to cover, and they are still dispatched.
-    #[allow(deprecated)]
     #[tokio::test]
-    async fn device_lifecycle_canonical() {
+    async fn device_lifecycle_to_wipe_and_disable() {
         let (state, _dir) = build_signing_test_app_state().await;
         let claims = crate::test_support::super_admin_claims();
         crate::test_support::seed_acl_entry(
@@ -5546,11 +5547,8 @@ mod response_coverage {
 
         let registered = ok(
             &state,
-            t::TASK_DEVICE_REGISTER_0_1,
+            t::TASK_DEVICE_REGISTER_0_2,
             json!({
-                // `formFactor`, not `form-factor`: the 0.1 → 0.2 difference is
-                // in the enum *values*, never the member names, and the edge
-                // transform only ever rewrites values at declared enum paths.
                 "consumerKind": { "kind": "companion", "formFactor": "mobile" },
                 "displayName": "Coverage Phone (canonical)",
             }),
@@ -5564,17 +5562,17 @@ mod response_coverage {
             .expect("register returns the binding's deviceId")
             .to_string();
 
-        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_1, json!({})).await;
-        ok(&state, t::TASK_DEVICE_SET_WAKE_0_1, json!({})).await;
+        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_3, json!({})).await;
+        ok(&state, t::TASK_DEVICE_SET_WAKE_0_2, json!({})).await;
 
         // Wipe before disable: a wipe instruction is issued *to* a device, and
         // a disabled one has nothing to collect it. The operator's order.
         ok(
             &state,
-            t::TASK_DEVICE_WIPE_0_1,
+            t::TASK_DEVICE_WIPE_0_2,
             json!({
                 "deviceId": device_id,
-                "scope": "cache-and-keys",
+                "scope": "cacheAndKeys",
                 "reason": "coverage",
             }),
         )
@@ -5779,7 +5777,7 @@ mod response_coverage {
                 "keyType": "ed25519",
                 "derivationPath": "m/26'/9'/0'",
                 "document": {
-                    "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+                    "type": "https://trusttasks.org/spec/auth/authenticate/0.3",
                     "payload": { "challenge": "abc", "sessionId": "s1" },
                 },
             }),
@@ -5849,7 +5847,6 @@ mod response_coverage {
     /// The vault write and release paths.
     // Names the deprecated 0.1 URI on purpose: it is the canonical form this
     // covers, and it is still dispatched.
-    #[allow(deprecated)]
     #[tokio::test]
     async fn vault_entry_lifecycle() {
         let (state, _dir) = build_signing_test_app_state().await;
@@ -5860,11 +5857,11 @@ mod response_coverage {
         // forward. A create with none is refused, and correctly.
         ok(
             &state,
-            t::TASK_VAULT_UPSERT_0_1,
+            t::TASK_VAULT_UPSERT_0_4,
             json!({
                 "id": entry_id,
                 "contextId": "vault-ctx",
-                "targets": [{ "kind": "web-origin", "origin": "https://example.com" }],
+                "targets": [{ "kind": "webOrigin", "origin": "https://example.com" }],
                 "label": "Coverage entry (renamed)",
                 "secretKind": "password",
             }),
@@ -5954,9 +5951,13 @@ mod response_coverage {
 
         ok(
             &state,
-            t::TASK_ACL_GRANT_0_1,
+            t::TASK_ACL_GRANT_0_2,
             json!({
-                "entry": { "subject": successor, "role": "admin" },
+                "entry": {
+                    "subject": successor, "role": "admin",
+                    "act": {"scope": "all"}, "keys": {"scope": "all"},
+                    "capabilities": {"scope": "ceiling"},
+                },
                 "ext": { "org.openvtc": { "handoffRollover": true } },
             }),
         )
@@ -6093,17 +6094,17 @@ mod response_coverage {
     #[tokio::test]
     async fn services_read_paths() {
         let (state, _dir) = build_signing_test_app_state().await;
-        ok(&state, t::TASK_SERVICES_LIST_1_0, json!({})).await;
+        ok(&state, t::TASK_SERVICES_LIST_1_1, json!({})).await;
         ok(
             &state,
-            t::TASK_SERVICES_GET_1_0,
+            t::TASK_SERVICES_GET_1_1,
             json!({ "service": "rest" }),
         )
         .await;
         // Drain is DIDComm-only and empty here; an empty list is still a
         // response shape, and an empty one is the shape most likely to be got
         // wrong (`[]` against absent).
-        ok(&state, t::TASK_SERVICES_DRAIN_LIST_1_0, json!({})).await;
+        ok(&state, t::TASK_SERVICES_DRAIN_LIST_1_1, json!({})).await;
     }
 
     /// The webvh read paths that need no hosting server.
@@ -6176,19 +6177,19 @@ mod response_coverage {
 
         ok(
             &state,
-            t::TASK_DID_TEMPLATES_CREATE_2_0,
+            t::TASK_DID_TEMPLATES_CREATE_3_1,
             json!({ "contextId": "cov-templates", "template": template }),
         )
         .await;
         ok(
             &state,
-            t::TASK_DID_TEMPLATES_LIST_2_0,
+            t::TASK_DID_TEMPLATES_LIST_3_1,
             json!({ "contextId": "cov-templates" }),
         )
         .await;
         ok(
             &state,
-            t::TASK_DID_TEMPLATES_GET_2_0,
+            t::TASK_DID_TEMPLATES_GET_3_1,
             json!({ "contextId": "cov-templates", "name": "cov-template" }),
         )
         .await;
@@ -6197,7 +6198,7 @@ mod response_coverage {
         updated["description"] = json!("renamed");
         ok(
             &state,
-            t::TASK_DID_TEMPLATES_UPDATE_2_0,
+            t::TASK_DID_TEMPLATES_UPDATE_3_1,
             json!({ "contextId": "cov-templates", "name": "cov-template", "template": updated }),
         )
         .await;
@@ -6231,7 +6232,7 @@ mod response_coverage {
 
         let created = ok(
             &state,
-            t::TASK_POLICY_UPSERT_0_2,
+            t::TASK_POLICY_UPSERT_0_3,
             json!({
                 "name": "cov-policy",
                 // The smallest Rego module that loads: a package and one rule.
@@ -6245,7 +6246,7 @@ mod response_coverage {
             .unwrap_or_else(|| panic!("upsert must name the policy it stored: {created}"))
             .to_owned();
 
-        ok(&state, t::TASK_POLICY_LIST_0_2, json!({})).await;
+        ok(&state, t::TASK_POLICY_LIST_0_3, json!({})).await;
         ok(&state, t::TASK_POLICY_GET_0_1, json!({ "id": id })).await;
         ok(
             &state,
@@ -6307,7 +6308,7 @@ mod response_coverage {
         // refusal the preview above exists to warn about.
         ok(
             &state,
-            t::TASK_CONTEXTS_DELETE_1_0,
+            t::TASK_CONTEXTS_DELETE_1_1,
             json!({ "id": "cov-contexts", "force": true }),
         )
         .await;
@@ -6338,7 +6339,7 @@ mod response_coverage {
 
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
         let body = signed_body(
-            t::TASK_CONTEXTS_DELETE_1_0,
+            t::TASK_CONTEXTS_DELETE_1_1,
             &vta_did,
             json!({ "id": "cov-notempty" }),
         );
@@ -6366,6 +6367,225 @@ mod response_coverage {
         )
         .await;
         assert_eq!(still["id"], "cov-notempty/sub");
+    }
+
+    /// `vta/contexts/delete:notFound` reaches the wire for a context that does
+    /// not exist, typed rather than as a bare `taskFailed`.
+    #[tokio::test]
+    async fn a_delete_of_an_unknown_context_answers_not_found_on_the_wire() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = signed_body(
+            t::TASK_CONTEXTS_DELETE_1_1,
+            &vta_did,
+            json!({ "id": "cov-never-created", "force": true }),
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["payload"]["code"], "vta/contexts/delete:notFound",
+            "the specification names this code for this refusal: {doc}"
+        );
+    }
+
+    /// Plant a `did:webvh` record in `context` published on `server_id`, and
+    /// give the state a resolver so the deletion takes the full webvh path.
+    #[cfg(feature = "webvh")]
+    async fn a_hosted_did(
+        state: &mut crate::server::AppState,
+        context: &str,
+        server_id: &str,
+    ) -> String {
+        if state.did_resolver.is_none() {
+            state.did_resolver = Some(
+                affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+                    affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default()
+                        .build(),
+                )
+                .await
+                .expect("resolver"),
+            );
+        }
+        let did = format!(
+            "did:webvh:QmGone:host.example:{}",
+            context.replace('/', ":")
+        );
+        let now = chrono::Utc::now();
+        crate::webvh_store::store_did(
+            &state.webvh_ks,
+            &vta_sdk::webvh::WebvhDidRecord {
+                did: did.clone(),
+                server_id: server_id.to_string(),
+                mnemonic: format!("{context}-slot"),
+                scid: "QmGone".to_string(),
+                context_id: context.to_string(),
+                portable: false,
+                log_entry_count: 1,
+                pre_rotation_count: 0,
+                next_fragment_id: 2,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .await
+        .expect("plant the DID record");
+        did
+    }
+
+    /// Dispatch as a super-admin and return the whole response document.
+    #[cfg(feature = "webvh")]
+    async fn answer(state: &crate::server::AppState, uri: &str, payload: Value) -> Value {
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let outcome = super::dispatch_trust_task_core(
+            state,
+            &crate::test_support::super_admin_claims(),
+            &signed_body(uri, &vta_did, payload),
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        serde_json::from_slice(&outcome.body).expect("a response document")
+    }
+
+    /// The deletion that used to be stuck: a context whose DID's hosting
+    /// server is no longer registered. 1.1 refuses with `hostCleanupFailed`, naming the DID and deleting
+    /// nothing, so the operator can wait or abandon.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn a_gone_host_refuses_1_1_with_host_cleanup_failed_and_deletes_nothing() {
+        let (mut state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "gone-host").await;
+        let did = a_hosted_did(&mut state, "gone-host", "decommissioned").await;
+
+        let doc = answer(
+            &state,
+            t::TASK_CONTEXTS_DELETE_1_1,
+            json!({ "id": "gone-host", "force": true }),
+        )
+        .await;
+        assert_eq!(
+            doc["payload"]["code"], "vta/contexts/delete:hostCleanupFailed",
+            "{doc}"
+        );
+        let failures = &doc["payload"]["details"]["hostCleanupFailures"];
+        assert_eq!(failures[0]["did"], did, "{doc}");
+        assert_eq!(failures[0]["server"], "decommissioned", "{doc}");
+        assert!(
+            failures[0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("no longer registered")),
+            "{doc}"
+        );
+
+        // Nothing local went: the context and the DID record that could still
+        // remove the host copy are both there for a retry.
+        ok(
+            &state,
+            t::TASK_CONTEXTS_GET_1_0,
+            json!({ "id": "gone-host" }),
+        )
+        .await;
+        assert!(
+            crate::webvh_store::get_did(&state.webvh_ks, &did)
+                .await
+                .expect("read")
+                .is_some(),
+            "the DID record must survive a refusal"
+        );
+    }
+
+    /// `abandonHostCopies` completes the deletion the refusal above stopped,
+    /// and names the abandoned copy in `daemonCleanupErrors`.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn abandon_host_copies_completes_the_deletion_and_reports_the_orphan() {
+        let (mut state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "abandon").await;
+        let did = a_hosted_did(&mut state, "abandon", "decommissioned").await;
+
+        let payload = ok(
+            &state,
+            t::TASK_CONTEXTS_DELETE_1_1,
+            json!({ "id": "abandon", "force": true, "abandonHostCopies": true }),
+        )
+        .await;
+        assert_eq!(payload["deleted"], true, "{payload}");
+        let orphans = payload["daemonCleanupErrors"]
+            .as_array()
+            .expect("the abandoned copy is reported");
+        assert_eq!(orphans.len(), 1, "{payload}");
+        assert!(
+            orphans[0].as_str().is_some_and(|o| o.starts_with(&did)),
+            "{payload}"
+        );
+
+        let gone = answer(&state, t::TASK_CONTEXTS_GET_1_0, json!({ "id": "abandon" })).await;
+        assert_eq!(
+            gone["payload"]["code"], "vta/contexts/get:notFound",
+            "{gone}"
+        );
+        assert!(
+            crate::webvh_store::get_did(&state.webvh_ks, &did)
+                .await
+                .expect("read")
+                .is_none(),
+            "the DID record goes with the context"
+        );
+    }
+
+    /// A registered host that cannot be reached is unconfirmed too, and is
+    /// found within the settle budget rather than one reply timeout per DID.
+    /// The server's DID is a `did:key` with no services, so the VTA has no
+    /// transport to it — the same answer an offline host gives, without a
+    /// network.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn an_unreachable_registered_host_is_unconfirmed_and_answered_promptly() {
+        let (mut state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "unreachable").await;
+        let now = chrono::Utc::now();
+        crate::webvh_store::store_server(
+            &state.webvh_ks,
+            &vta_sdk::webvh::WebvhServerRecord {
+                id: "dark".into(),
+                did: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into(),
+                label: None,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .await
+        .expect("register the server");
+        let did = a_hosted_did(&mut state, "unreachable", "dark").await;
+
+        let started = std::time::Instant::now();
+        let doc = answer(
+            &state,
+            t::TASK_CONTEXTS_DELETE_1_1,
+            json!({ "id": "unreachable", "force": true }),
+        )
+        .await;
+        assert!(
+            started.elapsed() < crate::operations::contexts::HOST_SETTLE_BUDGET,
+            "a host with no transport must not wait out the budget"
+        );
+        assert_eq!(
+            doc["payload"]["code"], "vta/contexts/delete:hostCleanupFailed",
+            "{doc}"
+        );
+        assert_eq!(
+            doc["payload"]["details"]["hostCleanupFailures"][0]["did"],
+            did
+        );
+        assert_eq!(
+            doc["payload"]["details"]["hostCleanupFailures"][0]["server"],
+            "dark"
+        );
     }
 
     /// Every id-taking task in the contexts family answers its own
@@ -6398,11 +6618,6 @@ mod response_coverage {
                 json!({ "id": "PLACEHOLDER" }),
             ),
             (
-                t::TASK_CONTEXTS_UPDATE_DID_1_0,
-                "vta/contexts/update-did",
-                json!({ "id": "PLACEHOLDER", "did": "did:key:z6MkTest" }),
-            ),
-            (
                 t::TASK_CONTEXTS_UPDATE_DID_1_1,
                 "vta/contexts/update-did",
                 json!({ "id": "PLACEHOLDER", "did": null }),
@@ -6413,7 +6628,7 @@ mod response_coverage {
                 json!({ "id": "PLACEHOLDER" }),
             ),
             (
-                t::TASK_CONTEXTS_DELETE_1_0,
+                t::TASK_CONTEXTS_DELETE_1_1,
                 "vta/contexts/delete",
                 json!({ "id": "PLACEHOLDER", "force": true }),
             ),
@@ -6457,17 +6672,17 @@ mod response_coverage {
 
         let mut put = base.clone();
         put["value"] = json!({ "hello": "world" });
-        ok(&state, t::TASK_VTA_APP_STATE_PUT_1_0, put).await;
+        ok(&state, t::TASK_VTA_APP_STATE_PUT_1_1, put).await;
         ok(&state, t::TASK_VTA_APP_STATE_GET_1_0, base.clone()).await;
         ok(
             &state,
-            t::TASK_VTA_APP_STATE_LIST_1_0,
+            t::TASK_VTA_APP_STATE_LIST_1_1,
             json!({ "contextId": "cov-appstate", "includeValues": true }),
         )
         .await;
         ok(
             &state,
-            t::TASK_VTA_APP_STATE_PUT_MANY_1_0,
+            t::TASK_VTA_APP_STATE_PUT_MANY_1_1,
             json!({
                 "contextId": "cov-appstate",
                 "namespace": "cov",
@@ -6729,7 +6944,7 @@ mod didcomm_sender_binding {
         let (state, _dir, victim, _attacker, _vta_did) = setup().await;
         let body = serde_json::to_vec(&serde_json::json!({
             "id": "urn:uuid:stray",
-            "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+            "type": "https://trusttasks.org/spec/messaging/message/status/0.2#response",
             "threadId": "urn:uuid:long-gone",
             "payload": {},
         }))

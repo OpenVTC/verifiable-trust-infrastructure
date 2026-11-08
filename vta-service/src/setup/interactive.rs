@@ -1276,9 +1276,13 @@ async fn gather_inputs(
             true,
             Some(&|s: &str| {
                 for entry in s.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                    entry
+                    let cidr = entry
                         .parse::<ipnetwork::IpNetwork>()
                         .map_err(|e| format!("'{entry}' is not a valid CIDR: {e}"))?;
+                    // The config loader applies the same rule; catch it here
+                    // rather than write a config the VTA will not start with.
+                    vti_common::rate_limit::check_trusted_proxy_cidrs(&[cidr])
+                        .map_err(|e| e.to_string())?;
                 }
                 Ok(())
             }),

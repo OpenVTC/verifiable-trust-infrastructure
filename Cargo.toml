@@ -26,11 +26,27 @@ members = [
   "vta-service",
   "vta-enclave",
   "vtc-client",
+  # The community's MCP bridge: `publish = false`, like `vta-mcp`.
+  "vtc-mcp",
   "vtc-service",
   "vti-common",
+  # What the MCP bridges share (guard, recorder): `publish = false`.
+  "vti-mcp-common",
+  # The generated Trust Task types (trust-tasks-build), one crate per spec
+  # family group, and the facade that merges their Type URI indexes. See the
+  # Trust Task wire types section of CLAUDE.md.
+  "vti-specs",
+  "vti-specs-core",
+  "vti-specs-rooms",
+  "vti-specs-vta",
+  "vti-specs-vtc",
+  "vti-specs-vtn",
   "vti-rooms",
   "vti-rooms-dtg",
   "vti-rooms-wasm",
+  "vti-vtn",
+  "vti-trust-task-server",
+  "vti-oob-server",
   "vti-secrets",
   "vti-webauthn",
   # The witness host service (docs/05-design-notes/witness-host-service.md):
@@ -75,10 +91,21 @@ default-members = [
   "vta-persona",
   "vta-enclave",
   "vtc-client",
+  "vtc-mcp",
   "vtc-service",
   "vti-common",
+  "vti-mcp-common",
   "vti-secrets",
+  "vti-specs",
+  "vti-specs-core",
+  "vti-specs-rooms",
+  "vti-specs-vta",
+  "vti-specs-vtc",
+  "vti-specs-vtn",
   "vti-webauthn",
+  "vti-vtn",
+  "vti-trust-task-server",
+  "vti-oob-server",
 ]
 exclude = [
   "deploy/nitro/enclave-proxy",
@@ -130,7 +157,12 @@ uniffi = "0.32"
 # rely on.
 # 0.33 moves in lockstep with `trust-tasks-rs` 0.35 and `affinidi-messaging-sdk`
 # 0.41 (affinidi-tdk-rs #975), and with mediator 0.46.
-affinidi-tdk = "0.33"
+# 0.35 goes with `affinidi-messaging-sdk` 0.43 and mediator 0.47.
+# 0.36 goes with `trust-tasks-rs` 0.36, `affinidi-messaging-sdk` 0.44 and
+# mediator 0.48 (affinidi-tdk-rs #978, affinidi-messaging-mediator #46).
+# 0.37 goes with `trust-tasks-rs` 0.37, `affinidi-messaging-sdk` 0.45 and
+# mediator 0.50 (affinidi-tdk-rs #983, affinidi-messaging-mediator #55).
+affinidi-tdk = "0.37"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -279,7 +311,14 @@ affinidi-messaging-core = "0.1"
 # (affinidi-tdk-rs #965, VTI-KEY-163).
 # 0.41 is the `trust-tasks-rs` 0.35 release (affinidi-tdk-rs #975), the one
 # mediator 0.46 is built on.
-affinidi-messaging-sdk = { version = "0.41", default-features = false }
+# 0.43 speaks the `messaging/*` 0.2 tasks (ping, account/*, audit/list,
+# message/status), falling back to 0.1 for a mediator before 0.47
+# (affinidi-tdk-rs #977), and takes and returns its own generated types:
+# `affinidi_tdk::messaging::tasks`, not `trust_tasks_rs::specs::messaging`.
+# Mediator 0.47 serves 0.2 (affinidi-messaging-mediator #40).
+# 0.44 is on `trust-tasks-rs` 0.36 (affinidi-tdk-rs #978).
+# 0.45 is on `trust-tasks-rs` 0.37 (affinidi-tdk-rs #983).
+affinidi-messaging-sdk = { version = "0.45", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
@@ -304,7 +343,7 @@ dtg-credentials = "0.13"
 # `idna` is kept: it is the `hostname`/`idn-hostname` format check, pure
 # computation and no I/O. `tls-aws-lc-rs` goes with `resolve-http` — it exists
 # only to fetch over HTTPS.
-jsonschema = { version = "0.59", default-features = false, features = ["idna"] }
+jsonschema = { version = "0.60", default-features = false, features = ["idna"] }
 
 # Async runtime. 1.49 stabilised `runtime::Id`, which
 # `vta_sdk::resolver::shared_did_resolver` keys on.
@@ -438,7 +477,7 @@ aws-lc-rs = "1.16"
 # **Remove this the moment `aws-config` ships a release on json 0.64.** The
 # bound is `< 1.7` rather than `= 1.6.3` so patch releases in the working line
 # are still picked up; it is an exclusion of the break, not a freeze.
-aws-smithy-types = ">=1.6.1, <1.9"
+aws-smithy-types = ">=1.6.1, <1.10"
 
 # Trust-Tasks framework — wire-envelope for the trust-task migration
 # initiative (docs/05-design-notes/trust-task-uri-registry.md). On
@@ -455,14 +494,19 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # than fail quietly — but it would fail as "you are serving unspecced URIs",
 # which reads as an implementation fault instead of a stale dependency. The
 # pin makes the resolver say the true thing instead.
-# `all-specs` is declared, not inherited. This workspace asked for
-# `default-features = false` and got every spec family anyway, because
-# `affinidi-messaging-sdk` -> `affinidi-tdk` happens to enable the default
-# feature and cargo unions them. That is the entire schema index arriving by
-# luck: if any crate in that chain ever set `default-features = false`,
-# `schema_index::schema_for` would answer `None` for every URI, `validate_payload`
-# would stop validating with one `debug!` line to say so, and `spec_policy_for`
-# would stop enforcing SPEC §7.2 the same way. Both fail *open*.
+# SPEC VERSIONS ARE PINNED IN THE `vti-specs-*` CRATES, not here. This entry is
+# the runtime only (`validate`, no prebuilt specification module: they are
+# deprecated, and `all-specs` was ~70 MB of generated Rust peaking at 10+ GB per
+# rustc). The Trust Task types and the Type URI index come from `vti-specs`
+# (`vta_sdk::specs`), generated by `trust-tasks-build` from the versions each
+# `vti-specs-*/trust-tasks.lock` pins — CLAUDE.md, "Pinning a task version".
+# Never turn a family feature back on here or in a crate: a prebuilt module and
+# a generated one are different types, and the index would not know the
+# prebuilt one's version.
+#
+# Until then the schemas the spine validates against came from this crate, so
+# the floors below were floors on schema content; they are history now — the
+# vendored bundles carry the schemas — kept for the incidents they record.
 # 0.18.3 is a FLOOR, not a preference: it is the first release whose
 # `provision/integration/0.3` schema carries `adminScope` and the `context` /
 # `adminScope` summary members. The dispatch spine validates outgoing responses
@@ -563,7 +607,7 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `handle_vetter_resend_v0_2`).
 #
 # 0.24.9 raises it again: it is the first release carrying
-# `vta/metrics/show/0.1`, `vta/attestation/mnemonic-status/0.1` and
+# `vta/metrics/show/0.1`, `vta/attestation/mnemonic-status/0.2` and
 # `vtc/vetting/hidden/publish/0.1` — the last three REST-exception routes,
 # retired in `vta-service/src/routes/vta.rs` (`GET /metrics`),
 # `vta-service/src/routes/attestation.rs` (`GET /attestation/mnemonic`) and
@@ -717,12 +761,32 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # 0.35.3: the lowerCamelCase registry/* versions with record validity windows
 # (trust-tasks-tf #925), and transports that no longer switch every spec family
 # on (#939).
-trust-tasks-rs = { version = "0.35.3", default-features = false, features = [
+# 0.36.1: vta/contexts/delete/1.1 (trust-tasks-tf #967). 0.36 marks every
+# prebuilt spec module deprecated in favour of `trust-tasks-build`.
+# 0.36.2: rooms/owner/group/remove/0.4 (trust-tasks-tf #975) and
+# vtc/install/claim/passkey/{start,finish}/0.1 (#976, #978), and `type_index`,
+# which the generated indexes' entries are.
+# 0.37: a stated `expiresAt` replaces the maximum age, up to an expiry horizon
+# (trust-tasks-tf #1021; VTI-OPS-024, VTI-OPS-028). Breaking in behaviour as
+# well as API: a consumer must keep its replay record to `record_expiry`, not
+# `issuedAt + max_age` (`vti_common::trust_task::acceptance::retain_until`).
+# 0.37.2: trust-task-discovery/0.4 (trust-tasks-tf #1030), whose acceptance
+# window carries the expiry horizon every VTI responder advertises
+# (`vti_common::trust_task::discovery::respond_v0_4`). 0.3 is superseded there,
+# and still answered.
+# Only `validate` here, and no crate adds a spec family (see "SPEC VERSIONS ARE
+# PINNED IN THE `vti-specs-*` CRATES" above).
+trust-tasks-rs = { version = "0.37.2", default-features = false, features = [
   "validate",
-  "all-specs",
 ] }
-trust-tasks-capability-client = "0.35"
-trust-tasks-https = { version = "0.35", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-capability-client = "0.37"
+# The build-time generator behind the `vti-specs-*` crates: each one's build.rs
+# turns the versions its `trust-tasks.lock` pins into Rust types and a Type URI
+# index (`.index(true)`). 0.1.3 is the floor: the first with the index.
+# trust-tasks-rs 0.36.2 above is the runtime that index's entries need
+# (`trust_tasks_rs::type_index`).
+trust-tasks-build = "0.1.3"
+trust-tasks-https = { version = "0.37", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -733,7 +797,7 @@ trust-tasks-https = { version = "0.35", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.35", default-features = false }
+trust-tasks-didcomm = { version = "0.37", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -752,9 +816,9 @@ trust-tasks-didcomm = { version = "0.35", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.35", default-features = false }
+trust-tasks-tsp = { version = "0.37", default-features = false }
 # 0.33.2: a did:scid key named with its `?src=` locator verifies (trust-tasks-tf #863).
-trust-tasks-proof = { version = "0.35.3", default-features = false, features = ["affinidi"] }
+trust-tasks-proof = { version = "0.37.0", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
@@ -962,13 +1026,6 @@ panic = "abort"
 # but visible in review.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
-# trust-tasks-rs 0.35 marks every superseded spec version deprecated
-# (trust-tasks-tf #921), and VTI still names many of them while it moves to the
-# current versions. A superseded version is withdrawn about 90 days after it is
-# superseded, so the move has to finish first; remove this allow when it has,
-# and the compiler lists whatever is left. It also silences unrelated
-# deprecations meanwhile, so keep the window short.
-deprecated = "allow"
 
 [workspace.lints.clippy]
 # Style/escape-hatch fences. Crates that want the broader clippy::all
@@ -1014,4 +1071,3 @@ type_complexity = "allow"
 # ever reports one, the fix is the same choice we faced here: patch it (fast,
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
-

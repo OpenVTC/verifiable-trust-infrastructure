@@ -73,8 +73,28 @@ pub struct SoftEd25519Authenticator {
 }
 
 struct CredentialEntry {
-    signing_key: SigningKey,
+    signing_key: CredentialKey,
     sign_count: u32,
+}
+
+/// The key a soft credential signs with.
+enum CredentialKey {
+    Ed25519(SigningKey),
+    P256(p256::ecdsa::SigningKey),
+}
+
+impl CredentialKey {
+    /// A WebAuthn assertion signature over `msg`: raw Ed25519, or DER ECDSA.
+    fn sign(&self, msg: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Ed25519(k) => k.sign(msg).to_bytes().to_vec(),
+            Self::P256(k) => {
+                use p256::ecdsa::signature::Signer as _;
+                let sig: p256::ecdsa::Signature = k.sign(msg);
+                sig.to_der().as_bytes().to_vec()
+            }
+        }
+    }
 }
 
 impl Default for SoftEd25519Authenticator {
@@ -150,7 +170,7 @@ impl SoftEd25519Authenticator {
         self.credentials.insert(
             cred_id.clone(),
             CredentialEntry {
-                signing_key,
+                signing_key: CredentialKey::Ed25519(signing_key),
                 sign_count: 0,
             },
         );
@@ -235,7 +255,7 @@ impl SoftEd25519Authenticator {
         let mut signed = Vec::with_capacity(auth_data.len() + client_data_hash.len());
         signed.extend_from_slice(&auth_data);
         signed.extend_from_slice(&client_data_hash);
-        let signature = entry.signing_key.sign(&signed).to_bytes();
+        let signature = entry.signing_key.sign(&signed);
 
         PublicKeyCredential {
             id: B64.encode(&cred_id),
@@ -243,13 +263,188 @@ impl SoftEd25519Authenticator {
             response: AuthenticatorAssertionResponseRaw {
                 authenticator_data: Base64UrlSafeData::from(auth_data),
                 client_data_json: Base64UrlSafeData::from(client_data_json),
-                signature: Base64UrlSafeData::from(signature.to_vec()),
+                signature: Base64UrlSafeData::from(signature),
                 user_handle: None,
             },
             type_: "public-key".to_string(),
             extensions: Default::default(),
         }
     }
+
+    /// Register an **ES256 / P-256** credential — what most platform
+    /// authenticators create. Returns the credential and the key's SEC1
+    /// uncompressed point (65 bytes).
+    pub fn register_p256(
+        &mut self,
+        ccr: &CreationChallengeResponse,
+        origin: &str,
+    ) -> (RegisterPublicKeyCredential, Vec<u8>) {
+        assert!(
+            ccr.public_key
+                .pub_key_cred_params
+                .iter()
+                .any(|p| p.alg == COSE_ALG_ES256),
+            "the challenge does not offer ES256"
+        );
+        let mut seed_input = ccr.public_key.challenge.as_ref().to_vec();
+        seed_input.extend_from_slice(b"soft-p256-seed/v1");
+        let seed: [u8; 32] = Sha256::digest(&seed_input).into();
+        let signing_key = p256::ecdsa::SigningKey::from_slice(&seed).expect("a valid scalar");
+        let point = {
+            use p256::elliptic_curve::sec1::ToSec1Point as _;
+            p256::PublicKey::from(signing_key.verifying_key())
+                .to_sec1_point(false)
+                .as_bytes()
+                .to_vec()
+        };
+        let cred_id = Sha256::digest([&point[..], b"cred-id/v1"].concat())[..16].to_vec();
+        let cose = cose_ec2_p256(&point[1..33], &point[33..65]);
+        let credential = self.attest(ccr, origin, &cred_id, &cose);
+        self.credentials.insert(
+            cred_id,
+            CredentialEntry {
+                signing_key: CredentialKey::P256(signing_key),
+                sign_count: 0,
+            },
+        );
+        (credential, point)
+    }
+
+    /// Register an **RS256** credential, which no `did:key` the passkey
+    /// install defines can name. The authenticator keeps no key for it.
+    pub fn register_rs256(
+        &mut self,
+        ccr: &CreationChallengeResponse,
+        origin: &str,
+    ) -> RegisterPublicKeyCredential {
+        use ciborium::Value;
+        let map = Value::Map(vec![
+            (Value::Integer(1.into()), Value::Integer(3.into())),
+            (Value::Integer(3.into()), Value::Integer((-257).into())),
+            (Value::Integer((-1).into()), Value::Bytes(vec![0xC5; 256])),
+            (
+                Value::Integer((-2).into()),
+                Value::Bytes(vec![0x01, 0x00, 0x01]),
+            ),
+        ]);
+        let mut cose = Vec::new();
+        ciborium::into_writer(&map, &mut cose).expect("CBOR encode");
+        let cred_id = Sha256::digest(b"rs256-cred-id")[..16].to_vec();
+        self.attest(ccr, origin, &cred_id, &cose)
+    }
+
+    fn attest(
+        &self,
+        ccr: &CreationChallengeResponse,
+        origin: &str,
+        cred_id: &[u8],
+        cose_public_key: &[u8],
+    ) -> RegisterPublicKeyCredential {
+        let client_data_json =
+            client_data_json("webauthn.create", ccr.public_key.challenge.as_ref(), origin);
+        let auth_data = authenticator_data(
+            &ccr.public_key.rp.id,
+            FLAG_UP | FLAG_UV | FLAG_AT,
+            0,
+            Some(AttestedCredentialData {
+                aaguid: &HARNESS_AAGUID,
+                credential_id: cred_id,
+                cose_public_key,
+            }),
+        );
+        RegisterPublicKeyCredential {
+            id: B64.encode(cred_id),
+            raw_id: Base64UrlSafeData::from(cred_id.to_vec()),
+            response: AuthenticatorAttestationResponseRaw {
+                attestation_object: Base64UrlSafeData::from(attestation_object_none(&auth_data)),
+                client_data_json: Base64UrlSafeData::from(client_data_json),
+                transports: None,
+            },
+            type_: "public-key".to_string(),
+            extensions: Default::default(),
+        }
+    }
+
+    /// The possession assertion `vtc/install/claim/passkey/finish/0.1`
+    /// requires: one `navigator.credentials.get()` by `credential` (just
+    /// registered here) over the `assertionOptions` start answered, as the
+    /// install page sends it.
+    pub fn install_assertion(
+        &mut self,
+        start_payload: &serde_json::Value,
+        credential: &RegisterPublicKeyCredential,
+        origin: &str,
+    ) -> serde_json::Value {
+        let options = &start_payload["assertionOptions"]["publicKey"];
+        let challenge = B64
+            .decode(options["challenge"].as_str().expect("assertion challenge"))
+            .expect("base64url challenge");
+        let rp_id = options["rpId"].as_str().expect("rpId");
+        let assertion = self.assert_raw(
+            credential.raw_id.as_ref(),
+            rp_id,
+            &challenge,
+            origin,
+            FLAG_UP | FLAG_UV,
+        );
+        serde_json::to_value(assertion).expect("assertion serialises")
+    }
+
+    /// A signed assertion by `cred_id` over `challenge` for `rp_id`.
+    pub fn assert_raw(
+        &mut self,
+        cred_id: &[u8],
+        rp_id: &str,
+        challenge: &[u8],
+        origin: &str,
+        flags: u8,
+    ) -> PublicKeyCredential {
+        let entry = self
+            .credentials
+            .get_mut(cred_id)
+            .expect("a credential this authenticator holds");
+        entry.sign_count = entry.sign_count.wrapping_add(1);
+        let client_data_json = client_data_json("webauthn.get", challenge, origin);
+        let client_data_hash = Sha256::digest(&client_data_json);
+        let auth_data = authenticator_data(rp_id, flags, entry.sign_count, None);
+        let signature = entry
+            .signing_key
+            .sign(&[&auth_data[..], &client_data_hash[..]].concat());
+        PublicKeyCredential {
+            id: B64.encode(cred_id),
+            raw_id: Base64UrlSafeData::from(cred_id.to_vec()),
+            response: AuthenticatorAssertionResponseRaw {
+                authenticator_data: Base64UrlSafeData::from(auth_data),
+                client_data_json: Base64UrlSafeData::from(client_data_json),
+                signature: Base64UrlSafeData::from(signature),
+                user_handle: None,
+            },
+            type_: "public-key".to_string(),
+            extensions: Default::default(),
+        }
+    }
+}
+
+/// Flags for [`SoftEd25519Authenticator::assert_raw`]: user present and verified.
+#[allow(dead_code)]
+pub const FLAGS_UP_UV: u8 = FLAG_UP | FLAG_UV;
+
+/// COSE algorithm identifier for ES256.
+const COSE_ALG_ES256: i64 = -7;
+
+/// Encode a COSE EC2 P-256 public key (RFC 8152 §13.1.1).
+fn cose_ec2_p256(x: &[u8], y: &[u8]) -> Vec<u8> {
+    use ciborium::Value;
+    let map = Value::Map(vec![
+        (Value::Integer(1.into()), Value::Integer(2.into())),
+        (Value::Integer(3.into()), Value::Integer((-7).into())),
+        (Value::Integer((-1).into()), Value::Integer(1.into())),
+        (Value::Integer((-2).into()), Value::Bytes(x.to_vec())),
+        (Value::Integer((-3).into()), Value::Bytes(y.to_vec())),
+    ]);
+    let mut out = Vec::new();
+    ciborium::into_writer(&map, &mut out).expect("CBOR encode never fails for owned Value");
+    out
 }
 
 // ---------------------------------------------------------------------------

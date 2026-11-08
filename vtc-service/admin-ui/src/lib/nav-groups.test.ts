@@ -35,6 +35,7 @@ const EVERYTHING = viewer([
   "vtc.registry.admin",
   "vtc.rooms.admin",
   "git.ns.admin",
+  "vtc.notifications.read",
 ]);
 
 beforeAll(() => {
@@ -88,6 +89,7 @@ describe("the grouped sidebar", () => {
       "invitations",
       "vetting",
       "relationships",
+      "notifications",
       "grouped",
     ]);
     expect(ids(byId.governance!.plugins)).toEqual(["ceremonies", "roles", "acl", "sessions"]);

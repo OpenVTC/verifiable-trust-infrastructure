@@ -7,6 +7,12 @@
 //    the browser extension. Deprecated (contract C7): kept, not deleted, until
 //    a removal date is set.
 //
+// `/members/?join` (the website's Join button) is the same page for someone
+// who is not a member yet: the same wallet code, worded for joining, with
+// nothing a newcomer cannot use (passkeys and the older sign-in need a
+// membership). The wallet, not this page, decides to offer a join: it does so
+// for a community it holds no identity for.
+//
 // Only an active member of this community is admitted; the daemon says so in
 // one message whatever the reason, and so does this page. There is
 // deliberately no "sign in with this browser's wallet" button: the
@@ -75,7 +81,84 @@ function describe(err: unknown, method: Method): Phase {
   return { kind: "error", message };
 }
 
-export function SignIn({ communityName }: { communityName?: string | null }) {
+/** Whether the page was opened to join (`?join`), not to sign in. */
+export function isJoinIntent(search: string = window.location.search): boolean {
+  return new URLSearchParams(search).has("join");
+}
+
+export function SignIn({
+  communityName,
+  signedInAs,
+}: {
+  communityName?: string | null;
+  /** The join page only: the member this browser is already signed in as. */
+  signedInAs?: string;
+}) {
+  if (isJoinIntent()) return <Join communityName={communityName} signedInAs={signedInAs} />;
+  return <SignInMember communityName={communityName} />;
+}
+
+function Join({
+  communityName,
+  signedInAs,
+}: {
+  communityName?: string | null;
+  signedInAs?: string;
+}) {
+  const qc = useQueryClient();
+  // Signed in through the join page (a community that admits at once): on to
+  // the member pages, not the join page again.
+  const onSignedIn = () => {
+    window.history.replaceState({}, "", "/members/");
+    return qc.invalidateQueries({ queryKey: ["member-me"] });
+  };
+  return (
+    <SignInPage
+      eyebrow="Join"
+      title={<>Join {communityName || "this community"}</>}
+      lead={
+        <>
+          Ask to become a member with the wallet that holds your keys. An
+          administrator reviews each request; once yours is approved, you sign
+          in here.
+        </>
+      }
+      foot={[
+        <>
+          Already a member? <a href="/members/">Sign in</a>. New to Verifiable
+          Trust Communities? Start at{" "}
+          <a href="https://openvtc.net" target="_blank" rel="noopener noreferrer">
+            openvtc.net
+          </a>
+          .
+        </>,
+        <HomeLink communityName={communityName} />,
+      ]}
+    >
+      {signedInAs && (
+        <div className="alert" role="status" data-testid="join-signed-in">
+          <p className="alert-title">You're already signed in as a member.</p>
+          <p>
+            You're signed in as <code title={signedInAs}>{signedInAs}</code>. To
+            join again with a separate identity, use the code below: your
+            wallet offers a new identity for this community.{" "}
+            <a href="/members/">Go to your member pages</a>.
+          </p>
+        </div>
+      )}
+      <Protected>
+        <WalletSignIn intent="join" communityName={communityName} onSignedIn={onSignedIn} />
+      </Protected>
+      <p className="option-note">
+        You need a Verifiable Trust Agent and its browser wallet. The wallet
+        connects this browser to your agent.
+      </p>
+      <InstallWallet open={false} />
+    </SignInPage>
+  );
+}
+
+function SignInMember({ communityName }: { communityName?: string | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const qc = useQueryClient();
   const [choices, setChoices] = useState<VtaIdentity[] | null>(null);
@@ -163,11 +246,7 @@ export function SignIn({ communityName }: { communityName?: string | null }) {
       }
       foot={[
         <>
-          Not a member yet? Start at{" "}
-          <a href="https://openvtc.net" target="_blank" rel="noopener noreferrer">
-            openvtc.net
-          </a>
-          . Running this community? The <a href="/admin/">operator console</a> is
+          Not a member yet? <a href="/members/?join">Join this community</a>. Running this community? The <a href="/admin/">operator console</a> is
           separate.
         </>,
         <HomeLink communityName={communityName} />,

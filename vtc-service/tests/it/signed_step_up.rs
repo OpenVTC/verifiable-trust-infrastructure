@@ -3,7 +3,8 @@
 //! `acl/grant` conferring admin authority needs a passkey gesture. On the
 //! bearer route that gesture is a live session elevation; a signed document
 //! has no session, so the gesture is **bound to the one grant** by a digest of
-//! its type and payload, recorded by `auth/step-up/approve-response/0.4`, and
+//! its type and payload, recorded by `auth/step-up/approve-response/0.7` (signed,
+//! or the console's unsigned answer), and
 //! spent by the grant. Design: `docs/05-design-notes/vtc-operation-bound-step-up.md`.
 //!
 //! These drive the whole loop end to end — refusal with the ceremony inline, a
@@ -30,9 +31,10 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
-const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
+/// `vtc/members/role/set/0.1` — the community-role move.
+const CHANGE_ROLE: &str = "https://trusttasks.org/spec/vtc/members/role/set/0.1";
 
 struct Fixture {
     vtc: TestVtc,
@@ -152,7 +154,7 @@ async fn post(fix: &Fixture, doc: &Value) -> (StatusCode, Value) {
 /// authority-conferring capability also needs another holder's consent
 /// (VTI-APV-018), which `unrestricted_admin_consent.rs` drives.
 fn grant_admin(subject: &str) -> Value {
-    json!({ "entry": { "subject": subject, "role": "moderator" } })
+    crate::common::signed::grant_payload(subject, "moderator")
 }
 
 /// The inline approve-request a refusal carries, checked for the shape
@@ -445,7 +447,12 @@ async fn a_console_key_redeems_its_admins_gesture_but_cannot_make_one() {
         .authenticate(&options(&request), RP_ORIGIN);
     let (status, refused) = approve(&fix, &console, &request, &cred).await;
     assert_ne!(status, StatusCode::OK, "{refused}");
-    assert_eq!(refused["code"], "permissionDenied", "{refused}");
+    // 0.7 names the case: a delegated key's proof is never the approver's
+    // (0.7 consumer item 1a).
+    assert_eq!(
+        refused["code"], "auth/step-up/approve-response:subjectMismatch",
+        "{refused}"
+    );
 
     // A fresh ceremony — the refused answer consumed nothing, but the
     // challenge is best asked again as the console would.
@@ -570,9 +577,33 @@ async fn a_grant_that_confers_nothing_needs_no_gesture() {
         .await
         .unwrap();
 
-    let relabel = json!({
-        "entry": { "subject": colleague.did, "role": "admin", "scopes": [], "label": "ops" }
-    });
+    // The colleague's entry restated exactly, with a label: nothing widens.
+    let (_, shown) = post(
+        &fix,
+        &signed(
+            &admin,
+            "https://trusttasks.org/spec/acl/show/0.2",
+            json!({ "subject": colleague.did }),
+        )
+        .await,
+    )
+    .await;
+    let held = &shown["entry"];
+    let mut entry = json!({ "label": "ops" });
+    for k in [
+        "subject",
+        "role",
+        "act",
+        "keys",
+        "capabilities",
+        "approve",
+        "approveCapabilities",
+    ] {
+        if let Some(v) = held.get(k) {
+            entry[k] = v.clone();
+        }
+    }
+    let relabel = json!({ "entry": entry });
     let (status, reply) = post(&fix, &signed(&admin, GRANT, relabel).await).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["entry"]["label"], "ops");
@@ -599,20 +630,26 @@ async fn a_refused_grant_never_asks_for_a_gesture() {
         &signed(
             &admin,
             GRANT,
-            json!({ "entry": { "subject": moderator.did, "role": "issuer" } }),
+            crate::common::signed::grant_payload(&moderator.did, "issuer"),
         )
         .await,
     )
     .await;
     assert_ne!(status, StatusCode::OK, "{reply}");
-    assert_ne!(reply["code"], "permissionDenied", "{reply}");
+    // `acl/grant/0.2` item 6 answers it `permissionDenied`, naming the task.
+    assert!(
+        reply["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("change-role")),
+        "refused as the wrong task: {reply}"
+    );
     assert!(
         reply["details"].get("stepUpRequest").is_none(),
         "a doomed grant must not ask for a passkey gesture: {reply}"
     );
 }
 
-// ─── acl/change-role ─────────────────────────────────────────────────────
+// ─── vtc/members/role/set ────────────────────────────────────────────────
 
 /// A plain member, ready to promote — to `moderator`, so the promotion confers
 /// administrative authority but nothing authority-conferring, and the gesture
@@ -669,7 +706,18 @@ async fn vti_apv_015_a_gesture_bound_to_the_promotion_lets_the_same_document_thr
 
     let (status, reply) = post(&fix, &doc).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["role"], "moderator", "{reply}");
+    assert_eq!(reply["previousRole"], "member", "{reply}");
+    assert_eq!(reply["changed"], true, "{reply}");
+    assert_eq!(reply["approval"], "policyAllowed", "{reply}");
+    // The administrative authority followed the role (item 8).
     assert_eq!(reply["entry"]["role"], "moderator", "{reply}");
+    assert_eq!(
+        reply["entry"]["ext"]["org.openvtc"]["communityRole"], "moderator",
+        "{reply}"
+    );
+    // A member has a member record: the role credential is re-issued (item 16).
+    assert!(reply["roleVac"].is_object(), "{reply}");
     let entry = get_acl_entry(&fix.vtc.state.acl_ks, &subject.did)
         .await
         .unwrap()
@@ -713,8 +761,79 @@ async fn a_stale_from_role_is_a_conflict_not_a_gesture() {
     let stale = json!({ "subject": subject.did, "fromRole": "issuer", "toRole": "moderator" });
     let (status, reply) = post(&fix, &signed(&admin, CHANGE_ROLE, stale).await).await;
     assert_ne!(status, StatusCode::OK, "{reply}");
-    // The task's own declared code for a compare-and-swap miss.
-    assert_eq!(reply["code"], "acl/change-role:stateMismatch", "{reply}");
+    // The task's own declared code for a compare-and-swap miss, naming the
+    // role the entry holds (`vtc/members/role/set/0.1` item 5).
+    assert_eq!(
+        reply["code"], "vtc/members/role/set:stateMismatch",
+        "{reply}"
+    );
+    assert_eq!(reply["details"]["currentRole"], "member", "{reply}");
+}
+
+/// `vtc/members/role/set/0.1` item 2 (VTI-OPS-050, VTI-ACL-052): nobody moves
+/// their own community role, in either direction, and the refusal names the
+/// task another administrator would send. Nothing is asked for and nothing
+/// moves.
+#[tokio::test]
+async fn vti_ops_050_role_set_refuses_a_self_move_in_either_direction() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    for to in ["member", "moderator"] {
+        let doc = signed(
+            &admin,
+            CHANGE_ROLE,
+            json!({ "subject": admin.did, "fromRole": "admin", "toRole": to }),
+        )
+        .await;
+        let (status, reply) = post(&fix, &doc).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+        assert_eq!(reply["code"], "permissionDenied", "{reply}");
+        assert!(
+            reply["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("vtc/members/role/set")),
+            "the refusal names the task another administrator sends: {reply}"
+        );
+        assert!(reply["details"].get("stepUpRequest").is_none(), "{reply}");
+    }
+    assert_eq!(
+        get_acl_entry(&fix.vtc.state.acl_ks, &admin.did)
+            .await
+            .unwrap()
+            .unwrap()
+            .role,
+        VtcRole::Admin
+    );
+}
+
+/// `vtc/members/role/set/0.1` item 7 (SPEC §7.2, a target already in the
+/// requested state): a move to the role already held answers `changed: false`
+/// with the entry, asks for no gesture, writes nothing and issues no
+/// credential.
+#[tokio::test]
+async fn role_set_to_the_role_already_held_is_a_no_op() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let subject = member(&fix).await;
+    let doc = signed(
+        &admin,
+        CHANGE_ROLE,
+        json!({ "subject": subject.did, "fromRole": "member", "toRole": "member" }),
+    )
+    .await;
+    let (status, reply) = post(&fix, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["changed"], false, "{reply}");
+    assert_eq!(reply["role"], "member", "{reply}");
+    assert_eq!(reply["previousRole"], "member", "{reply}");
+    assert!(reply.get("approval").is_none(), "{reply}");
+    assert!(reply.get("roleVac").is_none(), "{reply}");
+    assert_eq!(reply["entry"]["subject"], subject.did.as_str(), "{reply}");
+    let entry = get_acl_entry(&fix.vtc.state.acl_ks, &subject.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(entry.updated_by.is_none(), "nothing was written");
 }
 
 /// A demotion confers nothing, but it ends an administrator's authority — the
@@ -794,17 +913,17 @@ async fn a_non_admin_signer_cannot_change_roles() {
     }
 }
 
-// ─── auth/signing-key/{enroll,list,revoke}/0.1 ──────────────────────────
+// ─── auth/signing-key/enroll/0.2, {list,revoke}/0.1 ─────────────────────
 //
 // The console enrols its key with nothing but the key and a passkey: the
 // enrolment is signed by the key (proof of possession), and control of the
 // identity it names is a passkey gesture of that identity bound to that one
 // document, answered unsigned from the requester's own browser.
 
-const ENROLL: &str = "https://trusttasks.org/spec/auth/signing-key/enroll/0.1";
+const ENROLL: &str = "https://trusttasks.org/spec/auth/signing-key/enroll/0.2";
 const KEY_LIST: &str = "https://trusttasks.org/spec/auth/signing-key/list/0.1";
 const KEY_REVOKE: &str = "https://trusttasks.org/spec/auth/signing-key/revoke/0.1";
-const ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
+const ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
 
 fn enrolment(key: &Party, identity: &str, label: &str) -> Value {
     json!({
@@ -1043,8 +1162,12 @@ async fn an_identity_holds_a_bounded_number_of_keys() {
         reply["details"]["maxActiveKeys"],
         vtc_service::acl::console_key::MAX_ACTIVE_PER_IDENTITY
     );
-    // 0.1's `details` schema holds one member; the list is 0.2's.
-    assert!(reply["details"].get("activeKeys").is_none(), "{reply}");
+    // 0.2 lists the active keys, so the caller can choose one to replace.
+    assert_eq!(
+        reply["details"]["activeKeys"].as_array().map(Vec::len),
+        Some(vtc_service::acl::console_key::MAX_ACTIVE_PER_IDENTITY),
+        "{reply}"
+    );
 }
 
 // ─── auth/signing-key/enroll/0.2 ────────────────────────────────────────

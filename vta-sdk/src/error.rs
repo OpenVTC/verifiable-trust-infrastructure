@@ -322,6 +322,37 @@ pub enum VtaError {
         url: Option<String>,
     },
 
+    /// A record body uses a member the room's profile does not list in `recordMembers` —
+    /// `kind`, `inReplyTo`, `writtenAt`, `editedAt`, or a file's `width`, `height` or
+    /// `preview` — so the writer must not write it (`SealedRecordBody`, *When a writer may
+    /// use these members*). Refused here, before anything was sealed or sent.
+    ///
+    /// Typed so a CLI can print the fix: a curator lists the members with
+    /// `pnm rooms profile set --record-members …`, or the writer leaves them out.
+    /// `unresolved` is set when the profile could not be read at all, which permits none.
+    #[error(
+        "{} may not be written to room {room_id}: its profile lists {}{}",
+        refused.join(", "),
+        match listed.is_empty() {
+            true => "no record members".to_string(),
+            false => format!("only {}", listed.join(", ")),
+        },
+        match unresolved {
+            Some(why) => format!(" (its profile could not be read: {why})"),
+            None => String::new(),
+        }
+    )]
+    RecordMembersNotPermitted {
+        /// The room.
+        room_id: String,
+        /// The members the body uses that the profile does not list.
+        refused: Vec<String>,
+        /// What the profile lists; empty for none.
+        listed: Vec<String>,
+        /// Why the profile could not be read, where it could not.
+        unresolved: Option<String>,
+    },
+
     #[error("{0}")]
     Other(String),
 }
@@ -695,6 +726,11 @@ impl VtaError {
             Self::RateLimited { limited_by, .. } => {
                 Some(crate::rate_limit::suggested_fix(*limited_by))
             }
+            Self::RecordMembersNotPermitted { .. } => Some(
+                "The room's profile does not list these record members, so a writer must not \
+                 use them. A curator lists them with `rooms profile set --record-members …`; \
+                 otherwise write the record without them.",
+            ),
             Self::Validation(_) => Some(
                 "The request body or parameters were rejected by the VTA's schema. \
                  Inspect the response body for the specific field that failed.",

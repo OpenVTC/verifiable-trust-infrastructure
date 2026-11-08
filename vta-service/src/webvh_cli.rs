@@ -688,6 +688,7 @@ pub async fn run_edit_did(
         ttl: body.ttl,
         label: body.label,
         expected_version_id: body.expected_version_id,
+        scid_also_known_as: body.scid_also_known_as,
     };
 
     let auth = cli_super_admin();

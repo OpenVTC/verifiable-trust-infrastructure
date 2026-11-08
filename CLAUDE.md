@@ -27,7 +27,9 @@ it. Where they disagree, the specification is correct and the code changes.
 ## Workspace layout
 
 Rust workspace (edition 2024, resolver 3, MSRV 1.95.0). Dependencies flow
-strictly downward — no cycles. There are two leaf crates with no internal
+strictly downward — no cycles. Below everything sit the generated Trust Task
+crates (`vti-specs-*` and their facade `vti-specs`), which depend only on
+`trust-tasks-rs`. Above them are two leaf crates with no other internal
 workspace deps (`vti-common`, `vta-sdk`); everything else depends on one
 or both of them, plus optionally on `vta-cli-common`.
 
@@ -39,6 +41,10 @@ not reach through the facade. Before proposing a further extraction, read
 and — importantly — where the program stops.
 
 ```
+Generated (below the leaves; trust-tasks-rs only):
+  vti-specs-rooms, vti-specs-vta, vti-specs-vtc, vti-specs-core
+  vti-specs       → the four above (re-exports + one merged Type URI index)
+
 Layer 0 (leaves):
   vti-common   (no internal deps)
   vta-sdk      (no internal deps)
@@ -73,13 +79,17 @@ Layer 4 (the spine + consumers):
   vtc-service     → vti-common, vti-secrets, vta-sdk
   pnm-cli         → vta-sdk, vta-cli-common
   cnm-cli         → vta-sdk, vta-cli-common
-  vta-mcp         → vta-sdk
+  vti-mcp-common  (no internal deps; vti-specs as a dev-dep for its census)
+  vta-mcp         → vta-sdk, vti-mcp-common
+  vtc-mcp         → vtc-client, vta-sdk, vti-specs, vti-mcp-common
   vta-enclave     → vta-service (consumed as a library)
   vti-witness     → vti-common, vti-secrets, vta-sdk   (host service)
 ```
 
 | Crate | Role |
 |---|---|
+| `vti-specs-{rooms,vta,vtc,core}` | **Generated Trust Task wire types** (`trust-tasks-build` in `build.rs`), one crate per family group, each version pinned exactly once in its `trust-tasks.lock` and vendored under `trust-tasks/`. `rooms` stands alone so `vti-rooms-wasm` compiles nothing else |
+| `vti-specs` | Facade: re-exports every family at its (deprecated) `trust_tasks_rs::specs` path and merges the four `schema_index` tables (`schema_for`, `spec_policy_for`, `error_codes_for`, `max_document_bytes_for`, `is_pinned`). `vta-sdk` re-exports it as `vta_sdk::specs` |
 | `vti-common` | Shared foundation: `host_session` (a host service identity's mediator session), JWT auth, ACL, `Store` (local fjall + vsock), `AppError`, config types, identifier validation, `secure_file`, telemetry sink, `SeedStore`, `guards` |
 | `vta-sdk` | Public SDK: types, REST + DIDComm client, `sealed_transfer`, `did_templates`, `provision_integration`, attestation verification, `protocol` (DIDComm protocol-management types) |
 | `vti-secrets` | Shared secret-store backends (AWS / GCP / Azure / Vault / Kubernetes / keyring / config-seed / TEE-KMS / plaintext) + the `create_seed_store(&secrets, &data_dir)` factory + `SecretsConfig`, all behind the same feature flags, shared by the VTA (`vta-keys::seed_store`) and the VTC (its own factory, `vtc-service::keys::seed_store`). Feature `onboarding`: `IntegrationOnboarding`, the ephemeral-`did:key` → ACL-grant → auto-rotate cold-start helper for external integrations |
@@ -90,6 +100,9 @@ Layer 4 (the spine + consumers):
 | `vta-keys` | **Key management**: master-seed storage, BIP-32 hierarchical derivation, key wrapping (AES-GCM), imported-key handling, `create_seed_store` backend selection, `derive_pre_rotation_keys` |
 | `vta-vault` | **Holder credential vault**: storage, query, receive/verify, present, status refresh, and the archival lifecycle (`VaultStatus {Active,Archived,Deleted}`) |
 | `vti-vetting-pcs` | **Hidden vetting** on the Predicate Credential System: the community's `issuer` and `verifier` (`vtc-service`, feature `vetting-pcs`) and the member-side `vetter` / `applicant` engines the VTA runs as its principal's PCS engine (`vta/pcs/*`). Feature `harness`: an in-process community (`vtc::Vtc`) for end-to-end tests. Docs: `docs/02-vta/pcs-engine.md` |
+| `vti-vtn` | **The Verifiable Trust Network protocol** (VTI-VTN-*): listings, membership offers and acknowledgements, repudiation, entry lifecycle, Bitstring Status Lists, network index and DTG graph, directory, role/group registration (the signed `vtn/groups/register` request, accepted by a `groupRegistered` VSC), signed broadcast envelopes and hop chains, network room passes. Verification takes a purpose-checked `KeyResolver` and accepts proof sets. Feature `client`: `VtnClient` with `vtn/*` Trust Tasks signed by the caller and addressed to the expected network DID (`VtnClient::task`), and `StatusChecker`. Shared by `vtc-service` (a community as a network member) and the VTN service, which lives in its own repository and depends on this crate — never the reverse |
+| `vti-trust-task-server` | **The Trust Task receive pipeline**: per-type size, freshness, expiry and recipient, the spec's own policy, proof bound to `issuer`, messaging sender binding, admission, the duplicate-id record, dispatch, signed replies (refusals too); the reject/response helpers and an axum `POST /v1/trust-tasks` handler. Services inject the spec policy, size gate, proof verifier, hooks, id store, dispatcher and signer as traits; depends on no service and no `vti-specs-*` crate. Used by `vtc-service` and the VTN service |
+| `vti-oob-server` | **Wallet sign-in** (`auth/oob/*`, a wallet approving a browser's key `K_b`): the request store and compare-and-set, the claim and decision clocks, the `redeem` long poll, the `did:key` precheck (T21) and the check order of `request`/`claim`/`prove`/`respond`/`redeem`/`cancel`; `delegation` reads a key a grant armed as its approver. The host implements `OobHost` (records keyspace, DID and origin, step signer, carried-proof verifiers, accepted-id record, per-audience gate and `signingScope`, audit, and what `redeem` issues) and defines its audiences. Depends on no service; reads only the `auth/oob` types from `vti-specs-core`. Used by `vtc-service` (sessions and cookies) and the VTN service (a delegated key) |
 | `vti-voting` | **Community voting** (VTI-VOT-001 – 100): registrar, voter, ballot box, board, tally, audit, trustees. Unaudited protocol code over audited group operations (detail: `vti-voting/CLAUDE.md`) |
 | `vti-voting-service` | **The voting service** (`publish = false`): a host service holding ballot boxes for any number of communities, never a roster; TSP > DIDComm, HTTPS only as the sessionless cast door (VTI-VOT-004) (detail: `vti-voting-service/CLAUDE.md`) |
 | `vta-external` | **External accounts** (`external/*`): identities the VTA holds at clouds and third-party services, issuing short-lived downscoped credentials. Design: `docs/05-design-notes/vta-external-accounts.md` |
@@ -104,7 +117,9 @@ Layer 4 (the spine + consumers):
 | `vta-cli-common` | Shared CLI command implementations — both CLIs are thin wrappers |
 | `pnm-cli` | Personal Network Manager (single-VTA operator) |
 | `cnm-cli` | Community Network Manager (multi-community operator) |
-| `vta-mcp` | MCP server bridging a VTA's agent capabilities to MCP tools over stdio, with a local per-operation guard (`guard.rs`) because a host approves a tool, not a call. `publish = false` (detail: `vta-mcp/CLAUDE.md`) |
+| `vti-mcp-common` | What the MCP bridges share: the local per-operation guard (risk classifier, allow/deny globs, confirm levels) and the redacting call recorder, with a census holding every pinned request URI to a classified verb. `publish = false` (detail: `vti-mcp-common/CLAUDE.md`) |
+| `vta-mcp` | MCP server bridging a VTA's agent capabilities to MCP tools over stdio, through the guard in `vti-mcp-common` because a host approves a tool, not a call. `publish = false` (detail: `vta-mcp/CLAUDE.md`) |
+| `vtc-mcp` | MCP server bridging a VTC to MCP tools over stdio for a member's or an administrator's assistant: a native Trust Task client over TSP > DIDComm > HTTPS (`VtcClient::connect_resolved`), never a CLI subprocess; `vtc_call` by Type URI with a catalog read from the pinned specification bundles; the guard in `vti-mcp-common`. `publish = false` (detail: `vtc-mcp/CLAUDE.md`) |
 | `vti-witness` | **Witness host service** (`publish = false`): up to 10 `did:webvh` witness identities from the `dtg-witness` template, one mediator session each (detail: `vti-witness/CLAUDE.md`) |
 | `didcomm-test` | Standalone DIDComm connectivity harness (test tool, `publish = false`) |
 
@@ -274,17 +289,29 @@ VP. Custom JSON-LD contexts for our shapes live under
 `https://openvtc.org/contexts/` — baked into crates at compile time via
 `include_str!` so verification works offline.
 
-## Trust Task wire types come from `trust_tasks_rs::specs`
+## Trust Task wire types come from the generated `vti-specs` crates
 
-The Trust Task specifications in dtgwg-trust-tasks-tf are normative, and
-`trust-tasks-codegen` generates a Rust type for every payload and response in
-the registry, published by `trust-tasks-rs` under `trust_tasks_rs::specs`.
+The Trust Task specifications in dtgwg-trust-tasks-tf are normative. VTI pins
+the versions it speaks (`vti-specs-*/trust-tasks.lock`, bundles vendored under
+`trust-tasks/`) and `trust-tasks-build` generates a Rust type for every payload
+and response of each, at the module path the deprecated prebuilt
+`trust_tasks_rs::specs` used: `vti_specs::vtc::members::list::v0_2`, re-exported
+for consumers as `vta_sdk::specs`. The prebuilt modules are deprecated and will
+be removed; never turn a `trust-tasks-rs` spec-family feature on. Framework
+specifications (`trust-task-error`, `trust-task-discovery`, …) cannot be pinned
+and stay in `trust_tasks_rs`.
 
 - **Never hand-write a payload or response type for a task that has a generated
-  module** (`trust_tasks_rs::schema_index::schema_for` says whether it does).
-  Use the generated type. A crate wanting a shorter path re-exports it, as
+  module** (`vti_specs::schema_index::schema_for` says whether a pinned one
+  does). Use the generated type. A crate wanting a shorter path re-exports it, as
   `vta_sdk::protocols::vetting` does, and takes type URI constants from
   `<Payload as trust_tasks_rs::Payload>::TYPE_URI`, not a literal.
+- **Look a Type URI up in `vti_specs::schema_index`**, never
+  `trust_tasks_rs::schema_index` (which knows only the framework's own specs).
+  It answers for exactly the pinned versions: `None` means "not pinned", and a
+  gate that reads it as "nothing to check" fails open — the
+  `trust_tasks::spec_pin_census` tests in `vta-service` and `vtc-service` exist
+  for that.
 - **Behaviour stays hand-written and operates on the generated types**: signing,
   verification, counting, and the rules JSON Schema cannot state (an event's
   `endDate` against its `startDate`) as a check over the generated type — never
@@ -293,11 +320,39 @@ the registry, published by `trust-tasks-rs` under `trust_tasks_rs::specs`.
   (`vta_sdk::protocols::vetting::read_checked`). Some generated constructors
   normalise what they parse, so only the JSON shows what was sent.
 - **A specification change lands in dtgwg-trust-tasks-tf first** and reaches
-  this workspace through a `trust-tasks-rs` bump — never as a local edit to a
-  copied type.
+  this workspace as a pin (below) — never as a local edit to a copied type or
+  a vendored bundle (the build checks every bundle against its locked digest).
 - A generated type is foreign, so `utoipa::ToSchema` cannot be derived on it.
   Document a REST body with a wrapper in `vta_sdk::openapi`, whose schema is
   rendered from the specification's own.
+
+### Pinning a task version
+
+The versions VTI speaks are pinned with the `trust-tasks` CLI
+(`cargo install trust-tasks-cli`), per generated crate — `vti-specs-rooms` for
+`rooms/*`, `-vta` for `vta/*`, `-vtc` for `vtc/*`, `-vtn` for `vtn/*`, `-core` for everything else:
+
+```sh
+trust-tasks -C vti-specs-vtc add vtc/members/list/0.3   # a version; `<slug>` alone pins the latest
+git add vti-specs-vtc/trust-tasks.toml vti-specs-vtc/trust-tasks.lock vti-specs-vtc/trust-tasks/
+trust-tasks -C vti-specs-vtc check                     # offline: bundles match the lock
+```
+
+To pin a second version of a task already pinned (`add` refuses a slug named
+twice), make its `trust-tasks.toml` value an array — `"vtc/members/list" =
+["0.2", "0.3"]` — and run `trust-tasks -C <crate> update`. Moving to a new
+version is the same, then `trust-tasks remove <slug>/<old>` once nothing sends
+or serves the old one.
+
+Commit all three. The next build generates the new module
+(`vti_specs::vtc::members::list::v0_3`) and its index entries. Pin a version in
+exactly one crate (the facade test `the_generated_tables_are_disjoint` fails
+otherwise), unpin one VTI no longer sends or serves (`trust-tasks remove
+<slug>/<M.N>`), and never pin a framework specification (`trust-task-*`): those
+stay in `trust_tasks_rs`. An unpinned Type URI answers `None` from
+`vti_specs::schema_index`, and a gate reading `None` as "nothing to check" fails
+open — so `vta-service`'s and `vtc-service`'s `trust_tasks::spec_pin_census`
+fail on any served, sent or `TASK_*` Type URI that is not pinned.
 
 `vta-sdk/tests/generated_wire_types_census.rs` enforces the first rule: it fails
 on a serde type whose doc summary names a generated task as its payload,
@@ -392,8 +447,8 @@ docs — lives in the CLAUDE.md of the crate that owns it. **Read that entry
 before changing the flow.** When adding a flow, add its entry there and a
 line here.
 
-- **`vta-service/CLAUDE.md`**: VTA first-boot setup; Mediator connection; Admin credential cold-start; Deferred VTA-DID setup; TEE Mode B bootstrap; DIDComm challenge-response auth; Context + context-admin bootstrap; Provision-integration; Runtime service management; Sealed-transfer envelope format; Signing oracle; Approvals + task consent; External accounts; Room revocation; Hidden-vetting PCS engine; Witnessed party; Vault archival lifecycle; Backup / restore; Promote a serverless DID to a server-managed one; Provision a DID into a specific hosting domain; DID template management; A room's own profile; Room records: provenance, retention and prune, the epoch floor.
-- **`vtc-service/CLAUDE.md`**: first-boot setup; community-owned rooms; room file migration; member directory; community groups; administrator action list; member portal; direct admission; trusted witnesses; step-up: passkeys and approver devices; role-based administration; admin console live channel; git namespaces; capability modules; community elections.
+- **`vta-service/CLAUDE.md`**: VTA first-boot setup; Mediator connection; Admin credential cold-start; Deferred VTA-DID setup; TEE Mode B bootstrap; DIDComm challenge-response auth; Context + context-admin bootstrap; Provision-integration; Runtime service management; Sealed-transfer envelope format; Signing oracle; Approvals + task consent; External accounts; Room revocation; Hidden-vetting PCS engine; Witnessed party; Vault archival lifecycle; Backup / restore; Promote a serverless DID to a server-managed one; Provision a DID into a specific hosting domain; DID template management; A room's own profile; Room records: provenance, retention and prune, the epoch floor; Watching rooms for a client (`rooms/keys/watch`); Held notifications (and deposit); Collection for the principal's identifiers (claims, per-context setting, operator suspension).
+- **`vtc-service/CLAUDE.md`**: first-boot setup; community-owned rooms; room file migration; member directory; community groups; administrator action list; member portal; direct admission; trusted witnesses; step-up: passkeys and approver devices; role-based administration; admin console live channel; git namespaces; capability modules; community elections; community boards; member badges; notifications: the election notice, receiving, the administrators' view and relay decisions.
 - **`vti-witness/CLAUDE.md`**: Witness host service.
 
 ## Runtime guards to preserve
@@ -502,8 +557,8 @@ Mechanics: [`RELEASING.md`](RELEASING.md).
   baseline resolves without a lockfile. Read what
   `scripts/semver-build-failure.py` attributes it to before blaming our crate
   (#1667).
-- **27 of 37 crates publish**; the ten that do not set `publish = false` with a
-  comment saying why. `vtc-service` publishes as a binary with pre-built web
+- **36 of 47 crates publish**; the eleven that do not set `publish = false`
+  with a comment saying why. `vtc-service` publishes as a binary with pre-built web
   bundles — a new `include_dir!` / `include_str!` outside tests must sit inside
   its `include` list. `vta-service` publishes because `openvtc-core`
   dev-depends on it (`MockVta`); a re-export makes the re-exported crate's

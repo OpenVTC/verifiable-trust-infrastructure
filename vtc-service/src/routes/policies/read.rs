@@ -59,10 +59,10 @@ pub struct PolicyResponse {
 #[serde(rename_all = "camelCase")]
 pub struct PolicyListResponse {
     pub policies: Vec<PolicyModuleResponse>,
-    /// Canonical-required: more matching modules exist beyond this page.
-    pub truncated: bool,
+    /// Continuation token, present iff more matching modules exist beyond
+    /// this page.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
 }
 
 /// Canonical `policy/get` response.
@@ -174,8 +174,6 @@ pub struct ListPoliciesQuery {
     /// query was narrowed when it was not, so they are refused.
     pub context_id: Option<String>,
     pub enabled_only: Option<bool>,
-    /// Canonical page-size name.
-    pub page_size: Option<usize>,
     /// `"active"` — only the row pointed at by each
     /// `active_policies:<purpose>`. `"archived"` — every row that
     /// is *not* the current active pointer. Omitted → all rows.
@@ -194,7 +192,7 @@ pub enum PolicyStatusFilter {
     Archived,
 }
 
-/// The listing `policy/list/0.2` answers, on the route and the spine alike.
+/// The listing `policy/list/0.3` answers, on the route and the spine alike.
 pub(crate) async fn list_policies_inner(
     state: &AppState,
     query: ListPoliciesQuery,
@@ -237,16 +235,11 @@ pub(crate) async fn list_policies_inner(
         }
         return Ok(PolicyListResponse {
             policies: items.iter().map(|r| (&r.policy).into()).collect(),
-            truncated: false,
-            cursor: None,
+            next_cursor: None,
         });
     }
 
-    let limit = query
-        .page_size
-        .or(query.limit)
-        .unwrap_or(50)
-        .clamp(1, MAX_LIMIT);
+    let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
 
     let audit_writer = state
         .audit_writer
@@ -296,8 +289,7 @@ pub(crate) async fn list_policies_inner(
 
     Ok(PolicyListResponse {
         policies: items.iter().map(|r| (&r.policy).into()).collect(),
-        truncated: page.next_cursor.is_some(),
-        cursor: page.next_cursor,
+        next_cursor: page.next_cursor,
     })
 }
 

@@ -675,8 +675,8 @@ pub async fn project_due(state: &AppState) -> Result<usize, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trust_tasks_rs::specs::governance::capability::list::v0_1 as list_spec;
     use trust_tasks_rs::validate::ValidatedPayload;
+    use vti_specs::governance::capability::list::v0_1 as list_spec;
 
     /// The manifest parses into the generated `CapabilityManifest` and
     /// validates against the list response's schema — the check every read

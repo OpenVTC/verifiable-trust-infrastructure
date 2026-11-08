@@ -1386,7 +1386,7 @@ curl -s http://localhost:8443/attestation/mnemonic \
     -H "Authorization: Bearer $JWT" | jq
 
 # Export (one-time, entropy zeroed after) with the Trust Task
-# spec/vta/attestation/mnemonic-export/1.0. The REST route
+# spec/vta/attestation/mnemonic-export/1.1. The REST route
 # POST /attestation/mnemonic refuses with 403: a bearer token alone never
 # releases the mnemonic. The request is always a document the super admin
 # signs (proofPurpose authentication, issuer = your DID, recipient = the VTA's

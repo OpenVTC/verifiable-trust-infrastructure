@@ -5,7 +5,7 @@
 // member-owned room's never reaches this community. The one exception is a room
 // the community owns itself, whose label it chose at `vtc/rooms/community/create`
 // and keeps in its own record. So for a viewer who may read that record
-// (`vtc.rooms.manage`), the owner's list (`vtc/rooms/community/list/0.2`) is
+// (`vtc.rooms.manage`), the owner's list (`vtc/rooms/community/list/0.3`) is
 // joined on room DID and the host pages show the label and description (never
 // the tags, which are the Community rooms tab's filing); a viewer with only the
 // host's authority (`vtc.rooms.admin`) sees the DID, as before, and is not
@@ -28,7 +28,13 @@ import { communityRoomPath } from "./shared";
 export type RoomName =
   /** The community owns it, and these are the label and description it gave
    *  the room. */
-  | { readonly kind: "community"; readonly label: string; readonly description?: string }
+  | {
+      readonly kind: "community";
+      readonly label: string;
+      readonly description?: string;
+      /** Its state in its owner's lifecycle, when not `active`. */
+      readonly state?: "archived" | "removalScheduled" | "purging" | "removed";
+    }
   /** The community's own list was read in full and the room is not in it, so a
    *  member owns it — and named it, out of this community's sight. */
   | { readonly kind: "member" }
@@ -62,6 +68,7 @@ export function useRoomNames(): (roomId: string) => RoomName {
         kind: "community",
         label: r.label,
         ...(r.description ? { description: r.description } : {}),
+        ...(r.status && r.status.state !== "active" ? { state: r.status.state } : {}),
       };
     }
     return complete ? { kind: "member" } : UNKNOWN;

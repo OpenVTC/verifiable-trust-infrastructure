@@ -1,4 +1,4 @@
-//! Members' **step-up passkeys** — `auth/passkey/enroll/invite/0.2` with
+//! Members' **step-up passkeys** — `auth/passkey/enroll/invite/0.3` with
 //! `purpose: stepUp`, redeemed through `auth/passkey/enroll/redeem/{start,finish}/0.1`
 //! and revoked for the member with `auth/passkey/revoke/{start,finish}/0.2`.
 //!
@@ -37,9 +37,10 @@
 //! ## What a step-up passkey can do
 //!
 //! Exactly one thing: be the passkey half of an operation-bound step-up issued
-//! to its own subject ([`credentials_of`], read only by `bound_step_up`). It is
-//! never a proof — the approve-response that carries its assertion must still
-//! be signed by the member's `assertionMethod` key (approve-response 0.5) — and
+//! to its own subject ([`credentials_of`], read only by `bound_step_up`). Its
+//! user-verified assertion is the approver's evidence (approve-response 0.7
+//! `webauthn`), whether the answer comes unsigned from the console or beside
+//! the member's own `assertionMethod` proof; it never proves a document, and
 //! it never opens or elevates a session, which holds **by construction**: the
 //! credentials live in [`crate::store::keyspaces::STEP_UP_PASSKEYS`], and login
 //! and session step-up read only the `passkey` keyspace. It confers no role and
@@ -64,12 +65,6 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
-use trust_tasks_rs::specs::auth::passkey::admin_list::v0_1 as admin_list;
-use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
-use trust_tasks_rs::specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
-use trust_tasks_rs::specs::auth::passkey::revoke::start::v0_2 as revoke_start;
 use uuid::Uuid;
 use vti_common::audit::{AuditEvent, StepUpPasskeyData};
 use vti_common::auth::passkey::store::{
@@ -78,6 +73,12 @@ use vti_common::auth::passkey::store::{
 };
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_specs::auth::passkey::admin_list::v0_1 as admin_list;
+use vti_specs::auth::passkey::enroll::invite::v0_3 as invite;
+use vti_specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
+use vti_specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
+use vti_specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
+use vti_specs::auth::passkey::revoke::start::v0_2 as revoke_start;
 use webauthn_rs::prelude::{
     Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
     RegisterPublicKeyCredential, Webauthn,
@@ -501,7 +502,9 @@ pub async fn check_invite(
         )
         .into());
     }
-    let ttl = payload.ttl.map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
+    let ttl = payload
+        .ttl_seconds
+        .map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
     if ttl > MAX_INVITE_TTL_SECS {
         return Err(AppError::Validation(format!(
             "ttl must be at most {MAX_INVITE_TTL_SECS} seconds"
@@ -544,7 +547,7 @@ pub async fn check_invite(
     Ok(())
 }
 
-/// `auth/passkey/enroll/invite/0.2`, `purpose: stepUp`, issued by
+/// `auth/passkey/enroll/invite/0.3`, `purpose: stepUp`, issued by
 /// `admin_did`. The caller has verified the administrator's proof and the
 /// passkey gesture bound to this document.
 pub async fn issue_invite(
@@ -555,7 +558,9 @@ pub async fn issue_invite(
     check_invite(state, admin_did, payload).await?;
     let public_url = state.public_url.as_deref().unwrap_or_default();
     let subject = payload.subject.to_string();
-    let ttl = payload.ttl.map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
+    let ttl = payload
+        .ttl_seconds
+        .map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
 
     let mut raw = [0u8; 32];
     rand::rng().fill_bytes(&mut raw);
@@ -954,7 +959,7 @@ pub async fn redeem_finish(
     // Tell the member, best-effort and after the fact: an invite is always an
     // administrator acting (`check_invite` refuses one to oneself), so `by`
     // here is always someone other than the subject — the case
-    // `vtc/members/step-up-passkey-notice/0.1` exists to surface.
+    // `vtc/members/step-up-passkey-notice/0.2` exists to surface.
     crate::ceremony::step_up_passkey_notice::send(
         state,
         &c.subject,
@@ -1178,7 +1183,7 @@ pub async fn revoke_finish(
     let revoked_at = Utc::now();
     // Tell the member, best-effort and after the fact: `by` is the producer —
     // the member's own DID for a self-revoke, the administrator's otherwise —
-    // so the recipient can tell which this was (step-up-passkey-notice/0.1,
+    // so the recipient can tell which this was (step-up-passkey-notice/0.2,
     // producer requirement 3).
     crate::ceremony::step_up_passkey_notice::send(
         state,

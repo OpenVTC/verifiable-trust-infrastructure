@@ -26,7 +26,8 @@
 //! Mac.
 //!
 //! So each distinct keyspace set is created **once** in a template
-//! database, and every fixture writes the template's files into its own
+//! database, and every fixture writes the template's files — and its
+//! directories, empty ones included (see [`Snapshot`]) — into its own
 //! directory and opens them — ordinary buffered writes, no fsync. Opening
 //! recovers the copy as fjall would any database (one journal fsync), and
 //! each fixture's store is fully independent.
@@ -49,8 +50,16 @@ use crate::error::AppError;
 
 use super::{LocalStore, Store};
 
-/// A template database as its files: (path relative to the root, bytes).
-type Snapshot = Arc<Vec<(PathBuf, Vec<u8>)>>;
+/// A template database as its entries: (path relative to the root, bytes for a file or
+/// `None` for a directory).
+///
+/// Directories are entries too, **empty ones included**. An empty tree has an empty
+/// `tables/` folder, and lsm-tree's recovery creates and fsyncs one it finds missing
+/// (`recover_levels`), so a copy that dropped them paid one `F_FULLFSYNC` per keyspace on
+/// every open — ~5 ms each on a Mac, ~0.3 s for the VTA's set, which is what this module
+/// exists to avoid (#2383).
+type Snapshot = Arc<Vec<Entry>>;
+type Entry = (PathBuf, Option<Vec<u8>>);
 
 /// Templates already loaded by this process, by keyspace set.
 fn templates() -> &'static Mutex<HashMap<Vec<String>, Snapshot>> {
@@ -84,10 +93,15 @@ pub fn open_with_keyspaces(data_dir: &Path, keyspaces: &[&str]) -> Result<Store,
 fn copy_and_open(snapshot: &Snapshot, data_dir: &Path) -> Result<Store, AppError> {
     for (rel, bytes) in snapshot.iter() {
         let path = data_dir.join(rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        match bytes {
+            None => std::fs::create_dir_all(&path)?,
+            Some(bytes) => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, bytes)?;
+            }
         }
-        std::fs::write(&path, bytes)?;
     }
     std::fs::create_dir_all(data_dir)?;
     Store::open(&StoreConfig {
@@ -150,10 +164,10 @@ fn snapshot_for(key: &[String]) -> Result<Snapshot, AppError> {
     Ok(snapshot)
 }
 
-fn load(published: &Path) -> Option<Vec<(PathBuf, Vec<u8>)>> {
+fn load(published: &Path) -> Option<Vec<Entry>> {
     let mut files = Vec::new();
     match read_tree(published, Path::new(""), &mut files) {
-        Ok(()) if !files.is_empty() => Some(files),
+        Ok(()) if files.iter().any(|(_, bytes)| bytes.is_some()) => Some(files),
         _ => None,
     }
 }
@@ -161,10 +175,7 @@ fn load(published: &Path) -> Option<Vec<(PathBuf, Vec<u8>)>> {
 /// Build the template in a private staging directory, read it, then
 /// publish it by renaming the staging directory into place. A process that
 /// loses the race to publish discards its own copy; the two are equivalent.
-fn build_and_publish(
-    key: &[String],
-    published: &Path,
-) -> Result<Vec<(PathBuf, Vec<u8>)>, AppError> {
+fn build_and_publish(key: &[String], published: &Path) -> Result<Vec<Entry>, AppError> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = published
         .parent()
@@ -195,14 +206,16 @@ fn build_and_publish(
     built
 }
 
-fn read_tree(root: &Path, rel: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) -> Result<(), AppError> {
+fn read_tree(root: &Path, rel: &Path, out: &mut Vec<Entry>) -> Result<(), AppError> {
     for entry in std::fs::read_dir(root.join(rel))? {
         let entry = entry?;
         let rel = rel.join(entry.file_name());
         if entry.file_type()?.is_dir() {
+            // Before its contents, so a copy creates it first.
+            out.push((rel.clone(), None));
             read_tree(root, &rel, out)?;
         } else {
-            out.push((rel.clone(), std::fs::read(root.join(&rel))?));
+            out.push((rel.clone(), Some(std::fs::read(root.join(&rel))?)));
         }
     }
     Ok(())
@@ -241,6 +254,49 @@ mod tests {
         .unwrap();
         let got: Option<String> = reopened.keyspace("beta").unwrap().get("k").await.unwrap();
         assert_eq!(got.as_deref(), Some("in a"));
+    }
+
+    /// Every directory of the template is in its snapshot, empty ones included: an empty
+    /// tree's `tables/` folder that a copy leaves out is one lsm-tree's recovery creates
+    /// and fsyncs, per keyspace, on every open (#2383).
+    #[test]
+    fn the_snapshot_carries_every_directory_of_the_template() {
+        let mut key: Vec<String> = SET.iter().map(|s| s.to_string()).collect();
+        key.sort();
+        let snapshot = snapshot_for(&key).unwrap();
+
+        fn dirs(root: &Path, rel: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(root.join(rel)).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    let rel = rel.join(entry.file_name());
+                    out.push(rel.clone());
+                    dirs(root, &rel, out);
+                }
+            }
+        }
+        let mut published = Vec::new();
+        dirs(&published_dir(&key), Path::new(""), &mut published);
+
+        let empty = published
+            .iter()
+            .filter(|d| {
+                std::fs::read_dir(published_dir(&key).join(d))
+                    .unwrap()
+                    .next()
+                    .is_none()
+            })
+            .count();
+        assert!(empty > 0, "the template has no empty directory to check");
+        for dir in &published {
+            assert!(
+                snapshot
+                    .iter()
+                    .any(|(rel, bytes)| rel == dir && bytes.is_none()),
+                "`{}` is not in the snapshot",
+                dir.display()
+            );
+        }
     }
 
     /// A keyspace outside the template's set still opens (created normally).

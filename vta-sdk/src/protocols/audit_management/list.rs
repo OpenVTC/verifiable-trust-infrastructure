@@ -1,4 +1,4 @@
-//! Wire types for canonical `audit/list/0.1`.
+//! Wire types for canonical `audit/list/0.2`.
 //!
 //! Two shapes live here and they are deliberately not the same one:
 //!
@@ -108,7 +108,7 @@ impl From<&AuditLogEntry> for AuditEnvelope {
     }
 }
 
-/// Request payload for canonical `audit/list/0.1`.
+/// Request payload for canonical `audit/list/0.2`.
 ///
 /// Paging is by opaque continuation `cursor`, not offset: an offset
 /// silently skips or repeats rows when entries are appended while a
@@ -137,11 +137,11 @@ pub struct ListAuditLogsBody {
     /// Return only entries in this trust context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
-    /// Maximum entries to return in this page. Clamped to `1..=200`;
-    /// omitted means 50.
+    /// Maximum entries to return in this page (`limit`, 1–1000 on the wire).
+    /// The VTA clamps it to `1..=200`; omitted means 50.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<u64>,
-    /// Opaque continuation token from a previous response's `cursor`.
+    pub limit: Option<u64>,
+    /// Opaque continuation token from a previous response's `nextCursor`.
     ///
     /// The filters are bound into the cursor, so a consumer continuing
     /// a page must not also change them — doing so is rejected as an
@@ -151,16 +151,16 @@ pub struct ListAuditLogsBody {
     pub cursor: Option<String>,
 }
 
-/// Response payload for canonical `audit/list/0.1`.
+/// Response payload for canonical `audit/list/0.2`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListAuditLogsResultBody {
     /// The matching entries, newest first.
     pub entries: Vec<AuditEnvelope>,
-    /// True when more entries **match** beyond this page.
-    pub truncated: bool,
-    /// Continuation token for the next page. Present iff `truncated`.
+    /// Continuation token for the next page. Present iff more entries
+    /// **match** beyond this page; absent on the last page. (0.1's separate
+    /// `truncated` flag is gone in 0.2: the cursor's presence is the answer.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
 }

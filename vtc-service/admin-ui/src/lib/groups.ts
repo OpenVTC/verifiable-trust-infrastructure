@@ -24,15 +24,15 @@ import type {
   GroupUpdatePayload,
 } from "./wire-types";
 
-export const GROUPS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/list/0.1";
+export const GROUPS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/list/0.2";
 export const GROUPS_SHOW_TASK = "https://trusttasks.org/spec/vtc/groups/show/0.1";
 export const GROUPS_CREATE_TASK = "https://trusttasks.org/spec/vtc/groups/create/0.1";
 export const GROUPS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/groups/update/0.1";
 export const GROUPS_DELETE_TASK = "https://trusttasks.org/spec/vtc/groups/delete/0.1";
-export const GROUPS_MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/members/list/0.1";
+export const GROUPS_MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/members/list/0.2";
 export const GROUPS_MEMBERS_ADD_TASK = "https://trusttasks.org/spec/vtc/groups/members/add/0.1";
 export const GROUPS_MEMBERS_REMOVE_TASK = "https://trusttasks.org/spec/vtc/groups/members/remove/0.1";
-export const GROUPS_REQUESTS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/requests/list/0.1";
+export const GROUPS_REQUESTS_LIST_TASK = "https://trusttasks.org/spec/vtc/groups/requests/list/0.2";
 export const GROUPS_REQUESTS_DECIDE_TASK = "https://trusttasks.org/spec/vtc/groups/requests/decide/0.1";
 export const GROUPS_MANAGERS_ADD_TASK = "https://trusttasks.org/spec/vtc/groups/managers/add/0.1";
 export const GROUPS_MANAGERS_REMOVE_TASK = "https://trusttasks.org/spec/vtc/groups/managers/remove/0.1";

@@ -1,5 +1,5 @@
 //! Members' step-up passkeys on the signed-document spine —
-//! `auth/passkey/enroll/invite/0.2` (`purpose: stepUp`),
+//! `auth/passkey/enroll/invite/0.3` (`purpose: stepUp`),
 //! `auth/passkey/enroll/redeem/{start,finish}/0.1` and
 //! `auth/passkey/revoke/{start,finish}/0.2` for a member revoking their own,
 //! or an administrator revoking one on a member's behalf, and
@@ -15,17 +15,17 @@
 //! | `enroll/invite` | a community administrator ([`admin_signer`]) | their ACL row, **and** a passkey gesture of theirs bound to this document ([`crate::acl::bound_step_up`]) |
 //! | `enroll/redeem/start` | the member the invite names — required here, although the specification makes the proof optional | the invite token, the claim code and the signer, together |
 //! | `enroll/redeem/finish` | the member, or nobody (the browser that ran the ceremony) | the ceremony a signed start opened |
-//! | `revoke/start`, `revoke/finish` | the member revoking their own step-up passkey, or a community administrator revoking one for a member | a user-verified assertion from the producer's own passkeys — the subject's remaining step-up passkeys for a self-revoke, the administrator's session passkeys otherwise — plus, for an administrator, their ACL row |
+//! | `revoke/start`, `revoke/finish` | the member revoking their own step-up passkey, a community administrator revoking one for a member, or an administrator revoking their own session passkey (which `start` refuses below their last) | a user-verified assertion from the producer's own passkeys — the subject's remaining step-up passkeys for a self-revoke, the administrator's session passkeys otherwise — plus, for an administrator, their ACL row |
 //! | `admin-list` | an administrator with authority over the member — community-wide, or scoped to a context the member's entry names | their ACL row |
 
 use serde_json::Value;
-use trust_tasks_rs::specs::auth::passkey::admin_list::v0_1 as admin_list;
-use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
-use trust_tasks_rs::specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
-use trust_tasks_rs::specs::auth::passkey::revoke::start::v0_2 as revoke_start;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use vti_specs::auth::passkey::admin_list::v0_1 as admin_list;
+use vti_specs::auth::passkey::enroll::invite::v0_3 as invite;
+use vti_specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
+use vti_specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
+use vti_specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
+use vti_specs::auth::passkey::revoke::start::v0_2 as revoke_start;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, reject_with, reject_with_code, success_response,
@@ -79,7 +79,7 @@ pub(super) async fn dispatch(
     })
 }
 
-/// `auth/passkey/enroll/invite/0.2`. Letting a member bind a second factor is
+/// `auth/passkey/enroll/invite/0.3`. Letting a member bind a second factor is
 /// an act of authority, so beyond the administrator's signature it takes a
 /// passkey gesture of theirs **bound to this document**: without one the
 /// answer is `permissionDenied` with the ceremony inline as
@@ -219,8 +219,9 @@ async fn revoke_producer(
 }
 
 /// `auth/passkey/revoke/start/0.2`: the member revoking their own step-up
-/// passkey (`payload.subject` absent), or a community administrator revoking
-/// one for a member (`payload.subject` present, naming someone else).
+/// passkey (`payload.subject` absent), a community administrator revoking
+/// one for a member (`payload.subject` present, naming someone else), or an
+/// administrator revoking one of their own session (login) passkeys.
 async fn handle_revoke_start(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -234,6 +235,48 @@ async fn handle_revoke_start(
         Ok(p) => p,
         Err(reject) => return reject,
     };
+    // 0.2 resolves the credential across both purposes. A session (login)
+    // credential is an administrator's, revoked by its owner on their own
+    // administrator standing; everything else is a step-up credential.
+    let credential_id = payload.credential_id.as_str();
+    let subject = payload
+        .subject
+        .as_ref()
+        .map_or(producer.as_str(), |s| s.as_str());
+    let session = match crate::routes::admin::passkeys::is_session_credential_of(
+        state,
+        subject,
+        credential_id,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if session {
+        if subject != producer {
+            // An administrator's login passkey is theirs to remove: no
+            // other administrator revokes it on this door.
+            return task_error_to_reject(
+                &doc,
+                &crate::error::TaskError::declared(
+                    revoke_start::error_codes::NOT_AUTHORIZED.code,
+                    crate::error::AppError::Forbidden(
+                        "a session passkey is revoked only by its owner".into(),
+                    ),
+                ),
+            );
+        }
+        let actor = match admin_signer(state, ctx, &doc).await {
+            Ok(a) => a,
+            Err(reject) => return reject,
+        };
+        return match crate::routes::admin::passkeys::revoke_start(state, &actor.did, &payload).await
+        {
+            Ok(response) => success_response(&doc, response),
+            Err(e) => task_error_to_reject(&doc, &e),
+        };
+    }
     match crate::step_up_passkey::revoke_start(state, &producer, &payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
@@ -254,6 +297,26 @@ async fn handle_revoke_finish(
         Ok(p) => p,
         Err(reject) => return reject,
     };
+    // A handle `revoke/start` minted for a session credential is finished
+    // where it was started.
+    match crate::routes::admin::passkeys::owns_revocation(state, payload.revocation_id.as_str())
+        .await
+    {
+        Ok(false) => {}
+        Ok(true) => {
+            let actor = match admin_signer(state, ctx, &doc).await {
+                Ok(a) => a,
+                Err(reject) => return reject,
+            };
+            return match crate::routes::admin::passkeys::revoke_finish(state, &actor.did, &payload)
+                .await
+            {
+                Ok(response) => success_response(&doc, response),
+                Err(e) => task_error_to_reject(&doc, &e),
+            };
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
     match crate::step_up_passkey::revoke_finish(state, &producer, &payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
@@ -262,7 +325,7 @@ async fn handle_revoke_finish(
 
 /// `auth/passkey/admin-list/0.1`: an administrator lists one member's step-up
 /// passkeys. The specification declares its proof REQUIRED, and the spine's
-/// policy check (`dispatch_trust_task_validated`, off the published registry)
+/// policy check (`vti_trust_task_server::Spine`, off the published registry)
 /// refuses an unsigned document before this handler runs.
 ///
 /// A signer that does not resolve to an administrator — no ACL row, an
@@ -317,8 +380,7 @@ mod tests {
     use super::super::members_admin_tests::{error_code, payload_of, seed_acl, signed, unsigned};
     use super::super::soft_authenticator::SoftEd25519Authenticator;
     use super::super::{
-        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
-        TrustTaskOutcome, dispatch_trust_task_core,
+        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, TrustTaskOutcome, dispatch_trust_task_core,
     };
     use super::revoke_start;
     use super::{ADMIN_LIST_TYPE, admin_list};
@@ -333,7 +395,7 @@ mod tests {
     use trust_tasks_rs::validate::ValidatedPayload;
 
     const RP_ORIGIN: &str = "https://vtc.example.com";
-    const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.1";
+    const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.2";
 
     const TRANSPORTS: [JoinTransport; 3] = [
         JoinTransport::Rest,
@@ -493,11 +555,11 @@ mod tests {
             })
     }
 
-    /// [`approve`], against whichever approve-response version `uri` names.
-    async fn approve_as(
+    /// The `auth/step-up/approve-response/0.7` `signer` sends for `request`,
+    /// carrying an assertion from `key`, signed by `signer`.
+    async fn approve(
         fix: &Fixture,
         transport: JoinTransport,
-        uri: &str,
         signer: &Party,
         request: &Value,
         assertion: &PublicKeyCredential,
@@ -506,33 +568,13 @@ mod tests {
             fix,
             transport,
             signer,
-            uri,
+            STEP_UP_APPROVE_RESPONSE_TYPE,
             json!({
                 "subject": request["subject"],
                 "challenge": request["challenge"],
                 "decision": "approved",
                 "evidence": { "kind": "webauthn", "assertion": published(assertion) },
             }),
-        )
-        .await
-    }
-
-    /// The `auth/step-up/approve-response/0.4` `signer` sends for `request`,
-    /// carrying an assertion from `key`.
-    async fn approve(
-        fix: &Fixture,
-        transport: JoinTransport,
-        signer: &Party,
-        request: &Value,
-        assertion: &PublicKeyCredential,
-    ) -> TrustTaskOutcome {
-        approve_as(
-            fix,
-            transport,
-            STEP_UP_APPROVE_RESPONSE_TYPE,
-            signer,
-            request,
-            assertion,
         )
         .await
     }
@@ -660,7 +702,7 @@ mod tests {
     #[test]
     fn what_the_specifications_declare() {
         let required = |uri| {
-            trust_tasks_rs::schema_index::spec_policy_for(uri)
+            vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published policy"))
                 .is_proof_required
         };
@@ -730,7 +772,7 @@ mod tests {
                 ),
                 (
                     &fix.admin,
-                    json!({ "subject": fix.member.did, "purpose": "stepUp", "ttl": 86401 }),
+                    json!({ "subject": fix.member.did, "purpose": "stepUp", "ttlSeconds": 86401 }),
                     "malformedRequest",
                     "an invite lives at most a day",
                 ),
@@ -963,98 +1005,92 @@ mod tests {
 
     // ── use: auth/step-up/approve-response ───────────────────────────────
 
-    /// The passkey is in addition to the member's `assertionMethod` proof,
-    /// never instead of it (approve-response 0.5).
+    /// approve-response 0.7: a user-verified assertion by the member's own
+    /// step-up passkey is evidence on its own, so the answer may come unsigned
+    /// (over HTTPS — a messaging document always carries a proof). Unsigned,
+    /// it must name the subject as its issuer; signed, the signer must be the
+    /// subject. Every refusal comes before the pending step-up is taken, and
+    /// leaves the challenge for the member's own answer.
     #[tokio::test]
-    async fn approve_response_with_a_step_up_passkey_still_needs_the_members_own_proof() {
-        for t in TRANSPORTS {
-            let mut fix = fixture().await;
-            let member = fix.member.did.clone();
-            let issued = invite_over(&mut fix, t, &member).await;
-            redeem_over(&mut fix, t, &issued).await;
+    async fn approve_response_0_7_a_step_up_passkey_answers_unsigned_or_beside_the_members_proof() {
+        let mut fix = fixture().await;
+        let member = fix.member.did.clone();
+        let issued = invite_over(&mut fix, JoinTransport::Rest, &member).await;
+        redeem_over(&mut fix, JoinTransport::Rest, &issued).await;
 
-            let request = bound_request(&fix, &member).await;
-            let assertion = fix
-                .member_key
-                .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
-            let evidence = json!({
-                "subject": request["subject"],
-                "challenge": request["challenge"],
-                "decision": "approved",
-                "evidence": { "kind": "webauthn", "assertion": published(&assertion) },
-            });
+        let request = bound_request(&fix, &member).await;
+        let assertion = fix
+            .member_key
+            .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
+        let evidence = json!({
+            "subject": request["subject"],
+            "challenge": request["challenge"],
+            "decision": "approved",
+            "evidence": { "kind": "webauthn", "assertion": published(&assertion) },
+        });
 
-            let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_TYPE, evidence.clone());
-            let out = dispatch_doc(&fix, t, &fix.member, &bare).await;
-            assert_code(&out, "proofRequired", "the passkey alone");
-            for (signer, what) in [(&fix.other, "another member"), (&fix.admin, "an admin")] {
-                let out = approve(&fix, t, signer, &request, &assertion).await;
-                assert_code(
-                    &out,
-                    "auth/step-up/approve-response:subjectMismatch",
-                    &format!("{what} signing the member's gesture"),
-                );
-            }
-            // The refusals left the challenge unspent.
-            let out = approve(&fix, t, &fix.member, &request, &assertion).await;
-            assert_eq!(ok(&out, "the member's own")["status"], "recorded", "{t:?}");
-            let spent = bound_step_up::redeem_or_request(
-                &fix.vtc.state,
-                &member,
-                BREAK_GLASS,
-                &break_glass(),
-                "break the glass",
-            )
-            .await
-            .unwrap();
-            assert!(matches!(spent, Gate::Satisfied), "{t:?}");
-        }
-    }
-
-    /// `auth/step-up/approve-response/0.5`, served alongside 0.4: a webauthn
-    /// gate alone is never enough — unlike 0.4, which still admits an
-    /// unsigned console-passkey answer, 0.5 requires the approver's proof on
-    /// every response, so an unsigned 0.5 document is refused before its
-    /// evidence is even looked at. Signed by the subject, it is recorded
-    /// exactly as 0.4 records it.
-    #[tokio::test]
-    async fn approve_response_0_5_requires_the_subjects_proof_even_for_a_webauthn_gate() {
-        for t in TRANSPORTS {
-            let mut fix = fixture().await;
-            let member = fix.member.did.clone();
-            let issued = invite_over(&mut fix, t, &member).await;
-            redeem_over(&mut fix, t, &issued).await;
-
-            let request = bound_request(&fix, &member).await;
-            let assertion = fix
-                .member_key
-                .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
-            let evidence = json!({
-                "subject": request["subject"],
-                "challenge": request["challenge"],
-                "decision": "approved",
-                "evidence": { "kind": "webauthn", "assertion": published(&assertion) },
-            });
-
-            let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_V0_5_TYPE, evidence);
-            let out = dispatch_doc(&fix, t, &fix.member, &bare).await;
+        for (signer, what) in [(&fix.other, "another member"), (&fix.admin, "an admin")] {
+            let out = approve(&fix, JoinTransport::Rest, signer, &request, &assertion).await;
             assert_code(
                 &out,
-                "proofRequired",
-                "0.5 admits no unsigned answer, webauthn evidence or not",
+                "auth/step-up/approve-response:subjectMismatch",
+                &format!("{what} signing the member's gesture"),
             );
-
-            let out = approve_as(
+            let out = dispatch_doc(
                 &fix,
-                t,
-                STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
-                &fix.member,
-                &request,
-                &assertion,
+                JoinTransport::Rest,
+                signer,
+                &unsigned(signer, STEP_UP_APPROVE_RESPONSE_TYPE, evidence.clone()),
             )
             .await;
+            assert_code(
+                &out,
+                "auth/step-up/approve-response:subjectMismatch",
+                &format!("{what} as the unsigned answer's issuer"),
+            );
+        }
+        // Over messaging a document always carries a proof (VTI-OPS-021).
+        for t in [JoinTransport::DIDComm, JoinTransport::Tsp] {
+            let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_TYPE, evidence.clone());
+            let out = dispatch_doc(&fix, t, &fix.member, &bare).await;
+            assert_code(&out, "proofRequired", "unsigned over messaging");
+        }
+
+        let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_TYPE, evidence);
+        let out = dispatch_doc(&fix, JoinTransport::Rest, &fix.member, &bare).await;
+        assert_eq!(
+            ok(&out, "the member's unsigned answer")["status"],
+            "recorded"
+        );
+        let spent = bound_step_up::redeem_or_request(
+            &fix.vtc.state,
+            &member,
+            BREAK_GLASS,
+            &break_glass(),
+            "break the glass",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(spent, Gate::Satisfied));
+    }
+
+    /// approve-response 0.7, signed by the subject beside a webauthn gate, is
+    /// recorded on every transport.
+    #[tokio::test]
+    async fn approve_response_0_7_a_webauthn_answer_signed_by_the_subject_is_recorded() {
+        for t in TRANSPORTS {
+            let mut fix = fixture().await;
+            let member = fix.member.did.clone();
+            let issued = invite_over(&mut fix, t, &member).await;
+            redeem_over(&mut fix, t, &issued).await;
+
+            let request = bound_request(&fix, &member).await;
+            let assertion = fix
+                .member_key
+                .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
+            let out = approve(&fix, t, &fix.member, &request, &assertion).await;
             assert_eq!(
-                ok(&out, "0.5, signed by the subject")["status"],
+                ok(&out, "0.7, signed by the subject")["status"],
                 "recorded",
                 "{t:?}"
             );

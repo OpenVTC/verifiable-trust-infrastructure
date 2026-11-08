@@ -40,7 +40,7 @@ pub struct RequestVmcResponse {
 
 /// `vtc/members/solicit-vmc:notFound` — no active member with that DID.
 pub const SOLICIT_VMC_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::members::solicit_vmc::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::members::solicit_vmc::v0_1::error_codes::NOT_FOUND.code;
 
 /// POST /members/{did}/request-vmc — dispatch a reciprocal-VMC request.
 /// `vtc/members/solicit-vmc/0.1`. A signed document served by the spine

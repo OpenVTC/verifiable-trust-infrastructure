@@ -281,11 +281,23 @@ pub fn held_by<'a>(values: impl IntoIterator<Item = &'a Value>) -> BTreeSet<Stri
 /// Erase every lapsed hold, and every picture neither a card nor a live hold
 /// keeps (`images/upload` item 6). Returns how many pictures were erased.
 pub async fn collect(ks: &KeyspaceHandle, now: DateTime<Utc>) -> Result<usize, AppError> {
-    let _guard = super::WRITE_LOCK.lock().await;
     let mut kept: BTreeSet<String> = BTreeSet::new();
     for card in cards::all(ks).await? {
         kept.extend(held_by(card.values.values()));
     }
+    collect_except(ks, &kept, now).await
+}
+
+/// Erase every lapsed hold, and every picture neither `kept` nor a live hold keeps, in
+/// `ks` — the directory's own picture store, or another store that keeps pictures the
+/// same way (the badges' `badge_images`). Returns how many pictures were erased.
+pub async fn collect_except(
+    ks: &KeyspaceHandle,
+    kept: &BTreeSet<String>,
+    now: DateTime<Utc>,
+) -> Result<usize, AppError> {
+    let _guard = super::WRITE_LOCK.lock().await;
+    let mut kept: BTreeSet<String> = kept.clone();
     let mut batch = Batch::new();
     for (key, raw) in ks.prefix_iter_raw(b"upload:".to_vec()).await? {
         let sha = String::from_utf8_lossy(&key)

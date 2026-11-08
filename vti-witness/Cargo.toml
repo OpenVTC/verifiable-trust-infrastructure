@@ -33,17 +33,17 @@ k8s-secrets = ["vti-secrets/k8s-secrets"]
 # window the VTA and VTC answer with — `seed_store::SeedStore`, and (`tsp`)
 # `host_session`, the mediator session and its supervisor, which routes a TSP
 # reply to a peer on another mediator (`tsp_route`).
-vti-common = { path = "../vti-common", version = "0.49", features = ["host-session"] }
+vti-common = { path = "../vti-common", version = "0.61", features = ["host-session"] }
 # The `[secrets]` table and `create_seed_store`: the witness keeps its key
 # material behind the same backends the VTA and VTC use, never in its config.
-vti-secrets = { path = "../vti-secrets", version = "0.22" }
+vti-secrets = { path = "../vti-secrets", version = "0.34" }
 # `provision-client`: the two-phase, VTA-provisioned setup (`run_phase1_init`,
 # `run_connection_test`, `ProvisionAsk::witness`). `tsp`: the TSP leg of that
 # setup against a VTA that advertises TSP, and the binding envelope. `didcomm`:
 # `did_key::secrets_from_bundle`. `proof-verify` arrives with `client` (through
 # `provision-client`): `trust_task_proof` verifies an inbound document's proof,
 # `trust_task_sign` signs every reply.
-vta-sdk = { path = "../vta-sdk", version = "0.73", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.85", features = [
   "didcomm",
   "provision-client",
   "tsp",
@@ -61,6 +61,9 @@ affinidi-secrets-resolver = { workspace = true }
 
 # Trust Task documents and the generated wire types (discovery, witness).
 trust-tasks-rs = { workspace = true }
+# The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
+# "Pinning a task version").
+vti-specs = { path = "../vti-specs", version = "0.10" }
 # `ENVELOPE_TYPE`, from the crate that defines the DIDComm binding.
 trust-tasks-didcomm = { workspace = true }
 
@@ -102,6 +105,5 @@ vti-common = { path = "../vti-common", features = ["test-support"] }
 # Signing the presentations the tests submit (`authentication` proofs).
 affinidi-data-integrity = { workspace = true }
 
-[lints.rust]
-# See `[workspace.lints.rust]` in the workspace Cargo.toml.
-deprecated = "allow"
+[lints]
+workspace = true

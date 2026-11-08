@@ -649,6 +649,13 @@ pub async fn run_provision_integration(
     )
     .await
     .map_err(|e| format!("provision-integration: {e}"))?;
+    // Its holder collects for the integration's DID, never this VTA
+    // (VTI-NTF-080 item 2).
+    if let Some(did) = output.summary.integration_did.as_deref() {
+        crate::operations::collection::mark_provisioned(&state.collection_ks, did)
+            .await
+            .map_err(|e| format!("record the integration as provisioned: {e}"))?;
+    }
 
     // 6. Persist nonce-store writes + any other fjall flushes. The
     //    shared fn already committed its rows via the keyspaces; this
@@ -1068,6 +1075,18 @@ pub async fn run_context_delete(
     // carries the audit keyspace so backup export can dump it.
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
     let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let memory_ks = cs.keyspace(crate::keyspaces::MEMORY)?;
+    let app_state_ks = cs.keyspace(crate::keyspaces::APP_STATE)?;
+    let internal_ks = cs.keyspace(crate::keyspaces::INTERNAL_KEYS)?;
+    let vault_ks = cs.keyspace(crate::keyspaces::VAULT)?;
+    let consent_ks = cs.keyspace(crate::keyspaces::CONSENT)?;
+    let consent_approvers_ks = cs.keyspace(crate::keyspaces::CONSENT_APPROVERS)?;
+    let persona_ks = cs.keyspace(crate::keyspaces::PERSONA)?;
+    let pcs_engine_ks = cs.keyspace(crate::keyspaces::PCS_ENGINE)?;
+    let notifications_ks = cs.keyspace(crate::keyspaces::NOTIFICATIONS)?;
+    let external_accounts_ks = cs.keyspace(crate::keyspaces::EXTERNAL_ACCOUNTS)?;
+    let external_secrets_ks = cs.keyspace(crate::keyspaces::EXTERNAL_SECRETS)?;
+    let collection_ks = cs.keyspace(crate::keyspaces::COLLECTION)?;
     #[cfg(feature = "webvh")]
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
@@ -1110,6 +1129,18 @@ pub async fn run_context_delete(
         did_templates: &did_templates_ks,
         audit: &audit_ks,
         imported: &imported_ks,
+        memory: &memory_ks,
+        app_state: &app_state_ks,
+        internal: &internal_ks,
+        vault: &vault_ks,
+        consent: &consent_ks,
+        consent_approvers: &consent_approvers_ks,
+        persona: &persona_ks,
+        pcs_engine: &pcs_engine_ks,
+        notifications: &notifications_ks,
+        external_accounts: &external_accounts_ks,
+        external_secrets: &external_secrets_ks,
+        collection: &collection_ks,
         #[cfg(feature = "webvh")]
         webvh: &webvh_ks,
     };
@@ -1158,6 +1189,9 @@ pub async fn run_context_delete(
         let cleanup = crate::operations::contexts::ContextDidCleanup {
             deps: &deps,
             vta_did: app_config.vta_did.as_deref(),
+            // The break-glass path keeps the 1.0 contract it always had, and
+            // prints every orphan below.
+            host_copies: crate::operations::contexts::HostCopies::ReportAfter,
         };
         let result = crate::operations::contexts::delete_context(
             &ks,

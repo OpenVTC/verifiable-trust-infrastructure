@@ -13,9 +13,9 @@
 use std::collections::HashSet;
 
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::voting::{
+use vti_specs::voting::{
     ballot::cast::v0_1::{Answer, Ballot},
-    election::register::v0_1::{Manifest, Question, RollRuleRule, SecrecyLevel},
+    election::register::v0_4::{Manifest, Question, RollRuleRule, SecrecyLevel},
 };
 
 /// A broken rule. Each variant is one error local part of the voting families.
@@ -36,6 +36,57 @@ pub enum RuleError {
     BallotInvalid(String),
     #[error("serialization: {0}")]
     Serialization(String),
+}
+
+/// The members a manifest registered under `voting/election/register/0.1` (voting/_shared/0.1)
+/// named its instants by, renamed `…At` in voting/_shared/0.2.
+const V0_1_INSTANTS: [&str; 3] = ["registrationOpens", "votingOpens", "votingCloses"];
+
+/// Refuse a manifest in the shape of `voting/election/register/0.1`.
+///
+/// Every party now reads only the 0.2 manifest. One registered under 0.1 cannot be read as
+/// 0.2: its digest — which every ticket, ballot and certification is bound to — is over its
+/// 0.1 member names, so renaming them would make it a different election. It is refused by
+/// name instead of failing as a manifest missing `registrationOpensAt`.
+///
+/// # Errors
+/// [`RuleError::InvalidManifest`] naming the election and what to do.
+pub fn require_current_manifest(manifest: &serde_json::Value) -> Result<(), RuleError> {
+    if V0_1_INSTANTS.iter().any(|k| manifest.get(k).is_some()) {
+        let id = manifest
+            .get("electionId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("(unnamed)");
+        return Err(RuleError::InvalidManifest(format!(
+            "election {id} was registered under voting/election/register/0.1 (its manifest \
+             names registrationOpens, votingOpens and votingCloses); this build reads only \
+             the 0.2 manifest and cannot carry it over. Finish or cancel it on the previous \
+             release, or remove it"
+        )));
+    }
+    Ok(())
+}
+
+/// Why a board entry written under `voting/board/read/0.1` cannot be served or audited, if it is
+/// one: a lifecycle entry (`opened`, `closed`, `closedEarly`, `cancelled`) naming its instant `at`
+/// (voting/_shared/0.1) where voting/_shared/0.2 names it `occurredAt`.
+///
+/// The leaf hash is over the entry's member names, so renaming it would change the board's root
+/// and break every receipt and checkpoint already issued against it. It is refused by name
+/// instead.
+pub(crate) fn v0_1_lifecycle_entry(index: u64, entry: &serde_json::Value) -> Option<String> {
+    let lifecycle = matches!(
+        entry.get("kind").and_then(serde_json::Value::as_str),
+        Some("opened" | "closed" | "closedEarly" | "cancelled")
+    );
+    (lifecycle && entry.get("at").is_some() && entry.get("occurredAt").is_none()).then(|| {
+        format!(
+            "board entry {index} names its instant `at` (voting/board/read/0.1); this build \
+             serves and reads only voting/board/read/0.2, whose lifecycle entries name it \
+             `occurredAt`, and cannot rename it without changing the board. Finish or cancel \
+             the election on the previous release, or remove it"
+        )
+    })
 }
 
 /// SHA-256 of the manifest's RFC 8785 (JCS) canonicalization, over the JSON as received.
@@ -197,9 +248,9 @@ pub fn check_manifest_serving(
     } else {
         check_trustees(m)?;
     }
-    if !(m.registration_opens <= m.voting_opens && m.voting_opens < m.voting_closes) {
+    if !(m.registration_opens_at <= m.voting_opens_at && m.voting_opens_at < m.voting_closes_at) {
         return Err(bad_manifest(
-            "the times must satisfy registrationOpens <= votingOpens < votingCloses",
+            "the times must satisfy registrationOpensAt <= votingOpensAt < votingClosesAt",
         ));
     }
     if let Some(own) = ballot_box
@@ -207,9 +258,10 @@ pub fn check_manifest_serving(
     {
         return Err(bad_manifest("ballotBox names another service"));
     }
-    if m.text_release_threshold < 10 {
-        return Err(bad_manifest("textReleaseThreshold must be at least 10"));
-    }
+    // VTI-VOT-065: at least 1 (the generated type is non-zero, so the schema's `minimum`
+    // already holds it); below the SHOULD of 10 the member is told before taking a ticket
+    // (VTI-VOT-090), which the disclosure derives from the manifest. A manifest received
+    // under a version whose schema says 10 was refused by that schema before it got here.
     let listed = m.roll.listed.as_ref().map_or(0, Vec::len);
     match m.roll.rule {
         RollRuleRule::Listed | RollRuleRule::MembersAndListed if listed == 0 => {
@@ -220,7 +272,18 @@ pub fn check_manifest_serving(
         RollRuleRule::Members if listed != 0 => {
             return Err(bad_manifest("a members-only roll lists nobody"));
         }
+        // VTI-VOT-025, VTI-VOT-026: a credential roll names exactly one DID and lists nobody.
+        // The schema states both; they are held here too, as every rule the relation needs.
+        RollRuleRule::Credential if m.roll.member_of.is_none() => {
+            return Err(bad_manifest("a credential roll names the DID in memberOf"));
+        }
+        RollRuleRule::Credential if listed != 0 => {
+            return Err(bad_manifest("a credential roll lists nobody"));
+        }
         _ => {}
+    }
+    if m.roll.member_of.is_some() && m.roll.rule != RollRuleRule::Credential {
+        return Err(bad_manifest("only a credential roll names memberOf"));
     }
     if m.board
         .auditors
@@ -266,6 +329,33 @@ pub fn check_manifest_serving(
         }
     }
     Ok(())
+}
+
+/// A manifest as received, checked as a community checks one it is asked to create
+/// (`vtc/elections/create`): the current 0.2 shape ([`require_current_manifest`]), its typed
+/// form, [`check_manifest`], and voting not already closed at `now`.
+///
+/// Everything a community checks that needs nothing but the manifest and the clock — what is
+/// left needs the community itself: that `community` is its DID, that `ballotBox` is one of its
+/// trusted voting services (VTI-VOT-082), and that `electionId` is unused. The VTC runs it on
+/// every create; an operator's tool can run it offline first (`cnm elections manifest check`).
+/// The caller validates `manifest` against the schema first.
+///
+/// # Errors
+/// As [`check_manifest`]; [`RuleError::InvalidManifest`] for a 0.1 manifest, one that does not
+/// parse, or one whose voting has already closed.
+pub fn check_new_manifest(
+    manifest: &serde_json::Value,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Manifest, RuleError> {
+    require_current_manifest(manifest)?;
+    let m: Manifest =
+        serde_json::from_value(manifest.clone()).map_err(|e| bad_manifest(e.to_string()))?;
+    check_manifest(&m, None)?;
+    if m.voting_closes_at <= now {
+        return Err(bad_manifest("votingClosesAt is already past"));
+    }
+    Ok(m)
 }
 
 fn bad_ballot(why: impl Into<String>) -> RuleError {
@@ -387,4 +477,23 @@ pub fn check_ballot(m: &Manifest, manifest_digest: &[u8; 32], b: &Ballot) -> Res
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::v0_1_lifecycle_entry;
+
+    /// A lifecycle entry written under `voting/board/read/0.1` (`at`) is refused by name; one
+    /// written under 0.2 (`occurredAt`), and every other kind, is read.
+    #[test]
+    fn a_0_1_lifecycle_entry_is_refused_by_name() {
+        let old = json!({ "kind": "opened", "at": "2026-11-09T09:00:00Z" });
+        assert!(v0_1_lifecycle_entry(3, &old).is_some_and(|why| why.contains("board entry 3")));
+        let new = json!({ "kind": "closed", "occurredAt": "2026-11-09T09:00:00Z" });
+        assert!(v0_1_lifecycle_entry(0, &new).is_none());
+        let cast = json!({ "kind": "cast", "cast": {} });
+        assert!(v0_1_lifecycle_entry(0, &cast).is_none());
+    }
 }

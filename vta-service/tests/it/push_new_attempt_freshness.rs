@@ -39,7 +39,7 @@ use vti_common::trust_task::ACCEPTANCE_WINDOW;
 use vti_common::trust_task_push::new_attempt;
 
 const KEYS_CREATE: &str = "https://trusttasks.org/spec/keys/create/0.1";
-const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
 const RECIPIENT: &str = "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD";
 const SEED: u8 = 0x52;
 const CONTEXT: &str = "test";

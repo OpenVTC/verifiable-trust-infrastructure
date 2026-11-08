@@ -30,7 +30,7 @@ export function CustomThemeMarker() {
       <span
         className="chip"
         style={{ backgroundColor: "var(--bg-elev)", margin: 0 }}
-        title="This community draws its pages with a custom theme. Approvals, confirmations and warnings always use the standard look."
+        title="This community draws its pages with a custom theme. Approvals, confirmations and warnings always use the standard look; on a themed page they are outlined and marked Protected area."
       >
         Custom theme
       </span>

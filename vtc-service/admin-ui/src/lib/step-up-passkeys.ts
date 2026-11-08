@@ -9,7 +9,7 @@
 // Every step is a Trust Task on `POST /v1/trust-tasks` — the same tasks the
 // VTC serves over TSP and DIDComm:
 //
-// - the administrator signs `auth/passkey/enroll/invite/0.2`, with a passkey
+// - the administrator signs `auth/passkey/enroll/invite/0.3`, with a passkey
 //   gesture of their own bound to it (`bound-step-up.ts`);
 // - the member signs `auth/passkey/enroll/redeem/start/0.1` with `cnm`, since
 //   the invite redeems only for the DID it names, and `cnm` prints the link
@@ -31,7 +31,7 @@ import {
   type JsonPublicKeyOptions,
 } from "./webauthn";
 
-export const INVITE_TASK = "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2";
+export const INVITE_TASK = "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.3";
 export const REDEEM_FINISH_TASK =
   "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1";
 export const REVOKE_START_TASK = "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2";
@@ -57,7 +57,7 @@ export interface StepUpPasskeyList {
   credentials: StepUpPasskeyCredential[];
 }
 
-/** `auth/passkey/enroll/invite/0.2#response`. */
+/** `auth/passkey/enroll/invite/0.3#response`. */
 export interface StepUpPasskeyInvite {
   invite: { token: string; url: string };
   subject: string;

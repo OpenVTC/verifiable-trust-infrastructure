@@ -1026,7 +1026,7 @@ mod tests {
         let wire = c.to_wire();
         assert!(wire.get("position").is_none());
         assert!(wire.get("hiddenVetting").is_none());
-        use trust_tasks_rs::specs::vtc::schemas::accepts::{list, register, show};
+        use vti_specs::vtc::schemas::accepts::{list, register, show};
         serde_json::from_value::<register::v0_2::AcceptsCriterion>(wire.clone()).unwrap();
         serde_json::from_value::<show::v0_2::AcceptsCriterion>(wire.clone()).unwrap();
         serde_json::from_value::<list::v0_2::AcceptsCriterion>(wire).unwrap();

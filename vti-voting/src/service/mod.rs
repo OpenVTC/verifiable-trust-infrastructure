@@ -7,7 +7,7 @@
 //! (conventions §4, VTI-VOT-050), and the cast's answer is the voter's receipt (VTI-VOT-043).
 //!
 //! Time is an input: each election advances on its own clock — `opened` at
-//! `votingOpens`, `closed` and the result at `votingCloses` — and every handler advances first,
+//! `votingOpensAt`, `closed` and the result at `votingClosesAt` — and every handler advances first,
 //! so an election never answers from a state its clock has left.
 //!
 //! What the ballot box never holds is the point: no roster, no member DID, no issuance record
@@ -32,11 +32,11 @@ use rand::RngCore;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::voting::{
+use vti_specs::voting::{
     ballot::cast::v0_1 as cast, board::consistency::v0_1 as consistency, board::head::v0_1 as head,
-    board::inclusion::v0_1 as inclusion, board::read::v0_1 as read,
+    board::inclusion::v0_1 as inclusion, board::read::v0_2 as read,
     election::cancel::v0_1 as cancel, election::close::v0_1 as close,
-    election::register::v0_1 as register, election::show::v0_1 as show,
+    election::register::v0_4 as register, election::show::v0_4 as show,
     result::show::v0_1 as result,
 };
 
@@ -56,6 +56,51 @@ use crate::{
     voter::Cast,
     wire::Target,
 };
+
+/// The version of `voting/election/register` or `voting/election/show` a request named.
+///
+/// All three carry the same manifest shape and differ only in what their schema admits: under
+/// 0.2 (voting/_shared/0.2) a `textReleaseThreshold` of at least 10, under 0.3
+/// (voting/_shared/0.3) of at least 1 (VTI-VOT-065), and under 0.4 (voting/_shared/0.4) also the
+/// `credential` roll rule (VTI-VOT-025). A request is held to its own version's schema, then
+/// read as 0.4, so the ballot box keeps one election whichever version registered it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ElectionVersion {
+    /// `voting/election/{register,show}/0.2`: a threshold of at least 10.
+    V0_2,
+    /// `voting/election/{register,show}/0.3`: a threshold of at least 1.
+    V0_3,
+    /// `voting/election/{register,show}/0.4`: a threshold of at least 1, and the credential roll.
+    V0_4,
+}
+
+impl ElectionVersion {
+    /// The least `textReleaseThreshold` this version's schema admits.
+    #[must_use]
+    pub fn least_text_release_threshold(self) -> u64 {
+        match self {
+            Self::V0_2 => 10,
+            Self::V0_3 | Self::V0_4 => 1,
+        }
+    }
+
+    /// Whether this version's manifest can carry a `credential` roll (voting/_shared/0.4).
+    #[must_use]
+    pub fn carries_credential_roll(self) -> bool {
+        matches!(self, Self::V0_4)
+    }
+
+    /// The version's number, as its Type URI ends.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::V0_2 => "0.2",
+            Self::V0_3 => "0.3",
+            Self::V0_4 => "0.4",
+        }
+    }
+}
 
 /// A refusal: the task's error local part and a reason for the operator's log. The host turns
 /// it into a `trust-task-error` with code `<task slug>:<local>`, or the framework's standard
@@ -585,6 +630,9 @@ impl ElectionRecord {
             let leaf = self.board.append(&bytes) as u64;
             let entry: Value = serde_json::from_slice(&bytes)
                 .map_err(|e| journal_failure(format!("entry {leaf}: {e}")))?;
+            if let Some(why) = crate::rules::v0_1_lifecycle_entry(leaf, &entry) {
+                return Err(journal_failure(why));
+            }
             if self.replay_encrypted(&entry, leaf, receipts)? {
                 self.entries.push(bytes);
                 continue;
@@ -613,8 +661,10 @@ impl ElectionRecord {
                 }
                 Some("closed" | "closedEarly") => {
                     self.state = State::Closed;
-                    self.closing =
-                        Some((leaf, entry["at"].as_str().unwrap_or_default().to_string()));
+                    self.closing = Some((
+                        leaf,
+                        entry["occurredAt"].as_str().unwrap_or_default().to_string(),
+                    ));
                     self.start_decryption();
                 }
                 Some("result") => {
@@ -666,7 +716,7 @@ impl ElectionRecord {
     /// Close at `at` and publish the result on the board — at the encrypted levels, once the
     /// trustees have decrypted it.
     fn close(&mut self, kind: &str, at: DateTime<Utc>) -> Result<(), Failure> {
-        let leaf = self.append(&json!({ "kind": kind, "at": time(at) }))?;
+        let leaf = self.append(&json!({ "kind": kind, "occurredAt": time(at) }))?;
         self.closing = Some((leaf, time(at)));
         if self.ceremony.is_some() {
             self.state = State::Closed;
@@ -683,17 +733,17 @@ impl ElectionRecord {
 
     /// Run the election's clock up to `now`.
     fn advance(&mut self, now: DateTime<Utc>) -> Result<(), Failure> {
-        if self.state == State::Registered && now >= self.manifest.registration_opens {
+        if self.state == State::Registered && now >= self.manifest.registration_opens_at {
             self.state = State::Registration;
         }
-        if self.state <= State::Registration && now >= self.manifest.voting_opens {
-            let at = self.manifest.voting_opens;
+        if self.state <= State::Registration && now >= self.manifest.voting_opens_at {
+            let at = self.manifest.voting_opens_at;
             self.ceremony_deadline()?;
-            self.append(&json!({ "kind": "opened", "at": time(at) }))?;
+            self.append(&json!({ "kind": "opened", "occurredAt": time(at) }))?;
             self.state = State::Voting;
         }
-        if self.state == State::Voting && now >= self.manifest.voting_closes {
-            self.close("closed", self.manifest.voting_closes)?;
+        if self.state == State::Voting && now >= self.manifest.voting_closes_at {
+            self.close("closed", self.manifest.voting_closes_at)?;
         }
         Ok(())
     }
@@ -746,6 +796,8 @@ impl BallotBox {
         manifest_value: Value,
         parameters: Value,
     ) -> Result<ElectionRecord, Failure> {
+        rules::require_current_manifest(&manifest_value)
+            .map_err(|e| Failure::malformed(e.to_string()))?;
         let manifest: register::Manifest = parse(&manifest_value)?;
         let voting: register::VotingParameters = parse(&parameters)?;
         let community = manifest.community.as_str().to_string();
@@ -854,6 +906,41 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        self.register_at(ElectionVersion::V0_4, signer, payload, now)
+    }
+
+    /// [`BallotBox::register`] at `version`: the payload is held to that version's schema —
+    /// under 0.2, a threshold below 10 is refused there, and under 0.2 and 0.3 a `credential`
+    /// roll — and then read as 0.4. A threshold of 1 – 9 is never refused under 0.3 or 0.4
+    /// (VTI-VOT-065).
+    ///
+    /// # Errors
+    /// As [`BallotBox::register`].
+    #[allow(deprecated)] // voting/election/register/0.2: still served, so 0.2 clients register
+    pub fn register_at(
+        &mut self,
+        version: ElectionVersion,
+        signer: &str,
+        payload: &Value,
+        now: DateTime<Utc>,
+    ) -> Result<Value, Failure> {
+        match version {
+            ElectionVersion::V0_2 => {
+                use vti_specs::voting::election::register::v0_2 as old;
+                <old::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(
+                    payload,
+                )
+                .map_err(|e| Failure::malformed(e.to_string()))?;
+            }
+            ElectionVersion::V0_3 => {
+                use vti_specs::voting::election::register::v0_3 as old;
+                <old::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(
+                    payload,
+                )
+                .map_err(|e| Failure::malformed(e.to_string()))?;
+            }
+            ElectionVersion::V0_4 => {}
+        }
         let p: register::Payload = parse_payload(payload)?;
         let community = p.community.as_str().to_string();
         if signer != community || p.manifest.community.as_str() != community {
@@ -907,12 +994,48 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        self.show_at(ElectionVersion::V0_4, caller, payload, now)
+    }
+
+    /// [`BallotBox::show`] at `version`. An election whose manifest `version`'s answer cannot
+    /// carry — a `textReleaseThreshold` below 10 under 0.2, a `credential` roll under 0.2 or 0.3
+    /// — is refused `unsupportedVersion` naming the version that can, never answered in a shape
+    /// that version forbids.
+    ///
+    /// # Errors
+    /// As [`BallotBox::show`]; `unsupportedVersion` as above.
+    pub fn show_at(
+        &mut self,
+        version: ElectionVersion,
+        caller: Caller<'_>,
+        payload: &Value,
+        now: DateTime<Utc>,
+    ) -> Result<Value, Failure> {
         let p: show::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         // A trustee reads the election it takes part in on any board: its tasks take the
         // manifest, and its decryption the time voting closed (CONVENTIONS §4, §9.6).
         if !(e.readable_by(caller) || e.is_trustee(caller)) {
             return Err(Failure::unknown());
+        }
+        if e.manifest.roll.rule == register::RollRuleRule::Credential
+            && !version.carries_credential_roll()
+        {
+            return Err(Failure::standard(
+                "unsupportedVersion",
+                format!(
+                    "this election's roll is the holders of a membership credential, which \
+                     voting/election/show/{} cannot carry; read it with voting/election/show/0.4",
+                    version.as_str()
+                ),
+            ));
+        }
+        if e.manifest.text_release_threshold.get() < version.least_text_release_threshold() {
+            return Err(Failure::standard(
+                "unsupportedVersion",
+                "this election releases written answers after fewer than 10 ballots, which \
+                 voting/election/show/0.2 cannot carry; read it with voting/election/show/0.3",
+            ));
         }
         respond::<show::Response>(json!({
             "election": e.summary(now),
@@ -969,7 +1092,7 @@ impl BallotBox {
                 "the election has closed or was cancelled",
             ));
         }
-        e.append(&json!({ "kind": "cancelled", "at": time(now) }))?;
+        e.append(&json!({ "kind": "cancelled", "occurredAt": time(now) }))?;
         e.state = State::Cancelled;
         respond::<cancel::Response>(json!({ "election": e.summary(now) }))
     }

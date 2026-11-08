@@ -32,8 +32,8 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use trust_tasks_rs::specs::vta::pcs;
 use trust_tasks_rs::{Payload, TrustTask};
+use vti_specs::vta::pcs;
 
 use crate::error::FfiError;
 use crate::keys::Signer;
@@ -61,6 +61,7 @@ pub enum PcsTask {
     VoterReceipt,
     VoterRead,
     VoteEncrypted,
+    VetterRecover,
 }
 
 fn invalid<E: std::fmt::Display>(e: E) -> FfiError {
@@ -129,12 +130,15 @@ pub fn build_pcs_task(
         PcsTask::TokensAbandon => signed::<pcs::tokens::abandon::v0_1::Payload>(&env, p, s),
         PcsTask::Attest => signed::<pcs::attest::v0_1::Payload>(&env, p, s),
         PcsTask::VetterShow => signed::<pcs::vetter::show::v0_1::Payload>(&env, p, s),
-        PcsTask::VoterRegister => signed::<pcs::voter::register::v0_1::Payload>(&env, p, s),
+        PcsTask::VoterRegister => signed::<pcs::voter::register::v0_5::Payload>(&env, p, s),
         PcsTask::VoterAccept => signed::<pcs::voter::accept::v0_1::Payload>(&env, p, s),
-        PcsTask::Vote => signed::<pcs::vote::v0_1::Payload>(&env, p, s),
+        PcsTask::Vote => signed::<pcs::vote::v0_4::Payload>(&env, p, s),
         PcsTask::VoterReceipt => signed::<pcs::voter::receipt::v0_1::Payload>(&env, p, s),
-        PcsTask::VoterRead => signed::<pcs::voter::read::v0_1::Payload>(&env, p, s),
-        PcsTask::VoteEncrypted => signed::<pcs::vote_encrypted::v0_2::Payload>(&env, p, s),
+        // 0.6 still: every VTA a device may talk to serves it, and the device reads no tombstone.
+        #[allow(deprecated)]
+        PcsTask::VoterRead => signed::<pcs::voter::read::v0_6::Payload>(&env, p, s),
+        PcsTask::VoteEncrypted => signed::<pcs::vote_encrypted::v0_5::Payload>(&env, p, s),
+        PcsTask::VetterRecover => signed::<pcs::vetter::recover::v0_1::Payload>(&env, p, s),
     }
 }
 
@@ -157,12 +161,14 @@ pub fn parse_pcs_response(task: PcsTask, json: String) -> Result<String, FfiErro
         PcsTask::TokensAbandon => response::<pcs::tokens::abandon::v0_1::Response>(j),
         PcsTask::Attest => response::<pcs::attest::v0_1::Response>(j),
         PcsTask::VetterShow => response::<pcs::vetter::show::v0_1::Response>(j),
-        PcsTask::VoterRegister => response::<pcs::voter::register::v0_1::Response>(j),
+        PcsTask::VoterRegister => response::<pcs::voter::register::v0_5::Response>(j),
         PcsTask::VoterAccept => response::<pcs::voter::accept::v0_1::Response>(j),
-        PcsTask::Vote => response::<pcs::vote::v0_1::Response>(j),
+        PcsTask::Vote => response::<pcs::vote::v0_4::Response>(j),
         PcsTask::VoterReceipt => response::<pcs::voter::receipt::v0_1::Response>(j),
-        PcsTask::VoterRead => response::<pcs::voter::read::v0_1::Response>(j),
-        PcsTask::VoteEncrypted => response::<pcs::vote_encrypted::v0_2::Response>(j),
+        #[allow(deprecated)]
+        PcsTask::VoterRead => response::<pcs::voter::read::v0_6::Response>(j),
+        PcsTask::VoteEncrypted => response::<pcs::vote_encrypted::v0_5::Response>(j),
+        PcsTask::VetterRecover => response::<pcs::vetter::recover::v0_1::Response>(j),
     }
 }
 

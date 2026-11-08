@@ -88,9 +88,11 @@ export function wireRule(rule: DynamicRule): DynamicRule {
 export function RuleEditor({
   value,
   onChange,
+  className,
 }: {
   value: DynamicRule;
   onChange: (rule: DynamicRule) => void;
+  className?: string;
 }) {
   const fields = useQuery({ queryKey: ["directory", "fields"], queryFn: () => listFields() });
   // Only what the community vouches for (create item 2).
@@ -101,11 +103,13 @@ export function RuleEditor({
   const set = (i: number, c: RuleCondition) =>
     onChange({ all: value.all.map((x, j) => (j === i ? c : x)) });
   return (
-    <fieldset className="stack">
-      <legend>Members are everyone who…</legend>
+    <fieldset className={["field", "group-rule", className].filter(Boolean).join(" ")}>
+      <legend className="field-label">Members are everyone who…</legend>
       {value.all.map((c, i) => (
-        <div className="inline-form" key={i}>
-          {i > 0 && <span className="muted">and</span>}
+        <div className="group-rule-row" key={i}>
+          <span className="group-rule-and" aria-hidden={i === 0}>
+            {i > 0 ? "and" : ""}
+          </span>
           <select
             aria-label="Fact"
             value={c.fact}
@@ -177,7 +181,7 @@ export function RuleEditor({
           {value.all.length > 1 && (
             <button
               type="button"
-              className="icon-btn"
+              className="secondary sm"
               aria-label="Remove condition"
               onClick={() => onChange({ all: value.all.filter((_, j) => j !== i) })}
             >
@@ -189,7 +193,7 @@ export function RuleEditor({
       {value.all.length < 16 && (
         <button
           type="button"
-          className="secondary"
+          className="secondary sm group-rule-add"
           onClick={() => onChange({ all: [...value.all, fresh("role")] })}
         >
           <Plus size={14} aria-hidden="true" /> And…

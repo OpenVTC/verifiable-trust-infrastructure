@@ -156,6 +156,13 @@ async fn push_step(
         );
         let mut doc_value = serde_json::to_value(&doc)
             .map_err(|e| AppError::Internal(format!("serialise {type_uri} document: {e}")))?;
+        // The day this step is pushed for, stated as its expiry (VTI-TRN-048):
+        // a copy the counterparty collects hours later is still acceptable.
+        vti_common::trust_task_push::state_delivery_expiry(
+            &mut doc_value,
+            EXCHANGE_DELIVER_BY,
+            chrono::Utc::now(),
+        )?;
         if !super::sign_outbound_request(state, &mut doc_value).await {
             return Err(AppError::Internal(format!(
                 "{type_uri} could not be signed, so it was not sent"

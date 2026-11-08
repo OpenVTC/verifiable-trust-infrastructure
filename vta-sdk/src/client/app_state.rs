@@ -61,7 +61,7 @@ impl VtaClient {
         .await
     }
 
-    /// `vta/app-state/put/1.0` — write `value` at
+    /// `vta/app-state/put/1.1` — write `value` at
     /// `(context_id, namespace, key)`.
     ///
     /// `expected_version` is the optimistic-concurrency precondition: `Some(n)`
@@ -89,14 +89,14 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_VTA_APP_STATE_PUT_1_0,
+            trust_tasks::TASK_VTA_APP_STATE_PUT_1_1,
             payload,
             APP_STATE_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `vta/app-state/put/1.0` with an RFC 7386 merge patch instead of a whole
+    /// `vta/app-state/put/1.1` with an RFC 7386 merge patch instead of a whole
     /// value.
     ///
     /// Cuts payload, and more usefully cuts *conflicts*: two instances patching
@@ -125,14 +125,14 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_VTA_APP_STATE_PUT_1_0,
+            trust_tasks::TASK_VTA_APP_STATE_PUT_1_1,
             payload,
             APP_STATE_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `vta/app-state/list/1.0` — key-ordered snapshot of live records,
+    /// `vta/app-state/list/1.1` — key-ordered snapshot of live records,
     /// optionally narrowed to a namespace and a key prefix.
     ///
     /// For incremental sync use [`Self::app_state_changes_since`] instead; this
@@ -145,7 +145,7 @@ impl VtaClient {
         namespace: Option<&str>,
         prefix: Option<&str>,
         include_values: bool,
-        page_size: Option<usize>,
+        limit: Option<usize>,
         cursor: Option<&str>,
     ) -> Result<Value, VtaError> {
         let payload = body(AppStateListBody {
@@ -155,19 +155,19 @@ impl VtaClient {
             since_version: None,
             include_values: include_values.then_some(true),
             include_deleted: None,
-            page_size,
+            limit,
             cursor: cursor.map(str::to_string),
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_VTA_APP_STATE_LIST_1_0,
+            trust_tasks::TASK_VTA_APP_STATE_LIST_1_1,
             payload,
             APP_STATE_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `vta/app-state/list/1.0` in change-feed mode — every record in
+    /// `vta/app-state/list/1.1` in change-feed mode — every record in
     /// `namespace` whose version exceeds `since_version`, **tombstones
     /// included**, in ascending version order.
     ///
@@ -189,7 +189,7 @@ impl VtaClient {
         since_version: u64,
         prefix: Option<&str>,
         include_values: bool,
-        page_size: Option<usize>,
+        limit: Option<usize>,
         cursor: Option<&str>,
     ) -> Result<Value, VtaError> {
         let payload = body(AppStateListBody {
@@ -199,12 +199,12 @@ impl VtaClient {
             since_version: Some(since_version),
             include_values: include_values.then_some(true),
             include_deleted: None,
-            page_size,
+            limit,
             cursor: cursor.map(str::to_string),
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_VTA_APP_STATE_LIST_1_0,
+            trust_tasks::TASK_VTA_APP_STATE_LIST_1_1,
             payload,
             APP_STATE_TT_TIMEOUT,
         )
@@ -269,7 +269,7 @@ impl VtaClient {
         .await
     }
 
-    /// `vta/app-state/put-many/1.0` — up to 64 writes to one namespace in a
+    /// `vta/app-state/put-many/1.1` — up to 64 writes to one namespace in a
     /// single round trip, each carrying its own precondition.
     ///
     /// [`PutManyMode::Independent`] (the default) applies each write on its own
@@ -298,7 +298,7 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_0,
+            trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_1,
             payload,
             APP_STATE_TT_TIMEOUT,
         )

@@ -387,7 +387,7 @@ function EditFieldForm({ field, onDone }: { field: DirectoryFieldDefinition; onD
 
   return (
     <form
-      className="inline-form"
+      className="form-stack"
       onSubmit={(e) => {
         e.preventDefault();
         if (!aboveCeiling) save.mutate();
@@ -461,30 +461,32 @@ function EditFieldForm({ field, onDone }: { field: DirectoryFieldDefinition; onD
           takes your passkey gesture. No member&rsquo;s own choice changes.
         </p>
       )}
-      <button type="submit" className="primary" disabled={aboveCeiling || save.isPending}>
-        {wider ? "Send for approval" : "Save"}
-      </button>{" "}
-      {!field.base && (
-        <button
-          type="button"
-          className="danger"
-          disabled={retire.isPending}
-          onClick={async () => {
-            if (
-              await confirm({
-                title: `Retire ${field.label}?`,
-                message:
-                  "It is hidden from every card at once, members' values of it are erased after the retention period, and its key can never be used again.",
-                confirmLabel: "Retire",
-                destructive: true,
-              })
-            )
-              retire.mutate();
-          }}
-        >
-          Retire
+      <div className="form-actions">
+        <button type="submit" className="primary" disabled={aboveCeiling || save.isPending}>
+          {wider ? "Send for approval" : "Save"}
         </button>
-      )}
+        {!field.base && (
+          <button
+            type="button"
+            className="secondary destructive"
+            disabled={retire.isPending}
+            onClick={async () => {
+              if (
+                await confirm({
+                  title: `Retire ${field.label}?`,
+                  message:
+                    "It is hidden from every card at once, members' values of it are erased after the retention period, and its key can never be used again.",
+                  confirmLabel: "Retire",
+                  destructive: true,
+                })
+              )
+                retire.mutate();
+            }}
+          >
+            Retire
+          </button>
+        )}
+      </div>
     </form>
   );
 }
@@ -650,20 +652,22 @@ function ExportCard() {
         Administrators&rsquo; notes are never included.
       </p>
       <form
-        className="inline-form"
+        className="toolbar"
         onSubmit={(e) => {
           e.preventDefault();
           if (reason.trim()) run.mutate();
         }}
       >
-        <input
-          aria-label="Why export the directory"
-          placeholder="Why, e.g. the annual archive"
-          value={reason}
-          maxLength={1024}
-          onChange={(e) => setReason(e.target.value)}
-        />
-        <button type="submit" className="btn" disabled={!reason.trim() || run.isPending}>
+        <Field label="Why" inline>
+          <input
+            aria-label="Why export the directory"
+            placeholder="e.g. the annual archive"
+            value={reason}
+            maxLength={1024}
+            onChange={(e) => setReason(e.target.value)}
+          />
+        </Field>
+        <button type="submit" className="secondary" disabled={!reason.trim() || run.isPending}>
           {run.isPending ? "Exporting…" : "Export"}
         </button>
       </form>
@@ -690,19 +694,23 @@ function EntriesTab() {
     <>
       {holds(caps, DIRECTORY_ADMIN) && <ExportCard />}
       <form
-        className="inline-form"
+        className="toolbar list-toolbar"
+        role="search"
         onSubmit={(e) => {
           e.preventDefault();
           const t = text.trim();
           setQuery(t.length >= 3 ? t : undefined);
         }}
       >
-        <input
-          aria-label="Search the directory"
-          placeholder="Name, nickname, a searchable value or a DID"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
+        <Field label="Search" inline>
+          <input
+            type="search"
+            aria-label="Search the directory"
+            placeholder="Name, nickname, a searchable value or a DID"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+        </Field>
         <button type="submit" className="secondary">
           <Search size={14} aria-hidden="true" /> Search
         </button>
@@ -852,7 +860,7 @@ function AssertForm({
   });
   return (
     <form
-      className="inline-form"
+      className="form-stack"
       onSubmit={(e) => {
         e.preventDefault();
         if (reason) save.mutate();

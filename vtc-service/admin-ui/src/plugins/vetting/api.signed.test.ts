@@ -140,7 +140,7 @@ describe("endorsement-type writes with a console key", () => {
         status: 409,
         body: {
           id: "urn:uuid:err",
-          type: "https://trusttasks.org/spec/trust-task-error/0.5",
+          type: "https://trusttasks.org/spec/trust-task-error/0.6",
           payload: {
             code: "vtc/endorsement-types/delete:inUse",
             message: "endorsement-type-in-use: still referenced",

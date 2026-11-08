@@ -9,11 +9,9 @@
 //! (provision-integration mints it via the `ai-agent` template); the caller
 //! always acts on its **own** binding.
 //!
-//! The dispatcher routes the canonical `0.1` task URIs (see
-//! `vta-service::trust_tasks::dispatch_table!`); the `#[allow(deprecated)]`
-//! mirrors the service-side `REST_ROUTED` allowance — the `0.1` consts are
-//! marked deprecated in favour of `0.2`, but `0.1` is what the VTA dispatches.
-#![allow(deprecated)]
+//! Each method sends the current version of its task: `register`, `wipe` and
+//! `set-wake` at 0.2, `list` and `heartbeat` at 0.3 (camelCase enum values,
+//! `device/_shared/0.2`).
 
 use serde_json::Value;
 
@@ -31,9 +29,9 @@ use crate::trust_tasks;
 const DEVICE_TT_TIMEOUT: u64 = 30;
 
 impl VtaClient {
-    /// `device/register/0.1` — claim a `DeviceBinding` on the caller's ACL
+    /// `device/register/0.2` — claim a `DeviceBinding` on the caller's ACL
     /// entry. `consumer_kind` is the wire `consumerKind` object, e.g.
-    /// `{ "kind": "service", "serviceKind": "ai-agent" }` for a personal AI
+    /// `{ "kind": "service", "serviceKind": "aiAgent" }` for a personal AI
     /// agent. Returns the registered binding.
     pub async fn device_register(
         &self,
@@ -49,20 +47,20 @@ impl VtaClient {
             hpke_public_key: hpke_public_key.map(str::to_string),
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_DEVICE_REGISTER_0_1,
+            trust_tasks::TASK_DEVICE_REGISTER_0_2,
             payload,
             DEVICE_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `device/heartbeat/0.1` — refresh `lastSeenAt` (and `platform` if
+    /// `device/heartbeat/0.3` — refresh `lastSeenAt` (and `platform` if
     /// supplied). Returns server time + any queued operations for the device.
     pub async fn device_heartbeat(&self, platform: Option<&str>) -> Result<Value, VtaError> {
         self.device_heartbeat_named(platform, None).await
     }
 
-    /// `device/heartbeat/0.1` carrying this device's **current** display name.
+    /// `device/heartbeat/0.3` carrying this device's **current** display name.
     ///
     /// `displayName` is set once, at registration, and re-registration is
     /// intentionally refused — so a renamed machine (or an install moved to
@@ -90,19 +88,21 @@ impl VtaClient {
             ext: display_name.map(device_name_ext),
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_DEVICE_HEARTBEAT_0_1,
+            trust_tasks::TASK_DEVICE_HEARTBEAT_0_3,
             payload,
             DEVICE_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `device/list/0.1` — list the caller's registered devices. `filters` is
+    /// `device/list/0.3` — list the caller's registered devices. `filters` is
     /// the wire filter object (`{}` for all); e.g.
-    /// `{ "consumerKindFilter": "service", "serviceKindFilter": "ai-agent" }`.
+    /// `{ "consumerKindFilter": "service", "serviceKindFilter": "aiAgent" }`.
+    /// A page carrying `nextCursor` is not the whole list: send it back as
+    /// `cursor` for the next.
     pub async fn device_list(&self, filters: Value) -> Result<Value, VtaError> {
         self.dispatch_trust_task(
-            trust_tasks::TASK_DEVICE_LIST_0_1,
+            trust_tasks::TASK_DEVICE_LIST_0_3,
             filters,
             DEVICE_TT_TIMEOUT,
         )
@@ -124,10 +124,10 @@ impl VtaClient {
         .await
     }
 
-    /// `device/wipe/0.1` — issue a remote-wipe for a compromised/lost device.
+    /// `device/wipe/0.2` — issue a remote-wipe for a compromised/lost device.
     /// Marks the binding wiped (and disabled, so it can no longer authenticate)
     /// and records the `reason` in the audit log. `scope` is one of `cache`,
-    /// `cache-and-keys`, or `full` (how aggressively the device should wipe).
+    /// `cacheAndKeys`, or `full` (how aggressively the device should wipe).
     pub async fn device_wipe(
         &self,
         device_id: &str,
@@ -140,14 +140,14 @@ impl VtaClient {
             reason: reason.to_string(),
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_DEVICE_WIPE_0_1,
+            trust_tasks::TASK_DEVICE_WIPE_0_2,
             payload,
             DEVICE_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `device/set-wake/0.1` — convey the device's opaque push `WakeHandle`
+    /// `device/set-wake/0.2` — convey the device's opaque push `WakeHandle`
     /// (`gateway` + `handle`). The VTA records it and returns the trigger
     /// allowlist; over DIDComm it provisions the allowlist to the gateway.
     pub async fn device_set_wake(
@@ -164,7 +164,7 @@ impl VtaClient {
             suggested_triggers: Some(suggested_triggers),
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_DEVICE_SET_WAKE_0_1,
+            trust_tasks::TASK_DEVICE_SET_WAKE_0_2,
             payload,
             DEVICE_TT_TIMEOUT,
         )

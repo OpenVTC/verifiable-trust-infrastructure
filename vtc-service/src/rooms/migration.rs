@@ -1,4 +1,4 @@
-//! The room-file migration runner (`vtc/rooms/storage/migrate/0.2`, served beside 0.1;
+//! The room-file migration runner (`vtc/rooms/storage/migrate/0.3`;
 //! `docs/05-design-notes/data-rooms-files.md` §7.3).
 //!
 //! `migrate` records a migration and answers; this task does the work, one blob at a
@@ -56,15 +56,6 @@ pub(crate) fn kick() {
     KICK.notify_one();
 }
 
-/// Which version of `vtc/rooms/storage/migrate` and `vtc/rooms/get` an answer is for.
-/// 0.1 knows no `queued` state, no `toConfig` in `rooms/get` and none of the pause
-/// members; 0.2 reports all of them through `vtc/_shared/0.1/room-migration`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Wire {
-    V0_1,
-    V0_2,
-}
-
 fn rfc3339(secs: u64) -> Option<String> {
     chrono::DateTime::from_timestamp(secs as i64, 0).map(|t| t.to_rfc3339())
 }
@@ -73,52 +64,39 @@ fn now_secs() -> u64 {
     chrono::Utc::now().timestamp().max(0) as u64
 }
 
-/// The members `migrate` and `rooms/get` share: the state and, at 0.2, why it is
-/// paused or waiting (items 11, `room-migration`).
-fn state_members(m: &Migration, wire: Wire, out: &mut Value) {
-    match wire {
-        Wire::V0_1 => {
-            // 0.1's states: a queued migration is one waiting its turn, which 0.1
-            // reported `running`.
-            let state = match m.state {
-                MigrationState::Queued => "running",
-                s => s.as_str(),
-            };
-            out["state"] = json!(state);
-        }
-        Wire::V0_2 => {
-            out["state"] = json!(m.state.as_str());
-            match m.state {
-                MigrationState::Paused => {
-                    // Present exactly when paused. A record paused by a 0.1 host names
-                    // no cause; its causes were backend failures and restores, both
-                    // `destination` as near as the vocabulary allows.
-                    let cause = m.paused_cause.unwrap_or(PauseCause::Destination);
-                    out["pausedCause"] = json!(cause.as_str());
-                    out["lastError"] = json!(m.last_error.as_deref().unwrap_or("paused"));
-                    if let Some(at) = m.next_attempt_at.and_then(rfc3339) {
-                        out["nextAttemptAt"] = json!(at);
-                    }
-                }
-                // Waiting out a backoff: what failed, and when it is tried again.
-                MigrationState::Running => {
-                    if let Some(at) = m.next_attempt_at
-                        && let Some(e) = &m.last_error
-                    {
-                        out["lastError"] = json!(e);
-                        if let Some(at) = rfc3339(at) {
-                            out["nextAttemptAt"] = json!(at);
-                        }
-                    }
-                }
-                _ => {}
+/// The members `migrate` and `rooms/get` share: the state and why it is paused or
+/// waiting (items 11, `vtc/_shared/0.1/room-migration`).
+fn state_members(m: &Migration, out: &mut Value) {
+    out["state"] = json!(m.state.as_str());
+    match m.state {
+        MigrationState::Paused => {
+            // Present exactly when paused. A record paused by a 0.1 host names no
+            // cause; its causes were backend failures and restores, both
+            // `destination` as near as the vocabulary allows.
+            let cause = m.paused_cause.unwrap_or(PauseCause::Destination);
+            out["pausedCause"] = json!(cause.as_str());
+            out["lastError"] = json!(m.last_error.as_deref().unwrap_or("paused"));
+            if let Some(at) = m.next_attempt_at.and_then(rfc3339) {
+                out["nextAttemptAt"] = json!(at);
             }
         }
+        // Waiting out a backoff: what failed, and when it is tried again.
+        MigrationState::Running => {
+            if let Some(at) = m.next_attempt_at
+                && let Some(e) = &m.last_error
+            {
+                out["lastError"] = json!(e);
+                if let Some(at) = rfc3339(at) {
+                    out["nextAttemptAt"] = json!(at);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
 /// The `migrate` response: the migration and its progress so far.
-pub fn response_json(m: &Migration, wire: Wire) -> Value {
+pub fn response_json(m: &Migration) -> Value {
     let mut out = json!({
         "migrationId": m.migration_id.to_string(),
         "roomId": m.room_id,
@@ -129,13 +107,13 @@ pub fn response_json(m: &Migration, wire: Wire) -> Value {
         "doneFiles": m.done_files,
         "doneBytes": m.done_bytes,
     });
-    state_members(m, wire, &mut out);
+    state_members(m, &mut out);
     out
 }
 
-/// `vtc/rooms/get`'s `storage.migration` (`MigrationProgress`); 0.2 names the config it
+/// `vtc/rooms/get`'s `storage.migration` (`MigrationProgress`), naming the config it
 /// moves to, which differs from the room's assignment after a reassignment.
-pub fn progress_json(m: &Migration, wire: Wire) -> Value {
+pub fn progress_json(m: &Migration) -> Value {
     let mut out = json!({
         "migrationId": m.migration_id.to_string(),
         "totalFiles": m.total_files,
@@ -143,10 +121,8 @@ pub fn progress_json(m: &Migration, wire: Wire) -> Value {
         "doneFiles": m.done_files,
         "doneBytes": m.done_bytes,
     });
-    if wire == Wire::V0_2 {
-        out["toConfig"] = json!(m.to_config);
-    }
-    state_members(m, wire, &mut out);
+    out["toConfig"] = json!(m.to_config);
+    state_members(m, &mut out);
     out
 }
 
@@ -163,7 +139,7 @@ async fn audit_with(
     actor: &str,
     extra: Option<(&str, Value)>,
 ) {
-    let mut current = response_json(m, Wire::V0_2);
+    let mut current = response_json(m);
     // A failed migration's error names the blob that did not verify: kept for the
     // audit trail, never answered.
     if let Some(e) = &m.last_error

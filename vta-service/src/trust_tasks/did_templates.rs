@@ -1,7 +1,7 @@
 //! DID-templates slice trust-task handlers.
 //!
 //! Six handlers — one per operation, serving the merged
-//! `spec/vta/did-templates/*/2.0` family. Scope is selected by the
+//! `spec/vta/did-templates/*` family (`list`/`create`/`get`/`update` 3.1, `delete`/`render` 2.0). Scope is selected by the
 //! payload's optional `contextId` (absent = global, present = that
 //! context); each handler branches to the matching global/context
 //! operation function. Auth contracts:
@@ -41,7 +41,7 @@ use super::helpers::{
 };
 use trust_tasks_rs::RejectReason;
 
-/// `did-templates/list/2.0` — list the templates in one scope.
+/// `did-templates/list/3.1` — list the templates in one scope.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -106,10 +106,10 @@ pub(super) async fn handle_list(
 /// conformance fixtures check payload shapes, not which URI dispatched them.
 ///
 /// So the handler reads its own dispatching URI and holds the template to what
-/// that version can say. A 3.0 caller gets the wider schema; a 2.0 caller gets
-/// exactly what 2.0 promised.
+/// that version can say. Only 3.1 is served now, and it carries the wider
+/// schema; a version this does not recognise gets the narrow one.
 fn max_template_schema_version(type_uri: &str) -> u32 {
-    if type_uri.ends_with("/3.0") { 2 } else { 1 }
+    if type_uri.ends_with("/3.1") { 2 } else { 1 }
 }
 
 /// Refuse a template whose `schemaVersion` the dispatching spec version cannot
@@ -127,7 +127,7 @@ fn check_template_schema_version(
         RejectReason::MalformedRequest {
             reason: format!(
                 "template declares schemaVersion {} but this task version accepts at most {} \
-                 — send it to the 3.0 task URI, which is the version that can express it",
+                 — send it to the 3.1 task URI, which is the version that can express it",
                 template.schema_version, ceiling,
             ),
         },
@@ -162,14 +162,14 @@ fn check_record_schema_version(
         RejectReason::TaskFailed {
             reason: format!(
                 "a stored template declares schemaVersion {highest}, which this task version \
-                 cannot return — read it through the 3.0 task URI, which can"
+                 cannot return — read it through the 3.1 task URI, which can"
             ),
             details: Some(serde_json::json!({ "reason": "schemaVersionTooHigh" })),
         },
     ))
 }
 
-/// `did-templates/create/2.0` — create a template in one scope.
+/// `did-templates/create/3.1` — create a template in one scope.
 pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
@@ -212,7 +212,7 @@ pub(super) async fn handle_create(
     }
 }
 
-/// `did-templates/get/2.0` — fetch one template from one scope.
+/// `did-templates/get/3.1` — fetch one template from one scope.
 pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
@@ -256,7 +256,7 @@ pub(super) async fn handle_get(
     }
 }
 
-/// `did-templates/update/2.0` — replace a template in one scope.
+/// `did-templates/update/3.1` — replace a template in one scope.
 pub(super) async fn handle_update(
     state: &AppState,
     auth: &AuthClaims,
@@ -405,8 +405,7 @@ fn vars_from_hashmap(map: HashMap<String, Value>) -> TemplateVars {
 mod schema_ceiling_tests {
     use super::max_template_schema_version;
 
-    /// A 2.0 task accepts only what 2.0 can express, and 3.0 accepts the wider
-    /// schema.
+    /// 3.1 accepts the wider template schema (`schemaVersion` 2, `keys`).
     ///
     /// This is the whole of VTI's conformance to the 2.0 spec once both
     /// versions dispatch to one handler. `parse_payload` is plain serde with no
@@ -421,19 +420,8 @@ mod schema_ceiling_tests {
     #[test]
     fn a_task_version_accepts_only_the_template_schema_it_can_express() {
         for uri in [
-            "https://trusttasks.org/spec/vta/did-templates/create/2.0",
-            "https://trusttasks.org/spec/vta/did-templates/update/2.0",
-        ] {
-            assert_eq!(
-                max_template_schema_version(uri),
-                1,
-                "{uri} must not accept a v2 template — its schema pins schemaVersion to 1"
-            );
-        }
-
-        for uri in [
-            "https://trusttasks.org/spec/vta/did-templates/create/3.0",
-            "https://trusttasks.org/spec/vta/did-templates/update/3.0",
+            "https://trusttasks.org/spec/vta/did-templates/create/3.1",
+            "https://trusttasks.org/spec/vta/did-templates/update/3.1",
         ] {
             assert_eq!(
                 max_template_schema_version(uri),
@@ -457,7 +445,7 @@ mod schema_ceiling_tests {
         // read to it as URIs this service produces. That is the confusion it
         // exists to catch, and it caught both attempts. Deriving it also keeps
         // the test correct if the URI ever moves.
-        let stem = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0
+        let stem = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1
             .rsplit_once('/')
             .expect("a task URI ends in /<version>")
             .0;

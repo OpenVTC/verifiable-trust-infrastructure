@@ -121,7 +121,7 @@ fn assert_vta_answered(result: Result<serde_json::Value, VtaError>, authorized: 
 async fn ping(client: &VtaClient) -> Result<serde_json::Value, VtaError> {
     client
         .dispatch_trust_task(
-            vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_1,
+            vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_2,
             serde_json::json!({ "nonce": uuid::Uuid::new_v4().to_string() }),
             30,
         )

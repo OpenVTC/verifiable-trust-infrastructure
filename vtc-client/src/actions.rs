@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// `task-consent/decision/0.2`'s generated types, for a caller that decides.
-pub use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision_v0_2;
+pub use vti_specs::task_consent::decision::v0_2 as decision_v0_2;
 
 /// Domain tag of the challenge-salted digest an approver signs —
 /// `vti_common::task_consent`'s, which the VTC and VTA share.
@@ -118,7 +118,7 @@ pub fn decision_for(
     action: &Value,
     approve: bool,
     reason: Option<&str>,
-) -> Result<Option<trust_tasks_rs::specs::task_consent::decision::v0_2::Payload>, String> {
+) -> Result<Option<vti_specs::task_consent::decision::v0_2::Payload>, String> {
     let Some(challenge) = action["challenge"].as_str() else {
         return Ok(None);
     };

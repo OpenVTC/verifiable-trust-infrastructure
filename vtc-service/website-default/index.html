@@ -80,19 +80,21 @@
             description will appear here.
           </p>
 
+          <!--
+            Join opens the member portal's join page: the same wallet code
+            sign-in shows, worded for a newcomer. The wallet decides what the
+            code means — for a community it holds no identity for, it offers
+            to join, and can set up a new identity for it.
+          -->
           <div class="cta-row">
-            <a
-              href="https://openvtc.net"
-              class="btn btn-primary btn-lg"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              New here? Get started
+            <a href="/members/?join" class="btn btn-primary btn-lg">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <line x1="7" y1="17" x2="17" y2="7" />
-                <polyline points="7 7 17 7 17 17" />
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <line x1="19" y1="8" x2="19" y2="14" />
+                <line x1="22" y1="11" x2="16" y2="11" />
               </svg>
-              <span class="sr-only">(opens openvtc.net in a new tab)</span>
+              Join this community
             </a>
             <a href="/members/" class="btn btn-secondary btn-lg">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -104,9 +106,11 @@
             </a>
           </div>
           <p class="cta-note">
+            Joining takes a Verifiable Trust Agent and its browser wallet, and
+            an administrator approves each request. New to this?
             <a href="https://openvtc.net" target="_blank" rel="noopener noreferrer">openvtc.net</a>
             explains what a Verifiable Trust Community is and walks you
-            through getting a wallet and joining one.
+            through getting a wallet.
           </p>
           <p class="hero-hint" id="pass-hint" hidden>
             Have Keyring? Scan the code to add this community.
@@ -119,27 +123,46 @@
           and nothing on this card is secret. The image is rendered by the
           daemon at /v1/community/did-qr.svg; it stays hidden until it
           loads, so a VTC with no profile yet shows only the text.
+
+          A phone cannot scan its own screen, so on a device with a touch
+          screen "Join in Keyring" links to the same bare DID: a DID is a
+          URI (scheme `did`), and the wallet that registers that scheme
+          takes the tap exactly as it takes a scan of the code. It opens the
+          wallet's join flow, not sign-in, hence the label. It shows as
+          soon as the DID is known, whether or not the image loads. On a
+          phone it comes first and the code is folded away, since the code
+          only helps another device.
         -->
         <section class="pass" aria-labelledby="pass-heading">
           <div class="pass-head">
             <h2 id="pass-heading">Community DID</h2>
             <span class="pass-public">Public, nothing secret</span>
           </div>
-          <div class="pass-qr" id="pass-qr" hidden>
-            <img
-              id="pass-qr-img"
-              alt="QR code of the community DID"
-              width="264"
-              height="264"
-              decoding="async"
-            />
-          </div>
-          <p class="pass-caption" id="pass-caption" hidden>
-            <span class="pass-caption-scan">Scan with Keyring</span>
-            <span class="pass-caption-touch">
-              On this phone? Copy the DID into Keyring instead.
-            </span>
+          <a id="pass-open" class="btn btn-primary pass-open" hidden>
+            Join in Keyring
+          </a>
+          <p class="pass-open-note" id="pass-open-note" hidden>
+            New here? Join in Keyring, or copy the DID. Already a member?
+            Use Member sign-in above.
           </p>
+          <details class="pass-fold" id="pass-fold" open hidden>
+            <summary>
+              <span class="pass-fold-show">Show the code for another device</span>
+              <span class="pass-fold-hide">Hide the code</span>
+            </summary>
+            <div class="pass-fold-body">
+              <div class="pass-qr">
+                <img
+                  id="pass-qr-img"
+                  alt="QR code of the community DID"
+                  width="264"
+                  height="264"
+                  decoding="async"
+                />
+              </div>
+              <p class="pass-caption">Scan with Keyring</p>
+            </div>
+          </details>
           <div class="did-cell">
             <code id="community-did" class="did-value">…</code>
             <button
@@ -186,7 +209,8 @@
             <span class="step-num" aria-hidden="true">2</span>
             <span class="step-body">
               <strong>Join.</strong>
-              Scan the community DID and request membership.
+              Use Join above, or scan the community DID, and send a request.
+              An administrator reviews it.
             </span>
           </li>
           <li>

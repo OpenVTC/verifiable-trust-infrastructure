@@ -874,6 +874,26 @@ pub async fn delete_vault_entry(vault: &KeyspaceHandle, id: &str) -> Result<(), 
     vault.remove(vault_key(id)).await
 }
 
+/// Remove every vault entry in `context_id`'s custody, whatever its lifecycle
+/// state, returning how many went.
+///
+/// For a context deletion, and a hard delete rather than the `Deleted`
+/// lifecycle state: the context the entry belonged to no longer exists, and a
+/// soft-deleted entry would reappear in the trash of any context created again
+/// under the same id. A row this build cannot read is left alone.
+pub async fn purge_context(vault: &KeyspaceHandle, context_id: &str) -> Result<usize, AppError> {
+    let mut removed = 0;
+    for (key, bytes) in vault.prefix_iter_raw("vault:").await? {
+        if serde_json::from_slice::<StoredVaultEntry>(&bytes)
+            .is_ok_and(|stored| stored.entry.context_id == context_id)
+        {
+            vault.remove(key).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 // ───────────────────────────────────────────────────────────────────────
 // SessionBlob — the cleartext payload of vault/proxy-login/0.1's sealed
 // response (M2B). Mirrors `vault/_shared/0.1/session-blob` schema field

@@ -341,7 +341,7 @@ describe("Repos plugin — overview", () => {
       `cnm git reseat ns_acme --subject=${BOB} --statement='Alice left; Bob owns most repos'`,
     );
     expect(JSON.parse(within(sign).getByLabelText("Document").textContent!)).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
+      type: "https://trusttasks.org/spec/git-ns/namespace/reseat/0.4",
       payload: { namespace: "ns_acme", subject: BOB, statement: "Alice left; Bob owns most repos" },
     });
     // No console key: nothing to sign with, so nothing is sent.
@@ -396,7 +396,7 @@ describe("Repos plugin — overview", () => {
     fireEvent.click(send);
     await waitFor(() =>
       expect(postSignedTrustTask).toHaveBeenCalledWith(
-        "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
+        "https://trusttasks.org/spec/git-ns/namespace/reseat/0.4",
         { namespace: "ns_acme", subject: BOB, statement: "Alice left" },
       ),
     );
@@ -470,7 +470,7 @@ describe("Repos plugin — overview", () => {
     fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
     await waitFor(() =>
       expect(postSignedTrustTask).toHaveBeenCalledWith(
-        "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
+        "https://trusttasks.org/spec/git-ns/repo/adopt/0.3",
         { resource: SANDBOX.resource, owners: [BOB] },
       ),
     );
@@ -551,7 +551,7 @@ describe("Repos plugin — overview", () => {
     fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
     expect(await within(sign).findByText("gh repo create glenn-g/tool --public")).toBeTruthy();
     expect(postSignedTrustTask).toHaveBeenCalledWith(
-      "https://trusttasks.org/spec/git-ns/repo/create/0.3",
+      "https://trusttasks.org/spec/git-ns/repo/create/0.4",
       { namespace: "ns_glenn", name: "tool", visibility: "private" },
     );
   });

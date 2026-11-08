@@ -28,7 +28,9 @@ use uuid::Uuid;
 use vti_common::audit::{AuditEnvelope, AuditEvent};
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
-use vtc_service::install::{InstallTokenSigner, InstallTokenStore, mint_install_token};
+use vtc_service::install::{
+    InstallTokenSigner, InstallTokenStore, InvitedAuthority, mint_passkey_install_token,
+};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
@@ -49,8 +51,8 @@ fn wrap_options<T: serde::de::DeserializeOwned>(inner: &serde_json::Value) -> T 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 
 // Trust Tasks ------------------------------------------------------
-const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
-const CLAIM_FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/finish/0.2";
+const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/passkey/start/0.1";
+const CLAIM_FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/passkey/finish/0.1";
 const BOOTSTRAP_TASK: &str = "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1";
 const ENROLL_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2";
 const ENROLL_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
@@ -76,6 +78,13 @@ async fn build_fixture() -> Fixture {
         .with_audit(true)
         .with_public_url(RP_ORIGIN)
         .with_install_signer(install_signer.clone())
+        // The passkey finish's response is signed (its proof is REQUIRED).
+        .with_credential_signer(Arc::new(
+            vtc_service::credentials::LocalSigner::from_ed25519_seed(
+                vtc_service::test_support::TEST_VTC_DID.to_string(),
+                &[0x5A; 32],
+            ),
+        ))
         .build()
         .await;
 
@@ -140,22 +149,18 @@ async fn post_document(fix: &Fixture, type_uri: &str, payload: Value) -> (Status
 /// Step 1 (continued): mint a fresh install token + record it in
 /// the install store so `claim/start` finds the state.
 async fn mint_install(fix: &Fixture) -> String {
-    let minted = mint_install_token(
-        &fix.install_signer,
-        "did:webvh:vtc.example.com:abc",
-        "did:key:z6MkAdmin",
-        600,
-    )
-    .expect("mint install token");
+    let minted =
+        mint_passkey_install_token(&fix.install_signer, "did:webvh:vtc.example.com:abc", 600)
+            .expect("mint install token");
     let exp = Utc::now() + ChronoDuration::seconds(600);
     fix.install_store
-        .record_issued(
+        .record_issued_passkey(
             &minted.jti,
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
             None,
-            None,
+            InvitedAuthority::community_admin("test", "first admin (install)"),
         )
         .await
         .unwrap();
@@ -207,8 +212,9 @@ async fn end_to_end_install_flow_phase_0_gate() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "claim/start: {body}");
-    // `install/claim/start` is untouched by this PR: it is not one of the
-    // `auth/passkey/*` tasks, and it still sends the wrapper under `options`.
+    // The passkey install sends the creation options under `options`, the
+    // possession assertion's request options under `assertionOptions`.
+    let start_body = body.clone();
     let registration_id = body["registrationId"].as_str().unwrap().to_string();
     let ccr: CreationChallengeResponse = serde_json::from_value(body["options"].clone()).unwrap();
 
@@ -217,6 +223,7 @@ async fn end_to_end_install_flow_phase_0_gate() {
     // ----------------------------------------------------------------
     let mut authenticator = SoftEd25519Authenticator::new();
     let (register_cred, _ed25519_pub) = authenticator.register(&ccr, RP_ORIGIN);
+    let assertion = authenticator.install_assertion(&start_body, &register_cred, RP_ORIGIN);
 
     let (status, body) = post_document(
         &fix,
@@ -225,6 +232,7 @@ async fn end_to_end_install_flow_phase_0_gate() {
             "installToken": install_token,
             "registrationId": registration_id,
             "webauthnResponse": register_cred,
+            "webauthnAssertion": assertion,
         }),
     )
     .await;

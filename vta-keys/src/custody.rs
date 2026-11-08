@@ -59,6 +59,8 @@
 //! | Derive the key a stored [`KeyRecord`] names | [`authorize_record_derivation`] → [`AuthorizedRecordDerivation::load`] → [`RecordKey`] |
 //! | Accept a caller-chosen path for a new record | [`check_explicit_key_path`] |
 //! | Sign as a delegated identity (no record) | [`check_delegated_identity_path`] |
+//! | Derive a PCS member key's seed | [`authorize_pcs_derivation`] → [`AuthorizedPcsDerivation::seed`] |
+//! | Search a context's PCS member keys for one identifier | [`authorize_pcs_search`] → [`AuthorizedPcsSearch::find`] (bounded by [`PCS_SEARCH_MAX_DERIVATIONS`]) |
 //! | Raw seed bytes | [`crate::seeds::load_seed_bytes`]. **Restricted:** see below |
 //!
 //! [`RecordKey`] deliberately holds its BIP-32 root privately and exposes only
@@ -479,7 +481,6 @@ impl AuthorizedPcsDerivation {
         keys_ks: &KeyspaceHandle,
         seed_store: &dyn SeedStore,
     ) -> Result<Zeroizing<[u8; 32]>, AppError> {
-        use sha2::{Digest, Sha256};
         let seed = load_seed_bytes(keys_ks, seed_store, self.seed_id)
             .await
             .map_err(|e| AppError::Internal(format!("{e}")))?;
@@ -488,11 +489,178 @@ impl AuthorizedPcsDerivation {
         let node = root
             .derive(&self.path)
             .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
-        let node_bytes = Zeroizing::new(*node.signing_key.as_bytes());
-        let mut hasher = Sha256::new();
-        hasher.update(PCS_MEMBER_KEY_DOMAIN);
-        hasher.update(node_bytes.as_slice());
-        Ok(Zeroizing::new(hasher.finalize().into()))
+        Ok(pcs_member_seed_of(&node))
+    }
+}
+
+/// SHA-256 of [`PCS_MEMBER_KEY_DOMAIN`] and the SLIP-0010 node: a PCS member
+/// key's seed. The one place the domain separation is computed.
+fn pcs_member_seed_of(node: &ExtendedSigningKey) -> Zeroizing<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let node_bytes = Zeroizing::new(*node.signing_key.as_bytes());
+    let mut hasher = Sha256::new();
+    hasher.update(PCS_MEMBER_KEY_DOMAIN);
+    hasher.update(node_bytes.as_slice());
+    Zeroizing::new(hasher.finalize().into())
+}
+
+/// The most PCS member keys one [`AuthorizedPcsSearch`] derives: candidate
+/// paths times seed generations, after the paths other engines hold are set
+/// aside. `vta/pcs/vetter/recover` states this bound.
+///
+/// Each candidate costs one hardened SLIP-0010 step, a hash and the scheme's
+/// key generation (a G1 scalar multiplication), so the whole search stays well
+/// under a second. A context whose counter has handed out more paths than this
+/// is refused rather than searched in part: a partial search would answer "not
+/// found" for a key it never looked at.
+pub const PCS_SEARCH_MAX_DERIVATIONS: u64 = 4096;
+
+/// A search over the PCS member keys a context can derive, authorized: every
+/// candidate is `{context base}/{i}'` for an `i` the context's path counter has
+/// handed out, so nothing outside the context's base is ever derived (rules 3
+/// and 6). Constructed only by [`authorize_pcs_search`].
+///
+/// The search is the bulk counterpart of [`AuthorizedPcsDerivation`], for
+/// `vta/pcs/vetter/recover`: it loads each seed generation once, never returns
+/// a seed, a key or a node, and reports only *which* candidate matched, so the
+/// caller can record the path where [`AuthorizedPcsDerivation`] will rebuild it.
+#[derive(Debug)]
+pub struct AuthorizedPcsSearch {
+    base: DerivationPath,
+    base_str: String,
+    count: u32,
+}
+
+/// What an [`AuthorizedPcsSearch`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PcsSearchOutcome {
+    /// The candidate the predicate accepted: its path and seed generation.
+    Found { path: String, seed_id: u32 },
+    /// No candidate matched. `derived` is how many were derived.
+    NotFound { derived: u64 },
+    /// More candidates than [`PCS_SEARCH_MAX_DERIVATIONS`]; nothing was derived.
+    TooMany { candidates: u64 },
+}
+
+/// Rules 3 and 6 for a search over a context's PCS member keys: authorize
+/// deriving `{context_base}/{i}'` for every `i < count`, where `count` is the
+/// context's path counter (`paths::peek_path_counter`).
+pub fn authorize_pcs_search(
+    context_id: &str,
+    context_base: &str,
+    count: u32,
+) -> Result<AuthorizedPcsSearch, CustodyViolation> {
+    let base = parse_path(context_base).map_err(|_| CustodyViolation::ForeignPath {
+        path: context_base.to_string(),
+        requested_context: Some(context_id.to_string()),
+        owning_context: None,
+    })?;
+    // A context's base is never the master node: a search there would cover
+    // every top-level subtree, the delegated-identity root included.
+    if base.is_empty() {
+        return Err(CustodyViolation::ForeignPath {
+            path: context_base.to_string(),
+            requested_context: Some(context_id.to_string()),
+            owning_context: None,
+        });
+    }
+    Ok(AuthorizedPcsSearch {
+        base,
+        base_str: context_base.to_string(),
+        count,
+    })
+}
+
+impl AuthorizedPcsSearch {
+    /// Search every seed generation the VTA still holds for the candidate
+    /// whose PCS member seed `matches` accepts, skipping the paths in `skip`
+    /// (keys other engines hold). The first match wins.
+    ///
+    /// A retired generation whose archive cannot be read is skipped with a
+    /// warning: what cannot be loaded is not held. The active generation
+    /// failing to load is an error.
+    pub async fn find<F>(
+        self,
+        keys_ks: &KeyspaceHandle,
+        seed_store: &dyn SeedStore,
+        skip: &std::collections::HashSet<String>,
+        matches: F,
+    ) -> Result<PcsSearchOutcome, AppError>
+    where
+        F: Fn(&[u8; 32]) -> bool + Send + 'static,
+    {
+        let active = crate::seeds::get_active_seed_id(keys_ks)
+            .await
+            .map_err(|e| AppError::Internal(format!("active seed id: {e}")))?;
+        let mut generations: Vec<u32> = crate::seeds::list_seed_records(keys_ks)
+            .await
+            .map_err(|e| AppError::Internal(format!("seed records: {e}")))?
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        generations.push(active);
+        generations.sort_unstable();
+        generations.dedup();
+        // Newest first: a lost record is likelier to name a recent generation.
+        generations.reverse();
+
+        let indices: Vec<u32> = (0..self.count)
+            .filter(|i| !skip.contains(&crate::paths::path_at(&self.base_str, *i)))
+            .collect();
+        let candidates = indices.len() as u64 * generations.len() as u64;
+        if candidates > PCS_SEARCH_MAX_DERIVATIONS {
+            return Ok(PcsSearchOutcome::TooMany { candidates });
+        }
+
+        // Each generation's node at the context's base. The root is dropped
+        // (and zeroized) as soon as the base node is derived from it.
+        let mut bases = Vec::with_capacity(generations.len());
+        for seed_id in generations {
+            let seed = match load_seed_bytes(keys_ks, seed_store, Some(seed_id)).await {
+                Ok(s) => s,
+                Err(e) if seed_id != active => {
+                    tracing::warn!(
+                        seed_id,
+                        error = %e,
+                        "PCS key search: a retired seed generation cannot be loaded; skipped"
+                    );
+                    continue;
+                }
+                Err(e) => return Err(AppError::Internal(format!("{e}"))),
+            };
+            let root = ExtendedSigningKey::from_seed(&seed).map_err(|e| {
+                key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
+            })?;
+            let node = root
+                .derive(&self.base)
+                .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
+            bases.push((seed_id, node));
+        }
+
+        let base_str = self.base_str;
+        tokio::task::spawn_blocking(move || {
+            let mut derived = 0u64;
+            for (seed_id, node) in &bases {
+                for &i in &indices {
+                    let child = ChildIndex::hardened(i)
+                        .map_err(|e| key_derivation_error(format!("index {i}: {e}")))?;
+                    let leaf = node
+                        .derive_child(child)
+                        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
+                    derived += 1;
+                    let seed = pcs_member_seed_of(&leaf);
+                    if matches(&seed) {
+                        return Ok(PcsSearchOutcome::Found {
+                            path: crate::paths::path_at(&base_str, i),
+                            seed_id: *seed_id,
+                        });
+                    }
+                }
+            }
+            Ok(PcsSearchOutcome::NotFound { derived })
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("PCS key search: {e}")))?
     }
 }
 
@@ -764,6 +932,19 @@ mod tests {
             assert!(
                 authorize_pcs_derivation(path, "acme", base, None).is_err(),
                 "{path} must be refused"
+            );
+        }
+    }
+
+    /// A key search is authorized only over a real context base: never the
+    /// master node, never a path that does not parse.
+    #[test]
+    fn a_pcs_search_needs_a_context_base() {
+        assert!(authorize_pcs_search("acme", "m/26'/2'/4'", 12).is_ok());
+        for base in ["m", "not a path"] {
+            assert!(
+                authorize_pcs_search("acme", base, 12).is_err(),
+                "{base} must be refused"
             );
         }
     }

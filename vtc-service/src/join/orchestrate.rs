@@ -78,6 +78,9 @@ pub struct JoinSubmitOutcome {
 /// decision on the very request being described.
 #[derive(Debug)]
 pub enum SubmitRefusal {
+    /// The applicant is already a current member, so there is nothing to
+    /// apply for (`submit:alreadyMember`).
+    AlreadyMember,
     /// The applicant already has an open request. Carries what the guard saw.
     AlreadyOpen {
         request_id: Uuid,
@@ -133,6 +136,11 @@ impl From<SubmitRefusal> for AppError {
                  withdraw it with vtc/join-requests/withdraw/0.1, or await its decision, \
                  before resubmitting"
             )),
+            SubmitRefusal::AlreadyMember => AppError::Conflict(
+                "the applicant is already a current member of this community; sign in \
+                 instead of applying"
+                    .into(),
+            ),
             SubmitRefusal::AttributesMissing(types) => AppError::Validation(format!(
                 "this community asks for {} and the submission does not answer it; add it and \
                  resubmit",
@@ -241,6 +249,19 @@ pub async fn submit_inner(
         return Err(SubmitRefusal::PresentationInvalid(reason));
     }
 
+    // 1a'. A current member has nothing to apply for. Refused here, before the
+    //     request is stored, rather than by the admit effect's duplicate-ACL
+    //     guard, which fires only once an administrator approves — after they
+    //     have spent a review on a request that could never be admitted.
+    //     "Current" means ACL-present, as for invitations: a departed member's
+    //     tombstone Member row does not block a re-join.
+    if crate::acl::get_acl_entry(&state.acl_ks, &applicant_did)
+        .await?
+        .is_some()
+    {
+        return Err(SubmitRefusal::AlreadyMember);
+    }
+
     // 1b. Requested attributes: answered as the manifest asks, and nothing
     // more. Checked before dedup and before anything is stored, so an
     // over-shared value is never written anywhere — not even onto a request
@@ -263,8 +284,9 @@ pub async fn submit_inner(
 
     // 2. Dedup: at most one open (Pending/Deferred) request per applicant
     // (P0.13). Blocks replay of a captured body while a request is open and
-    // caps unbounded accumulation. An already-admitted applicant is caught
-    // later by the admit duplicate-ACL guard.
+    // caps unbounded accumulation. An already-admitted applicant was refused
+    // at 1a'; the admit duplicate-ACL guard still catches one admitted while
+    // this request was open.
     if let Some(existing) = find_open_request(&state.join_requests_ks, &applicant_did).await? {
         // Report the status, not just the id. "Withdraw or await its decision"
         // is advice the applicant cannot act on without knowing which of the

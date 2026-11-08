@@ -44,6 +44,18 @@ use syn::{Attribute, Fields, GenericArgument, Item, Meta, PathArguments, Type};
 /// *holds*; "it is awkward to redact" is never one.
 const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
     (
+        "vti-oob-server/src/record.rs",
+        "OobRequest",
+        "start_key",
+        "the browser's `K_b` as its public Ed25519 `did:key` identifier; the private key never leaves the browser",
+    ),
+    (
+        "vti-oob-server/src/record.rs",
+        "OobRequest",
+        "approver_key",
+        "the wallet's per-scan `K_a` as its public Ed25519 `did:key` identifier; the private key never leaves the wallet",
+    ),
+    (
         "vta-service/src/operations/pcs_voter.rs",
         "VoterRecord",
         "voting_key",
@@ -126,20 +138,6 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
         "the hidden-vetting token labels live after a change (`token/2026-10`, \
          `token/event/<id>`), public values every applicant and vetter reads from the join \
          manifest — names of labels, not tokens",
-    ),
-    (
-        "vtc-service/src/member_portal/oob.rs",
-        "OobRequest",
-        "approver_key",
-        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
-         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
-    ),
-    (
-        "vtc-service/src/member_portal/oob.rs",
-        "OobRequest",
-        "start_key",
-        "a wallet sign-in key named as an Ed25519 `did:key` — the public half the \
-         service checks a proof against (`K_a` / `K_b`, base design §10), never key material",
     ),
     (
         "vta-external/src/scope.rs",

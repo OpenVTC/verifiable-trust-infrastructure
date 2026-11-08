@@ -52,7 +52,7 @@ fn stale_reply(peer_did: &str, client_did: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "id": "urn:uuid:stale-response-from-an-earlier-run",
         "threadId": "urn:uuid:a-ping-this-process-never-sent",
-        "type": "https://trusttasks.org/spec/messaging/ping/0.1#response",
+        "type": "https://trusttasks.org/spec/messaging/ping/0.2#response",
         "issuer": peer_did,
         "recipient": client_did,
         "payload": { "nonce": "a-nonce-from-an-earlier-run" },
@@ -169,7 +169,7 @@ async fn a_correlated_reply_satisfies_the_ping() {
         let reply = serde_json::to_vec(&serde_json::json!({
             "id": "urn:uuid:the-response",
             "threadId": request_id,
-            "type": "https://trusttasks.org/spec/messaging/ping/0.1#response",
+            "type": "https://trusttasks.org/spec/messaging/ping/0.2#response",
             "issuer": peer_did_for_task,
             "recipient": client_for_peer,
             "payload": { "status": "ok" },

@@ -89,7 +89,7 @@ impl VtaClient {
         .await
     }
 
-    /// `consent/list/1.0` — sync / point-check the grants a bridge enforces. All
+    /// `consent/list/1.1` — sync / point-check the grants a bridge enforces. All
     /// filters are optional; pass a full `subject` for a point-check.
     pub async fn consent_list(
         &self,
@@ -103,7 +103,7 @@ impl VtaClient {
             subject,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_CONSENT_LIST_1_0,
+            trust_tasks::TASK_CONSENT_LIST_1_1,
             payload,
             CONSENT_TT_TIMEOUT,
         )

@@ -18,9 +18,7 @@ use crate::{HolderKey, VtcClient, VtcError};
 
 /// The generated wire types, re-exported so a caller names the reply types
 /// without depending on `trust-tasks-rs` itself.
-pub use trust_tasks_rs::specs::vtc::members::{
-    admit::v0_1 as admit, make_membership::v0_1 as make_membership,
-};
+pub use vti_specs::vtc::members::{admit::v0_1 as admit, make_membership::v0_1 as make_membership};
 
 /// The Type URI of each task, read off the generated payloads.
 pub mod task {

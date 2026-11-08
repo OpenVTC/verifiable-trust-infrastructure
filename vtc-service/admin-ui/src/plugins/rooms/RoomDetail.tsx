@@ -1,5 +1,5 @@
 // One hosted room, as its host holds it (docs/05-design-notes/data-rooms-files.md
-// §8.1 "Room detail") — `vtc/rooms/get/0.2`, per-member usage and daily
+// §8.1 "Room detail") — `vtc/rooms/get/0.3`, per-member usage and daily
 // activity from `vtc/rooms/usage/0.1`, and limit overrides through
 // `vtc/rooms/limits/set/0.1`.
 //
@@ -22,7 +22,7 @@ import { ErrorOrParked } from "@/components/ParkedNotice";
 import { PageHeader } from "@/components/PageHeader";
 import { Tabs } from "@/components/Tabs";
 import type { ApiError } from "@/lib/api";
-import { formatEpoch, formatIso, shorten } from "@/lib/format";
+import { formatIso, shorten } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import {
   MEMBER_USAGE_UNAVAILABLE,
@@ -179,14 +179,14 @@ function Identity({ data, name }: { data: RoomGetResponse; name: RoomName }) {
         <dt>Lifecycle</dt>
         <dd>
           <LifecyclePill value={r.lifecycle} /> epoch {r.epoch}
-          {r.epochExpiresAt ? `, expires ${formatEpoch(r.epochExpiresAt)}` : ""}
+          {r.epochExpiresAt ? `, expires ${formatIso(r.epochExpiresAt)}` : ""}
         </dd>
         <dt>Retention</dt>
         <dd>
           {r.retentionDays} days, {r.retentionPolicy === "chained" ? "history kept" : "from join"}
         </dd>
         <dt>Created</dt>
-        <dd>{formatEpoch(r.createdAt)}</dd>
+        <dd>{formatIso(r.createdAt)}</dd>
         {r.mirrorOf && (
           <>
             <dt>Copy of</dt>
@@ -450,7 +450,7 @@ function FilesSwitch({ data }: { data: RoomGetResponse }) {
             <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
           </label>
           <div className="rooms-form-actions">
-            <button
+            <button className="primary"
               type="button"
               onClick={flip}
               disabled={busy || reason.trim() === "" || reason.trim().length > 500}
@@ -656,7 +656,7 @@ export const PAUSE_SAYS: Record<NonNullable<Migration["pausedCause"]>, string> =
 
 /**
  * Move the room's existing files onto the storage it is assigned to
- * (`vtc/rooms/storage/migrate/0.2`): each is copied, checked against what its
+ * (`vtc/rooms/storage/migrate/0.3`): each is copied, checked against what its
  * uploader committed to, and switched; the old copies are deleted after the
  * grace window. Readers notice nothing. Like an assignment it takes the
  * requester's passkey and is parked for another holder of the room-hosting
@@ -765,7 +765,7 @@ function MoveExistingFiles({
               )}
               Files not yet moved keep working where they are. Resuming needs no new
               approval.{" "}
-              <button type="button" onClick={() => move.mutate(true)} disabled={move.isPending}>
+              <button className="secondary" type="button" onClick={() => move.mutate(true)} disabled={move.isPending}>
                 Resume now
               </button>
             </p>
@@ -818,7 +818,7 @@ function MoveExistingFiles({
           </label>
           {!rateOk && <p className="muted">At least 0.0625 MiB (64 KiB) per second.</p>}
           <div className="rooms-form-actions">
-            <button
+            <button className="primary"
               type="button"
               onClick={() => move.mutate(false)}
               disabled={
@@ -840,7 +840,7 @@ function MoveExistingFiles({
 
 /**
  * Point the room's new uploads at another storage location
- * (`vtc/rooms/storage/assign/0.1`). Its existing files stay where they are and
+ * (`vtc/rooms/storage/assign/0.2`). Its existing files stay where they are and
  * keep working, since each remembers its own location. Decides where members'
  * files go, so it takes the requester's passkey and is parked for another
  * holder of the room-hosting capability (§7.4).
@@ -911,7 +911,7 @@ function MoveStorage({ roomId, current }: { roomId: string; current: string }) {
         </>
       )}
       <div className="rooms-form-actions">
-        <button
+        <button className="primary"
           type="button"
           onClick={() => move.mutate()}
           disabled={

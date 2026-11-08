@@ -33,7 +33,7 @@ vi.mock("@/lib/api", async (original) => ({
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
 }));
 
-const ENTRIES = "https://trusttasks.org/spec/vtc/directory/entries/list/0.1";
+const ENTRIES = "https://trusttasks.org/spec/vtc/directory/entries/list/0.2";
 const GROUP_ID = "grp_W5k2N8xRb3Qz7TpLAAAAAA";
 const ENTRY = "dir_Q7m2K9xVb4Tz8LpRAAAAAA";
 

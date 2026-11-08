@@ -223,7 +223,7 @@ async fn di_signed_trust_task_authenticates_over_rest() {
     let session_id = challenge_body["payload"]["sessionId"].as_str().unwrap();
 
     // The exact bytes `vta_sdk::auth_di::sign_authenticate_doc` puts on the
-    // wire (an `auth/authenticate/0.2` Trust Task).
+    // wire (an `auth/authenticate/0.3` Trust Task).
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
@@ -339,7 +339,7 @@ async fn plaintext_didcomm_with_forged_sender_is_rejected() {
     let forged = json!({
         "id": "attacker-supplied-id",
         "typ": "application/didcomm-plain+json",
-        "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+        "type": "https://trusttasks.org/spec/auth/authenticate/0.3",
         "from": admin_did,
         "to": ["did:key:z6MkVtaServiceUnderTest"],
         "body": { "challenge": "whatever", "session_id": "whatever" },
@@ -418,7 +418,7 @@ async fn plaintext_didcomm_refresh_is_rejected() {
     let forged = json!({
         "id": "attacker-supplied-id",
         "typ": "application/didcomm-plain+json",
-        "type": "https://trusttasks.org/spec/auth/refresh/0.1",
+        "type": "https://trusttasks.org/spec/auth/refresh/0.2",
         "from": "did:key:z6MkForgedAdminTarget",
         "to": ["did:key:z6MkVtaServiceUnderTest"],
         "body": { "refresh_token": "stolen-or-guessed-token" },
@@ -521,7 +521,7 @@ async fn a_document_with_no_recipient_is_malformed() {
     let (_, ch) = request(&router, post_json("/trust-tasks", challenge_doc(&did))).await;
 
     let mut doc = vta_sdk::trust_task_sign::build_unsigned(
-        "https://trusttasks.org/spec/auth/authenticate/0.2",
+        "https://trusttasks.org/spec/auth/authenticate/0.3",
         json!({ "challenge": ch["payload"]["challenge"], "sessionId": ch["payload"]["sessionId"], "scope": [] }),
         &did,
         "unused",

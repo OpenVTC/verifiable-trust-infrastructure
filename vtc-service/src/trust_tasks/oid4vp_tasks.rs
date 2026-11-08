@@ -8,8 +8,8 @@
 //! The work is [`crate::oid4vp::status`]; this module maps the wire to it.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::oid4vp::identities::list::v0_1 as list;
 use trust_tasks_rs::{Payload, TrustTask};
+use vti_specs::vtc::oid4vp::identities::list::v0_1 as list;
 
 use super::helpers::{TrustTaskOutcome, app_error_to_reject, success_response};
 use super::{JoinAuthCtx, capable_signer, parse_spec_payload};

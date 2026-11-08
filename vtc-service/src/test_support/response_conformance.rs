@@ -141,7 +141,7 @@ fn check(task: &str, status: StatusCode, bytes: &Bytes) -> Option<String> {
     if status == StatusCode::NO_CONTENT || bytes.is_empty() {
         return None;
     }
-    let schema = trust_tasks_rs::schema_index::schema_for(&format!("{task}#response"))?;
+    let schema = vti_specs::schema_index::schema_for(&format!("{task}#response"))?;
     let value = serde_json::from_slice::<serde_json::Value>(bytes).ok()?;
     // A Trust Task *document* carries its payload under `payload`; a bare REST
     // response is the payload itself. Validate whichever this is, so the layer

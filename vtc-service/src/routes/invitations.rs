@@ -429,12 +429,12 @@ pub(crate) async fn revoke(
 
 /// `vtc/invitations/issue:unknownRole`, read from the generated bindings.
 pub const INVITATION_ISSUE_ERR_UNKNOWN_ROLE: &str =
-    trust_tasks_rs::specs::vtc::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE.code;
+    vti_specs::vtc::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE.code;
 /// `vtc/invitations/revoke:notFound`, read from the generated bindings.
 pub const INVITATION_REVOKE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::invitations::revoke::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::invitations::revoke::v0_1::error_codes::NOT_FOUND.code;
 
-use trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes as deliver_codes;
+use vti_specs::vtc::invitations::deliver::v0_1::error_codes as deliver_codes;
 
 /// `vtc/invitations/deliver:notFound`, read from the generated bindings.
 pub const INVITATION_DELIVER_ERR_NOT_FOUND: &str = deliver_codes::NOT_FOUND.code;
@@ -509,9 +509,9 @@ const VIC_CONFIGURATION: &str = "VIC";
 pub(crate) async fn deliver(
     state: &AppState,
     actor: &str,
-    body: trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::Payload,
-) -> Result<trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::Response, DeliverError> {
-    use trust_tasks_rs::specs::vtc::invitations::deliver::v0_1 as spec;
+    body: vti_specs::vtc::invitations::deliver::v0_1::Payload,
+) -> Result<vti_specs::vtc::invitations::deliver::v0_1::Response, DeliverError> {
+    use vti_specs::vtc::invitations::deliver::v0_1 as spec;
 
     let scope = require_inviter(state, actor).await?;
     let payload = body;

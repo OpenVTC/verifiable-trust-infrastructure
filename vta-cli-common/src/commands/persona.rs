@@ -38,18 +38,18 @@
 use std::num::NonZeroU64;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::persona::world::delete::v1_0::{
-    ExpectedVersion as WorldDeleteExpectedVersion, Payload as WorldDeletePayload,
-    Ulid as WorldDeleteUlid,
-};
-use trust_tasks_rs::specs::persona::world::list::v1_0::Payload as WorldListPayload;
-use trust_tasks_rs::specs::persona::world::put::v1_1::{
-    ExpectedVersion as WorldPutExpectedVersion, Payload as WorldPutPayload,
-    PayloadIcon as WorldPutIcon, PayloadName as WorldPutName, Ulid as WorldUlid, WorldColour,
-};
 use vta_sdk::client::VtaClient;
 use vta_sdk::protocols::persona::{
     ContactDocument, LocalProfileEntry, ProfileEntry, Provenance, ValueType,
+};
+use vti_specs::persona::world::delete::v1_0::{
+    ExpectedVersion as WorldDeleteExpectedVersion, Payload as WorldDeletePayload,
+    Ulid as WorldDeleteUlid,
+};
+use vti_specs::persona::world::list::v1_0::Payload as WorldListPayload;
+use vti_specs::persona::world::put::v1_1::{
+    ExpectedVersion as WorldPutExpectedVersion, Payload as WorldPutPayload,
+    PayloadIcon as WorldPutIcon, PayloadName as WorldPutName, Ulid as WorldUlid, WorldColour,
 };
 
 use crate::render::{BOLD, CYAN, DIM, RED, RESET, YELLOW, is_json_output, print_json};
@@ -225,7 +225,7 @@ pub async fn cmd_profile_put(
     name: String,
     entries: Vec<ProfileEntry>,
     credential_refs: Vec<String>,
-    reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_1::FaceReach>,
+    reach: Option<vti_specs::persona::profile::put::v1_1::FaceReach>,
     profile_id: Option<String>,
     expected_version: Option<u64>,
 ) -> CmdResult {
@@ -269,7 +269,7 @@ pub async fn cmd_profile_compose(
     }
     // Read into the generated payload here, so a malformed claim is reported
     // against the published shape before anything is sent.
-    let payload: trust_tasks_rs::specs::persona::profile::compose::v1_1::Payload =
+    let payload: vti_specs::persona::profile::compose::v1_1::Payload =
         serde_json::from_value(body).map_err(|e| format!("not a valid compose: {e}"))?;
     let out = client.persona_profile_compose(&payload).await?;
     let result = serde_json::to_value(&out)?;

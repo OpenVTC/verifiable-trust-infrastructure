@@ -1,8 +1,11 @@
-//! `trust-task-discovery/0.3` — which Trust Tasks this VTC serves, and the
-//! acceptance window it applies to them (VTI-TRN-047).
+//! `trust-task-discovery/0.4` — which Trust Tasks this VTC serves, and the
+//! acceptance window it applies to them (VTI-TRN-047), with the thirty-day
+//! expiry horizon up to which a stated `expiresAt` is honoured. The superseded
+//! 0.3 is still answered, without the horizon, for the clients that ask it
+//! (this VTC's own console among them).
 //!
 //! The answer is built by
-//! [`vti_common::trust_task::discovery::respond_v0_3`], the builder the VTA
+//! [`vti_common::trust_task::discovery::respond_v0_4`], the builder the VTA
 //! answers with, so the two node types answer alike. It advertises
 //! [`VTI_ACCEPTANCE_WINDOW`](vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW)
 //! at response level — the value [`super::freshness_policy`] applies, so the
@@ -14,19 +17,23 @@
 //! served versions from — so the answer cannot list a task nobody routes.
 //!
 //! Identified callers only, as on the VTA: a capability list is a fingerprint
-//! of the deployment (discovery 0.3, *Privacy considerations*). The version
+//! of the deployment (discovery 0.4, *Privacy considerations*). The version
 //! hint an unrouted URI earns already names the served versions of one family;
 //! this names them all.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::trust_task_discovery::v0_3 as wire;
+#[allow(deprecated)] // 0.3 is superseded, and still answered
+use trust_tasks_rs::specs::trust_task_discovery::v0_3;
+use trust_tasks_rs::specs::trust_task_discovery::v0_4 as wire;
 use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use super::helpers::{TrustTaskOutcome, parse_payload, reject_with, success_response};
 use super::{DISPATCHED_URIS, JoinAuthCtx, caller_is_identified};
 
-/// `trust-task-discovery/0.3`.
+/// `trust-task-discovery/0.4`.
+pub(crate) const DISCOVERY_V0_4_TYPE: &str = vti_common::trust_task::discovery::DISCOVERY_V0_4;
+/// `trust-task-discovery/0.3`, superseded by 0.4.
 pub(crate) const DISCOVERY_V0_3_TYPE: &str = vti_common::trust_task::discovery::DISCOVERY_V0_3;
 
 /// Every Type URI this dispatcher routes.
@@ -39,7 +46,7 @@ pub(super) fn served_uris() -> Vec<&'static str> {
         .collect()
 }
 
-/// Answer a discovery 0.3 query.
+/// Answer a discovery 0.4 query, or a superseded 0.3 one in its own shape.
 pub(super) fn handle(ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> TrustTaskOutcome {
     if !caller_is_identified(ctx) {
         return reject_with(
@@ -51,6 +58,9 @@ pub(super) fn handle(ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> TrustTaskOutco
             },
         );
     }
+    if doc.type_uri.for_routing().to_string() == DISCOVERY_V0_3_TYPE {
+        return handle_v0_3(doc);
+    }
     if let Err(e) = wire::Payload::validate_value(&doc.payload) {
         return reject_with(
             &doc,
@@ -60,6 +70,27 @@ pub(super) fn handle(ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> TrustTaskOutco
         );
     }
     let query: wire::Payload = match parse_payload(&doc) {
+        Ok(q) => q,
+        Err(reject) => return reject,
+    };
+    success_response(
+        &doc,
+        vti_common::trust_task::discovery::respond_v0_4(served_uris(), &query),
+    )
+}
+
+/// The superseded 0.3 answer: the same list, the window without the horizon.
+#[allow(deprecated)]
+fn handle_v0_3(doc: TrustTask<Value>) -> TrustTaskOutcome {
+    if let Err(e) = v0_3::Payload::validate_value(&doc.payload) {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: format!("payload: {e}"),
+            },
+        );
+    }
+    let query: v0_3::Payload = match parse_payload(&doc) {
         Ok(q) => q,
         Err(reject) => return reject,
     };
@@ -76,9 +107,13 @@ mod tests {
     use vti_common::trust_task::acceptance::AcceptanceWindow;
 
     fn query(payload: Value) -> TrustTask<Value> {
+        query_at(DISCOVERY_V0_4_TYPE, payload)
+    }
+
+    fn query_at(type_uri: &str, payload: Value) -> TrustTask<Value> {
         let mut doc = TrustTask::new(
             "urn:uuid:00000000-0000-4000-8000-000000000001".to_string(),
-            DISCOVERY_V0_3_TYPE.parse().unwrap(),
+            type_uri.parse().unwrap(),
             payload,
         );
         doc.issuer = Some("did:example:member".into());
@@ -107,7 +142,7 @@ mod tests {
         let body = answer(handle(&identified(), query(serde_json::json!({}))));
         assert_eq!(
             body["type"],
-            format!("{DISCOVERY_V0_3_TYPE}#response"),
+            format!("{DISCOVERY_V0_4_TYPE}#response"),
             "{body}"
         );
         let window: wire::AcceptanceWindow =
@@ -117,6 +152,28 @@ mod tests {
         let applied = super::super::freshness_policy();
         assert_eq!(Some(advertised.max_age), applied.max_age);
         assert_eq!(advertised.clock_skew, applied.skew);
+        assert_eq!(advertised.expiry_horizon, applied.expiry_horizon);
+        assert!(advertised.expiry_horizon.is_some(), "VTI-OPS-028: {body}");
+    }
+
+    /// A superseded 0.3 query is answered in 0.3's shape: the same list, and
+    /// the window without the horizon 0.3 has no member for.
+    #[test]
+    #[allow(deprecated)]
+    fn a_v0_3_query_is_answered_without_the_horizon() {
+        let body = answer(handle(
+            &identified(),
+            query_at(DISCOVERY_V0_3_TYPE, serde_json::json!({})),
+        ));
+        assert_eq!(
+            body["type"],
+            format!("{DISCOVERY_V0_3_TYPE}#response"),
+            "{body}"
+        );
+        v0_3::Response::validate_value(&body["payload"]).expect("schema-valid 0.3 response");
+        let window = &body["payload"]["acceptanceWindow"];
+        assert_eq!(window["maxAgeSeconds"], 600, "{body}");
+        assert!(window.get("expiryHorizonSeconds").is_none(), "{body}");
     }
 
     /// The same property measured the way a producer meets it: a document at
@@ -140,11 +197,11 @@ mod tests {
 
     /// The answer is the routing table: it lists discovery itself, a task from
     /// each dispatcher, and every URI the table routes — and it is valid
-    /// against the published 0.3 response schema.
+    /// against the published 0.4 response schema.
     #[test]
     fn the_answer_lists_what_the_dispatcher_routes() {
         let body = answer(handle(&identified(), query(serde_json::json!({}))));
-        wire::Response::validate_value(&body["payload"]).expect("schema-valid 0.3 response");
+        wire::Response::validate_value(&body["payload"]).expect("schema-valid 0.4 response");
         let listed: Vec<&str> = body["payload"]["supportedTypes"]
             .as_array()
             .expect("an array")
@@ -154,6 +211,7 @@ mod tests {
         for uri in served_uris() {
             assert!(listed.contains(&uri), "{uri} is routed but not listed");
         }
+        assert!(listed.contains(&DISCOVERY_V0_4_TYPE));
         assert!(listed.contains(&DISCOVERY_V0_3_TYPE));
         assert!(
             crate::rooms::handlers::served_uris()

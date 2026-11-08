@@ -128,7 +128,7 @@ function csrfTokenFromCookie(): string | null {
   return match?.[1] ?? null;
 }
 
-const REFRESH_TASK = "https://trusttasks.org/spec/auth/refresh/0.1";
+const REFRESH_TASK = "https://trusttasks.org/spec/auth/refresh/0.2";
 
 /**
  * The renewal call itself, kept out of `request` so it cannot recurse
@@ -600,9 +600,9 @@ export async function addressedDocument(
  *   no key here. Its authority is the ceremony the member's **signed**
  *   `redeem/start` opened (sent by `cnm`);
  * - a console user's answer to a bound step-up
- *   (`auth/step-up/approve-response/0.4`, `evidence.kind = webauthn`), whose
- *   gate is the passkey assertion. The console key is a delegation, and a
- *   delegated key is never accepted as an approver's attestation.
+ *   (`auth/step-up/approve-response/0.7`, `evidence.kind = webauthn`), whose
+ *   evidence is the passkey assertion. The console key is a delegation, and a
+ *   delegated key's proof is never the approver's (0.7 consumer item 1a).
  */
 export async function postUnsignedTrustTask<T>(
   typeUri: string,
@@ -800,7 +800,7 @@ export const fetchDiagnostics = (): Promise<DiagnosticsResponse> =>
 // these are the online half, and they share the daemon's eligibility rule
 // rather than re-deriving it.
 const SYNC_JOBS_LIST_TASK =
-  "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1";
+  "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.2";
 const SYNC_JOBS_RETRY_TASK =
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2";
 const SYNC_JOBS_DISCARD_TASK =
@@ -906,7 +906,7 @@ export async function fetchWhoami(): Promise<WhoamiResponse> {
     }),
     key,
     // A session key speaks as the subject for this session, with
-    // `proofPurpose: authentication` (`auth/authenticate/0.2`).
+    // `proofPurpose: authentication` (`auth/authenticate/0.3`).
     { proofPurpose: "authentication" },
   );
   const who = await postDocument<WhoamiResponse>(signed);
@@ -1098,7 +1098,7 @@ export const fetchRelationshipsGraph = (): Promise<RelationshipsGraph> =>
   postSignedRead<RelationshipsGraph>(RELATIONSHIPS_GRAPH_TASK, {});
 
 const MEMBER_RELATIONSHIPS_TASK =
-  "https://trusttasks.org/spec/vtc/relationships/list/0.2";
+  "https://trusttasks.org/spec/vtc/relationships/list/0.3";
 
 /** One relationship row as the community stored it, credential body included.
  *  Unlike `GraphHalf` — which is body-free by design, because the graph shows

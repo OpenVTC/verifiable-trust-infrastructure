@@ -1,9 +1,7 @@
 //! Manifest and ballot rules, and the count, over the generated wire types.
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::voting::{
-    ballot::cast::v0_1::Ballot, election::register::v0_1::Manifest,
-};
+use vti_specs::voting::{ballot::cast::v0_1::Ballot, election::register::v0_4::Manifest};
 use vti_voting::{
     rules::{RuleError, check_ballot, check_manifest, digest_multibase, manifest_digest},
     tally::tally,
@@ -32,9 +30,9 @@ fn manifest_json() -> Value {
         ],
         "secrecy": "open",
         "roll": { "rule": "members" },
-        "registrationOpens": "2026-11-01T00:00:00Z",
-        "votingOpens": "2026-11-03T00:00:00Z",
-        "votingCloses": "2026-11-07T18:00:00Z",
+        "registrationOpensAt": "2026-11-01T00:00:00Z",
+        "votingOpensAt": "2026-11-03T00:00:00Z",
+        "votingClosesAt": "2026-11-07T18:00:00Z",
         "revote": "replace",
         "board": { "visibility": "private", "auditors": ["did:webvh:QmAudit:audit.example.com"] },
         "ballotBox": BOX,
@@ -77,7 +75,7 @@ fn vot_010_a_well_formed_manifest_passes() {
 #[test]
 fn vot_010_manifest_rules_are_enforced() {
     let cases: [(&str, Value); 6] = [
-        ("votingOpens", json!("2026-11-08T00:00:00Z")),
+        ("votingOpensAt", json!("2026-11-08T00:00:00Z")),
         ("ballotBox", json!("did:webvh:QmOther:other.example.net")),
         ("textReleaseThreshold", json!(10)), // control: still valid
         ("roll", json!({ "rule": "listed" })),
@@ -119,7 +117,7 @@ fn vot_010_manifest_rules_are_enforced() {
 
 #[test]
 fn vot_062_trustee_rules_are_enforced_for_the_encrypted_levels() {
-    use trust_tasks_rs::specs::voting::election::register::v0_1::SecrecyLevel;
+    use vti_specs::voting::election::register::v0_4::SecrecyLevel;
     use vti_voting::rules::check_manifest_serving;
     const ALL: &[SecrecyLevel] = &[
         SecrecyLevel::Open,
@@ -303,4 +301,119 @@ fn vot_070_the_count() {
         serde_json::to_value(&early[4]).unwrap()["withheld"],
         json!(true)
     );
+}
+
+/// VTI-VOT-065: a threshold as low as 1 is a valid manifest — the ballot box must not refuse
+/// 1 – 9 — and 0 is no manifest at all (the generated type is non-zero, as the schema's
+/// `minimum` of 1).
+#[test]
+fn vti_vot_065_a_threshold_of_one_to_nine_is_valid_and_zero_is_not() {
+    for t in [1, 3, 9] {
+        let mut v = manifest_json();
+        v["textReleaseThreshold"] = json!(t);
+        assert_eq!(check_manifest(&manifest(&v), Some(BOX)), Ok(()), "{t}");
+    }
+    let mut v = manifest_json();
+    v["textReleaseThreshold"] = json!(0);
+    assert!(serde_json::from_value::<Manifest>(v).is_err());
+}
+
+/// VTI-VOT-065: at a threshold of 1, text is released from the first counted ballot — and still
+/// never in a provisional count.
+#[test]
+fn vti_vot_065_text_is_released_at_a_threshold_of_one() {
+    let mut v = manifest_json();
+    v["textReleaseThreshold"] = json!(1);
+    let (m, d) = (manifest(&v), manifest_digest(&v).unwrap());
+    let one = [ballot(&d, full_answers())];
+    let (_, rows) = tally(&m, &one, false).unwrap();
+    let text = serde_json::to_value(&rows[4]).unwrap();
+    assert_eq!(text["text"], json!(["Longer weekend hours"]));
+    let (_, early) = tally(&m, &one, true).unwrap();
+    assert_eq!(
+        serde_json::to_value(&early[4]).unwrap()["withheld"],
+        json!(true)
+    );
+    let (_, none) = tally(&m, &one[..0], false).unwrap();
+    assert_eq!(
+        serde_json::to_value(&none[4]).unwrap()["withheld"],
+        json!(true)
+    );
+}
+
+/// A manifest registered under `voting/election/register/0.1` (instants without `…At`) is
+/// refused by name, never re-read as 0.2: its digest binds the old member names.
+#[test]
+fn a_0_1_manifest_is_refused_by_name() {
+    let mut v = manifest_json();
+    vti_voting::rules::require_current_manifest(&v).expect("a 0.2 manifest is current");
+    let opens = v["votingOpensAt"].take();
+    v.as_object_mut().unwrap().remove("votingOpensAt");
+    v["votingOpens"] = opens;
+    let err = vti_voting::rules::require_current_manifest(&v)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("register/0.1"), "{err}");
+    assert!(err.contains("agm") || err.contains("election"), "{err}");
+}
+
+/// What a community checks of a manifest it is asked to create, needing only the manifest and
+/// the clock: the current shape, the rules, and voting not already closed.
+#[test]
+fn vot_010_a_new_manifest_is_checked_against_the_clock() {
+    use vti_voting::rules::check_new_manifest;
+    let v = manifest_json();
+    let before_close = "2026-11-07T17:59:59Z".parse().unwrap();
+    let at_close = "2026-11-07T18:00:00Z".parse().unwrap();
+    let m = check_new_manifest(&v, before_close).expect("open until votingClosesAt");
+    assert_eq!(m.election_id.as_str(), "agm-2027");
+    let err = check_new_manifest(&v, at_close).unwrap_err().to_string();
+    assert!(err.contains("votingClosesAt is already past"), "{err}");
+
+    let mut bad = v.clone();
+    bad["questions"][1]["maxSelections"] = json!(4);
+    let err = check_new_manifest(&bad, before_close)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("workshop"), "{err}");
+
+    let mut old = v.clone();
+    let closes = old["votingClosesAt"].take();
+    old.as_object_mut().unwrap().remove("votingClosesAt");
+    old["votingCloses"] = closes;
+    let err = check_new_manifest(&old, before_close)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("register/0.1"), "{err}");
+}
+
+/// VTI-VOT-025, VTI-VOT-026: a credential roll names exactly one DID in `memberOf` and lists
+/// nobody; no other rule names `memberOf`.
+#[test]
+fn vti_vot_025_a_credential_roll_names_one_did_and_lists_nobody() {
+    let group = "did:webvh:QmGroup:vtc.example.org:groups:g7";
+    let mut v = manifest_json();
+    v["roll"] = json!({ "rule": "credential", "memberOf": group });
+    assert_eq!(check_manifest(&manifest(&v), Some(BOX)), Ok(()));
+
+    for (roll, why) in [
+        (json!({ "rule": "credential" }), "memberOf"),
+        (
+            json!({ "rule": "credential", "memberOf": group, "listed": ["did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"] }),
+            "lists nobody",
+        ),
+        (json!({ "rule": "members", "memberOf": group }), "memberOf"),
+    ] {
+        let mut v = manifest_json();
+        v["roll"] = roll.clone();
+        // The schema refuses each; where the generated type still parses one, the rule does.
+        if let Ok(m) = serde_json::from_value::<Manifest>(v) {
+            match check_manifest(&m, Some(BOX)) {
+                Err(RuleError::InvalidManifest(reason)) => {
+                    assert!(reason.contains(why), "{roll}: {reason}")
+                }
+                other => panic!("{roll}: {other:?}"),
+            }
+        }
+    }
 }

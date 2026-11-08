@@ -1,10 +1,10 @@
-//! Wire types for canonical `acl/change-role/0.1`.
+//! Wire types for canonical `acl/change-role/0.2`.
 
 use serde::{Deserialize, Serialize};
 
 use super::create::CreateAclResultBody;
 
-/// Request payload for `acl/change-role/0.1`.
+/// Request payload for `acl/change-role/0.2`.
 ///
 /// Role is the one ACL attribute where a lost update is a privilege
 /// change, so the transition is **state-checked** rather than applied

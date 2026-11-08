@@ -487,12 +487,12 @@ in single-administrator mode runs at once. The documents behind those two
 buttons:
 
 ```json
-// vtc/storage/configs/create/0.1
+// vtc/storage/configs/create/0.3
 {"id": "localstack", "label": "LocalStack S3 (via the community VTA)", "reason": "…",
  "settings": {"kind": "s3", "bucket": "vdr-rooms", "region": "us-east-1",
               "endpoint": "https://localhost.localstack.cloud:4566", "pathStyle": true},
  "auth": {"mode": "vta-account", "context": "vtc", "account": "localstack-rooms"}}
-// vtc/rooms/storage/assign/0.1
+// vtc/rooms/storage/assign/0.2
 {"roomId": "$ROOM", "configId": "localstack", "reason": "…"}
 ```
 
@@ -502,17 +502,17 @@ answers it ([approver step-up](../05-design-notes/vtc-approver-step-up.md)).
 There is no CLI for either side of that yet.
 
 Creating the config asks VTA C once and probes the bucket through it;
-`vtc/storage/configs/get/0.1` (`{"configId": "localstack"}`) then shows
+`vtc/storage/configs/get/0.2` (`{"configId": "localstack"}`) then shows
 `"lastProbeOk": true`. Files already in the room stay where they were written;
 **Move existing files** on the room's page moves them too (parked like the
 assignment, then run in the background):
 
 ```json
-// vtc/rooms/storage/migrate/0.2
+// vtc/rooms/storage/migrate/0.3
 {"roomId": "$ROOM", "reason": "…", "maxBytesPerSecond": 1048576}
 ```
 
-`vtc/rooms/get/0.2` reports its progress as `storage.migration` — its destination,
+`vtc/rooms/get/0.3` reports its progress as `storage.migration` — its destination,
 its state (`queued`, `running`, `paused`, `complete`, `failed`) and, when paused,
 why and when the community tries again by itself.
 
@@ -630,10 +630,9 @@ with `$ALICE`, `read` and `write`, 90 days and a reason. Each asks for your pass
 that one request.
 
 Alice then lists her offers and accepts one. Her VTA signs each request as `$ALICE`
-(`rooms/keys/act` 0.4) and `pnm` carries it to the VTC (`vtc/rooms/offers/list/0.2`, then
+(`rooms/keys/act` 0.8) and `pnm` carries it to the VTC (`vtc/rooms/offers/list/0.4`, then
 `vtc/rooms/offers/accept/0.1`). Each offer prints with an `about:` line, the room's
-description (`Papers for the board's meetings.`); against a VTA or a VTC from before act 0.4 /
-list 0.2, `pnm` lists at 0.1 through act 0.3 and the offer has no `about:` line:
+description (`Papers for the board's meetings.`).
 
 ```bash
 export PNM_HOME=/tmp/vdr/pnm-alice

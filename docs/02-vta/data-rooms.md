@@ -85,15 +85,18 @@ knowing which half you are standing on saves an afternoon.
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
 | **A CLI** | **`pnm rooms {list,get,put,curate,renew,prune,file}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key; `put` seals on `attributed` and `private` (§9). **`pnm rooms owner {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew,revoke}`** — the owner's, run by the owner's VTA. **`pnm rooms keys {key-package,welcome,commit,list}`** — the joiner's key holder. A sealed room can be run end to end from the CLI (§5, §6) |
 | **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). `pnm rooms owner {invite,issue-membership,issue-authority}` drive them, over `VtaClient::room_owner_*` |
-| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove` (0.3, and 0.2) withdraws the member's credentials at the host and then drops their leaf, host first; `rooms/owner/revoke` withdraws credentials alone, signed as the room; `rooms/owner/group/renew` renews a sealed room with a commit that changes no membership, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` / `group-renew` drive them (§5.4, §6, §10.1) |
+| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove/0.4` withdraws an attributed room's member's credentials at the host and then drops their leaf, host first — and on a private room drops the leaf alone; `rooms/owner/revoke` withdraws credentials alone, signed as the room; `rooms/owner/group/renew` renews a sealed room with a commit that changes no membership, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` / `group-renew` drive them (§5.4, §6, §10.1) |
 | **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
 | **Reading across a membership change** | **Works, including for a member who has just joined.** Records are sealed per epoch, and the *epoch key chain* carries a member back across every advance. The owner hands each rung to the host on `rooms/epoch/mint`; a joiner fetches the chain with `rooms/epoch/chain` and reads everything the room retains. Rungs are ciphertext — the key that opens one is a storage key no host holds |
 | **An agent reading history through its VTA** | **Works.** `rooms/keys/open` resolves from the chain the VTA holds, which it accrues from every commit it applies — and a member who *joined* fills the rest with `rooms/keys/chain/0.2`, handing their own VTA the rungs they fetched from the host. The response says how far back it can now read, which is the only number worth having: a rung extends reach only if every rung above it is present too |
 | **Cryptographic deletion** | **At the host, and at members' key holders as far as they conform.** `rooms/epoch/prune` (`admin`, 0.1 and 0.2) erases the epoch key chain below an epoch at a host, and the host keeps the room's **epoch floor** (`beforeEpoch − 1`), which `rooms/epoch/chain/0.2` serves. A member's VTA that learns it — `rooms/keys/backfill/0.2`, `rooms/keys/chain/0.2`, a read's catch-up — discards every rung at or below it, refuses to derive below it (`beyondChain`), and never stores such a rung again from any source (trust-tasks-tf #869). Both hosts serve it (audited `room.epoch.prune`, `notAhead` for a floor at the current epoch); `pnm rooms prune` sends 0.2, warns, and asks first (§10.4). Nothing already read is recalled |
-| **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.2`), and an administrator removes what that makes eligible (`rooms/records/prune/0.1`), leaving a `lastPrune` mark that `rooms/records/list/0.3` and `rooms/keys/browse/0.2` carry. `pnm rooms records {prune,retention}` (§10.5) |
+| **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.3`), and an administrator removes what that makes eligible (`rooms/records/prune/0.2`), leaving a `lastPrune` mark that `rooms/records/list/0.5` and `rooms/keys/browse/0.3` carry. `pnm rooms records {prune,retention}` (§10.5) |
 | **Record provenance and expiry** | **Work.** `basis`, `confidence`, `evidence`, `validFor`, `validUntil` inside a sealed body, or in an open room's cleartext at `rooms/records/put/0.3`; readers hide an expired record by default (§9) |
+| **Record kinds, replies and the host's record times** | **On both hosts.** An open room's cleartext may carry `kind`, `inReplyTo`, `writtenAt` and `editedAt` at `rooms/records/put/0.5`, held to their schema and stored as received; a sealed room carries them inside the body. Every put records `bodyStoredAt`, and a record's first version `createdAt` and (on `open` and `attributed`) `createdBy`, kept across edits and curation; `rooms/records/list/0.6` serves them with an open record's `kind`, `rooms/records/get/0.3` serves them uncommitted. A record stored before this carries none and serves none. On an `open` room the host refuses a new version of a `message` or `reaction` from anyone but its original author (`permissionDenied`, put/0.5 Host item 15) — on by default; `room-host --allow-rewrites-by-others` or the VTC's `[rooms] refuse_rewrites_by_others = false` turns it off |
+| **Members' names in a room** | **Writer and reader in `pnm`.** A member writes its own name as a record of kind `memberProfile` with the name in `title` (`rooms/_shared/0.3` `MemberProfileRecord`, trust-tasks-tf #1035) — sealed on `attributed` and `private`, cleartext at `rooms/records/put/0.5` on `open` — only where the room's profile lists `kind` **and** `memberProfile` in `recordMembers`. `pnm rooms name set` / `clear`; `pnm rooms list`, `get` and `read` show a name record as a name, never a note, and a name beside its author's DID. No host, seal or act change: a name is an ordinary record |
+| **Watching a room** | **On both hosts.** `rooms/watch/0.1` (`read`, as a listing) arms one content-free `rooms/changed/0.1` signal to an address the member names, sent once the room moves past the member's watermark — at once if it already has — after a 2–6 s randomised delay, then disarmed (trust-tasks-tf #1036). Over the host's own messaging, TSP before DIDComm by what the address's DID document advertises; a host with none refuses `addressUnreachable`. `pnm rooms watch` (§9) |
 | **Witnessed renewal anchoring** | **Blocked on a decision**, not on effort: §9 says a renewal anchors the epoch authenticator and version watermark in the room's witnessed log, but not *where in the log entry*. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) |
 
 ---
@@ -252,7 +255,7 @@ the community's offer label, then the DID — and keeps the room's own name
 visible beside yours.
 
 Your own client never reaches a host as itself: it builds each room request
-unsigned and your VTA completes it **as the persona** (`rooms/keys/act/0.3`,
+unsigned and your VTA completes it **as the persona** (`rooms/keys/act/0.8`,
 §9). The one place a client DID does appear is as a *presenter* (§7): an
 agent your VTA equips with a four-hour, one-action leaf narrowed **from** your
 persona's grant. That leaf is a delegation, signed by your persona; the agent
@@ -465,9 +468,17 @@ member's room credentials **by issuer** — `issuer == roomId`, type
 **subject is a persona you may act as**. That second filter is the privilege
 boundary: a credential stored without a context is visible from every context,
 and its subject being someone else's persona is what keeps it theirs. It refuses
-if no persona of yours holds one, if one persona holds two of a kind for one
-room, or if you act in several contexts each holding a persona in the room (act
-from the one you mean).
+if no persona of yours holds one, or if you act in several contexts each holding
+a persona in the room (act from the one you mean).
+
+A persona holding **two of a kind** from one room — a member removed and admitted
+again keeps the first grant beside the second, since accepting stores the new
+credentials and retires nothing — uses the one with the **latest `validFrom`**
+among those in force (any not yet valid never displaces one that is). That is the
+room's own rule: a removal withdraws the member's credentials issued *before* its
+`revokedAt`, so the later grant is the one in force. Only two equally recent ones
+are refused; the refusal names their vault ids, and `pnm cred-vault archive <id>`
+retires the one you do not mean.
 
 The four actions are a ladder with one deliberate break: **`curate` is not
 implied by `write`.** Deciding what a room's shared knowledge is worth is a
@@ -684,7 +695,7 @@ saying which; a client acts on the reason, never on the message:
 |---|---|---|---|
 | `notDelivered` (`heldEpoch`) | *"a commit has not been delivered"* | the record is **newer** than this VTA's epoch | `pnm rooms keys commit --host …`, then try again |
 | `beyondChain` (`earliestEpoch`) | *"cannot reach … the epoch key chain reaches back only to N"* | the record is **older** than any key this VTA can derive | `pnm rooms keys backfill`. If the reach does not move, the links for that stretch never reached the host, or the history was deliberately severed — nothing recovers it |
-| `removed` (`removedAtEpoch`) | *"this member was removed from the room's group at epoch N"* | you were removed, and it was sealed at or after that | nothing, and do not retry: what you read before still opens, nothing written after does, and no commit changes that |
+| `removed` (`removedAtEpoch`) | *"this member was removed from the room's group at epoch N"* | you were removed, and it was sealed at or after that — and, if you were admitted again, before you rejoined | nothing, and do not retry: what you read before still opens, nothing written while you were out does, and no commit changes that |
 
 A VTA that knows of the removal never answers `notDelivered` for an epoch at or
 after it — that reason's remedy, catching up, cannot work. At 0.1, which a VTA
@@ -696,8 +707,8 @@ serve it.
 
 ### Remove a member
 
-Removal is two acts, and at `rooms/owner/group/remove/0.3` the owner's VTA does
-both, **withdrawing first** (trust-tasks-tf #804):
+Removal is two acts, and on an `attributed` room `rooms/owner/group/remove/0.4`
+does both, **withdrawing first** (trust-tasks-tf #804, #975):
 
 1. **Withdraw their credentials at the host.** A host authorizes from the
    credentials the room issued and keeps no roster, so without this a removed
@@ -727,11 +738,14 @@ the host as your owner persona:
   `rooms/owner/transfer` — when it will not let you name the room's key
   (`noSigningKey`), and without an `admin` grant naming a persona you act as
   (`noAuthority`).
-- **A private room is refused** (`privateRoom`, nothing changed): its host
-  verifies membership in zero knowledge and cannot be told whom to refuse
-  without being told who was a member. `pnm` then removes them from the group
-  alone, at `0.1`; reset every credential with `pnm rooms owner revoke --reset`
-  if the room needs that too.
+- **A private room is removed from the group alone** (trust-tasks-tf #975):
+  its host verifies membership in zero knowledge and cannot be told whom to
+  refuse without being told who was a member. The same version drops the leaf
+  and advances the room, signs and sends no list (no `--signing-key` needed),
+  and answers `withdrawn: false`; `pnm` says the member's credentials stay valid
+  at the host until they expire. Reset every credential with
+  `pnm rooms owner revoke --reset` if the room needs that too. On any other
+  room, a removal naming no `--signing-key` is refused `noSigningKey`.
 - **Withdrawal before advance.** The commit, the epoch link and the signed list
   are kept as the room's pending advance before anything is sent. If the host
   **refuses the list**, the whole removal is discarded, list included
@@ -756,12 +770,9 @@ the host as your owner persona:
   so do `group-add` at 0.3 and `group-renew` at 0.2, each under its own slug
   (trust-tasks-tf #824), where `hostRefused` means only that the host declined
   that request's own advance (`{code, reason}`), and an unanswered redelivery is
-  their `hostUnreachable` at `stage: revocation`. The earlier versions —
-  `group-add` 0.1/0.2, `group-renew` 0.1, `group-remove` 0.1 — answer their own
-  `hostRefused` with the same three details, and `hostUnreachable` with none;
-  `group-remove` 0.2, which has no such code, answers `hostRefused` at
-  `stage: revocation` with the member in the message. `pnm` asks the newest
-  version and explains every one of these alike. Repeat the request — the
+  their `hostUnreachable` at `stage: revocation`. `pnm` explains each alike.
+  A pending removal that carries no list — a private room's — is settled by
+  asking the host's epoch alone. Repeat the request — the
   earlier removal is no longer pending — and remove that member again if that is
   still wanted. A VTC's `members/remove` reports it as `keyHolderRefused`, saying
   the same.
@@ -772,10 +783,6 @@ the host as your owner persona:
   removal and a renewal (§10.1) share one slot, so whichever is pending is
   settled before another is built.
 
-Without `--signing-key`, `group-remove` is `0.1`: the group alone, and the
-member's credentials are **not** withdrawn at the host — they stay valid until
-they expire.
-
 Every remaining member's VTA applies the commit (`rooms/keys/commit/0.1`) as
 for any other change; the host relays it (`rooms/epoch/commits`), and
 `pnm rooms keys commit --room <room-did> --host <host-url> --host-did <host-did>`
@@ -785,6 +792,52 @@ fetches and applies it.
 the member already read, and on a `chained` room they keep reading the epochs
 they were in. Re-admitting them later works: fresh credentials are issued after
 the withdrawal, which does not reach them.
+
+**On the member's VTA, a removal ends a membership and a re-admission starts the
+next** (`rooms/keys/welcome/0.1`, `rooms/keys/open/0.2`). Once its VTA knows of
+the removal, the member's group state is a *prior membership*: it
+still opens what it opened, and it seals nothing — `rooms/keys/act`, `file-key`
+for sealing and a profile write answer as for a room the VTA holds nothing for.
+When the owner admits the member again (a fresh invitation, KeyPackage and
+Welcome), `keys welcome` accepts the new Welcome rather than answering
+`alreadyJoined`: the old group moves aside with its removal epoch, the new group is
+the one the member seals with, and the removal is cleared. A member removed and
+re-admitted more than once holds one prior membership per removal. Opening a record
+then goes by its epoch:
+
+- at or after the current membership's join epoch: the current group;
+- from a prior membership's join epoch up to, not including, its removal epoch:
+  that membership's group and its epoch links;
+- between a removal and the next join: `removed`, with that removal's epoch — even
+  if a backfill reached the current group's chain that far back;
+- below the first join epoch: `beyondChain`.
+
+**A member idle when it was removed** never applied the removing commit, and cannot
+fetch it afterwards (the host serves commits under the `read` grant the removal
+withdrew), so its VTA meets the re-admitting Welcome holding state at some epoch `h`
+with no removal recorded. The Welcome is the evidence: `keys welcome` processes it
+without keeping anything and looks in its ratchet tree for the held state's own leaf,
+by that leaf's signature key (never the member's DID, which the new leaf shares).
+Still there, the member was never removed: `alreadyJoined`, and the KeyPackage is not
+consumed. Gone, the held state becomes a prior membership whose removal epoch is **not
+yet known**, and the join completes without waiting for or fetching anything. Such a
+membership opens its join epoch through `h`; a record above `h` and below the
+re-admission is `notDelivered` (with `heldEpoch` `h`) until a read's repair applies the
+room's commits to **that** state — the host serves them to the re-admitted member's
+fresh credentials, whatever their `validFrom` — and the removing commit fixes the
+removal epoch. From then on it answers as above: below the removal opens, from it to
+the next join is `removed`. The repair runs under the same per-member lock as the
+current group's, and sealing never uses a prior state.
+
+Either way, the Welcome must be for the **same MLS group** as the held state (equal
+group ids). A Welcome for another group is refused as `welcomeInvalid` with nothing
+consumed or changed: a removal from the room's group is no reason to make another
+group current, and another group's tree lacks the held leaf by construction.
+
+Prior memberships are kept with the group, backed up with it, and discarded with it;
+an epoch prune drops one whose epochs all lie below the room's epoch floor. Only a
+Welcome for group state with no removal recorded **and** whose tree still holds that
+state's leaf is `alreadyJoined`.
 
 ### Withdraw credentials without removing anyone
 
@@ -823,7 +876,7 @@ it holds and when it began enforcing it), `refused` (with its code) or
 
 **Two different parties reach a host, and they use two different tasks.** Your
 own client — `pnm`, the browser extension, your phone — *is* you, and acts as
-your persona through `rooms/keys/act/0.3` (§9): the host records the persona.
+your persona through `rooms/keys/act/0.8` (§9): the host records the persona.
 An **agent** you equip is a different party, rightly recorded as itself: it
 asks for a presentation with `rooms/keys/present/0.2`, signs its own requests
 and its own record bodies, and is refused `act` and `seal`'s `signAsPrincipal`
@@ -1003,9 +1056,9 @@ community's ACL or a session.
   reassigning a room strands nothing. On first start the VTC seeds one, `local`,
   at `blob_dir`, as the default; every room is assigned to the default when it
   is created. A holder of `vtc.rooms.admin` manages them with
-  `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1` (list, get,
-  create and update also at 0.2), `vtc/storage/credentials/set/0.2`,
-  `vtc/rooms/storage/assign/0.1` and `vtc/rooms/storage/migrate/{0.1,0.2}`. Creating,
+  `vtc/storage/configs/{list,get}/0.2`, `{create,update,retire}/0.3` and
+  `probe/0.1`, `vtc/storage/credentials/set/0.3`,
+  `vtc/rooms/storage/assign/0.2` and `vtc/rooms/storage/migrate/0.3`. Creating,
   changing and retiring a config, setting a sealed credential, and reassigning a
   room or moving its files, are **parked for the other holders' consent** in the
   administrator action list. This build stores to `local` configs, to `s3` configs
@@ -1027,8 +1080,8 @@ community's ACL or a session.
   budget as any other large document; a chunk arriving at `POST /v1/trust-tasks`
   is under the room budgets below instead (over DIDComm or TSP it still takes the
   large-document budget).
-- **Moving a room's files** (`vtc/rooms/storage/migrate/0.2`, and 0.1 for older
-  clients, §7.3 of the design note). Reassigning a room leaves its existing files where they are; a
+- **Moving a room's files** (`vtc/rooms/storage/migrate/0.3`, §7.3 of the
+  design note). Reassigning a room leaves its existing files where they are; a
   migration moves them onto the config the room is assigned to, one at a time:
   each is copied, read back from the new config and checked against every chunk
   digest and the whole-blob digest of its committed manifest, and only then
@@ -1058,7 +1111,7 @@ community's ACL or a session.
   neither its destination nor its reason. A file orphaned (no record names it) is
   never moved or counted, and one orphaned during the move leaves it, whether or
   not it had been moved yet. A copy that does not verify stops it `failed`, leaving
-  that file where it was. Progress is `vtc/rooms/get/0.2`'s `storage.migration`,
+  that file where it was. Progress is `vtc/rooms/get/0.3`'s `storage.migration`,
   which names the destination (it differs from `storage.configId` after a
   reassignment); each start, resume, completion, pause and failure is a
   `RoomStorageChanged` audit row naming the requester, the approvers, the room,
@@ -1109,9 +1162,9 @@ community's ACL or a session.
   ```
 - **S3 through the community's VTA** (`auth: vta-account`). The VTC holds no
   storage credential. For every object operation it asks its VTA, over the
-  messaging channel it already keeps, for one presigned request
-  (`external/credentials/issue/0.1` on an `s3-static-presign` account): one
-  method on one object of one room, valid for five minutes, checked against the
+  messaging channel it already keeps, for presigned requests
+  (`external/credentials/issue/0.3` on an `s3-static-presign` account) on one
+  object of one room, each write bound to its length and SHA-256, valid for five minutes, checked against the
   community's binding and audited at the VTA, and sealed to the community's
   key-agreement key. A download's ranges reuse one read request until shortly
   before it expires. The VTA needs no inbound surface for any of it. To set one
@@ -1127,7 +1180,7 @@ community's ACL or a session.
      upload — `maxTtlSeconds` of at least 300, and a rate per minute that covers
      a few issuances per file. A direct upload is about four (create, one per 64
      parts, the checks and completion together), whatever its size: one
-     `external/credentials/issue/0.2` batch counts once.
+     `external/credentials/issue/0.3` batch counts once.
      The access key at the store must also allow `ListMultipartUploadParts` and
      `AbortMultipartUpload` on those prefixes; `pnm external setup` prints the
      policy.
@@ -1179,7 +1232,7 @@ community's ACL or a session.
     within five minutes, never logged. The member writes each part to its target
     and begins again, with the same manifest and plan, for the rest or for any
     that lapsed. Every request is presigned by the VTA in
-    `external/credentials/issue/0.2` batches; the VTC holds no storage
+    `external/credentials/issue/0.3` batches; the VTC holds no storage
     credential. A plan of one part is one `PUT`; several parts must be at least
     5 MiB but the last (storage's floor), or the begin is answered proxied (with
     an upload key) or `noTransferMode`.
@@ -1204,7 +1257,7 @@ community's ACL or a session.
   room per UTC day (and one per member per room, on rooms that are not
   `private`) for 400 days: space held at the day's close, uploads, downloads
   begun and bytes served. A holder of `vtc.rooms.admin` reads them with
-  `vtc/rooms/usage/0.1` and one room in full with `vtc/rooms/get/0.1`, and
+  `vtc/rooms/usage/0.1` and one room in full with `vtc/rooms/get/0.3`, and
   overrides a room's limits, its members' default or one member's with
   `vtc/rooms/limits/set/0.1` (a reason is required and audited; it is not
   parked, since an allowance can be reversed and loses nothing, and a lower
@@ -1352,7 +1405,7 @@ pnm rooms prune --room <room-did> --host … --before-epoch 3 --reason "…"   #
 pnm rooms records retention set --room <room-did> --host … --tombstone-days 30 --reason "…"  # needs `admin`, §10.5
 pnm rooms records prune --room <room-did> --host … --reason "…"           # IRREVERSIBLE (needs `admin`, §10.5)
 
-# Files, on `attributed` and `private` rooms.
+# Files. On `open` rooms the record states the file and its key in the clear (§9).
 pnm rooms file put ./term-sheet.pdf --room <room-did> --host … --title "Term sheet v3"
 pnm rooms file get <record-key> --room <room-did> --host … [--out ./term-sheet.pdf]
 ```
@@ -1360,8 +1413,7 @@ pnm rooms file get <record-key> --room <room-did> --host … [--out ./term-sheet
 The CLI **never holds a room credential, a group key or a key of your
 persona's**. For `list`, `get`, `put`, `curate`, the `rooms/info` lookup and
 `keys commit --host`, it builds the room request **unsigned** — no
-presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.3`
-(falling back to `0.1` for a VTA that does not serve it).
+presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.10`.
 The VTA completes it **as your persona**: it inserts the persona's own
 authority narrowed to exactly the action the request's type needs (`read`,
 `write`, `curate`, `admin`, from the specification's closed table) and granted
@@ -1399,10 +1451,8 @@ what `evidence` names, and nothing `evidence` names is ever fetched. Expiry
 hides, it never deletes — the record stays until a curator retracts it or a
 prune removes it (§10.5). On an `open` room the same members ride
 `rooms/records/put/0.3`'s cleartext, unsigned, stored and served exactly as
-received; both hosts serve 0.3 beside 0.2 and 0.1. `pnm` does not write 0.3 yet:
-`rooms/keys/act` (0.1–0.6) completes `put` only at 0.1 and 0.2, so it refuses
-provenance flags on an `open` room rather than signing as itself. A client with
-its own presentation uses `VtcClient::put_cleartext_record_v3`.
+received; both hosts serve 0.3 and 0.4, and no earlier `put`. A client with its own
+presentation uses `VtcClient::put_cleartext_record_v3`.
 
 **A request that names no room names its member.** A download chunk
 (`rooms/blobs/chunk/0.1`) and a direct upload's commit or abort
@@ -1418,8 +1468,7 @@ never picks the member itself (act 0.2 recipient item 2a).
 `/document/issuer`, not the room. A policy over `rooms/keys/act/0.2` sees the
 member as `input.request.subject` — where `issuer` is absent, the one member of
 the room the caller may act as — and the audit row (`rooms.keys.act`) names the
-member as its target, the type and room in its detail. A 0.1 row still names
-the room.
+member as its target, the type and room in its detail.
 
 **A community's offer (0.3).** `rooms/keys/act/0.3` also completes a member's
 reply to a community's offer of a room — `vtc/rooms/offers/list/0.1` and
@@ -1436,24 +1485,21 @@ KeyPackage minted anywhere else would become the member's leaf with keys
 somebody else holds. 0.1 and 0.2 refuse the offer types. `pnm rooms offers
 {list,accept}` drives them (see `docs/03-vtc/community-rooms.md`).
 
-**The listing with descriptions (0.4).** `rooms/keys/act/0.4` adds
-`vtc/rooms/offers/list/0.2` — which shows each offered room's description — to
-the same row as `0.1`, on the same terms. Nothing else changes, but 0.3's table
-is closed, so a 0.3 request wrapping a `0.2` listing is still refused
-`typeNotActable`. The SDK's `room_act` asks 0.4 first; it falls back to 0.3 for
-the 0.3 offer types and further for room requests, never for a `0.2` listing,
-and `pnm` lists at 0.1 when either the VTA or the community does not serve the
-newer version.
+**The listings, the community's record and the renewals (0.4–0.7).** `0.4` adds
+`vtc/rooms/offers/list/0.2` (each offered room's description), `0.5`
+`vtc/rooms/memberships/list/0.1` (where each admission stands), `0.6`
+`vtc/rooms/offers/list/0.3` and `0.7` `0.4`, which also carry the renewals of the
+admissions a member holds. Each is in the offer row, on the same terms; each table is
+closed, so an older version refuses a newer type `typeNotActable`.
 
-**The community's record and the renewals (0.5, 0.6).** `rooms/keys/act/0.5` adds
-`vtc/rooms/memberships/list/0.1`, the community's record of where each admission
-stands, and `0.6` adds `vtc/rooms/offers/list/0.3`, which also carries the
-renewals of the admissions a member holds — fresh membership and authority
-credentials the community issues before the ones held expire. Each is in the
-offer row, on the same terms; each earlier table is closed, so a `0.5` request
-wrapping a `0.3` listing is refused `typeNotActable`. The SDK's
-`room_act_community` asks 0.6 first and falls back version by version, never
-below 0.6 for a `0.3` listing.
+**The widened table (0.7, 0.8).** `0.7` adds the newer versions of the host-bound
+requests (`records/put/0.3`, `records/list/0.3`–`0.5`, `info/0.2`–`0.3`,
+`epoch/chain/0.2`) and `0.8` the room's retention requests (`records/prune/0.1`
+and `0.2`, `records/retention/set/0.1`) as `admin`, with a presentation. This VTA
+serves act 0.8 only, and the SDK's `room_act` and `room_act_community` send 0.8
+only, never falling back. 0.8's table still names superseded versions of the
+host-bound requests and of `vtc/rooms/offers/list`; it is the specification's, so
+the VTA completes them, though no host in this workspace serves them any more.
 
 `act` is not a signing oracle: only the table's host-bound room requests are
 completed, never `rooms/epoch/prune`, ownership changes, `rooms/create` or a
@@ -1502,6 +1548,21 @@ author's digest. A file's name comes from another member, so `get` writes it
 in the current directory under its last path component, never over an
 existing file. Files need a host that serves `rooms/records/put` 0.2:
 `room-host` does, and so does a VTC with a `[rooms.files]` section (§8.2).
+
+**A file on an `open` room** has no room key to be sealed under, so its
+uploader mints a random one for that file alone and the record carries it in
+the clear, beside the file's manifest, in `cleartext.file`
+(`rooms/records/put/0.4`). The blob is sealed exactly as on the other tiers,
+so it is one format and one reader; whoever holds only the storage sees
+ciphertext, while the host and every member can open it. Both hosts serve 0.4
+and, on an open room, refuse as `malformedRequest` a record whose `blobs` is
+not exactly the blob its `cleartext.file` describes, or whose file carries no
+`fileKey` — before looking for the blob, and without changing anything. A
+reader refuses a manifest whose `fileKey` does not fit the tier
+(`FileManifest::carried_key`). `pnm rooms file put` and `get` do this on an
+open room, writing through `rooms/keys/act/0.9`, whose table adds `put/0.4`;
+the VTA still serves `act/0.8`, with its own table, for clients that have not
+moved.
 
 **The owner's and the key holder's verbs are here too.** `pnm rooms owner
 {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew,revoke}`
@@ -1557,6 +1618,164 @@ again under the new epoch, as you, once the host accepts the advance. A
 re-write that fails never fails, delays or undoes the advance; it is retried a
 few times and logged. A room with no profile, or a cleared one, gets none.
 
+**Which record members the room's writers may use.** A record can say what it
+is to a reader — a note, a message or a reaction (`kind`) — what it answers
+(`inReplyTo`), when it was written and edited (`writtenAt`, `editedAt`), and a
+file can carry an image's size and a small preview (`width`, `height`,
+`preview`) (trust-tasks-tf #1027). A reader that predates one of them refuses a
+record carrying it, so a writer **must not** write one unless the room's current
+profile lists it in `recordMembers`; no profile, or one without the list, means
+none. Turn them on once every reader the room expects accepts them:
+
+```bash
+pnm rooms profile set --room <room-did> --host-did <host-did> \
+                      --record-members kind,inReplyTo,writtenAt,editedAt
+pnm rooms profile set --room <room-did> --host-did <host-did> --no-record-members
+```
+
+The list is checked by the writer, not by your VTA: `rooms/keys/seal/0.3` and
+`rooms/keys/act/0.11` (and 0.12) sign what they are given without reading it
+against the profile, as their specifications say. Every re-write after an advance carries
+`recordMembers` through unchanged.
+
+**Names.** Listing `memberProfile` (with `kind`) lets members tell the room
+what to call them: a record of kind `memberProfile` whose `title` is the name,
+written by the member and naming only its author, in this room only
+(`rooms/_shared/0.3` `MemberProfileRecord`):
+
+```bash
+pnm rooms profile set --room <room-did> --host-did <host-did> \
+                      --record-members kind,memberProfile,writtenAt
+pnm rooms name set --room <room-did> --host <url> --host-did <host-did> "Alice"
+pnm rooms name clear --room <room-did> --host <url> --host-did <host-did>
+```
+
+`name set` writes a new version of the name record you already hold — found by
+reading the room's records, which on a sealed tier means opening them through
+your VTA — or your first one, create-only, so a retry leaves one record. A name
+is your claim, not a verified one: `pnm rooms list`, `get` and `read` show it
+beside your DID ("calls themselves …"), never as a note and never instead of the
+DID — so two members who chose the same name, or names that look alike, are
+always told apart by the DID beside it. Where no name has been found for an
+author (on a sealed tier it may sit in pages not opened), the DID alone is
+shown; pnm never guesses one from another room, a directory or what the author
+wrote. After the room's epoch advances, members who join later read only what
+was sealed after they joined: write your name again then.
+
+**Which name is an author's.** Of every `memberProfile` record whose current
+version is by an author — whatever its key — the one the host stored most
+recently (`bodyStoredAt`, else `updatedAt`) gives the name, and of two stored at
+the same time the one with the greater `version` (trust-tasks-tf #1038). The
+answer never depends on the order the records were read in. A version another
+member rewrote is that member's claim about themselves, never the original
+author's.
+
+**Near the room's head.** A reader that opens only recent records sees no name
+written long before them. So after `pnm rooms put` and `pnm rooms file put`, when
+the version the host assigned the write is **more than 500** past your name
+record's current version (500 is the largest page `rooms/records/list/0.6`
+returns), pnm writes your name again over the same record: the same name, the
+`writtenAt` it had, no new `editedAt` (one the earlier version carried stays). A
+withdrawn name is not written again, and a room whose profile no longer lists
+`memberProfile` gets nothing. It looks one page back first, so the room's whole
+history is read only when the name record is not there; a failure is reported
+and never fails the write it followed.
+
+**Watching instead of polling.** `pnm rooms watch` asks your VTA to watch rooms
+at one host for you (`rooms/keys/watch/0.1`, trust-tasks-tf #1040). For each
+room the VTA arms the host's `rooms/watch` **as your member** — its own
+presentation narrowed to `read`, its own signature — with an **address of its
+own**: a `did:peer:2` minted for that one watch, whose only service is
+`DIDCommMessaging` at the VTA's mediator. When the room moves past the version
+you read to, the host signals that address once (`rooms/changed/0.1`), and the
+VTA passes the signal on to this client as `rooms/keys/changed/0.1` — the room,
+the member, the host and the latest version, nothing else — then forgets the
+watch:
+
+```bash
+pnm rooms watch --room <room-did> --host-did <host-did> --since 412 --lease 7d
+pnm rooms watch --room <deal> --room <board> --room <social> --host-did <host-did>
+pnm rooms watch --room <room-did> --host-did <host-did> --cancel
+```
+
+Up to 64 rooms at one host per request, one outcome each: `armed` with
+`expiresAt`, or `refused` — `notAMember`, `actionNotHeld`, `limitReached` (your
+VTA's own bound), `hostUnreachable`, or `hostRefused` with the host's code. The
+member is the one `rooms/keys/list` names for the rooms; name it with `--member`
+when you read them as several, and pass `--host <url>` to find it for an `open`
+room, which that list leaves out. A member your VTA holds no keys for, or that
+you may not act as, is refused whole (`memberNotPrincipal`).
+
+The signal names the room and its latest version, nothing about what changed:
+read the room to learn that, then watch again with the version you read to. One
+signal per arming, end to end. This client needs no address a host can reach,
+and the host learns neither it nor the VTA — only the member and an address used
+for that one watch and never shown to you. The pass-on reaches you the way a
+`task-consent/granted` does: queued at your mediator, and a sleeping phone woken
+by its mediator for it, never by a doorbell of the VTA's own.
+
+What your VTA keeps, per armed watch, is exactly what the specification lets it
+(Recipient item 6): the caller, the member, the room, the host, the address and
+its two private keys, and when the watch lapses — never the watermark, the
+signalled version or when a signal came, in the `room_key_watches` keyspace,
+encrypted at rest and **not backed up**. A watch is forgotten, and its address
+retired, when it fires, when you cancel it, when it lapses (30 days at most,
+never later than the host's `expiresAt`), when your client's standing to act as
+the member is withdrawn, and when the VTA no longer holds the member's
+credentials for the room; a sweep checks the last three every 30 seconds. The
+audit row says that watches were armed or cancelled at a host, and how many —
+never which rooms or which address.
+
+The VTA receives at each address over a mediator connection of its own, one per
+watch, so its bounds are its own: 64 watches per member, 64 per client and 256
+in all. A VTA with no mediator answers every room `limitReached`; poll instead.
+On a `private` room, the mediator named in each address tells the host which
+mediator the VTA receives at; a VTA whose mediator serves only its own
+principal identifies the member by it, and should not be asked to watch a
+`private` room.
+
+What the parties need of the deployment (`tests/e2e/tests/room_key_watch.rs` runs
+the whole loop through a real mediator):
+
+- **The host is reached over HTTPS** to arm a watch. The `rooms/watch` the VTA
+  sends is issued by your member, and DIDComm and TSP would authenticate the VTA
+  as its sender instead, which the bindings refuse (`identityMismatch`); so the
+  host's DID document advertises a `TrustTaskHTTPS` endpoint. It signals the
+  address over its mediator session.
+- **The host signs its answers** as its own DID, refusals included: the VTA
+  believes nothing a host it addressed did not sign. `room-host` does so once it
+  has an identity (`--mediator-did`, or one its VTA holds for it).
+- **The VTA's mediator lets a DID it has never seen receive DIDComm.** Nothing
+  registers a watch address or widens its account, so it gets the mediator's
+  `global_acl_default`, and must be able to connect (`LOCAL`) and take the host's
+  signal — which arrives as a forward — from a sender it has never named: an
+  open access list (`explicit_deny`) and `RECEIVE_FORWARDED`. The `mediator.toml`
+  default, `DENY_ALL,LOCAL,SEND_MESSAGES,RECEIVE_MESSAGES`, grants neither, and no
+  self-change bit to widen it, so on that mediator the watch arms, the address
+  connects, and the host's signal is refused (`e.p.delivery.refused`).
+
+**With an address of your own.** A client that receives Trust Task documents at
+a DID of its own — a command line, a desktop agent — can arm the host's watch
+itself with `--via-host`: your VTA completes the `rooms/watch` as the member
+with `rooms/keys/act/0.12`, which adds it to the table (`read`), and pnm sends it
+to the host. The address must be a DID you receive at and use for watches only:
+never the DID you authenticate to your VTA with, the VTA's own or the member's
+(Producer item 6). That rule is the client's: your VTA completes the request
+without reading, checking or changing the address (Recipient item 6), so pnm
+refuses those three before anything reaches the host. On a `private` room use
+one for that one watch:
+
+```bash
+pnm rooms watch --via-host --room <room-did> --host <url> --host-did <host-did> \
+                --address <your-watch-did> --since 412
+```
+
+A VTA from before `act/0.12` is asked the way earlier builds did: it presents
+for this client and this client signs, so the host sees the client as the
+presenter. A VTA that does not serve `rooms/keys/watch` is refused with this
+command to use instead. A signal addressed to the VTA's own DID matches no watch
+and is dropped.
+
 `rooms/keys/read` of the profile's key does not open it (its answer says
 `ext["org.openvtc.rooms"].roomProfile`), and `rooms/keys/browse` leaves it out of
 the records. Show `name`, `description` and `tags` as **text**: they are free
@@ -1582,10 +1801,11 @@ use to whoever hosts it. Depth is capped at `MAX_CHAIN_DEPTH` (8).
 
 | Verb | Task URI | Needs |
 |---|---|---|
-| Write | `rooms/records/put/0.3` | `write` |
-| Read | `rooms/records/get/0.2` | `read` |
-| List | `rooms/records/list/0.1` | `read` |
+| Write | `rooms/records/put/0.5` (0.3 and 0.4 still served) | `write` |
+| Read | `rooms/records/get/0.3` (0.2 still served) | `read` |
+| List | `rooms/records/list/0.6` (0.5 still served) | `read` |
 | Curate | `rooms/records/curate/0.1` | `curate` |
+| Watch | `rooms/watch/0.1` (`VtcClient::watch`, `cancel_watch`) | `read` |
 | Mint an epoch | `rooms/epoch/mint/0.1` | `admin` |
 | Transfer ownership | `rooms/owner/transfer/0.1` | `admin` |
 | Claim ownership | `rooms/owner/claim/0.1` | a nomination (§10) |
@@ -1850,7 +2070,7 @@ pnm rooms records prune --room <room-did> --host <host-url> \
 ```
 
 - **Two halves, both required.** The rule is the room's, stated in advance and
-  served to every member (`rooms/info/0.2`); the act is an administrator's
+  served to every member (`rooms/info/0.3`); the act is an administrator's
   (`admin`, never `curate`), with a reason. A host never prunes on its own, on a
   timer or at a quota, and removes only what the rule in force makes eligible at
   the moment of the prune — by the age a host can see, `updatedAt` (a curation
@@ -1869,12 +2089,11 @@ pnm rooms records prune --room <room-did> --host <host-url> \
   (`lastPrune`: the version the prune took, when, how many), never which records.
   `pnm rooms records prune` always asks the host for a dry run first, prints what
   would go, and asks before the real one; without a terminal it needs `--yes`.
-- **Readers learn of it.** `rooms/records/list/0.3` carries `lastPrune` on every
+- **Readers learn of it.** `rooms/records/list/0.5` carries `lastPrune` on every
   page, and `headVersion` is the higher of the highest record and the latest
   prune, so a root before and a root after are never labelled alike. A reader
   whose copy was synced below the mark rebuilds from a full listing and drops
-  what is gone. `rooms/keys/browse/0.2` passes the mark through; at `0.1` a VTA
-  ignores a `sinceVersion` below a prune and lists the whole room.
+  what is gone. `rooms/keys/browse/0.3` passes the mark through.
 - **What it is not.** It removes records from this host, not from the world:
   what a member read, exported or cached stays; a mirror is pruned separately;
   the ciphertext of a sealed record may survive in a backup, and only pruning
@@ -1934,19 +2153,17 @@ and `vtc-service`:
 
 | URI | Action required |
 |---|---|
-| `rooms/records/put/0.1`, `0.2` | `write` — served only for `rooms/keys/act` ≤ 0.6, which completes no later version; a direct writer sends 0.3 |
 | `rooms/records/put/0.3` | `write` — an `open` room's cleartext may carry provenance and `validUntil`, stored as received and never acted on |
 | `rooms/records/get/0.2` | `read` — and the record's `blobs` |
-| `rooms/records/list/0.1`, `0.2` | `read` |
-| `rooms/records/list/0.3` | `read` — every page carries the room's `lastPrune` |
+| `rooms/records/list/0.5` | `read` — every page carries the room's `lastPrune` |
 | `rooms/create/0.2` | no chain — the signer must be the `ownerDid` (§8.4); records the room's `recordRetention` as given |
-| `rooms/info/0.1`, `0.2` | `read` — 0.2 adds `recordRetention` and `lastPrune` |
-| `rooms/records/prune/0.1` | `admin` — removes what the record retention makes eligible (§10.5) |
+| `rooms/info/0.3` | `read` — adds `recordRetention` and `lastPrune` |
+| `rooms/records/prune/0.2` | `admin` — removes what the record retention makes eligible (§10.5) |
 | `rooms/records/retention/set/0.1` | `admin` — replaces the record retention (§10.5) |
 | `rooms/records/curate/0.1` | `curate` |
+| `rooms/watch/0.1` | `read` — arms, re-arms or cancels one `rooms/changed/0.1` signal to `address`; `addressUnreachable` without a transport to it, `limitReached` past 1024 per room or 16 per member; lease 7 days by default, 30 at most |
 | `rooms/epoch/mint/0.1` | `admin` |
-| `rooms/epoch/chain/0.1` | `read` — reading the room and reading what was written before you joined are the same act; no rung at or below the epoch floor. Served only for `rooms/keys/act` ≤ 0.6; a direct reader sends 0.2 |
-| `rooms/epoch/chain/0.2` | `read` — and the room's `epochFloor` on every response once pruned |
+| `rooms/epoch/chain/0.2` | `read` — reading the room and reading what was written before you joined are the same act; the room's `epochFloor` on every response once pruned, and no rung at or below it |
 | `rooms/epoch/prune/0.2` | `admin` — raises the epoch floor and returns it (§10.4) |
 | `rooms/owner/transfer/0.1` | `admin` |
 | `rooms/owner/claim/0.1` | nomination + membership + dormancy |
@@ -1961,14 +2178,17 @@ and `vtc-service`:
 | `rooms/keys/commit/0.1` | the MLS group itself |
 | `rooms/keys/open/0.2` | `roomOpen` capability |
 | `rooms/keys/file-key/0.2` | `roomOpen` capability |
-| `rooms/keys/seal/0.2` | `roomOpen` capability; `signAsPrincipal` refused to a delegate |
-| `rooms/keys/act/0.1` – `0.6` | `roomPresent` capability; refused to a delegate |
+| `rooms/keys/seal/0.2`, `0.3` | `roomOpen` capability; `signAsPrincipal` refused to a delegate. 0.3 accepts `kind`, `inReplyTo`, `writtenAt`, `editedAt` and a file's `width`, `height` and `preview`, which 0.2 refuses `bodyInvalid` |
+| `rooms/keys/act/0.8`, `0.9`, `0.10`, `0.11`, `0.12` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.11 adds `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3`; 0.12 adds `rooms/watch/0.1` (`read`), its `address`, `sinceVersion` and `leaseSeconds` passed through unread |
+| `rooms/keys/watch/0.1` | `roomPresent` capability + acting as `member` (`memberNotPrincipal` otherwise); refused to a delegate. Up to 64 rooms at one host, one outcome each; each armed with its own `rooms/watch/0.1`, presentation and `did:peer` address; bounds 64 per member, 64 per client, 256 in all |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
-| `rooms/keys/browse/0.1`, `0.2` | `roomOpen` capability; 0.2 passes the host's `lastPrune` through |
+| `rooms/keys/browse/0.3`, `0.4` | `roomOpen` capability; passes the host's `lastPrune` through. 0.4 lists with `rooms/records/list/0.6` (else 0.5) and passes its `RecordMetadataV3` rows through as served: `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`), `kind` (`open`) |
+| `rooms/keys/read/0.1`, `0.2` | `roomOpen` capability. 0.2 fetches with `rooms/records/get/0.3` (else 0.2) and passes `createdAt`, `createdBy` and `bodyStoredAt` through; `keys` reads up to 32 records, each answered on its own in `results` (`notAttempted` past 512 KiB of answers or 15 s), repairing once per batch |
 | `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
 | `rooms/keys/backfill/0.2` | `roomOpen` capability; fetches with `rooms/epoch/chain/0.2`, applies and reports the floor |
 | `rooms/keys/present/0.2` | `roomPresent` capability + acting in the persona's context |
+| `rooms/changed/0.1` | none — a host's one-way signal to a watch's address, from a sender with no ACL entry. At a `rooms/keys/watch` address, passed on once as `rooms/keys/changed/0.1` when the transport proved the watch's host and it names the watch's room; anything else, and anything at the VTA's own DID, dropped and answered with nothing |
 
 **Owner tasks** (`https://trusttasks.org/spec/rooms/owner/…`), served by
 `vta-service` — the room's own key, used without it leaving the VTA. The family

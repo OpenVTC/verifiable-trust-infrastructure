@@ -8,7 +8,7 @@
 // is not for (`git-ns/view:notAdministrator`: they administer no namespace)
 // sees nothing, and the query stops asking.
 //
-// The list is a signed read (`git-ns/view/0.5`, `scope: administrator`,
+// The list is a signed read (`git-ns/view/0.6`, `scope: administrator`,
 // `breakGlass: true`), answered to the signer and never to a session. So a
 // browser that cannot sign cannot see it — and says so, rather than showing
 // the silence an empty list would, because "nothing awaits you" is exactly

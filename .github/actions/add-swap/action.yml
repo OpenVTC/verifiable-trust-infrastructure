@@ -24,6 +24,15 @@ runs:
     # runner's second disk, when there is one, so it does not take from the
     # root disk the Test jobs already reclaim space for.
     #
+    # Each crate now enables only the spec families it uses (see "SPEC
+    # FAMILIES ARE DECLARED PER CRATE" in the workspace Cargo.toml), not
+    # `all-specs`. That does not retire this step: the workspace, the
+    # services and vta-mobile-core still need 26-29 of the 34 families, and
+    # those are the bulk of the code (measured on 0.36.1, macOS: a dev build
+    # of the crate still peaks at ~14 GB, `check` at 11-12.7 GB, against
+    # 14.2 / 12.9 GB with every family). Only builds that stay off vta-sdk
+    # shrink: `vti-rooms-wasm` compiles `rooms` alone, in 1.5 GB.
+    #
     # The lasting fix is not compiling every spec: VTI moving to types
     # generated for only the versions it uses (trust-tasks-build). Remove this
     # when a cold `cargo clippy --workspace --all-targets` fits in RAM again.

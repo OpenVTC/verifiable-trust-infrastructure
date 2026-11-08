@@ -1,15 +1,15 @@
 //! Discovery slice. One URI family, one question: **which Trust Tasks does this
 //! agent serve?**
 //!
-//! `spec/trust-task-discovery/0.1` and `/0.3` — the published canonical family
-//! from the dtgwg-trust-tasks-tf registry, carried by `trust-tasks-rs`. Any
+//! `spec/trust-task-discovery/0.4` — the published canonical family from the
+//! dtgwg-trust-tasks-tf registry, carried by `trust-tasks-rs`. Any
 //! authenticated caller. This is what a client should ask before assuming a
-//! task exists. Each version is answered in the version it was asked
-//! (discovery 0.3, *Relationship to 0.2 and 0.1*).
+//! task exists. The superseded 0.3 is still answered; 0.1 is not.
 //!
-//! 0.3 adds the acceptance window this VTA applies to `issuedAt`, at response
-//! level (VTI-TRN-047). It is built by
-//! [`vti_common::trust_task::discovery::respond_v0_3`] from the same
+//! The answer carries the acceptance window this VTA applies, at response
+//! level (VTI-TRN-047): in 0.4 with the thirty-day expiry horizon up to which a
+//! stated `expiresAt` is honoured, in 0.3 without it. It is built by
+//! [`vti_common::trust_task::discovery::respond_v0_4`] from the same
 //! [`VTI_ACCEPTANCE_WINDOW`](vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW)
 //! this VTA's spine applies (`super::freshness_policy`), so the advertised
 //! window cannot be wider than the applied one; the tests below pin it.
@@ -29,8 +29,9 @@ use crate::server::AppState;
 
 use super::helpers::{parse_payload, success_response};
 
-/// Handler for `spec/trust-task-discovery/0.1` — canonical capability
-/// negotiation.
+/// Handler for `spec/trust-task-discovery/0.4` and the superseded 0.3 —
+/// canonical capability negotiation, with this VTA's acceptance window at
+/// response level (VTI-TRN-047). Each version is answered in its own shape.
 ///
 /// The answer is **derived from the dispatch table**, so it cannot claim a task
 /// this service does not actually route. A hand-maintained list would be a
@@ -42,49 +43,42 @@ pub(super) async fn handle_trust_task_discovery(
     _auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::trust_task_discovery::v0_1 as wire;
+    #[allow(deprecated)] // 0.3 is superseded, and still answered
+    use trust_tasks_rs::specs::trust_task_discovery::v0_3;
+    use trust_tasks_rs::specs::trust_task_discovery::v0_4;
 
-    let req: wire::Payload = match parse_payload(&doc) {
+    if doc.type_uri.for_routing().to_string() == discovery::DISCOVERY_V0_3 {
+        #[allow(deprecated)]
+        let req: v0_3::Payload = match parse_payload(&doc) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        };
+        return success_response(
+            &doc,
+            discovery::respond_v0_3(super::dispatched_uris(), &req),
+        );
+    }
+    let req: v0_4::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
     success_response(
         &doc,
-        discovery::respond_v0_1(super::dispatched_uris(), &req),
-    )
-}
-
-/// Handler for `spec/trust-task-discovery/0.3` — the 0.1 answer, with the
-/// framework release in three parts and this VTA's acceptance window at
-/// response level (VTI-TRN-047).
-pub(super) async fn handle_trust_task_discovery_v0_3(
-    _state: &AppState,
-    _auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::trust_task_discovery::v0_3 as wire;
-
-    let req: wire::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    success_response(
-        &doc,
-        discovery::respond_v0_3(super::dispatched_uris(), &req),
+        discovery::respond_v0_4(super::dispatched_uris(), &req),
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use trust_tasks_rs::specs::trust_task_discovery::v0_3;
+    use trust_tasks_rs::specs::trust_task_discovery::v0_4;
     use vti_common::trust_task::acceptance::AcceptanceWindow;
 
-    /// What this VTA answers a discovery 0.3 query with, read back as a
+    /// What this VTA answers a discovery 0.4 query with, read back as a
     /// discoverer reads it.
     fn advertised() -> AcceptanceWindow {
-        let response = vti_common::trust_task::discovery::respond_v0_3(
+        let response = vti_common::trust_task::discovery::respond_v0_4(
             crate::trust_tasks::dispatched_uris(),
-            &v0_3::Payload::default(),
+            &v0_4::Payload::default(),
         );
         AcceptanceWindow::from_advertised(
             response
@@ -94,8 +88,9 @@ mod tests {
         )
     }
 
-    /// The window this VTA advertises in its discovery 0.3 answer is the window
-    /// its spine applies — neither wider (VTI-TRN-047's MUST NOT) nor narrower.
+    /// The window this VTA advertises in its discovery 0.4 answer is the window
+    /// its spine applies — neither wider (VTI-TRN-047's MUST NOT) nor narrower,
+    /// expiry horizon included.
     ///
     /// Compared against `freshness_policy`, the policy the spine refuses
     /// documents with: were either side to take its own constant again, this
@@ -106,6 +101,33 @@ mod tests {
         let applied = super::super::freshness_policy();
         assert_eq!(Some(advertised.max_age), applied.max_age);
         assert_eq!(advertised.clock_skew, applied.skew);
+        assert_eq!(advertised.expiry_horizon, applied.expiry_horizon);
+    }
+
+    /// The same property for a document that states an `expiresAt` beyond the
+    /// horizon: accepted up to the advertised horizon (and skew), and refused a
+    /// second past it.
+    #[test]
+    fn vti_trn_047_a_stated_expiry_is_honoured_to_the_advertised_horizon() {
+        let w = advertised();
+        let horizon = w
+            .expiry_horizon
+            .expect("VTI-OPS-028: a horizon is advertised");
+        let issued = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 0);
+        let mut doc = trust_tasks_rs::TrustTask::new(
+            "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
+            "https://trusttasks.org/spec/acl/list/0.3".parse().unwrap(),
+            serde_json::json!({}),
+        );
+        doc.issued_at = Some(issued);
+        doc.expires_at = Some(issued + chrono::TimeDelta::days(365));
+        let policy = super::super::freshness_policy();
+        let edge = issued + horizon + w.clock_skew;
+        assert!(doc.validate_freshness(edge, &policy).is_ok());
+        assert!(
+            doc.validate_freshness(edge + chrono::TimeDelta::seconds(1), &policy)
+                .is_err()
+        );
     }
 
     /// The same property, measured the way a producer meets it: a document
@@ -119,7 +141,7 @@ mod tests {
         let doc = |issued| {
             let mut d = trust_tasks_rs::TrustTask::new(
                 "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
-                "https://trusttasks.org/spec/acl/list/0.1".parse().unwrap(),
+                "https://trusttasks.org/spec/acl/list/0.3".parse().unwrap(),
                 serde_json::json!({}),
             );
             d.issued_at = Some(issued);
@@ -151,7 +173,7 @@ mod tests {
             all.len()
         );
         for version in [
-            vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
+            vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_4,
             vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
         ] {
             assert!(

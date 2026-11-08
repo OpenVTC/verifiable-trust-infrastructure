@@ -44,7 +44,7 @@ pub async fn request(
     )
     .await?;
     let issue = serde_json::json!({ "credential_response": response });
-    let payload: trust_tasks_rs::specs::credential_exchange::issue::v0_1::Payload =
+    let payload: vti_specs::credential_exchange::issue::v0_1::Payload =
         serde_json::from_value(issue)
             .map_err(|e| AppError::Internal(format!("build issue payload: {e}")))?;
     Ok(Json(payload.into()))

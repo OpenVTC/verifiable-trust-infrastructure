@@ -134,12 +134,12 @@ describe("operator console login", () => {
 
   it("asks the community for an operator-console session", async () => {
     const posted = stubDaemon((doc) => {
-      if (doc.type.endsWith("/request/0.1")) {
+      if (doc.type.endsWith("/request/0.2")) {
         return json(200, {
           type: `${doc.type}#response`,
           payload: {
             requestId: RID,
-            claimDeadline: Math.floor(Date.now() / 1000) + 120,
+            claimClosesAt: new Date(Date.now() + 120_000).toISOString(),
             ext: { "org.openvtc.session": { audience: "admin" } },
           },
         });
@@ -159,18 +159,18 @@ describe("operator console login", () => {
 
   it("tells an identity that is not an administrator so", async () => {
     stubDaemon((doc) => {
-      if (doc.type.endsWith("/request/0.1")) {
+      if (doc.type.endsWith("/request/0.2")) {
         return json(200, {
           type: `${doc.type}#response`,
           payload: {
             requestId: RID,
-            claimDeadline: Math.floor(Date.now() / 1000) + 120,
+            claimClosesAt: new Date(Date.now() + 120_000).toISOString(),
             ext: { "org.openvtc.session": { audience: "admin" } },
           },
         });
       }
       return json(422, {
-        type: "https://trusttasks.org/spec/trust-task-error/0.5",
+        type: "https://trusttasks.org/spec/trust-task-error/0.6",
         payload: {
           code: "auth/oob/redeem:declined",
           message: "This identity isn't an administrator of this community.",
@@ -191,7 +191,7 @@ describe("operator console login", () => {
       json(200, {
         type: `${doc.type}#response`,
         // A VTC that predates the extension: no `ext` echoed.
-        payload: { requestId: RID, claimDeadline: Math.floor(Date.now() / 1000) + 120 },
+        payload: { requestId: RID, claimClosesAt: new Date(Date.now() + 120_000).toISOString() },
       }),
     );
     renderLogin();

@@ -59,10 +59,10 @@ pub(crate) async fn run(
         }
         KeyCommands::List {
             limit,
-            offset,
+            cursor,
             status,
             context,
-        } => keys::cmd_key_list(client, offset, limit, status, context).await,
+        } => keys::cmd_key_list(client, cursor, limit, status, context).await,
         KeyCommands::Secrets { key_ids, context } => {
             keys::cmd_key_secrets(client, key_ids, context).await
         }

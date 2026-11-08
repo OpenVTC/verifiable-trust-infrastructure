@@ -44,12 +44,12 @@ use vta_service::test_support::{TestAppContext, TestAppOptions, build_test_app_w
 /// client resolves — a literal here would only re-encode one author's belief, and
 /// that belief was wrong once already.
 const WEBVH_UPDATE: &str = vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0;
-const TASK_CONSENT_DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1;
+const TASK_CONSENT_DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2;
 
 /// Policy: this task needs a human, and it must not be the requester.
 const REQUIRE_CONSENT: &str = r#"package vta.policy
 import rego.v1
-decision := {"decision": "requireConsent", "requireConsent": {"approverSet": "operators", "excludeRequester": true}}
+decision := {"decision": "requireConsent", "requireConsent": {"approverSet": "operators", "minApprovals": 1, "excludeRequester": true}}
 "#;
 
 // ─── wire helpers ────────────────────────────────────────────────────────────
@@ -743,7 +743,7 @@ async fn create_did(
         .expect("seed the default context");
 
     let doc = envelope(
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
         caller,
         &ctx.vta_did,
         json!({ "contextId": "default", "url": "https://example.com/acme" }),
@@ -794,21 +794,22 @@ async fn rest_and_trust_task_reach_the_same_consent_decision() {
     install_policy(&ctx, REQUIRE_CONSENT).await;
 
     // One grant, expressed identically on both transports.
-    // Canonical `acl/grant/0.1` shape — `scopes`, not `allowedContexts`. The
-    // spine schema-validates before the gate runs, so a wrong field name here
-    // would be rejected as malformed and this test would prove nothing about
-    // consent.
+    // Canonical `acl/grant/0.2` shape — every axis explicit. The spine
+    // schema-validates before the gate runs, so a wrong member here would be
+    // rejected as malformed and this test would prove nothing about consent.
     let grant = json!({
         "entry": {
             "subject": "did:key:z6MkNewlyGrantedAdmin",
             "role": "admin",
-            "scopes": ["default"],
+            "act": {"scope": "contexts", "contexts": ["default"]},
+            "keys": {"scope": "all"},
+            "capabilities": {"scope": "ceiling"},
         }
     });
 
     // ── Trust-task path: refused, as it always was.
     let doc = envelope(
-        vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+        vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
         &requester,
         &ctx.vta_did,
         grant.clone(),

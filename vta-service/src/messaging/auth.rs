@@ -102,6 +102,19 @@ pub(crate) async fn resolve_trust_task_sender(
             ceremony::ceremony_claims(sender_did),
             Standing::ZeroAuthority,
         )),
+        // An originator or relayer of a notification: a community, group or network,
+        // which holds no ACL entry by design. The handler keeps nothing on the claim;
+        // the acceptance policy decides (VTI-NTF-030).
+        Some(uri) if crate::trust_tasks::notifications::is_counterparty_task(uri) => Ok((
+            ceremony::ceremony_claims(sender_did),
+            Standing::ZeroAuthority,
+        )),
+        // A room's host signalling a watch this VTA's member armed (`rooms/changed/0.1`):
+        // a host holds no ACL entry, and the handler reads nothing on the claim.
+        Some(uri) if crate::trust_tasks::room_changed::is_counterparty_task(uri) => Ok((
+            ceremony::ceremony_claims(sender_did),
+            Standing::ZeroAuthority,
+        )),
         Some(uri) if crate::trust_tasks::credential_exchange::is_counterparty_task(uri) => {
             tracing::debug!(
                 sender = %sender_did,
@@ -362,8 +375,8 @@ mod tests {
     // written to accommodate it could run, and the operator saw an approval that
     // a human gave, the wallet sent, and the VTA silently discarded.
 
-    const DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1;
-    const STEP_UP: &str = vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2;
+    const DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2;
+    const STEP_UP: &str = vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7;
     const ORDINARY: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
     const APPROVER: &str = "did:key:zApproverNotInAcl";
 

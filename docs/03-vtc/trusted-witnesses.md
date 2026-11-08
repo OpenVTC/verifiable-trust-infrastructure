@@ -158,8 +158,9 @@ The VTC pairs an entry with the VWC whose `taskContext` is the entry's session
 2. the response is on the session's thread (`threadId` equals the session's
    `threadId`, or its `id` when it has none);
 3. the response is the type the session document's own version declares —
-   `witness/session/submit/0.2#response` for a `witness/session/0.2`,
-   `/0.1#response` for a `witness/session/0.1`, never the other;
+   `witness/session/submit/0.2#response` for a `witness/session/0.2`. Evidence
+   of a superseded `witness/session/0.1` session pairs with nothing: every
+   witness and every VTA serves only 0.2;
 4. the response's proof verifies under the session's `recipient`, and that
    recipient is the VWC's issuer;
 5. the session was opened by, and the response addressed to, the VWC's subject;

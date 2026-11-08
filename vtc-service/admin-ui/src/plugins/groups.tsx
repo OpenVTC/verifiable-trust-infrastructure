@@ -10,21 +10,22 @@
 // the refusal says what to do. Members are named by their directory entry and
 // shown with their directory name and picture.
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { DoorOpen, KeyRound, Plus, Trash2, UserMinus, UserPlus } from "lucide-react";
+import { DoorOpen, KeyRound, Plus, Trash2, UserMinus, UserPlus, Users } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
-import { DirectoryAvatar } from "@/components/DirectoryAvatar";
+import { DidText } from "@/components/DidText";
+import { EntryName, useEntryFaces } from "@/components/EntryName";
 import { EmptyState } from "@/components/EmptyState";
+import { Field } from "@/components/Field";
 import { DidHostingCard } from "@/plugins/DidHostingCard";
 import { DidPresentationCard } from "@/plugins/DidPresentationCard";
 import { type DynamicRule, RuleEditor, emptyRule, ruleReady, wireRule } from "@/plugins/GroupRule";
 import { PageHeader } from "@/components/PageHeader";
 import { COMMUNITY_ROOMS_LIST_KEY, ROOMS_MANAGE, fetchCommunityRooms } from "@/lib/community-rooms-api";
-import { listAllEntries } from "@/lib/directory";
 import {
   AUDIENCES,
   GROUPS_MANAGE,
@@ -71,45 +72,6 @@ function membershipLabel(group: Group): string {
   return group.kind === "dynamic" ? "By rule" : joinLabel(group.joinPolicy);
 }
 
-/** Each directory entry's name and picture, by entry, for naming members. */
-function useEntryFaces() {
-  const q = useQuery({
-    queryKey: ["directory", "entries", "all"],
-    queryFn: listAllEntries,
-    retry: false,
-    staleTime: 60_000,
-  });
-  return useMemo(() => {
-    const out = new Map<string, { name: string | null; avatar: unknown }>();
-    for (const e of q.data ?? []) {
-      const name =
-        typeof e.fields.displayName === "string"
-          ? e.fields.displayName
-          : typeof e.fields.nickname === "string"
-            ? e.fields.nickname
-            : null;
-      out.set(e.entryId, { name, avatar: e.fields.avatar });
-    }
-    return out;
-  }, [q.data]);
-}
-
-function EntryName({
-  entryId,
-  faces,
-}: {
-  entryId: string;
-  faces: Map<string, { name: string | null; avatar: unknown }>;
-}) {
-  const face = faces.get(entryId);
-  return (
-    <span className="dir-name-cell">
-      <DirectoryAvatar entryId={entryId} value={face?.avatar} name={face?.name} colourKey={entryId} />
-      {face?.name ?? <span className="muted">(no name)</span>}
-    </span>
-  );
-}
-
 export function Groups() {
   return (
     <section className="page">
@@ -127,33 +89,33 @@ function GroupsList() {
   const [creating, setCreating] = useState(false);
   const list = useQuery({ queryKey: GROUPS_KEY, queryFn: listGroups });
   const items = list.data ?? [];
+  const manages = holds(caps, GROUPS_MANAGE);
   return (
     <>
       <PageHeader
         count={list.data ? items.length : null}
+        countLabel={list.data ? `${items.length} groups` : undefined}
+        lead="A group has an identity of its own, held by the community's VTA, and gives each member a credential others can check. Who sees a group, and who sees its members, are separate choices."
         actions={
-          holds(caps, GROUPS_MANAGE) && (
-            <button type="button" onClick={() => setCreating(!creating)}>
+          manages && (
+            <button
+              type="button"
+              className={creating ? "secondary" : "primary"}
+              onClick={() => setCreating(!creating)}
+            >
               <Plus size={14} aria-hidden="true" /> New group
             </button>
           )
         }
       />
-      <p className="muted">
-        A group has an identity of its own, held by the community&rsquo;s VTA, and gives each
-        member a credential others can check. Who sees a group, and who sees its members, are
-        separate choices.
-      </p>
       {creating && <CreateGroupForm onDone={() => setCreating(false)} />}
-      {holds(caps, "vtc.config.admin") && <DidHostingCard />}
-      {holds(caps, "vtc.config.admin") && <DidPresentationCard />}
       {list.error && (
         <section className="card error">
           <h3>Failed to read the groups</h3>
           <p>{(list.error as Error).message}</p>
         </section>
       )}
-      <section className="card">
+      <section className="card table-card">
         <DataTable
           caption="Groups"
           columns={[
@@ -166,8 +128,9 @@ function GroupsList() {
           {list.isSuccess && items.length === 0 && (
             <tr>
               <td colSpan={4}>
-                <EmptyState title="No groups yet">
-                  A working group, a chapter, the people running an event: create one above.
+                <EmptyState icon={Users} title="No groups yet">
+                  A working group, a chapter, the people running an event
+                  {manages ? ": create one with New group." : "."}
                 </EmptyState>
               </td>
             </tr>
@@ -179,8 +142,10 @@ function GroupsList() {
               onClick={() => navigate(encodeURIComponent(group.groupId))}
             >
               <td>
-                <strong>{group.name}</strong>
-                {group.description && <div className="muted">{group.description}</div>}
+                <div className="group-name-cell">
+                  <strong>{group.name}</strong>
+                  {group.description && <span className="muted">{group.description}</span>}
+                </div>
               </td>
               <td>{membershipLabel(group)}</td>
               <td>{audienceLabel(group.visibility)}</td>
@@ -189,6 +154,8 @@ function GroupsList() {
           ))}
         </DataTable>
       </section>
+      {holds(caps, "vtc.config.admin") && <DidHostingCard />}
+      {holds(caps, "vtc.config.admin") && <DidPresentationCard />}
     </>
   );
 }
@@ -226,73 +193,71 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
   const ok =
     name.trim() && reason.trim() && audienceWithin(showMembers, visibility) && (!dynamic || ruleReady(rule));
   return (
-    <section className="card">
-      <h3>New group</h3>
+    <section className="card" aria-labelledby="new-group-title">
+      <h3 id="new-group-title">New group</h3>
       <form
-        className="stack"
+        className="form-stack"
         onSubmit={(e) => {
           e.preventDefault();
           if (ok) create.mutate();
         }}
       >
-        <label>
-          Name
-          <input value={name} maxLength={128} onChange={(e) => setName(e.target.value)} />
-        </label>
-        <label>
-          Description
-          <textarea
-            value={description}
-            maxLength={1000}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-        </label>
-        <label>
-          Members
-          <select
-            aria-label="Members"
-            value={dynamic ? "dynamic" : "static"}
-            onChange={(e) => setDynamic(e.target.value === "dynamic")}
+        <div className="form-grid">
+          <Field label="Name">
+            <input value={name} maxLength={128} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field
+            label="Members"
+            hint={
+              dynamic
+                ? "Whoever the rule admits, re-checked as facts change; a member may opt out."
+                : "Added by a manager, joined, or asked for."
+            }
           >
-            <option value="static">Chosen — added, joined or asked for</option>
-            <option value="dynamic">By rule — whoever verified facts include, who may opt out</option>
-          </select>
-        </label>
-        {dynamic ? (
-          <RuleEditor value={rule} onChange={setRule} />
-        ) : (
-          <label>
-            Joining
-            <select value={joinPolicy} onChange={(e) => setJoinPolicy(e.target.value as JoinPolicy)}>
-              {JOIN_POLICIES.map((j) => (
-                <option key={j.id} value={j.id}>
-                  {j.label} — {j.help}
-                </option>
-              ))}
+            <select
+              aria-label="Members"
+              value={dynamic ? "dynamic" : "static"}
+              onChange={(e) => setDynamic(e.target.value === "dynamic")}
+            >
+              <option value="static">Chosen</option>
+              <option value="dynamic">By rule</option>
             </select>
-          </label>
-        )}
-        <AudienceSelects
-          visibility={visibility}
-          showMembers={showMembers}
-          onVisibility={setVisibility}
-          onShowMembers={setShowMembers}
-        />
-        <label className="checkbox">
-          <input type="checkbox" checked={issues} onChange={(e) => setIssues(e.target.checked)} />
-          Give each member a group credential others can check
-        </label>
-        <label>
-          Why
-          <input
-            value={reason}
-            maxLength={1024}
-            placeholder="e.g. the identity working group starts"
-            onChange={(e) => setReason(e.target.value)}
+          </Field>
+          <Field label="Description" className="span-2" hint="Optional. Shown to whoever sees the group.">
+            <textarea
+              className="prose"
+              rows={2}
+              value={description}
+              maxLength={1000}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </Field>
+          {dynamic ? (
+            <RuleEditor value={rule} onChange={setRule} className="span-2" />
+          ) : (
+            <JoinPolicyField value={joinPolicy} onChange={setJoinPolicy} className="span-2" />
+          )}
+          <AudienceSelects
+            visibility={visibility}
+            showMembers={showMembers}
+            onVisibility={setVisibility}
+            onShowMembers={setShowMembers}
           />
-        </label>
-        <div className="actions">
-          <button type="submit" disabled={!ok || create.isPending}>
+          <label className="checkbox span-2">
+            <input type="checkbox" checked={issues} onChange={(e) => setIssues(e.target.checked)} />
+            <span className="checkbox-text">Give each member a group credential others can check</span>
+          </label>
+          <Field label="Why" className="span-2" hint="Recorded in the audit trail.">
+            <input
+              value={reason}
+              maxLength={1024}
+              placeholder="e.g. the identity working group starts"
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </Field>
+        </div>
+        <div className="form-actions">
+          <button type="submit" className="primary" disabled={!ok || create.isPending}>
             {create.isPending ? "Creating…" : "Create"}
           </button>
           <button type="button" className="secondary" onClick={onDone}>
@@ -301,6 +266,29 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
         </div>
       </form>
     </section>
+  );
+}
+
+function JoinPolicyField({
+  value,
+  onChange,
+  className,
+}: {
+  value: JoinPolicy;
+  onChange: (j: JoinPolicy) => void;
+  className?: string;
+}) {
+  const chosen = JOIN_POLICIES.find((j) => j.id === value);
+  return (
+    <Field label="Joining" className={className} hint={chosen?.help}>
+      <select value={value} onChange={(e) => onChange(e.target.value as JoinPolicy)}>
+        {JOIN_POLICIES.map((j) => (
+          <option key={j.id} value={j.id}>
+            {j.label}
+          </option>
+        ))}
+      </select>
+    </Field>
   );
 }
 
@@ -317,8 +305,7 @@ function AudienceSelects({
 }) {
   return (
     <>
-      <label>
-        Who sees the group
+      <Field label="Who sees the group">
         <select
           value={visibility}
           onChange={(e) => {
@@ -333,9 +320,8 @@ function AudienceSelects({
             </option>
           ))}
         </select>
-      </label>
-      <label>
-        Who sees its members
+      </Field>
+      <Field label="Who sees its members" hint="Never more widely than the group itself.">
         <select value={showMembers} onChange={(e) => onShowMembers(e.target.value as Audience)}>
           {AUDIENCES.filter((a) => audienceWithin(a.id, visibility)).map((a) => (
             <option key={a.id} value={a.id}>
@@ -343,7 +329,7 @@ function AudienceSelects({
             </option>
           ))}
         </select>
-      </label>
+      </Field>
     </>
   );
 }
@@ -358,8 +344,9 @@ function GroupPage() {
   return (
     <>
       <PageHeader
-        trail={[{ label: "Groups", to: ".." }, { label: group?.name ?? "…" }]}
+        trail={[{ label: group?.name ?? "…" }]}
         title={group?.name ?? "Group"}
+        lead={group?.description}
       />
       {q.error && (
         <section className="card error">
@@ -386,14 +373,8 @@ function GroupPage() {
 
 function GroupSummary({ group }: { group: Group }) {
   return (
-    <section className="card">
+    <section className="card" aria-label="About this group">
       <dl className="kv">
-        {group.description && (
-          <div>
-            <dt>About</dt>
-            <dd>{group.description}</dd>
-          </div>
-        )}
         <div>
           <dt>Joining</dt>
           <dd>{membershipLabel(group)}</dd>
@@ -409,7 +390,7 @@ function GroupSummary({ group }: { group: Group }) {
         <div>
           <dt>Identity</dt>
           <dd>
-            <code>{group.groupDid}</code>
+            <DidText did={group.groupDid} />
           </dd>
         </div>
         <div>
@@ -458,46 +439,43 @@ function GroupSettings({ group }: { group: Group }) {
     <details className="card">
       <summary>Settings</summary>
       <form
-        className="stack"
+        className="form-stack"
         onSubmit={(e) => {
           e.preventDefault();
           save.mutate();
         }}
       >
-        <label>
-          Name
-          <input value={name} maxLength={128} onChange={(e) => setName(e.target.value)} />
-        </label>
-        <label>
-          Description
-          <textarea
-            value={description}
-            maxLength={1000}
-            onChange={(e) => setDescription(e.target.value)}
+        <div className="form-grid">
+          <Field label="Name" className="span-2">
+            <input value={name} maxLength={128} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="Description" className="span-2">
+            <textarea
+              className="prose"
+              rows={2}
+              value={description}
+              maxLength={1000}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </Field>
+          {dynamic ? (
+            <RuleEditor value={rule} onChange={setRule} className="span-2" />
+          ) : (
+            <JoinPolicyField value={joinPolicy} onChange={setJoinPolicy} className="span-2" />
+          )}
+          <AudienceSelects
+            visibility={visibility}
+            showMembers={showMembers}
+            onVisibility={setVisibility}
+            onShowMembers={setShowMembers}
           />
-        </label>
-        {dynamic ? (
-          <RuleEditor value={rule} onChange={setRule} />
-        ) : (
-          <label>
-            Joining
-            <select value={joinPolicy} onChange={(e) => setJoinPolicy(e.target.value as JoinPolicy)}>
-              {JOIN_POLICIES.map((j) => (
-                <option key={j.id} value={j.id}>
-                  {j.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <AudienceSelects
-          visibility={visibility}
-          showMembers={showMembers}
-          onVisibility={setVisibility}
-          onShowMembers={setShowMembers}
-        />
-        <div className="actions">
-          <button type="submit" disabled={!name.trim() || (dynamic && !ruleReady(rule)) || save.isPending}>
+        </div>
+        <div className="form-actions">
+          <button
+            type="submit"
+            className="primary"
+            disabled={!name.trim() || (dynamic && !ruleReady(rule)) || save.isPending}
+          >
             {save.isPending ? "Saving…" : "Save"}
           </button>
         </div>
@@ -538,77 +516,88 @@ function GroupMembers({ group, manages }: { group: Group; manages: boolean }) {
   if (members.error) return null;
   const inGroup = new Set((members.data ?? []).map((m) => m.entryId));
   const candidates = [...faces.entries()].filter(([e]) => !inGroup.has(e));
+  const rows = members.data ?? [];
   return (
-    <section className="card">
-      <h3>Members {members.data && <span className="muted">({members.data.length})</span>}</h3>
+    <section className="card" aria-labelledby="group-members-title">
+      <h3 id="group-members-title">
+        Members {members.data && <span className="muted">({members.data.length})</span>}
+      </h3>
       {manages && (
         <form
-          className="inline-form"
+          className="toolbar"
           onSubmit={(e) => {
             e.preventDefault();
             if (adding) add.mutate(adding);
           }}
         >
-          <select aria-label="Member to add" value={adding} onChange={(e) => setAdding(e.target.value)}>
-            <option value="">Choose a member…</option>
-            {candidates.map(([entryId, f]) => (
-              <option key={entryId} value={entryId}>
-                {f.name ?? entryId}
-              </option>
-            ))}
-          </select>
+          <Field label="Add a member" inline>
+            <select aria-label="Member to add" value={adding} onChange={(e) => setAdding(e.target.value)}>
+              <option value="">Choose a member…</option>
+              {candidates.map(([entryId, f]) => (
+                <option key={entryId} value={entryId}>
+                  {f.name ?? entryId}
+                </option>
+              ))}
+            </select>
+          </Field>
           <button type="submit" className="secondary" disabled={!adding || add.isPending}>
             <UserPlus size={14} aria-hidden="true" /> Add
           </button>
         </form>
       )}
-      <DataTable
-        caption="Members"
-        columns={[
-          { key: "member", label: "Member" },
-          { key: "how", label: "Joined" },
-          { key: "credential", label: "Credential until" },
-          { key: "act", label: "" },
-        ]}
-      >
-        {(members.data ?? []).map((m) => (
-          <tr key={m.entryId}>
-            <td>
-              <EntryName entryId={m.entryId} faces={faces} />
-            </td>
-            <td>
-              {m.source === "added" ? "Added" : m.source === "joined" ? "Joined" : "By request"}{" "}
-              <span className="muted">{new Date(m.since).toLocaleDateString()}</span>
-            </td>
-            <td>
-              {m.credentialValidUntil ? (
-                new Date(m.credentialValidUntil).toLocaleDateString()
-              ) : (
-                <span className="muted">—</span>
-              )}
-            </td>
-            <td>
+      {members.isSuccess && rows.length === 0 ? (
+        <EmptyState compact title="Nobody is in this group yet." />
+      ) : (
+        <DataTable
+          caption="Members"
+          columns={[
+            { key: "member", label: "Member" },
+            { key: "how", label: "Joined" },
+            { key: "credential", label: "Credential until" },
+            ...(manages ? [{ key: "act", label: "" }] : []),
+          ]}
+        >
+          {rows.map((m) => (
+            <tr key={m.entryId}>
+              <td>
+                <EntryName entryId={m.entryId} faces={faces} />
+              </td>
+              <td>
+                {m.source === "added" ? "Added" : m.source === "joined" ? "Joined" : "By request"}{" "}
+                <span className="muted">{new Date(m.since).toLocaleDateString()}</span>
+              </td>
+              <td>
+                {m.credentialValidUntil ? (
+                  new Date(m.credentialValidUntil).toLocaleDateString()
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </td>
               {manages && (
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={async () => {
-                    const ok = await confirm({
-                      title: "Remove from the group?",
-                      message: "Their group credential stops renewing and lapses at its expiry.",
-                      confirmLabel: "Remove",
-                      destructive: true,
-                    });
-                    if (ok) remove.mutate(m.entryId);
-                  }}
-                >
-                  <UserMinus size={14} aria-hidden="true" /> Remove
-                </button>
+                <td>
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: "Remove from the group?",
+                          message: "Their group credential stops renewing and lapses at its expiry.",
+                          confirmLabel: "Remove",
+                          destructive: true,
+                        });
+                        if (ok) remove.mutate(m.entryId);
+                      }}
+                    >
+                      <UserMinus size={14} aria-hidden="true" /> Remove
+                    </button>
+                  </div>
+                </td>
               )}
-            </td>
-          </tr>
-        ))}
-      </DataTable>
+            </tr>
+          ))}
+        </DataTable>
+      )}
     </section>
   );
 }
@@ -634,19 +623,21 @@ function GroupRequests({ group }: { group: Group }) {
   const items = requests.data ?? [];
   if (group.joinPolicy !== "request" && items.length === 0) return null;
   return (
-    <section className="card">
-      <h3>Requests to join</h3>
+    <section className="card" aria-labelledby="group-requests-title">
+      <h3 id="group-requests-title">
+        Requests to join {items.length > 0 && <span className="muted">({items.length})</span>}
+      </h3>
       {items.length === 0 ? (
-        <p className="muted">No requests waiting.</p>
+        <EmptyState compact title="No requests waiting." />
       ) : (
-        <ul className="group-requests">
+        <ul className="group-list">
           {items.map(({ request }) => (
             <li key={request.requestId}>
               <EntryName entryId={request.entryId} faces={faces} />
-              {request.message && <p className="group-request-note">{request.message}</p>}
-              <div className="actions">
+              <div className="row-actions">
                 <button
                   type="button"
+                  className="primary"
                   onClick={() => decide.mutate({ id: request.requestId, decision: "approve" })}
                   disabled={decide.isPending}
                 >
@@ -661,6 +652,7 @@ function GroupRequests({ group }: { group: Group }) {
                   Decline
                 </button>
               </div>
+              {request.message && <p className="group-request-note">{request.message}</p>}
             </li>
           ))}
         </ul>
@@ -694,39 +686,47 @@ function GroupManagers({ group }: { group: Group }) {
     onError: (err) => toast.pushFromError(err, "Not changed"),
   });
   return (
-    <section className="card">
-      <h3>Managers</h3>
+    <section className="card" aria-labelledby="group-managers-title">
+      <h3 id="group-managers-title">Managers</h3>
       <p className="muted">
         Managers add and remove members, decide requests and change the group&rsquo;s settings.
         Administrators who manage every group are not listed.
       </p>
-      <ul className="group-managers">
-        {managers.map((e) => (
-          <li key={e}>
-            <EntryName entryId={e} faces={faces} />
-            <button type="button" className="secondary" onClick={() => remove.mutate(e)}>
-              End appointment
-            </button>
-          </li>
-        ))}
-      </ul>
+      {managers.length === 0 ? (
+        <EmptyState compact title="No managers appointed." />
+      ) : (
+        <ul className="group-list">
+          {managers.map((e) => (
+            <li key={e}>
+              <EntryName entryId={e} faces={faces} />
+              <div className="row-actions">
+                <button type="button" className="secondary" onClick={() => remove.mutate(e)}>
+                  End appointment
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
       <form
-        className="inline-form"
+        className="toolbar"
         onSubmit={(e) => {
           e.preventDefault();
           if (adding) add.mutate(adding);
         }}
       >
-        <select aria-label="Member to appoint" value={adding} onChange={(e) => setAdding(e.target.value)}>
-          <option value="">Choose a member…</option>
-          {[...faces.entries()]
-            .filter(([e]) => !managers.includes(e))
-            .map(([entryId, f]) => (
-              <option key={entryId} value={entryId}>
-                {f.name ?? entryId}
-              </option>
-            ))}
-        </select>
+        <Field label="Appoint a manager" inline>
+          <select aria-label="Member to appoint" value={adding} onChange={(e) => setAdding(e.target.value)}>
+            <option value="">Choose a member…</option>
+            {[...faces.entries()]
+              .filter(([e]) => !managers.includes(e))
+              .map(([entryId, f]) => (
+                <option key={entryId} value={entryId}>
+                  {f.name ?? entryId}
+                </option>
+              ))}
+          </select>
+        </Field>
         <button type="submit" className="secondary" disabled={!adding || add.isPending}>
           Appoint
         </button>
@@ -797,92 +797,109 @@ function GroupRooms({ group }: { group: Group }) {
   });
   const items = (bindings.data ?? []).filter((b) => !confersAuthority(b.binding as { kind?: string }));
   return (
-    <section className="card">
-      <h3>
-        <DoorOpen size={16} aria-hidden="true" /> Rooms
+    <section className="card" aria-labelledby="group-rooms-title">
+      <h3 id="group-rooms-title">
+        <DoorOpen size={14} aria-hidden="true" /> Rooms
       </h3>
       <p className="muted">
         Members of this group are offered a place in these community rooms, keep it while they stay,
         and lose it when they leave — unless they were admitted to the room directly too.
       </p>
-      {bindings.error && <p className="error">{(bindings.error as Error).message}</p>}
-      {items.length === 0 && bindings.isSuccess && <p className="muted">Not bound to any room.</p>}
-      <ul className="group-managers">
-        {items.map((b) => {
-          const spec = b.binding as { kind: string; roomId?: string; actions?: string[]; validFor?: string };
-          return (
-            <li key={b.bindingId}>
-              <span>
-                {spec.kind === "room" ? labelOf(spec.roomId ?? "") : spec.kind}
-                {spec.actions && <span className="muted"> — {spec.actions.join(", ")}</span>}
-                {spec.validFor && <span className="muted">, renewed every {spec.validFor.slice(1, -1)} days</span>}
-                {b.state !== "active" && <span className="pill">{b.state}</span>}
-              </span>
-              {mayBind && b.state === "active" && (
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={remove.isPending}
-                  onClick={() => remove.mutate(b.bindingId)}
-                >
-                  End
-                </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+      {bindings.error && <p className="field-error">{(bindings.error as Error).message}</p>}
+      {items.length === 0 && bindings.isSuccess ? (
+        <EmptyState compact title="Not bound to any room." />
+      ) : (
+        <ul className="group-list">
+          {items.map((b) => {
+            const spec = b.binding as { kind: string; roomId?: string; actions?: string[]; validFor?: string };
+            return (
+              <li key={b.bindingId}>
+                <span>
+                  <strong>{spec.kind === "room" ? labelOf(spec.roomId ?? "") : spec.kind}</strong>
+                  {spec.actions && <span className="muted"> — {spec.actions.join(", ")}</span>}
+                  {spec.validFor && (
+                    <span className="muted">, renewed every {spec.validFor.slice(1, -1)} days</span>
+                  )}
+                  {b.state !== "active" && <span className="chip warning">{b.state}</span>}
+                </span>
+                {mayBind && b.state === "active" && (
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={remove.isPending}
+                      onClick={() => remove.mutate(b.bindingId)}
+                    >
+                      End
+                    </button>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {mayBind && (
         <form
-          className="stack"
+          className="form-stack"
           onSubmit={(e) => {
             e.preventDefault();
             if (ready) add.mutate();
           }}
         >
-          <select aria-label="Room to bind" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
-            <option value="">Choose a community room…</option>
-            {(rooms.data?.rooms ?? []).map((r) => (
-              <option key={r.room.roomId} value={r.room.roomId}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-          <fieldset className="inline-form">
-            <legend>What members may do</legend>
-            {ROOM_ACTIONS.map((a) => (
-              <label key={a}>
-                <input
-                  type="checkbox"
-                  checked={actions.includes(a)}
-                  onChange={(e) =>
-                    setActions((cur) => (e.target.checked ? [...cur, a] : cur.filter((x) => x !== a)))
-                  }
-                />{" "}
-                {a}
-              </label>
-            ))}
-          </fieldset>
-          <label>
-            Days each admission lasts before it is renewed
-            <input
-              type="number"
-              min={1}
-              max={3650}
-              value={days}
-              onChange={(e) => setDays(e.target.value)}
-            />
-          </label>
-          <input
-            aria-label="Why bind the room"
-            placeholder="Why, e.g. the working group's drafting room"
-            value={reason}
-            maxLength={1024}
-            onChange={(e) => setReason(e.target.value)}
-          />
-          <button type="submit" className="secondary" disabled={!ready || add.isPending}>
-            Bind room
-          </button>
+          <div className="form-grid">
+            <Field label="Room">
+              <select aria-label="Room to bind" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
+                <option value="">Choose a community room…</option>
+                {/* Only an active room admits anyone: an archived one, or one being
+                    removed, is not offered for a new binding. */}
+                {(rooms.data?.rooms ?? []).filter((r) => (r.status?.state ?? "active") === "active").map((r) => (
+                  <option key={r.room.roomId} value={r.room.roomId}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Admission lasts" hint="Days before each member's admission is renewed.">
+              <input
+                type="number"
+                aria-label="Days each admission lasts before it is renewed"
+                min={1}
+                max={3650}
+                value={days}
+                onChange={(e) => setDays(e.target.value)}
+              />
+            </Field>
+            <fieldset className="choice-group inline span-2">
+              <legend className="field-label">What members may do</legend>
+              {ROOM_ACTIONS.map((a) => (
+                <label key={a} className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={actions.includes(a)}
+                    onChange={(e) =>
+                      setActions((cur) => (e.target.checked ? [...cur, a] : cur.filter((x) => x !== a)))
+                    }
+                  />
+                  <span className="checkbox-text">{a}</span>
+                </label>
+              ))}
+            </fieldset>
+            <Field label="Why" className="span-2" hint="Recorded in the audit trail.">
+              <input
+                aria-label="Why bind the room"
+                placeholder="e.g. the working group's drafting room"
+                value={reason}
+                maxLength={1024}
+                onChange={(e) => setReason(e.target.value)}
+              />
+            </Field>
+          </div>
+          <div className="form-actions">
+            <button type="submit" className="primary" disabled={!ready || add.isPending}>
+              Bind room
+            </button>
+          </div>
         </form>
       )}
     </section>
@@ -950,9 +967,9 @@ function GroupAuthority({ group }: { group: Group }) {
   const items = (bindings.data ?? []).filter((b) => confersAuthority(b.binding as { kind?: string }));
   const conferring = (id: string) => CAPABILITIES.find((c) => c.id === id)?.conferring ?? false;
   return (
-    <section className="card">
-      <h3>
-        <KeyRound size={16} aria-hidden="true" /> Authority
+    <section className="card" aria-labelledby="group-authority-title">
+      <h3 id="group-authority-title">
+        <KeyRound size={14} aria-hidden="true" /> Authority
       </h3>
       <p className="muted">
         What this group gives its members is written onto each member&rsquo;s access-control entry,
@@ -960,35 +977,40 @@ function GroupAuthority({ group }: { group: Group }) {
         not admit it cannot be added. Giving authority that creates authority — and every later
         change to who holds it through the group — waits for another administrator&rsquo;s approval.
       </p>
-      {bindings.error && <p className="error">{(bindings.error as Error).message}</p>}
-      {items.length === 0 && bindings.isSuccess && <p className="muted">It gives its members nothing.</p>}
-      <ul className="group-managers">
-        {items.map((b) => {
-          const spec = b.binding as { kind: string; grants?: { capability: string; resource?: string }[]; role?: string };
-          return (
-            <li key={b.bindingId}>
-              <span>
-                {spec.kind === "role"
-                  ? `The ${spec.role} role's capabilities`
-                  : (spec.grants ?? [])
-                      .map((g) => (g.resource ? `${g.capability}@${g.resource}` : g.capability))
-                      .join(", ")}
-                {b.state !== "active" && <span className="pill">{b.state}</span>}
-              </span>
-              {b.state === "active" && (
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={remove.isPending}
-                  onClick={() => remove.mutate(b.bindingId)}
-                >
-                  End
-                </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+      {bindings.error && <p className="field-error">{(bindings.error as Error).message}</p>}
+      {items.length === 0 && bindings.isSuccess ? (
+        <EmptyState compact title="It gives its members nothing." />
+      ) : (
+        <ul className="group-list">
+          {items.map((b) => {
+            const spec = b.binding as { kind: string; grants?: { capability: string; resource?: string }[]; role?: string };
+            return (
+              <li key={b.bindingId}>
+                <span>
+                  {spec.kind === "role"
+                    ? `The ${spec.role} role's capabilities`
+                    : (spec.grants ?? [])
+                        .map((g) => (g.resource ? `${g.capability}@${g.resource}` : g.capability))
+                        .join(", ")}
+                  {b.state !== "active" && <span className="chip warning">{b.state}</span>}
+                </span>
+                {b.state === "active" && (
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={remove.isPending}
+                      onClick={() => remove.mutate(b.bindingId)}
+                    >
+                      End
+                    </button>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {!closed && (
         <p className="muted">
           Only a closed group can give authority: close it first, so that only its managers add
@@ -997,76 +1019,97 @@ function GroupAuthority({ group }: { group: Group }) {
       )}
       {closed && (
         <form
-          className="stack"
+          className="form-stack"
           onSubmit={(e) => {
             e.preventDefault();
             if (ready) add.mutate();
           }}
         >
-          <fieldset className="inline-form">
-            <legend>Give its members</legend>
-            <label>
-              <input type="radio" name="authority-kind" checked={kind === "grants"} onChange={() => setKind("grants")} />{" "}
-              Capabilities
+          <fieldset className="choice-group inline">
+            <legend className="field-label">Give its members</legend>
+            <label className="checkbox">
+              <input
+                type="radio"
+                name="authority-kind"
+                checked={kind === "grants"}
+                onChange={() => setKind("grants")}
+              />
+              <span className="checkbox-text">Capabilities</span>
             </label>
-            <label>
-              <input type="radio" name="authority-kind" checked={kind === "role"} onChange={() => setKind("role")} />{" "}
-              A role&rsquo;s capabilities
+            <label className="checkbox">
+              <input
+                type="radio"
+                name="authority-kind"
+                checked={kind === "role"}
+                onChange={() => setKind("role")}
+              />
+              <span className="checkbox-text">A role&rsquo;s capabilities</span>
             </label>
           </fieldset>
           {kind === "grants" && (
-            <fieldset className="stack">
-              <legend>Capabilities you hold</legend>
+            <fieldset className="field group-cap-list">
+              <legend className="field-label">Capabilities you hold</legend>
               {bindable.length === 0 && <p className="muted">You hold no capability to give.</p>}
               {bindable.map((c) => (
-                <label key={c.id}>
+                <label key={c.id} className="checkbox">
                   <input
                     type="checkbox"
                     checked={chosen.includes(c.id)}
                     onChange={(e) =>
                       setChosen((cur) => (e.target.checked ? [...cur, c.id] : cur.filter((x) => x !== c.id)))
                     }
-                  />{" "}
-                  <code>{c.id}</code> <span className="muted">— {c.gates}</span>
-                  {c.conferring && <span className="pill">needs approval</span>}
+                  />
+                  <span className="checkbox-text">
+                    <code>{c.id}</code> <span className="muted">— {c.gates}</span>
+                    {c.conferring && <span className="chip warning">needs approval</span>}
+                  </span>
                 </label>
               ))}
             </fieldset>
           )}
-          {kind === "role" &&
-            (roles.data ? (
-              <select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value)}>
-                <option value="">Choose a role…</option>
-                {roles.data.map((r) => (
-                  <option key={r.name} value={r.name}>
-                    {r.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                aria-label="Role"
-                placeholder="A role's name, e.g. moderator"
-                value={role}
-                maxLength={64}
-                onChange={(e) => setRole(e.target.value)}
-              />
-            ))}
-          <input
-            aria-label="Why give it"
-            placeholder="Why, e.g. working group members may invite"
-            value={reason}
-            maxLength={1024}
-            onChange={(e) => setReason(e.target.value)}
-          />
-          {kind === "grants" && chosen.some(conferring) && (
-            <p className="muted">
-              This creates authority, so another administrator approves it before anyone holds it.
-            </p>
+          {kind === "role" && (
+            <Field label="Role">
+              {roles.data ? (
+                <select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value)}>
+                  <option value="">Choose a role…</option>
+                  {roles.data.map((r) => (
+                    <option key={r.name} value={r.name}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  aria-label="Role"
+                  placeholder="A role's name, e.g. moderator"
+                  value={role}
+                  maxLength={64}
+                  onChange={(e) => setRole(e.target.value)}
+                />
+              )}
+            </Field>
           )}
-          <button type="submit" className="secondary" disabled={!ready || add.isPending}>
-            Give
-          </button>
+          <Field
+            label="Why"
+            hint={
+              kind === "grants" && chosen.some(conferring)
+                ? "This creates authority, so another administrator approves it before anyone holds it."
+                : "Recorded in the audit trail."
+            }
+          >
+            <input
+              aria-label="Why give it"
+              placeholder="e.g. working group members may invite"
+              value={reason}
+              maxLength={1024}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </Field>
+          <div className="form-actions">
+            <button type="submit" className="primary" disabled={!ready || add.isPending}>
+              Give
+            </button>
+          </div>
         </form>
       )}
     </section>
@@ -1095,7 +1138,7 @@ function DeleteGroup({ group, onDeleted }: { group: Group; onDeleted: () => void
         to issue credentials is revoked. Credentials it issued lapse at their expiry.
       </p>
       <form
-        className="inline-form"
+        className="toolbar"
         onSubmit={async (e) => {
           e.preventDefault();
           if (!reason.trim()) return;
@@ -1108,14 +1151,16 @@ function DeleteGroup({ group, onDeleted }: { group: Group; onDeleted: () => void
           if (ok) del.mutate();
         }}
       >
-        <input
-          aria-label="Why delete the group"
-          placeholder="Why, e.g. the working group wound up"
-          value={reason}
-          maxLength={1024}
-          onChange={(e) => setReason(e.target.value)}
-        />
-        <button type="submit" className="danger" disabled={!reason.trim() || del.isPending}>
+        <Field label="Why" inline>
+          <input
+            aria-label="Why delete the group"
+            placeholder="e.g. the working group wound up"
+            value={reason}
+            maxLength={1024}
+            onChange={(e) => setReason(e.target.value)}
+          />
+        </Field>
+        <button type="submit" className="destructive" disabled={!reason.trim() || del.isPending}>
           <Trash2 size={14} aria-hidden="true" /> Delete
         </button>
       </form>

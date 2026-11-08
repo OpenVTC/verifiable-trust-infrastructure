@@ -38,25 +38,26 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
 }
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
-const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
-const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
+const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.2";
+/// `vtc/members/role/set/0.1` — the community-role move.
+const CHANGE_ROLE: &str = "https://trusttasks.org/spec/vtc/members/role/set/0.1";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
-const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
-const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1";
-const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1";
+const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
+const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
+const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 const ATTEST: &str = "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1";
-const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
-const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
-const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2";
-const ACKNOWLEDGE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2";
+const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
+const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
+const ACKNOWLEDGE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3";
 /// The record type an operator's offline write is named by (VTI-VTC-023).
-const OFFLINE_WRITE: &str = "https://trusttasks.org/spec/vtc/operator/offline-write/0.1";
-const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const OFFLINE_WRITE: &str = "https://trusttasks.org/spec/vtc/operator/offline-write/0.2";
+const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const COOLING_OFF_KEY: &str = "acl.removal_cooling_off";
 
 struct Fixture {
@@ -173,7 +174,7 @@ async fn list(fix: &Fixture, who: &Party, view: &str) -> Value {
     reply["payload"].clone()
 }
 
-/// `vtc/admin/actions/show/0.2` as `who`: the action, held to the 0.2 schema.
+/// `vtc/admin/actions/show/0.3` as `who`: the action, held to its schema.
 async fn action_v0_2(fix: &Fixture, who: &Party, id: &str) -> Value {
     let (status, reply) = post(
         &fix.vtc,
@@ -376,7 +377,7 @@ async fn vti_vtc_023_every_offline_writer_raises_an_acknowledge_item() {
         assert_eq!(item["typeUri"], OFFLINE_WRITE, "{item}");
         {
             use trust_tasks_rs::validate::ValidatedPayload as _;
-            trust_tasks_rs::specs::vtc::operator::offline_write::v0_1::Payload::validate_value(
+            vti_specs::vtc::operator::offline_write::v0_2::Payload::validate_value(
                 &item["payload"],
             )
             .unwrap_or_else(|e| panic!("not an offline-write record: {e}\n{item}"));
@@ -531,7 +532,7 @@ async fn vti_vtc_023_an_emergency_bootstrap_is_acknowledged_by_the_new_administr
     assert_eq!(history["actions"].as_array().unwrap().len(), 1);
 }
 
-/// `vtc/operator/offline-write/0.1` is a record type: an acknowledge item
+/// `vtc/operator/offline-write/0.2` is a record type: an acknowledge item
 /// names it, nobody sends it. A document of that type, even from an
 /// administrator, is not dispatched — it answers `unsupportedType`, like every
 /// other embedded-only type.
@@ -574,7 +575,7 @@ async fn vti_apv_019_a_consented_revocation_sends_the_notice() {
         &signed(
             &a,
             REVOKE,
-            json!({ "subject": subject.did, "reason": "rotation" }),
+            json!({ "subject": subject.did, "revocation": { "kind": "entry" }, "reason": "rotation" }),
         )
         .await,
     )
@@ -608,7 +609,12 @@ async fn vti_apv_019_each_direct_reduction_sends_the_notice_with_its_code() {
     let (status, reply) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": revoked.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": revoked.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{reply}");
@@ -658,7 +664,12 @@ async fn vti_apv_019_each_direct_reduction_sends_the_notice_with_its_code() {
     let moderator = seed(&fix, VtcRole::Member, &[]).await;
     let (status, _) = post(
         &fix.vtc,
-        &signed(&a, REVOKE, json!({ "subject": moderator.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": moderator.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -707,7 +718,12 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
     let (status, reply) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
@@ -730,16 +746,6 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
         "the reduced notice waits for the landing"
     );
 
-    let mine = action(&fix, &a, &id).await;
-    assert_eq!(mine["category"], "approval");
-    assert_eq!(mine["callerRole"], "requester");
-    assert!(
-        mine.get("threshold").is_none(),
-        "nobody can approve: {mine}"
-    );
-    assert!(mine.get("expiresAt").is_none(), "it lands, never lapses");
-    assert_eq!(mine["approversRemaining"], 0);
-    assert!(mine["ext"]["org.openvtc"]["coolingOff"]["landsAt"].is_string());
     assert_eq!(
         list(&fix, &a, "requestedByMe").await["counts"]["requestedByMe"],
         1
@@ -752,19 +758,14 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
     let against = &theirs["ext"]["org.openvtc"]["coolingOffAgainstMe"];
     assert_eq!(against[0]["actionId"], id.as_str(), "{theirs}");
     assert_eq!(against[0]["requester"], a.did.as_str());
-    let seen = action(&fix, &b, &id).await;
-    assert_eq!(seen["callerRole"], "observer");
-    assert!(seen.get("challenge").is_none());
-    assert_eq!(seen["ext"]["org.openvtc"]["coolingOff"]["againstYou"], true);
-
     // Not due yet: the sweep leaves it.
     vtc_service::admin_actions::sweep_once(&fix.vtc.state)
         .await
         .unwrap();
     assert!(entry(&fix, &b.did).await.is_some());
 
-    // 0.2 says it in the schema's own terms (trust-tasks-tf #719): category
-    // `coolingOff`, `landsAt`, cancellable by the requester, no ext workaround.
+    // Said in the schema's own terms (`_shared/0.2` onward, trust-tasks-tf
+    // #719): category `coolingOff`, `landsAt`, cancellable by the requester.
     let mine = action_v0_2(&fix, &a, &id).await;
     assert_eq!(mine["category"], "coolingOff", "{mine}");
     assert_eq!(mine["callerRole"], "requester");
@@ -801,8 +802,6 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
     assert!(entry(&fix, &b.did).await.is_none(), "landed");
     let done = action(&fix, &a, &id).await;
     assert_eq!(done["status"], "completed", "{done}");
-    // 0.1 can only say `thresholdMet`; 0.2 says what happened.
-    assert_eq!(done["closedReason"], "thresholdMet");
     let landed = action_v0_2(&fix, &a, &id).await;
     assert_eq!(landed["closedReason"], "landedAfterCoolingOff", "{landed}");
     assert_eq!(landed["category"], "coolingOff");
@@ -846,7 +845,12 @@ async fn vti_apv_019_the_requester_cancels_a_cooling_off() {
     let id = park(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     // The subject cannot withdraw it.
@@ -896,7 +900,7 @@ async fn vti_apv_019_the_first_of_two_administrators_to_act_wins() {
         &signed(
             &b,
             GRANT,
-            json!({ "entry": { "subject": Party::new().did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&Party::new().did, "admin"),
         )
         .await,
     )
@@ -904,14 +908,24 @@ async fn vti_apv_019_the_first_of_two_administrators_to_act_wins() {
     let first = park(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
 
     // B answers by asking to remove A: refused, because B is suspended.
     let (status, reply) = post(
         &fix.vtc,
-        &signed(&b, REVOKE, json!({ "subject": a.did })).await,
+        &signed(
+            &b,
+            REVOKE,
+            json!({ "subject": a.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
@@ -956,7 +970,12 @@ async fn vti_apv_019_a_zero_cooling_off_lands_at_once() {
     let (status, reply) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{reply}");
@@ -987,7 +1006,7 @@ async fn vti_apv_017_approver_signed_decision_evidence_is_verified() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "admin"),
         )
         .await,
     )
@@ -1073,7 +1092,7 @@ async fn an_interrupted_execution_is_reconciled_from_its_effect() {
     let mut fix = fixture().await;
     let a = requester(&mut fix).await;
     let _b = admin(&fix).await;
-    let grant = |s: &str| json!({ "entry": { "subject": s, "role": "admin", "scopes": [] } });
+    let grant = |s: &str| crate::common::signed::grant_payload(s, "admin");
 
     // Did not land: nothing written.
     let s1 = Party::new();
@@ -1246,7 +1265,7 @@ async fn an_executed_action_records_its_effect_with_its_execution() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "admin"),
         )
         .await,
     )
@@ -1317,7 +1336,7 @@ async fn a_new_administrator_is_issued_an_approver_invite() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "admin"),
         )
         .await,
     )

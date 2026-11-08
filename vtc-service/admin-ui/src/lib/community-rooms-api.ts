@@ -1,8 +1,9 @@
 // Rooms the community itself owns — `vtc/rooms/community/*`
 // (docs/03-vtc/community-rooms.md, docs/05-design-notes/data-rooms-files.md §8.4).
-// The console is baked into the VTC it talks to, so it reads and creates at 0.2
-// only: the shape that carries each room's description, tags and who last
-// changed them (`CommunityRoomV2`).
+// The console is baked into the VTC it talks to, so it reads at `list`/`get` 0.4
+// only: the shape that carries each room's description, tags, who last changed
+// them, and its state in its owner's lifecycle (`CommunityRoomV3`) — active,
+// archived (read-only or no access), scheduled for removal, purging, removed.
 //
 // The community is the room's **owner** here, not only its host: its VTA mints
 // the room's DID and holds its keys, and the VTC keeps the owner's record of
@@ -23,6 +24,10 @@
 // and never reach an offer. All three are administrator-written free text,
 // rendered as text and never as markup.
 //
+// `archive`, `unarchive` and `remove` take the requester's gesture too;
+// `removal/cancel` takes none — stopping a mistaken removal is never harder than
+// making it. What each does, and does not, is said before it is signed.
+//
 // Admission is pull-shaped: `members/add` makes an **offer** the member collects
 // with their own VTA (`vtc/rooms/offers/*`, `pnm rooms offers accept`). Nothing
 // here returns a credential, a key or anything from a room's content.
@@ -32,6 +37,17 @@ import { postSignedRead } from "./api";
 import { GestureDeclinedError, postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 import type {
   CommunityRoom,
+  CommunityRoomArchiveAccess,
+  CommunityRoomArchivePayload,
+  CommunityRoomArchiveResponse,
+  CommunityRoomRemovalCancelPayload,
+  CommunityRoomRemovalCancelResponse,
+  CommunityRoomRemovePayload,
+  CommunityRoomRemoveResponse,
+  CommunityRoomState,
+  CommunityRoomStatus,
+  CommunityRoomUnarchivePayload,
+  CommunityRoomUnarchiveResponse,
   CommunityRoomCreatePayload,
   CommunityRoomCreateResponse,
   CommunityRoomGetResponse,
@@ -44,21 +60,30 @@ import type {
   CommunityRoomMemberState,
   CommunityRoomMembersRemovePayload,
   CommunityRoomMembersRemoveResponse,
+  CommunityRoomsListPayload,
   CommunityRoomsListResponse,
   CommunityRoomUpdatePayload,
   CommunityRoomUpdateResponse,
 } from "./wire-types";
 
-export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.3";
-export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.2";
-export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2";
-export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.2";
+export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4";
+export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.4";
+export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.4";
+export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3";
 export const COMMUNITY_ROOMS_MEMBERS_ADD_TASK =
-  "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
+  "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2";
 export const COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK =
   "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
 export const COMMUNITY_ROOMS_MEMBERS_LIST_TASK =
-  "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
+  "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.2";
+export const COMMUNITY_ROOMS_ARCHIVE_TASK =
+  "https://trusttasks.org/spec/vtc/rooms/community/archive/0.1";
+export const COMMUNITY_ROOMS_UNARCHIVE_TASK =
+  "https://trusttasks.org/spec/vtc/rooms/community/unarchive/0.1";
+export const COMMUNITY_ROOMS_REMOVE_TASK =
+  "https://trusttasks.org/spec/vtc/rooms/community/remove/0.1";
+export const COMMUNITY_ROOMS_REMOVAL_CANCEL_TASK =
+  "https://trusttasks.org/spec/vtc/rooms/community/removal/cancel/0.1";
 
 /** The owner's authority over the rooms the community owns. */
 export const ROOMS_MANAGE = "vtc.rooms.manage";
@@ -213,6 +238,8 @@ export interface CommunityRoomsListing {
   setting: CommunityRoomsSetting;
   /** Each listed room's renewal, by room DID, where the VTC has one to report. */
   renewal: Record<string, AuthorityRenewal>;
+  /** What each listed room's lifecycle shows beyond its `status`, by room DID. */
+  lifecycle: Record<string, LifecycleExt>;
   /** More rooms exist than the pages read hold. */
   truncated: boolean;
 }
@@ -250,17 +277,39 @@ function settingOf(ext: unknown): CommunityRoomsSetting | null {
  *  invalidates). A refusal card reads the same cached list for its fix. */
 export const COMMUNITY_ROOMS_LIST_KEY = ["rooms", "community", "list"] as const;
 
-/** Every room the community owns, page by page, and whether the feature is on. */
-export async function fetchCommunityRooms(): Promise<CommunityRoomsListing> {
+/** Every state a room can be in, in its owner's lifecycle. */
+export const ROOM_STATES: readonly CommunityRoomState[] = [
+  "active",
+  "archived",
+  "removalScheduled",
+  "purging",
+  "removed",
+];
+
+/** Every room the community owns that is not removed, page by page, and whether the
+ *  feature is on. */
+export function fetchCommunityRooms(): Promise<CommunityRoomsListing> {
+  return listCommunityRooms({});
+}
+
+/** Every room the community owns, removed ones — tombstones — included. */
+export function fetchCommunityRoomsWithRemoved(): Promise<CommunityRoomsListing> {
+  return listCommunityRooms({ includeRemoved: true });
+}
+
+async function listCommunityRooms(opts: { includeRemoved?: boolean }): Promise<CommunityRoomsListing> {
   const rooms: CommunityRoom[] = [];
   const renewal: Record<string, AuthorityRenewal> = {};
+  const lifecycle: Record<string, LifecycleExt> = {};
   let setting: CommunityRoomsSetting | null = null;
   let cursor: string | undefined;
   for (let page = 0; page < MAX_COMMUNITY_PAGES; page++) {
-    const body = await postSignedRead<CommunityRoomsListResponse>(COMMUNITY_ROOMS_LIST_TASK, {
+    const payload: CommunityRoomsListPayload = {
       limit: COMMUNITY_PAGE,
+      ...(opts.includeRemoved ? { states: [...ROOM_STATES] } : {}),
       ...(cursor ? { cursor } : {}),
-    });
+    };
+    const body = await postSignedRead<CommunityRoomsListResponse>(COMMUNITY_ROOMS_LIST_TASK, payload);
     rooms.push(...body.items);
     setting ??= settingOf(body.ext);
     const perRoom = renewalExt(body.ext)?.rooms as Record<string, unknown> | undefined;
@@ -268,10 +317,18 @@ export async function fetchCommunityRooms(): Promise<CommunityRoomsListing> {
       const status = renewalStatus(v);
       if (status) renewal[id] = status;
     }
+    const perRoomLifecycle = (body.ext as { "org.openvtc"?: { lifecycle?: Record<string, unknown> } } | undefined)?.[
+      "org.openvtc"
+    ]?.lifecycle;
+    for (const [id, v] of Object.entries(perRoomLifecycle ?? {})) {
+      const l = lifecycleExtOf(v);
+      if (l) lifecycle[id] = l;
+    }
     cursor = body.nextCursor;
-    if (!cursor) return { rooms, setting: setting ?? { enabled: true }, renewal, truncated: false };
+    if (!cursor)
+      return { rooms, setting: setting ?? { enabled: true }, renewal, lifecycle, truncated: false };
   }
-  return { rooms, setting: setting ?? { enabled: true }, renewal, truncated: true };
+  return { rooms, setting: setting ?? { enabled: true }, renewal, lifecycle, truncated: true };
 }
 
 export function fetchCommunityRoom(roomId: string): Promise<CommunityRoomGetResponse> {
@@ -336,7 +393,7 @@ export async function fetchCommunityRoomMembers(
   return { items, truncated: true, departures: departures ?? [] };
 }
 
-/** `vtc/rooms/community/create/0.3`, after the requester's bound gesture: the
+/** `vtc/rooms/community/create/0.4`, after the requester's bound gesture: the
  *  community's VTA also writes the label and description into the room as its
  *  profile (`roomProfile` says whether it did yet). */
 export function createCommunityRoom(
@@ -350,7 +407,7 @@ export function createCommunityRoom(
   );
 }
 
-/** `vtc/rooms/community/update/0.2` — and a new label or description is written
+/** `vtc/rooms/community/update/0.3` — and a new label or description is written
  *  into the room as its profile. It asks for no gesture; one is given only
  *  if the community's policy asks for it all the same. */
 export function updateCommunityRoom(
@@ -364,7 +421,7 @@ export function updateCommunityRoom(
   );
 }
 
-/** `vtc/rooms/community/members/add/0.1`, after the requester's bound gesture. */
+/** `vtc/rooms/community/members/add/0.2`, after the requester's bound gesture. */
 export function addCommunityRoomMember(
   payload: CommunityRoomMembersAddPayload,
   confirmGesture: ConfirmGesture,
@@ -383,6 +440,191 @@ export function removeCommunityRoomMember(
 ): Promise<CommunityRoomMembersRemoveResponse> {
   return postSignedWithStepUp<CommunityRoomMembersRemoveResponse>(
     COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK,
+    payload,
+    confirmGesture,
+  );
+}
+
+// ── A room's lifecycle: archive, unarchive, remove ─────────────────────
+
+/** Attempts at a step the VTC retries, and how the last went. */
+export interface LifecycleProgress {
+  attempts: number;
+  lastAttemptAt?: string;
+  nextAttemptAt?: string;
+  lastError?: string;
+}
+
+/** What a room's lifecycle shows that `RoomStatus` has no member for — the VTC's
+ *  `ext["org.openvtc"].lifecycle`: a failing restore of suspended members, the
+ *  attempts at a pending change, and what became of a purged room's DID. */
+export interface LifecycleExt {
+  restore?: LifecycleProgress;
+  pendingChange?: LifecycleProgress;
+  didRetirement?: string;
+}
+
+function progressOf(v: unknown): LifecycleProgress | undefined {
+  const r = v as Record<string, unknown> | undefined;
+  if (!r || typeof r.attempts !== "number") return undefined;
+  const str = (k: string) => (typeof r[k] === "string" ? { [k]: r[k] as string } : {});
+  return { attempts: r.attempts, ...str("lastAttemptAt"), ...str("nextAttemptAt"), ...str("lastError") };
+}
+
+function lifecycleExtOf(v: unknown): LifecycleExt | null {
+  const r = v as Record<string, unknown> | undefined;
+  if (!r || typeof r !== "object") return null;
+  const restore = progressOf(r.restore);
+  const pendingChange = progressOf(r.pendingChange);
+  const out: LifecycleExt = {
+    ...(restore ? { restore } : {}),
+    ...(pendingChange ? { pendingChange } : {}),
+    ...(typeof r.didRetirement === "string" ? { didRetirement: r.didRetirement } : {}),
+  };
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** One room's lifecycle extras, from a `get`'s (or a lifecycle answer's) `ext`. */
+export function roomLifecycleOf(ext: unknown): LifecycleExt | null {
+  return lifecycleExtOf(
+    (ext as { "org.openvtc"?: { lifecycle?: unknown } } | undefined)?.["org.openvtc"]?.lifecycle,
+  );
+}
+
+/** A room's state, defaulting a room the VTC reported without one to `active`. */
+export function roomStateOf(room: CommunityRoom): CommunityRoomState {
+  return room.status?.state ?? "active";
+}
+
+/** The words for a room's state — never colour alone. */
+export function roomStateLabel(status: CommunityRoomStatus | undefined): string {
+  switch (status?.state ?? "active") {
+    case "archived":
+      return status?.access === "noAccess" ? "Archived · no access" : "Archived · read-only";
+    case "removalScheduled":
+      return status?.purgeAt ? `Removal scheduled ${status.purgeAt.slice(0, 10)}` : "Removal scheduled";
+    case "purging":
+      return "Purging";
+    case "removed":
+      return "Removed";
+    default:
+      return "Active";
+  }
+}
+
+/** What each archive access means to the room's members. */
+export const ARCHIVE_ACCESS: readonly { id: CommunityRoomArchiveAccess; label: string; hint: string }[] = [
+  {
+    id: "readOnly",
+    label: "Read-only",
+    hint: "Members keep reading. The host refuses every write, upload and curation.",
+  },
+  {
+    id: "noAccess",
+    label: "No access",
+    hint:
+      "Every credential the room issued is withdrawn at its host (a room reset). Members are " +
+      "suspended, and restored with fresh credentials when it is unarchived. The content is kept.",
+  },
+];
+
+/** What archiving with `access` will do, said before it is signed (archive producer item 1). */
+export function archivePreview(
+  visibility: string,
+  access: CommunityRoomArchiveAccess,
+  openOffers: number,
+): string {
+  const offers =
+    openOffers > 0
+      ? ` ${openOffers} open offer${openOffers === 1 ? " is" : "s are"} withdrawn, and not restored on unarchive.`
+      : "";
+  const sealed =
+    visibility === "open"
+      ? ""
+      : " Nobody leaves the room's group and its epoch does not advance: on this tier a suspended member still holds the keys to what they could open, and is refused only the ciphertext.";
+  const what =
+    access === "readOnly"
+      ? "The room admits no one and its host accepts no write, upload or curation; members keep reading."
+      : "Every credential the room issued is withdrawn at its host, from everyone, and members are suspended until it is unarchived. The content is kept intact.";
+  return `${what}${offers}${sealed} Nothing a member already read or saved can be recalled.`;
+}
+
+/** What removing will do, said before it is signed (remove producer items). */
+export function removalRoomPreview(now: boolean, graceDays: number | null): string {
+  if (now) {
+    return (
+      "Every credential is withdrawn and the room's content — its records and files in every " +
+      "storage location — is deleted at once. This cannot be undone. Nothing a member already " +
+      "read or saved can be recalled."
+    );
+  }
+  const when =
+    graceDays === null
+      ? "after the community's default grace period (30 days unless configured)"
+      : `in ${graceDays} day${graceDays === 1 ? "" : "s"}`;
+  return (
+    `Every credential is withdrawn now, and the room's content is deleted ${when}. Until then the ` +
+    "removal can be cancelled and the room stays archived with no access. Nothing a member " +
+    "already read or saved can be recalled."
+  );
+}
+
+/** What a lifecycle answer did, from its structured members only. */
+export function lifecycleOutcome(
+  answer: { room: CommunityRoom; changed?: boolean; withdrawnOffers?: number; revocation?: { sequence: number }; revokedAt?: string },
+): string {
+  if (answer.changed === false) return `Nothing changed: the room is already ${roomStateLabel(answer.room.status).toLowerCase()}.`;
+  const parts = [`Now ${roomStateLabel(answer.room.status).toLowerCase()}.`];
+  if (answer.withdrawnOffers) parts.push(`${answer.withdrawnOffers} open offer(s) withdrawn.`);
+  if (answer.revocation) {
+    parts.push(
+      `The host refuses the withdrawn credentials from ${answer.revokedAt ?? "now"} (revocation list ${answer.revocation.sequence}).`,
+    );
+  }
+  if (answer.room.status?.restoring) parts.push(`${answer.room.status.restoring} suspended member(s) being restored.`);
+  if (answer.room.status?.pendingChange) {
+    parts.push("A change is still pending; the community finishes it by itself.");
+  }
+  return parts.join(" ");
+}
+
+/** `vtc/rooms/community/archive/0.1`, after the requester's bound gesture. */
+export function archiveCommunityRoom(
+  payload: CommunityRoomArchivePayload,
+  confirmGesture: ConfirmGesture,
+): Promise<CommunityRoomArchiveResponse> {
+  return postSignedWithStepUp<CommunityRoomArchiveResponse>(COMMUNITY_ROOMS_ARCHIVE_TASK, payload, confirmGesture);
+}
+
+/** `vtc/rooms/community/unarchive/0.1`, after the requester's bound gesture. */
+export function unarchiveCommunityRoom(
+  payload: CommunityRoomUnarchivePayload,
+  confirmGesture: ConfirmGesture,
+): Promise<CommunityRoomUnarchiveResponse> {
+  return postSignedWithStepUp<CommunityRoomUnarchiveResponse>(
+    COMMUNITY_ROOMS_UNARCHIVE_TASK,
+    payload,
+    confirmGesture,
+  );
+}
+
+/** `vtc/rooms/community/remove/0.1`, after the requester's bound gesture. `graceDays`
+ *  absent: the community's default; `0`: at once, irreversibly. */
+export function removeCommunityRoom(
+  payload: CommunityRoomRemovePayload,
+  confirmGesture: ConfirmGesture,
+): Promise<CommunityRoomRemoveResponse> {
+  return postSignedWithStepUp<CommunityRoomRemoveResponse>(COMMUNITY_ROOMS_REMOVE_TASK, payload, confirmGesture);
+}
+
+/** `vtc/rooms/community/removal/cancel/0.1`. The VTC asks no gesture for it; one is
+ *  given only if the community's policy asks all the same. */
+export function cancelCommunityRoomRemoval(
+  payload: CommunityRoomRemovalCancelPayload,
+  confirmGesture: ConfirmGesture,
+): Promise<CommunityRoomRemovalCancelResponse> {
+  return postSignedWithStepUp<CommunityRoomRemovalCancelResponse>(
+    COMMUNITY_ROOMS_REMOVAL_CANCEL_TASK,
     payload,
     confirmGesture,
   );
@@ -547,8 +789,36 @@ export function refusalFix(err: unknown): string | null {
       );
     case "unknownStorageConfig":
       return "Choose an active storage location from the Storage tab, or leave it empty for the default.";
+    case "wrongState": {
+      const state = (e?.details as { state?: unknown } | undefined)?.state;
+      if (code.includes("/members/add:")) {
+        return state === "archived"
+          ? "An archived room admits no one. Unarchive it first, then add the member."
+          : "This room is being removed and admits no one again.";
+      }
+      if (state === "active") {
+        return "Archive the room first: a room is removed only once it is archived.";
+      }
+      if (state === "removalScheduled") {
+        return "Its removal is scheduled. Cancel the removal first; the room is then archived with no access.";
+      }
+      if (state === "purging" || state === "removed") {
+        return "Its content is being or has been deleted, which cannot be undone. Nothing more can change it.";
+      }
+      if (state === "archived") {
+        return "The room is archived already. Unarchive it, or change its access with Archive.";
+      }
+      return "The room is not in a state this change starts from; the page may be out of date.";
+    }
     case "keyHolderUnavailable": {
       const minted = (e?.details as { roomId?: unknown } | undefined)?.roomId;
+      if (/^vtc\/rooms\/community\/(archive|unarchive|remove):/.test(code)) {
+        return (
+          "The community's VTA did not answer. If the room's credentials were already reset, the " +
+          "room shows a pending change and the community finishes it by itself; repeating this " +
+          "finishes it too. Otherwise nothing changed."
+        );
+      }
       if (code.includes("/members/remove:")) {
         return "The outcome is unknown. Remove them again: the community's VTA settles a removal it may have completed from its own record.";
       }

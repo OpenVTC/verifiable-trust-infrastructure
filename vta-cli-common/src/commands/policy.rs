@@ -22,20 +22,32 @@ pub async fn cmd_list(
     context: Option<String>,
     enabled_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = client
-        .list_policies({
-            let mut body = ListPoliciesBody::new(enabled_only);
-            body.context_id = context;
-            body
-        })
-        .await?;
+    // `policy/list/0.3` pages by cursor; follow it to the end so the listing
+    // shown is the whole policy set, never a first page that reads as all of it.
+    let mut policies = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = client
+            .list_policies({
+                let mut body = ListPoliciesBody::new(enabled_only);
+                body.context_id = context.clone();
+                body.cursor = cursor.take();
+                body
+            })
+            .await?;
+        policies.extend(page.policies);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
 
     if crate::render::is_json_output() {
-        println!("{}", serde_json::to_string_pretty(&result.policies)?);
+        println!("{}", serde_json::to_string_pretty(&policies)?);
         return Ok(());
     }
 
-    if result.policies.is_empty() {
+    if policies.is_empty() {
         println!("No policies stored.");
         return Ok(());
     }
@@ -44,7 +56,7 @@ pub async fn cmd_list(
         "{:<24} {:<8} {:<8} {:<7} NAME",
         "ID", "PRIORITY", "ENABLED", "VERSION"
     );
-    for p in &result.policies {
+    for p in &policies {
         println!(
             "{:<24} {:<8} {:<8} {:<7} {}",
             truncate(&p.id, 24),
@@ -52,12 +64,6 @@ pub async fn cmd_list(
             if p.enabled { "yes" } else { "no" },
             p.version,
             p.name
-        );
-    }
-    if result.truncated {
-        println!(
-            "\n(more policies exist than were returned — this VTA does not page, \
-             so nothing further can be listed)"
         );
     }
     Ok(())
@@ -109,7 +115,11 @@ pub async fn cmd_upsert(
 
     println!(
         "Policy {} ({}):",
-        if result.created { "created" } else { "updated" },
+        if result.was_created {
+            "created"
+        } else {
+            "updated"
+        },
         result.policy.id
     );
     print_header(&result.policy);

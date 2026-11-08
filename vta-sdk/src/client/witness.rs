@@ -14,7 +14,7 @@
 //! 3. [`VtaClient::witness_accept`] — hand back the witness's submit `#response`; the stored
 //!    VWC's handle and its evidence.
 //!
-//! [`VtaClient::witness_list`] (`vta/witness/list/0.1`) reads back every stored VWC with its
+//! [`VtaClient::witness_list`] (`vta/witness/list/0.2`) reads back every stored VWC with its
 //! evidence exactly as stored — how a client that lost `accept`'s answer, or a second device,
 //! rebuilds its record of a witnessing.
 //!
@@ -22,10 +22,10 @@
 //! session to try again. Every step is safe to repeat (`retry_safety`: `RetrySafe`).
 //!
 //! Every method takes the task's generated payload type and returns its generated response
-//! type (`trust_tasks_rs::specs::vta::witness`). Declared refusals (`sessionUnknown`,
+//! type (`vti_specs::vta::witness`). Declared refusals (`sessionUnknown`,
 //! `responseInvalid`, `vwcInvalid`, …) arrive as [`VtaError::Rejected`] with their code.
 
-use trust_tasks_rs::specs::vta::witness;
+use vti_specs::vta::witness;
 
 use super::VtaClient;
 use crate::error::VtaError;
@@ -70,14 +70,14 @@ impl VtaClient {
             .await
     }
 
-    /// `vta/witness/list/0.1` — the stored VWCs the caller may read, each with its evidence,
-    /// oldest first. Filter by `relationshipDid` when one relationship's are wanted. A page with
-    /// `truncated: true` is not the whole listing: pass its `cursor` back for the next.
+    /// `vta/witness/list/0.2` — the stored VWCs the caller may read, each with its evidence,
+    /// oldest first. Filter by `relationshipDid` when one relationship's are wanted. A page
+    /// carrying a `nextCursor` is not the whole listing: pass it back as `cursor` for the next.
     pub async fn witness_list(
         &self,
-        req: &witness::list::v0_1::Payload,
-    ) -> Result<witness::list::v0_1::Response, VtaError> {
-        self.witness_call(trust_tasks::TASK_VTA_WITNESS_LIST_0_1, req)
+        req: &witness::list::v0_2::Payload,
+    ) -> Result<witness::list::v0_2::Response, VtaError> {
+        self.witness_call(trust_tasks::TASK_VTA_WITNESS_LIST_0_2, req)
             .await
     }
 

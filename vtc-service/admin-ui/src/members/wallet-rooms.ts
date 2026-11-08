@@ -24,7 +24,9 @@ export interface PageRoom {
   member?: string;
   epoch?: number;
   earliestReadableEpoch?: number;
-  /** False when the member's VTA no longer holds keys for it. */
+  /** False when the member's VTA no longer holds keys for it. True with no
+   *  `epoch` for an open room the member is in: it has no keys, and the wallet
+   *  reads it with the room's credentials. */
   held: boolean;
   sharedAt: string;
   expiresAt: string;
@@ -35,6 +37,12 @@ export interface PageRoom {
   label?: string;
   /** The room's tier, as the same offer gave it. */
   visibility?: string;
+  /** The room's own state, as the community (its owner) set it. The extension
+   *  supplies these from `vtc/rooms/memberships/list/0.2`; a wallet reading 0.1
+   *  leaves them absent, and the room reads as it always has. */
+  roomState?: RoomOwnerState;
+  roomAccess?: "readOnly" | "noAccess";
+  purgeAt?: string;
 }
 
 /**
@@ -114,9 +122,55 @@ export interface RoomRecord {
  *   accepting again finishes it;
  * - `needsReadmission`: accepted too long ago to finish: an administrator
  *   removes and re-admits them;
+ * - `suspended`: admitted, but the community closed the room to every member —
+ *   restored if it reopens (from `vtc/rooms/memberships/list/0.2`);
  * - `removed`.
  */
-export type RoomStanding = "offered" | "joined" | "unfinished" | "needsReadmission" | "removed";
+export type RoomStanding =
+  | "offered"
+  | "joined"
+  | "unfinished"
+  | "needsReadmission"
+  | "suspended"
+  | "removed";
+
+/** A room's state in its owner's lifecycle (`vtc/rooms/memberships/list/0.2`
+ *  `roomState`). `purging` reaches a member as `removalScheduled`. */
+export type RoomOwnerState = "active" | "archived" | "removalScheduled" | "purging" | "removed";
+
+/**
+ * What a room's own state means to the member, in words — `null` for an active
+ * room, or when the wallet did not say (it reads memberships/list 0.1).
+ */
+export function roomStateWords(
+  v: { roomState?: RoomOwnerState; roomAccess?: "readOnly" | "noAccess"; purgeAt?: string; state?: string },
+): { label: string; hint: string } | null {
+  const date = (iso?: string) => (iso ? new Date(iso).toLocaleDateString() : "");
+  switch (v.roomState) {
+    case "archived":
+      return v.roomAccess === "noAccess" || v.state === "suspended"
+        ? {
+            label: "closed for now",
+            hint: "The community archived this room and closed it to its members. You are restored if it reopens.",
+          }
+        : {
+            label: "read-only",
+            hint: "The community archived this room: you can still read it, but nothing new can be added.",
+          };
+    case "removalScheduled":
+    case "purging":
+      return {
+        label: `removal scheduled${v.purgeAt ? ` ${date(v.purgeAt)}` : ""}`,
+        hint: "The community is removing this room. Its content is deleted on that date unless the removal is cancelled.",
+      };
+    case "removed":
+      return { label: "removed", hint: "The community removed this room and deleted its content." };
+    default:
+      return v.state === "suspended"
+        ? { label: "closed for now", hint: "Your access is suspended. You are restored if the room reopens." }
+        : null;
+  }
+}
 
 /**
  * One room this community has offered the member, as the wallet shows it
@@ -145,6 +199,12 @@ export interface PageOffer {
   /** While a sealed room's acceptance can still be finished, from any surface. */
   repeatAcceptUntil?: string;
   state: RoomStanding;
+  /** The room's own state, from `vtc/rooms/memberships/list/0.2` — supplied by
+   *  the extension once it reads that version; absent before. */
+  roomState?: RoomOwnerState;
+  roomAccess?: "readOnly" | "noAccess";
+  purgeAt?: string;
+  suspendedAt?: string;
 }
 
 /** What the wallet reports after an accept. */

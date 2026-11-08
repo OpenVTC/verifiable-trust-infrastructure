@@ -103,11 +103,10 @@ pub(super) async fn handle_key_package_v0_2(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Payload =
-        match parse_payload(&doc) {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        };
+    let req: vti_specs::rooms::keys::key_package::v0_2::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
     let room_id = req.room_id.to_string();
     // Item 1: never without a valid invitation to the room. Item 2: the member is its
     // subject, and the caller must act as them.
@@ -153,8 +152,7 @@ pub(super) async fn handle_welcome(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: trust_tasks_rs::specs::rooms::keys::welcome::v0_1::Payload = match parse_payload(&doc)
-    {
+    let req: vti_specs::rooms::keys::welcome::v0_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -178,15 +176,18 @@ pub(super) async fn handle_welcome(
             let joined =
                 match room_member::member_as(state, auth, &req.room_id, invitation.subject()).await
                 {
-                    Ok(member) => room_groups::load(&state.room_groups_ks, &member)
+                    // A current membership only: group state a removal ended is a prior
+                    // membership (welcome/0.1), and this spent invitation is not what
+                    // admitted the member again.
+                    Ok(member) => room_groups::holds_current(&state.room_groups_ks, &member)
                         .await
-                        .is_ok_and(|g| g.is_some()),
+                        .unwrap_or(false),
                     Err(_) => false,
                 };
             if joined {
                 return super::helpers::reject_declared(
                     &doc,
-                    trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
+                    vti_specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
                     format!(
                         "this VTA already holds group state for `{}` in room `{}`, joined with \
                          this invitation",
@@ -218,7 +219,7 @@ pub(super) async fn handle_welcome(
         Err(room_groups::JoinError::AlreadyJoined) => {
             return super::helpers::reject_declared(
                 &doc,
-                trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
+                vti_specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
                 format!(
                     "this VTA already holds group state for `{}` in room `{}`; leaving and \
                      rejoining is a removal and a fresh invitation, not a second welcome",
@@ -230,11 +231,24 @@ pub(super) async fn handle_welcome(
         Err(room_groups::JoinError::KeyPackageExpired) => {
             return super::helpers::reject_declared(
                 &doc,
-                trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID,
+                vti_specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID,
                 format!(
                     "the key package this welcome is sealed to expired and has been discarded; \
                      mint a fresh one for room `{}` (rooms/keys/key-package) and have the owner \
                      add that",
+                    req.room_id
+                ),
+            );
+        }
+        Err(room_groups::JoinError::WelcomeForAnotherGroup) => {
+            return super::helpers::reject_declared(
+                &doc,
+                vti_specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID,
+                format!(
+                    "this welcome is for an MLS group other than the one this VTA holds for \
+                     `{}` in room `{}`; a re-admission is into that group, so nothing was \
+                     joined or consumed",
+                    member.persona(),
                     req.room_id
                 ),
             );
@@ -265,7 +279,7 @@ pub(super) async fn handle_commit(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: trust_tasks_rs::specs::rooms::keys::commit::v0_1::Payload = match parse_payload(&doc) {
+    let req: vti_specs::rooms::keys::commit::v0_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -336,7 +350,7 @@ pub(super) async fn held_by(state: &AppState, auth: &AuthClaims, m: &room_groups
 /// The member the request names in `ext["org.openvtc.rooms"].member`
 /// ([`room_member::named_member`]), or a malformed-request refusal.
 #[allow(clippy::result_large_err)]
-fn named_member(doc: &TrustTask<Value>) -> Result<Option<String>, TrustTaskOutcome> {
+pub(super) fn named_member(doc: &TrustTask<Value>) -> Result<Option<String>, TrustTaskOutcome> {
     room_member::named_member(&doc.payload).map_err(super::helpers::malformed_request_response)
 }
 
@@ -389,9 +403,7 @@ pub(super) async fn handle_chain_v0_2(
     }
 
     use trust_tasks_rs::validate::ValidatedPayload as _;
-    if let Err(e) =
-        trust_tasks_rs::specs::rooms::keys::chain::v0_2::Payload::validate_value(&doc.payload)
-    {
+    if let Err(e) = vti_specs::rooms::keys::chain::v0_2::Payload::validate_value(&doc.payload) {
         return super::helpers::malformed_request_response(format!(
             "payload refused by its schema: {}",
             e.messages().join("; ")
@@ -513,8 +525,7 @@ pub(super) async fn handle_backfill_v0_2(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Payload = match parse_payload(&doc)
-    {
+    let req: vti_specs::rooms::keys::backfill::v0_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -569,7 +580,7 @@ pub(super) async fn handle_backfill_v0_2(
     let reply = match fetched {
         Ok(v) => v,
         Err(e) => {
-            use trust_tasks_rs::specs::rooms::keys::backfill::v0_2::error_codes as codes;
+            use vti_specs::rooms::keys::backfill::v0_2::error_codes as codes;
             return host_failure(
                 &doc,
                 e,
@@ -749,7 +760,7 @@ pub(super) async fn send_as_member_typed(
 /// A failed send as the task's declared `hostUnreachable` / `hostRefused` (`rooms/keys/read`
 /// and `rooms/keys/backfill` 0.1). A host that could not be found or did not answer is
 /// `unreachable`, never a malformed request: the request was fine.
-fn host_failure(
+pub(super) fn host_failure(
     doc: &TrustTask<Value>,
     e: MemberSendError,
     host: &str,
@@ -952,7 +963,7 @@ pub(super) fn verify_trace(reply: &vti_rooms::wire::GetRecordResponse) -> &'stat
     }
 }
 
-/// `rooms/keys/read/0.1`.
+/// `rooms/keys/read/0.1` ([`super::room_read`], which serves 0.2 beside it).
 ///
 /// Mint the presentation, ask the host, check what came back, open it. The
 /// fourth act is why the other three are here: the epoch key never leaves this
@@ -963,218 +974,7 @@ pub(super) async fn handle_read(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = super::helpers::require_capability(
-        state,
-        auth,
-        &doc,
-        Capability::RoomOpen,
-        "reading a room record",
-    )
-    .await
-    {
-        return r;
-    }
-
-    let req: trust_tasks_rs::specs::rooms::keys::read::v0_1::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-
-    let resolver = match outbound_resolver(state, &doc) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-
-    // `read`, and only `read`, granted to the principal and sent as the principal
-    // (`rooms/keys/read/0.1`, *What the recipient presents, and to whom*). The
-    // caller-named host is not bound into the presentation: what makes naming one safe
-    // is that the leaf grants to the principal, usable only by a party that can sign as
-    // the principal. What it gains is sight of the credentials, which is a disclosure
-    // rather than an escalation.
-    let named = match named_member(&doc) {
-        Ok(n) => n,
-        Err(resp) => return resp,
-    };
-    let presenting = match presenting_member(state, auth, &req.room_id, named.as_deref()).await {
-        Ok(v) => v,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-
-    use trust_tasks_rs::specs::rooms::keys::read::v0_1::error_codes as read_codes;
-    let reply = match send_as_member_typed(
-        state,
-        auth,
-        &presenting,
-        &resolver,
-        &req.host,
-        vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
-        serde_json::json!({ "roomId": req.room_id, "key": req.key }),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            return host_failure(
-                &doc,
-                e,
-                &req.host,
-                read_codes::HOST_UNREACHABLE,
-                read_codes::HOST_REFUSED,
-            );
-        }
-    };
-    let member = presenting.member.clone();
-
-    // `send_room_task` has already verified the reply's proof AND bound the
-    // proven signer to the host that was addressed — a proof that verifies
-    // against some other party is a reply from somebody else.
-    let served: vti_rooms::wire::GetRecordResponse = match serde_json::from_value(reply) {
-        Ok(r) => r,
-        Err(e) => {
-            return app_error_to_reject(
-                &doc,
-                vti_common::error::AppError::Internal(format!(
-                    "room host `{}` served a record this agent cannot read: {e}",
-                    req.host
-                )),
-            );
-        }
-    };
-
-    let trace = verify_trace(&served);
-
-    // Opened here or nowhere. A tombstone has no body and that is an answer
-    // rather than a failure: the record's standing is what the caller asked for.
-    let mut payload = serde_json::json!({
-        "roomId": req.room_id,
-        "key": served.record.key,
-        "version": served.record.version,
-        "status": served.record.status,
-        "updatedAt": served.record.updated_at,
-        "verification": { "trace": trace },
-    });
-    if let Some(author) = &served.record.author {
-        payload["author"] = serde_json::json!(author);
-    }
-    let head = head_of(
-        served.data_commitment.as_ref(),
-        served.record_count,
-        served.head_version,
-    );
-    payload["verification"]["priorRoots"] =
-        serde_json::json!(compare_head(state, &member, head.as_ref()).await);
-    payload["verification"]["anchor"] =
-        serde_json::json!(compare_anchor(state, &req.room_id, head.as_ref()).await);
-    if let Some(head) = head {
-        payload["verification"]["head"] = head;
-    }
-
-    // The room's own profile is how the room describes itself, not a record a member wrote
-    // into it (`SealedRecordBody`, *A profile record*): it is not opened here, and the
-    // answer says where to read it.
-    if is_profile_location(state, &member, &served.record).await {
-        payload["ext"] = serde_json::json!({
-            room_member::MEMBER_EXT: { "roomProfile": true },
-        });
-        record(state, "rooms.keys.read", auth, &req.room_id).await;
-        return success_response(&doc, payload);
-    }
-
-    if let Some(sealed) = &served.record.sealed {
-        // Opened at the version the body was sealed at, which a curation moves the record
-        // past (rooms `_shared/0.1` `SealedRecord.version`). A record curated by a host that
-        // predates that member carries none, and is searched for.
-        let sealed_at = match sealed.sealed_at(served.record.version) {
-            Ok(v) => v,
-            Err(why) => {
-                return app_error_to_reject(
-                    &doc,
-                    vti_common::error::AppError::Validation(format!(
-                        "room host `{}` {why}",
-                        req.host
-                    )),
-                );
-            }
-        };
-        let search = if sealed.version.is_some() {
-            room_groups::Search::Exact
-        } else {
-            room_groups::Search::Earlier
-        };
-        // Repair before refusing (`rooms/keys/read/0.1`, *Opening, and when it cannot*): a
-        // member who is behind applies the commits the host relays, one who joined late
-        // fetches the links, each at most once per request; a removed member is never
-        // repaired. Only then is it `cannotOpen`, with the reason.
-        let mut repaired: Option<Result<(), String>> = None;
-        let (plaintext, opened_at) = loop {
-            let opened = room_groups::open_record_at(
-                &state.room_groups_ks,
-                &member,
-                &served.record.key,
-                sealed_at,
-                &sealed.ciphertext,
-                &sealed.nonce,
-                sealed.epoch,
-                search,
-            )
-            .await;
-            match opened {
-                Ok(opened) => break opened,
-                Err(
-                    e @ (room_groups::OpenError::NotDelivered { .. }
-                    | room_groups::OpenError::BeyondChain { .. }),
-                ) if repaired.is_none() => {
-                    let outcome = super::room_catch_up::repair(
-                        state,
-                        auth,
-                        &presenting,
-                        &resolver,
-                        &req.host,
-                        &e,
-                    )
-                    .await;
-                    if let Err(why) = &outcome {
-                        tracing::warn!(
-                            room = %req.room_id,
-                            epoch = sealed.epoch,
-                            reason = %why,
-                            "could not repair this member's epoch state before opening a record"
-                        );
-                    }
-                    repaired = Some(outcome);
-                }
-                Err(e) => {
-                    return read_cannot_open(&doc, e, sealed.epoch, repaired.and_then(Result::err));
-                }
-            }
-        };
-        // A record this agent could not place before the repair may be the room's own
-        // profile, which is not opened here.
-        if repaired.is_some() && is_profile_location(state, &member, &served.record).await {
-            payload["ext"] = serde_json::json!({
-                room_member::MEMBER_EXT: { "roomProfile": true },
-            });
-            record(state, "rooms.keys.read", auth, &req.room_id).await;
-            return success_response(&doc, payload);
-        }
-        // A reader checks the author's signed location against the version the body was
-        // sealed at; where that is not the record's own, say which it is.
-        if opened_at != served.record.version {
-            payload["ext"] = serde_json::json!({
-                room_member::MEMBER_EXT: { "sealedAt": opened_at },
-            });
-        }
-        // base64url, as the spec gives it — not the bytes, which serialize as an array.
-        payload["plaintext"] = serde_json::json!(base64::Engine::encode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            plaintext
-        ));
-    } else if let Some(cleartext) = &served.record.cleartext {
-        payload["cleartext"] = cleartext.clone();
-    }
-
-    record(state, "rooms.keys.read", auth, &req.room_id).await;
-    success_response(&doc, payload)
+    super::room_read::handle_read_v0_1(state, auth, doc).await
 }
 
 /// Every key the room's profile can be at for `member`: `profile_key(E)` for each epoch its
@@ -1203,7 +1003,7 @@ async fn profile_keys(
 
 /// Whether `record` sits at the room's profile location for the epoch it was sealed under
 /// (or, on an `open` room, at `room-profile`).
-async fn is_profile_location(
+pub(super) async fn is_profile_location(
     state: &AppState,
     member: &room_groups::Member,
     record: &vti_rooms::wire::CommittedRecord,
@@ -1218,32 +1018,37 @@ async fn is_profile_location(
     }
 }
 
-/// `rooms/keys/browse/0.1`.
-///
-/// Metadata, never bodies — a property of the task rather than of the tier, and
-/// why browsing and reading are two: looking at a room's shelf should not
-/// decrypt the room.
-pub(super) async fn handle_browse(
+/// `rooms/keys/browse/0.3`: 0.1, and the room's `lastPrune` passed through exactly as the
+/// host served it (its instant `prunedAt`, `rooms/_shared/0.2`), so a caller keeping its
+/// own copy of the room knows to rebuild it.
+pub(super) async fn handle_browse_v0_3(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    browse_at(state, auth, doc, false).await
+    browse_at(state, auth, doc, BrowseVersion::V0_3).await
 }
 
-/// `rooms/keys/browse/0.2`: 0.1, and the room's `lastPrune` passed through exactly as the
-/// host served it (trust-tasks-tf #868), so a caller keeping its own copy of the room knows
-/// to rebuild it.
-pub(super) async fn handle_browse_v0_2(
+/// `rooms/keys/browse/0.4`: 0.3, its rows the `RecordMetadataV3` the host's
+/// `rooms/records/list/0.6` serves, passed through exactly as served — `createdAt`,
+/// `bodyStoredAt`, `createdBy` (`open` and `attributed`), `kind` (`open`) and `blobs`. A host
+/// that answers list/0.6 `unsupportedType` is listed with 0.5, and its rows carry what 0.5
+/// carries.
+pub(super) async fn handle_browse_v0_4(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    browse_at(state, auth, doc, true).await
+    browse_at(state, auth, doc, BrowseVersion::V0_4).await
 }
 
-/// The request members `browse` reads — the same at 0.1 and 0.2, each parsed through its
-/// own version's generated type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowseVersion {
+    V0_3,
+    V0_4,
+}
+
+/// The request members `browse` reads.
 struct BrowseRequest {
     room_id: String,
     host: String,
@@ -1252,27 +1057,15 @@ struct BrowseRequest {
     limit: Option<u64>,
 }
 
-/// Whether a host's refusal says it does not serve the task asked — the signal to fall
-/// back from `rooms/records/list/0.3` to `0.1` for a host that predates it.
-pub(super) fn not_served(e: &MemberSendError) -> bool {
-    matches!(
-        e,
-        MemberSendError::Host(crate::operations::room_host::RoomTaskError::Refused { code, .. })
-            if code.ends_with("unsupportedType") || code.ends_with("unsupportedVersion")
-    )
-}
-
-/// `rooms/keys/browse`, at either version.
-///
-/// Lists with `rooms/records/list/0.3` where the host serves it (0.2 *The room's prunes*),
-/// else 0.1. At 0.1 a `sinceVersion` below a prune the host reports is ignored and the whole
-/// room listed (0.2 *What changed from 0.1*): a 0.1 caller cannot be told to drop what a
-/// prune removed, but is at least handed the full set.
+/// `rooms/keys/browse/0.3` lists with `rooms/records/list/0.5` (*The room's prunes*): a
+/// host that predates it is not read from. 0.4 lists with `rooms/records/list/0.6` where
+/// the host serves it, else 0.5. 0.1 and 0.2 are not served.
+#[allow(deprecated)] // browse/0.3 and list/0.5 are still served and read beside browse/0.4 and list/0.6
 async fn browse_at(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-    v2: bool,
+    version: BrowseVersion,
 ) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1286,28 +1079,25 @@ async fn browse_at(
         return r;
     }
 
-    let parsed = if v2 {
-        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_2::Payload>(&doc).map(|r| {
-            BrowseRequest {
+    let parsed = match version {
+        BrowseVersion::V0_3 => parse_payload::<vti_specs::rooms::keys::browse::v0_3::Payload>(&doc)
+            .map(|r| BrowseRequest {
                 room_id: r.room_id.to_string(),
                 host: r.host.to_string(),
                 prefix: r.prefix.map(|p| p.to_string()),
                 since_version: r.since_version,
                 limit: r.limit.map(u64::from),
-            }
-        })
-    } else {
-        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_1::Payload>(&doc).map(|r| {
-            BrowseRequest {
+            }),
+        BrowseVersion::V0_4 => parse_payload::<vti_specs::rooms::keys::browse::v0_4::Payload>(&doc)
+            .map(|r| BrowseRequest {
                 room_id: r.room_id.to_string(),
                 host: r.host.to_string(),
                 prefix: r.prefix.map(|p| p.to_string()),
                 since_version: r.since_version,
                 limit: r.limit.map(u64::from),
-            }
-        })
+            }),
     };
-    let mut req = match parsed {
+    let req = match parsed {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -1324,16 +1114,31 @@ async fn browse_at(
     };
     let presenting = match presenting_member(state, auth, &req.room_id, named.as_deref()).await {
         Ok(v) => v,
+        // 0.4 answers a principal holding nothing this room issued with its declared code;
+        // 0.3 keeps the refusal it has always given.
+        Err(vti_common::error::AppError::NotFound(why)) if version == BrowseVersion::V0_4 => {
+            return super::helpers::reject_declared(
+                &doc,
+                vti_specs::rooms::keys::browse::v0_4::error_codes::NOT_A_MEMBER,
+                why,
+            );
+        }
         Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    // 0.4 asks list/0.6 first; a host answering it `unsupportedType` is listed with 0.5 for
+    // the rest of the request. Only before the first page: a cursor is the version's own.
+    let mut list_task = match version {
+        BrowseVersion::V0_3 => vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
+        BrowseVersion::V0_4 => vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE,
     };
 
     let mut records: Vec<Value> = Vec::new();
     let mut cursor: Option<String> = None;
     let mut head: Option<Value> = None;
     let mut complete = false;
-    // The host's `lastPrune`, exactly as served; and whether it serves list 0.3 at all.
+    // The host's `lastPrune`, exactly as served.
     let mut last_prune: Option<Value> = None;
-    let mut list_v3 = true;
     // A listing is read to its END, and absence of the cursor is the only thing
     // that says so. A short page says nothing — which is exactly why the count
     // check below is conditioned on having reached the end.
@@ -1353,57 +1158,62 @@ async fn browse_at(
             payload["cursor"] = serde_json::json!(c);
         }
 
-        let task = if list_v3 {
-            vti_rooms::wire::ROOMS_RECORDS_LIST_V3_TYPE
-        } else {
-            vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE
-        };
-        let reply = match send_as_member_typed(
+        let mut sent = send_as_member_typed(
             state,
             auth,
             &presenting,
             &resolver,
             &req.host,
-            task,
+            list_task,
             payload.clone(),
         )
-        .await
+        .await;
+        if let Err(MemberSendError::Host(crate::operations::room_host::RoomTaskError::Refused {
+            code,
+            ..
+        })) = &sent
+            && code == "unsupportedType"
+            && list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE
+            && page == 0
         {
-            Ok(v) => v,
-            // A host that predates list 0.3: the same listing at 0.1, with no prune to report.
-            Err(e) if list_v3 && page == 0 && not_served(&e) => {
-                list_v3 = false;
-                match send_as_member(
-                    state,
-                    auth,
-                    &presenting,
-                    &resolver,
+            list_task = vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE;
+            sent = send_as_member_typed(
+                state,
+                auth,
+                &presenting,
+                &resolver,
+                &req.host,
+                list_task,
+                payload,
+            )
+            .await;
+        }
+        let reply = match (sent, version) {
+            (Ok(v), _) => v,
+            (Err(e), BrowseVersion::V0_3) => return app_error_to_reject(&doc, e.into_app_error()),
+            (Err(e), BrowseVersion::V0_4) => {
+                use vti_specs::rooms::keys::browse::v0_4::error_codes as codes;
+                return host_failure(
+                    &doc,
+                    e,
                     &req.host,
-                    vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
-                    payload,
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(e) => return app_error_to_reject(&doc, e),
-                }
+                    codes::HOST_UNREACHABLE,
+                    codes::HOST_REFUSED,
+                );
             }
-            Err(e) => return app_error_to_reject(&doc, e.into_app_error()),
         };
         if let Some(mark) = reply.get("lastPrune") {
-            // A 0.1 caller synced below a prune would merge an incremental page and keep
-            // what the prune removed: list the whole room instead, once, from the top.
-            let pruned_past = req
-                .since_version
-                .is_some_and(|since| mark["version"].as_u64().is_some_and(|v| v > since));
-            if !v2 && page == 0 && pruned_past {
-                req.since_version = None;
-                last_prune = Some(mark.clone());
-                continue;
-            }
             last_prune = Some(mark.clone());
         }
 
+        // List 0.5 names the continuation token `nextCursor`; the stored listing shape
+        // (`ListRecordsResponse`) still calls it `cursor`.
+        let mut reply = reply;
+        if let Some(obj) = reply.as_object_mut()
+            && let Some(next) = obj.remove("nextCursor")
+        {
+            obj.insert("cursor".into(), next);
+        }
         let listing: vti_rooms::wire::ListRecordsResponse = match serde_json::from_value(reply) {
             Ok(l) => l,
             Err(e) => {
@@ -1485,7 +1295,7 @@ async fn browse_at(
         "complete": complete,
         "verification": verification,
     });
-    if v2 && let Some(mark) = last_prune {
+    if let Some(mark) = last_prune {
         body["lastPrune"] = mark;
     }
     success_response(&doc, body)
@@ -1511,7 +1321,7 @@ pub(super) async fn handle_open_v0_2(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::open::v0_2::Payload = match parse_payload(&doc) {
+    let req: vti_specs::rooms::keys::open::v0_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -1579,7 +1389,7 @@ pub(super) async fn handle_file_key_v0_2(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::file_key::v0_2 as spec;
+    use vti_specs::rooms::keys::file_key::v0_2 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1750,37 +1560,6 @@ pub(super) async fn handle_file_key_v0_2(
     )
 }
 
-/// `rooms/keys/read/0.1`'s `cannotOpen`: the record was fetched and its epoch key is not
-/// held, after the repair its reason admits. `details` carries the epoch and the reason in
-/// `rooms/keys/open/0.2`'s words, and the repair's failure where it failed, so a member is
-/// told which party has to act. Anything else that stopped the open is not an epoch case.
-fn read_cannot_open(
-    doc: &TrustTask<Value>,
-    e: room_groups::OpenError,
-    epoch: u32,
-    repair_failed: Option<String>,
-) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::read::v0_1::error_codes::CANNOT_OPEN;
-    let mut message = e.to_string();
-    let mut details = match e {
-        room_groups::OpenError::NotDelivered { held, .. } => {
-            serde_json::json!({ "reason": "notDelivered", "heldEpoch": held })
-        }
-        room_groups::OpenError::BeyondChain { earliest, .. } => {
-            serde_json::json!({ "reason": "beyondChain", "earliestEpoch": earliest })
-        }
-        room_groups::OpenError::Removed { removed_at, .. } => {
-            serde_json::json!({ "reason": "removed", "removedAtEpoch": removed_at })
-        }
-        room_groups::OpenError::App(e) => return app_error_to_reject(doc, e),
-    };
-    details["epoch"] = serde_json::json!(epoch);
-    if let Some(why) = repair_failed {
-        message = format!("{message} (fetching what was missing from the host: {why})");
-    }
-    super::helpers::reject_with_code(doc, declared(CANNOT_OPEN), message, Some(details))
-}
-
 /// `rooms/keys/open`'s refusal for a record that did not open.
 ///
 /// The epoch cases are the declared `unknownEpoch` with `details.reason` saying which, as
@@ -1788,7 +1567,7 @@ fn read_cannot_open(
 /// `removed` (nothing will — this member was removed) and `beyondChain` (the retained
 /// chain does not reach back). A client tells them apart by reason, never by message.
 fn open_refused(doc: &TrustTask<Value>, e: room_groups::OpenError) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH;
+    use vti_specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH;
     let message = e.to_string();
     match e {
         room_groups::OpenError::NotDelivered { held, .. } => super::helpers::reject_with_code(
@@ -1946,6 +1725,9 @@ mod verification_tests {
                 cleartext: None,
                 author: None,
                 updated_at: 1_756_000_000,
+                created_at: None,
+                created_by: None,
+                body_stored_at: None,
             })
             .collect()
     }
@@ -2091,7 +1873,7 @@ mod file_key_refusal_tests {
         let details = &doc["payload"]["details"];
         assert_eq!(details["reason"], "removed", "{doc}");
         assert_eq!(details["removedAtEpoch"], 3, "{doc}");
-        trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
+        vti_specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(details)
             .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {details}"));
     }
@@ -2116,7 +1898,7 @@ mod file_key_refusal_tests {
         )
         .await;
         assert_eq!(doc["payload"]["details"]["reason"], "beyondChain", "{doc}");
-        trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
+        vti_specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(&doc["payload"]["details"])
             .unwrap();
     }
@@ -2136,7 +1918,7 @@ mod file_key_refusal_tests {
         let details = &doc["payload"]["details"];
         assert_eq!(details["reason"], "beyondChain", "{doc}");
         assert_eq!(details["earliestEpoch"], 2, "{doc}");
-        trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
+        vti_specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(details)
             .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {details}"));
     }
@@ -2152,7 +1934,7 @@ mod file_key_refusal_tests {
                 "{doc}"
             );
             assert_eq!(doc["payload"]["details"]["reason"], reason, "{doc}");
-            trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
+            vti_specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
                 .check_details(&doc["payload"]["details"])
                 .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {doc}"));
         };
@@ -2176,7 +1958,7 @@ mod file_key_refusal_tests {
         assert_eq!(details["reason"], reason, "{doc}");
         // Checked against the schema the specification declares, carried by the
         // generated code, rather than a copy of it kept here.
-        trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
+        vti_specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(details)
             .unwrap_or_else(|e| {
                 panic!("details must match the declared detailsSchema: {e}: {details}")
@@ -2232,7 +2014,7 @@ mod file_key_refusal_tests {
             serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "seal" }),
         )
         .await;
-        let response: trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Response =
+        let response: vti_specs::rooms::keys::file_key::v0_2::Response =
             serde_json::from_value(doc["payload"].clone()).expect("a typed response");
         assert_eq!(response.epoch.get(), 2);
     }
@@ -3087,7 +2869,7 @@ mod per_member_tests {
         );
         assert_eq!(
             refused["payload"]["code"],
-            trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID.code,
+            vti_specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID.code,
             "{refused}"
         );
         assert!(

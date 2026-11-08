@@ -22,7 +22,7 @@ use vti_common::vault::{
 use crate::error::AppError;
 use crate::keys::seed_store::SeedStore;
 use crate::store::KeyspaceHandle;
-use crate::trust_tasks::wire_v0_2::{WireVersion, camelize_paths};
+use crate::trust_tasks::wire_v0_2::camelize_paths;
 
 /// Password-POST session TTL ceiling (seconds). The caller's `ttlSecondsHint`
 /// is honoured up to this and silently truncated above it.
@@ -82,7 +82,6 @@ pub(crate) async fn proxy_login(
     target: Option<SiteTarget>,
     nonce: Option<String>,
     ttl_hint: Option<u32>,
-    wire: WireVersion,
 ) -> Result<ProxyLoginOutput, ProxyLoginError> {
     // Driver dispatch. Each arm produces a `SessionBlob` (+ session_id +
     // expires_at); the shared tail below authcrypts + persists.
@@ -171,8 +170,7 @@ pub(crate) async fn proxy_login(
 
     // The SessionBlob rides inside the opaque JWE, so the edge transform can't
     // reach its `refreshHint`; emit the version-appropriate casing here.
-    let session_body =
-        session_blob_cleartext_for_wire(&session_blob, wire).map_err(ProxyLoginError::App)?;
+    let session_body = session_blob_cleartext(&session_blob).map_err(ProxyLoginError::App)?;
 
     let jwe = super::authcrypt_to_holder(
         atm,
@@ -298,23 +296,18 @@ fn resolve_siop_audience(
     entry_origin.clone().map(|o| (o, entry_origin))
 }
 
-/// Serialise a `SessionBlob` into the JWE cleartext JSON in the casing the
-/// negotiated wire version requires. `SessionBlob` always serialises its 0.1
-/// (kebab) `refreshHint` value; for a 0.2 session we up-convert it (the field
-/// name `refreshHint` is already camelCase via the struct's `rename_all`).
-/// Pure + synchronous so the casing is unit-testable without an ATM/JWE.
-fn session_blob_cleartext_for_wire(
-    blob: &SessionBlob,
-    wire: WireVersion,
-) -> Result<Value, AppError> {
+/// Serialise a `SessionBlob` into the JWE cleartext JSON in
+/// `vault/proxy-login/0.2`'s casing. `SessionBlob` serialises a kebab-case
+/// `refreshHint` value (its storage form); 0.2 spells it in camelCase, and the
+/// edge transform cannot reach ciphertext, so it is up-converted here. Pure +
+/// synchronous so the casing is unit-testable without an ATM/JWE.
+fn session_blob_cleartext(blob: &SessionBlob) -> Result<Value, AppError> {
     let mut body = serde_json::to_value(blob).map_err(|e| {
         AppError::Internal(format!(
             "vault/proxy-login: failed to serialise SessionBlob: {e}"
         ))
     })?;
-    if wire == WireVersion::V0_2 {
-        camelize_paths(&mut body, &["refreshHint"]);
-    }
+    camelize_paths(&mut body, &["refreshHint"]);
     Ok(body)
 }
 
@@ -337,43 +330,22 @@ mod tests {
     }
 
     #[test]
-    fn v0_1_session_blob_keeps_kebab_refresh_hint() {
-        let body = session_blob_cleartext_for_wire(
-            &blob_with_hint(Some(RefreshHint::BeforeExpiry)),
-            WireVersion::V0_1,
-        )
-        .unwrap();
-        assert_eq!(body["refreshHint"], "before-expiry");
-    }
-
-    #[test]
     fn v0_2_session_blob_camelizes_refresh_hint() {
-        let body = session_blob_cleartext_for_wire(
-            &blob_with_hint(Some(RefreshHint::BeforeExpiry)),
-            WireVersion::V0_2,
-        )
-        .unwrap();
+        let body =
+            session_blob_cleartext(&blob_with_hint(Some(RefreshHint::BeforeExpiry))).unwrap();
         assert_eq!(body["refreshHint"], "beforeExpiry");
         // `on401` is identical in both casings; `maintainer-only` → `maintainerOnly`.
-        let on401 = session_blob_cleartext_for_wire(
-            &blob_with_hint(Some(RefreshHint::On401)),
-            WireVersion::V0_2,
-        )
-        .unwrap();
+        let on401 = session_blob_cleartext(&blob_with_hint(Some(RefreshHint::On401))).unwrap();
         assert_eq!(on401["refreshHint"], "on401");
-        let maint = session_blob_cleartext_for_wire(
-            &blob_with_hint(Some(RefreshHint::MaintainerOnly)),
-            WireVersion::V0_2,
-        )
-        .unwrap();
+        let maint =
+            session_blob_cleartext(&blob_with_hint(Some(RefreshHint::MaintainerOnly))).unwrap();
         assert_eq!(maint["refreshHint"], "maintainerOnly");
     }
 
     #[test]
     fn session_blob_without_hint_is_unaffected() {
         // `refresh_hint: None` is skipped on the wire — camelize is a safe no-op.
-        let body =
-            session_blob_cleartext_for_wire(&blob_with_hint(None), WireVersion::V0_2).unwrap();
+        let body = session_blob_cleartext(&blob_with_hint(None)).unwrap();
         assert!(body.get("refreshHint").is_none());
     }
 

@@ -1,4 +1,4 @@
-// The community's repositories in the member portal (`git-ns/view/0.4`):
+// The community's repositories in the member portal (`git-ns/view/0.6`):
 //
 //   #/repos   What you may do on the community's repositories, what others
 //             hold on the ones you own, every repository the community
@@ -283,12 +283,12 @@ function ForgeAccounts({
         which account is yours.
       </p>
       {note && (
-        <p className="note" role="status">
+        <p className="alert alert-info" role="status">
           {note}
         </p>
       )}
       {pending && (
-        <p className="note" role="status">
+        <p className="alert alert-info" role="status">
           Finish linking on {pending.forge} in your wallet&rsquo;s window, before{" "}
           {new Date(pending.expiresAt).toLocaleTimeString()}.
           {status.isError ? ` ${(status.error as Error).message}` : " Waiting for the forge…"}

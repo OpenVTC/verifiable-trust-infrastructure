@@ -30,7 +30,7 @@ vi.mock("@/lib/signed-act", async (original) => ({
   postSignedWithStepUp: (await import("@/test/signed-read")).unsignedTask,
 }));
 
-const ACL_LIST = "https://trusttasks.org/spec/acl/list/0.2";
+const ACL_LIST = "https://trusttasks.org/spec/acl/list/0.3";
 const FOUNDER = "did:key:z6MkFounder";
 const MEMBER = "did:key:z6MkMember";
 const BRIDGE = "did:key:z6MkBridge";

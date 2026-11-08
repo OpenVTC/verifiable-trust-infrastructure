@@ -15,8 +15,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::oid4vp::identities::list::v0_1 as list;
 use vti_common::error::AppError;
+use vti_specs::vtc::oid4vp::identities::list::v0_1 as list;
 
 use super::trust_statement::{self, StatementKind};
 use super::{KeyCustody, VerifierIdentityRecord, VerifierKind, VerifierSigners};

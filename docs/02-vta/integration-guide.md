@@ -186,7 +186,7 @@ let key = client.create_key(
 ).await?;
 
 // List keys
-let keys = client.list_keys(None, None, None, None, None).await?;
+let keys = client.list_keys(None, 50, None, None).await?; // pass keys.next_cursor for the next page
 
 // Get a key's private material (for local signing)
 let secret = client.get_key_secret(&key.key_id).await?;

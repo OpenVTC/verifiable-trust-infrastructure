@@ -62,7 +62,9 @@ intended; reach for `#[non_exhaustive]` when the type will keep growing.
 
 Neither replaces the mechanical check: `release bump is large enough` runs
 cargo-semver-checks against the versions a Release PR actually proposes and
-blocks when the bump is too small. It does not depend on anyone noticing.
+blocks when the bump is too small. It does not depend on anyone noticing. When
+it finds one, it names each crate with the version it needs and pushes the
+raise onto the Release PR itself (below).
 
 **Write a real commit body.** It is included in the changelog verbatim, so the
 explanation you write for reviewers is the same text an external consumer reads
@@ -83,7 +85,7 @@ that branch. See [RELEASES.md](RELEASES.md#what-goes-on-a-release-branch).
 
 ## What gets published
 
-**26 of 35 crates.** The nine that stay internal set `publish = false` in their
+**28 of 37 crates.** The nine that stay internal set `publish = false` in their
 own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
 `vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`, `room-host`,
 `vti-rooms-wasm`, `vti-witness`.
@@ -98,7 +100,11 @@ own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
 | `pnm-cli`, `cnm-cli` | operator binaries, `cargo install` |
 | `vtc-service` | the VTC binary (`vtc`), `cargo install vtc-service` — see below |
 | `vta-service` | **openvtc-core**, as a dev-dependency — `test_support::MockVta` |
+| `vti-vtn` | `vtc-service`, and the VTN service and `nnm` in OpenVTC/verifiable-trust-network |
+| `vti-trust-task-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
+| `vti-oob-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
 | the subsystem crates (`vta-*`, `vti-webauthn`, `vti-rooms*`, `vti-vetting-pcs`) | nothing directly; they are `vta-service`'s and `vtc-service`'s closure |
+| `vti-specs`, `vti-specs-{rooms,vta,vtc,core}` | `vta-sdk`'s closure: the generated Trust Task types it re-exports as `vta_sdk::specs`. Each package carries its `trust-tasks.lock` and vendored bundles, which its `build.rs` generates from |
 
 ### npm: `@openvtc/vti-rooms-wasm`
 
@@ -190,11 +196,35 @@ to main and contains:
 - the version bump for each changed crate, and
 - the changelog entries those commits produced.
 
-Read it as you would any diff. **The bump levels are derived, not guessed:**
+Read it as you would any diff. **release-plz sizes the bumps from conventional
+commits** (`semver_check = false` in `release-plz.toml`), and **CI checks them**:
+the Release PR's `release bump is large enough` job runs
 [`cargo-semver-checks`](https://github.com/obi1kenobi/cargo-semver-checks)
-compares each crate's public API against the version on crates.io, so a genuine
-API break moves the compatibility field whether or not anyone remembered to say
-so.
+(`SEMVER_MODE=enforce scripts/semver-report.sh`) against each crate's newest
+version on crates.io, so a genuine API break moves the compatibility field
+whether or not anyone remembered the `!`.
+
+The check runs once, there. release-plz used to run it too, on every merge to
+main — one crate at a time to stay inside the runner's memory, 40-135 minutes
+per regeneration, restarted by each merge — and its verdicts were the ones the
+guard had to overrule. Two things keep the guard's own run short:
+
+- **A crate already proposed at a breaking version is not checked.** No
+  finding can ask for more than a breaking bump, so the output lists it as
+  `NOT CHECKED — the proposed version is already a breaking bump` with both
+  versions, and the coverage assertion expects only the rest. A Release PR
+  that raises every changed crate (the usual case after a workspace-wide
+  dependency move) finishes in minutes.
+- **The crates.io baselines' rustdoc is cached** on the Release PR's ref, so a
+  re-run after release-plz rewrites the PR builds each crate once, not twice.
+
+When the guard does find an under-bump it prints, per crate,
+`<crate>: proposed 0.16.2 is too small — … needs 0.17.0 or later`, and the
+one-step fix, `python3 scripts/fix-release-bump-sizes.py --raise <crates…>`.
+It also runs that fix itself and pushes it onto the Release PR (with
+`RELEASE_PLZ_TOKEN`); the run on the pushed commit skips the raised crates and
+is the verdict. release-plz drops the raise the next time it rewrites the PR,
+and the guard applies it again.
 
 Every crate here is `0.x`, where cargo treats the **minor** field as the
 compatibility boundary: `0.21.4` → `0.21.5` is compatible, `0.21.4` → `0.22.0`
@@ -333,4 +363,4 @@ changelog sections — there is no range for it to read commits from.
 | `.github/workflows/publish.yml` | the Release PR + release jobs |
 | `scripts/check-lockfile-self-pins.sh` | catches a stale registry self-pin in `Cargo.lock` |
 | CI `commit lint` | PR title must be a conventional commit |
-| CI `semver report` | reports API breaks on a PR labelled `semver-report` (opt-in); `release bump is large enough` enforces on every Release PR |
+| CI `semver report` | reports API breaks on a PR labelled `semver-report` (opt-in); `release bump is large enough` enforces on every Release PR, the only API check a release gets |

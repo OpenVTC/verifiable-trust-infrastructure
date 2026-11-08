@@ -48,7 +48,7 @@ party's report of it.** The board is the evidence; the ballot box is only its ke
 | 19 | One `voting/board/read` of a board of large entries is an unbounded answer | a page carries at most 256 KiB of entries (at least one), fewer than `limit` |
 | 20 | A box dates its heads ahead, and the community, pacing checkpoints by a head's `issuedAt`, stops taking them — leaving the box free to show different boards in between | checkpoints are paced by when the community last had a head answered, by its own clock |
 
-Items 1 – 8 changed the wire, as `vta/pcs/trustee/*/0.2`, `vta/pcs/vote-encrypted/0.2`,
+Items 1 – 8 changed the wire, as `vta/pcs/trustee/*/0.2`, `vta/pcs/vote-encrypted/0.3`,
 `voting/trustees/authorize/0.1` and CONVENTIONS §3.9 / §9.3 – 9.7. The 0.1 trustee and
 vote-encrypted tasks are retired: their whole design was acting on the box's report.
 

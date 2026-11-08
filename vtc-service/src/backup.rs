@@ -28,10 +28,10 @@ use crate::error::TaskError;
 
 /// `vtc/backup/export:passwordTooShort`.
 pub const EXPORT_ERR_PASSWORD_TOO_SHORT: &str =
-    trust_tasks_rs::specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT.code;
+    vti_specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT.code;
 /// `vtc/backup/import:decryptionFailed`.
 pub const IMPORT_ERR_DECRYPTION_FAILED: &str =
-    trust_tasks_rs::specs::vtc::backup::import::v0_1::error_codes::DECRYPTION_FAILED.code;
+    vti_specs::vtc::backup::import::v0_1::error_codes::DECRYPTION_FAILED.code;
 use vti_common::store::KeyspaceHandle;
 
 use crate::config::MessagingConfig;
@@ -391,7 +391,7 @@ pub async fn import_backup(
 
     // A restore never carries a sealed storage credential: every one held is destroyed,
     // and a restored `sealed` config reports `required` until an administrator sets it
-    // again (`vtc/storage/credentials/set/0.2` item 7). Before the reload, so no store
+    // again (`vtc/storage/credentials/set/0.3` item 7). Before the reload, so no store
     // is built over a credential that was set for the community as it was.
     if let Some(sealed) = state.room_storage.sealed_credentials() {
         match sealed.clear().await {
@@ -421,6 +421,11 @@ pub async fn import_backup(
     // finished by the restart the import asks for.
     if let Err(e) = crate::acl::resource_grant::rebuild_holder_index(&state.acl_ks).await {
         tracing::warn!(error = %e, "backup import: the git grant-holder index could not be rebuilt; boot rebuilds it");
+    }
+    // A backup taken before #2382 holds its room rows in the earlier key layout. Boot
+    // runs the same migration, so a failure here is logged and finished there.
+    if let Err(e) = crate::rooms::migrate_room_keys(state, "backup import").await {
+        tracing::warn!(error = %e, "backup import: room rows not yet moved to the current key layout; boot finishes it");
     }
     if let Err(e) = crate::git_ns::migrate::migrate_rights(state, "backup import").await {
         tracing::warn!(error = %e, "backup import: git-namespace rights not yet moved onto the ACL entries; boot finishes it");
@@ -460,6 +465,7 @@ async fn close_issuance_after_restore(state: &AppState) -> Result<(), AppError> 
             binding: None,
             action_id: None,
             ballot_box_answer: None,
+            roll_member_of: None,
             reason: Some(
                 "restored from a backup: tickets issued after it was taken are not in it".into(),
             ),
@@ -679,6 +685,10 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == COMMUNITY_ROOMS => state.community_rooms.keyspace(),
         x if x == DIRECTORY => state.directory.ks(),
         x if x == ELECTIONS => state.elections.ks(),
+        x if x == crate::store::keyspaces::NOTIFICATIONS => &state.notifications_ks,
+        x if x == crate::store::keyspaces::BOARDS => &state.boards_ks,
+        x if x == crate::store::keyspaces::BADGES => &state.badges_ks,
+        x if x == crate::store::keyspaces::BADGE_IMAGES => &state.badge_images_ks,
         x if x == INVITATIONS => &state.invitations_ks,
         x if x == CONSUMED_INVITATIONS => &state.consumed_invitations_ks,
         x if x == AUDIT => &state.audit_ks,

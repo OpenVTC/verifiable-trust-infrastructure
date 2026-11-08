@@ -24,7 +24,7 @@
 //! ## Layering
 //!
 //! - [`engine`] — the thin `regorus` wrapper (compile + evaluate one module).
-//! - [`types`] — the Rust mirror of `policy/_shared/0.3`.
+//! - [`types`] — the Rust mirror of `policy/_shared/0.4`.
 //! - [`decide`] — orchestration across the active policy set (this module).
 //!
 //! Persistence (the `policy:` keyspace), the `policy/*` Trust Task handlers,
@@ -91,7 +91,7 @@ mod tests {
     fn input(side_effects: SideEffectLevel) -> PolicyInput {
         PolicyInput {
             request: PolicyRequest {
-                type_uri: "https://trusttasks.org/spec/vault/release/0.1".into(),
+                type_uri: "https://trusttasks.org/spec/vault/release/0.2".into(),
                 kind: Some("release".into()),
                 subject: None,
                 payload_digest: None,

@@ -58,7 +58,6 @@ export type PasskeyRevokeStartResponse = Schemas["RevokeStartResponse"];
 // ── ACL + admin invites ─────────────────────────────────────────────────
 export type AclEntry = Schemas["AclEntryResponse"];
 export type AclEntryEnvelope = Schemas["AclEntryEnvelope"];
-export type AclListResponse = Schemas["AclListResponse"];
 export type InviteSummary = Schemas["InviteSummary"];
 export type InvitesListResponse = Schemas["ListInvitesResponse"];
 export type CreateInviteResponse = Schemas["CreateInviteResponse"];
@@ -198,14 +197,14 @@ export type DriftEntry = Schemas["DriftEntry"];
 // The published Trust Task shapes, not this service's own: the schemas are
 // rendered from `vtc/registry/{sync-jobs,records}/…` so the console and the
 // specification cannot disagree about a field name.
-export type SyncJobsListResponse = Schemas["VtcRegistrySyncJobsListV0_1Response"];
-export type SyncJobRow = Schemas["VtcRegistrySyncJobsListV0_1Job"];
-export type SyncJobState = Schemas["VtcRegistrySyncJobsListV0_1State"];
-export type SyncJobKind = Schemas["VtcRegistrySyncJobsListV0_1Kind"];
+export type SyncJobsListResponse = Schemas["VtcRegistrySyncJobsListV0_2Response"];
+export type SyncJobRow = Schemas["VtcRegistrySyncJobsListV0_2Job"];
+export type SyncJobState = Schemas["VtcRegistrySyncJobsListV0_2State"];
+export type SyncJobKind = Schemas["VtcRegistrySyncJobsListV0_2Kind"];
 export type SyncJobsRetryResponse = Schemas["VtcRegistrySyncJobsRetryV0_2Response"];
 export type SyncJobsDiscardResponse = Schemas["VtcRegistrySyncJobsDiscardV0_1Response"];
-export type RegistryRecordsResponse = Schemas["VtcRegistryRecordsListV0_1Response"];
-export type RegistryRecordRow = Schemas["VtcRegistryRecordsListV0_1Record"];
+export type RegistryRecordsResponse = Schemas["VtcRegistryRecordsListV0_2Response"];
+export type RegistryRecordRow = Schemas["VtcRegistryRecordsListV0_2Record"];
 
 // ── Git namespaces (the Repos plugin) ───────────────────────────────────
 //
@@ -221,12 +220,12 @@ export type GitNsRightRow = Schemas["GitNsRightRow"];
 export type GitNsRightList = Schemas["GitNsRightList"];
 export type GitNsDepartedGrants = Schemas["GitNsDepartedGrants"];
 export type GitNsDepartedGranter = Schemas["GitNsDepartedGranter"];
-export type GitNsDriftItem = Schemas["GitNsViewV0_1DriftItem"];
+export type GitNsDriftItem = Schemas["GitNsViewV0_6DriftItem"];
 export type GitNsJobList = Schemas["GitNsJobList"];
 export type GitNsJobRow = Schemas["GitNsJobRow"];
 export type GitNsProjection = Schemas["GitNsProjection"];
 export type GitNsPublishedRow = Schemas["GitNsPublishedRow"];
-export type GitNsRight = Schemas["GitNsViewV0_1Right"];
+export type GitNsRight = Schemas["GitNsViewV0_6Right"];
 export type GitNsForgeStatus = Schemas["GitNsForgeStatus"];
 export type GitNsStepOutcome = Schemas["GitNsStepOutcome"];
 export type GitNsLastCheck = Schemas["GitNsLastCheck"];
@@ -236,10 +235,10 @@ export type GitNsActivity = Schemas["GitNsActivity"];
 export type GitNsActivityItem = Schemas["GitNsActivityItem"];
 export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];
 // The member's own view (`git-ns/view`), as the portal's Repos page reads it.
-export type GitNsViewNamespace = Schemas["GitNsViewV0_1GitNamespace"];
-export type GitNsRepoSummary = Schemas["GitNsViewV0_1RepoSummary"];
-export type GitNsRightRecord = Schemas["GitNsViewV0_1RightRecord"];
-export type GitNsForgeAccount = Schemas["GitNsViewV0_1ForgeAccount"];
+export type GitNsViewNamespace = Schemas["GitNsViewV0_6GitNamespace"];
+export type GitNsRepoSummary = Schemas["GitNsViewV0_6RepoSummary"];
+export type GitNsRightRecord = Schemas["GitNsViewV0_6RightRecord"];
+export type GitNsForgeAccount = Schemas["GitNsViewV0_6ForgeAccount"];
 
 // ── Data rooms: the room-hosting administrator's reads ──────────────────
 //
@@ -247,11 +246,11 @@ export type GitNsForgeAccount = Schemas["GitNsViewV0_1ForgeAccount"];
 // specification (`vta_sdk::openapi`). Signed documents only; no REST route.
 // `get` is read at 0.2, whose `storage.migration` names its target and says why a
 // move is queued or paused.
-export type RoomGetResponse = Schemas["VtcRoomsGetV0_2Response"];
-export type RoomEffectiveLimits = Schemas["VtcRoomsGetV0_2EffectiveLimits"];
-export type RoomScopeLimits = Schemas["VtcRoomsGetV0_2ScopeLimits"];
-export type RoomUsageNow = Schemas["VtcRoomsGetV0_2Usage"];
-export type RoomLimitSource = Schemas["VtcRoomsGetV0_2LimitSource"];
+export type RoomGetResponse = Schemas["VtcRoomsGetV0_3Response"];
+export type RoomEffectiveLimits = Schemas["VtcRoomsGetV0_3EffectiveLimits"];
+export type RoomScopeLimits = Schemas["VtcRoomsGetV0_3ScopeLimits"];
+export type RoomUsageNow = Schemas["VtcRoomsGetV0_3Usage"];
+export type RoomLimitSource = Schemas["VtcRoomsGetV0_3LimitSource"];
 export type RoomsUsagePayload = Schemas["VtcRoomsUsageV0_1Payload"];
 export type RoomsUsageResponse = Schemas["VtcRoomsUsageV0_1Response"];
 export type RoomsUsageRow = Schemas["VtcRoomsUsageV0_1UsageRow"];
@@ -263,54 +262,68 @@ export type RoomLimitTarget = Schemas["VtcRoomsLimitsSetV0_1LimitTarget"];
 //
 // The published `vtc/storage/configs/*` and `vtc/rooms/storage/{assign,migrate}` shapes.
 // None carries a secret: a credential is never sent to or returned by them. The
-// console speaks `list`, `get`, `create` and `update` at 0.2 (`roleArn`, `notAllowed`).
+// console speaks `list` and `get` at 0.2, and `create`, `update` and `retire` at 0.3.
 export type StorageConfigItem = Schemas["VtcStorageConfigsListV0_2ConfigItem"];
 export type StorageConfigsListResponse = Schemas["VtcStorageConfigsListV0_2Response"];
 export type StorageConfigRecord = Schemas["VtcStorageConfigsListV0_2StorageConfig"];
 export type StorageConfigFacts = Schemas["VtcStorageConfigsListV0_2StorageConfigFacts"];
 export type StorageCredentialState = Schemas["VtcStorageConfigsListV0_2CredentialState"];
 export type StorageConfigGetResponse = Schemas["VtcStorageConfigsGetV0_2Response"];
-export type StorageConfigCreatePayload = Schemas["VtcStorageConfigsCreateV0_2Payload"];
-export type StorageConfigCreateResponse = Schemas["VtcStorageConfigsCreateV0_2Response"];
-export type StorageConfigUpdatePayload = Schemas["VtcStorageConfigsUpdateV0_2Payload"];
-export type StorageConfigUpdateResponse = Schemas["VtcStorageConfigsUpdateV0_2Response"];
-export type StorageConfigRetireResponse = Schemas["VtcStorageConfigsRetireV0_1Response"];
+export type StorageConfigCreatePayload = Schemas["VtcStorageConfigsCreateV0_3Payload"];
+export type StorageConfigCreateResponse = Schemas["VtcStorageConfigsCreateV0_3Response"];
+export type StorageConfigUpdatePayload = Schemas["VtcStorageConfigsUpdateV0_3Payload"];
+export type StorageConfigUpdateResponse = Schemas["VtcStorageConfigsUpdateV0_3Response"];
+export type StorageConfigRetireResponse = Schemas["VtcStorageConfigsRetireV0_3Response"];
 export type StorageConfigProbeResponse = Schemas["VtcStorageConfigsProbeV0_1Response"];
-export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_2StorageSettings"];
-export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_2StorageAuth"];
-export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_1Response"];
-export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_2Response"];
-// `vtc/storage/credentials/set/0.2`: a `sealed` config's credential, sealed in this
+export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_3StorageSettings"];
+export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_3StorageAuth"];
+export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_2Response"];
+export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_3Response"];
+// `vtc/storage/credentials/set/0.3`: a `sealed` config's credential, sealed in this
 // browser to the community (`lib/sealed-transfer.ts`). The cleartext type is what is
 // sealed; it is never a payload member and never leaves the page unsealed.
-export type StorageCredentialsSetPayload = Schemas["VtcStorageCredentialsSetV0_2Payload"];
-export type StorageCredentialsSetResponse = Schemas["VtcStorageCredentialsSetV0_2Response"];
-export type SealedStorageCredential = Schemas["VtcStorageCredentialsSetV0_2SealedCredentialCleartext"];
+export type StorageCredentialsSetPayload = Schemas["VtcStorageCredentialsSetV0_3Payload"];
+export type StorageCredentialsSetResponse = Schemas["VtcStorageCredentialsSetV0_3Response"];
+export type SealedStorageCredential = Schemas["VtcStorageCredentialsSetV0_3SealedCredentialCleartext"];
 
 // ── Data rooms the community itself owns ────────────────────────────────
 //
 // The published `vtc/rooms/community/*` shapes (`lib/community-rooms-api.ts`),
 // answered from `vtc.rooms.manage` — the owner's authority, not the host's.
 // Signed documents only; no REST route.
-// The console reads and creates at 0.2 — `CommunityRoomV2`, with each room's
-// description, tags and who last changed them — and changes them with
-// `update/0.1`.
-export type CommunityRoom = Schemas["VtcRoomsCommunityListV0_2CommunityRoomV2"];
-export type CommunityRoomsListResponse = Schemas["VtcRoomsCommunityListV0_2Response"];
-export type CommunityRoomGetResponse = Schemas["VtcRoomsCommunityGetV0_2Response"];
-export type CommunityRoomCreatePayload = Schemas["VtcRoomsCommunityCreateV0_3Payload"];
-export type CommunityRoomCreateResponse = Schemas["VtcRoomsCommunityCreateV0_3Response"];
-export type CommunityRoomUpdatePayload = Schemas["VtcRoomsCommunityUpdateV0_2Payload"];
-export type CommunityRoomUpdateResponse = Schemas["VtcRoomsCommunityUpdateV0_2Response"];
-export type CommunityRoomMember = Schemas["VtcRoomsCommunityMembersListV0_1RoomMember"];
-export type CommunityRoomMemberState = Schemas["VtcRoomsCommunityMembersListV0_1MemberState"];
-export type CommunityRoomMemberAction = Schemas["VtcRoomsCommunityMembersAddV0_1MemberAction"];
-export type CommunityRoomMembersListPayload = Schemas["VtcRoomsCommunityMembersListV0_1Payload"];
-export type CommunityRoomMembersListResponse = Schemas["VtcRoomsCommunityMembersListV0_1Response"];
-export type CommunityRoomMembersAddPayload = Schemas["VtcRoomsCommunityMembersAddV0_1Payload"];
-export type CommunityRoomMembersAddResponse = Schemas["VtcRoomsCommunityMembersAddV0_1Response"];
+// The console reads at `list`/`get` 0.4 — `CommunityRoomV3`, each room's details
+// and its `status` in its owner's lifecycle — creates at `create/0.4`, changes
+// details with `update/0.3`, admits and lists members at 0.2 (the `suspended`
+// state), and archives and removes rooms with `archive`, `unarchive`, `remove`
+// and `removal/cancel` 0.1.
+export type CommunityRoom = Schemas["VtcRoomsCommunityListV0_4CommunityRoomV3"];
+export type CommunityRoomStatus = Schemas["VtcRoomsCommunityListV0_4RoomStatus"];
+export type CommunityRoomState = Schemas["VtcRoomsCommunityListV0_4RoomState"];
+export type CommunityRoomArchiveAccess = Schemas["VtcRoomsCommunityListV0_4ArchiveAccess"];
+export type CommunityRoomsListPayload = Schemas["VtcRoomsCommunityListV0_4Payload"];
+export type CommunityRoomsListResponse = Schemas["VtcRoomsCommunityListV0_4Response"];
+export type CommunityRoomGetResponse = Schemas["VtcRoomsCommunityGetV0_4Response"];
+export type CommunityRoomCreatePayload = Schemas["VtcRoomsCommunityCreateV0_4Payload"];
+export type CommunityRoomCreateResponse = Schemas["VtcRoomsCommunityCreateV0_4Response"];
+export type CommunityRoomUpdatePayload = Schemas["VtcRoomsCommunityUpdateV0_3Payload"];
+export type CommunityRoomUpdateResponse = Schemas["VtcRoomsCommunityUpdateV0_3Response"];
+export type CommunityRoomMember = Schemas["VtcRoomsCommunityMembersListV0_2RoomMemberV2"];
+export type CommunityRoomMemberState = Schemas["VtcRoomsCommunityMembersListV0_2MemberStateV2"];
+export type CommunityRoomMemberAction = Schemas["VtcRoomsCommunityMembersAddV0_2MemberAction"];
+export type CommunityRoomMembersListPayload = Schemas["VtcRoomsCommunityMembersListV0_2Payload"];
+export type CommunityRoomMembersListResponse = Schemas["VtcRoomsCommunityMembersListV0_2Response"];
+export type CommunityRoomMembersAddPayload = Schemas["VtcRoomsCommunityMembersAddV0_2Payload"];
+export type CommunityRoomMembersAddResponse = Schemas["VtcRoomsCommunityMembersAddV0_2Response"];
 export type CommunityRoomMembersRemovePayload = Schemas["VtcRoomsCommunityMembersRemoveV0_2Payload"];
 export type CommunityRoomMembersRemoveResponse = Schemas["VtcRoomsCommunityMembersRemoveV0_2Response"];
+export type CommunityRoomArchivePayload = Schemas["VtcRoomsCommunityArchiveV0_1Payload"];
+export type CommunityRoomArchiveResponse = Schemas["VtcRoomsCommunityArchiveV0_1Response"];
+export type CommunityRoomUnarchivePayload = Schemas["VtcRoomsCommunityUnarchiveV0_1Payload"];
+export type CommunityRoomUnarchiveResponse = Schemas["VtcRoomsCommunityUnarchiveV0_1Response"];
+export type CommunityRoomRemovePayload = Schemas["VtcRoomsCommunityRemoveV0_1Payload"];
+export type CommunityRoomRemoveResponse = Schemas["VtcRoomsCommunityRemoveV0_1Response"];
+export type CommunityRoomRemovalCancelPayload = Schemas["VtcRoomsCommunityRemovalCancelV0_1Payload"];
+export type CommunityRoomRemovalCancelResponse = Schemas["VtcRoomsCommunityRemovalCancelV0_1Response"];
 
 // ── Member directory (`vtc/directory/*`) ─────────────────────────────────
 export type DirectoryFieldDefinition = Schemas["VtcDirectoryFieldsListV0_1FieldDefinition"];
@@ -319,8 +332,8 @@ export type DirectoryFieldInput = Schemas["VtcDirectoryFieldsDefineV0_1FieldInpu
 export type DirectoryFieldsUpdatePayload = Schemas["VtcDirectoryFieldsUpdateV0_1Payload"];
 export type DirectoryCardAssertPayload = Schemas["VtcDirectoryCardAssertV0_1Payload"];
 export type DirectoryCardAssertResponse = Schemas["VtcDirectoryCardAssertV0_1Response"];
-export type DirectoryEntriesListPayload = Schemas["VtcDirectoryEntriesListV0_1Payload"];
-export type DirectoryEntriesListResponse = Schemas["VtcDirectoryEntriesListV0_1Response"];
+export type DirectoryEntriesListPayload = Schemas["VtcDirectoryEntriesListV0_2Payload"];
+export type DirectoryEntriesListResponse = Schemas["VtcDirectoryEntriesListV0_2Response"];
 export type DirectoryEntriesShowResponse = Schemas["VtcDirectoryEntriesShowV0_1Response"];
 export type DirectoryCard = Schemas["VtcDirectoryCardShowV0_1DirectoryCard"];
 export type DirectoryCardShowResponse = Schemas["VtcDirectoryCardShowV0_1Response"];
@@ -335,21 +348,94 @@ export type DirectoryImagesUploadResponse = Schemas["VtcDirectoryImagesUploadV0_
 export type DirectoryImagesGetPayload = Schemas["VtcDirectoryImagesGetV0_1Payload"];
 export type DirectoryImagesGetResponse = Schemas["VtcDirectoryImagesGetV0_1Response"];
 export type DirectoryAdminNote = Schemas["VtcDirectoryNotesAppendV0_1AdminNote"];
-export type DirectoryNotesListResponse = Schemas["VtcDirectoryNotesListV0_1Response"];
+export type DirectoryNotesListResponse = Schemas["VtcDirectoryNotesListV0_2Response"];
 export type DirectoryNotesExportResponse = Schemas["VtcDirectoryNotesExportV0_1Response"];
-export type DirectoryExportResponse = Schemas["VtcDirectoryExportV0_1Response"];
+export type DirectoryExportResponse = Schemas["VtcDirectoryExportV0_2Response"];
+
+// ── Network memberships (`vtc/networks/*`) ───────────────────────────────
+export type NetworkMembership = Schemas["VtcNetworksListV0_2NetworkMembership"];
+export type NetworkRegisteredGroup = Schemas["VtcNetworksListV0_2RegisteredGroup"];
+export type NetworksListPayload = Schemas["VtcNetworksListV0_2Payload"];
+export type NetworksListResponse = Schemas["VtcNetworksListV0_2Response"];
+export type NetworksShowResponse = Schemas["VtcNetworksShowV0_2Response"];
+export type NetworkPreviewPayload = Schemas["VtcNetworksPreviewV0_1Payload"];
+export type NetworkPreviewResponse = Schemas["VtcNetworksPreviewV0_1Response"];
+export type NetworkJoinPayload = Schemas["VtcNetworksJoinV0_2Payload"];
+export type NetworkRoleAssignment = Schemas["VtcNetworksJoinV0_2RoleAssignment"];
+export type NetworkJoinResponse = Schemas["VtcNetworksJoinV0_2Response"];
+export type NetworkLeavePayload = Schemas["VtcNetworksLeaveV0_2Payload"];
+export type NetworkLeaveResponse = Schemas["VtcNetworksLeaveV0_2Response"];
+export type NetworkRepudiatePayload = Schemas["VtcNetworksRepudiateV0_2Payload"];
+export type NetworkRepudiateResponse = Schemas["VtcNetworksRepudiateV0_2Response"];
 
 // ── Community groups (`vtc/groups/*`) ────────────────────────────────────
-export type Group = Schemas["VtcGroupsListV0_1Group"];
+export type Group = Schemas["VtcGroupsListV0_2Group"];
 export type GroupMember = Schemas["VtcGroupsMembersAddV0_1GroupMember"];
 export type GroupJoinRequest = Schemas["VtcGroupsJoinV0_1GroupJoinRequest"];
 export type GroupCreatePayload = Schemas["VtcGroupsCreateV0_1Payload"];
 export type GroupUpdatePayload = Schemas["VtcGroupsUpdateV0_1Payload"];
-export type GroupListResponse = Schemas["VtcGroupsListV0_1Response"];
+export type GroupListResponse = Schemas["VtcGroupsListV0_2Response"];
 export type GroupShowResponse = Schemas["VtcGroupsShowV0_1Response"];
-export type GroupMembersListResponse = Schemas["VtcGroupsMembersListV0_1Response"];
-export type GroupRequestsListResponse = Schemas["VtcGroupsRequestsListV0_1Response"];
+export type GroupMembersListResponse = Schemas["VtcGroupsMembersListV0_2Response"];
+export type GroupRequestsListResponse = Schemas["VtcGroupsRequestsListV0_2Response"];
 export type GroupManagersResponse = Schemas["VtcGroupsManagersAddV0_1Response"];
+
+// ── Community boards (`vtc/boards/*`) ────────────────────────────────────
+export type BoardCreatePayload = Schemas["VtcBoardsCreateV0_1Payload"];
+export type BoardCreateResponse = Schemas["VtcBoardsCreateV0_1Response"];
+export type BoardUpdatePayload = Schemas["VtcBoardsUpdateV0_1Payload"];
+export type BoardUpdateResponse = Schemas["VtcBoardsUpdateV0_1Response"];
+export type BoardDeleteResponse = Schemas["VtcBoardsDeleteV0_1Response"];
+export type BoardFacilitatorsResponse = Schemas["VtcBoardsFacilitatorsAddV0_1Response"];
+export type BoardFacilitatorsListResponse = Schemas["VtcBoardsFacilitatorsListV0_1Response"];
+export type BoardListResponse = Schemas["VtcBoardsListV0_1Response"];
+export type BoardShowResponse = Schemas["VtcBoardsShowV0_1Response"];
+export type BoardIdeasProposeResponse = Schemas["VtcBoardsIdeasProposeV0_1Response"];
+export type BoardIdeasUpdateResponse = Schemas["VtcBoardsIdeasUpdateV0_1Response"];
+export type BoardIdeasWithdrawResponse = Schemas["VtcBoardsIdeasWithdrawV0_1Response"];
+export type BoardIdeasDecideResponse = Schemas["VtcBoardsIdeasDecideV0_1Response"];
+export type BoardIdeasSelectResponse = Schemas["VtcBoardsIdeasSelectV0_1Response"];
+export type BoardNotesAddResponse = Schemas["VtcBoardsNotesAddV0_1Response"];
+export type BoardNotesListResponse = Schemas["VtcBoardsNotesListV0_1Response"];
+export type BoardNotesWithdrawResponse = Schemas["VtcBoardsNotesWithdrawV0_1Response"];
+export type BoardNotesHideResponse = Schemas["VtcBoardsNotesHideV0_1Response"];
+
+// ── Member badges (`vtc/badges/*`) ───────────────────────────────────────
+export type BadgeSettingsShowResponse = Schemas["VtcBadgesSettingsShowV0_1Response"];
+export type BadgeSettingsUpdatePayload = Schemas["VtcBadgesSettingsUpdateV0_1Payload"];
+export type BadgeSettingsUpdateResponse = Schemas["VtcBadgesSettingsUpdateV0_1Response"];
+export type BadgeCreatePayload = Schemas["VtcBadgesCreateV0_1Payload"];
+export type BadgeCreateResponse = Schemas["VtcBadgesCreateV0_1Response"];
+export type BadgeUpdatePayload = Schemas["VtcBadgesUpdateV0_1Payload"];
+export type BadgeUpdateResponse = Schemas["VtcBadgesUpdateV0_1Response"];
+export type BadgeRetireResponse = Schemas["VtcBadgesRetireV0_1Response"];
+export type BadgePromotePayload = Schemas["VtcBadgesPromoteV0_1Payload"];
+export type BadgePromoteResponse = Schemas["VtcBadgesPromoteV0_1Response"];
+export type BadgeListPayload = Schemas["VtcBadgesListV0_1Payload"];
+export type BadgeListResponse = Schemas["VtcBadgesListV0_1Response"];
+export type BadgeShowResponse = Schemas["VtcBadgesShowV0_1Response"];
+export type BadgeImagesUploadPayload = Schemas["VtcBadgesImagesUploadV0_1Payload"];
+export type BadgeImagesUploadResponse = Schemas["VtcBadgesImagesUploadV0_1Response"];
+export type BadgeImagesGetResponse = Schemas["VtcBadgesImagesGetV0_1Response"];
+export type BadgeAwardsOfferPayload = Schemas["VtcBadgesAwardsOfferV0_1Payload"];
+export type BadgeAwardsOfferResponse = Schemas["VtcBadgesAwardsOfferV0_1Response"];
+export type BadgeAwardsWithdrawResponse = Schemas["VtcBadgesAwardsWithdrawV0_1Response"];
+export type BadgeAwardsRevokeResponse = Schemas["VtcBadgesAwardsRevokeV0_1Response"];
+export type BadgeAwardsListPayload = Schemas["VtcBadgesAwardsListV0_1Payload"];
+export type BadgeAwardsListResponse = Schemas["VtcBadgesAwardsListV0_1Response"];
+export type BadgeHoldersListResponse = Schemas["VtcBadgesHoldersListV0_1Response"];
+export type BadgeWallShowResponse = Schemas["VtcBadgesWallShowV0_1Response"];
+export type BadgeMineListResponse = Schemas["VtcBadgesMineListV0_1Response"];
+export type BadgeMineAcceptResponse = Schemas["VtcBadgesMineAcceptV0_1Response"];
+export type BadgeMineDeclineResponse = Schemas["VtcBadgesMineDeclineV0_1Response"];
+export type BadgeMineHideResponse = Schemas["VtcBadgesMineHideV0_1Response"];
+export type BadgeMineShowResponse = Schemas["VtcBadgesMineShowV0_1Response"];
+export type BadgeMineArrangePayload = Schemas["VtcBadgesMineArrangeV0_1Payload"];
+export type BadgeMineArrangeResponse = Schemas["VtcBadgesMineArrangeV0_1Response"];
+export type BadgeKudosGivePayload = Schemas["VtcBadgesKudosGiveV0_1Payload"];
+export type BadgeKudosGiveResponse = Schemas["VtcBadgesKudosGiveV0_1Response"];
+export type BadgeKudosListPayload = Schemas["VtcBadgesKudosListV0_1Payload"];
+export type BadgeKudosListResponse = Schemas["VtcBadgesKudosListV0_1Response"];
 
 // ── Where identities are published (`vtc/config/did-hosting/list`) ──────
 export type DidHostingListResponse = Schemas["VtcConfigDidHostingListV0_1Response"];

@@ -172,7 +172,7 @@ this; a new Trust Task URI needs a published specification first.)
    `details.expiresAt` (unix seconds).
 3. The browser polls by sending the same request again. A poll re-reads the
    same request; it never raises another or rings the phone again.
-4. The phone answers with its ordinary `task-consent/decision/0.1`. The
+4. The phone answers with its ordinary `task-consent/decision/0.2`. The
    decision handler accepts it only from the bound approver, and only for the
    request whose challenge and salted digest it echoes; approval mints the
    usual single-use grant for the browser.

@@ -62,11 +62,17 @@ use syn::{ImplItem, Item, ReturnType, Type};
 /// Every name here should disappear as #1035 collapses the pairs.
 const COVERED_BY_SEAM_TEST: &[&str] = &[
     // The ACL pair is the one place two types is the right answer:
-    // `AclEntryResponse` renames `subject`→`did` and `scopes`→`allowed_contexts`
-    // and converts RFC 3339 to epoch seconds, so it cannot simply re-export the
-    // agent's `AclEntry`. An adapter carrying real logic can be wrong in ways a
+    // `AclEntryResponse` renames `subject`→`did`, reads the explicit AclEntry 0.2
+    // `act` back into `allowed_contexts` through the role, and converts RFC 3339
+    // to epoch seconds, so it cannot simply re-export the agent's `AclEntry`. An adapter carrying real logic can be wrong in ways a
     // mirror cannot, which is why it is checked rather than reasoned about.
     "AclListResponse",
+    // One `acl/list/0.3` page and the nullable `{ entry }` of `acl/show/0.2` /
+    // `acl/revoke/0.2`: the agent answers both as JSON built from the shared
+    // AclEntry 0.2 component, so the seam is the entry, driven by
+    // trust_task_decode.rs::acl_list_page_and_nullable_entry_decode.
+    "AclListPage",
+    "AclShowResponse",
 ];
 
 // The eight names that used to sit above — ContextResponse, ContextListResponse,

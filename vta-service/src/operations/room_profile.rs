@@ -44,6 +44,12 @@ const BODY_MEMBERS: &[&str] = &[
     "evidence",
     "validFor",
     "validUntil",
+    // trust-tasks-tf #1027: known members, so a record carrying them at a profile location
+    // is `notProfile` (below) rather than `malformed`.
+    "kind",
+    "inReplyTo",
+    "writtenAt",
+    "editedAt",
     "roomProfile",
     "proof",
 ];
@@ -61,6 +67,10 @@ const RECORD_MEMBERS: &[&str] = &[
     "evidence",
     "validFor",
     "validUntil",
+    "kind",
+    "inReplyTo",
+    "writtenAt",
+    "editedAt",
 ];
 
 /// The members a `RoomProfileStatement` may carry.
@@ -242,11 +252,14 @@ pub async fn check_statement(
     let Some(profile) = st.get("profile") else {
         return Err(Rejected::new(Rejection::Malformed, named));
     };
-    // The profile against its own schema, through the generated type.
-    if serde_json::from_value::<
-        trust_tasks_rs::specs::rooms::keys::profile::read::v0_1::RoomProfile,
-    >(profile.clone())
+    // The profile against its own schema, through the generated type — and through the
+    // schema itself, which states bounds the type does not carry (`recordMembers` is a
+    // non-empty set).
+    if serde_json::from_value::<vti_specs::rooms::keys::profile::read::v0_1::RoomProfile>(
+        profile.clone(),
+    )
     .is_err()
+        || !profile_meets_its_schema(profile)
     {
         return Err(Rejected::new(Rejection::Malformed, named));
     }
@@ -312,6 +325,17 @@ pub async fn check_statement(
     })
 }
 
+/// Whether `profile` meets `RoomProfile`'s JSON Schema, checked inside the one payload that
+/// carries it whole, `rooms/keys/profile/write/0.1`'s.
+pub fn profile_meets_its_schema(profile: &Value) -> bool {
+    let probe = serde_json::json!({
+        "roomId": "did:example:room",
+        "host": "did:example:host",
+        "profile": profile,
+    });
+    <vti_specs::rooms::keys::profile::write::v0_1::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(&probe).is_ok()
+}
+
 /// The unsigned `SealedRecordBody` carrying `profile` as its author's statement — what
 /// `rooms/keys/profile/write` signs and seals (sealed tiers) or stores as `cleartext.body`
 /// (`open`). `authority` is the author's chain conferring `curate` or `admin`, leaf first.
@@ -342,9 +366,13 @@ pub fn statement_body(
 /// signed bytes are a multiple of [`vti_rooms::profile::PADDING_BLOCK`] — so a host comparing
 /// ciphertext lengths learns nothing about how long the name or the description is.
 ///
-/// A proof's length varies by a byte or two from one signature to the next, so the padding
-/// is measured on what was signed and corrected; after a few attempts the closest result is
-/// kept, because padding is a SHOULD and refusing to name the room over it would be worse.
+/// A proof's length varies by a byte or two from one signature to the next (a base58
+/// Ed25519 signature is 88 characters about four times in five, otherwise 87 or fewer), so
+/// the padding is measured on what was signed and corrected. Each attempt aims at the
+/// longest unpadded length seen so far, the common case, rather than at the last one: aiming
+/// at a short proof bets on the unlikely length twice running. After a few attempts the last
+/// result is kept, because padding is a SHOULD and refusing to name the room over it would
+/// be worse.
 pub async fn sign_padded<F, Fut>(mut body: Value, sign: F) -> Result<Vec<u8>, AppError>
 where
     F: Fn(Value) -> Fut,
@@ -353,23 +381,30 @@ where
     use vti_rooms::profile::{MAX_PADDING, PADDING_BLOCK};
     const ATTEMPTS: usize = 8;
     let mut signed = sign(body.clone()).await?;
-    let mut target = signed.len().div_ceil(PADDING_BLOCK) * PADDING_BLOCK;
     let mut padding = 0usize;
+    // The signed length less the padding, at its longest so far.
+    let mut unpadded = signed.len();
+    // Whole blocks added so the body differs from one already signed.
+    let mut extra = 0usize;
     for _ in 0..ATTEMPTS {
-        let len = signed.len();
-        if len % PADDING_BLOCK == 0 {
+        if signed.len() % PADDING_BLOCK == 0 {
             break;
         }
-        // A longer proof than last time can overshoot the block: aim for the next one.
-        if len > target {
-            target += PADDING_BLOCK;
+        unpadded = unpadded.max(signed.len() - padding);
+        let aim = (PADDING_BLOCK - unpadded % PADDING_BLOCK) % PADDING_BLOCK;
+        // Ed25519 is deterministic, so re-signing an unchanged body returns the same short
+        // proof. When the aim has not moved, move the body on by a whole block, and keep
+        // it moved: dropping back would re-sign a body already tried.
+        if aim + extra * PADDING_BLOCK == padding {
+            extra += 1;
         }
-        padding = (padding + (target - len)).min(MAX_PADDING);
+        let next = aim + extra * PADDING_BLOCK;
+        if next > MAX_PADDING {
+            break;
+        }
+        padding = next;
         body["roomProfile"]["padding"] = Value::String(" ".repeat(padding));
         signed = sign(body.clone()).await?;
-        if padding == MAX_PADDING {
-            break;
-        }
     }
     Ok(signed)
 }
@@ -603,6 +638,89 @@ mod tests {
             .expect("accepted");
         assert_eq!(ok.profile, name("Board pack"));
         assert_eq!(ok.author, f.curator.did);
+    }
+
+    /// `RoomProfile.recordMembers` (trust-tasks-tf #1027) is part of the profile: a reader
+    /// accepts a profile carrying it, kept exactly as signed, and refuses one whose
+    /// `recordMembers` breaks its schema. Before this reader knew it, a profile carrying it
+    /// read as `malformed` — and the owner's re-write after a removal would have dropped it.
+    #[tokio::test]
+    async fn a_profile_listing_record_members_is_accepted_as_signed() {
+        let f = fx().await;
+        let now = now_s();
+        let profile = serde_json::json!({
+            "name": "Board pack",
+            "recordMembers": ["kind", "inReplyTo", "writtenAt", "editedAt", "width", "height",
+                              "preview", "aLaterMember"],
+        });
+        let body = statement_body(
+            &f.room.did,
+            KEY,
+            7,
+            &f.curator.did,
+            &profile,
+            Utc::now(),
+            f.curator_chain.clone(),
+        );
+        let bytes = signed(&f.curator, body).await;
+        let ok = check(&f, &bytes, &at(&f, None, &now))
+            .await
+            .expect("accepted");
+        assert_eq!(ok.profile, profile);
+
+        for bad in [
+            serde_json::json!([]),
+            serde_json::json!(["kind", "kind"]),
+            serde_json::json!(["Kind"]),
+            serde_json::json!("kind"),
+        ] {
+            let body = statement_body(
+                &f.room.did,
+                KEY,
+                7,
+                &f.curator.did,
+                &serde_json::json!({ "name": "Board", "recordMembers": bad }),
+                Utc::now(),
+                f.curator_chain.clone(),
+            );
+            let bytes = signed(&f.curator, body).await;
+            assert_eq!(
+                check(&f, &bytes, &at(&f, None, &now))
+                    .await
+                    .unwrap_err()
+                    .reason,
+                Rejection::Malformed,
+                "recordMembers {bad}"
+            );
+        }
+
+        // A profile record carries none of a record's members, the new ones included.
+        for (member, value) in [
+            ("kind", serde_json::json!("message")),
+            ("inReplyTo", serde_json::json!({ "key": "k" })),
+            ("writtenAt", serde_json::json!("2026-01-01T00:00:00Z")),
+            ("editedAt", serde_json::json!("2026-01-01T00:00:00Z")),
+        ] {
+            let mut body = statement_body(
+                &f.room.did,
+                KEY,
+                7,
+                &f.curator.did,
+                &name("Board"),
+                Utc::now(),
+                f.curator_chain.clone(),
+            );
+            body[member] = value;
+            let bytes = signed(&f.curator, body).await;
+            assert_eq!(
+                check(&f, &bytes, &at(&f, None, &now))
+                    .await
+                    .unwrap_err()
+                    .reason,
+                Rejection::NotProfile,
+                "{member}"
+            );
+        }
     }
 
     /// **The forged rename.** A member holding `write` stores a record at the profile's

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use serde_json::{Value, json};
 use sha2::Sha256;
-use trust_tasks_rs::specs::voting::election::register::v0_1::Manifest;
+use vti_specs::voting::election::register::v0_4::Manifest;
 use vti_voting::{
     election::{Election, ElectionId},
     registrar::Registrar,
@@ -17,7 +17,9 @@ use vti_voting::{
 };
 
 use super::link::{BoxAnswer, LinkError};
-use super::store::{self, Delivery, ElectionRecord, Standing, TicketIssued};
+use super::presentation::{Check, Outcome};
+use super::roll;
+use super::store::{self, Delivery, ElectionRecord, RollParty, Standing, TicketIssued};
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -88,8 +90,12 @@ pub async fn parameters(state: &AppState) -> Result<Value, AppError> {
 }
 
 /// `Disclosure` (VTI-VOT-090): generated from the manifest and the trusted ballot box's entry,
-/// never written by hand.
-pub async fn disclosure(state: &AppState, rec: &ElectionRecord) -> Value {
+/// never written by hand. Under a credential roll it carries `rollCredential`: whose
+/// membership credential counts, what that party is to the community, and that claiming a
+/// ticket shows the community the claimant's membership of it. `memberOfName` is a group's name
+/// only where the reader may know the group exists (VTI-DIR-070): to a manager, or for a group
+/// every member may see.
+pub async fn disclosure(state: &AppState, rec: &ElectionRecord, manager: bool) -> Value {
     let config = state.config.read().await;
     let (operator, same) = config.voting.trusted(&rec.ballot_box).map_or_else(
         // No longer trusted: still described, as its operator unknown and possibly this one.
@@ -108,6 +114,22 @@ pub async fn disclosure(state: &AppState, rec: &ElectionRecord) -> Value {
     });
     if let Some(t) = m.get("trustees") {
         d["trustees"] = t.clone();
+    }
+    drop(config);
+    if let (Some(member_of), Some(party)) = (rec.roll_member_of(), &rec.roll_party) {
+        let mut rc = json!({
+            "memberOf": member_of,
+            "memberOfKind": party.kind(),
+            "presenterDisclosed": true,
+        });
+        if let RollParty::CommunityGroup { group_id } = party
+            && let Ok(Some(g)) = roll::group(state, group_id).await
+            && (manager || g.visibility == crate::groups::Audience::Members)
+            && !g.name.is_empty()
+        {
+            rc["memberOfName"] = json!(g.name);
+        }
+        d["rollCredential"] = rc;
     }
     d
 }
@@ -158,7 +180,37 @@ pub async fn may_see(
     if !rec.is_registered() && rec.standing != Standing::Cancelled {
         return Ok(false);
     }
+    // Under a credential roll the records say only who the roll could admit (VTI-VOT-015
+    // items 2 – 3): never anyone, for a member party, but the party itself, and nobody for a
+    // group the community no longer holds (VTI-VOT-029).
+    if rec.roll_member_of().is_some() {
+        return roll::records_could_admit(state, rec, did).await;
+    }
     roll_admits(state, rec, did).await
+}
+
+/// Whether a reader who is not otherwise shown `rec` is shown it on `outcome` (show/0.6
+/// Conformance item 8.3 – 8.4, VTI-VOT-015 item 3): only for a registered member-party election,
+/// only on a presentation that passed, of a credential `roll.memberOf` itself issued, while that
+/// party's own membership is active — decided from the community's own records.
+///
+/// # Errors
+/// A store failure.
+pub async fn presentation_admits(
+    state: &AppState,
+    rec: &ElectionRecord,
+    outcome: Option<&Outcome>,
+) -> Result<bool, AppError> {
+    let Some(Outcome::Passed(p)) = outcome else {
+        return Ok(false);
+    };
+    if !rec.is_member_party_election()
+        || (!rec.is_registered() && rec.standing != Standing::Cancelled)
+        || rec.roll_member_of() != Some(p.issuer.as_str())
+    {
+        return Ok(false);
+    }
+    roll::still_trusted(state, rec).await
 }
 
 // ─── create ──────────────────────────────────────────────────────────────
@@ -170,8 +222,13 @@ pub enum CreateError {
     UnsupportedSecrecy,
     CommunityMismatch,
     BallotBoxNotTrusted,
+    /// A credential roll names a DID this community does not trust for one (VTI-VOT-026).
+    RollUntrusted,
     ElectionExists,
-    BallotBoxRefused { code: String, message: String },
+    BallotBoxRefused {
+        code: String,
+        message: String,
+    },
     App(AppError),
 }
 
@@ -185,6 +242,8 @@ impl From<AppError> for CreateError {
 pub struct CheckedManifest {
     pub manifest: Manifest,
     pub digest: [u8; 32],
+    /// Under a credential roll, what `roll.memberOf` is to the community (item 6).
+    pub roll_party: Option<RollParty>,
 }
 
 /// Items 2 – 6, against the community and the clock as they are now — run on the request, and
@@ -197,18 +256,12 @@ pub async fn check_create(
     manifest: &Value,
     now: DateTime<Utc>,
 ) -> Result<CheckedManifest, CreateError> {
-    let m: Manifest = serde_json::from_value(manifest.clone())
-        .map_err(|e| CreateError::InvalidManifest(e.to_string()))?;
-    rules::check_manifest(&m, None).map_err(|e| match e {
+    // What needs only the manifest and the clock; `cnm elections manifest check` runs the same.
+    let m = rules::check_new_manifest(manifest, now).map_err(|e| match e {
         RuleError::UnsupportedSecrecy(_) => CreateError::UnsupportedSecrecy,
         RuleError::InvalidManifest(why) => CreateError::InvalidManifest(why),
         other => CreateError::InvalidManifest(other.to_string()),
     })?;
-    if m.voting_closes <= now {
-        return Err(CreateError::InvalidManifest(
-            "votingCloses is already past".into(),
-        ));
-    }
     if m.community.as_str() != community_did(state).await {
         return Err(CreateError::CommunityMismatch);
     }
@@ -222,6 +275,16 @@ pub async fn check_create(
     {
         return Err(CreateError::BallotBoxNotTrusted);
     }
+    // Item 6 (VTI-VOT-026): the community, one of its groups, or a party that is itself an
+    // active member. Nothing about who may vote is fixed here (VTI-VOT-025).
+    let roll_party = match &m.roll.member_of {
+        Some(did) => Some(
+            roll::classify(state, did.as_str())
+                .await?
+                .ok_or(CreateError::RollUntrusted)?,
+        ),
+        None => None,
+    };
     if store::get(state.elections.ks(), m.election_id.as_str())
         .await?
         .is_some()
@@ -233,6 +296,7 @@ pub async fn check_create(
     Ok(CheckedManifest {
         manifest: m,
         digest,
+        roll_party,
     })
 }
 
@@ -258,9 +322,9 @@ pub async fn create(
         standing: Standing::PendingRegistration,
         binding: m.binding,
         ballot_box: m.ballot_box.as_str().to_string(),
-        registration_opens: m.registration_opens,
-        voting_opens: m.voting_opens,
-        voting_closes: m.voting_closes,
+        registration_opens: m.registration_opens_at,
+        voting_opens: m.voting_opens_at,
+        voting_closes: m.voting_closes_at,
         created_by: requester.to_string(),
         created_at: now,
         action_id,
@@ -281,6 +345,9 @@ pub async fn create(
         election_key: None,
         ceremony: None,
         decryption_authorized: false,
+        roll_party: checked.roll_party.clone(),
+        verified: None,
+        pending_end: None,
     };
     if !store::put_new(state.elections.ks(), &rec).await? {
         return Err(CreateError::ElectionExists);
@@ -340,12 +407,39 @@ pub async fn deliver_registration(
     });
     let answer = match state.elections.link() {
         Some(link) => {
-            link.exchange(
-                &rec.ballot_box,
-                &format!("{SPEC}voting/election/register/0.1"),
-                &payload,
-            )
-            .await
+            // voting/election/register/0.4 first. A ballot box from before it refuses it by
+            // version; 0.3 carries the same manifest wherever the roll is not a credential roll
+            // (voting/_shared/0.4, VTI-VOT-025), and 0.2 wherever the threshold is also 10 or
+            // more (VTI-VOT-065). A manifest neither can carry keeps the refusal. Each is a
+            // different request on a definite refusal, not a retry: the sweeper stays the one
+            // owner of redelivery.
+            let mut answer = link
+                .exchange(
+                    &rec.ballot_box,
+                    &format!("{SPEC}voting/election/register/0.4"),
+                    &payload,
+                )
+                .await;
+            for (version, fits) in [
+                ("0.3", fits_register_0_3(&rec.manifest)),
+                ("0.2", fits_register_0_2(&rec.manifest)),
+            ] {
+                let refused_by_version = matches!(
+                    &answer,
+                    Ok(BoxAnswer::Refused { code, .. }) if code == "unsupportedVersion"
+                );
+                if !(refused_by_version && fits) {
+                    break;
+                }
+                answer = link
+                    .exchange(
+                        &rec.ballot_box,
+                        &format!("{SPEC}voting/election/register/{version}"),
+                        &payload,
+                    )
+                    .await;
+            }
+            answer
         }
         None => Err(LinkError::Unavailable(
             "this VTC has no messaging link to ballot boxes yet".into(),
@@ -384,7 +478,13 @@ pub async fn deliver_registration(
     };
     match &out {
         Delivered::Registered(r) | Delivered::Pending(r) => {
-            store::put(state.elections.ks(), r).await?
+            let (standing, refusal, delivery) = (r.standing, r.refusal.clone(), r.delivery.clone());
+            store::update(state.elections.ks(), &r.election_id, move |cur| {
+                cur.standing = standing;
+                cur.refusal = refusal;
+                cur.delivery = delivery;
+            })
+            .await?;
         }
         // The caller decides: discard on the first delivery, keep as refused on a later one.
         Delivered::Refused { .. } => {}
@@ -394,15 +494,29 @@ pub async fn deliver_registration(
 
 // ─── tickets ─────────────────────────────────────────────────────────────
 
-/// Why a ticket was refused (tickets/issue items 2 – 7).
+/// Why a ticket was refused (tickets/issue/0.3 items 3 – 8).
 #[derive(Debug)]
 pub enum IssueError {
     ElectionUnknown,
     NotOpen,
     ManifestMismatch,
     NotEligible,
+    /// Under a credential roll, to a signer who may see the election (item 6.5).
+    NotEligibleSeen,
     AlreadyIssued,
     RequestInvalid(String),
+    /// Item 6: a presentation under a rule that takes none.
+    PresentationUnexpected,
+    /// Item 6.1.
+    PresentationRequired,
+    /// Item 6.2 (VTI-VOT-026, VTI-VOT-029).
+    RollUntrusted,
+    /// Item 6.3, with `details.reason`.
+    MembershipNotProven(&'static str),
+    /// Item 6.4.
+    MembershipRevoked,
+    /// A credential-roll election claimed at `tickets/issue/0.1`, which carries no presentation.
+    UnsupportedVersion,
     App(AppError),
 }
 
@@ -422,10 +536,90 @@ pub struct TicketAsk<'a> {
     pub request: &'a Value,
     pub doc_id: &'a str,
     pub doc_digest: &'a str,
+    /// What the request's presentation came to (item 2), checked before this is called — never
+    /// [`Outcome::Indeterminate`], which the caller has already answered — or `None` without one.
+    pub presentation: Option<&'a Outcome>,
+    /// Whether the request's version carries a presentation (tickets/issue/0.3, not 0.1).
+    pub carries_presentation: bool,
 }
 
-/// Issue a ticket blind, recording it first (tickets/issue items 1 – 10). Returns the
-/// pre-credential, multibase, and whether this was a resend answered from the record.
+/// A ticket issued: the pre-credential, multibase; whether this was a resend answered from the
+/// record; and, under a credential roll, the issuer of the credential presented (item 12).
+pub struct Issued {
+    pub pre_credential: String,
+    pub resend: bool,
+    pub credential_issuer: Option<String>,
+}
+
+/// Item 6 under `credential` (VTI-VOT-025), in its order, reading nothing after item 2 but the
+/// community's own records.
+async fn credential_eligible(
+    state: &AppState,
+    rec: &ElectionRecord,
+    signer: &str,
+    outcome: Option<&Outcome>,
+    now: DateTime<Utc>,
+) -> Result<String, IssueError> {
+    // 6.1.
+    let Some(outcome) = outcome else {
+        return Err(IssueError::PresentationRequired);
+    };
+    // 6.2.
+    if !roll::still_trusted(state, rec).await? {
+        return Err(IssueError::RollUntrusted);
+    }
+    // 6.3.
+    if let Outcome::Failed { check, .. } = outcome
+        && *check != Check::Revoked
+    {
+        return Err(IssueError::MembershipNotProven(check.reason()));
+    }
+    let member_of = rec.roll_member_of().unwrap_or_default();
+    let Some(issuer) = outcome.issuer() else {
+        return Err(IssueError::MembershipNotProven("issuer"));
+    };
+    if issuer != member_of {
+        return Err(IssueError::MembershipNotProven("issuer"));
+    }
+    if let Some(RollParty::CommunityGroup { group_id }) = &rec.roll_party {
+        let live = match roll::group(state, group_id).await? {
+            Some(g) => roll::group_authorized(state, &g, now).await?,
+            None => false,
+        };
+        if !live {
+            return Err(IssueError::MembershipNotProven("authorization"));
+        }
+    }
+    // 6.4.
+    if matches!(
+        outcome,
+        Outcome::Failed {
+            check: Check::Revoked,
+            ..
+        }
+    ) {
+        return Err(IssueError::MembershipRevoked);
+    }
+    // 6.5: a credential not yet expired does not outlast a removal recorded here.
+    let agrees = match &rec.roll_party {
+        Some(RollParty::ThisCommunity) => {
+            crate::member_portal::active::active_member(state, signer)
+                .await?
+                .is_some()
+        }
+        Some(RollParty::CommunityGroup { group_id }) => {
+            roll::active_in_group(state, group_id, signer).await?
+        }
+        _ => true,
+    };
+    if !agrees {
+        return Err(IssueError::NotEligibleSeen);
+    }
+    Ok(issuer.to_string())
+}
+
+/// Issue a ticket blind, recording it first (tickets/issue/0.3 items 1 and 3 – 12; item 2, the
+/// presentation, the caller made).
 ///
 /// # Errors
 /// The first rule broken, in the specification's order.
@@ -433,9 +627,9 @@ pub async fn issue_ticket(
     state: &AppState,
     ask: TicketAsk<'_>,
     now: DateTime<Utc>,
-) -> Result<(String, bool), IssueError> {
+) -> Result<Issued, IssueError> {
     let ks = state.elections.ks();
-    // Item 8: one critical section for items 6 – 10.
+    // Item 9: one critical section for items 7 – 11.
     let _guard = state.elections.issue_lock.lock().await;
 
     // Item 1: a resend of the document already answered.
@@ -444,17 +638,29 @@ pub async fn issue_ticket(
         && t.doc_digest == ask.doc_digest
         && let Some(pre) = t.pre_credential
     {
-        return Ok((pre, true));
+        return Ok(Issued {
+            pre_credential: pre,
+            resend: true,
+            credential_issuer: None,
+        });
     }
 
-    // Item 2: unknown and unseen are the same answer.
+    // Item 3: unknown and unseen are the same answer (VTI-VOT-015, VTI-VOT-017). A member-party
+    // election is seen by anyone else only on this request's own presentation, decided before
+    // its state or manifest is compared.
     let Some(mut rec) = store::get(ks, ask.election_id).await? else {
         return Err(IssueError::ElectionUnknown);
     };
-    if !may_see(state, &rec, ask.signer, ask.manager).await? {
+    let seen = may_see(state, &rec, ask.signer, ask.manager).await?
+        || presentation_admits(state, &rec, ask.presentation).await?;
+    if !seen {
         return Err(IssueError::ElectionUnknown);
     }
-    // Item 3 (VTI-VOT-024); and never after a restore (VTI-VOT-022).
+    let credential_roll = rec.roll_member_of().is_some();
+    if credential_roll && !ask.carries_presentation {
+        return Err(IssueError::UnsupportedVersion);
+    }
+    // Item 4 (VTI-VOT-024); and never after a restore (VTI-VOT-022).
     let open = rec.standing == Standing::Registered
         && !rec.issuance_stopped
         && !rec.close_in_flight
@@ -464,22 +670,34 @@ pub async fn issue_ticket(
     if !open {
         return Err(IssueError::NotOpen);
     }
-    // Item 4.
+    // Item 5.
     if ask.manifest_digest != rec.manifest_digest {
         return Err(IssueError::ManifestMismatch);
     }
-    // Item 5: the roll as the records stand now.
-    if !roll_admits(state, &rec, ask.signer).await? {
-        return Err(IssueError::NotEligible);
-    }
-    // Item 6 (VTI-VOT-022).
+    // Item 6: the roll as the records — or, under a credential roll, the presentation — stand
+    // now.
+    let credential_issuer = if credential_roll {
+        Some(credential_eligible(state, &rec, ask.signer, ask.presentation, now).await?)
+    } else {
+        if ask.presentation.is_some() {
+            return Err(IssueError::PresentationUnexpected);
+        }
+        if !roll_admits(state, &rec, ask.signer).await? {
+            return Err(IssueError::NotEligible);
+        }
+        None
+    };
+    // Item 7 (VTI-VOT-022, VTI-VOT-027): one ticket per party. Under a credential roll the
+    // party is the credential's subject, which item 2 held to be the signer — for the community
+    // and its groups the member by their membership DID, whose tickets follow a rotation
+    // (`Elections::carry_tickets`); for a member party the subject's own DID.
     if store::ticket(ks, ask.election_id, ask.signer)
         .await?
         .is_some()
     {
         return Err(IssueError::AlreadyIssued);
     }
-    // Item 7.
+    // Item 8.
     let label = format!("voter/{}", rec.election_id);
     if ask.request["label"].as_str() != Some(label.as_str()) {
         return Err(IssueError::RequestInvalid(format!(
@@ -503,7 +721,7 @@ pub async fn issue_ticket(
     )
     .map_err(|e| AppError::Internal(format!("election: {e}")))?;
 
-    // Item 9: blind.
+    // Item 10: blind.
     let reg = registrar(state).await?;
     let pre = reg
         .issue_ticket(&election, &id, &request, &mut vti_voting::rand::rngs::OsRng)
@@ -511,7 +729,7 @@ pub async fn issue_ticket(
     let pre = vti_vetting_pcs::scheme::enc(&pre)
         .map_err(|e| AppError::Internal(format!("encode the pre-credential: {e}")))?;
 
-    // Item 10: record before answering.
+    // Item 11: record before answering — the party, never the presentation (VTI-CRD-042).
     let ticket = TicketIssued {
         election_id: rec.election_id.clone(),
         signer: ask.signer.to_string(),
@@ -524,8 +742,15 @@ pub async fn issue_ticket(
         return Err(IssueError::AlreadyIssued);
     }
     rec.tickets_issued = rec.tickets_issued.saturating_add(1);
-    store::put(ks, &rec).await?;
-    Ok((pre, false))
+    store::update(ks, &rec.election_id, |cur| {
+        cur.tickets_issued = cur.tickets_issued.saturating_add(1);
+    })
+    .await?;
+    Ok(Issued {
+        pre_credential: pre,
+        resend: false,
+        credential_issuer,
+    })
 }
 
 // ─── close and cancel ────────────────────────────────────────────────────
@@ -558,7 +783,7 @@ pub async fn close(
     now: DateTime<Utc>,
 ) -> Result<String, EndError> {
     let ks = state.elections.ks();
-    let Some(mut rec) = store::get(ks, election_id).await? else {
+    let Some(rec) = store::get(ks, election_id).await? else {
         return Err(EndError::ElectionUnknown);
     };
     if rec.state(now) != "voting" {
@@ -568,19 +793,22 @@ pub async fn close(
         return Err(EndError::EarlyCloseNotAllowed);
     }
     // Item 4: no ticket while the close is in flight.
-    rec.close_in_flight = true;
-    store::put(ks, &rec).await?;
+    store::update(ks, election_id, |cur| cur.close_in_flight = true).await?;
     let mut payload = json!({ "community": community_did(state).await, "electionId": election_id });
     if let Some(r) = reason {
         payload["reason"] = json!(r);
     }
     let answer = exchange(state, &rec.ballot_box, "voting/election/close", &payload).await;
-    let mut rec = store::get(ks, election_id).await?.unwrap_or(rec);
-    rec.close_in_flight = false;
+    let closed = matches!(answer, Ok(BoxAnswer::Success { .. }));
+    store::update(ks, election_id, |cur| {
+        cur.close_in_flight = false;
+        if closed {
+            cur.standing = Standing::Closed;
+        }
+    })
+    .await?;
     match answer {
         Ok(BoxAnswer::Success { payload, .. }) => {
-            rec.standing = Standing::Closed;
-            store::put(ks, &rec).await?;
             // Item 5: keep the final head.
             checkpoint(state, election_id, true).await;
             Ok(payload["election"]["state"]
@@ -589,13 +817,9 @@ pub async fn close(
                 .to_string())
         }
         Ok(BoxAnswer::Refused { code, message }) => {
-            store::put(ks, &rec).await?;
             Err(EndError::BallotBoxRefused { code, message })
         }
-        Err(e) => {
-            store::put(ks, &rec).await?;
-            Err(EndError::BallotBoxUnavailable(e.to_string()))
-        }
+        Err(e) => Err(EndError::BallotBoxUnavailable(e.to_string())),
     }
 }
 
@@ -610,7 +834,7 @@ pub async fn cancel(
     now: DateTime<Utc>,
 ) -> Result<String, EndError> {
     let ks = state.elections.ks();
-    let Some(mut rec) = store::get(ks, election_id).await? else {
+    let Some(rec) = store::get(ks, election_id).await? else {
         return Err(EndError::ElectionUnknown);
     };
     if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
@@ -618,9 +842,11 @@ pub async fn cancel(
     }
     // Item 3: stop issuing, durably, before anything else; item 5: stop delivering.
     let unregistered = !rec.is_registered();
-    rec.issuance_stopped = true;
-    rec.delivery = None;
-    store::put(ks, &rec).await?;
+    store::update(ks, election_id, |cur| {
+        cur.issuance_stopped = true;
+        cur.delivery = None;
+    })
+    .await?;
     let payload = json!({
         "community": community_did(state).await,
         "electionId": election_id,
@@ -628,8 +854,7 @@ pub async fn cancel(
     });
     match exchange(state, &rec.ballot_box, "voting/election/cancel", &payload).await {
         Ok(BoxAnswer::Success { payload, .. }) => {
-            rec.standing = Standing::Cancelled;
-            store::put(ks, &rec).await?;
+            store::update(ks, election_id, |cur| cur.standing = Standing::Cancelled).await?;
             Ok(payload["election"]["state"]
                 .as_str()
                 .unwrap_or("cancelled")
@@ -639,8 +864,7 @@ pub async fn cancel(
         Ok(BoxAnswer::Refused { code, .. })
             if unregistered && code.ends_with(":electionUnknown") =>
         {
-            rec.standing = Standing::Cancelled;
-            store::put(ks, &rec).await?;
+            store::update(ks, election_id, |cur| cur.standing = Standing::Cancelled).await?;
             Ok("cancelled".to_string())
         }
         Ok(BoxAnswer::Refused { code, message }) => {
@@ -648,6 +872,121 @@ pub async fn cancel(
         }
         Err(e) => Err(EndError::BallotBoxUnavailable(e.to_string())),
     }
+}
+
+/// How an end asked for by closing a board stands after one attempt (VTI-BRD-006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndAttempt {
+    /// The ballot box answered; nothing is pending.
+    Done,
+    /// The ballot box did not answer; the sweeper asks again.
+    Pending,
+    /// Nothing to do, or nothing more that can be done: the election had already ended, or the
+    /// ballot box refused (recorded on the election, logged, not retried).
+    Settled,
+}
+
+/// Record `kind` on `election_id` as asked for by its board's closing (VTI-BRD-006), without
+/// asking the ballot box yet: the record is what the sweeper retries, so it is durable before
+/// anything is sent. Returns whether it was recorded (false: the election has already ended).
+///
+/// # Errors
+/// A store failure.
+pub async fn record_end(
+    state: &AppState,
+    election_id: &str,
+    kind: store::EndKind,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, AppError> {
+    let ks = state.elections.ks();
+    let recorded = store::update(ks, election_id, |rec| {
+        if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
+            return false;
+        }
+        if rec.pending_end.is_none() {
+            rec.pending_end = Some(store::PendingEnd {
+                kind,
+                reason: reason.to_string(),
+                attempts: 0,
+                // The caller's own attempt follows at once and holds it until then: the sweeper
+                // retries only an attempt that never answered (a process that died mid-way).
+                next_at: now + delivery_backoff(0),
+                last_error: None,
+            });
+        }
+        true
+    })
+    .await?;
+    Ok(recorded.unwrap_or(false))
+}
+
+/// Ask for `kind` on `election_id` on behalf of its board's closing (VTI-BRD-006), recording it
+/// first so the elections sweeper — the one retry owner — asks again until the ballot box
+/// answers. Also the sweeper's own retry: an existing [`store::PendingEnd`] is attempted again.
+///
+/// # Errors
+/// A store failure.
+pub async fn request_end(
+    state: &AppState,
+    election_id: &str,
+    kind: store::EndKind,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<EndAttempt, AppError> {
+    let ks = state.elections.ks();
+    let started = store::update(ks, election_id, |rec| {
+        if matches!(rec.state(now), "closed" | "tallied" | "cancelled") {
+            rec.pending_end = None;
+            return None;
+        }
+        let attempts = rec.pending_end.as_ref().map_or(0, |p| p.attempts);
+        // This attempt holds the end while it asks: a sweeper pass meanwhile does not ask again,
+        // so one election is never ended twice at once (two closes reading and writing its
+        // record over each other lose what the other kept — the final head among it).
+        rec.pending_end = Some(store::PendingEnd {
+            kind,
+            reason: reason.to_string(),
+            attempts,
+            next_at: now + delivery_backoff(attempts),
+            last_error: None,
+        });
+        Some(attempts)
+    })
+    .await?;
+    let Some(Some(attempts)) = started else {
+        return Ok(EndAttempt::Settled);
+    };
+    let outcome = match kind {
+        store::EndKind::Close => close(state, election_id, Some(reason), now)
+            .await
+            .map(|_| ()),
+        store::EndKind::Cancel => cancel(state, election_id, reason, now).await.map(|_| ()),
+    };
+    let (attempt, pending) = match outcome {
+        Ok(()) => (EndAttempt::Done, None),
+        Err(EndError::BallotBoxUnavailable(e)) => {
+            let attempts = attempts.saturating_add(1);
+            tracing::warn!(election = %election_id, attempts, error = %e, "the ballot box did not answer ending this election; retrying");
+            (
+                EndAttempt::Pending,
+                Some(store::PendingEnd {
+                    kind,
+                    reason: reason.to_string(),
+                    attempts,
+                    next_at: now + delivery_backoff(attempts),
+                    last_error: Some(e),
+                }),
+            )
+        }
+        Err(EndError::App(e)) => return Err(e),
+        Err(other) => {
+            tracing::warn!(election = %election_id, outcome = ?other, "ending this election was refused; not retried");
+            (EndAttempt::Settled, None)
+        }
+    };
+    store::update(ks, election_id, |rec| rec.pending_end = pending).await?;
+    Ok(attempt)
 }
 
 /// Read the ballot box's head and keep it, with the signed document that carried it (show item
@@ -666,26 +1005,26 @@ pub async fn checkpoint(state: &AppState, election_id: &str, final_head: bool) {
         return;
     };
     let head = payload["head"].clone();
-    // Re-read: a close or a certify may have written meanwhile.
-    let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
-        return;
-    };
-    // Paced by this clock: a box that dates its heads ahead cannot put the next one off.
-    rec.checkpoint_asked_at = Some(asked);
-    let repeat = rec.checkpoints.last().is_some_and(|c| c["head"] == head);
-    if !repeat {
-        // At most 256 kept; the final head always is, in place of the oldest after the first
-        // if need be — it is the one certification ends at.
-        if rec.checkpoints.len() >= 256 && final_head {
-            rec.checkpoints.remove(1);
+    // Applied to the record as it is now: a close or a certify may have written meanwhile.
+    let kept = store::update(ks, election_id, |rec| {
+        // Paced by this clock: a box that dates its heads ahead cannot put the next one off.
+        rec.checkpoint_asked_at = Some(asked);
+        let repeat = rec.checkpoints.last().is_some_and(|c| c["head"] == head);
+        if !repeat {
+            // At most 256 kept; the final head always is, in place of the oldest after the
+            // first if need be — it is the one certification ends at.
+            if rec.checkpoints.len() >= 256 && final_head {
+                rec.checkpoints.remove(1);
+            }
+            if rec.checkpoints.len() < 256 {
+                rec.checkpoints
+                    .push(json!({ "head": head, "document": document }));
+            }
         }
-        if rec.checkpoints.len() < 256 {
-            rec.checkpoints
-                .push(json!({ "head": head, "document": document }));
-        }
-    }
-    rec.final_checkpoint |= final_head;
-    if let Err(e) = store::put(ks, &rec).await {
+        rec.final_checkpoint |= final_head;
+    })
+    .await;
+    if let Err(e) = kept {
         tracing::warn!(election = election_id, error = %e, "could not keep a board checkpoint");
     }
 }
@@ -725,13 +1064,13 @@ pub async fn read_election_key(state: &AppState, election_id: &str) {
         .filter(|e| e["kind"] == vti_voting::steps::KIND)
         .map(|e| e["request"].clone())
         .collect();
-    // Re-read: a close or a certify may have written meanwhile.
-    let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
-        return;
-    };
-    rec.election_key = Some(key);
-    rec.ceremony = Some(Value::Array(ceremony));
-    if let Err(e) = store::put(ks, &rec).await {
+    // Applied to the record as it is now: a close or a certify may have written meanwhile.
+    let kept = store::update(ks, election_id, |rec| {
+        rec.election_key = Some(key);
+        rec.ceremony = Some(Value::Array(ceremony));
+    })
+    .await;
+    if let Err(e) = kept {
         tracing::warn!(election = election_id, error = %e, "could not keep the election key");
     }
 }
@@ -815,11 +1154,8 @@ pub async fn authorize_decryption(state: &AppState, election_id: &str) {
             return;
         }
     }
-    let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
-        return;
-    };
-    rec.decryption_authorized = true;
-    if let Err(e) = store::put(ks, &rec).await {
+    let kept = store::update(ks, election_id, |rec| rec.decryption_authorized = true).await;
+    if let Err(e) = kept {
         tracing::warn!(election = election_id, error = %e, "could not record the decryption authorization");
     }
 }
@@ -921,32 +1257,28 @@ pub struct Certified {
 /// The most entries one `voting/board/read` asks for.
 const READ_PAGE: u64 = 1000;
 
-/// Certify `election_id`: read the result, the head and every entry from the ballot box itself —
-/// never from the requester — verify the board from the community's own voting key, check each
-/// auditor's attestation, and only then record (certify items 2 – 11).
+/// A published result the community verified from the board (certify items 3 – 9).
+pub struct Verified {
+    pub result: Value,
+}
+
+/// Read the published result, the head and every entry from the ballot box itself and verify
+/// them from the community's own voting key — what certification checks before it records
+/// anything (certify items 3 – 9). Records nothing: [`certify`] records a certification, and
+/// [`verify_and_keep`] keeps an uncertified result for a board's facilitators.
 ///
 /// # Errors
-/// As the certify specification lists, the first failure found.
-pub async fn certify(
+/// As [`certify`] lists for those items.
+pub async fn verify(
     state: &AppState,
-    election_id: &str,
-    attestations: &[Value],
-    now: DateTime<Utc>,
-) -> Result<Certified, CertifyError> {
+    rec: &store::ElectionRecord,
+    community: &str,
+) -> Result<Verified, CertifyError> {
     use vti_voting::audit::{AuditFailure, Evidence, HeadRef};
-    let ks = state.elections.ks();
-    let Some(rec) = store::get(ks, election_id).await? else {
-        return Err(CertifyError::ElectionUnknown);
-    };
-    // Item 2.
-    if rec.certified.is_some() {
-        return Err(CertifyError::AlreadyCertified);
-    }
     if !rec.is_registered() {
         return Err(CertifyError::NotTallied);
     }
-    let community = community_did(state).await;
-    let sel = json!({ "community": community, "electionId": election_id });
+    let sel = json!({ "community": community, "electionId": rec.election_id });
     let unavailable = |e: LinkError| CertifyError::BallotBoxUnavailable(e.to_string());
 
     // Item 3: the result, the head, every entry under it.
@@ -1009,6 +1341,70 @@ pub async fn certify(
         AuditFailure::ResultMismatch(why) => CertifyError::ResultMismatch(why),
         other => CertifyError::ResultMismatch(other.to_string()),
     })?;
+    Ok(Verified { result })
+}
+
+/// Verify `election_id`'s published result ([`verify`]) and keep it on the record as
+/// `verified`, uncertified: `{result, head, verifiedAt}`. A result already kept, or a certified
+/// election, is answered from the record without asking the ballot box again.
+///
+/// # Errors
+/// As [`verify`].
+pub async fn verify_and_keep(
+    state: &AppState,
+    election_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Value, CertifyError> {
+    let ks = state.elections.ks();
+    let Some(rec) = store::get(ks, election_id).await? else {
+        return Err(CertifyError::ElectionUnknown);
+    };
+    if let Some(c) = &rec.certified {
+        return Ok(c["result"].clone());
+    }
+    if let Some(v) = &rec.verified {
+        return Ok(v["result"].clone());
+    }
+    let community = community_did(state).await;
+    let Verified { result } = verify(state, &rec, &community).await?;
+    // Applied to the record as it is now: the sweeper or a certification may have written.
+    store::update(ks, election_id, |rec| {
+        if rec.certified.is_none() && rec.verified.is_none() {
+            rec.verified = Some(json!({
+                "result": result,
+                "head": result["head"],
+                "verifiedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            }));
+        }
+    })
+    .await?
+    .ok_or(CertifyError::ElectionUnknown)?;
+    Ok(result)
+}
+
+/// Certify `election_id`: read the result, the head and every entry from the ballot box itself —
+/// never from the requester — verify the board from the community's own voting key, check each
+/// auditor's attestation, and only then record (certify items 2 – 11).
+///
+/// # Errors
+/// As the certify specification lists, the first failure found.
+pub async fn certify(
+    state: &AppState,
+    election_id: &str,
+    attestations: &[Value],
+    now: DateTime<Utc>,
+) -> Result<Certified, CertifyError> {
+    let ks = state.elections.ks();
+    let Some(rec) = store::get(ks, election_id).await? else {
+        return Err(CertifyError::ElectionUnknown);
+    };
+    // Item 2.
+    if rec.certified.is_some() {
+        return Err(CertifyError::AlreadyCertified);
+    }
+    let community = community_did(state).await;
+    // Items 3 – 9.
+    let Verified { result } = verify(state, &rec, &community).await?;
 
     // Item 10: each attestation, beside the community's own verification, never instead of it.
     let counted_head = result["head"].clone();
@@ -1051,19 +1447,23 @@ pub async fn certify(
     }
 
     // Item 11: record, then answer.
-    let mut rec = store::get(ks, election_id)
-        .await?
-        .ok_or(CertifyError::ElectionUnknown)?;
-    if rec.certified.is_some() {
+    let recorded = store::update(ks, election_id, |rec| {
+        if rec.certified.is_some() {
+            return false;
+        }
+        rec.certified = Some(json!({
+            "result": result,
+            "certifiedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "auditAttestations": attestations,
+        }));
+        rec.standing = Standing::Tallied;
+        true
+    })
+    .await?
+    .ok_or(CertifyError::ElectionUnknown)?;
+    if !recorded {
         return Err(CertifyError::AlreadyCertified);
     }
-    rec.certified = Some(json!({
-        "result": result,
-        "certifiedAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "auditAttestations": attestations,
-    }));
-    rec.standing = Standing::Tallied;
-    store::put(ks, &rec).await?;
     Ok(Certified {
         result,
         head: counted_head,
@@ -1095,12 +1495,42 @@ async fn exchange(
     }
     match state.elections.link() {
         Some(link) => {
-            link.exchange(ballot_box, &format!("{SPEC}{task}/0.1"), payload)
-                .await
+            link.exchange(
+                ballot_box,
+                &format!("{SPEC}{task}/{}", box_version(task)),
+                payload,
+            )
+            .await
         }
         None => Err(LinkError::Unavailable(
             "this VTC has no messaging link to ballot boxes".into(),
         )),
+    }
+}
+
+/// Whether `manifest` can be registered under `voting/election/register/0.3`, whose manifest
+/// (voting/_shared/0.3) has no `credential` roll.
+fn fits_register_0_3(manifest: &Value) -> bool {
+    manifest["roll"]["rule"] != "credential"
+}
+
+/// Whether `manifest` can be registered under `voting/election/register/0.2`, whose schema
+/// (voting/_shared/0.2) also holds `textReleaseThreshold` to 10 or more (VTI-VOT-065).
+fn fits_register_0_2(manifest: &Value) -> bool {
+    fits_register_0_3(manifest)
+        && manifest["textReleaseThreshold"]
+            .as_u64()
+            .is_some_and(|t| t >= 10)
+}
+
+/// The version of a ballot-box task the community sends: `voting/board/read` at 0.2, whose
+/// lifecycle entries name their instant `occurredAt` (voting/_shared/0.2), every other task this
+/// path sends at 0.1, its current version. `voting/election/register` is sent at 0.4 directly
+/// ([`deliver_registration`]).
+fn box_version(task: &str) -> &'static str {
+    match task {
+        "voting/board/read" => "0.2",
+        _ => "0.1",
     }
 }
 

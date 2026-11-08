@@ -381,7 +381,7 @@ pub struct PersonaProfilePutBody {
     pub credential_refs: Vec<String>,
     /// Where the face may be worn. Omit to keep its current reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_1::FaceReach>,
+    pub reach: Option<vti_specs::persona::profile::put::v1_1::FaceReach>,
     /// Address an existing profile, or make a create idempotent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
@@ -775,7 +775,7 @@ pub struct PersonaDisclosureHistoryBody {
 // Correlation and renderers — agent-scoped.
 // ---------------------------------------------------------------------------
 
-/// `spec/persona/correlation/analyze/1.0` — how linkable would this make me?
+/// `spec/persona/correlation/analyze/1.2` — how linkable would this make me?
 ///
 /// Reads the pool and writes nothing. Note the inversion that is easy to get
 /// backwards: a credential presented **whole** correlates *more* than a

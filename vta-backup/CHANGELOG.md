@@ -2,6 +2,222 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.37.0...vta-backup-v0.38.0) — 2026-11-05
+
+
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.36.0...vta-backup-v0.37.0) — 2026-11-05
+
+
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.35.0...vta-backup-v0.36.0) — 2026-11-05
+
+
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.34.0...vta-backup-v0.35.0) — 2026-11-04
+
+
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.33.0...vta-backup-v0.34.0) — 2026-11-04
+
+
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.32.0...vta-backup-v0.33.0) — 2026-11-04
+
+
+### Added
+
+- **vta**: Collection for the principal's identifiers — claims, the collector, collection by default off (VTI-NTF-080 – 093) ([#2421](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2421))
+
+* feat(vti-specs): pin vta/collection/{claim,release,list} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1023 and #1024: a client's
+  collection claim on a persona DID, its release, and the listing of who
+  collects for each of a context's identifiers (VTI-NTF-080 – VTI-NTF-093).
+
+
+
+### Fixed
+
+- **contexts**: Purge every context-scoped record on delete ([#2419](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2419))
+
+vta/contexts/delete removed a context's keys, DIDs, ACL scope, DID
+  templates, app state and memory ([#2415](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2415)), but every other store that holds
+  data for a context kept its rows. Most are keyed by the context id, or by a
+  digest of it, so a context later created under the same id inherited them.
+
+  Seen with OpenVTC: a context deleted and recreated under the same id failed
+  vta/pcs/root-request with memberMismatch. The vetter engine record
+  (pcs_engine vetter:<sha256(ctx, community)>) had survived, still pinned to
+  the old member DID and to a derivation path under the old context's base.
+
+  delete_context now purges, for every context in the subtree:
+
+  - pcs_engine: vetter, applicant, voter and trustee records whose contextId
+    is the context, with the wrapped state beside each (secret:<key>, and a
+    voter's secret:voter-casts:<digest>). The keys are digests, so the purge
+    scans each record prefix and matches the record's own contextId.
+  - persona: every context-scoped prefix (pb, pc, pcr, pca, pcl, pd, plp, plb),
+    driven from PREFIX_SCOPES so a new context-scoped prefix is purged without
+    anyone remembering to; and the agent-scoped face-value edges that name one
+    of the context's local profiles.
+  - vault: credentials in the context's custody (with their index rows) and
+    vault entries, hard-deleted whatever their lifecycle state.
+  - notifications: held records with their dedup and bound rows (the sweep's
+    removal, factored out and shared).
+  - consent: grants decided in, and pending requests scoped to, the context;
+    consent_approvers: its approver bindings.
+  - external_accounts / external_secrets: each live account deleted the way
+    external/accounts/delete deletes one (secret gone, id retired).
+  - contexts: the daily quota counters (quota:<ctx>:...).
+  - imported_secrets / internal_keys: the material of each key record the
+    purge removes, as revoke_key does for an imported key.
+
+  Each store purges itself next to the code that writes it, and the counts go
+  in the deletion's log line. As in #2415 none of this is in the not-empty
+  gate: the gate must agree with preview-delete, whose wire shape has no
+  member for these, so surfacing them needs a spec revision.
+
+  Kept on purpose: the audit log; issued credentials (revoked through the DID
+  cascade, never deleted); operator policy; room groups and invitations (keyed
+  by persona DID / credential id, unreachable from a recreated context); and
+  external accounts' retired: tombstones, which hold no data and stop a
+  recreated context reusing an account id a provider-side trust policy may
+  still name.
+
+  The census is now a claim the code is held to:
+
+  - vta_keyspaces::context_delete_effect classifies every keyspace for a
+    context deletion (Purged / Retained / Lapses / Unrelated), and
+    context_delete_labels_match_the_cascade ties the Purged set to the
+    cascade's own list.
+  - did_delete_effect labelled most keyspaces Cascade (and five Blocks) though
+    the DID deletion reaches only keys, webvh, acl, sessions, issued
+    credentials and contexts. Those labels are now Orphaned, with the intended
+    effect beside each, and did_delete_labels_match_the_cascade holds
+    Cascade / Blocks / Revoke to DID_DELETE_REACHES.
+
+
+
+## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.31.0...vta-backup-v0.32.0) — 2026-11-03
+
+
+### Fixed
+
+- **contexts**: Context deletion purges the context's app-state and agent memory ([#2415](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2415))
+
+vta/contexts/delete removed a context's keys, DIDs, ACL entries and DID
+  templates, but left its application state (app:/appv:/appc:/appt:<ctx>:…)
+  and agent memory (mem:<ctx>:…) in place. Both are keyed by context id
+  alone, so a context later created under the same id inherited them.
+
+  Seen with OpenVTC: a profile wiped locally (config, keychain) and its VTA
+  context deleted, then re-provisioned into a fresh context under the same
+  id, synced the deleted profile's personas and communities straight back
+  from vta/app-state — personas whose keys were gone, so every one failed to
+  load with "not within the caller's scope".
+
+  - operations::app_state::purge_context removes every record family for a
+    context (records live and tombstoned, version index, write counters, reap
+    watermarks), so a recreated context starts with an empty store and a
+    change feed from zero.
+  - operations::memory::purge_context removes the context's memory entries.
+  - delete_context calls both for every context in the deleted subtree, and
+    logs the counts.
+  - Not added to the not-empty gate: the gate has to agree with
+    preview-delete, whose wire shape has no member for either, and a refusal
+    the preview cannot explain is the failure that function already warns
+    about. Surfacing them in the preview needs a spec revision.
+
+
+
+## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.30.0...vta-backup-v0.31.0) — 2026-11-03
+
+
+### Added
+
+- **notifications**: Notify/relay, the VTA's held notifications and the election notice (VTI-NTF-001 – 063) ([#2397](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2397))
+
+* feat(notifications)!: notifications/notify + relay, the VTA's held notifications, and the election notice to a member party (VTI-NTF-001 – 063)
+
+  Implements the Notifications chapter of the VTI specification
+  (dtgwg-vti-spec #91, VTI-NTF-001 – 063, Appendix G `election`) over the
+  tasks pinned from dtgwg-trust-tasks-tf #1012: notifications/notify/0.1 and
+  notifications/relay/0.1 (vti-specs-core), vta/notifications/{list,show,
+  dismiss}/0.1 (vti-specs-vta).
+
+  - vta-sdk: `notifications::verify_delivery` -> `VerifiedDelivery`, the one
+    way to a notification's members: every layer's type and pinned schema,
+    each proof over the JSON as received as its own issuer, each forwarded
+    document addressed to the relay carrying it, at most four relays,
+    `relayable` honoured (VTI-NTF-042). TASK_* constants, retry_safety
+    (notify/relay/dismiss RetrySafe, list/show ReadOnly), typed and `_json`
+    client methods for list/show/dismiss.
+  - VTA: notify/relay are counterparty tasks (zero-authority claim for a
+    sender the ACL does not know); the stated acceptance policy
+    (`[notifications]`: an ACL entry, an issuer of a membership credential or
+    a party of a relationship credential held in the context, `accept_from`,
+    `accept_any`) counts the delivering relayer, never the originator
+    (VTI-NTF-030/031); one record per (addressee, originator, notificationId),
+    higher revision replaces, dismissal kept (VTI-NTF-022); the same receipt
+    whatever was done (VTI-NTF-023); bounds per originator and deliverer
+    (VTI-NTF-033); held per context in the new `notifications` keyspace
+    (backed up), listed/read/dismissed only with standing there
+    (VTI-NTF-050 – 052); lapsed records swept after `retain_lapsed_days`.
+  - VTC as originator: an election under a credential roll naming a member
+    party is notified to that party once registered and withdrawn (higher
+    revision) if cancelled or closed before voting closes (VTI-NTF-060/061);
+    the notice is recorded before it is sent and queued on the durable member
+    push by the election sweeper, its one sender.
+  - VTC as recipient and relayer: notify/relay on the open door, verified and
+    held by its stated policy in its own `notifications` keyspace (backed up);
+    a relay engine that refuses a decision which has not acknowledged what
+    the relay discloses (VTI-NTF-046), relays the document exactly as
+    received to every member, keeps whom it relayed to until the period ends
+    (30 days without one) and relays every later revision, withdrawals
+    included, to them (VTI-NTF-044). No remote surface for the relay decision
+    yet: the specification defines no administrator task for it.
+  - pnm: `pnm notifications list|show|dismiss`.
+
+
+
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.29.0...vta-backup-v0.30.0) — 2026-11-02
+
+
+## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.28.0...vta-backup-v0.29.0) — 2026-10-30
+
+
+## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.27.0...vta-backup-v0.28.0) — 2026-10-30
+
+
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.26.0...vta-backup-v0.27.0) — 2026-10-28
+
+
+### Added
+
+- **vta**: Serve only the current vta/* and messaging/ping versions ([#2316](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2316))
+
+The VTA and its clients move off superseded `vta/*` versions, and the VTA
+  stops serving the old ones:
+
+  - vta/did-templates/{list,create,get,update} 2.0/3.0 -> 3.1: the record's
+    `createdAt`/`updatedAt` are RFC 3339 instants (`vta/_shared/0.7`). A record
+    stored with integer seconds still reads.
+  - vta/app-state/{put,put-many} 1.0 -> 1.1 (`created` -> `wasCreated`),
+    vta/app-state/list 1.0 -> 1.1 (`limit`/`nextCursor`).
+  - vta/attestation/mnemonic-export 1.0 -> 1.1, mnemonic-status 0.1 -> 0.2
+    (`windowRemainingSecs` -> `windowRemainingSeconds`).
+  - vta/credentials/list 0.1 -> 0.2 (`limit`/`nextCursor`).
+  - vta/passkey-vms/enroll-submit 0.1 -> 0.2 (`clientDataJSON`; the REST twin
+    still reads `clientDataJson`).
+  - vta/services/{list,get,enable,disable,drain/list} 1.0 -> 1.1,
+    {update,rollback} 1.0/1.1 -> 1.2, report 0.1 -> 0.2 (`drainTtlSeconds`,
+    `handshakeTimeoutSeconds`, `drainEndsAt`, `firstSeenAt`/`lastSeenAt`).
+  - vta/backup/{initiate-export,initiate-import,finalize-import} 1.0 -> 1.1,
+    vta/contexts/update-did 1.0 -> 1.1, vta/webvh/dids/create 1.0/1.1 -> 1.2,
+    vta/webvh/agent-name/list 1.0 -> 1.1, vta/witness/list 0.1 -> 0.2.
+  - messaging/ping 0.1 -> 0.2 (`serverTime` -> `respondedAt`).
+
+
+
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.25.0...vta-backup-v0.26.0) — 2026-10-27
+
+
 ## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.24.0...vta-backup-v0.25.0) — 2026-10-26
 
 

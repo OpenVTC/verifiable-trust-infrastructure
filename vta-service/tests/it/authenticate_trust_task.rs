@@ -1,7 +1,7 @@
 //! Integration test for **authenticate via a DI-signed Trust Task over HTTPS**
-//! — the transport-agnostic `auth/authenticate/0.2` path.
+//! — the transport-agnostic `auth/authenticate/0.3` path.
 //!
-//! The holder posts a plain JSON `auth/authenticate/0.2` Trust Task to
+//! The holder posts a plain JSON `auth/authenticate/0.3` Trust Task to
 //! `POST /trust-tasks` (the pre-session auth family's one conformant path;
 //! the old dedicated `/auth/challenge` / `/auth/` / `/auth/refresh` REST
 //! routes are gone — see `trust_tasks::auth`). Its `eddsa-jcs-2022`
@@ -68,7 +68,7 @@ async fn send(router: &axum::Router, req: Request<Body>) -> (StatusCode, Value) 
     (status, v)
 }
 
-/// Build a holder-signed `auth/authenticate/0.2` Trust Task document for the
+/// Build a holder-signed `auth/authenticate/0.3` Trust Task document for the
 /// given challenge + session, signed with `sk` (eddsa-jcs-2022).
 fn signed_authenticate_doc(
     sk: &SigningKey,
@@ -79,7 +79,7 @@ fn signed_authenticate_doc(
 ) -> TrustTask<Value> {
     let doc_json = json!({
         "id": "urn:uuid:authn-itest-1",
-        "type": "https://trusttasks.org/spec/auth/authenticate/0.2",
+        "type": "https://trusttasks.org/spec/auth/authenticate/0.3",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
@@ -156,7 +156,7 @@ async fn di_signed_authenticate_issues_tokens() {
     assert!(
         body["type"]
             .as_str()
-            .is_some_and(|t| t.ends_with("/auth/authenticate/0.2#response")),
+            .is_some_and(|t| t.ends_with("/auth/authenticate/0.3#response")),
         "response is a TT #response doc: {body}"
     );
     assert_eq!(body["payload"]["session"]["subject"], did, "{body}");

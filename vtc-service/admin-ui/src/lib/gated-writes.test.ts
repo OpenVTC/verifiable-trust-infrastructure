@@ -37,6 +37,7 @@ const STEP_UP: StepUpRequest = {
   challenge: "c".repeat(32),
   boundTo: "urn:sha256:op",
   reason: "Confirm",
+  accepts: ["webauthn"],
 };
 const SIGNED = { type: "x", proof: {} } as unknown as SignedTrustTaskDocument;
 const stepUpRefusal = (): ApiError => ({

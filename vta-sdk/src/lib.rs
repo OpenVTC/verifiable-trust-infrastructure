@@ -79,8 +79,15 @@
 //! * `integration` (feature-gated) — service-startup pull pattern with offline-cache resilience
 //! * [`did_templates`] — render-side helpers for the VTA's template registry
 //! * [`error`] — [`error::VtaError`] (typed, HTTP-aware, DIDComm-aware)
+//! * [`specs`] — the generated Trust Task wire types, at the versions VTI pins
 
 pub mod error;
+/// The Trust Task wire types, generated at build time from the specification
+/// versions VTI pins (`trust-tasks-build`), at the module paths the deprecated
+/// prebuilt `trust_tasks_rs::specs` gave them: `trust_tasks_rs::specs::vtc::…`
+/// is `vta_sdk::specs::vtc::…`. [`specs::schema_index`] is the drop-in for
+/// `trust_tasks_rs::schema_index` over exactly those versions.
+pub use vti_specs as specs;
 pub mod hex;
 pub mod rate_limit;
 // Pure, dependency-light validators shared with clients so they apply the
@@ -128,6 +135,10 @@ pub mod did_templates;
 /// Compact-JWS verification over a resolved key — EdDSA, ES256, ES256K.
 #[cfg(feature = "proof-verify")]
 pub mod jws;
+/// Notifications (`notifications/*`, VTI-NTF-001 – 063): verifying a delivered notification
+/// and every relay around it.
+#[cfg(feature = "proof-verify")]
+pub mod notifications;
 /// Reading an IETF Token Status List for a credential, signed by its issuer.
 #[cfg(feature = "proof-verify")]
 pub mod token_status_list;

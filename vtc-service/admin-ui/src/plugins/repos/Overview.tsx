@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { InfoTip } from "@/components/InfoTip";
 import { NamedDid } from "@/components/NamedDid";
 import { PageHeader } from "@/components/PageHeader";
+import { Protected } from "@/components/Protected";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { useNameBook } from "@/lib/names";
 import {
@@ -919,8 +920,15 @@ export function Overview() {
             />
           )}
           <div className="gitns-pair">
-            <BreakGlassCard />
-            <DepartedCard />
+            {/* Warnings about rights nobody has agreed to: out of the
+                community theme's reach (vtc/community/theme/show/0.1,
+                client item 2). */}
+            <Protected ground="card">
+              <BreakGlassCard />
+            </Protected>
+            <Protected ground="card">
+              <DepartedCard />
+            </Protected>
           </div>
         </>
       )}

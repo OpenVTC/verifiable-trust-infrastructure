@@ -639,6 +639,38 @@ impl BlobHost {
         Ok(())
     }
 
+    /// The room's usage history and overrides, for [`Self::purge_room`]: its `daily:` and
+    /// `mdaily:` rows, its `room:` and `member:` index rows, and its `limits:` overrides.
+    /// Under the activity lock, so a chunk served as the purge runs cannot write a day row
+    /// back between the scan and the removal. Whether anything was removed.
+    pub(super) async fn purge_usage_rows(&self, room_id: &str) -> Result<bool, AppError> {
+        let _guard = self.activity.lock().await;
+        let h = room_hash(room_id);
+        let mut batch = vti_common::store::Batch::new();
+        let mut any = false;
+        for prefix in [
+            day_prefix(room_id),
+            format!("mdaily:{h}:"),
+            member_index_prefix(room_id),
+            member_override_prefix(room_id),
+        ] {
+            for k in self.blobs.prefix_keys(prefix.into_bytes()).await? {
+                batch.remove(k);
+                any = true;
+            }
+        }
+        for k in [room_index_key(room_id), room_override_key(room_id)] {
+            if self.blobs.get_raw(k.clone()).await?.is_some() {
+                batch.remove(k);
+                any = true;
+            }
+        }
+        if any {
+            self.blobs.apply_batch(batch).await?;
+        }
+        Ok(any)
+    }
+
     /// Index every room and member the blob index already charges, once: a
     /// host that stored files before reporting existed has counters naming
     /// members only by hash.
@@ -951,6 +983,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         }
     }
 

@@ -21,6 +21,8 @@ import { useLocation } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { Fingerprint } from "lucide-react";
 
+import { Field } from "@/components/Field";
+
 import {
   enrollmentFromHash,
   redeemCommand,
@@ -79,22 +81,24 @@ export function EnrolStepUpPage() {
                 {started.uvOptions &&
                   " You already hold a step-up passkey: confirm with it first, then create the new one."}
               </p>
-              <label>
-                Label{" "}
+              <Field label="Label" hint="So you can tell this passkey from others you hold.">
                 <input
                   value={label}
                   maxLength={256}
                   onChange={(e) => setLabel(e.target.value)}
                   placeholder={started.deviceLabel ?? "This laptop"}
                 />
-              </label>{" "}
-              <button
-                type="button"
-                disabled={finish.isPending}
-                onClick={() => finish.mutate()}
-              >
-                <Fingerprint aria-hidden="true" size={14} /> Create the passkey
-              </button>
+              </Field>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={finish.isPending}
+                  onClick={() => finish.mutate()}
+                >
+                  <Fingerprint aria-hidden="true" size={14} /> Create the passkey
+                </button>
+              </div>
               {finish.isError && (
                 <p className="error" role="alert">
                   {message(finish.error)}
@@ -138,7 +142,7 @@ export function EnrolStepUpPage() {
             aria-label="Command to run"
             onFocus={(e) => e.currentTarget.select()}
           />
-          <button type="button" onClick={() => void navigator.clipboard?.writeText(command)}>
+          <button className="secondary" type="button" onClick={() => void navigator.clipboard?.writeText(command)}>
             Copy
           </button>
           <p className="muted">

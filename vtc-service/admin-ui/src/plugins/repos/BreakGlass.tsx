@@ -29,6 +29,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { type Column, DataTable, useSortedRows } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
+import { Protected } from "@/components/Protected";
 import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
 import { useIsGitCommunityAdmin, useViewerDid } from "@/lib/viewer";
@@ -131,7 +132,7 @@ export function BreakGlassList() {
   const awaiting = awaitingItems(items);
   const settled = items
     .filter((i) => !awaiting.includes(i))
-    .sort((a, b) => b.breakGlass.at.localeCompare(a.breakGlass.at));
+    .sort((a, b) => b.breakGlass.recordedAt.localeCompare(a.breakGlass.recordedAt));
 
   const row = (item: GitNsBreakGlassItem) => {
     const state = stateOf(item);
@@ -141,7 +142,7 @@ export function BreakGlassList() {
     const revoke = revokeBreakGlassStanding(viewer, superAdmin, item, rights);
     const known = isRight(item.right);
     return (
-      <tr key={`${item.subject}|${item.right}|${item.resource}|${item.breakGlass.at}`}>
+      <tr key={`${item.subject}|${item.right}|${item.resource}|${item.breakGlass.recordedAt}`}>
         <td>
           <NamedDid did={item.subject} book={book} />
           {item.subject === viewer && <div className="muted gitns-small">You</div>}
@@ -162,7 +163,7 @@ export function BreakGlassList() {
         </td>
         <td className="gitns-justification">“{item.breakGlass.justification}”</td>
         <td>
-          {new Date(item.breakGlass.at).toLocaleString()}
+          {new Date(item.breakGlass.recordedAt).toLocaleString()}
           {item.breakGlass.effectiveAt && state === "pending" && (
             <div className="muted gitns-small">
               takes effect {new Date(item.breakGlass.effectiveAt).toLocaleString()}
@@ -207,7 +208,7 @@ export function BreakGlassList() {
             <HandOver
               why={ratify.why}
               command={
-                ratifyTask(item.subject, right, item.resource, item.breakGlass.at).command
+                ratifyTask(item.subject, right, item.resource, item.breakGlass.recordedAt).command
               }
             />
           )}
@@ -231,7 +232,7 @@ export function BreakGlassList() {
       case "resource":
         return item.resource;
       case "when":
-        return item.breakGlass.at;
+        return item.breakGlass.recordedAt;
       case "state":
         return BREAK_GLASS_STATE_LABEL[stateOf(item)];
     }
@@ -268,7 +269,11 @@ export function BreakGlassList() {
         </section>
       )}
 
+      {/* Self-granted rights waiting on someone else: a warning, out of the
+          community theme's reach (vtc/community/theme/show/0.1, client
+          item 2). Ratify and revoke open protected dialogs. */}
       {q.data && (
+        <Protected ground="card">
         <section className="card" aria-labelledby="bg-awaiting">
           <h3 id="bg-awaiting">
             <Siren aria-hidden="true" size={16} /> Awaiting another administrator ·{" "}
@@ -280,6 +285,7 @@ export function BreakGlassList() {
             table(awaiting, "Break-glass grants awaiting a decision")
           )}
         </section>
+        </Protected>
       )}
 
       {q.data && settled.length > 0 && (
@@ -299,7 +305,7 @@ export function BreakGlassList() {
           subjectName={book.nameOf(dialog.item.subject) ?? undefined}
           right={dialog.item.right}
           resource={dialog.item.resource}
-          breakGlassAt={dialog.item.breakGlass.at}
+          breakGlassAt={dialog.item.breakGlass.recordedAt}
           justification={dialog.item.breakGlass.justification}
           onClose={() => setDialog(null)}
           onBuilt={(task) => setDialog({ kind: "sign", task })}

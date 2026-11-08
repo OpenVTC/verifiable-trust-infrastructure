@@ -129,7 +129,7 @@ URL was misleading). See `spec/vta/seeds/export-mnemonic/1.0`.
 | `spec/vta/contexts/update/1.0` | `PATCH /contexts/{id}` + DIDComm `update-context` |
 | `spec/vta/contexts/update-did/1.0` | DIDComm `update-context-did` (and REST equivalent) |
 | `spec/vta/contexts/preview-delete/1.0` | DIDComm `preview-delete-context` + REST |
-| `spec/vta/contexts/delete/1.0` | `DELETE /contexts/{id}` + DIDComm `delete-context` |
+| `spec/vta/contexts/delete/1.1` | `DELETE /contexts/{id}` + DIDComm `delete-context` |
 
 ### ACL slice (`spec/vta/acl/*`)
 
@@ -317,7 +317,8 @@ Future: `s3-presigned`.
 | URI | Today's surface |
 |---|---|
 | `spec/trust-task-discovery/0.1` | Trust Task only — **the canonical "which tasks do you serve"**, answered from the dispatch table |
-| `spec/trust-task-discovery/0.3` | Trust Task only — 0.1's answer plus the acceptance window the node applies (VTI-TRN-047); served by the VTA and the VTC |
+| `spec/trust-task-discovery/0.3` | Trust Task only — 0.1's answer plus the acceptance window the node applies (VTI-TRN-047); superseded by 0.4, still served by the VTA, the VTC and the witness |
+| `spec/trust-task-discovery/0.4` | Trust Task only — 0.3's answer plus the expiry horizon up to which a stated `expiresAt` is honoured (VTI-OPS-028); served by the VTA, the VTC and the witness |
 
 `GET /capabilities` was removed in #1039. Nothing consumed it, and a REST route
 running parallel to a Trust Task is the shape #1020 removed everywhere else —
@@ -442,7 +443,7 @@ REST:
   POST   /contexts                                  → vta/contexts/create/1.0
   GET    /contexts/{id}                             → vta/contexts/get/1.0
   PATCH  /contexts/{id}                             → vta/contexts/update/1.0
-  DELETE /contexts/{id}                             → vta/contexts/delete/1.0
+  DELETE /contexts/{id}                             → vta/contexts/delete/1.1
   GET    /acl                                       → acl/list/0.1
   POST   /acl                                       → acl/grant/0.1
   PATCH  /acl/{did}                                 → acl/update/0.1

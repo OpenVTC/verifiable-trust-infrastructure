@@ -25,7 +25,7 @@ use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::{MockVtc, build_offline_atm};
 
 const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/auth/challenge/0.1";
-const AUTHENTICATE_TASK: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
+const AUTHENTICATE_TASK: &str = "https://trusttasks.org/spec/auth/authenticate/0.3";
 
 fn admin_entry(did: &str) -> VtcAclEntry {
     VtcAclEntry {
@@ -146,7 +146,7 @@ async fn plaintext_didcomm_with_forged_sender_is_rejected() {
 /// No valid refresh token is needed — the guard runs first.
 #[tokio::test]
 async fn plaintext_didcomm_refresh_is_rejected() {
-    const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+    const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.2";
 
     let mock = MockVtc::start_with_atm(build_offline_atm().await).await;
     let base = mock.base_url().to_string();

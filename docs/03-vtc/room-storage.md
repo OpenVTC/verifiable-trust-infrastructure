@@ -20,7 +20,7 @@ With `ambient` and `sealed` the community does what the VTA would: for each room
 mints a credential limited to that room's prefix (`rooms/<32 hex of SHA-256(roomId)>/`
 under the config's prefix) and to read, write or delete objects, for at most 15
 minutes, and never uses one for another room or the bucket as a whole
-(`vtc/storage/configs/create/0.2`, "Room-scoped credentials"). If it cannot get one,
+(`vtc/storage/configs/create/0.3`, "Room-scoped credentials"). If it cannot get one,
 the operation fails — it never falls back to the unscoped identity or key.
 
 **`sealed` does not protect the credential from whoever operates this machine.** The
@@ -92,7 +92,7 @@ cnm storage credentials set --config r2-archive --file ./r2-key.json --reason "e
 `cnm` reads the config, resolves the community's DID and seals the credential the
 same way.
 
-Either way, `vtc/storage/credentials/set/0.2` is sent after your passkey gesture
+Either way, `vtc/storage/credentials/set/0.3` is sent after your passkey gesture
 carrying only the sealed block and its digest, and another administrator approves it
 like any storage change; approvers see the digest, never the credential. The community opens it, checks it is a
 credential for that config and kind, stores it encrypted, probes the config with it

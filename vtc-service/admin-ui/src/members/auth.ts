@@ -25,7 +25,7 @@ import {
   type MemberPasskey,
 } from "./api";
 
-const AUTHENTICATE_TYPE = "https://trusttasks.org/spec/auth/authenticate/0.1";
+const AUTHENTICATE_TYPE = "https://trusttasks.org/spec/auth/authenticate/0.3";
 
 /** The member SIOP surface. Same shapes as the console's `/v1/wallet`; only
  *  the base differs, and with it who is admitted and the audience minted. */

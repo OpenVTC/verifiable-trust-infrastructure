@@ -40,7 +40,7 @@ const routes = (
   }),
   taskRoute("https://trusttasks.org/spec/vtc/members/removed/0.1", { removed: [] }),
   taskRoute("https://trusttasks.org/spec/vtc/members/show/0.1", { member: member(BOB, "Bob Mensah") }),
-  taskRoute("https://trusttasks.org/spec/acl/list/0.2", { entries: [], truncated: false }),
+  taskRoute("https://trusttasks.org/spec/acl/list/0.3", { entries: [], truncated: false }),
   taskRoute(
     TASK_RIGHT_LIST,
     over.rightsStatus
@@ -142,7 +142,7 @@ describe("Members — git rights (UI-13)", () => {
   it("flags a right Bob granted himself by break-glass until it is ratified", async () => {
     const mark = {
       by: BOB,
-      at: "2026-09-25T02:10:31Z",
+      recordedAt: "2026-09-25T02:10:31Z",
       justification: "Both owners unreachable; CVE fix must ship tonight.",
     };
     const rights = RIGHTS.map((r) =>

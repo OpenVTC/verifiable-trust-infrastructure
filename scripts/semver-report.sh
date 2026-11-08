@@ -64,7 +64,21 @@
 # enums — and `vta-sdk: 0.32.4` where 16 public wire structs had gained a field.
 # Both would have gone out as patch releases that `^0.16` and `^0.32` consumers
 # take automatically. Nothing reconciled release-plz's verdict against the
-# report's; this is that reconciliation.
+# report's; this is that reconciliation — and since release-plz's own check was
+# switched off (release-plz.toml), it is the only API check a release gets.
+#
+# In enforce mode a crate whose proposed version is ALREADY a compatibility-
+# breaking bump over its newest crates.io version (0.16.x -> 0.17.0, or
+# 1.x -> 2.0.0) is not checked: no finding can demand a bigger bump than that,
+# so the check cannot change the verdict, and each one costs two cold rustdoc
+# builds of the crate's whole dependency tree. Those crates leave the expected
+# set and are NAMED in the output with both versions, the same way the excluded
+# and unpublished crates are. Report mode checks them as before.
+#
+# When enforce mode does find an under-bump it names each crate with the
+# version it needs, and writes the crate names to `semver-raise.txt` for
+# `scripts/fix-release-bump-sizes.py --raise`, which applies the raise and its
+# cascade in one step (ci.yml's guard runs exactly that and pushes it).
 set -euo pipefail
 
 MODE="${SEMVER_MODE:-report}"
@@ -79,8 +93,9 @@ esac
 # Excluded for RUNTIME, not because a break there is acceptable. This job builds
 # rustdoc JSON for every crate twice, current and baseline; including these took
 # it from ~17 minutes to over 35, on every pull request, for a signal no
-# consumer can act on. `release-plz.toml` carries the matching
-# `semver_check = false` so the release decides bumps the same way.
+# consumer can act on. Their bumps come from conventional commits, as every
+# crate's proposal does now (`semver_check = false` in release-plz.toml); this
+# list is the one place that decides which APIs are checked.
 #
 # These twelve are the subsystem crates. They are on crates.io only because a
 # published crate's whole dependency closure must be published and `vta-service`
@@ -127,15 +142,54 @@ index_path() {
 # treated as "unknown" and fails loudly further down: a network blip must not
 # quietly become "unpublished, skip it", because that is the same silent
 # shrinking this script exists to prevent.
+#
+# The index file is kept in $INDEX_DIR: enforce mode reads the published
+# versions from it (see already_breaking).
+INDEX_DIR=$(mktemp -d)
+trap 'rm -rf "$INDEX_DIR"' EXIT
 published_status() {
   local c="$1" code
-  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 --retry 3 \
+  code=$(curl -sS -o "$INDEX_DIR/$c" -w '%{http_code}' --max-time 20 --retry 3 \
     "https://index.crates.io/$(index_path "$c")" 2>/dev/null || echo 000)
   case "$code" in
     200) echo published ;;
     404) echo absent ;;
     *) echo "unknown:$code" ;;
   esac
+}
+
+# Is PROPOSED in a newer compatibility range than EVERY version of the crate
+# on crates.io? Compared on the field cargo's caret treats as the boundary: the
+# major at 1.0 and above, the minor below it (the patch for 0.0.x). Taken over
+# all published versions, yanked and prerelease included, so it can only err
+# towards checking: a crate is skipped only when it is breaking over the newest
+# of them, and so over whichever one cargo-semver-checks takes as the baseline.
+# Prints the newest published version. Exit 0: already a breaking bump, skip.
+# Exit 1: check it — including when the index cannot be read or parsed.
+already_breaking() {
+  python3 -c '
+import json, re, sys
+
+def line(v):
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", v)
+    if not m:
+        return None
+    ma, mi, pa = (int(x) for x in m.groups())
+    return (ma,) if ma > 0 else (0, mi) if mi > 0 else (0, 0, pa)
+
+try:
+    with open(sys.argv[2]) as f:
+        versions = [json.loads(l)["vers"] for l in f if l.strip()]
+except (OSError, ValueError, KeyError):
+    sys.exit(1)
+proposed = line(sys.argv[1])
+lines = [(line(v), v) for v in versions]
+if proposed is None or not lines or any(l is None for l, _ in lines):
+    sys.exit(1)
+newest = max(lines)
+print(newest[1])
+sys.exit(0 if proposed > newest[0] else 1)
+' "$1" "$INDEX_DIR/$2"
 }
 
 # Read with `while read` rather than `mapfile`: mapfile is bash 4+, macOS ships
@@ -158,7 +212,7 @@ for p in json.load(sys.stdin)["packages"]:
     # cargo-semver-checks has nothing to compare and emits no line for it.
     if not any(k in LIB for t in p["targets"] for k in t["kind"]):
         continue
-    print(p["name"])
+    print(p["name"], p["version"])
 ' \
     | sort
 )
@@ -171,7 +225,10 @@ fi
 expected=()
 unpublished=()
 unknown=()
-for crate in "${PUBLISHABLE[@]}"; do
+already=()   # enforce mode: "crate latest -> proposed", not checked
+for entry in "${PUBLISHABLE[@]}"; do
+  crate=${entry% *}
+  version=${entry#* }
   skip=false
   for e in "${EXCLUDED[@]}"; do
     [ "$crate" = "$e" ] && skip=true && break
@@ -179,7 +236,13 @@ for crate in "${PUBLISHABLE[@]}"; do
   $skip && continue
 
   case "$(published_status "$crate")" in
-    published) expected+=("$crate") ;;
+    published)
+      if [ "$MODE" = enforce ] && latest=$(already_breaking "$version" "$crate"); then
+        already+=("$crate $latest -> $version")
+      else
+        expected+=("$crate")
+      fi
+      ;;
     absent) unpublished+=("$crate") ;;
     unknown:*) unknown+=("$crate") ;;
   esac
@@ -200,6 +263,18 @@ if [ ${#unpublished[@]} -gt 0 ]; then
   echo "  expected once. If one of these is still here after a release has gone out,"
   echo "  the release did not publish it and that is the thing to look at."
 fi
+if [ ${#already[@]} -gt 0 ]; then
+  echo
+  echo "NOT CHECKED — the proposed version is already a breaking bump over crates.io:"
+  for a in "${already[@]}"; do echo "  $a"; done
+  echo "  No API change can require more than a breaking bump, so checking these"
+  echo "  cannot change the verdict. Enforce mode only; report mode checks them."
+fi
+if [ ${#expected[@]} -eq 0 ] && [ ${#already[@]} -gt 0 ]; then
+  echo
+  echo "nothing left to check: every other publishable library is excluded or unpublished"
+  exit 0
+fi
 if [ ${#expected[@]} -eq 0 ]; then
   echo "::error::nothing to check — every publishable library is either excluded or \
 unpublished. That is not a pass; it is the report covering nothing."
@@ -209,6 +284,12 @@ fi
 echo
 echo "checking: ${expected[*]}"
 echo
+
+# For trying the selection without the hours of rustdoc behind it.
+if [ "${SEMVER_DRY_RUN:-}" = 1 ]; then
+  echo "SEMVER_DRY_RUN=1: stopping before cargo semver-checks"
+  exit 0
+fi
 
 # `${arr[@]+"${arr[@]}"}` rather than a plain `"${arr[@]}"`: expanding an EMPTY
 # array under `set -u` is an unbound-variable error in bash 3.2, and `unpublished`
@@ -220,6 +301,9 @@ echo
 args=(--workspace)
 for c in "${EXCLUDED[@]}" ${unpublished[@]+"${unpublished[@]}"}; do
   args+=(--exclude "$c")
+done
+for a in ${already[@]+"${already[@]}"}; do
+  args+=(--exclude "${a%% *}")
 done
 
 # ANSI is stripped rather than left in. GitHub's runner makes cargo emit colour
@@ -301,6 +385,39 @@ if [ "$status" -eq 0 ]; then
 fi
 
 if [ "$MODE" = "enforce" ]; then
+  # Name each under-bumped crate and the version it needs, from the tool's own
+  # lines: `Checking <crate> v<baseline> -> v<proposed>` opens a crate, and a
+  # `Summary semver requires new <major|minor> version` inside it is the
+  # finding. Checks run one crate at a time, so the lines do not interleave.
+  # The crate names go to semver-raise.txt for fix-release-bump-sizes.py.
+  : > semver-raise.txt
+  python3 -c '
+import re, sys
+cur = None
+seen = []
+for l in open("semver.log"):
+    m = re.search(r"Checking (\S+) v(\S+) -> v(\S+) ", l)
+    if m:
+        cur = m.groups()
+        continue
+    m = re.search(r"Summary semver requires new (major|minor) version", l)
+    if m and cur:
+        name, base, prop = cur
+        ma, mi, pa = (int(x) for x in re.match(r"(\d+)\.(\d+)\.(\d+)", base).groups())
+        if m.group(1) == "major":
+            need = f"{ma + 1}.0.0" if ma > 0 else f"0.{mi + 1}.0" if mi > 0 else f"0.0.{pa + 1}"
+            # Only a breaking finding: --raise applies exactly that bump.
+            seen.append(name)
+        else:
+            need = f"{ma}.{mi + 1}.0"
+        print(f"::error::{name}: proposed {prop} is too small — the API change since {base} needs {need} or later")
+with open("semver-raise.txt", "w") as f:
+    f.write("".join(n + "\n" for n in seen))
+'
+  if [ -s semver-raise.txt ]; then
+    echo "To fix, on the Release PR branch: python3 scripts/fix-release-bump-sizes.py --raise $(tr '\n' ' ' < semver-raise.txt)"
+    echo "(it raises each crate to its next breaking version, moves its dependents' requirements, and converges the cascade)"
+  fi
   echo "::error::THE PROPOSED RELEASE UNDER-BUMPS A BREAKING CHANGE. Each version above \
 is the one about to be published, so cargo-semver-checks derived the release type from the \
 real delta — and a failure means that delta is too small, not that breaking is forbidden. \

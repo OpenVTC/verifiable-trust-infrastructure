@@ -51,12 +51,12 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::vtc::storage::configs::create::v0_2 as wire;
 use vti_common::blob_store::BlobStore;
 use vti_common::blob_store::local::LocalDirStore;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_rooms::blobs::{BlobStores, ConfigHoldings, UploadTarget};
+use vti_specs::vtc::storage::configs::create::v0_2 as wire;
 
 use super::storage_auth::{HostAuth, Scope, aws, gcs};
 use super::storage_credentials::SealedCredentials;
@@ -65,12 +65,13 @@ use super::vta_storage::{AccountCheck, VtaStorage};
 /// The declared error codes of the storage tasks, read off the generated
 /// specifications — what the tests that witness each one compare against.
 pub mod codes {
-    use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_1 as assign;
-    use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_1 as migrate;
-    use trust_tasks_rs::specs::vtc::storage::configs::{
-        create::v0_1 as create, get::v0_1 as get, list::v0_1 as list, probe::v0_1 as probe,
-        retire::v0_1 as retire, update::v0_1 as update,
+    use vti_specs::vtc::rooms::storage::assign::v0_2 as assign;
+    use vti_specs::vtc::rooms::storage::migrate::v0_3 as migrate;
+    use vti_specs::vtc::storage::configs::{
+        create::v0_3 as create, get::v0_2 as get, list::v0_2 as list, probe::v0_1 as probe,
+        retire::v0_3 as retire, update::v0_3 as update,
     };
+    use vti_specs::vtc::storage::credentials::set::v0_3 as set;
 
     pub const LIST_INVALID_CURSOR: &str = list::error_codes::INVALID_CURSOR.code;
     pub const GET_NOT_FOUND: &str = get::error_codes::NOT_FOUND.code;
@@ -86,6 +87,7 @@ pub mod codes {
     pub const RETIRE_NOT_FOUND: &str = retire::error_codes::NOT_FOUND.code;
     pub const RETIRE_ROOMS_ASSIGNED: &str = retire::error_codes::ROOMS_ASSIGNED.code;
     pub const RETIRE_IS_DEFAULT: &str = retire::error_codes::IS_DEFAULT.code;
+    pub const RETIRE_MIGRATIONS_INBOUND: &str = retire::error_codes::MIGRATIONS_INBOUND.code;
     pub const PROBE_NOT_FOUND: &str = probe::error_codes::NOT_FOUND.code;
     pub const ASSIGN_ROOM_NOT_FOUND: &str = assign::error_codes::ROOM_NOT_FOUND.code;
     pub const ASSIGN_CONFIG_NOT_FOUND: &str = assign::error_codes::CONFIG_NOT_FOUND.code;
@@ -98,33 +100,15 @@ pub mod codes {
     pub const MIGRATE_CONFIG_NOT_ACTIVE: &str = migrate::error_codes::CONFIG_NOT_ACTIVE.code;
     pub const MIGRATE_CAPACITY_EXCEEDED: &str = migrate::error_codes::CAPACITY_EXCEEDED.code;
 
-    // 0.2 (trust-tasks-tf #866): ambient and sealed authentication.
-    use trust_tasks_rs::specs::vtc::storage::configs::{
-        create::v0_2 as create2, get::v0_2 as get2, list::v0_2 as list2, update::v0_2 as update2,
-    };
-    use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_2 as set2;
-    pub const LIST_V0_2_INVALID_CURSOR: &str = list2::error_codes::INVALID_CURSOR.code;
-    pub const GET_V0_2_NOT_FOUND: &str = get2::error_codes::NOT_FOUND.code;
-    pub const CREATE_V0_2_EXISTS: &str = create2::error_codes::EXISTS.code;
-    pub const CREATE_V0_2_INVALID_SETTINGS: &str = create2::error_codes::INVALID_SETTINGS.code;
-    pub const CREATE_V0_2_AUTH_NOT_ALLOWED: &str = create2::error_codes::AUTH_NOT_ALLOWED.code;
-    pub const CREATE_V0_2_UNKNOWN_ACCOUNT: &str = create2::error_codes::UNKNOWN_ACCOUNT.code;
-    pub const UPDATE_V0_2_NOT_FOUND: &str = update2::error_codes::NOT_FOUND.code;
-    pub const UPDATE_V0_2_KIND_IMMUTABLE: &str = update2::error_codes::KIND_IMMUTABLE.code;
-    pub const UPDATE_V0_2_LOCATION_IMMUTABLE: &str = update2::error_codes::LOCATION_IMMUTABLE.code;
-    pub const UPDATE_V0_2_INVALID_SETTINGS: &str = update2::error_codes::INVALID_SETTINGS.code;
-    pub const UPDATE_V0_2_AUTH_NOT_ALLOWED: &str = update2::error_codes::AUTH_NOT_ALLOWED.code;
-    pub const UPDATE_V0_2_NOT_ACTIVE: &str = update2::error_codes::NOT_ACTIVE.code;
-    pub const UPDATE_V0_2_UNKNOWN_ACCOUNT: &str = update2::error_codes::UNKNOWN_ACCOUNT.code;
-    pub const SET_NOT_FOUND: &str = set2::error_codes::NOT_FOUND.code;
-    pub const SET_NOT_SEALED_MODE: &str = set2::error_codes::NOT_SEALED_MODE.code;
-    pub const SET_CANNOT_OPEN: &str = set2::error_codes::CANNOT_OPEN.code;
-    pub const SET_INVALID_CREDENTIAL: &str = set2::error_codes::INVALID_CREDENTIAL.code;
-    pub const SET_AUTH_NOT_ALLOWED: &str = set2::error_codes::AUTH_NOT_ALLOWED.code;
+    pub const SET_NOT_FOUND: &str = set::error_codes::NOT_FOUND.code;
+    pub const SET_NOT_SEALED_MODE: &str = set::error_codes::NOT_SEALED_MODE.code;
+    pub const SET_CANNOT_OPEN: &str = set::error_codes::CANNOT_OPEN.code;
+    pub const SET_INVALID_CREDENTIAL: &str = set::error_codes::INVALID_CREDENTIAL.code;
+    pub const SET_AUTH_NOT_ALLOWED: &str = set::error_codes::AUTH_NOT_ALLOWED.code;
 
     // What rooms store and may store (`vtc/rooms/{get,usage,limits/set}`).
-    use trust_tasks_rs::specs::vtc::rooms::{
-        get::v0_1 as room_get, limits::set::v0_1 as limits_set, usage::v0_1 as usage,
+    use vti_specs::vtc::rooms::{
+        get::v0_3 as room_get, limits::set::v0_1 as limits_set, usage::v0_1 as usage,
     };
     pub const ROOM_GET_NOT_FOUND: &str = room_get::error_codes::NOT_FOUND.code;
     pub const USAGE_INVALID_RANGE: &str = usage::error_codes::INVALID_RANGE.code;
@@ -509,7 +493,7 @@ impl RoomStorage {
         checked(&record)?;
         let id = record["id"].as_str().unwrap_or_default().to_string();
         // `auth` leaving `sealed` destroys the stored credential
-        // (`vtc/storage/configs/update/0.2` item 5).
+        // (`vtc/storage/configs/update/0.3` item 5).
         if mode_of(&record) != Some("sealed")
             && let Some(sealed) = self.sealed_credentials()
             && self
@@ -632,6 +616,12 @@ impl RoomStorage {
             assigned_by: by.to_string(),
         };
         self.ks.insert(assign_key(room_id), &a).await
+    }
+
+    /// Forget `room_id`'s assignment: the room was purged and has nothing left to store.
+    pub async fn drop_assignment(&self, room_id: &str) -> Result<(), AppError> {
+        let _guard = self.lock().await;
+        self.ks.remove(assign_key(room_id)).await
     }
 
     /// Assign a newly created room to the default config.

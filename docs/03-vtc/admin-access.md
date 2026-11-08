@@ -321,7 +321,8 @@ The ways forward:
 4. **Add the second administrator offline**, once — the break-glass. Stop the
    daemon, then run `vtc acl add --did <did> --role admin --label "<name>"` (a
    `community-admin`; `--admin-role` and `--capability` choose another role or
-   narrow it) or `vtc admin invite --did <did>`, and start it again. Each
+   narrow it) or `vtc admin invite` (a passkey invitation; `--did <did>` for a
+   wallet one), and start it again. Each
    offline write is recorded as an `AclBreakGlassWritten` audit row at the next
    start, and raised in Actions for the administrators to acknowledge (§3.5).
 
@@ -503,7 +504,7 @@ the last one is allowed — it costs the ability to step up with it, not the
 subject's authority — and is recovered through another invite.
 
 Every administrator made by a completed action (§3.2: an `acl/grant`,
-`acl/update` or `acl/change-role` to community-admin) is issued an approver
+`acl/update`, `acl/change-role` or `vtc/members/role/set` to community-admin) is issued an approver
 enrolment invite automatically. The requester sees it once, on the completed
 action (the URL and a claim code), and delivers the claim code to the new
 administrator by a separate channel.
@@ -514,8 +515,8 @@ These operations need the consent of **other** administrators:
 
 | Operation | Approvers | Requirement |
 |---|---|---|
-| granting or widening an entry to an **authority-conferring capability** it did not hold: `acl/grant`, `acl/update`, `acl/change-role`, `vtc/admin/invites/create` | holders of the same capabilities at a covering resource | VTI-APV-018 (the generalised VTI-APV-014) |
-| taking authority-conferring capabilities away from **another** entry: `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update`, `vtc/members/admin-remove` | the same, the subject excluded | VTI-APV-019 |
+| granting or widening an entry to an **authority-conferring capability** it did not hold: `acl/grant`, `acl/update`, `acl/change-role`, `vtc/members/role/set`, `vtc/admin/invites/create` | holders of the same capabilities at a covering resource | VTI-APV-018 (the generalised VTI-APV-014) |
+| taking authority-conferring capabilities away from **another** entry: `acl/revoke`, a downward `acl/change-role` or `vtc/members/role/set`, a narrowing `acl/update`, `vtc/members/admin-remove` | the same, the subject excluded | VTI-APV-019 |
 | lowering `acl.unrestricted_admin_consent_threshold`, by `config/patch` or `vtc/config/import` (raising it stays immediate) | holders of `vtc.roles.assign` | VTI-APV-020 |
 | any change to the trusted-witness list `witnesses.trusted` — adding, removing or relabelling a witness — by `config/patch` or `vtc/config/import` (kind `config.witnesses.change`; [trusted-witnesses.md](trusted-witnesses.md)) | holders of `vtc.config.admin` | VTI-CMP-090, VTI-APV-023 |
 | `policy/upsert` and `policy/activate` for the purposes that decide authority | holders of `vtc.policy.admin` at that purpose | VTI-VTC-022 |
@@ -561,9 +562,11 @@ their holders' entries at the same boot.
 An expiry put on a permanent entry, or brought forward, is a reduction of
 everything the entry holds: it takes every capability away sooner. A move of a
 community role that implies an administrative role (`moderator`, `issuer`, or
-`admin`) is made with `acl/change-role` only; `vtc/members/update` refuses it
-with `adminRoleForbidden`, because only `acl/change-role` carries the step-up
-bound to the move.
+`admin`) is made with `vtc/members/role/set/0.1` only; `vtc/members/update`
+refuses it with `adminRoleForbidden`, because only `vtc/members/role/set`
+carries the step-up bound to the move. (`acl/change-role/0.2` moves an entry's
+administrative role and leaves its community role alone; `acl/change-role/0.1`,
+which moved the community role, is no longer served.)
 
 1. Administrator A sends the operation. Every check runs, and A's step-up is
    asked for **first**, so a thief holding only A's signing key cannot make the
@@ -744,7 +747,7 @@ path, whoever else could have approved it (§2.1a):
   never **Waiting for me**) and a `Critical` console banner — "*X has asked to
   reduce your authority; it takes effect at T unless they cancel*" — but cannot
   block it. If the subject is the attacker, a veto would protect them.
-- On the wire (`vtc/admin/actions/*/0.2`) it is category `coolingOff`, with
+- On the wire (`vtc/admin/actions/*/0.3`) it is category `coolingOff`, with
   `landsAt` and `cancellableBy: requester`, and no threshold or expiry. The
   console and `cnm` count down to `landsAt`. (A 0.1 caller still reads it as
   an `approval` with `ext["org.openvtc"].coolingOff`.)
@@ -769,7 +772,8 @@ When an administrator loses privilege, their sessions are revoked and they are
 told with a VTC-signed notice:
 
 - **A reduction** — `acl/revoke` (whole entry or part of its scope), a
-  downward `acl/change-role`, or an `acl/update` or `acl/grant` that narrows
+  downward `acl/change-role` or `vtc/members/role/set`, or an `acl/update` or
+  `acl/grant` that narrows
   the entry — sends `vtc/members/authority-reduced-notice/0.1` (VTI-APV-019),
   a durable push over TSP, DIDComm or REST, in that order of preference. It
   says what happened (`revoked`, `demoted` or `narrowed`), the previous and
@@ -795,7 +799,7 @@ or `EmergencyBootstrapInvoked`) and also raises it in the action list as an
 **acknowledge** item (VTI-VTC-023):
 
 - Its `typeUri` is the record type
-  `https://trusttasks.org/spec/vtc/operator/offline-write/0.1`, and its payload
+  `https://trusttasks.org/spec/vtc/operator/offline-write/0.2`, and its payload
   is that record: `command` (`aclAdd`, `aclRemove`, `adminInvite`,
   `createDidKeyAdmin`, `enrolApprover` or `emergencyBootstrap`), the `dids`
   whose access changed, the operator's `host` and the time `at`. The record is
@@ -811,7 +815,7 @@ or `EmergencyBootstrapInvoked`) and also raises it in the action list as an
   them — it is for every administrator there is now.
 - Until you acknowledge it, the console shows a `Critical` banner that cannot
   be dismissed, linking to **Actions**. **Acknowledge** signs
-  `vtc/admin/actions/acknowledge/0.2`; acknowledging is audited. When everyone
+  `vtc/admin/actions/acknowledge/0.3`; acknowledging is audited. When everyone
   it is for has acknowledged, it closes `completed` (`acknowledged`) and stays
   in **History** for 30 days. Acknowledging twice answers
   `alreadyAcknowledged`; anyone it is not for gets `notAcknowledgeable`.
@@ -887,23 +891,26 @@ confirms it and rotates it to a fresh key.
    co_admin_did = "did:webvh:…:bob"
    ```
 
-   Setup provisions the VTC's identity from Alice's VTA, mints her
-   administrator `did:key`, and prints a one-time install URL
-   (`<base>/admin/install?token=…`) and a separate **claim code**. Both are
-   valid for 15 minutes.
-2. Alice opens the URL ("Claim Admin Passkey"), enters the claim code and
-   registers a passkey. The VTC writes **two** community-admin entries:
-   Alice's, and Bob's labelled "co-admin (install bootstrap)". It audits
-   `CommunityInstalled`.
+   Setup provisions the VTC's identity from Alice's VTA and prints a one-time
+   install URL (`<base>/admin/install?token=…`) and a separate **claim
+   code**. Both are valid for 15 minutes.
+2. Alice opens the URL ("Claim administrator access"), enters the claim code
+   and registers a passkey, then signs once with it to prove she holds it
+   (`vtc/install/claim/passkey/{start,finish}/0.1`). Her administrator DID is
+   the `did:key` of that passkey's own key. The VTC writes **two**
+   community-admin entries: Alice's, and Bob's labelled "co-admin (install
+   bootstrap)". It audits `CommunityInstalled`.
 3. Alice signs in with **Sign in with passkey**, then completes **Set up
    signing** with her passkey.
 
-The claim code is the security of this step, not the URL. Keep them apart, and
-note that the claim proves possession of the URL and code, not control of the
-DID it names.
+The claim code is the security of this step, not the URL. Keep them apart. The
+claim proves possession of the URL, the code and the passkey; the DID it makes
+an administrator is the passkey's own, so there is no other DID to prove
+control of.
 
 A founder who uses only a wallet claims the install under their own DID
-instead — the install page offers it beside the passkey claim (claim 0.3,
+instead, with an install URL that names it — the install page offers the
+wallet claim for such a URL (claim 0.3,
 [`bootstrap-runbook.md`](bootstrap-runbook.md), Path C): the wallet signs as
 the founder's DID, and the plugin's approver device is bound as their step-up
 factor at bootstrap.
@@ -961,14 +968,16 @@ mints the same invite and is audited as a break-glass at the next start.
 
 ### Step 5b — Or: Bob registers a passkey at the community
 
-If Bob would rather step up with a passkey:
+If Bob would rather step up with a passkey, Alice invites him to enrol a
+**step-up passkey** for his DID (Members → Bob → *Step-up passkeys* →
+*Invite…*, `auth/passkey/enroll/invite/0.3`; [`git-namespaces.md`](git-namespaces.md),
+"Step-up passkeys for members"). Bob redeems it signing as his own DID, so the
+passkey is bound to that DID.
 
-1. Access control → **Admin invites** → **Invite admin** → Bob's DID →
-   **Mint invite**. Bob already holds an admin entry, so the invite grants
-   nothing, and needs neither Alice's step-up nor anyone's consent.
-2. She sends Bob the install URL and the claim code by **different channels**.
-3. Bob opens the URL, enters the code, and registers a passkey. It is recorded
-   against his DID (`AdminPasskeyRegistered`).
+An install URL does not do this any more. A passkey install
+(`vtc/install/claim/passkey/*`) makes the passkey's **own** `did:key` an
+administrator — a second administrator identity, not a factor for Bob's DID —
+and an invite naming Bob's DID is claimed with his wallet (claim 0.3).
 
 From then on Bob's step-up works whichever way he signs in, because the gesture
 is checked against the passkeys registered to his DID — until he enrols a
@@ -1052,7 +1061,7 @@ requester is never the approver of their own request.
   the three queues of §3.2a (`urn:openvtc:vtc:git-ns:break-glass-review`,
   `urn:openvtc:vtc:join:review`, `urn:openvtc:vtc:vetting:withdrawal-review`)
   name their payload with a placeholder `urn:openvtc:` URI; no record type is
-  specified for them yet, as `vtc/operator/offline-write/0.1` is for offline
+  specified for them yet, as `vtc/operator/offline-write/0.2` is for offline
   writes.
 - **A join review with more than one decider.** Every queue item (§3.2a) is
   decided by one holder of the capability; a community asking for N > 1

@@ -58,6 +58,17 @@ Like rule 2 this only reports when something is about to publish (some member's
 version is not on crates.io yet), so a feature PR that moves a floor is not
 held to a version the Release PR will set.
 
+### Shared external dependencies count as siblings
+
+Rules 2 and 3 also cover the external crates in `SHARED_EXTERNAL`, whose types
+and traits the members' public API is built from. `trust-tasks-rs` is the one:
+every generated `vti_specs_*` type implements its `Payload` trait. When the
+workspace moved `^0.36` -> `^0.37` (#2423), release-plz gave `vti-specs-core`,
+`-rooms`, `-vtc` and `-vtn` patch bumps, and the new `vti-oob-server` failed to
+publish on every push to main: packaged against the published `vti-specs-core`
+0.3.0, its generated types implemented 0.36's `Payload` and the crate 0.37's
+(`the trait bound ... Payload: trust_tasks_rs::Payload is not satisfied`).
+
 ## Fixing a failure
 
 Rules 2 and 3 fail on every Release PR that follows a breaking change to a
@@ -125,19 +136,31 @@ def get(url):
     return None
 
 
+# External crates whose types and traits members re-export or implement, so that
+# moving their compatibility range breaks a member's dependents exactly as moving
+# a sibling's does (see "Shared external dependencies count as siblings").
+SHARED_EXTERNAL = frozenset({"trust-tasks-rs"})
+
+
+def tracked(dep_name, members):
+    """Whether a dependency's compatibility range is part of its dependents' API."""
+    return dep_name in members or dep_name in SHARED_EXTERNAL
+
+
 def moved_reqs(pkg, members, name, version):
-    """Internal normal/build deps whose caret range differs from `name@version` on crates.io."""
+    """Tracked normal/build deps (siblings and `SHARED_EXTERNAL`) whose caret range
+    differs from `name@version` on crates.io."""
     deps = get(f"https://crates.io/api/v1/crates/{name}/{version}/dependencies")
     if deps is None:
         return []
     base_reqs = {
         d["crate_id"]: d["req"]
         for d in deps["dependencies"]
-        if d["kind"] in ("normal", "build") and d["crate_id"] in members
+        if d["kind"] in ("normal", "build") and tracked(d["crate_id"], members)
     }
     moved = []
     for dep in pkg["dependencies"]:
-        if dep.get("kind") not in (None, "build") or dep["name"] not in members:
+        if dep.get("kind") not in (None, "build") or not tracked(dep["name"], members):
             continue
         before = base_reqs.get(dep["name"])
         if before is None:
@@ -193,8 +216,12 @@ def main():
         current = pkg["version"]
         info = get(f"https://crates.io/api/v1/crates/{name}")
         if info is None:
-            releasing = True
-            continue  # a crate's first release has no baseline to break
+            # A crate's first release has no baseline to break, and does not by
+            # itself make this a Release PR: a new member sits unpublished on main
+            # from its merge until the release, and counting it would hold every
+            # feature PR to rule 3. A Release PR always raises some published
+            # crate too, which is what sets `releasing` below.
+            continue
         versions = [v for v in info["versions"] if not v["yanked"]]
         if any(v["num"] == current for v in info["versions"]):
             # ── Rule 3 ──────────────────────────────────────────────────

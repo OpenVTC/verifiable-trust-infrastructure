@@ -65,6 +65,11 @@ const NOT_A_LIBRARY_API: &[(&str, &str)] = &[(
 /// to the workspace root.
 const DELIBERATELY_EXHAUSTIVE: &[(&str, &str, &str)] = &[
     (
+        "vti-oob-server/src/record.rs",
+        "TransitionError",
+        "the three outcomes of a compare-and-set (no record, the closure refused, the store failed); callers act on each",
+    ),
+    (
         "vta-sdk/src/sealed_transfer/verify.rs",
         "VerifiedAssertion",
         "typestate: callers match every arm, and `AttestedNeedsNitroCheck` demands a follow-up check",

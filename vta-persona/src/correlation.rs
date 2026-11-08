@@ -308,6 +308,9 @@ pub struct Finding {
     /// one thing [`Finding::shared_with`] does not restate: that list is keyed
     /// on the *profiles and bindings* the value reaches, and two attributes
     /// referenced by one profile collapse to a single entry there.
+    ///
+    /// `reason` on the wire (`persona/correlation/analyze/1.2`).
+    #[serde(rename = "reason")]
     pub why: String,
     /// Where the value has actually gone.
     ///

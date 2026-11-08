@@ -54,6 +54,36 @@ pub struct TenantConfigOverlay {
     /// runs the enclave on. See [`TenantServerOverlay`].
     #[serde(default)]
     pub server: Option<TenantServerOverlay>,
+    /// The operator's off-only suspension of collection by default
+    /// (VTI-NTF-098). See [`TenantCollectionOverlay`].
+    #[serde(default)]
+    pub collection: Option<TenantCollectionOverlay>,
+}
+
+/// The tenant-scoped subset of `[collection]` an operator may deliver at
+/// runtime: the operator's **suspension** of collection by default
+/// (VTI-NTF-098), and nothing else.
+///
+/// It is **off-only**: `suspend: true` suspends collection for every context;
+/// `false` or absent leaves the baked value as it is, so the overlay can never
+/// lift a suspension baked into the image, and nothing here enables collection
+/// for any context (VTI-NTF-098). Whether a context is collected for is that
+/// context's stored setting (VTI-NTF-094), changed by its administrators. It
+/// confers nothing on the parent: the parent that carries every packet can
+/// already withhold every message.
+///
+/// The retired `collect_by_default` (VTI-NTF-093, withdrawn) is still accepted,
+/// so an overlay written for an earlier release keeps parsing; it is ignored
+/// with a warning.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TenantCollectionOverlay {
+    #[serde(default)]
+    pub suspend: Option<bool>,
+    /// The retired key, read only to say it is ignored.
+    #[serde(default, rename = "collect_by_default")]
+    retired_collect_by_default: Option<bool>,
 }
 
 /// The tenant-scoped subset of `[tee.kms]` an operator may deliver at runtime.
@@ -410,6 +440,22 @@ pub fn apply_tenant_overlay(
             if value.is_some() {
                 *field = value;
             }
+        }
+    }
+
+    if let Some(c) = overlay.collection {
+        // Off-only (VTI-NTF-098): the overlay may suspend, never lift.
+        if c.suspend == Some(true) {
+            base.collection.suspend = true;
+        }
+        if let Some(v) = c.retired_collect_by_default {
+            tracing::warn!(
+                collect_by_default = v,
+                "the tenant overlay's `collection.collect_by_default` is retired and ignored \
+                 (VTI-NTF-093 is withdrawn): collection by default is a setting of each trust \
+                 context. Deliver `collection.suspend: true` to stop collection on this VTA \
+                 (VTI-NTF-098)."
+            );
         }
     }
 
@@ -906,6 +952,37 @@ mod tests {
     #[cfg(feature = "tee")]
     fn claim_overlay(did: &str) -> TenantConfigOverlay {
         serde_json::from_value(serde_json::json!({ "bootstrap_claim_did": did })).unwrap()
+    }
+
+    /// VTI-NTF-098: the overlay may suspend collection by default, never lift
+    /// a suspension, and the retired VTI-NTF-093 key parses and sets nothing.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn vti_ntf_098_apply_overlay_only_suspends() {
+        let mut base = empty_base();
+        assert!(!base.collection.suspend, "not suspended unless suspended");
+        let retired: TenantConfigOverlay =
+            serde_json::from_str(r#"{"collection":{"collect_by_default":false}}"#).unwrap();
+        apply_tenant_overlay(&mut base, retired).expect("apply succeeds");
+        assert!(!base.collection.suspend, "the retired key sets nothing");
+        let on: TenantConfigOverlay =
+            serde_json::from_str(r#"{"collection":{"suspend":true}}"#).unwrap();
+        apply_tenant_overlay(&mut base, on).expect("apply succeeds");
+        assert!(base.collection.suspend);
+        let off: TenantConfigOverlay =
+            serde_json::from_str(r#"{"collection":{"suspend":false}}"#).unwrap();
+        apply_tenant_overlay(&mut base, off).expect("apply succeeds");
+        assert!(
+            base.collection.suspend,
+            "the overlay never lifts a suspension"
+        );
+        // Nothing else of `[collection]` reaches the enclave this way.
+        assert!(
+            serde_json::from_str::<TenantConfigOverlay>(
+                r#"{"collection":{"max_identifiers":100000}}"#
+            )
+            .is_err()
+        );
     }
 
     #[cfg(feature = "tee")]

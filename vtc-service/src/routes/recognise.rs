@@ -71,8 +71,8 @@ use crate::recognition::{
 };
 use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
-use trust_tasks_rs::specs::vtc::auth::recognise::challenge::v0_2::Response as RecogniseChallengeResponse;
 use vta_sdk::protocols::members::{AUTHORITY_CREDENTIAL_TYPE, MEMBERSHIP_CREDENTIAL_TYPE};
+use vti_specs::vtc::auth::recognise::challenge::v0_2::Response as RecogniseChallengeResponse;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,15 +140,15 @@ pub(crate) async fn recognise_challenge(
 /// verification, fell outside its validity window, or was revoked through
 /// `credentialStatus`.
 pub const RECOGNISE_ERR_CREDENTIAL_INVALID: &str =
-    trust_tasks_rs::specs::vtc::auth::recognise::v0_3::error_codes::CREDENTIAL_INVALID.code;
+    vti_specs::vtc::auth::recognise::v0_3::error_codes::CREDENTIAL_INVALID.code;
 /// `vtc/auth/recognise:issuerNotRecognised` — the foreign issuer is not in this
 /// community's recognition graph.
 pub const RECOGNISE_ERR_ISSUER_NOT_RECOGNISED: &str =
-    trust_tasks_rs::specs::vtc::auth::recognise::v0_3::error_codes::ISSUER_NOT_RECOGNISED.code;
+    vti_specs::vtc::auth::recognise::v0_3::error_codes::ISSUER_NOT_RECOGNISED.code;
 /// `vtc/auth/recognise:roleNotMapped` — policy allowed the issuer but mapped
 /// the foreign role to no local role.
 pub const RECOGNISE_ERR_ROLE_NOT_MAPPED: &str =
-    trust_tasks_rs::specs::vtc::auth::recognise::v0_3::error_codes::ROLE_NOT_MAPPED.code;
+    vti_specs::vtc::auth::recognise::v0_3::error_codes::ROLE_NOT_MAPPED.code;
 
 /// `vtc/auth/recognise/0.3` — cross-community session mint from a
 /// holder-signed VP embedding a foreign VAC + VMC. Called from

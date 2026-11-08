@@ -6,6 +6,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
+import { setProtectedIsolationForTests } from "@/components/Protected";
 import { postSignedTrustTask, type WhoamiResponse } from "@/lib/api";
 import { matchCode, payloadDigestOf, wireDigest } from "@/lib/action-summary";
 import {
@@ -159,13 +160,40 @@ describe("the Actions page", () => {
     render();
     const card = await screen.findByRole("article", { name: "Action act-1" });
     expect(
-      await within(card).findByText(/^Make did:webvh:QmScid…xample:carol an unrestricted administrator$/),
+      await within(card).findByText(/^Make did:webvh:QmScid…xample:carol a admin$/),
     ).toBeTruthy();
     expect(within(card).getByText(`Code: ${matchCode(waiting.payloadDigest)}`)).toBeTruthy();
     expect(within(card).getByText(/0 of 2/)).toBeTruthy();
     expect(within(card).getByText(/expires in 2 d 4 h/)).toBeTruthy();
     expect(within(card).getByText(/raised 4 actions in the last 10/)).toBeTruthy();
     expect(within(card).getByText("3")).toBeTruthy();
+  });
+
+  // vtc/community/theme/show/0.1, client item 2: the card an approval is given
+  // on is out of the theme's reach; the list around it takes the theme.
+  it("draws each card out of the theme's reach, and the page around it in the theme's", async () => {
+    setProtectedIsolationForTests(true);
+    try {
+      installWallet();
+      routes([waiting]);
+      render();
+      const shadow = await waitFor(() => {
+        const s = document.querySelector("[data-protected]")?.shadowRoot;
+        expect(s?.querySelector('article[aria-label="Action act-1"]')).toBeTruthy();
+        return s!;
+      });
+      const card = shadow.querySelector<HTMLElement>('article[aria-label="Action act-1"]')!;
+      expect(await within(card).findByRole("button", { name: "Approve" })).toBeTruthy();
+      expect(within(card).getByRole("button", { name: "Decline" })).toBeTruthy();
+      expect(within(card).getByText(`Code: ${matchCode(waiting.payloadDigest)}`)).toBeTruthy();
+      // Nothing of the card is in the light DOM, where the theme's selectors reach…
+      expect(screen.queryByRole("article")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+      // …and the tabs are: they decide nothing.
+      expect(screen.getByRole("tablist", { name: "Action lists" })).toBeTruthy();
+    } finally {
+      setProtectedIsolationForTests(false);
+    }
   });
 
   it("lays a card out as an inbox row: verified chip and requester first, decision on the right", async () => {
@@ -399,7 +427,7 @@ describe("the Actions page", () => {
 const OP_GRANT = (vectors as unknown as Vector[]).find(
   (v) =>
     v.kind === "operator.offlineWrite" &&
-    v.typeUri === "https://trusttasks.org/spec/vtc/operator/offline-write/0.1" &&
+    v.typeUri === "https://trusttasks.org/spec/vtc/operator/offline-write/0.2" &&
     (v.payload as { command?: string }).command === "aclAdd",
 )!;
 
@@ -412,7 +440,7 @@ async function operatorWrite(overrides: Partial<Action> = {}): Promise<Action> {
     requester: VTC,
     status: "open",
     createdAt: "2026-10-02T08:31:00Z",
-    approvals: [{ subject: REQUESTER, at: "2026-10-02T09:00:00Z" }],
+    approvals: [{ subject: REQUESTER, decidedAt: "2026-10-02T09:00:00Z" }],
     approversRemaining: 2,
     callerRole: "acknowledger",
     payload: OP_GRANT.payload,
@@ -530,7 +558,7 @@ describe("an operator's offline write", () => {
 
 const REDUCE = {
   kind: "acl.reduce.authority",
-  typeUri: "https://trusttasks.org/spec/acl/revoke/0.1",
+  typeUri: "https://trusttasks.org/spec/acl/revoke/0.2",
 };
 
 /** A 0.2 `coolingOff` action: `landsAt` and `cancellableBy` on the action
@@ -951,11 +979,11 @@ describe("landsIn", () => {
 
 describe("the 0.2 wire", () => {
   it("lists, shows, cancels and acknowledges at 0.2", () => {
-    expect(ACTIONS_LIST_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/list/0.2");
-    expect(ACTIONS_SHOW_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/show/0.2");
-    expect(ACTIONS_CANCEL_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2");
+    expect(ACTIONS_LIST_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/list/0.3");
+    expect(ACTIONS_SHOW_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/show/0.3");
+    expect(ACTIONS_CANCEL_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3");
     expect(ACTIONS_ACKNOWLEDGE_TASK).toBe(
-      "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2",
+      "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3",
     );
   });
 
@@ -966,7 +994,7 @@ describe("the 0.2 wire", () => {
     const types = requests
       .filter((r) => r.url === "/v1/trust-tasks")
       .map((r) => (r.body as { type?: string })?.type);
-    expect(types).toContain("https://trusttasks.org/spec/vtc/admin/actions/list/0.2");
+    expect(types).toContain("https://trusttasks.org/spec/vtc/admin/actions/list/0.3");
     expect(types.some((t) => t?.endsWith("/actions/list/0.1"))).toBe(false);
   });
 });

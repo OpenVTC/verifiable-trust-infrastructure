@@ -94,6 +94,15 @@ pub enum PcsError {
     EvidenceInvalid(String),
     /// `member` names a DID this engine holds no `authentication` key of that the caller may act as.
     MemberNotHeld(String),
+    /// Under a `credential` roll, `member` without `membershipCredential`; or
+    /// `membershipCredential` without `member`, or under any other rule (voter/register item 9).
+    MembershipCredentialRequired,
+    /// `membershipCredential` names no credential the caller may present as `member` now, or
+    /// one whose issuer is not the roll's `memberOf` (voter/register item 9, voter/read item 5).
+    MembershipCredentialUnusable,
+    /// `membershipCredential` was not issued by the `memberOf` the read names (VTI-VOT-016,
+    /// voter/read item 6).
+    MembershipCredentialMismatch,
     // The encrypted levels (`vta/pcs/vote-encrypted`, `vta/pcs/trustee/*`;
     // operations::pcs_trustee).
     WrongLevel,
@@ -115,6 +124,14 @@ pub enum PcsError {
     KeyMismatch,
     NoDealing,
     KeyNotHeld,
+    // `vta/pcs/vetter/recover`.
+    /// No key this VTA can derive for the context has the bound identifier; the reason says
+    /// whether the search ran in full or the context had more candidates than its bound.
+    BoundKeyNotFound(String),
+    /// A vetter engine for the community with the bound identifier is in this other context.
+    HeldInAnotherContext(String),
+    /// The engine's current key holds something a community issued: it is never replaced.
+    EngineEnrolled,
     App(AppError),
 }
 
@@ -164,6 +181,19 @@ impl std::fmt::Display for PcsError {
                 "this agent holds no authentication key of {did} that you may act as, so it \
                  cannot sign the ticket request as it"
             ),
+            Self::MembershipCredentialRequired => f.write_str(
+                "a credential roll is claimed with the member's membership credential for the \
+                 party it names (name it as membershipCredential, with member), and no other \
+                 roll takes one",
+            ),
+            Self::MembershipCredentialUnusable => f.write_str(
+                "membershipCredential names no credential this agent may present as member now \
+                 whose issuer is the party the roll names",
+            ),
+            Self::MembershipCredentialMismatch => f.write_str(
+                "membershipCredential was not issued by memberOf; this agent presents no \
+                 membership unrelated to the election (VTI-VOT-016)",
+            ),
             Self::TicketHeld => f.write_str("a ticket for this election is already held"),
             Self::ManifestMismatch => f.write_str(
                 "the manifest or ballot is not the one this election was registered with",
@@ -200,6 +230,20 @@ impl std::fmt::Display for PcsError {
             ),
             Self::NoDealing => f.write_str("this engine has not dealt for this trustee and election"),
             Self::KeyNotHeld => f.write_str("this engine holds no key share for this trustee and election"),
+            Self::BoundKeyNotFound(why) => write!(
+                f,
+                "no key this agent can derive for the context has that identifier ({why}); ask \
+                 the community's administrators to reset your binding"
+            ),
+            Self::HeldInAnotherContext(ctx) => write!(
+                f,
+                "a vetter engine for this community with that identifier is in context {ctx}; \
+                 vet from that context — a key cannot move between contexts"
+            ),
+            Self::EngineEnrolled => f.write_str(
+                "the engine's current key holds a class credential, tokens or attestations from \
+                 the community, and a key a community has issued to is never replaced",
+            ),
             Self::App(e) => write!(f, "{e}"),
         }
     }
@@ -268,7 +312,7 @@ struct ApplicantState {
     held: Vec<HeldAttestation>,
 }
 
-fn vetter_key(context_id: &str, community: &str) -> String {
+pub(crate) fn vetter_key(context_id: &str, community: &str) -> String {
     let mut h = Sha256::new();
     h.update(context_id.as_bytes());
     h.update([0]);
@@ -787,6 +831,205 @@ pub async fn vetter_show(state: &AppState, context_id: &str, community: &str) ->
         .ok_or(PcsError::NotFound)?;
     let st = load_vetter_state(state, &record).await?;
     Ok(vetter_summary(&record, &st.snapshot, &st.enrolments))
+}
+
+/// Key prefixes of the records in the `pcs_engine` keyspace that name a member key's path.
+const KEYED_RECORD_PREFIXES: &[&str] = &["vetter:", "app:", "voter:", "trustee:"];
+
+/// Remove every engine record of `context_id` — vetter, applicant, voter and
+/// trustee — with the wrapped state beside each, returning how many records
+/// went.
+///
+/// For a context deletion. Each record names the context its key is derived
+/// under, and its key is a digest of that context id (or, for an applicant, an
+/// application id), so a context created again under the same id finds the old
+/// ones: a vetter pinned to the old member DID refuses the new one with
+/// `memberMismatch`, and every record names a path under the *old* context's
+/// base, which the new context does not have. The keys go with their records,
+/// as [`delete_application`] and the voter sweep say: never stored, and
+/// nothing names their paths any more.
+///
+/// The keys are hashed, so this scans each record prefix and matches the
+/// record's own `contextId`. A row this build cannot read is left alone, for an
+/// operator, never guessed at.
+pub async fn purge_context(
+    ks: &vti_common::store::KeyspaceHandle,
+    context_id: &str,
+) -> std::result::Result<usize, AppError> {
+    let _guard = write_lock().await;
+    let mut removed = 0;
+    for prefix in KEYED_RECORD_PREFIXES {
+        for (key, raw) in ks.prefix_iter_raw(*prefix).await? {
+            let Ok(record) = serde_json::from_slice::<Value>(&raw) else {
+                continue;
+            };
+            if record.get("contextId").and_then(Value::as_str) != Some(context_id) {
+                continue;
+            }
+            let key = String::from_utf8_lossy(&key).into_owned();
+            // The wrapped state is stored under the record's own key; a voter
+            // keeps its casts and receipts apart, under a second one.
+            vta_keys::imported::delete_secret(ks, &key).await?;
+            if *prefix == "voter:" {
+                vta_keys::imported::delete_secret(ks, &super::pcs_voter::casts_key(&key)).await?;
+            }
+            ks.remove(key).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// The paths every PCS engine record names: keys that already serve an engine, which a
+/// recovery must not hand to another one. A member's identifier is a function of its seed alone
+/// (not of the community), so a key serving two engines would show one identifier to two
+/// parties — an applicant's key turned vetter's would link the two roles.
+async fn paths_held(state: &AppState) -> Result<std::collections::HashSet<String>> {
+    let mut held = std::collections::HashSet::new();
+    for prefix in KEYED_RECORD_PREFIXES {
+        for (_, raw) in state.pcs_engine_ks.prefix_iter_raw(*prefix).await? {
+            if let Some(path) = serde_json::from_slice::<Value>(&raw)
+                .ok()
+                .and_then(|v| v.get("path").and_then(Value::as_str).map(str::to_string))
+            {
+                held.insert(path);
+            }
+        }
+    }
+    Ok(held)
+}
+
+/// The vetter engine for `community` with identifier `id` in a context other than
+/// `context_id` that the caller may act in, if there is one.
+async fn vetter_elsewhere(
+    state: &AppState,
+    context_id: &str,
+    community: &str,
+    id: &vti_vetting_pcs::scheme::G1,
+    may_act_in: &impl Fn(&str) -> bool,
+) -> Result<Option<String>> {
+    for (_, raw) in state.pcs_engine_ks.prefix_iter_raw("vetter:").await? {
+        let Ok(r) = serde_json::from_slice::<VetterRecord>(&raw) else {
+            continue;
+        };
+        if r.community == community
+            && r.context_id != context_id
+            && point_from_text(&r.id).is_ok_and(|p| p == *id)
+            && may_act_in(&r.context_id)
+        {
+            return Ok(Some(r.context_id));
+        }
+    }
+    Ok(None)
+}
+
+/// `vta/pcs/vetter/recover`: make the key the community bound the member to the engine's key
+/// again, when the engine record that named it was lost or replaced. Returns whether the key
+/// changed, and the engine's summary.
+///
+/// The search covers every path the context's counter has handed out, under every seed
+/// generation still held, less the paths other engines hold, through
+/// [`key_custody::search_pcs_member_keys`](super::key_custody::search_pcs_member_keys) — bounded
+/// by [`vta_keys::custody::PCS_SEARCH_MAX_DERIVATIONS`]. No other context's keys are derived.
+/// Nothing here logs, audits or returns a key, a seed or a path.
+#[allow(clippy::too_many_arguments)]
+pub async fn vetter_recover(
+    state: &AppState,
+    caller: &Caller<'_>,
+    context_id: &str,
+    community: &str,
+    member_did: &str,
+    bound_id: &str,
+    may_act_in: impl Fn(&str) -> bool,
+) -> Result<(bool, Value)> {
+    // A string the schema admits but that is no point in the group is no key's identifier.
+    let bound = point_from_text(bound_id)
+        .map_err(|_| PcsError::BoundKeyNotFound("boundId is not a PCS identifier".to_string()))?;
+    let _guard = write_lock().await;
+    let existing = vetter_record(state, context_id, community).await?;
+    if let Some(record) = &existing {
+        // Rule 2.
+        if record.member_did != member_did {
+            return Err(PcsError::MemberMismatch);
+        }
+        let st = load_vetter_state(state, record).await?;
+        // Rule 3: already the bound key.
+        if point_from_text(&record.id).is_ok_and(|p| p == bound) {
+            return Ok((false, vetter_summary(record, &st.snapshot, &st.enrolments)));
+        }
+        // Rule 4: anything a community issued to the current key.
+        let snap = &st.snapshot;
+        if !snap.credentials.is_empty() || !snap.tokens.is_empty() || !snap.log.is_empty() {
+            return Err(PcsError::EngineEnrolled);
+        }
+    }
+
+    // Rule 7, checked first because it is a read: an identifier an engine in another context
+    // holds was derived from that context's base, so this context's search cannot find it.
+    if let Some(other) = vetter_elsewhere(state, context_id, community, &bound, &may_act_in).await?
+    {
+        return Err(PcsError::HeldInAnotherContext(other));
+    }
+
+    // Rule 5. A context that does not exist derives nothing.
+    if crate::contexts::get_context(&state.contexts_ks, context_id)
+        .await?
+        .is_none()
+    {
+        return Err(PcsError::BoundKeyNotFound(
+            "the context does not exist".to_string(),
+        ));
+    }
+    let ids = vti_vetting_pcs::scheme::MemberIds::for_community(community).map_err(proto)?;
+    let skip = paths_held(state).await?;
+    let outcome = super::key_custody::search_pcs_member_keys(
+        &state.contexts_ks,
+        &state.keys_ks,
+        &*state.seed_store,
+        &state.audit_sink,
+        caller.did,
+        context_id,
+        &skip,
+        move |seed| ids.id_from_seed(seed).is_ok_and(|id| id == bound),
+        caller.channel,
+    )
+    .await?;
+    let (path, seed_id) = match outcome {
+        vta_keys::custody::PcsSearchOutcome::Found { path, seed_id } => (path, seed_id),
+        vta_keys::custody::PcsSearchOutcome::NotFound { derived } => {
+            return Err(PcsError::BoundKeyNotFound(format!(
+                "searched all {derived} keys derivable for the context"
+            )));
+        }
+        vta_keys::custody::PcsSearchOutcome::TooMany { candidates } => {
+            return Err(PcsError::BoundKeyNotFound(format!(
+                "the context has {candidates} candidate keys, more than the {} this agent \
+                 searches; none was searched",
+                vta_keys::custody::PCS_SEARCH_MAX_DERIVATIONS
+            )));
+        }
+    };
+
+    // Rule 6: the found key replaces the engine's, and the state held under the replaced key
+    // (enrolments and draws in flight — rule 4 established there is nothing else) goes with it.
+    let record = VetterRecord {
+        context_id: context_id.to_string(),
+        community: community.to_string(),
+        member_did: member_did.to_string(),
+        suite: SUITE.to_string(),
+        path,
+        seed_id,
+        id: point_text(&bound).map_err(proto)?,
+        created_at: existing.as_ref().map_or_else(Utc::now, |r| r.created_at),
+    };
+    let st = VetterState {
+        snapshot: VetterSnapshot::without_keys(member_did),
+        enrolments: BTreeMap::new(),
+    };
+    let key = vetter_key(context_id, community);
+    store_secret_json(state, &key, VETTER_STATE_TYPE, record.seed_id, &st).await?;
+    state.pcs_engine_ks.insert(key, &record).await?;
+    Ok((true, vetter_summary(&record, &st.snapshot, &st.enrolments)))
 }
 
 // ─── Applicant ───────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@
 //! and both are about *identity*, not *shape*:
 //! `every_bound_task_is_published_or_excepted` (coverage) and
 //! `every_bound_canonical_task_exists_in_the_registry` (the URI resolves in
-//! `trust_tasks_rs::schema_index`). Neither looks at a payload, and there is
+//! `vti_specs::schema_index`). Neither looks at a payload, and there is
 //! no runtime validation on this side either — the document dispatcher's
 //! `parse_payload` (`trust_tasks/helpers.rs:59`) is a bare
 //! `serde_json::from_value`, and the REST layer's Trust-Task gate checks the
@@ -111,6 +111,10 @@
 //! assertion from the other direction, and that direction is what tells you a
 //! fold landed.
 
+// `get`/`list` 0.3 and `members/list`/`memberships/list` 0.1 are superseded and still
+// served, so their samples stay; their generated types are marked deprecated.
+#![allow(deprecated)]
+
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -190,10 +194,13 @@ fn collect_from_dir(dir: &Path, out: &mut BTreeSet<String>) {
 }
 
 /// The sweep's scope: bound ∩ published. Derived, never hand-listed.
+/// Published means a schema in either index: the deprecated prebuilt
+/// `trust_tasks_rs` one, or the versions the `vti-specs` crates pin — which
+/// alone carry a version newer than the last `trust-tasks-rs` release.
 pub(super) fn resolved_uris() -> BTreeSet<String> {
     bound_uris()
         .into_iter()
-        .filter(|u| trust_tasks_rs::schema_index::schema_for(u).is_some())
+        .filter(|u| vti_specs::schema_index::schema_for(u).is_some())
         .collect()
 }
 
@@ -359,6 +366,94 @@ fn base_disclosure() -> Value {
     .expect("the base schema gives a statement")
 }
 
+/// A received notification as `crate::notifications::inbox` answers it (`ReceivedNotification`),
+/// with one relay decision.
+fn sample_received_notification() -> serde_json::Value {
+    use crate::notifications::inbox::{ReceivedNotification, RelayDecision, Selection};
+    let at = DateTime::parse_from_rfc3339("2027-03-01T09:00:02Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let rec = ReceivedNotification {
+        record_id: "rn-4Tq8Zr2Lw9Ks6Pm1".into(),
+        originator: "did:web:community.example".into(),
+        relayed_by: vec![],
+        delivered_by: "did:web:community.example".into(),
+        notification: json!({
+            "notificationId": "ntf-7Qk2p9Xv3mR8",
+            "revision": 1,
+            "kind": "election",
+            "subject": {
+                "heldBy": "did:web:community.example",
+                "id": "board-2027",
+                "openWith": vta_sdk::notifications::ELECTION_OPEN_WITH,
+            },
+            "audience": "did:web:partner.example",
+            "status": "available",
+            "relayable": true,
+            "validUntil": "2027-03-15T00:00:00Z",
+        }),
+        revision: 1,
+        kind: "election".into(),
+        relayable: true,
+        withdrawn: false,
+        valid_until: None,
+        received_at: at,
+        document: json!({}),
+        relay_decisions: vec![RelayDecision {
+            decided_at: at,
+            decided_by: "did:web:carol.example".into(),
+            recipients: Selection::AllMembers,
+            recipient_count: 42,
+            revision: 1,
+            disclosure_acknowledged: true,
+        }],
+        relayed_to: vec![],
+        keep_until: at,
+    };
+    rec.to_wire(at)
+}
+
+/// A network membership as `crate::networks` stores and answers it — the shared
+/// `vtc/_shared/0.7` `NetworkMembership` — with its admins group registered.
+fn sample_network_membership() -> serde_json::Value {
+    use crate::networks::{Membership, RegisteredGroup, State};
+    let at = DateTime::parse_from_rfc3339("2026-11-03T10:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let cred = |issuer: &str, subject: &str| {
+        json!({
+            "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
+            "issuer": issuer,
+            "credentialSubject": { "id": subject },
+        })
+    };
+    let net = "did:example:whn";
+    let vtc = "did:example:community";
+    let group = "did:example:community-admins";
+    serde_json::to_value(Membership {
+        network: net.into(),
+        url: "https://whn.example.org".into(),
+        name: Some("World Health Network".into()),
+        state: State::Acknowledged,
+        listing: cred(net, vtc),
+        grant: Some(cred(net, vtc)),
+        acknowledgement: Some(cred(vtc, net)),
+        repudiation: None,
+        groups: vec![RegisteredGroup {
+            role: "admins".into(),
+            group_id: "admins".into(),
+            group_did: group.into(),
+            endpoint: "https://community.example.org/v1/trust-tasks".into(),
+            registration: cred(vtc, group),
+            acceptance: cred(net, group),
+            registered_at: at,
+        }],
+        joined_at: Some(at),
+        updated_at: at,
+    })
+    .unwrap()
+}
+
 fn sample_binding() -> crate::groups::bindings::Binding {
     crate::groups::bindings::Binding {
         binding_id: "gb_P2k8W5qYc6Vd1MsKAAAAAA".into(),
@@ -479,8 +574,14 @@ const ACTION_ID: &str = "act-5b8f1d4e9c2a4f6b8e317a0c5d9e2f14";
 /// challenge, or closed. The summary and digest are the real renderer's.
 fn sample_action(open: bool) -> serde_json::Value {
     use crate::admin_actions::summary;
-    let type_uri = "https://trusttasks.org/spec/acl/grant/0.1";
-    let payload = json!({ "entry": { "subject": OTHER_DID, "role": "admin", "scopes": [] } });
+    let type_uri = "https://trusttasks.org/spec/acl/grant/0.2";
+    let payload = json!({ "entry": {
+        "subject": OTHER_DID,
+        "role": "community-admin",
+        "act": { "scope": "all" },
+        "keys": { "scope": "none" },
+        "capabilities": { "scope": "ceiling" },
+    } });
     let mut action = json!({
         "actionId": ACTION_ID,
         "category": "approval",
@@ -514,8 +615,8 @@ fn sample_action(open: bool) -> serde_json::Value {
 /// and cancellable by its requester, or landed.
 fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
     use crate::admin_actions::summary;
-    let type_uri = "https://trusttasks.org/spec/acl/revoke/0.1";
-    let payload = json!({ "subject": OTHER_DID });
+    let type_uri = "https://trusttasks.org/spec/acl/revoke/0.2";
+    let payload = json!({ "subject": OTHER_DID, "revocation": { "kind": "entry" } });
     let mut action = json!({
         "actionId": ACTION_ID,
         "category": "coolingOff",
@@ -543,12 +644,22 @@ fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
 }
 
 /// A room the community owns, as `vtc/rooms/community/*` answers it.
-fn sample_community_room() -> serde_json::Value {
+/// `CommunityRoomV3`: `CommunityRoomV2`, the room's `status`, its suspended admissions.
+fn sample_community_room_v3(status: serde_json::Value) -> serde_json::Value {
+    let mut v = sample_community_room_v2();
+    v["status"] = status;
+    v["suspended"] = json!(2);
+    v
+}
+
+fn sample_community_room_v2() -> serde_json::Value {
     json!({
         "room": {
             "roomId": "did:key:z6MkRoom", "ownerDid": "did:example:community",
             "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
-            "lifecycle": "live", "retentionDays": 90, "createdAt": 0, "updatedAt": 0,
+            "lifecycle": "live", "retentionDays": 90,
+            "epochExpiresAt": "2027-01-12T10:00:00Z",
+            "createdAt": "2026-10-14T10:00:00Z", "updatedAt": "2026-10-14T10:00:00Z",
         },
         "label": "Board pack",
         "storageConfig": "local",
@@ -556,17 +667,11 @@ fn sample_community_room() -> serde_json::Value {
         "offered": 1,
         "ownerAuthorityValidUntil": "2027-10-14T10:00:00Z",
         "createdBy": "did:key:z6MkAdmin",
+        "description": "Papers for the board's meetings.",
+        "tags": ["board", "finance"],
+        "detailsUpdatedAt": "2026-10-15T09:30:01Z",
+        "detailsUpdatedBy": "did:key:z6MkAdmin",
     })
-}
-
-/// The same room as `vtc/rooms/community/*` 0.2 answers it: with its details.
-fn sample_community_room_v2() -> serde_json::Value {
-    let mut room = sample_community_room();
-    room["description"] = json!("Papers for the board's meetings.");
-    room["tags"] = json!(["board", "finance"]);
-    room["detailsUpdatedAt"] = json!("2026-10-15T09:30:01Z");
-    room["detailsUpdatedBy"] = json!("did:key:z6MkAdmin");
-    room
 }
 
 /// A room's migration as `vti_rooms::blobs` records it.
@@ -599,34 +704,6 @@ fn sample_paused_migration() -> vti_rooms::blobs::Migration {
     serde_json::from_value(m).expect("a migration record")
 }
 
-/// A stored storage config as `crate::rooms::storage_configs` keeps it.
-fn sample_storage_config() -> serde_json::Value {
-    json!({
-        "id": "local",
-        "label": "This host's disk",
-        "settings": { "kind": "local", "root": "/var/lib/vtc/room-blobs" },
-        "state": "active",
-        "isDefault": true,
-        "capacityBytes": 1_000_000,
-        "createdBy": "did:key:z6MkCommunity",
-        "createdAt": "2026-10-12T09:00:00Z",
-        "updatedBy": "did:key:z6MkAdmin",
-        "updatedAt": "2026-10-12T10:00:00Z",
-    })
-}
-
-/// Its facts, as `RoomStorage::facts` renders them.
-fn sample_storage_facts() -> serde_json::Value {
-    json!({
-        "rooms": 1,
-        "files": 3,
-        "bytes": 1024,
-        "pendingDeleteBytes": 0,
-        "credential": { "status": "none" },
-        "health": { "lastProbeAt": "2026-10-12T10:00:00Z", "lastProbeOk": true },
-    })
-}
-
 /// An `ambient` `s3` config at 0.2, assuming a named role.
 fn sample_storage_config_v2() -> serde_json::Value {
     json!({
@@ -653,7 +730,7 @@ fn sample_storage_facts_v2() -> serde_json::Value {
 }
 
 /// An operator's offline write as an acknowledge item names it: the record
-/// type `vtc/operator/offline-write/0.1`, with the record as its payload.
+/// type `vtc/operator/offline-write/0.2`, with the record as its payload.
 /// A replaced custom role, as `crate::acl::roles` stores it.
 fn sample_role() -> crate::acl::roles::RoleDefinition {
     crate::acl::roles::RoleDefinition {
@@ -677,7 +754,7 @@ fn sample_offline_write() -> serde_json::Value {
         "command": "emergencyBootstrap",
         "dids": [DID, OTHER_DID],
         "host": "vtc-host-1",
-        "at": TS,
+        "writtenAt": TS,
     });
     json!({
         "actionId": ACTION_ID,
@@ -687,7 +764,7 @@ fn sample_offline_write() -> serde_json::Value {
         "requester": COMMUNITY_DID,
         "status": "open",
         "createdAt": TS,
-        "approvals": [{ "subject": DID, "at": TS }],
+        "approvals": [{ "subject": DID, "decidedAt": TS }],
         "approversRemaining": 1,
         "summary": summary::render(summary::KIND_OPERATOR_WRITE, OPERATOR_OFFLINE_WRITE_URI, &payload),
         "payloadDigest": summary::payload_digest(&payload).unwrap(),
@@ -771,6 +848,26 @@ fn member_credentials_response() -> Value {
 
 /// A completed direct admission, as `ceremony::admission::admit_directly`
 /// returns one, with the credentials [`credential`] stands for.
+/// A moderator's entry, as a completed `vtc/members/role/set` leaves it.
+fn role_set_entry() -> crate::acl::VtcAclEntry {
+    crate::acl::VtcAclEntry {
+        did: DID.into(),
+        role: crate::acl::VtcRole::Moderator,
+        label: None,
+        admin: crate::acl::VtcRole::Moderator.implied_authority(),
+        delegated_by: Some(COMMUNITY_DID.into()),
+        created_at: 1_700_000_000,
+        created_by: COMMUNITY_DID.into(),
+        updated_at: Some(1_700_000_100),
+        updated_by: Some(COMMUNITY_DID.into()),
+        expires_at: None,
+        resource_grants: Vec::new(),
+        group_grants: Vec::new(),
+        label_set_by_subject: false,
+        suspension: None,
+    }
+}
+
 fn admitted(label: Option<&str>) -> crate::ceremony::admission::Admitted {
     let vc = || serde_json::from_value(credential()).expect("the fixture credential parses");
     crate::ceremony::admission::Admitted {
@@ -1090,48 +1187,146 @@ const KNOWN_DRIFT_COUNT: usize = 0;
 /// being a nicety.
 #[allow(clippy::too_many_lines)]
 fn table() -> Vec<Conformance> {
-    use trust_tasks_rs::specs::vtc as s;
     use vta_sdk::protocols::join_requests as jr;
     use vta_sdk::protocols::members as mem;
+    use vti_specs::vtc as s;
 
     #[allow(unused_mut)]
     let mut table = vec![
-        // ─── the action list (`crate::admin_actions`) ────────────────
+        // ─── received notifications (`crate::notifications::inbox`) ──
         checked!(
-            s::admin::actions::list::v0_1::Payload,
-            s::admin::actions::list::v0_1::Response,
-            json!({ "view": "waitingForMe", "limit": 25 }),
+            s::notifications::list::v0_1::Payload,
+            s::notifications::list::v0_1::Response,
+            json!({ "kind": "election", "includeLapsed": false, "limit": 50 }),
+            json!({ "items": [sample_received_notification()] })
+        ),
+        checked!(
+            s::notifications::show::v0_1::Payload,
+            s::notifications::show::v0_1::Response,
+            json!({ "recordId": "rn-4Tq8Zr2Lw9Ks6Pm1" }),
+            json!({ "item": sample_received_notification(),
+                    "document": { "type": "https://trusttasks.org/spec/notifications/notify/0.1" } })
+        ),
+        checked!(
+            s::notifications::relay::v0_1::Payload,
+            s::notifications::relay::v0_1::Response,
+            json!({ "recordId": "rn-4Tq8Zr2Lw9Ks6Pm1",
+                    "recipients": { "scope": "group", "groupId": "grp_Q2xpbWJpbmdDbHViMjAyNw" },
+                    "disclosureAcknowledged": true }),
+            json!({ "recordId": "rn-4Tq8Zr2Lw9Ks6Pm1", "revision": 1, "recipientCount": 42 })
+        ),
+        // ─── network membership (`crate::networks`) ──────────────────
+        checked!(
+            s::networks::list::v0_2::Payload,
+            s::networks::list::v0_2::Response,
+            json!({ "state": "acknowledged", "limit": 50 }),
+            json!({ "items": [sample_network_membership()] })
+        ),
+        checked!(
+            s::networks::show::v0_2::Payload,
+            s::networks::show::v0_2::Response,
+            json!({ "network": "did:example:whn" }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::preview::v0_1::Payload,
+            s::networks::preview::v0_1::Response,
+            json!({ "url": "https://whn.example.org", "network": "did:example:whn" }),
+            json!({ "network": "did:example:whn", "url": "https://whn.example.org",
+                    "name": "World Health Network", "owner": "WHN Foundation",
+                    "framework": { "iri": "https://whn.example.org/governance", "version": "1.0" },
+                    "roles": [{ "name": "admins", "required": true }],
+                    "listed": true, "entryState": "listed" })
+        ),
+        checked!(
+            s::networks::join::v0_2::Payload,
+            s::networks::join::v0_2::Response,
+            json!({ "url": "https://whn.example.org", "network": "did:example:whn",
+                    "groups": [{ "role": "admins", "groupId": "admins" }] }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::repudiate::v0_2::Payload,
+            s::networks::repudiate::v0_2::Response,
+            json!({ "url": "https://whn.example.org", "network": "did:example:whn", "reason": "not ours" }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::leave::v0_2::Payload,
+            s::networks::leave::v0_2::Response,
+            json!({ "network": "did:example:whn", "reason": "merged" }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::groups::register::v0_2::Payload,
+            s::networks::groups::register::v0_2::Response,
+            json!({ "network": "did:example:whn", "role": "admins", "groupId": "admins" }),
+            json!({ "membership": sample_network_membership() })
+        ),
+        checked!(
+            s::networks::deliver::v0_1::Payload,
+            s::networks::deliver::v0_1::Response,
+            // The spec's own example.
             json!({
-                "actions": [sample_action(true)],
-                "counts": { "waitingForMe": 1, "requestedByMe": 0 },
-                "nextCursor": "djF8d2FpdGluZ0Zvck1lfHwyNQ",
-            })
+                "role": "admins",
+                "envelope": {
+                    "message": {
+                        "type": "VtnBroadcast",
+                        "id": "urn:uuid:00000000-0000-4000-8000-00000000b001",
+                        "origin": "did:example:whn",
+                        "role": "admins",
+                        "class": "notice",
+                        "subject": "Regional exercise",
+                        "body": "A coordination exercise runs on 12 November at 09:00 UTC.",
+                        "sentAt": "2026-11-03T09:59:00Z",
+                        "expiresAt": "2026-11-06T09:59:00Z",
+                        "proof": {
+                            "type": "DataIntegrityProof",
+                            "cryptosuite": "eddsa-jcs-2022",
+                            "proofPurpose": "assertionMethod",
+                            "verificationMethod": "did:example:whn#key-0",
+                            "proofValue": "z3abc"
+                        }
+                    },
+                    "hops": [
+                        {
+                            "type": "VtnRelayHop",
+                            "message": "urn:uuid:00000000-0000-4000-8000-00000000b001",
+                            "index": 0,
+                            "from": "did:example:whn",
+                            "to": "did:example:community-admins-group",
+                            "role": "admins",
+                            "at": "2026-11-03T09:59:01Z",
+                            "proof": {
+                                "type": "DataIntegrityProof",
+                                "cryptosuite": "eddsa-jcs-2022",
+                                "proofPurpose": "assertionMethod",
+                                "verificationMethod": "did:example:whn#key-0",
+                                "proofValue": "z3def"
+                            }
+                        }
+                    ]
+                }
+            }),
+            json!({ "status": "delivered" })
         ),
         checked!(
-            s::admin::actions::show::v0_1::Payload,
-            s::admin::actions::show::v0_1::Response,
-            json!({ "actionId": ACTION_ID }),
-            json!({ "action": sample_action(true) })
+            s::networks::evidence::v0_2::Payload,
+            s::networks::evidence::v0_2::Response,
+            json!({ "network": "did:example:whn" }),
+            json!({ "links": [{
+                "groupId": "admins", "groupDid": "did:example:community-admins",
+                "network": "did:example:whn", "role": "admins",
+                "registration": sample_network_membership()["groups"][0]["registration"],
+                "acceptance": sample_network_membership()["groups"][0]["acceptance"],
+            }] })
         ),
+        // ─── the action list (`crate::admin_actions`) ────────────────
+        // `_shared/0.3` Actions: an approval, a cooling-off in the schema's own
+        // terms, and an operator's offline write (`offline-write/0.2`).
         checked!(
-            s::admin::actions::cancel::v0_1::Payload,
-            s::admin::actions::cancel::v0_1::Response,
-            json!({ "actionId": ACTION_ID, "reason": "raised against the wrong DID" }),
-            json!({ "action": sample_action(false) })
-        ),
-        // Served, but every action A1 raises is an approval, so the success
-        // path is not reached yet; the response is the shape it will carry.
-        checked!(
-            s::admin::actions::acknowledge::v0_1::Payload,
-            s::admin::actions::acknowledge::v0_1::Response,
-            json!({ "actionId": ACTION_ID }),
-            json!({ "action": sample_action(false) })
-        ),
-        // 0.2: the same requests, answered with `_shared/0.2` Actions — an
-        // approval as before, and a cooling-off in the schema's own terms.
-        checked!(
-            s::admin::actions::list::v0_2::Payload,
-            s::admin::actions::list::v0_2::Response,
+            s::admin::actions::list::v0_3::Payload,
+            s::admin::actions::list::v0_3::Response,
             json!({ "view": "all", "limit": 25 }),
             json!({
                 "actions": [sample_action(true), sample_cooling_off(true, "requester")],
@@ -1144,90 +1339,40 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::admin::actions::show::v0_2::Payload,
-            s::admin::actions::show::v0_2::Response,
+            s::admin::actions::show::v0_3::Payload,
+            s::admin::actions::show::v0_3::Response,
             json!({ "actionId": ACTION_ID }),
             json!({ "action": sample_cooling_off(false, "subject") })
         ),
         checked!(
-            s::admin::actions::cancel::v0_2::Payload,
-            s::admin::actions::cancel::v0_2::Response,
-            json!({ "actionId": ACTION_ID }),
+            s::admin::actions::cancel::v0_3::Payload,
+            s::admin::actions::cancel::v0_3::Response,
+            json!({ "actionId": ACTION_ID, "reason": "raised against the wrong DID" }),
             json!({ "action": sample_action(false) })
         ),
         checked!(
-            s::admin::actions::acknowledge::v0_2::Payload,
-            s::admin::actions::acknowledge::v0_2::Response,
+            s::admin::actions::acknowledge::v0_3::Payload,
+            s::admin::actions::acknowledge::v0_3::Response,
             json!({ "actionId": ACTION_ID }),
             json!({ "action": sample_offline_write() })
         ),
         // ─── the console's live channel ──────────────────────────────
         // The response is the first event of the stream it opens; the
-        // hints after it are `event/0.1` documents (`admin_events.rs`
+        // hints after it are `event/0.5` documents (`admin_events.rs`
         // holds their shape against that schema).
         checked!(
-            s::admin::events::subscribe::v0_1::Payload,
-            s::admin::events::subscribe::v0_1::Response,
-            json!({
-                "topics": ["actions", "acknowledgements", "joinRequests", "members",
-                           "singleAdminMode", "config"],
-                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            }),
-            json!({
-                "topics": ["actions", "acknowledgements", "members", "singleAdminMode"],
-                "heartbeatSeconds": 25,
-                "resumed": true,
-                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            })
-        ),
-        // 0.2: the same, plus `rooms`; its hints are `event/0.2` documents.
-        checked!(
-            s::admin::events::subscribe::v0_2::Payload,
-            s::admin::events::subscribe::v0_2::Response,
-            json!({
-                "topics": ["actions", "acknowledgements", "joinRequests", "members",
-                           "singleAdminMode", "config", "rooms"],
-                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            }),
-            json!({
-                "topics": ["actions", "members", "singleAdminMode", "rooms"],
-                "heartbeatSeconds": 25,
-                "resumed": false,
-                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            })
-        ),
-        // 0.3: the same, plus `directory` and `groups`; its hints are
-        // `event/0.3` documents.
-        checked!(
-            s::admin::events::subscribe::v0_3::Payload,
-            s::admin::events::subscribe::v0_3::Response,
-            json!({
-                "topics": ["actions", "acknowledgements", "joinRequests", "members",
-                           "singleAdminMode", "config", "rooms", "directory", "groups"],
-                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            }),
-            json!({
-                "topics": ["actions", "members", "directory", "groups"],
-                "heartbeatSeconds": 25,
-                "resumed": false,
-                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            })
-        ),
-        // 0.4: the same, plus `communityRooms`; its hints are `event/0.4`
-        // documents.
-        checked!(
-            s::admin::events::subscribe::v0_4::Payload,
-            s::admin::events::subscribe::v0_4::Response,
+            s::admin::events::subscribe::v0_6::Payload,
+            s::admin::events::subscribe::v0_6::Response,
             json!({
                 "topics": ["actions", "acknowledgements", "joinRequests", "members",
                            "singleAdminMode", "config", "rooms", "directory", "groups",
                            "communityRooms"],
-                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
             }),
             json!({
                 "topics": ["actions", "members", "communityRooms"],
                 "heartbeatSeconds": 25,
-                "resumed": false,
+                "resumed": true,
                 "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
             })
         ),
@@ -1306,59 +1451,23 @@ fn table() -> Vec<Conformance> {
             })
         ),
         // ─── what rooms store and may store (`room_admin_tasks`) ─────
+        // The migration names its target, a paused one says why and when, and the host
+        // record's instants are RFC 3339 strings (0.3).
         checked!(
-            s::rooms::get::v0_1::Payload,
-            s::rooms::get::v0_1::Response,
+            s::rooms::get::v0_3::Payload,
+            s::rooms::get::v0_3::Response,
             json!({ "roomId": "did:key:z6MkRoom" }),
             json!({
                 "room": {
                     "roomId": "did:key:z6MkRoom", "ownerDid": "did:key:zOwner",
                     "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
-                    "lifecycle": "live", "retentionDays": 30, "createdAt": 0, "updatedAt": 0,
+                    "lifecycle": "live", "retentionDays": 30,
+                    "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-10T10:00:00Z",
                 },
                 "storage": {
                     "configId": "local",
                     "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
-                    "migration": crate::rooms::migration::progress_json(
-                        &sample_migration(),
-                        crate::rooms::migration::Wire::V0_1,
-                    ),
-                },
-                "limits": {
-                    "limits": {
-                        "filesEnabled": true,
-                        "room": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
-                        "member": { "maxFiles": 2000, "maxFileBytes": 104857600, "maxBytes": 1073741824 },
-                    },
-                    "roomSource": "override", "memberSource": "default",
-                    "hostCeilingBytes": 1073741824,
-                },
-                "usage": {
-                    "room": { "files": 3, "bytes": 1800, "reservedBytes": 0, "reservedFiles": 0 },
-                    "orphans": { "files": 1, "bytes": 5, "oldestOrphanedAt": "2026-10-10T10:00:00+00:00" },
-                },
-                "largestBlobs": [{ "size": 900, "configId": "local", "createdAt": "2026-10-10T10:00:00+00:00" }],
-                "membersWithUsage": 1,
-            })
-        ),
-        // 0.2: the migration names its target, and a paused one says why and when.
-        checked!(
-            s::rooms::get::v0_2::Payload,
-            s::rooms::get::v0_2::Response,
-            json!({ "roomId": "did:key:z6MkRoom" }),
-            json!({
-                "room": {
-                    "roomId": "did:key:z6MkRoom", "ownerDid": "did:key:zOwner",
-                    "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
-                    "lifecycle": "live", "retentionDays": 30, "createdAt": 0, "updatedAt": 0,
-                },
-                "storage": {
-                    "configId": "local",
-                    "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
-                    "migration": crate::rooms::migration::progress_json(
-                        &sample_paused_migration(),
-                        crate::rooms::migration::Wire::V0_2,
-                    ),
+                    "migration": crate::rooms::migration::progress_json(&sample_paused_migration()),
                 },
                 "limits": {
                     "limits": {
@@ -1424,65 +1533,11 @@ fn table() -> Vec<Conformance> {
             })
         ),
         // ─── rooms the community owns (`community_room_tasks`) ───────
+        // The community's VTA writes the label and description into the room as its
+        // profile — here it did not answer yet, so `pending`.
         checked!(
-            s::rooms::community::create::v0_1::Payload,
-            s::rooms::community::create::v0_1::Response,
-            json!({ "label": "Board pack", "visibility": "attributed", "reason": "the board" }),
-            json!({ "room": sample_community_room() })
-        ),
-        checked!(
-            s::rooms::community::list::v0_1::Payload,
-            s::rooms::community::list::v0_1::Response,
-            json!({ "limit": 10 }),
-            json!({
-                "items": [sample_community_room()],
-                "nextCursor": "community-rooms:did:key:z6MkRoom",
-            })
-        ),
-        checked!(
-            s::rooms::community::get::v0_1::Payload,
-            s::rooms::community::get::v0_1::Response,
-            json!({ "roomId": "did:key:z6MkRoom" }),
-            json!({ "room": sample_community_room() })
-        ),
-        checked!(
-            s::rooms::community::create::v0_2::Payload,
-            s::rooms::community::create::v0_2::Response,
-            json!({
-                "label": "Board pack", "visibility": "attributed", "reason": "the board",
-                "description": "Papers for the board's meetings.", "tags": ["board", "finance"],
-            }),
-            json!({ "room": sample_community_room_v2() })
-        ),
-        checked!(
-            s::rooms::community::list::v0_2::Payload,
-            s::rooms::community::list::v0_2::Response,
-            json!({ "limit": 10, "tag": "board" }),
-            json!({
-                "items": [sample_community_room_v2()],
-                "nextCursor": "community-rooms:did:key:z6MkRoom",
-            })
-        ),
-        checked!(
-            s::rooms::community::get::v0_2::Payload,
-            s::rooms::community::get::v0_2::Response,
-            json!({ "roomId": "did:key:z6MkRoom" }),
-            json!({ "room": sample_community_room_v2() })
-        ),
-        checked!(
-            s::rooms::community::update::v0_1::Payload,
-            s::rooms::community::update::v0_1::Response,
-            json!({
-                "roomId": "did:key:z6MkRoom", "label": "Board pack — 2027",
-                "tags": [], "reason": "the 2027 cycle",
-            }),
-            json!({ "room": sample_community_room_v2(), "changed": true })
-        ),
-        // 0.3: as 0.2, and the community's VTA writes the label and description into the
-        // room as its profile — here it did not answer yet, so `pending`.
-        checked!(
-            s::rooms::community::create::v0_3::Payload,
-            s::rooms::community::create::v0_3::Response,
+            s::rooms::community::create::v0_4::Payload,
+            s::rooms::community::create::v0_4::Response,
             json!({
                 "label": "Board pack", "visibility": "attributed", "reason": "the board",
                 "description": "Papers for the board's meetings.", "tags": ["board"],
@@ -1490,17 +1545,32 @@ fn table() -> Vec<Conformance> {
             json!({ "room": sample_community_room_v2(), "roomProfile": "pending" })
         ),
         checked!(
-            s::rooms::community::update::v0_2::Payload,
-            s::rooms::community::update::v0_2::Response,
+            s::rooms::community::list::v0_3::Payload,
+            s::rooms::community::list::v0_3::Response,
+            json!({ "limit": 10, "tag": "board" }),
+            json!({
+                "items": [sample_community_room_v2()],
+                "nextCursor": "community-rooms:did:key:z6MkRoom",
+            })
+        ),
+        checked!(
+            s::rooms::community::get::v0_3::Payload,
+            s::rooms::community::get::v0_3::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({ "room": sample_community_room_v2() })
+        ),
+        checked!(
+            s::rooms::community::update::v0_3::Payload,
+            s::rooms::community::update::v0_3::Response,
             json!({
                 "roomId": "did:key:z6MkRoom", "label": "Board pack — 2027",
-                "reason": "the 2027 cycle",
+                "tags": [], "reason": "the 2027 cycle",
             }),
             json!({ "room": sample_community_room_v2(), "changed": true, "roomProfile": "written" })
         ),
         checked!(
-            s::rooms::community::members::add::v0_1::Payload,
-            s::rooms::community::members::add::v0_1::Response,
+            s::rooms::community::members::add::v0_2::Payload,
+            s::rooms::community::members::add::v0_2::Response,
             json!({
                 "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember",
                 "actions": ["read", "write"], "validUntil": "2027-10-01T00:00:00Z",
@@ -1511,21 +1581,6 @@ fn table() -> Vec<Conformance> {
                 "validUntil": "2027-10-01T00:00:00Z", "state": "offered",
                 "offeredAt": "2026-10-14T10:00:00Z",
             } })
-        ),
-        checked!(
-            s::rooms::community::members::remove::v0_1::Payload,
-            s::rooms::community::members::remove::v0_1::Response,
-            json!({ "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember", "reason": "left" }),
-            json!({
-                "member": {
-                    "member": "did:key:z6MkMember", "actions": ["read"],
-                    "validUntil": "2027-10-01T00:00:00Z", "state": "removed",
-                    "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
-                    "removedAt": "2026-11-02T09:00:00Z",
-                },
-                "epoch": 3,
-                "ext": { "org.openvtc": { "notice": "Removal recalls nothing already read." } },
-            })
         ),
         checked!(
             s::rooms::community::members::remove::v0_2::Payload,
@@ -1554,43 +1609,118 @@ fn table() -> Vec<Conformance> {
                 "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
             }] })
         ),
+        // ─── a room's owner lifecycle (`rooms::community_lifecycle`) ───
         checked!(
-            s::rooms::offers::list::v0_1::Payload,
-            s::rooms::offers::list::v0_1::Response,
-            json!({}),
+            s::rooms::community::list::v0_4::Payload,
+            s::rooms::community::list::v0_4::Response,
+            json!({ "limit": 10, "states": ["archived", "removalScheduled"] }),
+            json!({ "items": [sample_community_room_v3(json!({
+                "state": "archived", "access": "readOnly",
+                "changedAt": "2026-11-02T10:00:02Z", "changedBy": "did:key:z6MkAdmin",
+            }))] })
+        ),
+        checked!(
+            s::rooms::community::get::v0_4::Payload,
+            s::rooms::community::get::v0_4::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({ "room": sample_community_room_v3(json!({
+                "state": "purging", "changedAt": "2026-11-02T10:00:02Z",
+                "changedBy": "did:key:z6MkAdmin", "purgeAt": "2026-11-02T10:00:02Z",
+                "purge": { "attempts": 1, "lastAttemptAt": "2026-11-02T10:00:03Z",
+                    "nextAttemptAt": "2026-11-02T10:00:33Z",
+                    "lastError": "1 of the room's files could not be deleted from storage yet" },
+            })) })
+        ),
+        checked!(
+            s::rooms::community::archive::v0_1::Payload,
+            s::rooms::community::archive::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "access": "noAccess", "reason": "the cycle closed" }),
+            json!({
+                "room": sample_community_room_v3(json!({
+                    "state": "archived", "access": "noAccess",
+                    "changedAt": "2026-11-02T10:00:02Z", "changedBy": "did:key:z6MkAdmin",
+                })),
+                "changed": true, "withdrawnOffers": 1,
+                "revocation": { "sequence": 3,
+                    "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                "revokedAt": "2026-11-02T10:00:01Z",
+            })
+        ),
+        checked!(
+            s::rooms::community::unarchive::v0_1::Payload,
+            s::rooms::community::unarchive::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "reason": "reopened" }),
+            json!({
+                "room": sample_community_room_v3(json!({
+                    "state": "active", "changedAt": "2026-11-03T10:00:00Z",
+                    "changedBy": "did:key:z6MkAdmin", "restoring": 2,
+                })),
+                "changed": true,
+            })
+        ),
+        checked!(
+            s::rooms::community::remove::v0_1::Payload,
+            s::rooms::community::remove::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "graceDays": 30, "reason": "no longer needed" }),
+            json!({ "room": sample_community_room_v3(json!({
+                "state": "removalScheduled", "access": "noAccess",
+                "changedAt": "2026-11-02T10:00:02Z", "changedBy": "did:key:z6MkAdmin",
+                "purgeAt": "2026-12-02T10:00:02Z",
+            })) })
+        ),
+        checked!(
+            s::rooms::community::removal::cancel::v0_1::Payload,
+            s::rooms::community::removal::cancel::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "reason": "removed by mistake" }),
+            json!({ "room": sample_community_room_v3(json!({
+                "state": "archived", "access": "noAccess",
+                "changedAt": "2026-11-03T10:00:00Z", "changedBy": "did:key:z6MkAdmin",
+            })) })
+        ),
+        checked!(
+            s::rooms::community::members::list::v0_2::Payload,
+            s::rooms::community::members::list::v0_2::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "state": "suspended", "limit": 10 }),
+            json!({ "items": [{
+                "member": "did:key:z6MkMember", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "state": "suspended",
+                "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                "suspendedAt": "2026-11-02T10:00:02Z",
+            }] })
+        ),
+        checked!(
+            s::rooms::memberships::list::v0_2::Payload,
+            s::rooms::memberships::list::v0_2::Response,
+            json!({ "limit": 10 }),
             json!({ "items": [{
                 "roomId": "did:key:z6MkRoom", "host": "did:example:community",
                 "label": "Board pack", "visibility": "attributed", "actions": ["read"],
-                "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
-                "state": "open",
-                "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
+                "validUntil": "2027-10-01T00:00:00Z", "state": "suspended",
+                "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                "suspendedAt": "2026-11-02T10:00:02Z",
+                "roomState": "removalScheduled", "roomAccess": "noAccess",
+                "purgeAt": "2026-12-02T10:00:02Z",
             }] })
         ),
+        // The offers, and on the first page the renewals of the admissions the
+        // member holds (`groups::bindings`), `renewsAt` (0.4).
         checked!(
-            s::rooms::offers::list::v0_2::Payload,
-            s::rooms::offers::list::v0_2::Response,
-            json!({}),
-            json!({ "items": [{
-                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
-                "label": "Board pack", "description": "Papers for the board's meetings.",
-                "visibility": "attributed", "actions": ["read"],
-                "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
-                "state": "open",
-                "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
-            }] })
-        ),
-        // 0.3: the same offers, and on the first page the renewals of the
-        // admissions the member holds (`groups::bindings`).
-        checked!(
-            s::rooms::offers::list::v0_3::Payload,
-            s::rooms::offers::list::v0_3::Response,
+            s::rooms::offers::list::v0_4::Payload,
+            s::rooms::offers::list::v0_4::Response,
             json!({}),
             json!({
-                "items": [],
+                "items": [{
+                    "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                    "label": "Board pack", "description": "Papers for the board's meetings.",
+                    "visibility": "attributed", "actions": ["read"],
+                    "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
+                    "state": "open",
+                    "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
+                }],
                 "renewals": [{
                     "roomId": "did:key:z6MkRoom", "host": "did:example:community",
                     "label": "Board pack", "visibility": "attributed", "actions": ["read"],
-                    "validUntil": "2027-11-10T00:00:00Z", "renews": "2026-11-10T00:00:00Z",
+                    "validUntil": "2027-11-10T00:00:00Z", "renewsAt": "2026-11-10T00:00:00Z",
                     "issuedAt": "2026-10-20T09:00:00Z",
                     "credentials": { "membership": "{}", "authority": "{}" },
                 }],
@@ -1616,46 +1746,6 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── storage configs (`storage_tasks`) ───────────────────────
         checked!(
-            s::storage::configs::list::v0_1::Payload,
-            s::storage::configs::list::v0_1::Response,
-            json!({ "state": "active", "limit": 10 }),
-            json!({
-                "items": [{ "config": sample_storage_config(), "facts": sample_storage_facts() }],
-                "nextCursor": "storage-configs:local",
-            })
-        ),
-        checked!(
-            s::storage::configs::get::v0_1::Payload,
-            s::storage::configs::get::v0_1::Response,
-            json!({ "configId": "local" }),
-            json!({
-                "config": sample_storage_config(),
-                "facts": sample_storage_facts(),
-                "assignedRooms": ["did:key:z6MkRoom"],
-                "assignedRoomsTruncated": false,
-            })
-        ),
-        checked!(
-            s::storage::configs::create::v0_1::Payload,
-            s::storage::configs::create::v0_1::Response,
-            json!({
-                "id": "local",
-                "label": "This host's disk",
-                "settings": { "kind": "local", "root": "/var/lib/vtc/room-storage/local" },
-                "capacityBytes": 1_000_000,
-                "isDefault": true,
-                "reason": "the community's first storage",
-            }),
-            json!({ "config": sample_storage_config() })
-        ),
-        checked!(
-            s::storage::configs::update::v0_1::Payload,
-            s::storage::configs::update::v0_1::Response,
-            json!({ "configId": "local", "label": "Main disk", "reason": "renamed" }),
-            json!({ "config": sample_storage_config() })
-        ),
-        // 0.2 (trust-tasks-tf #866): `roleArn`, `notAllowed`, sealed credentials.
-        checked!(
             s::storage::configs::list::v0_2::Payload,
             s::storage::configs::list::v0_2::Response,
             json!({ "kind": "s3", "limit": 10 }),
@@ -1679,8 +1769,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::storage::configs::create::v0_2::Payload,
-            s::storage::configs::create::v0_2::Response,
+            s::storage::configs::create::v0_3::Payload,
+            s::storage::configs::create::v0_3::Response,
             json!({
                 "id": "eu-s3-instance",
                 "label": "EU — S3 (instance role)",
@@ -1691,14 +1781,14 @@ fn table() -> Vec<Conformance> {
             json!({ "config": sample_storage_config_v2() })
         ),
         checked!(
-            s::storage::configs::update::v0_2::Payload,
-            s::storage::configs::update::v0_2::Response,
+            s::storage::configs::update::v0_3::Payload,
+            s::storage::configs::update::v0_3::Response,
             json!({ "configId": "eu-s3-instance", "auth": { "mode": "sealed" }, "reason": "x" }),
             json!({ "config": sample_storage_config_v2() })
         ),
         checked!(
-            s::storage::credentials::set::v0_2::Payload,
-            s::storage::credentials::set::v0_2::Response,
+            s::storage::credentials::set::v0_3::Payload,
+            s::storage::credentials::set::v0_3::Response,
             json!({
                 "configId": "r2-archive",
                 "sealed": format!("-----BEGIN VTA SEALED BUNDLE-----\n{}\n-----END VTA SEALED BUNDLE-----", "A".repeat(64)),
@@ -1716,8 +1806,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::storage::configs::retire::v0_1::Payload,
-            s::storage::configs::retire::v0_1::Response,
+            s::storage::configs::retire::v0_3::Payload,
+            s::storage::configs::retire::v0_3::Response,
             json!({ "configId": "local", "reason": "moving to object storage" }),
             json!({ "configId": "local", "state": "draining", "blobsRemaining": 3 })
         ),
@@ -1737,8 +1827,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::rooms::storage::assign::v0_1::Payload,
-            s::rooms::storage::assign::v0_1::Response,
+            s::rooms::storage::assign::v0_2::Payload,
+            s::rooms::storage::assign::v0_2::Response,
             json!({ "roomId": "did:key:z6MkRoom", "configId": "eu", "reason": "EU residency" }),
             json!({
                 "roomId": "did:key:z6MkRoom",
@@ -1748,30 +1838,14 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::rooms::storage::migrate::v0_1::Payload,
-            s::rooms::storage::migrate::v0_1::Response,
+            s::rooms::storage::migrate::v0_3::Payload,
+            s::rooms::storage::migrate::v0_3::Response,
             json!({
                 "roomId": "did:key:z6MkRoom",
                 "maxBytesPerSecond": 1_048_576,
                 "reason": "retiring local",
             }),
-            crate::rooms::migration::response_json(
-                &sample_migration(),
-                crate::rooms::migration::Wire::V0_1,
-            )
-        ),
-        checked!(
-            s::rooms::storage::migrate::v0_2::Payload,
-            s::rooms::storage::migrate::v0_2::Response,
-            json!({
-                "roomId": "did:key:z6MkRoom",
-                "maxBytesPerSecond": 1_048_576,
-                "reason": "retiring local",
-            }),
-            crate::rooms::migration::response_json(
-                &sample_paused_migration(),
-                crate::rooms::migration::Wire::V0_2,
-            )
+            crate::rooms::migration::response_json(&sample_paused_migration())
         ),
         // ─── admin ───────────────────────────────────────────────────
         checked!(
@@ -1786,13 +1860,16 @@ fn table() -> Vec<Conformance> {
             json!({ "adminDid": OTHER_DID, "eventId": REQUEST_ID })
         ),
         checked!(
-            s::admin::invites::create::v0_1::Payload,
-            s::admin::invites::create::v0_1::Response,
-            // `CreateInviteRequest` — routes/admin/invites.rs:51.
+            s::admin::invites::create::v0_2::Payload,
+            s::admin::invites::create::v0_2::Response,
+            // `CreateInviteRequest` — routes/admin/invites.rs: a wallet
+            // invitation names `did`; a passkey invitation omits it (that
+            // shape is held by `single_admin_mode.rs`'s `assert_conforms`).
             json!({ "did": OTHER_DID, "ttlSeconds": 3600, "label": "ops laptop invite" }),
-            // `CreateInviteResponse` — routes/admin/invites.rs:69.
+            // `CreateInviteResponse` — routes/admin/invites.rs.
             json!({
                 "jti": REQUEST_ID,
+                "kind": "wallet",
                 "installUrl": "https://vtc.example.org/admin/install?token=eyJ0.e30.s",
                 "claimCode": "K7QW-3M2X-9PLD",
                 "expiresAt": TS,
@@ -1800,18 +1877,17 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::admin::invites::list::v0_1::Payload,
-            s::admin::invites::list::v0_1::Response,
-            // GET: the payload has no required member and the body is empty.
+            s::admin::invites::list::v0_2::Payload,
+            s::admin::invites::list::v0_2::Response,
+            // The payload has no required member.
             json!({}),
-            // `ListInvitesResponse` / `InviteSummary` —
-            // routes/admin/invites.rs:122 / :92.
+            // `ListInvitesResponse` / `InviteSummary` — routes/admin/invites.rs.
             json!({
                 "invites": [
-                    { "jti": REQUEST_ID, "status": "issued", "targetDid": OTHER_DID,
+                    { "jti": REQUEST_ID, "kind": "passkey", "status": "issued",
                       "expiresAt": TS },
-                    { "jti": "8b7a6c5d-1e2f-4a3b-9c8d-7e6f5a4b3c2d", "status": "consumed",
-                      "targetDid": DID, "consumedAt": TS },
+                    { "jti": "8b7a6c5d-1e2f-4a3b-9c8d-7e6f5a4b3c2d", "kind": "wallet",
+                      "status": "consumed", "targetDid": DID, "consumedAt": TS },
                 ]
             })
         ),
@@ -2049,8 +2125,8 @@ fn table() -> Vec<Conformance> {
             json!({ "entryId": DIRECTORY_ENTRY, "written": ["org.example.chapter"], "revision": 5 })
         ),
         checked!(
-            s::directory::entries::list::v0_1::Payload,
-            s::directory::entries::list::v0_1::Response,
+            s::directory::entries::list::v0_2::Payload,
+            s::directory::entries::list::v0_2::Response,
             json!({
                 "query": "caro",
                 "filters": [{ "field": "org.example.chapter", "values": ["sydney"] }],
@@ -2066,7 +2142,6 @@ fn table() -> Vec<Conformance> {
                     { "value": "sydney", "count": 12 },
                     { "value": "berlin", "fewerThan": 5 },
                 ]}],
-                "nextCursor": null,
             })
         ),
         checked!(
@@ -2166,26 +2241,34 @@ fn table() -> Vec<Conformance> {
             .expect("RevokeResponse serialises")
         ),
         // ─── install ─────────────────────────────────────────────────
+        // The passkey install (`routes::install::{claim_start,claim_finish}`,
+        // which build the start response from the generated type).
         checked!(
-            s::install::claim::start::v0_2::Payload,
-            s::install::claim::start::v0_2::Response,
-            // `ClaimStartRequest` — routes/install.rs:65. No `rename_all`.
+            s::install::claim::passkey::start::v0_1::Payload,
+            s::install::claim::passkey::start::v0_1::Response,
             json!({ "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
                     "claimSecret": "K7QW-3M2X-9PLD" }),
-            // `ClaimStartResponse` — routes/install.rs:81.
-            json!({ "registrationId": REQUEST_ID, "options": { "publicKey": {} } })
+            json!({
+                "registrationId": REQUEST_ID,
+                "options": { "publicKey": {} },
+                "assertionOptions": { "publicKey": {} },
+            })
         ),
         checked!(
-            s::install::claim::finish::v0_2::Payload,
-            s::install::claim::finish::v0_2::Response,
-            // `ClaimFinishRequest` — routes/install.rs:93. No `rename_all`.
+            s::install::claim::passkey::finish::v0_1::Payload,
+            s::install::claim::passkey::finish::v0_1::Response,
+            // `ClaimFinishRequest` — routes/install.rs.
             json!({
                 "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
                 "registrationId": REQUEST_ID,
                 "webauthnResponse": { "id": "AX6nVQ8s", "type": "public-key" },
+                "webauthnAssertion": { "id": "AX6nVQ8s", "type": "public-key" },
             }),
-            // `ClaimFinishResponse` — routes/install.rs:103.
-            json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" })
+            // Built from the generated type by `install_tasks`.
+            json!({
+                "adminDid": "did:key:zDnaerDaTF5BXEavCrfRZEk316dpbLsfPDZ3WJ5hRTPFU2169",
+                "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
+            })
         ),
         // 0.3 — a claim under an existing DID, with a step-up approver
         // (`step_up_approver::claim_{start,finish}_v0_3`, which build their
@@ -2211,7 +2294,7 @@ fn table() -> Vec<Conformance> {
                 "label": "Browser plugin",
                 "statement": { "id": "urn:uuid:3a6c1e0b-9d2f-4b7a-8c15-2e4f6a8b0c01" },
             }),
-            // `ClaimFinishResponse` — the same body 0.2 answers with.
+            // Built from the generated type by `install_tasks`.
             json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" })
         ),
         // ─── invitations ─────────────────────────────────────────────
@@ -2488,6 +2571,26 @@ fn table() -> Vec<Conformance> {
             )
         ),
         checked!(
+            s::members::role::set::v0_1::Payload,
+            s::members::role::set::v0_1::Response,
+            json!({
+                "subject": DID,
+                "fromRole": "member",
+                "toRole": "moderator",
+                "reason": "runs the events programme"
+            }),
+            // The handler's own projection of a completed move.
+            crate::trust_tasks::member_role_tasks::role_set_response(
+                &role_set_entry(),
+                &crate::acl::VtcRole::Member,
+                &crate::acl::VtcRole::Moderator,
+                true,
+                Some("policyAllowed"),
+                Some(json!({ "type": ["VerifiableCredential"] })),
+            )
+            .expect("a completed move projects")
+        ),
+        checked!(
             s::members::make_membership::v0_1::Payload,
             s::members::make_membership::v0_1::Response,
             json!({ "subject": DID, "reason": "the founder is a member too" }),
@@ -2677,8 +2780,8 @@ fn table() -> Vec<Conformance> {
         // the registry's verbatim error, and the attempt count that separates
         // "answered and refused" from "never answered".
         checked!(
-            s::registry::sync_jobs::list::v0_1::Payload,
-            s::registry::sync_jobs::list::v0_1::Response,
+            s::registry::sync_jobs::list::v0_2::Payload,
+            s::registry::sync_jobs::list::v0_2::Response,
             json!({ "state": "failed", "limit": 50 }),
             // `job_wire` — routes/registry_admin.rs. A failed row carries no
             // `nextAttemptAt`: it has no schedule, and claiming one would be
@@ -2697,26 +2800,11 @@ fn table() -> Vec<Conformance> {
                 }],
             })
         ),
-        checked!(
-            s::registry::sync_jobs::retry::v0_1::Payload,
-            s::registry::sync_jobs::retry::v0_1::Response,
-            json!({ "jobId": "07c6c189-8272-4761-96e9-0ef869380665" }),
-            // Both halves are always present, including when one is empty:
-            // "requeued nothing" and "declined nothing" are distinct answers
-            // and a consumer must not have to infer either from absence.
-            json!({
-                "requeued": [{
-                    "jobId": "07c6c189-8272-4761-96e9-0ef869380665",
-                    "memberDid": "did:web:member.example",
-                }],
-                "skipped": [{
-                    "jobId": "1f2e3d4c-5b6a-4798-8765-43210fedcba9",
-                    "reason": "notFailed",
-                }],
-            })
-        ),
-        // `sync_jobs_retry_v0_2`: a pending job brought forward says so, and
-        // an RTBF-batched one is `held`.
+        // `sync_jobs_retry`: a pending job brought forward says so, and an
+        // RTBF-batched one is `held`. Both halves are always present,
+        // including when one is empty: "requeued nothing" and "declined
+        // nothing" are distinct answers and a consumer must not have to
+        // infer either from absence.
         checked!(
             s::registry::sync_jobs::retry::v0_2::Payload,
             s::registry::sync_jobs::retry::v0_2::Response,
@@ -2743,8 +2831,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::registry::records::list::v0_1::Payload,
-            s::registry::records::list::v0_1::Response,
+            s::registry::records::list::v0_2::Payload,
+            s::registry::records::list::v0_2::Response,
             json!({ "source": "registry", "limit": 50 }),
             // `source` is echoed, so a consumer never infers which view it
             // received from the request it believes it sent.
@@ -2762,8 +2850,8 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── relationships ───────────────────────────────────────────
         checked!(
-            s::relationships::list::v0_2::Payload,
-            s::relationships::list::v0_2::Response,
+            s::relationships::list::v0_3::Payload,
+            s::relationships::list::v0_3::Response,
             json!({ "did": DID, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             // This fixture said `vrcSha256` — the `0.1` member — while the
             // service had already moved to a multibase digest. The table
@@ -2833,13 +2921,6 @@ fn table() -> Vec<Conformance> {
                     "vrcDigestMultibase": "zQmbGXRT3v1RmfWkQ7Y3Z5Uj9pKq2NcXhLd8sVtA4eB6nMw" })
         ),
         checked!(
-            s::relationships::revoke::v0_1::Payload,
-            s::relationships::revoke::v0_1::Response,
-            json!({ "id": REQUEST_ID }),
-            // `RevokeResponse` — routes/relationships.rs:423.
-            json!({ "id": REQUEST_ID })
-        ),
-        checked!(
             s::relationships::revoke::v0_2::Payload,
             s::relationships::revoke::v0_2::Response,
             // The pairwise route: a `VrcRevokeAuthorization` bound to this
@@ -2858,8 +2939,8 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── website ─────────────────────────────────────────────────
         checked!(
-            s::website::files::list::v0_1::Payload,
-            s::website::files::list::v0_1::Response,
+            s::website::files::list::v0_3::Payload,
+            s::website::files::list::v0_3::Response,
             json!({ "cursor": "assets/logo.png", "limit": 50 }),
             // Serialised from the real `ListResponse` / `FileEntry`, per the
             // `endorsements/revoke` note below — a hand-written fixture is
@@ -2870,7 +2951,7 @@ fn table() -> Vec<Conformance> {
                     path: "index.html".into(),
                     size: 2048,
                     etag: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
-                    modified_at: DateTime::from_timestamp(1_755_946_800, 0)
+                    updated_at: DateTime::from_timestamp(1_755_946_800, 0)
                         .expect("fixture timestamp"),
                 }],
                 next_cursor: Some("styles/main.css".into()),
@@ -3105,8 +3186,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::groups::list::v0_1::Payload,
-            s::groups::list::v0_1::Response,
+            s::groups::list::v0_2::Payload,
+            s::groups::list::v0_2::Response,
             json!({ "joinable": true, "limit": 50 }),
             json!({ "items": [{ "group": group_wire(), "myMembership": "none" }] })
         ),
@@ -3129,8 +3210,8 @@ fn table() -> Vec<Conformance> {
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "state": "removed", "credentialValidUntil": "2026-11-18T09:00:00Z" })
         ),
         checked!(
-            s::groups::members::list::v0_1::Payload,
-            s::groups::members::list::v0_1::Response,
+            s::groups::members::list::v0_2::Payload,
+            s::groups::members::list::v0_2::Response,
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "limit": 50 }),
             json!({ "items": [{ "entryId": DIRECTORY_ENTRY, "source": "added", "since": "2026-10-19T09:00:00Z", "state": "active", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2026-11-18T09:00:00Z" }] })
         ),
@@ -3147,8 +3228,262 @@ fn table() -> Vec<Conformance> {
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "left", "credentialValidUntil": "2026-11-18T09:00:00Z" })
         ),
         checked!(
-            s::groups::requests::list::v0_1::Payload,
-            s::groups::requests::list::v0_1::Response,
+            s::boards::create::v0_1::Payload,
+            s::boards::create::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"board": {"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "open", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": true, "ideaCounts": {}}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::update::v0_1::Payload,
+            s::boards::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "status": "closed"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"board": {"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "closed", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": true, "ideaCounts": {"proposed": 2, "open": 4, "selected": 0, "notSelected": 0, "declined": 0, "merged": 0, "withdrawn": 0}}}"#).unwrap()
+        ),
+        #[cfg(feature = "voting")]
+        checked!(
+            s::elections::tombstones::show::v0_1::Payload,
+            s::elections::tombstones::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "manifestDigest": "uEiDexampleManifestDigestNotReal000000000000000", "ballotBox": "did:example:ballot-box", "checkpoints": [], "deletedAt": "2026-11-20T09:00:01Z", "removeAt": "2027-11-20T09:00:01Z"}"#).unwrap()
+        ),
+        checked!(
+            s::boards::delete::v0_1::Payload,
+            s::boards::delete::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "reason": "Trust Week is over."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideasRemoved": 18, "notesRemoved": 42, "electionsRemoved": 14, "tombstones": {"kept": 14, "removeAt": "2027-11-20T09:00:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::facilitators::add::v0_1::Payload,
+            s::boards::facilitators::add::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "entryId": "dir_Q7m2K9xVb4Tz8LpR", "reason": "Carol convenes the security track."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": ["dir_Q7m2K9xVb4Tz8LpR"]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::facilitators::remove::v0_1::Payload,
+            s::boards::facilitators::remove::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "entryId": "dir_Q7m2K9xVb4Tz8LpR"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": []}"#).unwrap()
+        ),
+        checked!(
+            s::boards::facilitators::list::v0_1::Payload,
+            s::boards::facilitators::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": [{"entryId": "dir_Q7m2K9xVb4Tz8LpR", "appointedAt": "2026-11-01T10:00:00Z", "appointedBy": "dir_K3n8P2xWc5Rz9MqT"}, {"entryId": "dir_T4v9L3xZd6Sq2NpW", "appointedAt": "2026-11-02T14:30:00Z", "reviewEndsAt": "2026-11-12T14:30:00Z"}]}"#).unwrap()
+        ),
+        // Member badges (VTI-BDG-*): each task's own request and response examples.
+        checked!(
+            s::badges::awards::list::v0_1::Payload,
+            s::badges::awards::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "state": "offered", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "note": "For the Saturday joinery workshop.", "state": "offered", "offeredAt": "2026-11-05T18:00:00Z", "expiresAt": "2026-12-05T18:00:00Z"}, "hidden": false, "fields": {"displayName": "Sam N."}}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::offer::v0_1::Payload,
+            s::badges::awards::offer::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "to": ["dir_NoorElSayed00000", "dir_LenaWirth0000000"], "note": "Resin pour workshop, 25 October 2026"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"awards": [{"awardId": "awd_Qz7TpLW5k2N8xRb3", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_NoorElSayed00000", "givenBy": "dir_Pr1yaNatarajan00", "note": "Resin pour workshop, 25 October 2026", "state": "offered", "offeredAt": "2026-11-06T18:00:01Z", "expiresAt": "2026-12-06T18:00:01Z"}], "skipped": [{"entryId": "dir_LenaWirth0000000", "reason": "alreadyOffered"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::revoke::v0_1::Payload,
+            s::badges::awards::revoke::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N", "reason": "The workshop was cancelled; nobody hosted it."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "note": "For the Saturday joinery workshop.", "state": "revoked", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-06T12:00:01Z", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::withdraw::v0_1::Payload,
+            s::badges::awards::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N", "reason": "Offered to the wrong Sam; the host was Sam Ortiz."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "note": "For the Saturday joinery workshop.", "state": "withdrawn", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-06T11:00:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::create::v0_1::Payload,
+            s::badges::create::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "holdersVisibleTo": "members", "owners": ["dir_Pr1yaNatarajan00", "dir_BenOkafor0000000"], "reason": "Workshops are the heart of the community; the hosts should wear it."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 0, "createdAt": "2026-11-06T09:00:02Z", "createdBy": "dir_AnnaReyes0000000"}, "group": {"groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "groupDid": "did:webvh:QmGroupScid:community.example:group-dids:grp_Hs7Qm2Lk9Tn4Bv1X", "name": "Workshop host", "kind": "static", "joinPolicy": "request", "visibility": "members", "showMembers": "members", "issuesCredentials": true, "carriesAuthority": false, "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "memberCount": 0, "managers": ["dir_Pr1yaNatarajan00", "dir_BenOkafor0000000"], "credentialAuthorityValidUntil": "2027-11-06T09:00:01Z", "createdAt": "2026-11-06T09:00:02Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::holders::list::v0_1::Payload,
+            s::badges::holders::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"total": 2, "items": [{"entryId": "dir_BenOkafor0000000", "count": 3, "since": "2026-03-14T19:30:00Z", "latestAt": "2026-10-31T20:10:00Z", "fields": {"displayName": "Ben", "avatar": {"sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", "mediaType": "image/webp", "size": 18342}}}, {"entryId": "dir_SamNguyen0000000", "count": 1, "since": "2026-09-02T17:45:00Z", "latestAt": "2026-09-02T17:45:00Z"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::images::get::v0_1::Payload,
+            s::badges::images::get::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "data": "iVBORw0KGgoAAAANSUhEUgAABAAAAAQA"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::images::upload::v0_1::Payload,
+            s::badges::images::upload::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"mediaType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/webp", "size": 18342}, "expiresAt": "2026-11-07T08:55:01Z"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::kudos::give::v0_1::Payload,
+            s::badges::kudos::give::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "to": "dir_B3nOk4f0rRq9Wz2X", "note": "Found the long sash clamps behind the bandsaw. Saved the glue-up."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3m8Qp2Vt7Xz4Ln9", "badgeId": "bdg_Kd0sCl4mpWh1sp3r", "entryId": "dir_B3nOk4f0rRq9Wz2X", "givenBy": "dir_Tm4sV3g4K9xQ2bLp", "note": "Found the long sash clamps behind the bandsaw. Saved the glue-up.", "state": "offered", "offeredAt": "2026-11-06T10:30:01Z", "expiresAt": "2026-12-06T10:30:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::kudos::list::v0_1::Payload,
+            s::badges::kudos::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"direction": "received", "limit": 20}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"award": {"awardId": "awd_K3m8Qp2Vt7Xz4Ln9", "badgeId": "bdg_Kd0sCl4mpWh1sp3r", "entryId": "dir_B3nOk4f0rRq9Wz2X", "givenBy": "dir_Tm4sV3g4K9xQ2bLp", "note": "Found the long sash clamps behind the bandsaw. Saved the glue-up.", "state": "offered", "offeredAt": "2026-11-06T10:30:01Z", "expiresAt": "2026-12-06T10:30:01Z"}, "badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "counterpart": {"displayName": "Tom\u00e1s"}}, {"award": {"awardId": "awd_P9r4Wn6Yc2Hs8Vq1", "badgeId": "bdg_Kd0sCl4mpWh1sp3r", "entryId": "dir_B3nOk4f0rRq9Wz2X", "givenBy": "dir_Pr1yaN4t7Rj2Qw8K", "state": "accepted", "offeredAt": "2026-10-28T19:00:00Z", "decidedAt": "2026-10-28T21:12:00Z"}, "badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "counterpart": {"displayName": "Priya"}}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::list::v0_1::Payload,
+            s::badges::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"kind": "community", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"badge": {"badgeId": "bdg_Nf2Rk7Lp9Xs3Qw5T", "kind": "community", "name": "One year aboard", "description": "A year in the community.", "criteria": "Twelve months of membership. Given by the community itself.", "image": {"sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "mediaType": "image/png", "size": 52200}, "repeatable": false, "requestable": false, "listed": true, "shareableOutside": false, "groupId": "grp_Lk8Tn2Vx4Rm9Qs7H", "state": "active", "holderCount": 213, "createdAt": "2026-03-01T08:00:00Z"}, "myCount": 1, "myState": "holder"}, {"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z"}, "myCount": 0, "myState": "requested"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::accept::v0_1::Payload,
+            s::badges::mine::accept::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_Qz7TpLW5k2N8xRb3"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_Qz7TpLW5k2N8xRb3", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_NoorElSayed00000", "givenBy": "dir_Pr1yaNatarajan00", "note": "Resin pour workshop, 25 October 2026", "state": "accepted", "offeredAt": "2026-11-06T18:00:01Z", "decidedAt": "2026-11-06T19:10:02Z", "credentialId": "urn:uuid:9c1d2e3f-4a5b-4c6d-8e7f-000000000777"}, "badge": {"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 10, "createdAt": "2026-11-06T09:00:02Z"}, "count": 1, "since": "2026-11-06T19:10:02Z", "latestAt": "2026-11-06T19:10:02Z", "pinned": false, "hidden": false, "position": 7, "credentialId": "urn:uuid:9c1d2e3f-4a5b-4c6d-8e7f-000000000777", "credentialValidUntil": "2028-11-06T19:10:02Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::arrange::v0_1::Payload,
+            s::badges::mine::arrange::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"order": ["bdg_Kd0sCl4mpWh1sp3r", "bdg_W5k2N8xRb3Qz7TpL"], "pinned": ["bdg_Kd0sCl4mpWh1sp3r", "bdg_W5k2N8xRb3Qz7TpL"]}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badges": [{"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": true, "hidden": false, "position": 0}, {"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "createdAt": "2026-09-01T09:00:02Z"}, "count": 2, "since": "2026-09-14T18:00:00Z", "latestAt": "2026-10-19T18:30:00Z", "pinned": true, "hidden": false, "position": 1, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2028-10-19T18:30:00Z"}], "visibility": "members"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::decline::v0_1::Payload,
+            s::badges::mine::decline::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_H7q2Lm9Xc4Vt1Bz8"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_H7q2Lm9Xc4Vt1Bz8", "badgeId": "bdg_Yr1Ab0ardTn2Qx7V", "entryId": "dir_Tm4sV3g4K9xQ2bLp", "givenBy": "dir_B3nOk4f0rRq9Wz2X", "note": "A year of Saturdays. Thank you.", "state": "declined", "offeredAt": "2026-11-05T20:00:00Z", "decidedAt": "2026-11-06T10:05:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::hide::v0_1::Payload,
+            s::badges::mine::hide::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd0sCl4mpWh1sp3r"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": false, "hidden": true, "position": 1}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::list::v0_1::Payload,
+            s::badges::mine::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badges": [{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "createdAt": "2026-09-01T09:00:02Z"}, "count": 2, "since": "2026-09-14T18:00:00Z", "latestAt": "2026-10-19T18:30:00Z", "pinned": true, "hidden": false, "position": 0, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2028-10-19T18:30:00Z"}, {"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": false, "hidden": true, "position": 1}], "offers": [{"award": {"awardId": "awd_H7q2Lm9Xc4Vt1Bz8", "badgeId": "bdg_Yr1Ab0ardTn2Qx7V", "entryId": "dir_Tm4sV3g4K9xQ2bLp", "givenBy": "dir_B3nOk4f0rRq9Wz2X", "note": "A year of Saturdays. Thank you.", "state": "offered", "offeredAt": "2026-11-05T20:00:00Z", "expiresAt": "2026-12-05T20:00:00Z"}, "badge": {"badgeId": "bdg_Yr1Ab0ardTn2Qx7V", "kind": "community", "name": "One year aboard", "description": "A year in the community.", "image": {"sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "mediaType": "image/png", "size": 30720}, "repeatable": false, "listed": true, "groupId": "grp_Yr1Ab0ardGr0upX2", "state": "active", "createdAt": "2026-09-01T09:10:00Z"}, "givenBy": {"displayName": "Ben"}}], "visibility": "members", "kudosTotal": 0}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::show::v0_1::Payload,
+            s::badges::mine::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd0sCl4mpWh1sp3r"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": false, "hidden": false, "position": 1}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::promote::v0_1::Payload,
+            s::badges::promote::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd3mR9vXs2Wq8LpN", "requestable": false, "shareableOutside": false, "holdersVisibleTo": "members", "owners": ["dir_Pr1yaNatarajan00", "dir_TomasVrba0000000"], "reason": "Given four hundred times this year; the community should stand behind it."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_Kd3mR9vXs2Wq8LpN", "kind": "community", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 48120}, "repeatable": true, "requestable": false, "listed": true, "shareableOutside": false, "groupId": "grp_Qm4Vx8Tk2Rn7Hs1L", "state": "active", "holderCount": 0, "createdAt": "2026-11-06T09:05:02Z", "createdBy": "dir_TomasVrba0000000", "updatedAt": "2026-11-06T09:40:03Z"}, "group": {"groupId": "grp_Qm4Vx8Tk2Rn7Hs1L", "groupDid": "did:webvh:QmGroupScid:community.example:group-dids:grp_Qm4Vx8Tk2Rn7Hs1L", "name": "Clamp whisperer", "kind": "static", "joinPolicy": "closed", "visibility": "members", "showMembers": "members", "issuesCredentials": true, "carriesAuthority": false, "badgeId": "bdg_Kd3mR9vXs2Wq8LpN", "memberCount": 0, "managers": ["dir_Pr1yaNatarajan00", "dir_TomasVrba0000000"], "credentialAuthorityValidUntil": "2027-11-06T09:40:02Z", "createdAt": "2026-11-06T09:40:03Z"}, "holdersOffered": 37}"#).unwrap()
+        ),
+        checked!(
+            s::badges::retire::v0_1::Payload,
+            s::badges::retire::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "reason": "The workshop programme ended with the season."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": false, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "retired", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z", "createdBy": "dir_AnnaReyes0000000", "retiredAt": "2026-11-06T09:30:03Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::settings::show::v0_1::Payload,
+            s::badges::settings::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"settings": {"enabled": true, "kudosMakers": {"policy": "roles", "roles": ["steward"], "groups": ["grp_Hs7Qm2Lk9Tn4Bv1X"]}, "limits": {"kudosPerGiverPerDay": 10, "sameGiverSameMember": "day", "minTenureDays": 7, "kudosBadgesPerMakerPerMonth": 5, "maxPinned": 2}, "showKudosTotals": true, "automaticBadges": true, "membersMayRequest": true, "credentialValidDays": 730, "updatedAt": "2026-11-01T10:00:00Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::settings::update::v0_1::Payload,
+            s::badges::settings::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"settings": {"enabled": true, "kudosMakers": {"policy": "roles", "roles": ["steward"], "groups": ["grp_Hs7Qm2Lk9Tn4Bv1X"]}, "limits": {"kudosPerGiverPerDay": 10, "sameGiverSameMember": "day", "minTenureDays": 7, "kudosBadgesPerMakerPerMonth": 5, "maxPinned": 2}, "showKudosTotals": true, "automaticBadges": true, "membersMayRequest": true, "credentialValidDays": 730}, "reason": "Stewards and the welcome team asked to make their own thank-you badges."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"settings": {"enabled": true, "kudosMakers": {"policy": "roles", "roles": ["steward"], "groups": ["grp_Hs7Qm2Lk9Tn4Bv1X"]}, "limits": {"kudosPerGiverPerDay": 10, "sameGiverSameMember": "day", "minTenureDays": 7, "kudosBadgesPerMakerPerMonth": 5, "maxPinned": 2}, "showKudosTotals": true, "automaticBadges": true, "membersMayRequest": true, "credentialValidDays": 730, "updatedAt": "2026-11-06T09:10:02Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::show::v0_1::Payload,
+            s::badges::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z"}, "myCount": 0, "myState": "requested", "owners": ["dir_Pr1yaNatarajan00", "dir_BenOkafor0000000"], "credentialRegime": "outside"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::update::v0_1::Payload,
+            s::badges::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "criteria": "Hosted a workshop on the community calendar this year. A badge owner gives it after the session.", "requestable": false, "holdersVisibleTo": "groupMembers", "reason": "Owners give it after each session now; nobody needs to ask."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted a workshop on the community calendar this year. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": false, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z", "createdBy": "dir_AnnaReyes0000000", "updatedAt": "2026-11-06T09:20:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::wall::show::v0_1::Payload,
+            s::badges::wall::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"entryId": "dir_BenOkafor0000000"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"visibility": "members", "kudosTotal": 14, "entries": [{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 2, "createdAt": "2026-03-01T09:00:02Z", "createdBy": "dir_AnnaReyes0000000"}, "count": 3, "since": "2026-03-14T19:30:00Z", "latestAt": "2026-10-31T20:10:00Z", "pinned": true}, {"badge": {"badgeId": "bdg_Kd8sPq2Vn4Xm7Rt1", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/webp", "size": 18342}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-11-06T09:05:01Z", "createdBy": "dir_TomasVega0000000"}, "count": 5, "since": "2026-11-06T12:00:00Z", "latestAt": "2026-11-06T14:30:00Z", "pinned": false}]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::list::v0_1::Payload,
+            s::boards::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"status": "open"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boards": [{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "open", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": false, "ideaCounts": {"proposed": 2, "open": 4, "selected": 0, "notSelected": 0, "declined": 0, "merged": 0, "withdrawn": 0}}]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::show::v0_1::Payload,
+            s::boards::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": ["open"]}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"board": {"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "open", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": false, "ideaCounts": {"proposed": 2, "open": 4, "selected": 0, "notSelected": 0, "declined": 0, "merged": 0, "withdrawn": 0}}, "ideas": [{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "open", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat"}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 2, "election": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "state": "voting", "ballotsOnBoard": 38, "boardHeadIssuedAt": "2026-11-10T04:00:00Z"}}]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::propose::v0_1::Payload,
+            s::boards::ideas::propose::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "proposed", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat", "you": true}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 0}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::update::v0_1::Payload,
+            s::boards::ideas::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "title": "Wallet sign-in for everyone"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "proposed", "title": "Wallet sign-in for everyone", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat", "you": true}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 0}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::withdraw::v0_1::Payload,
+            s::boards::ideas::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "withdrawn", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat", "you": true}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 0}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::decide::v0_1::Payload,
+            s::boards::ideas::decide::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "decision": "accept"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "open", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat"}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 2, "election": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "state": "registration"}}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::ideas::select::v0_1::Payload,
+            s::boards::ideas::select::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "decision": "selected", "slotId": "a-0900"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"idea": {"ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "state": "selected", "title": "Accessible wallet sign-in", "description": "The on-screen number, screen readers, and people who can't scan a code. List the barriers and pick three to fix.", "format": "Discussion", "topic": "Identity", "proposer": {"entryId": "dir_Rb8Nc3Kq7Wz2Lp5D", "name": "Elif Polat"}, "proposedAt": "2026-11-04T02:10:00Z", "noteCount": 2, "election": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "state": "tallied", "certified": false, "result": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "manifestDigest": "uEiDexampleDigestNotReal0000000000000000000000", "ballotsCounted": 92, "questions": [{"question": "attend", "abstained": 0, "choice": {"yes": 65, "no": 27}}], "head": {"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "treeSize": 97, "rootHash": "uEiBexampleRootNotReal00000000000000000000000", "issuedAt": "2026-11-12T09:05:00Z"}}}, "decision": {"decidedAt": "2026-11-12T10:00:00Z", "slotId": "a-0900"}}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::notes::add::v0_1::Payload,
+            s::boards::notes::add::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "text": "Happy to co-host the screen-reader half."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"note": {"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "author": {"entryId": "dir_Hm2Vt6Xs9Qe4Jn1F", "name": "Tomás Brandt", "you": true}, "text": "Happy to co-host the screen-reader half.", "createdAt": "2026-11-04T05:00:00Z", "state": "visible"}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::notes::list::v0_1::Payload,
+            s::boards::notes::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"notes": [{"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "author": {"entryId": "dir_Hm2Vt6Xs9Qe4Jn1F", "name": "Tomás Brandt"}, "text": "Happy to co-host the screen-reader half.", "createdAt": "2026-11-04T05:00:00Z", "state": "visible"}]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::notes::withdraw::v0_1::Payload,
+            s::boards::notes::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"note": {"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "author": {"entryId": "dir_Hm2Vt6Xs9Qe4Jn1F", "name": "Tomás Brandt", "you": true}, "text": "Happy to co-host the screen-reader half.", "createdAt": "2026-11-04T05:00:00Z", "state": "withdrawn"}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::notes::hide::v0_1::Payload,
+            s::boards::notes::hide::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "action": "hide", "reason": "Off topic for this board."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"note": {"noteId": "bnt_Xa4Fh7Ty2Gp9Lm6C", "boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideaId": "ida_Pk3Wq9Ls2Dn6Hy4B", "author": {"entryId": "dir_Hm2Vt6Xs9Qe4Jn1F", "name": "Tomás Brandt"}, "text": "Happy to co-host the screen-reader half.", "createdAt": "2026-11-04T05:00:00Z", "state": "hidden", "hiddenReason": "Off topic for this board."}}"#).unwrap()
+        ),
+        checked!(
+            s::groups::requests::list::v0_2::Payload,
+            s::groups::requests::list::v0_2::Response,
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "pending" }),
             json!({ "items": [{ "request": { "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "message": "I work on identity.", "createdAt": "2026-10-19T09:00:00Z", "state": "pending" } }] })
         ),
@@ -3205,10 +3540,10 @@ fn table() -> Vec<Conformance> {
             json!({ "note": admin_note().wire() })
         ),
         checked!(
-            s::directory::notes::list::v0_1::Payload,
-            s::directory::notes::list::v0_1::Response,
+            s::directory::notes::list::v0_2::Payload,
+            s::directory::notes::list::v0_2::Response,
             json!({ "entryId": DIRECTORY_ENTRY, "limit": 20 }),
-            json!({ "items": [admin_note().wire()], "nextCursor": null })
+            json!({ "items": [admin_note().wire()] })
         ),
         checked!(
             s::directory::notes::export::v0_1::Payload,
@@ -3221,8 +3556,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::directory::export::v0_1::Payload,
-            s::directory::export::v0_1::Response,
+            s::directory::export::v0_2::Payload,
+            s::directory::export::v0_2::Response,
             json!({ "format": "jscontact", "reason": "Annual archive.", "limit": 200 }),
             json!({
                 "items": [{
@@ -3232,7 +3567,6 @@ fn table() -> Vec<Conformance> {
                     "name": { "full": "Carol Example" },
                     "role": "member",
                 }],
-                "nextCursor": null,
                 "exportedAt": "2026-10-19T09:00:00Z",
             })
         ),
@@ -3580,8 +3914,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::relationships::suspend::v0_1::Payload,
-            s::relationships::suspend::v0_1::Response,
+            s::relationships::suspend::v0_2::Payload,
+            s::relationships::suspend::v0_2::Response,
             json!({ "id": REQUEST_ID, "reason": "under review" }),
             to_v(crate::routes::relationships::LifecycleResponse {
                 id: uuid(),
@@ -3591,8 +3925,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::relationships::restore::v0_1::Payload,
-            s::relationships::restore::v0_1::Response,
+            s::relationships::restore::v0_2::Payload,
+            s::relationships::restore::v0_2::Response,
             json!({ "id": REQUEST_ID }),
             to_v(crate::routes::relationships::LifecycleResponse {
                 id: uuid(),
@@ -3656,8 +3990,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::rooms::list::v0_1::Payload,
-            s::rooms::list::v0_1::Response,
+            s::rooms::list::v0_2::Payload,
+            s::rooms::list::v0_2::Response,
             json!({ "lifecycle": "live", "cursor": "o0", "limit": 50 }),
             json!({
                 "items": [to_v(crate::routes::rooms::HostedRoom {
@@ -3667,11 +4001,11 @@ fn table() -> Vec<Conformance> {
                     retention_policy: "chained".into(),
                     epoch: 3,
                     lifecycle: "live".into(),
-                    epoch_expires_at: Some(1_787_654_400),
+                    epoch_expires_at: Some("2026-08-25T00:00:00Z".into()),
                     retention_days: 30,
                     mirror_of: None,
-                    created_at: 1_787_000_000,
-                    updated_at: 1_787_500_000,
+                    created_at: "2026-08-17T20:53:20Z".into(),
+                    updated_at: "2026-08-23T15:46:40Z".into(),
                 })],
             })
         ),
@@ -3684,28 +4018,43 @@ fn table() -> Vec<Conformance> {
 }
 
 /// Community elections (`vtc/elections/*`), witnessed only where they are bound: each the
-/// specification's own example request and response.
+/// specification's own example request and response. `create/0.4` and `show/0.3` carry the
+/// same example with a `textReleaseThreshold` of 3, which their voting/_shared/0.3 manifest
+/// admits and 0.2's refuses (VTI-VOT-065).
 #[cfg(feature = "voting")]
+#[allow(deprecated)] // create/0.3 and show/0.2: still served, and witnessed
 fn election_witnesses() -> Vec<Conformance> {
-    use trust_tasks_rs::specs::vtc as s;
+    use vti_specs::vtc as s;
     vec![
         checked!(
-            s::elections::create::v0_1::Payload,
-            s::elections::create::v0_1::Response,
-            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpens": "2026-11-01T00:00:00Z", "votingOpens": "2026-11-08T00:00:00Z", "votingCloses": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}}"#).unwrap(),
+            s::elections::create::v0_3::Payload,
+            s::elections::create::v0_3::Response,
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpensAt": "2026-11-01T00:00:00Z", "votingOpensAt": "2026-11-08T00:00:00Z", "votingClosesAt": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}}"#).unwrap(),
             serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registered", "actionId": "act_Vb3k9Qm2Lp7xR4tZ"}"#).unwrap()
         ),
         checked!(
-            s::elections::list::v0_1::Payload,
-            s::elections::list::v0_1::Response,
-            serde_json::from_str::<Value>(r#"{"state": "voting", "limit": 20}"#).unwrap(),
-            serde_json::from_str::<Value>(r#"{"elections": [{"electionId": "board-2026", "title": "Board election 2026", "state": "voting", "votingOpens": "2026-11-08T00:00:00Z", "votingCloses": "2026-11-15T00:00:00Z", "binding": true, "ticketHeld": true}]}"#).unwrap()
+            s::elections::create::v0_4::Payload,
+            s::elections::create::v0_4::Response,
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpensAt": "2026-11-01T00:00:00Z", "votingOpensAt": "2026-11-08T00:00:00Z", "votingClosesAt": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 3}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registered", "actionId": "act_Vb3k9Qm2Lp7xR4tZ"}"#).unwrap()
         ),
         checked!(
-            s::elections::show::v0_1::Payload,
-            s::elections::show::v0_1::Response,
+            s::elections::list::v0_3::Payload,
+            s::elections::list::v0_3::Response,
+            serde_json::from_str::<Value>(r#"{"state": "voting", "limit": 20}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"elections": [{"electionId": "board-2026", "title": "Board election 2026", "state": "voting", "votingOpensAt": "2026-11-08T00:00:00Z", "votingClosesAt": "2026-11-15T00:00:00Z", "binding": true, "ticketHeld": true}]}"#).unwrap()
+        ),
+        checked!(
+            s::elections::show::v0_2::Payload,
+            s::elections::show::v0_2::Response,
             serde_json::from_str::<Value>(r#"{"electionId": "board-2026"}"#).unwrap(),
-            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpens": "2026-11-01T00:00:00Z", "votingOpens": "2026-11-08T00:00:00Z", "votingCloses": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registration", "parameters": {"suite": "ps-ddh-bls12381", "votingKey": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}, "disclosure": {"ballotBox": "did:web:ballots.example", "ballotBoxOperator": "Ballots Example Ltd", "sameOperator": false, "boardVisibility": "public", "auditors": ["did:web:audit.example"], "revote": "replace", "coercionResistance": false}, "checkpoints": [{"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}, "document": {"id": "urn:uuid:92a3b4c5-d6e7-4f80-a9ba-2b3c4d5e6f70", "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": "did:web:ballots.example", "recipient": "did:webvh:QmCommunity:community.example", "issuedAt": "2026-11-01T00:00:05Z", "threadId": "urn:uuid:a3b4c5d6-e7f8-4091-bacb-3c4d5e6f7081", "payload": {"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}}, "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "verificationMethod": "did:web:ballots.example#key-1", "created": "2026-11-01T00:00:05Z", "proofPurpose": "assertionMethod", "proofValue": "z5BallotBoxHeadProofValue"}}}]}"#).unwrap()
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpensAt": "2026-11-01T00:00:00Z", "votingOpensAt": "2026-11-08T00:00:00Z", "votingClosesAt": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registration", "parameters": {"suite": "ps-ddh-bls12381", "votingKey": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}, "disclosure": {"ballotBox": "did:web:ballots.example", "ballotBoxOperator": "Ballots Example Ltd", "sameOperator": false, "boardVisibility": "public", "auditors": ["did:web:audit.example"], "revote": "replace", "coercionResistance": false}, "checkpoints": [{"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}, "document": {"id": "urn:uuid:92a3b4c5-d6e7-4f80-a9ba-2b3c4d5e6f70", "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": "did:web:ballots.example", "recipient": "did:webvh:QmCommunity:community.example", "issuedAt": "2026-11-01T00:00:05Z", "threadId": "urn:uuid:a3b4c5d6-e7f8-4091-bacb-3c4d5e6f7081", "payload": {"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}}, "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "verificationMethod": "did:web:ballots.example#key-1", "created": "2026-11-01T00:00:05Z", "proofPurpose": "assertionMethod", "proofValue": "z5BallotBoxHeadProofValue"}}}]}"#).unwrap()
+        ),
+        checked!(
+            s::elections::show::v0_3::Payload,
+            s::elections::show::v0_3::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpensAt": "2026-11-01T00:00:00Z", "votingOpensAt": "2026-11-08T00:00:00Z", "votingClosesAt": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 3}, "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registration", "parameters": {"suite": "ps-ddh-bls12381", "votingKey": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}, "disclosure": {"ballotBox": "did:web:ballots.example", "ballotBoxOperator": "Ballots Example Ltd", "sameOperator": false, "boardVisibility": "public", "auditors": ["did:web:audit.example"], "revote": "replace", "coercionResistance": false}, "checkpoints": [{"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}, "document": {"id": "urn:uuid:92a3b4c5-d6e7-4f80-a9ba-2b3c4d5e6f70", "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": "did:web:ballots.example", "recipient": "did:webvh:QmCommunity:community.example", "issuedAt": "2026-11-01T00:00:05Z", "threadId": "urn:uuid:a3b4c5d6-e7f8-4091-bacb-3c4d5e6f7081", "payload": {"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}}, "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "verificationMethod": "did:web:ballots.example#key-1", "created": "2026-11-01T00:00:05Z", "proofPurpose": "assertionMethod", "proofValue": "z5BallotBoxHeadProofValue"}}}]}"#).unwrap()
         ),
         checked!(
             s::elections::close::v0_1::Payload,
@@ -3726,10 +4075,40 @@ fn election_witnesses() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "result": {"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "ballotsCounted": 80, "questions": [{"question": "chair", "abstained": 2, "choice": {"alice": 41, "bob": 37}}], "head": {"electionId": "board-2026", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT", "issuedAt": "2026-11-15T00:00:03Z"}}, "head": {"electionId": "board-2026", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT", "issuedAt": "2026-11-15T00:00:03Z"}, "certifiedAt": "2026-11-16T09:00:19Z", "auditAttestations": [{"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential"], "issuer": "did:web:audit.example", "validFrom": "2026-11-15T18:00:00Z", "credentialSubject": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT"}}]}"#).unwrap()
         ),
         checked!(
+            s::elections::ballot_boxes::list::v0_1::Payload,
+            s::elections::ballot_boxes::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"ballotBoxes": [{"did": "did:webvh:QmBallots:votes.example.net", "operator": "Ballots Example Ltd", "sameOperator": false}, {"did": "did:webvh:QmOwnBox:votes.community.example", "operator": "Community Example Hosting", "sameOperator": true}]}"#).unwrap()
+        ),
+        checked!(
             s::elections::tickets::issue::v0_1::Payload,
             s::elections::tickets::issue::v0_1::Response,
             serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "request": {"label": "voter/board-2026", "id": "z5jokfsiZx1sk1mJyQnBnR519B9mcQhw9a8LrF9VQdAjExwoLzcdVdZ2aXaH14a3mdF", "request": {"encoding": "z6P4jNSt4qHKYhSBGSWgr6VcQGMsjmfYGUBdYWNtS7xbpGsTuiY1PDfoce4yTApuqUm", "proof": "zSzFTCny3qaXpSHTsTE877ffQfSuF9T5zo53iuZkwx9NbLYSq3GeLZpRda286SBhqwJg"}}}"#).unwrap(),
             serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "label": "voter/board-2026", "preCredential": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}"#).unwrap()
+        ),
+        checked!(
+            s::elections::create::v0_5::Payload,
+            s::elections::create::v0_5::Response,
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "eng-offsite-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Engineering offsite 2026", "questions": [{"key": "venue", "type": "choice", "text": "Where should we meet?", "options": [{"key": "lisbon"}, {"key": "berlin"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "credential", "memberOf": "did:webvh:QmGroupEng:community.example:groups:g7"}, "registrationOpensAt": "2026-11-01T00:00:00Z", "votingOpensAt": "2026-11-08T00:00:00Z", "votingClosesAt": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": false, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "eng-offsite-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registered"}"#).unwrap()
+        ),
+        checked!(
+            s::elections::list::v0_5::Payload,
+            s::elections::list::v0_5::Response,
+            serde_json::from_str::<Value>(r#"{"state": "voting", "limit": 20}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"elections": [{"electionId": "eng-offsite-2026", "title": "Engineering offsite 2026", "state": "voting", "votingOpensAt": "2026-11-08T00:00:00Z", "votingClosesAt": "2026-11-15T00:00:00Z", "binding": false, "ticketHeld": false}]}"#).unwrap()
+        ),
+        checked!(
+            s::elections::show::v0_6::Payload,
+            s::elections::show::v0_6::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "eng-offsite-2026", "presentation": {"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiablePresentation"], "holder": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "nonce": "urn:uuid:9e0f1a2b-3c4d-45e6-8f70-8192a3b4c5d6", "domain": "did:webvh:QmCommunity:community.example", "verifiableCredential": [{"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential", "MembershipCredential"], "issuer": "did:webvh:QmGroupEng:community.example:groups:g7", "validFrom": "2026-10-25T00:00:00Z", "validUntil": "2026-11-24T00:00:00Z", "credentialSubject": {"id": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"}, "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "proofValue": "z5vExampleCredentialProof"}}], "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "verificationMethod": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "proofPurpose": "authentication", "proofValue": "z2pExamplePresentationProof"}}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "eng-offsite-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Engineering offsite 2026", "questions": [{"key": "venue", "type": "choice", "text": "Where should we meet?", "options": [{"key": "lisbon"}, {"key": "berlin"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "credential", "memberOf": "did:webvh:QmGroupEng:community.example:groups:g7"}, "registrationOpensAt": "2026-11-01T00:00:00Z", "votingOpensAt": "2026-11-08T00:00:00Z", "votingClosesAt": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": false, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registration", "parameters": {"suite": "ps-ddh-bls12381", "votingKey": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}, "disclosure": {"ballotBox": "did:web:ballots.example", "ballotBoxOperator": "Ballots Example Ltd", "sameOperator": false, "boardVisibility": "public", "auditors": ["did:web:audit.example"], "revote": "replace", "coercionResistance": false, "rollCredential": {"memberOf": "did:webvh:QmGroupEng:community.example:groups:g7", "memberOfKind": "communityGroup", "memberOfName": "Engineering", "presenterDisclosed": true}}, "checkpoints": []}"#).unwrap()
+        ),
+        checked!(
+            s::elections::tickets::issue::v0_3::Payload,
+            s::elections::tickets::issue::v0_3::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "eng-offsite-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "request": {"label": "voter/eng-offsite-2026", "id": "z5jokfsiZx1sk1mJyQnBnR519B9mcQhw9a8LrF9VQdAjExwoLzcdVdZ2aXaH14a3mdF", "request": {"encoding": "z6P4jNSt4qHKYhSBGSWgr6VcQGMsjmfYGUBdYWNtS7xbpGsTuiY1PDfoce4yTApuqUm", "proof": "zSzFTCny3qaXpSHTsTE877ffQfSuF9T5zo53iuZkwx9NbLYSq3GeLZpRda286SBhqwJg"}}, "presentation": {"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiablePresentation"], "holder": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "nonce": "urn:uuid:9e0f1a2b-3c4d-45e6-8f70-8192a3b4c5d6", "domain": "did:webvh:QmCommunity:community.example", "verifiableCredential": [{"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential", "MembershipCredential"], "issuer": "did:webvh:QmGroupEng:community.example:groups:g7", "validFrom": "2026-10-25T00:00:00Z", "validUntil": "2026-11-24T00:00:00Z", "credentialSubject": {"id": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"}, "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "proofValue": "z5vExampleCredentialProof"}}], "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "verificationMethod": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "proofPurpose": "authentication", "proofValue": "z2pExamplePresentationProof"}}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "eng-offsite-2026", "label": "voter/eng-offsite-2026", "preCredential": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}"#).unwrap()
         ),
     ]
 }
@@ -3743,7 +4122,7 @@ fn election_witnesses() -> Vec<Conformance> {
 /// where one exists.
 #[cfg(feature = "vetting-pcs")]
 fn pcs_witnesses() -> Vec<Conformance> {
-    use trust_tasks_rs::specs::vtc as s;
+    use vti_specs::vtc as s;
 
     /// Finish a generated builder into its `#[non_exhaustive]` type. Fixture data, so a
     /// validation failure (a placeholder that stopped matching the specification's own pattern)
@@ -3918,6 +4297,38 @@ fn pcs_witnesses() -> Vec<Conformance> {
                 "requirementsDigest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
             })
         ),
+        // A member's own binding, with a reset waiting on a live label: what
+        // `pcs_tasks::handle_binding_show` builds from the enrolment record.
+        checked!(
+            s::vetting::vetters::pcs_binding::show::v0_1::Payload,
+            s::vetting::vetters::pcs_binding::show::v0_1::Response,
+            json!({}),
+            json!({
+                "bound": true,
+                "id": MB,
+                "enrolledLabels": ["vetter/2026-09", "vetter/2026-10"],
+                "reset": {
+                    "resetAt": "2026-11-02T14:20:00Z",
+                    "waitingOn": ["vetter/2026-10"],
+                    "open": false,
+                },
+            })
+        ),
+        // An administrator's reset: `pcs_tasks::handle_binding_reset`'s answer.
+        checked!(
+            s::vetting::vetters::pcs_binding::reset::v0_1::Payload,
+            s::vetting::vetters::pcs_binding::reset::v0_1::Response,
+            json!({
+                "memberDid": "did:key:z6MkVetter",
+                "reason": "Rebuilt their VTA; the old key cannot be recovered.",
+            }),
+            json!({
+                "memberDid": "did:key:z6MkVetter",
+                "resetAt": "2026-11-02T14:20:00Z",
+                "waitingOn": ["vetter/2026-10"],
+                "open": false,
+            })
+        ),
         // The stored configuration and its counts: the shape
         // `show_hidden_vetting_core` builds, an approved event included.
         checked!(
@@ -4038,7 +4449,7 @@ fn every_bound_published_uri_has_a_witness() {
 #[test]
 fn status_credential_delivery_speaks_its_published_schema() {
     use vta_sdk::protocols::join_requests as jr;
-    type R = trust_tasks_rs::specs::vtc::join_requests::status::v0_1::Response;
+    type R = vti_specs::vtc::join_requests::status::v0_1::Response;
     for resend in [
         jr::CredentialResend::Queued,
         jr::CredentialResend::NotNeeded,

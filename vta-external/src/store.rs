@@ -116,6 +116,47 @@ pub async fn delete(
     accounts.remove(account_key(context, id)).await
 }
 
+/// Delete every account in `context`, the way [`delete`] deletes one — record
+/// and secret gone, id retired — returning how many went. For a context
+/// deletion: takes [`write_lock`] itself.
+///
+/// Live accounts go whatever their state: the context that owned them no
+/// longer exists, so there is nobody left to archive one first. The
+/// `retired:<context>:` tombstones stay, including the ones this writes.
+/// They hold no data and resurrect nothing; what they do is keep a context
+/// created again under the same id from reusing an account id that a
+/// provider-side trust policy or an audit row may still name — the reason
+/// they exist at all. A secret with no account row left (a crash between the
+/// two removals) goes too.
+pub async fn purge_context(
+    accounts: &KeyspaceHandle,
+    secrets: &KeyspaceHandle,
+    context: &str,
+) -> Result<usize, AppError> {
+    let _guard = write_lock().await;
+    let mut removed = 0;
+    // By key rather than through `list`, which refuses a record it cannot
+    // read: one unreadable row must not stop the rest of a deletion.
+    let prefix = account_key(context, "");
+    for key in accounts.prefix_keys(prefix.clone()).await? {
+        let Some(id) = std::str::from_utf8(&key)
+            .ok()
+            .and_then(|k| k.strip_prefix(&prefix))
+        else {
+            continue;
+        };
+        delete(accounts, secrets, context, id).await?;
+        removed += 1;
+    }
+    for key in secrets
+        .prefix_keys(format!("secret:{}", secret_key_id(context, "")))
+        .await?
+    {
+        secrets.remove(key).await?;
+    }
+    Ok(removed)
+}
+
 /// Wrap and store an account's secret under the active seed generation.
 /// Returns the generation, which the record keeps so the secret opens under the
 /// generation that sealed it after a seed rotation.

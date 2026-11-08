@@ -31,6 +31,8 @@ so it must not be retitled), and then converges as above.
 
 import argparse
 import datetime
+import functools
+import json
 import pathlib
 import re
 import subprocess
@@ -62,19 +64,32 @@ def req(v):
     return major if int(major) > 0 else f"{major}.{minor}"
 
 
+@functools.cache
+def members():
+    """Every workspace member's manifest, by crate name.
+
+    Read once, before anything is raised: `cargo metadata` fails on a tree whose
+    requirements disagree, which this script's own edits leave until the round
+    ends. Members sit at any depth (`tests/e2e`), so a directory glob misses some.
+    """
+    meta = json.loads(
+        subprocess.run(
+            ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        ).stdout
+    )
+    return {p["name"]: pathlib.Path(p["manifest_path"]) for p in meta["packages"]}
+
+
 def manifests():
-    return [
-        p
-        for p in ROOT.glob("*/Cargo.toml")
-        if "target" not in p.parts and ".claude" not in p.relative_to(ROOT).parts
-    ] + [ROOT / "Cargo.toml"]
+    return list(members().values()) + [ROOT / "Cargo.toml"]
 
 
 CLAIM = None  # the release a --claim run opens new lines ahead of
 
 
 def bump(name):
-    manifest = ROOT / name / "Cargo.toml"
+    manifest = members()[name]
     text = manifest.read_text()
     m = re.search(r'^version = "([^"]+)"', text, re.M)
     old = m.group(1)
@@ -92,7 +107,7 @@ def bump(name):
             p.write_text(t2)
 
     # The newest changelog entry carries the version in its title and compare link.
-    log = ROOT / name / "CHANGELOG.md"
+    log = manifest.parent / "CHANGELOG.md"
     if log.exists() and CLAIM:
         # Nothing about the crate changed; say why it has a new version.
         t = log.read_text()
@@ -130,6 +145,7 @@ def main():
                     help="with --raise: the release these new lines are opened for")
     args = ap.parse_args()
     CLAIM = args.claim
+    members()
     if args.raise_:
         print(f"raising {len(args.raise_)} named crate(s)")
         for n in args.raise_:

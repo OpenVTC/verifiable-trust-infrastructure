@@ -102,7 +102,7 @@ describe("Recognition — every trust record, filterable", () => {
 
 describe("fetchAllRegistryRecords", () => {
   it("follows the cursor to the last page", async () => {
-    const TASK = "https://trusttasks.org/spec/vtc/registry/records/list/0.1";
+    const TASK = "https://trusttasks.org/spec/vtc/registry/records/list/0.2";
     mockFetch([
       taskRoute(TASK, (payload) =>
         (payload as { cursor?: string }).cursor

@@ -2,6 +2,284 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.34.0...vta-keyspaces-v0.35.0) — 2026-11-05
+
+
+### Added
+
+- **collection**: Collection by default is a stored setting of each trust context, with an off-only operator suspension (VTI-NTF-094 – 098) ([#2467](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2467))
+
+
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.33.0...vta-keyspaces-v0.34.0) — 2026-11-05
+
+
+### Added
+
+- **rooms**: The VTA watches rooms for its clients (rooms/keys/watch, rooms/keys/changed), act/0.12, and memberProfile's tie-break and rewrite near the head ([#2461](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2461))
+
+* feat(rooms)!: the VTA watches rooms for its clients (rooms/keys/watch, rooms/keys/changed), act/0.12, and memberProfile's tie-break and rewrite near the head
+
+  rooms/keys/watch/0.1, rooms/keys/changed/0.1 and rooms/keys/act/0.12
+  (trust-tasks-tf #1040), pinned in vti-specs-rooms (act 0.8-0.11 are now
+  marked superseded upstream, so their uses carry allow(deprecated)).
+
+  The VTA serves rooms/keys/watch/0.1: up to 64 rooms at one host, one
+  outcome per room. A delegate is refused permissionDenied, a member the
+  VTA holds no authentication key for that the caller may act as is
+  refused memberNotPrincipal (details.member), a room named twice is
+  malformedRequest. Each room is its own rooms/watch/0.1 at the host,
+  completed as act/0.12 completes one (presentation narrowed to read,
+  granted to and signed by the member), with an address of the VTA's
+  own: a did:peer:2 minted for that one watch from fresh keys, whose
+  only service is DIDCommMessaging at the VTA's mediator. A re-arm of an
+  unfired watch keeps its address; every other arming takes a new one.
+  Per room: notAMember, actionNotHeld, limitReached (the VTA's own bound:
+  64 per member, 64 per caller, 256 in all; a VTA with no mediator holds
+  none), hostUnreachable, or hostRefused with the host's code unaltered.
+
+  The record (operations::room_key_watch, keyspace room_key_watches,
+  encrypted at rest, excluded from backup) is Recipient item 6's list and
+  nothing else: caller, member, room, host, address and its keys, lapse.
+  messaging::watch_addresses holds one mediator connection per address
+  and runs the sweep. A rooms/changed at an address is passed on only
+  when DIDComm authcrypt proved the watch's host as sender, it names the
+  watch's room, and the watch has not lapsed; the watch is forgotten
+  before the pass-on is sent. rooms/keys/changed carries roomId, member,
+  host and latestVersion only, signed by the VTA, through the push path
+  task-consent/granted uses, without a doorbell (Producer item 5) and
+  with a deadline of one attempt window, so an accepted push is never
+  re-sent (Producer item 4). A watch is also forgotten when cancelled,
+  at its lapse (never later than the host's expiresAt, 30 days at most),
+  when its caller loses standing to act as the member, and when the
+  member's credentials for the room are gone. rooms/changed addressed to
+  the VTA's own DID matches no watch and is dropped.
+
+  rooms/keys/act/0.12 is served beside 0.8-0.11; its table adds
+  rooms/watch/0.1 (read). A watch whose address is the caller's DID, the
+  VTA's or the member's is refused malformedRequest (Producer item 6;
+  Recipient item 6).
+
+
+
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.30.0...vta-keyspaces-v0.33.0) — 2026-11-04
+
+
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.29.0...vta-keyspaces-v0.30.0) — 2026-11-04
+
+
+### Added
+
+- **vta**: Collection for the principal's identifiers — claims, the collector, collection by default off (VTI-NTF-080 – 093) ([#2421](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2421))
+
+* feat(vti-specs): pin vta/collection/{claim,release,list} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1023 and #1024: a client's
+  collection claim on a persona DID, its release, and the listing of who
+  collects for each of a context's identifiers (VTI-NTF-080 – VTI-NTF-093).
+
+
+
+### Fixed
+
+- **contexts**: Purge every context-scoped record on delete ([#2419](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2419))
+
+vta/contexts/delete removed a context's keys, DIDs, ACL scope, DID
+  templates, app state and memory ([#2415](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2415)), but every other store that holds
+  data for a context kept its rows. Most are keyed by the context id, or by a
+  digest of it, so a context later created under the same id inherited them.
+
+  Seen with OpenVTC: a context deleted and recreated under the same id failed
+  vta/pcs/root-request with memberMismatch. The vetter engine record
+  (pcs_engine vetter:<sha256(ctx, community)>) had survived, still pinned to
+  the old member DID and to a derivation path under the old context's base.
+
+  delete_context now purges, for every context in the subtree:
+
+  - pcs_engine: vetter, applicant, voter and trustee records whose contextId
+    is the context, with the wrapped state beside each (secret:<key>, and a
+    voter's secret:voter-casts:<digest>). The keys are digests, so the purge
+    scans each record prefix and matches the record's own contextId.
+  - persona: every context-scoped prefix (pb, pc, pcr, pca, pcl, pd, plp, plb),
+    driven from PREFIX_SCOPES so a new context-scoped prefix is purged without
+    anyone remembering to; and the agent-scoped face-value edges that name one
+    of the context's local profiles.
+  - vault: credentials in the context's custody (with their index rows) and
+    vault entries, hard-deleted whatever their lifecycle state.
+  - notifications: held records with their dedup and bound rows (the sweep's
+    removal, factored out and shared).
+  - consent: grants decided in, and pending requests scoped to, the context;
+    consent_approvers: its approver bindings.
+  - external_accounts / external_secrets: each live account deleted the way
+    external/accounts/delete deletes one (secret gone, id retired).
+  - contexts: the daily quota counters (quota:<ctx>:...).
+  - imported_secrets / internal_keys: the material of each key record the
+    purge removes, as revoke_key does for an imported key.
+
+  Each store purges itself next to the code that writes it, and the counts go
+  in the deletion's log line. As in #2415 none of this is in the not-empty
+  gate: the gate must agree with preview-delete, whose wire shape has no
+  member for these, so surfacing them needs a spec revision.
+
+  Kept on purpose: the audit log; issued credentials (revoked through the DID
+  cascade, never deleted); operator policy; room groups and invitations (keyed
+  by persona DID / credential id, unreachable from a recreated context); and
+  external accounts' retired: tombstones, which hold no data and stop a
+  recreated context reusing an account id a provider-side trust policy may
+  still name.
+
+  The census is now a claim the code is held to:
+
+  - vta_keyspaces::context_delete_effect classifies every keyspace for a
+    context deletion (Purged / Retained / Lapses / Unrelated), and
+    context_delete_labels_match_the_cascade ties the Purged set to the
+    cascade's own list.
+  - did_delete_effect labelled most keyspaces Cascade (and five Blocks) though
+    the DID deletion reaches only keys, webvh, acl, sessions, issued
+    credentials and contexts. Those labels are now Orphaned, with the intended
+    effect beside each, and did_delete_labels_match_the_cascade holds
+    Cascade / Blocks / Revoke to DID_DELETE_REACHES.
+
+
+
+## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.28.0...vta-keyspaces-v0.29.0) — 2026-11-03
+
+
+### Added
+
+- **vta-service**: The accepted-document-id record in the store, shared with the VTC (VTI-OPS-026, VTI-OPS-027) ([#2417](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2417))
+
+The VTA kept its record of accepted document ids (SPEC §7.2 item 11) in a
+  process-local InMemoryReplayGuard, so a document accepted before a restart
+  executed again when replayed after it, still inside its acceptance window
+  (VTI-OPS-026).
+
+  The VTC's store-backed record moves into vti-trust-task-server as
+  StoreAcceptedIds (with its sweep and tests) and the VTA adopts it over a new
+  `accepted_ids` keyspace: encrypted, excluded from backup, Unrelated to DID
+  deletion, swept on the storage thread's timer. Rows keep the `accepted:<id>`
+  shape, so the VTC needs no migration. admit_carried_document now returns the
+  claim it took, and the deposit handler settles it.
+
+  Also fixes a document refused after its claim (schema, spec policy, proof,
+  idempotency) keeping its id spent as in-flight: the corrected resend under
+  the same id was answered 202 and never ran. The post-claim work is now
+  dispatch_claimed, and the caller settles the claim on every outcome.
+
+  Retention is unchanged (issuedAt + max_age + skew); it moves to expiresAt when
+  the nodes adopt trust-tasks-rs 0.37.
+
+
+
+### Fixed
+
+- **contexts**: Context deletion purges the context's app-state and agent memory ([#2415](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2415))
+
+vta/contexts/delete removed a context's keys, DIDs, ACL entries and DID
+  templates, but left its application state (app:/appv:/appc:/appt:<ctx>:…)
+  and agent memory (mem:<ctx>:…) in place. Both are keyed by context id
+  alone, so a context later created under the same id inherited them.
+
+  Seen with OpenVTC: a profile wiped locally (config, keychain) and its VTA
+  context deleted, then re-provisioned into a fresh context under the same
+  id, synced the deleted profile's personas and communities straight back
+  from vta/app-state — personas whose keys were gone, so every one failed to
+  load with "not within the caller's scope".
+
+  - operations::app_state::purge_context removes every record family for a
+    context (records live and tombstoned, version index, write counters, reap
+    watermarks), so a recreated context starts with an empty store and a
+    change feed from zero.
+  - operations::memory::purge_context removes the context's memory entries.
+  - delete_context calls both for every context in the deleted subtree, and
+    logs the counts.
+  - Not added to the not-empty gate: the gate has to agree with
+    preview-delete, whose wire shape has no member for either, and a refusal
+    the preview cannot explain is the failure that function already warns
+    about. Surfacing them in the preview needs a spec revision.
+
+
+
+## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.27.0...vta-keyspaces-v0.28.0) — 2026-11-03
+
+
+### Added
+
+- **notifications**: Notify/relay, the VTA's held notifications and the election notice (VTI-NTF-001 – 063) ([#2397](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2397))
+
+* feat(notifications)!: notifications/notify + relay, the VTA's held notifications, and the election notice to a member party (VTI-NTF-001 – 063)
+
+  Implements the Notifications chapter of the VTI specification
+  (dtgwg-vti-spec #91, VTI-NTF-001 – 063, Appendix G `election`) over the
+  tasks pinned from dtgwg-trust-tasks-tf #1012: notifications/notify/0.1 and
+  notifications/relay/0.1 (vti-specs-core), vta/notifications/{list,show,
+  dismiss}/0.1 (vti-specs-vta).
+
+  - vta-sdk: `notifications::verify_delivery` -> `VerifiedDelivery`, the one
+    way to a notification's members: every layer's type and pinned schema,
+    each proof over the JSON as received as its own issuer, each forwarded
+    document addressed to the relay carrying it, at most four relays,
+    `relayable` honoured (VTI-NTF-042). TASK_* constants, retry_safety
+    (notify/relay/dismiss RetrySafe, list/show ReadOnly), typed and `_json`
+    client methods for list/show/dismiss.
+  - VTA: notify/relay are counterparty tasks (zero-authority claim for a
+    sender the ACL does not know); the stated acceptance policy
+    (`[notifications]`: an ACL entry, an issuer of a membership credential or
+    a party of a relationship credential held in the context, `accept_from`,
+    `accept_any`) counts the delivering relayer, never the originator
+    (VTI-NTF-030/031); one record per (addressee, originator, notificationId),
+    higher revision replaces, dismissal kept (VTI-NTF-022); the same receipt
+    whatever was done (VTI-NTF-023); bounds per originator and deliverer
+    (VTI-NTF-033); held per context in the new `notifications` keyspace
+    (backed up), listed/read/dismissed only with standing there
+    (VTI-NTF-050 – 052); lapsed records swept after `retain_lapsed_days`.
+  - VTC as originator: an election under a credential roll naming a member
+    party is notified to that party once registered and withdrawn (higher
+    revision) if cancelled or closed before voting closes (VTI-NTF-060/061);
+    the notice is recorded before it is sent and queued on the durable member
+    push by the election sweeper, its one sender.
+  - VTC as recipient and relayer: notify/relay on the open door, verified and
+    held by its stated policy in its own `notifications` keyspace (backed up);
+    a relay engine that refuses a decision which has not acknowledged what
+    the relay discloses (VTI-NTF-046), relays the document exactly as
+    received to every member, keeps whom it relayed to until the period ends
+    (30 days without one) and relays every later revision, withdrawals
+    included, to them (VTI-NTF-044). No remote surface for the relay decision
+    yet: the specification defines no administrator task for it.
+  - pnm: `pnm notifications list|show|dismiss`.
+
+
+
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.26.0...vta-keyspaces-v0.27.0) — 2026-11-02
+
+
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.24.0...vta-keyspaces-v0.26.0) — 2026-10-30
+
+
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.23.0...vta-keyspaces-v0.24.0) — 2026-10-28
+
+
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.22.0...vta-keyspaces-v0.23.0) — 2026-10-27
+
+
+### Added
+
+- **rooms**: Serve and send only the current rooms/keys and rooms/owner/group versions ([#2295](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2295))
+
+The VTA stops serving the superseded member-key-holder and owner-group versions,
+  and every sender (vta-sdk, vta-cli-common/pnm, the VTC as a community's owner)
+  sends the current one with no fallback:
+
+  - rooms/keys/open 0.1 -> 0.2, file-key 0.1 -> 0.2, seal 0.1 -> 0.2,
+    key-package 0.1 -> 0.2, list 0.1 -> 0.2, chain 0.1 -> 0.2,
+    backfill 0.1 -> 0.2 (fetching with rooms/epoch/chain/0.2 only)
+  - rooms/owner/group/add 0.1, 0.2 -> 0.3; remove 0.2 -> 0.3; renew 0.1 -> 0.2
+
+  rooms/owner/group/remove/0.1 is kept, served and sent: 0.3 refuses a private
+  room (privateRoom) and names 0.1 as that tier's removal, so withdrawing 0.1
+  would leave no way to remove a member of a private room.
+
+
+
 ## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.21.0...vta-keyspaces-v0.22.0) — 2026-10-26
 
 

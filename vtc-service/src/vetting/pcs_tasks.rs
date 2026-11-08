@@ -3,20 +3,26 @@
 //! [`super::pcs_issue`] mints, [`super::pcs_challenge`] issues and [`super::pcs_event`] decides
 //! who may draw at an event's rate; this is how a vetter and an applicant reach them. Four
 //! exchanges, each a published specification, generated (`trust-tasks-rs` 0.22+) rather than
-//! hand-written — see [`trust_tasks_rs::specs::vtc::vetting`]:
+//! hand-written — see [`vti_specs::vtc::vetting`]:
 //!
 //! - `vtc/vetting/vetters/pcs-root/0.1` — a vetter enrols for a class label.
 //! - `vtc/vetting/vetters/pcs-tokens/0.1` — a vetter draws its tick of the drip.
 //! - `vtc/vetting/vetters/event-mode/0.1` — a vetter asks to vet at a named event.
 //! - `vtc/vetting/pcs-challenge/0.1` — an applicant asks for the nonce its proof must bind.
+//!
+//! And the two that let a vetter who lost their key back in: `vtc/vetting/vetters/pcs-binding/
+//! show/0.1` (a member reads their own binding) and `.../pcs-binding/reset/0.1` (an administrator
+//! resets it).
 
 use chrono::{Duration, Utc};
 use serde_json::Value as JsonValue;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::vtc::vetting::pcs_challenge::v0_1 as pcs_challenge_spec;
-use trust_tasks_rs::specs::vtc::vetting::vetters::event_mode::v0_1 as event_mode_spec;
-use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_root::v0_1 as pcs_root_spec;
-use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_tokens::v0_1 as pcs_tokens_spec;
+use vti_specs::vtc::vetting::pcs_challenge::v0_1 as pcs_challenge_spec;
+use vti_specs::vtc::vetting::vetters::event_mode::v0_1 as event_mode_spec;
+use vti_specs::vtc::vetting::vetters::pcs_binding::reset::v0_1 as binding_reset_spec;
+use vti_specs::vtc::vetting::vetters::pcs_binding::show::v0_1 as binding_show_spec;
+use vti_specs::vtc::vetting::vetters::pcs_root::v0_1 as pcs_root_spec;
+use vti_specs::vtc::vetting::vetters::pcs_tokens::v0_1 as pcs_tokens_spec;
 
 use vti_vetting_pcs::issuer::{
     RootCredentialWire, RootRequestWire, TokenBatchRequestWire, TokenBatchWire, TokenRequestWire,
@@ -39,11 +45,20 @@ pub const PCS_CHALLENGE_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/pc
 pub const HIDDEN_PUBLISH_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1";
 /// `vtc/vetting/hidden/withdraw/0.1` — an admin turns hidden-vetter admission off for a criterion.
 pub const HIDDEN_WITHDRAW_TYPE: &str =
-    <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `vtc/vetting/hidden/show/0.1` — an admin reads a criterion's stored hidden-vetting
 /// configuration, with the enrolment and event-demand counts it needs to run it.
 pub const HIDDEN_SHOW_TYPE: &str =
-    <trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::vetting::hidden::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/vetting/vetters/pcs-binding/show/0.1` — a member reads which hidden-vetting identifier
+/// they are bound to, and the state of any reset.
+pub const BINDING_SHOW_TYPE: &str =
+    <binding_show_spec::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/vetting/vetters/pcs-binding/reset/0.1` — an administrator resets a vetter's binding after
+/// the key behind it was lost.
+pub const BINDING_RESET_TYPE: &str =
+    <binding_reset_spec::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // --- declared error codes --------------------------------------------------------------------
 //
@@ -72,7 +87,7 @@ pub const TOKENS_ERR_OVER_QUOTA: &str = "vtc/vetting/vetters/pcs-tokens:overQuot
 pub const TOKENS_ERR_BAD_OPENING_PROOF: &str = "vtc/vetting/vetters/pcs-tokens:badOpeningProof";
 /// `vtc/vetting/vetters/pcs-tokens:tickNotYet`: the tick named has not begun.
 pub const TOKENS_ERR_TICK_NOT_YET: &str =
-    trust_tasks_rs::specs::vtc::vetting::vetters::pcs_tokens::v0_1::error_codes::TICK_NOT_YET.code;
+    vti_specs::vtc::vetting::vetters::pcs_tokens::v0_1::error_codes::TICK_NOT_YET.code;
 /// `vtc/vetting/vetters/pcs-tokens:eventRefused`
 pub const TOKENS_ERR_EVENT_REFUSED: &str = "vtc/vetting/vetters/pcs-tokens:eventRefused";
 /// `vtc/vetting/vetters/event-mode:notAVetter`
@@ -85,32 +100,38 @@ pub const EVENT_ERR_UNKNOWN_TIER: &str = "vtc/vetting/vetters/event-mode:unknown
 pub const EVENT_ERR_BAD_WINDOW: &str = "vtc/vetting/vetters/event-mode:badWindow";
 /// `vtc/vetting/hidden/publish:noSuchCriterion`, read from the generated bindings.
 pub const HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_SUCH_CRITERION.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_SUCH_CRITERION.code;
 /// `vtc/vetting/hidden/publish:noVetting`, read from the generated bindings.
 pub const HIDDEN_PUBLISH_ERR_NO_VETTING: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_VETTING.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_VETTING.code;
 /// `vtc/vetting/hidden/publish:approverNotSigner`: a new or changed `approvedBy` names someone
 /// other than the administrator publishing it.
 pub const HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_NOT_SIGNER
-        .code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_NOT_SIGNER.code;
 /// `vtc/vetting/hidden/publish:approverInEvent`: the approver has asked to vet at the event.
 pub const HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_IN_EVENT.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_IN_EVENT.code;
 /// `vtc/vetting/hidden/publish:signerChanged`: the stored keys are not what the community's
 /// signer derives now.
 pub const HIDDEN_PUBLISH_ERR_SIGNER_CHANGED: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::SIGNER_CHANGED.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::SIGNER_CHANGED.code;
 /// `vtc/vetting/hidden/publish:otherCriterion`: hidden vetting is on for another criterion.
 pub const HIDDEN_PUBLISH_ERR_OTHER_CRITERION: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::OTHER_CRITERION.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::OTHER_CRITERION.code;
+/// `vtc/vetting/hidden/publish:labelRetired`: the live set names a vetter label retired by a
+/// re-binding (pcs-binding/reset/0.1 "Labels never come back").
+pub const HIDDEN_PUBLISH_ERR_LABEL_RETIRED: &str =
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::LABEL_RETIRED.code;
 /// `vtc/vetting/hidden/withdraw:noSuchCriterion`
 pub const HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::error_codes::NO_SUCH_CRITERION
-        .code;
+    vti_specs::vtc::vetting::hidden::withdraw::v0_1::error_codes::NO_SUCH_CRITERION.code;
 /// `vtc/vetting/hidden/show:noSuchCriterion`
 pub const HIDDEN_SHOW_ERR_NO_SUCH_CRITERION: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::error_codes::NO_SUCH_CRITERION.code;
+    vti_specs::vtc::vetting::hidden::show::v0_1::error_codes::NO_SUCH_CRITERION.code;
+/// `vtc/vetting/vetters/pcs-binding/show:notAMember`: the requester is not a member.
+pub const BINDING_SHOW_ERR_NOT_A_MEMBER: &str = binding_show_spec::error_codes::NOT_A_MEMBER.code;
+/// `vtc/vetting/vetters/pcs-binding/reset:notBound`: the member never enrolled.
+pub const BINDING_RESET_ERR_NOT_BOUND: &str = binding_reset_spec::error_codes::NOT_BOUND.code;
 /// `vtc/vetting/vetters/event-mode:alreadyRequested`
 pub const EVENT_ERR_ALREADY_REQUESTED: &str = "vtc/vetting/vetters/event-mode:alreadyRequested";
 /// `vtc/vetting/vetters/event-mode:eventClosed`
@@ -317,6 +338,115 @@ pub async fn handle_pcs_challenge(
         pcs_challenge_spec::Response::builder()
             .challenge(challenge)
             .expires_at(now + ttl),
+    )?)
+}
+
+/// A member reads their own hidden-vetting binding.
+///
+/// Membership is the entitlement — not a vetter grant, because a member whose grant was revoked
+/// and re-issued is exactly the member who needs this. The request names nobody: the answer is
+/// about the proven requester and no one else (show/0.1 item 2). Answered whether or not hidden
+/// vetting is on now: a member with no record is `bound: false`, and with nothing live a pending
+/// reset is open.
+///
+/// # Errors
+///
+/// `notAMember` when the requester is not a current member; the store's own failures otherwise.
+pub async fn handle_binding_show(
+    state: &AppState,
+    member_did: &str,
+    doc: &TrustTask<JsonValue>,
+) -> Result<JsonValue, TaskError> {
+    let _payload: binding_show_spec::Payload = parse(doc)?;
+    let member = crate::members::get_member(&state.members_ks, member_did)
+        .await
+        .map_err(TaskError::from)?;
+    if member.is_none_or(|m| m.is_removed()) {
+        return Err(TaskError::declared(
+            BINDING_SHOW_ERR_NOT_A_MEMBER,
+            vti_common::error::AppError::Forbidden(format!(
+                "{member_did} is not a member of this community"
+            )),
+        ));
+    }
+    let live = pcs_issue::live_vetter_labels(state)
+        .await
+        .map_err(TaskError::from)?;
+    let view = pcs_issue::show_binding(state, member_did, &live)
+        .await
+        .map_err(TaskError::from)?;
+    let enrolled: Vec<binding_show_spec::ResponseEnrolledLabelsItem> =
+        convert_vec(view.enrolled_labels)?;
+    let id: Option<binding_show_spec::ResponseId> =
+        view.id.map(TryInto::try_into).transpose().map_err(
+            |e: binding_show_spec::error::ConversionError| {
+                TaskError::from(vti_common::error::AppError::Internal(format!(
+                    "response: {e}"
+                )))
+            },
+        )?;
+    let reset = match view.reset {
+        Some((reset_at, waiting_on)) => {
+            let open = waiting_on.is_empty();
+            let waiting_on: Vec<binding_show_spec::ResetWaitingOnItem> = convert_vec(waiting_on)?;
+            Some(build::<_, binding_show_spec::Reset>(
+                binding_show_spec::Reset::builder()
+                    .reset_at(reset_at)
+                    .waiting_on(waiting_on)
+                    .open(open),
+            )?)
+        }
+        None => None,
+    };
+    to_value(build::<_, binding_show_spec::Response>(
+        binding_show_spec::Response::builder()
+            .bound(id.is_some())
+            .id(id)
+            .enrolled_labels(enrolled)
+            .reset(reset),
+    )?)
+}
+
+/// An administrator resets a member's hidden-vetting binding. The capability check
+/// (`vtc.vetting.manage`, as `vtc/vetting/vetters/grant`) is the dispatcher's; this is the
+/// record. Idempotent: a binding already reset answers with the first reset.
+///
+/// # Errors
+///
+/// `notBound` when the member never enrolled; the store's own failures otherwise.
+pub async fn handle_binding_reset(
+    state: &AppState,
+    admin_did: &str,
+    doc: &TrustTask<JsonValue>,
+) -> Result<JsonValue, TaskError> {
+    let payload: binding_reset_spec::Payload = parse(doc)?;
+    let member_did = payload.member_did.to_string();
+    let live = pcs_issue::live_vetter_labels(state)
+        .await
+        .map_err(TaskError::from)?;
+    let (reset_at, waiting_on) = pcs_issue::reset_binding(
+        state,
+        &member_did,
+        admin_did,
+        payload.reason.as_str(),
+        &live,
+        Utc::now(),
+    )
+    .await
+    .map_err(|e| match e {
+        vti_common::error::AppError::NotFound(_) => {
+            TaskError::declared(BINDING_RESET_ERR_NOT_BOUND, declared_reason(e))
+        }
+        other => TaskError::from(other),
+    })?;
+    let open = waiting_on.is_empty();
+    let waiting_on: Vec<binding_reset_spec::ResponseWaitingOnItem> = convert_vec(waiting_on)?;
+    to_value(build::<_, binding_reset_spec::Response>(
+        binding_reset_spec::Response::builder()
+            .member_did(member_did)
+            .reset_at(reset_at)
+            .waiting_on(waiting_on)
+            .open(open),
     )?)
 }
 

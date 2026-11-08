@@ -102,6 +102,26 @@ pub async fn delete(
     memory_ks.remove(sk).await
 }
 
+/// Remove every entry in `context_id`. Called by the context-deletion cascade,
+/// so a context recreated under the same id starts with no memory. Returns
+/// how many entries went.
+pub async fn purge_context(
+    memory_ks: &KeyspaceHandle,
+    context_id: &str,
+) -> Result<usize, AppError> {
+    let keys = memory_ks.prefix_keys(context_prefix(context_id)).await?;
+    let n = keys.len();
+    if n == 0 {
+        return Ok(0);
+    }
+    let mut batch = vti_common::store::Batch::new();
+    for key in keys {
+        batch.remove(key);
+    }
+    memory_ks.apply_batch(batch).await?;
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

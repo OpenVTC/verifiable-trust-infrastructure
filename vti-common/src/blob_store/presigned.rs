@@ -97,7 +97,7 @@ pub trait Presigner: Send + Sync {
     ) -> Result<PresignedRequest, AppError>;
 
     /// Whether [`presign_ops`](Self::presign_ops) works: writes bound to their
-    /// length and checksum, multipart, head (`external/credentials/issue/0.2`+).
+    /// length and checksum, multipart, head (`external/credentials/issue/0.3`).
     fn presigns_ops(&self) -> bool {
         false
     }
@@ -530,6 +530,23 @@ fn transport(op: &str, e: reqwest::Error) -> AppError {
     }
 }
 
+/// The SHA-256 of a staged file, read in chunks.
+async fn sha256_of_file(path: &Path) -> Result<[u8; 32], AppError> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await.map_err(AppError::Io)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).await.map_err(AppError::Io)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(h.finalize().into())
+}
+
 fn refused(op: &str, status: StatusCode) -> AppError {
     AppError::ServiceError {
         status: axum::http::StatusCode::BAD_GATEWAY,
@@ -544,11 +561,25 @@ impl BlobStore for PresignedBlobs {
     }
 
     async fn put(&self, key: &BlobKey, staged: &Path, size: u64) -> Result<BackendRef, AppError> {
-        let req = self.request(PresignAction::Put, key).await?;
+        // A presigner that binds writes (`external/credentials/issue/0.3`, whose
+        // only PUT is one bound to its length and SHA-256) is asked for exactly
+        // that write; its request carries the `Content-Length` and
+        // `x-amz-checksum-sha256` it was signed over.
+        let (req, bound) = if self.presigner.presigns_ops() {
+            let sha256 = sha256_of_file(staged).await?;
+            let mut reqs = self
+                .ops(key, None, &[StorageOp::Put { len: size, sha256 }])
+                .await?;
+            (reqs.remove(0), true)
+        } else {
+            (self.request(PresignAction::Put, key).await?, false)
+        };
         let file = tokio::fs::File::open(staged).await.map_err(AppError::Io)?;
-        let res = self
-            .builder(&req)?
-            .header(reqwest::header::CONTENT_LENGTH, size)
+        let mut builder = self.builder(&req)?;
+        if !bound {
+            builder = builder.header(reqwest::header::CONTENT_LENGTH, size);
+        }
+        let res = builder
             .body(reqwest::Body::from(file))
             .send()
             .await

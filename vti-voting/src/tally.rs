@@ -8,9 +8,9 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::voting::{
+use vti_specs::voting::{
     ballot::cast::v0_1::Ballot,
-    election::register::v0_1::{Manifest, Question},
+    election::register::v0_4::{Manifest, Question},
     result::show::v0_1::QuestionResult,
 };
 
@@ -68,8 +68,7 @@ pub fn tally<'a>(
 ) -> Result<(u64, Vec<QuestionResult>), RuleError> {
     let counted: Vec<&Ballot> = counted.into_iter().collect();
     let n = counted.len() as u64;
-    let release_text =
-        !provisional && n >= u64::try_from(m.text_release_threshold).unwrap_or(u64::MAX);
+    let release_text = !provisional && n >= m.text_release_threshold.get();
     let mut out = Vec::with_capacity(m.questions.len());
     for q in &m.questions {
         let Some(qkey) = key(q) else {

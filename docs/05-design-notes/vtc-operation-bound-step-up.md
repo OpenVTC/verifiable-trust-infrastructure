@@ -96,7 +96,7 @@ signer ──(5) the same document, re-sent────────────�
    `(acting admin, digest)`.
 2. **It refuses with `stepUpRequired`** and parks a pending mark: a 256-bit
    challenge, the internal digest, the acting admin's DID, the type URI and an
-   expiry — **300 s**, decided: shorter than a session elevation's 900 s, because a mark authorizes one known act and has no reason to wait. The refusal's `details.stepUpRequest` — an inline `approve-request/0.3` payload — carries the challenge, the **wire
+   expiry — **300 s**, decided: shorter than a session elevation's 900 s, because a mark authorizes one known act and has no reason to wait. The refusal's `details.stepUpRequest` — an inline `approve-request/0.5` payload — carries the challenge, the **wire
    digest** (the payload digest salted with the challenge — all a client ever
    sees, since an unsalted digest over a low-entropy `acl/grant` payload is a
    confirmation oracle) and WebAuthn request options restricted to the acting
@@ -302,8 +302,17 @@ upstream spec and a `trust-tasks-rs` bump first).
 - **Evidence:** only `webauthn` is accepted. A `didSigned` or absent
   `evidence` is refused `noGate` — a proof is possession of a key, which a
   console key already has.
-- **`approve-response/0.4` declares no proof**, so the dispatcher does not
-  require one; its gate is the assertion. A console may sign it anyway.
+- **`approve-response/0.7`** is the one version served (0.4 and 0.6 are
+  retired). A `webauthn` approval may come **unsigned** — the console's answer,
+  since a console holds only a delegated key, whose proof is never the
+  approver's (`auth/signing-key/enroll/0.2` item 7, 0.7 consumer item 1a) —
+  and the user-verified assertion by a passkey registered to the subject (a
+  session passkey or a step-up passkey) is the evidence. Unsigned, it must
+  name the subject as `issuer`. A `didSigned` or `approverSigned` answer, and
+  every **denial**, must carry the subject's own `assertionMethod` proof
+  (`proofRequired` otherwise), so the console declines only through the VTA
+  wallet plugin signing as the subject; without one, it lets the request
+  lapse. `assertionInvalid`'s `details.reason` uses 0.7's enum.
 - **WebAuthn challenge = step-up challenge.** webauthn-rs mints the challenge
   when the ceremony starts, and the pending mark is keyed by it, so the
   assertion binds the same nonce the mark does.

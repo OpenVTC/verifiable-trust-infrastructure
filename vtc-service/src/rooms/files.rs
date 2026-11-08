@@ -13,21 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk;
-use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::{
-    abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
-    commit::v0_2 as upload_commit_v2,
-};
-use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
-use trust_tasks_rs::specs::rooms::records::{
-    get::v0_2 as get_v2, list::v0_2 as list_v2, put::v0_2 as put_v2,
-};
-use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
-use trust_tasks_rs::specs::rooms::{
-    epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
-    info::v0_2 as info_v2, records::list::v0_3 as list_v3, records::prune::v0_1 as records_prune,
-};
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_common::error::AppError;
 use vti_common::store::Store;
@@ -37,6 +22,20 @@ use vti_rooms::blobs::{BlobHost, UploadCaller};
 use vti_rooms::record_tasks;
 use vti_rooms::wire::{AuthorityPresentation, GetRecordBody, ListRecordsBody, PutRecordBody};
 use vti_rooms::{Room, storage};
+use vti_specs::rooms::blobs::chunk::v0_1 as download_chunk;
+use vti_specs::rooms::blobs::get::v0_2 as blob_get_v2;
+use vti_specs::rooms::blobs::upload::{
+    abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
+    commit::v0_2 as upload_commit_v2,
+};
+use vti_specs::rooms::records::get::v0_2 as get_v2;
+use vti_specs::rooms::records::get::v0_3 as get_v3;
+use vti_specs::rooms::records::list::v0_6 as list_v6;
+use vti_specs::rooms::usage::v0_1 as rooms_usage;
+use vti_specs::rooms::{
+    epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
+    info::v0_3 as info_v3, records::list::v0_5 as list_v5, records::prune::v0_2 as records_prune,
+};
 
 use super::handlers::{RoomCtx, charged, now, presenter_and_verifier};
 use super::storage_configs::RoomStorage;
@@ -242,7 +241,7 @@ fn payload_json<P: serde::Serialize>(doc: &TrustTask<P>) -> Result<Value, TrustT
 ///
 /// A chain that does not confer `action` is the framework's standard `permissionDenied`, as
 /// for every `rooms/*` task: the family declares no task-specific code that would shadow it.
-async fn authorize<P>(
+pub(super) async fn authorize<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     payload: &Value,
@@ -407,26 +406,6 @@ fn as_v0_1<P, B: serde::de::DeserializeOwned>(
     })
 }
 
-/// `rooms/records/put/0.2`: a record that may name blobs committed in its room.
-pub(crate) async fn handle_put_record_v2(
-    doc: TrustTask<put_v2::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let payload = match payload_json(&doc) {
-        Ok(p) => p,
-        Err(o) => return o,
-    };
-    let blobs = match blob_tasks::put_v2_blobs(&payload) {
-        Ok(b) => b,
-        Err(r) => return refused(&doc, r),
-    };
-    let req: PutRecordBody = match as_v0_1(&doc, payload) {
-        Ok(r) => r,
-        Err(o) => return o,
-    };
-    super::handlers::put_record(&doc, &ctx, req, blobs, None).await
-}
-
 /// `rooms/records/put/0.3`: 0.2, and an `open` room's `cleartext` may carry the record's
 /// provenance and `validUntil` — stored and served exactly as received, never acted on
 /// (consumer item 11). A sealed write is 0.2's: those members travel inside the body.
@@ -451,10 +430,92 @@ pub(crate) async fn handle_put_record_v3(doc: TrustTask<Value>, ctx: RoomCtx) ->
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::put_record(&doc, &ctx, req, blobs, cleartext).await
+    super::handlers::put_record(&doc, &ctx, req, blobs, cleartext, false).await
+}
+
+/// `rooms/records/put/0.4`: 0.3, and an `open` room's `cleartext` may carry a `file` — its
+/// manifest and the random key its blob is sealed under — stored and served as received
+/// (Host item 13), once the record's `blobs` is checked against it (Host item 12).
+pub(crate) async fn handle_put_record_v4(doc: TrustTask<Value>, ctx: RoomCtx) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (blobs, cleartext) = match blob_tasks::put_v4_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: PutRecordBody = match serde_json::from_value(blob_tasks::put_v4_as_v0_1(payload))
+        .map_err(|e| {
+            reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            )
+        }) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::put_record(&doc, &ctx, req, blobs, cleartext, true).await
+}
+
+/// `rooms/records/put/0.5`: 0.4, and an `open` room's `cleartext` may say what kind of
+/// record it is, what it answers and when it was written and edited, and its `file` an
+/// image's size and preview — each held to its schema, then stored and served as received
+/// and never acted on (Host item 14).
+pub(crate) async fn handle_put_record_v5(doc: TrustTask<Value>, ctx: RoomCtx) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (blobs, cleartext) = match blob_tasks::put_v5_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: PutRecordBody = match serde_json::from_value(blob_tasks::put_v5_as_v0_1(payload))
+        .map_err(|e| {
+            reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            )
+        }) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::put_record(&doc, &ctx, req, blobs, cleartext, true).await
+}
+
+/// `rooms/records/get/0.3`: 0.2, and the host's `createdAt`, `createdBy` and
+/// `bodyStoredAt` for the record.
+pub(crate) async fn handle_get_record_v3(
+    doc: TrustTask<get_v3::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let req: GetRecordBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::get_record(&doc, &ctx, req, true).await
+}
+
+/// `rooms/records/list/0.6`: 0.5, with each row's `kind` on an `open` room and the host's
+/// `createdAt`, `createdBy` and `bodyStoredAt`.
+pub(crate) async fn handle_list_records_v6(
+    doc: TrustTask<list_v6::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let req: ListRecordsBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::list_records(&doc, &ctx, req, true).await
 }
 
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the record's blobs.
+#[allow(deprecated)] // get/0.2 and list/0.5 are served beside get/0.3 and list/0.6, to readers that ask for them
 pub(crate) async fn handle_get_record_v2(
     doc: TrustTask<get_v2::Payload>,
     ctx: RoomCtx,
@@ -463,31 +524,21 @@ pub(crate) async fn handle_get_record_v2(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::get_record(&doc, &ctx, req).await
+    super::handlers::get_record(&doc, &ctx, req, false).await
 }
 
-/// `rooms/records/list/0.2`: the 0.1 listing, each row naming its blobs.
-pub(crate) async fn handle_list_records_v2(
-    doc: TrustTask<list_v2::Payload>,
+/// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's
+/// `lastPrune` on every page and the continuation token named `nextCursor`.
+#[allow(deprecated)] // get/0.2 and list/0.5 are served beside get/0.3 and list/0.6, to readers that ask for them
+pub(crate) async fn handle_list_records_v5(
+    doc: TrustTask<list_v5::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
     let req: ListRecordsBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::list_records(&doc, &ctx, req, 2).await
-}
-
-/// `rooms/records/list/0.3`: the 0.2 listing, and the room's `lastPrune` on every page.
-pub(crate) async fn handle_list_records_v3(
-    doc: TrustTask<list_v3::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let req: ListRecordsBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
-        Ok(r) => r,
-        Err(o) => return o,
-    };
-    super::handlers::list_records(&doc, &ctx, req, 3).await
+    super::handlers::list_records(&doc, &ctx, req, false).await
 }
 
 /// `rooms/create/0.2`: 0.1, and the room's record retention, recorded as given.
@@ -523,7 +574,7 @@ pub(crate) async fn handle_epoch_chain_v2(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::epoch_chain(&doc, &ctx, &req, true).await
+    super::handlers::epoch_chain(&doc, &ctx, &req).await
 }
 
 /// `rooms/epoch/prune/0.2`: the 0.1 prune, and the room's epoch floor it leaves.
@@ -538,10 +589,10 @@ pub(crate) async fn handle_epoch_prune_v2(
     super::handlers::epoch_prune(&doc, &ctx, &req).await
 }
 
-/// `rooms/info/0.2`. Needs `read`: 0.1's answer, the record retention in force and the
-/// room's latest prune.
-pub(crate) async fn handle_info_v2(
-    doc: TrustTask<info_v2::Payload>,
+/// `rooms/info/0.3`. Needs `read`: 0.1's answer, the record retention in force and the
+/// room's latest prune (`prunedAt`).
+pub(crate) async fn handle_info_v3(
+    doc: TrustTask<info_v3::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
     let payload = match payload_json(&doc) {
@@ -554,11 +605,11 @@ pub(crate) async fn handle_info_v2(
     };
     render(
         &doc,
-        record_tasks::info_v2(&ctx.state.room_files, &room, &authorized, &payload).await,
+        record_tasks::info_v3(&ctx.state.room_files, &room, &authorized, &payload).await,
     )
 }
 
-/// `rooms/records/prune/0.1`: remove what the room's record retention makes eligible.
+/// `rooms/records/prune/0.2`: remove what the room's record retention makes eligible.
 /// Needs `admin` — never `curate` or `write`.
 pub(crate) async fn handle_records_prune(
     doc: TrustTask<records_prune::Payload>,
@@ -798,25 +849,6 @@ pub(crate) async fn handle_usage(
     render(
         &doc,
         blob_tasks::usage(&ctx.state.room_files, &room, &authorized, &payload).await,
-    )
-}
-
-/// `rooms/info/0.1`. Needs `read`.
-pub(crate) async fn handle_info(
-    doc: TrustTask<rooms_info::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let payload = match payload_json(&doc) {
-        Ok(p) => p,
-        Err(o) => return o,
-    };
-    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
-        Ok(r) => r,
-        Err(o) => return o,
-    };
-    render(
-        &doc,
-        blob_tasks::info(&ctx.state.room_files, &room, &authorized, &payload).await,
     )
 }
 

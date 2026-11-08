@@ -96,9 +96,9 @@ fn manifest(trustees: &[String], ballot_box: &str) -> Value {
         "secrecy": "sealed",
         "trustees": { "dids": trustees, "threshold": 2 },
         "roll": { "rule": "members" },
-        "registrationOpens": t(now - chrono::Duration::days(2)),
-        "votingOpens": t(now - chrono::Duration::hours(1)),
-        "votingCloses": t(now + chrono::Duration::days(1)),
+        "registrationOpensAt": t(now - chrono::Duration::days(2)),
+        "votingOpensAt": t(now - chrono::Duration::hours(1)),
+        "votingClosesAt": t(now + chrono::Duration::days(1)),
         "revote": "replace",
         "board": { "visibility": "public", "auditors": [] }, "ballotBox": ballot_box,
         "binding": false, "allowEarlyClose": true, "resultsBeforeClose": false,
@@ -249,7 +249,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
             &state,
             &auth,
             trustee_doc(
-                uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
+                uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_4,
                 p,
                 json!({ "manifest": m }),
             ),
@@ -265,7 +265,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
             &state,
             &auth,
             trustee_doc(
-                uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
+                uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_4,
                 p,
                 json!({ "manifest": m }),
             ),
@@ -287,7 +287,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
             &state,
             &auth,
             trustee_doc(
-                uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
+                uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_5,
                 p,
                 json!({ "manifest": m, "ceremony": status["steps"] }),
             ),
@@ -304,7 +304,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
             &state,
             &auth,
             trustee_doc(
-                uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
+                uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_5,
                 p,
                 json!({ "manifest": m, "ceremony": status["steps"] }),
             ),
@@ -324,7 +324,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
             &state,
             &auth,
             trustee_doc(
-                uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
+                uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_5,
                 p,
                 json!({ "manifest": m, "ceremony": status["steps"] }),
             ),
@@ -335,7 +335,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
 
     // A member registers, takes the ticket, and casts a sealed ballot.
     let register = doc(
-        uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+        uris::TASK_VTA_PCS_VOTER_REGISTER_0_5,
         json!({ "contextId": CTX, "community": community(), "parameters": params, "manifest": m }),
     );
     let first = ok(&handle_voter_register(&state, &auth, register).await);
@@ -366,7 +366,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
     });
     let vote = |b: Value| {
         doc(
-            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2,
+            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_5,
             json!({ "contextId": CTX, "community": community(), "parameters": params, "manifest": m,
                     "ceremony": status["steps"], "ballot": b }),
         )
@@ -379,7 +379,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
         .unwrap()
         .remove("proof");
     let forged_vote = doc(
-        uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2,
+        uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_5,
         json!({ "contextId": CTX, "community": community(), "parameters": params, "manifest": m,
                 "ceremony": forged, "ballot": ballot }),
     );
@@ -406,7 +406,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
                 &state,
                 &auth,
                 doc(
-                    uris::TASK_VTA_PCS_VOTE_0_1,
+                    uris::TASK_VTA_PCS_VOTE_0_4,
                     json!({ "contextId": CTX, "community": community(), "parameters": params,
                         "manifest": m, "ballot": ballot }),
                 )
@@ -573,19 +573,19 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
     // trusteeNotHeld, at every trustee task.
     let cases = [
         (
-            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_4,
             json!({ "manifest": m }),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_5,
             json!({ "manifest": m, "ceremony": fake_steps }),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_5,
             json!({ "manifest": m, "ceremony": fake_steps }),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_5,
             json!({ "manifest": m, "ceremony": fake_steps, "recipient": 2 }),
         ),
         (
@@ -597,16 +597,16 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
     for (uri, extra) in &cases {
         let d = trustee_doc(uri, not_held, extra.clone());
         let out = match *uri {
-            u if u == uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1 => {
+            u if u == uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_4 => {
                 handle_trustee_enrol(&state, &auth, d).await
             }
-            u if u == uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_2 => {
+            u if u == uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_5 => {
                 handle_trustee_deal(&state, &auth, d).await
             }
-            u if u == uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2 => {
+            u if u == uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_5 => {
                 handle_trustee_keys(&state, &auth, d).await
             }
-            u if u == uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2 => {
+            u if u == uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_5 => {
                 handle_trustee_justify(&state, &auth, d).await
             }
             _ => handle_trustee_decrypt(&state, &auth, d).await,
@@ -632,7 +632,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         &state,
         &auth,
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_4,
             &held,
             json!({ "manifest": elsewhere }),
         ),
@@ -645,7 +645,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         &state,
         &auth,
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_5,
             &held,
             json!({ "manifest": m, "ceremony": fake_steps }),
         ),
@@ -656,7 +656,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         &state,
         &auth,
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_5,
             &held,
             json!({ "manifest": m, "ceremony": fake_steps }),
         ),
@@ -667,7 +667,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         &state,
         &auth,
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_5,
             &held,
             json!({ "manifest": m, "ceremony": fake_steps, "recipient": 2 }),
         ),
@@ -691,7 +691,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         &state,
         &auth,
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_4,
             &held,
             json!({ "manifest": m }),
         ),
@@ -701,7 +701,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         &state,
         &auth,
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_5,
             &held,
             json!({ "manifest": m, "ceremony": fake_steps }),
         ),
@@ -712,7 +712,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         &state,
         &auth,
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_5,
             &held,
             json!({ "manifest": m, "ceremony": fake_steps }),
         ),
@@ -727,7 +727,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
     let params = json!({ "suite": "ps-ddh-bls12381", "votingKey": reg.public_text().unwrap() });
     let ve = |manifest: &Value, steps: &Value, ballot: Value| {
         doc(
-            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2,
+            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_5,
             json!({ "contextId": CTX, "community": community(), "parameters": params,
                     "manifest": manifest, "ceremony": steps, "ballot": ballot }),
         )
@@ -745,7 +745,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         &state,
         &auth,
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_5,
             json!({ "contextId": CTX, "community": community(), "parameters": params, "manifest": m }),
         ),
     )
@@ -759,7 +759,7 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         &state,
         &auth,
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_5,
             json!({ "contextId": CTX, "community": community(), "parameters": params, "manifest": open_m }),
         ),
     )
@@ -776,15 +776,15 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
     let mut later = m.clone();
     later["electionId"] = json!("later-2027");
     let soon = chrono::Utc::now() + chrono::Duration::days(1);
-    later["votingOpens"] = json!(soon.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-    later["votingCloses"] = json!(
+    later["votingOpensAt"] = json!(soon.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    later["votingClosesAt"] = json!(
         (soon + chrono::Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     );
     ok(&handle_voter_register(
         &state,
         &auth,
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_5,
             json!({ "contextId": CTX, "community": community(), "parameters": params, "manifest": later }),
         ),
     )
@@ -845,18 +845,46 @@ async fn a_trustee_reads_its_election_on_a_private_board_through_the_vta() {
     let sel = json!({ "community": community(), "electionId": "sealed-2027" });
     assert!(bb.show(BoxCaller::Anonymous, &sel, now).is_err());
 
-    let read = |which: &str, trustee: &str| {
-        trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_READ_0_1,
-            trustee,
-            json!({ "ballotBox": box_did, "read": which }),
-        )
+    let read_at = |uri: &'static str, which: &str, trustee: &str| {
+        trustee_doc(uri, trustee, json!({ "ballotBox": box_did, "read": which }))
     };
+    let read =
+        |which: &str, trustee: &str| read_at(uris::TASK_VTA_PCS_TRUSTEE_READ_0_4, which, trustee);
+    // trustee/read 0.2, still served, signs the show its version names: 0.2.
+    let old = ok(&handle_trustee_read(
+        &state,
+        &auth,
+        read_at(
+            uris::TASK_VTA_PCS_TRUSTEE_READ_0_2,
+            "election",
+            &personas[1],
+        ),
+    )
+    .await);
+    assert_eq!(
+        old["document"]["type"],
+        "https://trusttasks.org/spec/voting/election/show/0.2"
+    );
+    // trustee/read 0.3, still served, signs show/0.3.
+    let mid = ok(&handle_trustee_read(
+        &state,
+        &auth,
+        read_at(
+            uris::TASK_VTA_PCS_TRUSTEE_READ_0_3,
+            "election",
+            &personas[1],
+        ),
+    )
+    .await);
+    assert_eq!(
+        mid["document"]["type"],
+        "https://trusttasks.org/spec/voting/election/show/0.3"
+    );
     let shown = ok(&handle_trustee_read(&state, &auth, read("election", &personas[1])).await);
     let d = &shown["document"];
     assert_eq!(
         d["type"],
-        "https://trusttasks.org/spec/voting/election/show/0.1"
+        "https://trusttasks.org/spec/voting/election/show/0.4"
     );
     assert_eq!(d["recipient"], box_did.as_str());
     assert_eq!(d["payload"], sel);
@@ -944,7 +972,7 @@ async fn a_trustee_vta_acts_on_signed_steps_only() {
         &state,
         &auth,
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_4,
             &held,
             json!({ "manifest": m }),
         ),
@@ -979,7 +1007,7 @@ async fn a_trustee_vta_acts_on_signed_steps_only() {
     // Deal once, to these transport keys.
     let deal_doc = |ceremony: Value| {
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_5,
             &held,
             json!({ "manifest": m, "ceremony": ceremony }),
         )
@@ -1038,7 +1066,7 @@ async fn a_trustee_vta_acts_on_signed_steps_only() {
     // No share is revealed to a complaint nobody signed — the ballot box saying so is nothing.
     let justify = |ceremony: Value| {
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_5,
             &held,
             json!({ "manifest": m, "ceremony": ceremony, "recipient": 2 }),
         )
@@ -1073,7 +1101,7 @@ async fn a_trustee_vta_acts_on_signed_steps_only() {
     // The key forms: trustee 1 (this VTA) and trustee 3 confirm, and the VTA keeps its share.
     let keys = |ceremony: Value| {
         trustee_doc(
-            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_5,
             &held,
             json!({ "manifest": m, "ceremony": ceremony }),
         )

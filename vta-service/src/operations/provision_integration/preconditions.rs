@@ -330,7 +330,8 @@ pub(super) async fn preconditions(
         if !template_registered {
             return Err(AppError::Validation(format!(
                 "template '{template_name}' is not registered on this VTA. Register it via \
-                 'pnm did-templates create {template_name} --file <path>' then retry"
+                 'pnm did-templates create --file <path> --context {context}' (the file's \
+                 `name` must be '{template_name}') then retry"
             )));
         }
     }
@@ -352,7 +353,8 @@ pub(super) async fn preconditions(
         if !registered {
             return Err(AppError::Validation(format!(
                 "admin template '{name}' is not registered on this VTA. Register it via \
-                 'pnm did-templates create {name} --file <path>' then retry, or use the \
+                 'pnm did-templates create --file <path> --context {context}' (the file's \
+                 `name` must be '{name}') then retry, or use the \
                  built-in 'vta-admin' template."
             )));
         }

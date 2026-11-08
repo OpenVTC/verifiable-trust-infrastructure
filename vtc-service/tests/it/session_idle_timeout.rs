@@ -38,7 +38,7 @@ use vtc_service::test_support::TestVtc;
 use crate::common::session_probe::probe;
 
 const ADMIN_DID: &str = "did:key:z6MkAdminIdle";
-const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.2";
 
 struct Fixture {
     router: axum::Router,

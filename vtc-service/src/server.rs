@@ -151,6 +151,15 @@ pub struct AppState {
     pub admin_actions_ks: KeyspaceHandle,
     /// Member pushes in flight (`crate::member_push`). Encrypted at rest.
     pub member_pushes_ks: KeyspaceHandle,
+    /// Notifications addressed to this community, and whom it relayed them to
+    /// (`crate::notifications`). Encrypted at rest.
+    pub notifications_ks: KeyspaceHandle,
+    /// Community boards: boards, ideas and notes (`crate::boards`).
+    pub boards_ks: KeyspaceHandle,
+    /// Member badges: settings, badges, awards and holders' preferences (`crate::badges`).
+    pub badges_ks: KeyspaceHandle,
+    /// Badge pictures, re-encoded (`crate::badges`, over `crate::directory::images`).
+    pub badge_images_ks: KeyspaceHandle,
     /// OpenID4VP verifier identities and their keys (`crate::oid4vp`).
     /// Encrypted at rest.
     pub oid4vp_keys_ks: KeyspaceHandle,
@@ -197,6 +206,9 @@ pub struct AppState {
     /// Each hosted room's revocation list (`rooms/revocations/put`), consulted by every
     /// room authorization.
     pub room_revocations_ks: KeyspaceHandle,
+    /// The watches members armed on hosted rooms (`rooms/watch/0.1`): host state only,
+    /// consulted to authorize nothing, signalled over this VTC's messaging.
+    pub room_watches: Arc<vti_rooms::watch::RoomWatches>,
     /// Room files: the blob index, transfers in flight, limits and the blob store
     /// (`[rooms.files]`). Ciphertext only: this service never holds a file key.
     pub room_files: Arc<vti_rooms::blobs::BlobHost>,
@@ -540,6 +552,10 @@ pub async fn run(
     let admin_actions_ks = store.keyspace(keyspaces::ADMIN_ACTIONS)?;
     let step_up_approvers_ks = store.keyspace(keyspaces::STEP_UP_APPROVERS)?;
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
+    let notifications_ks = store.keyspace(keyspaces::NOTIFICATIONS)?;
+    let boards_ks = store.keyspace(keyspaces::BOARDS)?;
+    let badges_ks = store.keyspace(keyspaces::BADGES)?;
+    let badge_images_ks = store.keyspace(keyspaces::BADGE_IMAGES)?;
     let oid4vp_keys_ks = store.keyspace(keyspaces::OID4VP_KEYS)?;
     let oid4vp_sessions_ks = store.keyspace(keyspaces::OID4VP_SESSIONS)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
@@ -710,6 +726,12 @@ pub async fn run(
     let member_pushes_ks = match storage_key {
         Some(key) => member_pushes_ks.with_encryption(key),
         None => member_pushes_ks,
+    };
+    // Held notifications name who told this community what, and whom it relayed
+    // them to: encrypted like the push records. New, so nothing to migrate.
+    let notifications_ks = match storage_key {
+        Some(key) => notifications_ks.with_encryption(key),
+        None => notifications_ks,
     };
     // Verifier identities hold private keys; written only through
     // `vtc oid4vp install`, which encrypts under the same key, so there is
@@ -936,6 +958,25 @@ pub async fn run(
         ballot_box_link,
     ));
 
+    // Watches on hosted rooms (`rooms/watch/0.1`). Their signal leaves over this VTC's
+    // messaging as this community, so it needs the signing key and a resolver; without
+    // them every address is unreachable and a watch is refused `addressUnreachable`.
+    let room_watches = Arc::new(vti_rooms::watch::RoomWatches::new(
+        store.keyspace(keyspaces::ROOM_WATCHES)?,
+        rooms_ks.clone(),
+        room_revocations_ks.clone(),
+    ));
+    if let (Some(signer), Some(resolver)) = (credential_signer.clone(), did_resolver.clone()) {
+        room_watches.set_signals(Arc::new(crate::rooms::watch::VtcSignals {
+            peers: crate::outbound::PeerTasks {
+                didcomm: didcomm_cell.clone(),
+                signer: Some(signer),
+                replies: pending_replies.clone(),
+                resolver: Some(resolver),
+            },
+        }));
+    }
+
     // Sealed storage credentials (`rooms::storage_credentials`): opened with the
     // community's own key, kept encrypted under the storage key. Without either there
     // is nowhere safe to keep one, and a `sealed` config reports its credential
@@ -1071,6 +1112,10 @@ pub async fn run(
         admin_actions_ks,
         step_up_approvers_ks,
         member_pushes_ks,
+        notifications_ks,
+        boards_ks,
+        badges_ks,
+        badge_images_ks,
         oid4vp_keys_ks,
         oid4vp_signers,
         oid4vp_sessions_ks,
@@ -1084,6 +1129,7 @@ pub async fn run(
         room_records_ks,
         room_epoch_links_ks,
         room_revocations_ks,
+        room_watches,
         room_files,
         room_storage,
         community_rooms,
@@ -1137,6 +1183,8 @@ pub async fn run(
     // Any left in the old rights store move onto them now, before a git-ns
     // task is authorized from the entries (VTI-VTC-020).
     crate::git_ns::migrate::migrate_on_boot(&state).await?;
+    // Room rows in the earlier, ambiguous key layout move before a room is served (#2382).
+    crate::rooms::migrate_room_keys(&state, "the boot migration").await?;
 
     // Heal missing AdminEntries: any DID with an Admin ACL grant +
     // a PasskeyUser but no AdminEntry gets the AdminEntry synthesised
@@ -1622,6 +1670,11 @@ pub async fn run(
     // Members who left the community leave the rooms it owns (`members/add` item 6): the
     // one owner of those removals, resuming at start whatever a restart interrupted.
     crate::rooms::departures::spawn(state.clone(), shutdown_rx.clone());
+    // What archiving and removing a room the community owns leaves to do: a change whose
+    // reset landed and whose re-issue did not, a purge whose grace period ended, a purge
+    // that has not finished, and suspended members owed a restore. Always spawned: idle
+    // while no room has any of these.
+    crate::rooms::community_lifecycle::spawn(state.clone(), shutdown_rx.clone());
     // A retired directory field's values, erased once its retention period
     // has passed (`crate::directory::sweep`).
     crate::directory::sweep::spawn(state.clone(), shutdown_rx.clone());
@@ -1648,6 +1701,9 @@ pub async fn run(
     // not answered, the board checkpoints, and discarding pre-credentials after close.
     #[cfg(feature = "voting")]
     crate::elections::sweeper::spawn(state.clone(), shutdown_rx.clone());
+    // Notifications addressed to this community: later revisions relayed to whoever an
+    // earlier one was (VTI-NTF-044), and lapsed relay records discarded.
+    crate::notifications::inbox::spawn(state.clone(), shutdown_rx.clone());
     // Room files deleted, orphaned past their grace, or abandoned mid-transfer.
     crate::rooms::files::spawn_sweeper(
         state.room_files.clone(),
@@ -1697,6 +1753,24 @@ pub async fn run(
                     crate::step_up_approver::sweep_expired(&ks, chrono::Utc::now()).await
                 {
                     warn!(error = %e, "step-up approver sweep failed");
+                }
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+                }
+            }
+        });
+    }
+
+    // Room watches whose lease ran out (`rooms/watch/0.1` Host item 5). A storage bound:
+    // a lapsed watch never fires, and a room's own are also swept when it moves.
+    {
+        let watches = state.room_watches.clone();
+        let mut shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = watches.sweep(chrono::Utc::now()).await {
+                    warn!(error = %e, "room watch sweep failed");
                 }
                 tokio::select! {
                     _ = shutdown.changed() => return,
@@ -2214,10 +2288,10 @@ fn run_rest_thread(
             ));
 
         let shutdown_rx = shutdown_rx.clone();
-        // `into_make_service_with_connect_info` is required for the
-        // tower-governor `SmartIpKeyExtractor` to fall back to the
-        // peer socket address when `X-Forwarded-For` / `X-Real-IP`
-        // headers are absent (Phase 5 M5.1.5).
+        // `into_make_service_with_connect_info` is required: the per-IP
+        // rate limiters key on the peer socket address (or, behind a
+        // trusted proxy, the client it names), and refuse a request
+        // without one (Phase 5 M5.1.5).
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -2792,7 +2866,7 @@ pub async fn audit_offline_break_glass(state: &AppState) {
                 command: "vtc admin emergency-bootstrap".into(),
                 action: "emergencyBootstrap".into(),
                 // The recovery DID it installed, then the administrators it
-                // wiped (`vtc/operator/offline-write/0.1` `dids`).
+                // wiped (`vtc/operator/offline-write/0.2` `dids`).
                 dids: pending.dids.clone(),
                 operator_host: pending.operator_hostname.clone(),
                 invoked_at: pending.invoked_at,

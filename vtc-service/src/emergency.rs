@@ -59,8 +59,8 @@ use vta_sdk::provision_client::{
 use crate::acl::admin::list_admin_entries;
 use crate::config::AppConfig;
 use crate::install::{
-    INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenStore,
-    PendingEmergencyBootstrap, mint_install_token,
+    INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenStore, InvitedAuthority,
+    PendingEmergencyBootstrap, mint_passkey_install_token,
 };
 use crate::keys::seed_store::{SecretStore, create_secret_store};
 use crate::setup::VtcKeyBundle;
@@ -262,8 +262,9 @@ pub async fn run_emergency_bootstrap_with_store(
     // wipe unaudited.
     let operator_hostname = gethostname::gethostname().to_string_lossy().into_owned();
     // Whose access this changes, for the acknowledge item the daemon raises
-    // (VTI-VTC-023): the recovery DID it installs, then the admins it wipes.
-    let mut dids = vec![setup_key.did.clone()];
+    // (VTI-VTC-023): the admins it wipes. It installs no DID — the recovery is
+    // a passkey invitation, whose administrator is whatever passkey claims it.
+    let mut dids: Vec<String> = Vec::new();
     for entry in list_acl_entries(&acl_ks).await? {
         if entry.admin.is_administrator() && !dids.contains(&entry.did) {
             dids.push(entry.did);
@@ -324,35 +325,33 @@ pub async fn run_emergency_bootstrap_with_store(
 
     // --- mint a fresh install token ---------------------------------
     //
-    // The earlier "carve-out reopen" step is gone — install tokens
-    // are gated per-row by the out-of-band claim secret, so emergency
-    // recovery just mints a fresh URL + code pair the operator types
-    // alongside.
+    // A **passkey** invitation: the token names no DID, and the recovered
+    // administrator is the `did:key` of the passkey the operator registers
+    // with it (`vtc/install/claim/passkey/finish/0.1` item 5). The ephemeral
+    // DID that proved access at the VTA above is never made an administrator
+    // here — nobody holds it once this command exits. With every
+    // administrator wiped, the claim is a fresh install and
+    // `vtc/admin/bootstrap` writes the entry; the authority is recorded on the
+    // invitation regardless, so a claim on a community that has meanwhile
+    // gained one writes it at finish instead (item 9).
     let ed25519 = bundle.ed25519_private_bytes()?;
     let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
     let issuer = bundle.integration_did.clone();
-    // Reuse the recovery DID as the new admin — the operator already
-    // proved control of it via the VTA recovery context, and it's the
-    // identity they currently hold private keys for. Operators who
-    // want a different admin DID can rotate via the regular flow
-    // after the emergency bootstrap completes.
-    let minted = mint_install_token(
-        &signer,
-        &issuer,
-        &setup_key.did,
-        INSTALL_TOKEN_DEFAULT_TTL_SECS,
-    )?;
+    let minted = mint_passkey_install_token(&signer, &issuer, INSTALL_TOKEN_DEFAULT_TTL_SECS)?;
     let claim_code = crate::install::claim_secret::generate();
     let claim_code_hash = crate::install::claim_secret::hash(&claim_code)?;
     let exp = Utc::now() + chrono::Duration::seconds(INSTALL_TOKEN_DEFAULT_TTL_SECS as i64);
     install_store
-        .record_issued(
+        .record_issued_passkey(
             &minted.jti,
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
             Some(claim_code_hash),
-            Some(setup_key.did.clone()),
+            InvitedAuthority::community_admin(
+                "vtc admin emergency-bootstrap",
+                "recovered administrator (emergency bootstrap)",
+            ),
         )
         .await?;
 

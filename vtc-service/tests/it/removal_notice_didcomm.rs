@@ -122,6 +122,21 @@ async fn an_admin_removal_reaches_the_member_signed() {
         Some(mock.vtc_did()),
         "issued by the community, so the member knows who removed them"
     );
+    // VTI-TRN-048: the push runs thirty days, so the notice states that as its
+    // expiry and stays acceptable for as long as it is pursued — a member who
+    // collects it a week later is not refused it as stale. Stated before
+    // signing, so the proof below covers it.
+    let at = |member: &str| {
+        doc.get(member)
+            .and_then(Value::as_str)
+            .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok())
+            .unwrap_or_else(|| panic!("the notice states its {member}"))
+    };
+    assert_eq!(
+        at("expiresAt") - at("issuedAt"),
+        chrono::TimeDelta::days(30),
+        "the expiry is the close of the thirty-day delivery window"
+    );
 
     let p = payload_of(&doc);
     assert_eq!(

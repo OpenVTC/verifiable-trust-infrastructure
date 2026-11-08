@@ -1,5 +1,7 @@
 // Vetters — every vetter grant, and what an admin does with them: name a
-// member a vetter, send a grant's credential again, revoke a grant.
+// member a vetter, send a grant's credential again, revoke a grant, and — on a
+// build with hidden vetting — reset a vetter's hidden-vetting key binding
+// after they lost the key (`vtc/vetting/vetters/pcs-binding/reset/0.1`).
 //
 // `live` comes from the daemon (`GET /v1/vetting/vetters`), so this panel
 // never decides whether a grant is in force; `grantState` only says why one
@@ -38,8 +40,11 @@ import {
   fetchActiveMembers,
   fetchAutoGrant,
   fetchGrants,
+  fetchPcsBindingResetServed,
   grantVetter,
+  PCS_BINDING_RESET_NOT_BOUND,
   resendGrant,
+  resetPcsBinding,
   revokeGrant,
   vettingKeys,
 } from "./api";
@@ -349,7 +354,153 @@ export function VettersPanel() {
           </DataTable>
         </div>
       </section>
+
+      <PcsResetCard memberDids={grants.data?.map((g) => g.memberDid) ?? []} />
     </>
+  );
+}
+
+/**
+ * Reset a vetter's hidden-vetting key binding. A vetter is bound to the PCS
+ * identifier they first enrolled with, and revoking and re-granting the role
+ * does not change that; a vetter whose key is truly lost asks for this. The
+ * community then accepts a new key from them once no label the old one
+ * enrolled under is live. Shown only when the build serves the task.
+ */
+function PcsResetCard({ memberDids }: { memberDids: readonly string[] }) {
+  const book = useNameBook();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const served = useQuery({
+    queryKey: vettingKeys.pcsResetServed,
+    queryFn: fetchPcsBindingResetServed,
+  });
+  const [memberDid, setMemberDid] = useState("");
+  const [reason, setReason] = useState("");
+  const [attempted, setAttempted] = useState(false);
+  const choices = useMemo(() => [...new Set(memberDids)], [memberDids]);
+
+  const reset = useMutation({
+    mutationFn: resetPcsBinding,
+    onSuccess: (res) => {
+      const name = book.nameOrDid(res.memberDid);
+      toast.push(
+        "success",
+        res.open
+          ? `Reset ${name}'s hidden-vetting key. Their next enrolment can use a new key.`
+          : `Reset ${name}'s hidden-vetting key. A new key is accepted once ${res.waitingOn.join(", ")} ${res.waitingOn.length === 1 ? "is" : "are"} no longer live.`,
+      );
+      setMemberDid("");
+      setReason("");
+      setAttempted(false);
+    },
+  });
+
+  if (!served.data) return null;
+
+  const memberError = memberDid ? null : "Choose the vetter whose key was lost.";
+  const reasonError = reason.trim()
+    ? reason.length > 500
+      ? "500 characters at most."
+      : null
+    : "Say why. It is kept in the audit log.";
+
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setAttempted(true);
+    if (memberError || reasonError) return;
+    const name = book.nameOrDid(memberDid);
+    const ok = await confirm({
+      title: `Reset ${name}'s hidden-vetting key?`,
+      message:
+        `Do this only when ${name} cannot recover their key. ` +
+        `The community will accept a new hidden-vetting key from them once no vetter label their old key enrolled under is live — usually by next month — and those labels can never be made live again. ` +
+        `If they find the old key first, enrolling with it cancels the reset. This does not grant or revoke the vetter role.`,
+      confirmLabel: "Reset hidden-vetting key",
+      destructive: true,
+    });
+    if (ok) reset.mutate({ memberDid, reason: reason.trim() });
+  };
+
+  const err = reset.error as { code?: string } | null;
+  return (
+    <form
+      className="card"
+      onSubmit={(e) => void onSubmit(e)}
+      aria-labelledby="pcs-reset-title"
+      noValidate
+    >
+      <h3 id="pcs-reset-title">Reset a hidden-vetting key</h3>
+      <p className="lead">
+        A vetter stays bound to the hidden-vetting key they first enrolled
+        with, even if their role is revoked and granted again. If their key is
+        lost and cannot be recovered, reset it here.
+      </p>
+      <div className="filter-grid">
+        <FormField
+          id="pcs-reset-member"
+          label="Vetter"
+          error={attempted ? memberError : null}
+        >
+          <select
+            id="pcs-reset-member"
+            value={memberDid}
+            onChange={(e) => setMemberDid(e.target.value)}
+            aria-invalid={Boolean(attempted && memberError)}
+            aria-describedby={describedBy(
+              "pcs-reset-member",
+              false,
+              attempted ? memberError : null,
+            )}
+          >
+            <option value="">Choose a vetter</option>
+            {choices.map((did) => (
+              <option key={did} value={did}>
+                {book.nameOrDid(did)}
+              </option>
+            ))}
+          </select>
+        </FormField>
+        <FormField
+          id="pcs-reset-reason"
+          label="Reason"
+          hint="Kept in the audit log."
+          error={attempted ? reasonError : null}
+        >
+          <input
+            id="pcs-reset-reason"
+            value={reason}
+            maxLength={500}
+            onChange={(e) => setReason(e.target.value)}
+            aria-invalid={Boolean(attempted && reasonError)}
+            aria-describedby={describedBy(
+              "pcs-reset-reason",
+              true,
+              attempted ? reasonError : null,
+            )}
+          />
+        </FormField>
+      </div>
+      {reset.error && (
+        <section className="card error" role="alert">
+          <h3>Could not reset the key</h3>
+          <p>
+            {err?.code === PCS_BINDING_RESET_NOT_BOUND
+              ? `${book.nameOrDid(reset.variables?.memberDid ?? "")} has never enrolled for hidden vetting, so there is no key to reset.`
+              : errorMessage(reset.error)}
+          </p>
+        </section>
+      )}
+      <div className="form-actions">
+        <button
+          type="submit"
+          className="secondary destructive"
+          disabled={reset.isPending}
+        >
+          {reset.isPending ? "Resetting…" : "Reset hidden-vetting key"}
+        </button>
+      </div>
+    </form>
   );
 }
 

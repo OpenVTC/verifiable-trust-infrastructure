@@ -7,7 +7,7 @@
 //!
 //! Every Trust Task payload and response in this family is the type
 //! `trust-tasks-codegen` generates from its specification, re-exported here from
-//! `trust_tasks_rs::specs`. This crate does not restate any of them: a change to
+//! `vti_specs`. This crate does not restate any of them: a change to
 //! a vetting wire shape lands in dtgwg-trust-tasks-tf and arrives here with a
 //! `trust-tasks-rs` release.
 //!
@@ -103,15 +103,15 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use trust_tasks_rs::specs::vetting::{decline, request, session};
-pub use trust_tasks_rs::specs::vtc::join_requests::manifest::v0_4::{
+pub use vti_specs::vetting::{decline, request, session};
+pub use vti_specs::vtc::join_requests::manifest::v0_4::{
     ClaimType, VettingDocumentation, VettingMethod, VettingRelationship, VettingRequirements,
     VettingRequirementsEligibleVetters, VettingRequirementsIndependence,
     VettingRequirementsInvitation,
 };
-pub use trust_tasks_rs::specs::vtc::vetting::{revoke_statement, vetters};
+pub use vti_specs::vtc::vetting::{revoke_statement, vetters};
 
-use trust_tasks_rs::specs::vtc::join_requests::manifest::v0_4 as manifest;
+use vti_specs::vtc::join_requests::manifest::v0_4 as manifest;
 
 // ---------------------------------------------------------------------------
 // Type URIs — the generated types' own, so the URI a handler answers on is the

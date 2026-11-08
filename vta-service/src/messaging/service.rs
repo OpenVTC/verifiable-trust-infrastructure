@@ -1136,7 +1136,7 @@ mod keyring_vti_27_gate {
     fn request() -> Value {
         json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": "https://trusttasks.org/spec/keys/list/0.1",
+            "type": "https://trusttasks.org/spec/keys/list/0.2",
             "issuer": "did:key:z6MkForgedSender",
             "payload": {},
         })

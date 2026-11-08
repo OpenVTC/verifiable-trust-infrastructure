@@ -140,22 +140,20 @@ pub const fn min_relay_budget_secs() -> u64 {
 /// a reply, add its URI here.** The transport it relays over does not matter:
 /// TSP is the worst case this floor is sized for, and DIDComm and REST both sit
 /// inside it.
-#[allow(deprecated)] // names the deprecated 0.1 proxy-login URI on purpose — still served
 pub const RELAYS_ONWARD: &[&str] = &[
     // ── did:webvh, server-managed ───────────────────────────────────────
     // Each of these publishes to, or reads from, the DID hosting server that
     // holds the log. `create` is the one that failed in the field; the rest
     // share its path and were latent behind the same arithmetic.
-    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
     trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
     trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
+    trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1,
     trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
     // Agent names live on the hosting server, so every verb is a round trip —
     // including the two reads.
-    trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0,
+    trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1,
     trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0,
     trust_tasks::TASK_WEBVH_AGENT_NAME_SET_1_0,
     trust_tasks::TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
@@ -169,14 +167,13 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // Anchoring and registration reach the room's host; the three reads fetch
     // epoch state from it.
     trust_tasks::TASK_ROOMS_OWNER_ANCHOR_0_1,
-    trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1,
     trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2,
     // Admission advances the room's epoch at its host (and may first ask it which
     // epoch it is at).
     trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
-    // So does removal — at 0.2 after delivering the room's revocation list there.
-    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
-    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+    // So does removal — on an attributed room after delivering the room's revocation list
+    // there.
+    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
     // Withdrawal delivers the room's list to every host serving it (and first asks them
     // for a later one).
     trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1,
@@ -184,8 +181,10 @@ pub const RELAYS_ONWARD: &[&str] = &[
     trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
     trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2,
     trust_tasks::TASK_ROOMS_KEYS_READ_0_1,
-    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1,
-    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2,
+    // Up to 32 host requests, each with its checks, and a repair.
+    trust_tasks::TASK_ROOMS_KEYS_READ_0_2,
+    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3,
+    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4,
     // The profile walk fetches one location per epoch down to where it finds one, and a
     // write lists, seals and puts — each a call to the room's host.
     trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1,
@@ -193,15 +192,13 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // ── Vault ───────────────────────────────────────────────────────────
     // A `password` entry logs in to the third-party site and waits on it. The
     // `did-self-issued` driver mints locally, but the URI cannot say which.
-    trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1,
     trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2,
     // ── Services ────────────────────────────────────────────────────────
     // Enabling or updating `didcomm` runs the mediator handshake and awaits the
     // pong. TSP has no handshake and REST none either, but again: not from the
     // URI.
-    trust_tasks::TASK_SERVICES_ENABLE_1_0,
-    trust_tasks::TASK_SERVICES_UPDATE_1_0,
-    trust_tasks::TASK_SERVICES_UPDATE_1_1,
+    trust_tasks::TASK_SERVICES_ENABLE_1_1,
+    trust_tasks::TASK_SERVICES_UPDATE_1_2,
     // ── Provisioning ────────────────────────────────────────────────────
     // A template naming a `WEBVH_SERVER` mints through the very same
     // server-managed path as `dids/create`.
@@ -253,7 +250,7 @@ mod tests {
     /// would have failed before the fix.
     #[test]
     fn the_task_that_failed_now_outlasts_the_vta() {
-        let budget = client_budget_secs(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0, 60);
+        let budget = client_budget_secs(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2, 60);
         assert!(
             budget > relay_worst_case_secs(),
             "a relayed mint must outlast the VTA ({budget}s vs {}s)",
@@ -281,7 +278,7 @@ mod tests {
     fn the_clamp_never_shortens_a_budget() {
         let generous = min_relay_budget_secs() + 600;
         assert_eq!(
-            client_budget_secs(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0, generous),
+            client_budget_secs(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2, generous),
             generous
         );
         // And a task served from the VTA's own storage keeps the caller's

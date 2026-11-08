@@ -357,7 +357,7 @@ impl Ceremony {
         }
     }
 
-    /// `votingOpens` has come: form the key from whoever qualifies if confirming, else fail. A
+    /// `votingOpensAt` has come: form the key from whoever qualifies if confirming, else fail. A
     /// key already formed is untouched. Returns whether the phase changed.
     pub fn deadline(&mut self) -> bool {
         let before = self.phase;

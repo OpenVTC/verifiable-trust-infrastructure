@@ -22,7 +22,7 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 use crate::common::second_party::{Gesturer, parked_action, step_up_request};
 use crate::common::signed::{call, error_code, seed_role, signed};
 
-use trust_tasks_rs::specs::vtc::groups as g;
+use vti_specs::vtc::groups as g;
 
 const BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE: &str =
     g::bindings::add::v0_1::error_codes::GROUP_NOT_ELIGIBLE.code;
@@ -40,7 +40,12 @@ const RP_ORIGIN: &str = "https://vtc.example.com";
 const SPEC: &str = "https://trusttasks.org/spec/vtc/groups";
 
 fn task(name: &str) -> String {
-    format!("{SPEC}/{name}/0.1")
+    // The paged reads moved to 0.2 (`nextCursor` absent on the last page).
+    let version = match name {
+        "list" | "members/list" | "requests/list" => "0.2",
+        _ => "0.1",
+    };
+    format!("{SPEC}/{name}/{version}")
 }
 
 /// A `trust-task-error` reply's code — the census reads witnesses by this name.

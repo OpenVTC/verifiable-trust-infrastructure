@@ -22,7 +22,7 @@ use crate::auth::AuthClaims;
 use crate::operations;
 use crate::server::AppState;
 
-/// Handler for canonical `policy/list/0.2`.
+/// Handler for canonical `policy/list/0.3`.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -37,7 +37,8 @@ pub(super) async fn handle_list(
         auth,
         req.context_id.as_deref(),
         req.enabled_only,
-        req.page_size,
+        req.cursor.as_deref(),
+        req.limit,
         TRANSPORT_TRUST_TASK,
     )
     .await
@@ -65,7 +66,7 @@ pub(super) async fn handle_get(
     }
 }
 
-/// Handler for canonical `policy/upsert/0.2`. Super-admin.
+/// Handler for canonical `policy/upsert/0.3`. Super-admin.
 pub(super) async fn handle_upsert(
     state: &AppState,
     auth: &AuthClaims,

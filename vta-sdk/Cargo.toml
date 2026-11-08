@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.73.0"
+version = "0.85.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -118,7 +118,7 @@ client = [
   "dep:affinidi-messaging-didcomm",
   # `auth_di` — the canonical REST auth transport. The VTA requires an
   # *authenticated* sender on `/auth/*` (VTI #771), so the client signs an
-  # `auth/authenticate/0.1` Trust Task with the holder key: the DI suite
+  # `auth/authenticate/0.3` Trust Task with the holder key: the DI suite
   # signs, `Secret` carries the key.
   "dep:affinidi-data-integrity",
   "dep:affinidi-secrets-resolver",
@@ -335,19 +335,22 @@ sha2 = { workspace = true, optional = true }
 # workspace's pinned DIDComm decrypt path will accept (ECDH-ES+A256KW +
 # A256CBC-HS512). Same pinned version as `vta-service`.
 affinidi-messaging-didcomm = { version = "0.15.9", optional = true }
-hpke = { version = "0.14", optional = true }
+hpke = { version = "0.15", optional = true }
 # `jose` carries the ECDSA verifiers (`verify_p256`, `verify_secp256k1`) the
 # `jws` module uses; the TDK keeps the curve code in one place.
 affinidi-crypto = { workspace = true, optional = true, features = ["jose"] }
 affinidi-vc = { workspace = true, optional = true }
 affinidi-data-integrity = { workspace = true, optional = true }
 affinidi-secrets-resolver = { workspace = true, optional = true }
-# The Trust Task framework and the wire types generated from the published
-# specifications (`trust_tasks_rs::specs`). Required, not feature-gated: the
-# always-compiled `protocols` modules re-export the generated payload and
-# response types as this crate's wire layer, and check values against the
-# schemas those types embed (the workspace dependency enables `validate`).
+# The Trust Task framework (the workspace dependency enables `validate`) and
+# the wire types generated at the versions VTI pins (`trust-tasks-build`).
+# Required, not feature-gated: the always-compiled `protocols` modules re-export
+# the generated payload and response types as this crate's wire layer, and check
+# values against the schemas those types embed. `vti-specs` is re-exported as
+# `vta_sdk::specs`, so a consumer's imports move from `trust_tasks_rs::specs` by
+# find-and-replace.
 trust-tasks-rs = { workspace = true }
+vti-specs = { path = "../vti-specs", version = "0.10" }
 # The TSP binding (`tsp` feature). Carries `ENVELOPE_TYPE` — the payload wrapper
 # every Trust-Task TSP frame must use — so `tsp_binding` takes the URI from the
 # crate that defines the binding rather than writing it out locally. A binding

@@ -375,7 +375,7 @@ pub async fn list_issued(
 ) -> Result<ListCredentialsResponse, AppError> {
     let now = Utc::now();
     let limit = filter
-        .page_size
+        .limit
         .map_or(LIST_PAGE_DEFAULT, |n| (n as usize).min(LIST_PAGE_MAX))
         .max(1);
 
@@ -443,8 +443,7 @@ fn page_rows(
 
     ListCredentialsResponse {
         credentials: rows.into_iter().map(|(_, s)| s).collect(),
-        truncated,
-        cursor,
+        next_cursor: cursor,
         ext: None,
     }
 }
@@ -544,18 +543,16 @@ mod list_tests {
     fn a_short_page_is_not_truncated_and_offers_no_cursor() {
         let page = page_rows(rows(&["a", "b"]), None, 10);
         assert_eq!(page.credentials.len(), 2);
-        assert!(!page.truncated);
         // A caller must be able to stop on the cursor's absence rather than
         // needing to fetch an empty page to find out.
-        assert_eq!(page.cursor, None);
+        assert_eq!(page.next_cursor, None);
     }
 
     #[test]
     fn a_full_page_reports_truncation_and_the_key_to_resume_after() {
         let page = page_rows(rows(&["a", "b", "c"]), None, 2);
         assert_eq!(page.credentials.len(), 2);
-        assert!(page.truncated);
-        assert_eq!(page.cursor.as_deref(), Some("cred:b"));
+        assert_eq!(page.next_cursor.as_deref(), Some("cred:b"));
     }
 
     #[test]
@@ -575,9 +572,13 @@ mod list_tests {
         // a,b; `a0` then appears before both. With an offset of 2 the next page
         // would start at `c` and `b` would never be seen.
         let page_one = page_rows(rows(&["a", "b", "c"]), None, 2);
-        assert_eq!(page_one.cursor.as_deref(), Some("cred:b"));
+        assert_eq!(page_one.next_cursor.as_deref(), Some("cred:b"));
 
-        let page_two = page_rows(rows(&["a0", "a", "b", "c"]), page_one.cursor.as_deref(), 2);
+        let page_two = page_rows(
+            rows(&["a0", "a", "b", "c"]),
+            page_one.next_cursor.as_deref(),
+            2,
+        );
         let ids: Vec<_> = page_two
             .credentials
             .iter()

@@ -36,15 +36,15 @@ const REQUEST_TASK: &str = "https://trusttasks.org/spec/credential-exchange/requ
 /// The codes `vtc/invitations/deliver/0.1` declares, read from the generated
 /// bindings rather than spelled out (#1600).
 const INVITATION_DELIVER_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::invitations::deliver::v0_1::error_codes::NOT_FOUND.code;
 const INVITATION_DELIVER_ERR_REVOKED: &str =
-    trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes::REVOKED.code;
+    vti_specs::vtc::invitations::deliver::v0_1::error_codes::REVOKED.code;
 const INVITATION_DELIVER_ERR_NO_ROUTE: &str =
-    trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes::NO_ROUTE.code;
+    vti_specs::vtc::invitations::deliver::v0_1::error_codes::NO_ROUTE.code;
 const INVITATION_ISSUE_ERR_UNKNOWN_ROLE: &str =
-    trust_tasks_rs::specs::vtc::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE.code;
+    vti_specs::vtc::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE.code;
 const INVITATION_REVOKE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::invitations::revoke::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::invitations::revoke::v0_1::error_codes::NOT_FOUND.code;
 
 /// The extended error code carried by a REST error body (`{"error", "code"}`).
 fn rest_error_code(body: &Value) -> &str {

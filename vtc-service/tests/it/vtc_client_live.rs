@@ -456,7 +456,7 @@ async fn admin_client(mock: &MockVtc, seed: u8) -> VtcClient {
         .expect("connect")
 }
 
-/// `upload_policy` sends the canonical `policy/upsert/0.2` body the VTC's
+/// `upload_policy` sends the canonical `policy/upsert/0.3` body the VTC's
 /// strict (`deny_unknown_fields`) `UploadBody` accepts. It used to send
 /// `{purpose, regoSource}`, which that body refuses outright — so the method
 /// had never worked against a live VTC. Activation proves the stored revision
@@ -489,7 +489,7 @@ async fn upload_policy_is_accepted_and_activates() {
         )
         .await
         .expect("a live VTC must accept the upload");
-    assert_eq!(uploaded["created"], true, "{uploaded}");
+    assert_eq!(uploaded["wasCreated"], true, "{uploaded}");
     let policy = &uploaded["policy"];
     assert_eq!(policy["name"], "directory", "{uploaded}");
     assert_eq!(

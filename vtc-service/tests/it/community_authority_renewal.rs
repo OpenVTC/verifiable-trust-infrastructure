@@ -28,17 +28,17 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 use crate::common::second_party::Gesturer;
 use crate::common::signed::{post, signed};
 
-const CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.1";
-const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.1";
+const CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4";
+const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3";
+const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.3";
 
-const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
+const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.2";
 const GROUP_CREATE: &str = "https://trusttasks.org/spec/rooms/owner/group/create/0.1";
 const ISSUE_MEMBERSHIP: &str = "https://trusttasks.org/spec/rooms/owner/issue-membership/0.1";
 const ISSUE_AUTHORITY: &str = "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
 const RECEIVE: &str = "https://trusttasks.org/spec/vault/credentials/receive/0.1";
 const QUERY: &str = "https://trusttasks.org/spec/vault/credentials/query/0.1";
-const VAULT_GET: &str = "https://trusttasks.org/spec/vault/credentials/get/0.1";
+const VAULT_GET: &str = "https://trusttasks.org/spec/vault/credentials/get/0.2";
 
 // ─── the community's VTA, standing in ───────────────────────────────────
 
@@ -167,7 +167,7 @@ impl FakeVta {
             VAULT_GET => {
                 let st = self.0.lock().unwrap();
                 match st.vault.get(p["id"].as_str().unwrap()) {
-                    Some(c) => Ok(json!({ "credential": c })),
+                    Some(c) => Ok(json!({ "format": "ldp_vc", "credential": c })),
                     None => Err(("vault/credentials/get:notFound", "no such id".into())),
                 }
             }
@@ -251,6 +251,7 @@ fn config() -> CommunityRoomsConfig {
         mediator_did: Some("did:example:mediator".into()),
         authority_valid_days: None,
         authority_renew_within_days: None,
+        removal_grace_days: None,
     }
 }
 
@@ -312,6 +313,7 @@ async fn seed_room_owned_by(
         record_retention: None,
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
     };
     vti_rooms::storage::create_room(&fix.vtc.state.rooms_ks, &room)
         .await
@@ -334,6 +336,8 @@ async fn seed_owner_record(fix: &Fixture, room_id: &str, authority_until: DateTi
         tags: vec!["board".into()],
         details_updated_at: None,
         details_updated_by: None,
+        status: Default::default(),
+        hosted_snapshot: None,
     };
     fix.vtc
         .state

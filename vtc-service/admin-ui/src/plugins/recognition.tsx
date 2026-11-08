@@ -604,7 +604,7 @@ export function Recognition() {
           </Field>
           <button
             type="submit"
-            className="btn primary"
+            className="primary"
             disabled={!did.trim() || lookup.isPending}
           >
             {lookup.isPending ? "Checking…" : "Check"}

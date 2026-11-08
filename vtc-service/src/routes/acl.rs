@@ -26,7 +26,7 @@
 
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use tracing::info;
@@ -41,8 +41,9 @@ use crate::auth::{AuthClaims, session::now_epoch};
 use crate::error::{AppError, TaskError};
 use crate::members::get_member;
 use crate::server::AppState;
-use vti_common::acl::ContextDirection;
-use vti_common::audit::{AclChangeData, AclRevokedData, AdminPromotedData, AuditEvent};
+use vti_common::audit::{
+    AclChangeData, AclRevokedData, AdminPromotedData, AuditEvent, CommunityRoleSetData,
+};
 use vti_common::pagination::{Cursor, MAX_LIMIT};
 
 /// The `ext` namespace this community's own members live under.
@@ -52,16 +53,6 @@ pub(crate) const EXT_NS: &str = "org.openvtc";
 pub(crate) const NO_ADMIN_ROLE: &str = "member";
 
 // ---------- 0.1 rendering ----------
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct AclListResponse {
-    pub entries: Vec<AclEntryResponse>,
-    /// True when more entries match beyond this page; `cursor` is then
-    /// present. Required by canonical `acl/list`.
-    pub truncated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-}
 
 /// Canonical `acl/_shared/0.1` **AclEntry**.
 ///
@@ -107,16 +98,6 @@ fn epoch_to_rfc3339(secs: u64) -> String {
 #[must_use]
 pub(crate) fn expressible_in_v0_1(e: &VtcAclEntry) -> bool {
     e.admin == e.role.implied_authority()
-}
-
-/// The refusal for an entry 0.1 cannot express.
-fn inexpressible(did: &str, verb: &str) -> AppError {
-    AppError::Conflict(format!(
-        "the ACL entry for {did} carries administrative authority acl/*/0.1 cannot express — a \
-         narrowed or qualified capability set, or a role its community role does not imply — \
-         so it cannot be {verb} at 0.1. Use the 0.2 task instead (acl/_shared/0.2 \
-         CONVENTIONS §8)"
-    ))
 }
 
 /// Render `e` for a 0.1 reader (see [`AclEntryResponse::v0_1`]).
@@ -293,30 +274,9 @@ pub(crate) async fn reader_entry(state: &AppState, did: &str) -> Result<VtcAclEn
     }
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
-#[serde(rename_all = "camelCase")]
-#[into_params(parameter_in = Query)]
-pub struct ListAclQuery {
-    /// Return only entries with this role.
-    pub role: Option<String>,
-    /// Return only entries carrying this scope. A VTC holds no contexts
-    /// (VTI-VTC-010), so no entry carries one.
-    pub scope: Option<String>,
-    /// Return only entries whose subject starts with this prefix.
-    pub subject_prefix: Option<String>,
-    /// How `scope` is read over the hierarchy (`acl/list/0.1` `direction`).
-    #[param(inline)]
-    pub direction: Option<ContextDirection>,
-    /// Page size. Clamped to `1..=200`. Defaults to 50.
-    pub page_size: Option<usize>,
-    /// Opaque continuation token from a previous page's `cursor`.
-    pub cursor: Option<String>,
-}
-
 /// One page of entries, in subject order, under a cursor bound to `binding`.
 struct Page {
     entries: Vec<VtcAclEntry>,
-    truncated: bool,
     cursor: Option<String>,
 }
 
@@ -362,11 +322,7 @@ async fn page(
         }),
         _ => None,
     };
-    Ok(Page {
-        entries,
-        truncated,
-        cursor,
-    })
+    Ok(Page { entries, cursor })
 }
 
 fn bind(fields: &[Option<&str>]) -> Vec<u8> {
@@ -379,55 +335,11 @@ fn bind(fields: &[Option<&str>]) -> Vec<u8> {
     out
 }
 
-/// `acl/list/0.1`. Entries 0.1 cannot express are left out of the page rather
-/// than rendered lossily (CONVENTIONS §8) — `acl/list/0.2` shows them.
+/// `acl/list/0.3`: every entry the filters match, rendered with every axis.
 pub(crate) async fn list_entries(
     state: &AppState,
-    actor: &AuthClaims,
-    query: &ListAclQuery,
-) -> Result<AclListResponse, AppError> {
-    reader_entry(state, &actor.did).await?;
-    let matching: Vec<VtcAclEntry> = list_acl_entries(&state.acl_ks)
-        .await?
-        .into_iter()
-        .filter(expressible_in_v0_1)
-        .filter(|e| query.role.as_ref().is_none_or(|r| e.role.to_string() == *r))
-        // No VTC entry carries a scope.
-        .filter(|_| query.scope.is_none())
-        .filter(|e| {
-            query
-                .subject_prefix
-                .as_ref()
-                .is_none_or(|p| e.did.starts_with(p.as_str()))
-        })
-        .collect();
-    let binding = bind(&[
-        query.role.as_deref(),
-        query.scope.as_deref(),
-        query.subject_prefix.as_deref(),
-        Some(query.direction.unwrap_or_default().as_str()),
-    ]);
-    let p = page(
-        state,
-        matching,
-        query.page_size,
-        query.cursor.as_deref(),
-        &binding,
-    )
-    .await?;
-    info!(caller = %actor.did, count = p.entries.len(), truncated = p.truncated, "ACL listed");
-    Ok(AclListResponse {
-        entries: p.entries.into_iter().map(AclEntryResponse::v0_1).collect(),
-        truncated: p.truncated,
-        cursor: p.cursor,
-    })
-}
-
-/// `acl/list/0.2`: every entry the filters match, rendered with every axis.
-pub(crate) async fn list_entries_v0_2(
-    state: &AppState,
     actor_did: &str,
-    q: &trust_tasks_rs::specs::acl::list::v0_2::Payload,
+    q: &vti_specs::acl::list::v0_3::Payload,
 ) -> Result<Value, AppError> {
     reader_entry(state, actor_did).await?;
     let capability: Option<Capability> = q.capability.as_deref().map(|c| c.parse()).transpose()?;
@@ -505,7 +417,7 @@ pub(crate) async fn list_entries_v0_2(
         subject_prefix,
     ]);
     let page_size = q
-        .page_size
+        .limit
         .map(|n| usize::try_from(n.get()).unwrap_or(usize::MAX));
     let cursor = q.cursor.as_deref().map(String::as_str);
     let p = page(state, matching, page_size, cursor, &binding).await?;
@@ -516,36 +428,16 @@ pub(crate) async fn list_entries_v0_2(
         with_membership(state, &mut v, &e.did).await?;
         entries.push(v);
     }
-    let mut out = json!({ "entries": entries, "truncated": p.truncated });
+    let mut out = json!({ "entries": entries });
     if let Some(c) = p.cursor {
-        out["cursor"] = json!(c);
+        out["nextCursor"] = json!(c);
     }
     info!(caller = %actor_did, count = entries.len(), "ACL listed (0.2)");
     Ok(out)
 }
 
-/// `acl/show/0.1`. An absent entry is `NotFound`; one 0.1 cannot express is
-/// refused, naming `acl/show/0.2`.
-pub(crate) async fn show_entry(
-    state: &AppState,
-    actor: &AuthClaims,
-    did: &str,
-) -> Result<AclEntryEnvelope, AppError> {
-    reader_entry(state, &actor.did).await?;
-    let entry = get_acl_entry(&state.acl_ks, did)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
-    if !expressible_in_v0_1(&entry) {
-        return Err(inexpressible(did, "shown"));
-    }
-    info!(caller = %actor.did, did = %did, "ACL entry retrieved");
-    Ok(AclEntryEnvelope {
-        entry: AclEntryResponse::v0_1(entry),
-    })
-}
-
 /// `acl/show/0.2`: `{entry}`, `entry: null` when absent.
-pub(crate) async fn show_entry_v0_2(
+pub(crate) async fn show_entry(
     state: &AppState,
     actor_did: &str,
     did: &str,
@@ -596,34 +488,6 @@ async fn with_membership(
 }
 
 // ---------- writing ----------
-
-/// Canonical `acl/grant` request: the entry the maintainer should hold
-/// for the subject, plus an optional operator rationale.
-#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateAclRequest {
-    pub entry: GrantEntry,
-    /// Operator rationale, emitted on the service log line for this change.
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-/// The writable subset of a canonical 0.1 `AclEntry`. Server-owned fields
-/// (`createdAt`/`createdBy`/`updatedAt`/`updatedBy`) are deliberately
-/// absent — a caller must not be able to backdate provenance.
-#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GrantEntry {
-    pub subject: String,
-    pub role: VtcRole,
-    #[serde(default)]
-    pub label: Option<String>,
-    #[serde(default)]
-    pub scopes: Vec<String>,
-    /// RFC3339, per canonical `AclEntry.expiresAt`.
-    #[serde(default)]
-    pub expires_at: Option<DateTime<Utc>>,
-}
 
 /// What an approver is shown for a grant conferring `conferred` on `subject`.
 pub(crate) fn conferral_summary(subject: &str, conferred: &[CapRef]) -> String {
@@ -765,7 +629,7 @@ pub(crate) fn self_edit_refusal(what: &str, single_admin_mode: bool) -> AppError
 }
 
 /// The refusal for a subject moving its own role on a door that carries
-/// neither exception of VTI-ACL-052 (`acl/change-role/0.1`,
+/// neither exception of VTI-ACL-052 (`vtc/members/role/set/0.1`,
 /// `vtc/members/update`), naming the doors that do.
 pub(crate) fn own_role_refusal(single_admin_mode: bool) -> AppError {
     let mode = if single_admin_mode {
@@ -1171,141 +1035,6 @@ fn audit_data(e: &VtcAclEntry) -> AclChangeData {
     }
 }
 
-// ---------- 0.1 writes ----------
-
-/// Refuse a 0.1 `scopes` list: a VTC holds no contexts (**VTI-VTC-010**).
-fn refuse_scopes(scopes: &[String]) -> Result<(), AppError> {
-    if scopes.is_empty() {
-        Ok(())
-    } else {
-        Err(AppError::Validation(format!(
-            "a community holds no contexts (VTI-VTC-010), so an entry cannot be scoped to {} — \
-             narrow administrative authority with acl/update/0.2 capabilities and qualifiers",
-            scopes.join(", ")
-        )))
-    }
-}
-
-/// `acl/grant/0.1`: plan the write the 0.1 entry describes.
-pub(crate) async fn plan_grant(
-    state: &AppState,
-    actor: &AuthClaims,
-    req: CreateAclRequest,
-) -> Result<GrantPlan, WriteError> {
-    let e = req.entry;
-    refuse_scopes(&e.scopes)?;
-    let existing = get_acl_entry(&state.acl_ks, &e.subject).await?;
-    if let Some(prev) = existing.as_ref() {
-        if prev.role != e.role {
-            return Err(AppError::Conflict(format!(
-                "ACL entry for {} already holds role {}; use acl/change-role to move it to {}",
-                e.subject, prev.role, e.role
-            ))
-            .into());
-        }
-        if !expressible_in_v0_1(prev) {
-            return Err(inexpressible(&e.subject, "rewritten").into());
-        }
-    }
-    let mut next = VtcAclEntry::new(
-        e.subject,
-        e.role.clone(),
-        e.role.implied_authority(),
-        actor.did.clone(),
-    );
-    next.label = e.label;
-    next.expires_at = e.expires_at.map(|t| t.timestamp() as u64);
-    plan_write(
-        state,
-        &actor.did,
-        next,
-        existing,
-        PlanEvent::Granted,
-        req.reason,
-    )
-    .await
-}
-
-/// Canonical `acl/update/0.1`: amend an existing entry's non-role attributes.
-///
-/// `label` and `expiresAt` distinguish **absent** (unchanged) from **`null`**
-/// (cleared), which is why they are double options.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct UpdateEntryRequest {
-    pub subject: String,
-    #[serde(default, deserialize_with = "double_option")]
-    pub label: Option<Option<String>>,
-    #[serde(default)]
-    pub scopes: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "double_option")]
-    pub expires_at: Option<Option<DateTime<Utc>>>,
-    #[serde(default)]
-    pub reason: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub ext: Option<Value>,
-}
-
-/// Absent → `None`, `null` → `Some(None)`, a value → `Some(Some(v))`.
-fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: serde::Deserializer<'de>,
-{
-    Deserialize::deserialize(de).map(Some)
-}
-
-/// The existing entry `acl/update` amends, or its declared `notFound`.
-async fn existing_for_update(
-    state: &AppState,
-    subject: &str,
-    not_found_code: &'static str,
-) -> Result<VtcAclEntry, TaskError> {
-    get_acl_entry(&state.acl_ks, subject).await?.ok_or_else(|| {
-        TaskError::declared(
-            not_found_code,
-            AppError::NotFound(format!(
-                "ACL entry not found for DID: {subject} — acl/update amends an existing entry; \
-                 use acl/grant to create one"
-            )),
-        )
-    })
-}
-
-/// `acl/update/0.1`.
-pub(crate) async fn plan_update(
-    state: &AppState,
-    actor: &AuthClaims,
-    req: UpdateEntryRequest,
-) -> Result<GrantPlan, WriteError> {
-    use trust_tasks_rs::specs::acl::update::v0_1::error_codes;
-    // A subject's own entry is decided by `plan_write` (VTI-ACL-052).
-    let existing = existing_for_update(state, &req.subject, error_codes::NOT_FOUND.code).await?;
-    if let Some(scopes) = req.scopes.as_ref() {
-        refuse_scopes(scopes)?;
-    }
-    if !expressible_in_v0_1(&existing) {
-        return Err(inexpressible(&req.subject, "updated").into());
-    }
-    let mut next = existing.clone();
-    if let Some(label) = req.label {
-        next.label = label;
-    }
-    if let Some(exp) = req.expires_at {
-        next.expires_at = exp.map(|t| t.timestamp() as u64);
-    }
-    plan_write(
-        state,
-        &actor.did,
-        next,
-        Some(existing),
-        PlanEvent::Updated,
-        req.reason,
-    )
-    .await
-}
-
 // ---------- 0.2 writes ----------
 
 /// Read a 0.2 `AclEntry`-shaped value's administrative axes onto this
@@ -1498,6 +1227,23 @@ pub(crate) fn role_string(e: &VtcAclEntry) -> String {
         .unwrap_or_else(|| NO_ADMIN_ROLE.into())
 }
 
+/// The existing entry `acl/update` amends, or its declared `notFound`.
+async fn existing_for_update(
+    state: &AppState,
+    subject: &str,
+    not_found_code: &'static str,
+) -> Result<VtcAclEntry, TaskError> {
+    get_acl_entry(&state.acl_ks, subject).await?.ok_or_else(|| {
+        TaskError::declared(
+            not_found_code,
+            AppError::NotFound(format!(
+                "ACL entry not found for DID: {subject} — acl/update amends an existing entry; \
+                 use acl/grant to create one"
+            )),
+        )
+    })
+}
+
 /// `acl/update/0.2`: the existing entry with the payload's replacements.
 /// Narrowing the act scope is a revocation (`narrowingNotPermitted`); every
 /// other axis may narrow here, and a narrowing is a privilege reduction.
@@ -1506,7 +1252,7 @@ pub(crate) async fn plan_update_v0_2(
     actor_did: &str,
     payload: &Value,
 ) -> Result<GrantPlan, UpdateV02Error> {
-    use trust_tasks_rs::specs::acl::update::v0_2::error_codes;
+    use vti_specs::acl::update::v0_2::error_codes;
     let subject = payload["subject"].as_str().unwrap_or_default().to_string();
     // A subject's own entry is decided by `plan_write` (VTI-ACL-052).
     let existing = existing_for_update(state, &subject, error_codes::NOT_FOUND.code)
@@ -1581,154 +1327,125 @@ pub(crate) enum UpdateV02Error {
     Write(WriteError),
 }
 
-// ---------- acl/change-role ----------
+// ---------- vtc/members/role/set ----------
 
-/// Canonical `acl/change-role` request: a **community** role move, with
-/// `fromRole` as a compare-and-swap guard. The administrative authority follows
-/// the role under the 0.1 convention ([`VtcRole::implied_authority`]).
-#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UpdateAclRequest {
-    pub from_role: VtcRole,
-    pub to_role: VtcRole,
-    /// Operator rationale, emitted on the service log line for this change.
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-/// What [`change_role_inner`] produced.
+/// What [`set_community_role`] produced.
 #[derive(Debug)]
-pub(crate) enum ChangeRoleOutcome {
-    Changed(Box<AclEntryEnvelope>),
-    /// A promotion that needs a gesture bound to it, and has none yet. Nothing
-    /// was written.
+pub(crate) enum RoleSetOutcome {
+    /// The move landed: the entry as it now stands, and what the ceremony
+    /// returned (the role credential, how it was allowed).
+    Changed {
+        entry: Box<VtcAclEntry>,
+        result: Box<crate::ceremony::RoleChangeResult>,
+    },
+    /// A move that needs a gesture bound to it, and has none yet. Nothing was
+    /// written.
     StepUpRequired(Box<crate::acl::bound_step_up::ApproveRequest>),
+    /// Refused for a reason the task declares a code for. Nothing was written.
+    Refused(crate::ceremony::RoleChangeRefusal),
 }
 
-/// `acl/change-role/0.1`: the community role-change ceremony, carrying the
-/// administrative authority the role implies.
+/// `vtc/members/role/set/0.1` items 8–18: the community role-change ceremony,
+/// carrying the administrative authority the role implies where the entry's
+/// authority is exactly the one its current role implies.
 ///
-/// The ceremony owns the role-change policy, the role-VAC re-mint and the
-/// promotion serialisation; the granting bounds (§6.3), the consent for an
-/// authority-conferring capability (**VTI-APV-018**) and the reduction gate
-/// (**VTI-APV-019**) run inside it ([`crate::ceremony::role_change_via_pipeline`]).
-pub(crate) async fn change_role_inner(
+/// The caller has made items 1–7 (the requester's capability, no self-move,
+/// the entry, the roles, the compare-and-swap, covering, the no-op). The
+/// ceremony owns the bound, the last-role-assigner check, the role-change
+/// policy, the gesture and consent bound to this document (**VTI-OPS-050/051**,
+/// **VTI-APV-018**, **VTI-APV-019**), the serialised write and the role
+/// credential ([`crate::ceremony::role_change_via_bound_step_up`]); this then
+/// applies the move at once and audits it.
+pub(crate) async fn set_community_role(
     state: &AppState,
     actor: &AuthClaims,
-    did: &str,
-    req: UpdateAclRequest,
-    source: crate::ceremony::StepUpSource<'_>,
-) -> Result<ChangeRoleOutcome, AppError> {
-    let did = did.to_string();
-    // VTI-ACL-052: in either direction. A role move is not a label (item 2),
-    // and item 3 is carried by `acl/update/0.2` and `acl/change-role/0.2`,
-    // whose shared plan (`plan_self_write`) holds the unrestricted-entry
-    // invariant; this door runs the role-change ceremony, which does not.
-    if actor.did == did {
-        return Err(own_role_refusal(
-            crate::acl::admin_consent::single_admin_mode(state).await,
-        ));
-    }
-    let op_payload = {
-        let mut v = serde_json::to_value(&req)
-            .map_err(|e| AppError::Internal(format!("serialise acl/change-role body: {e}")))?;
-        if let Some(map) = v.as_object_mut() {
-            map.insert("subject".into(), Value::String(did.clone()));
+    prior: &VtcAclEntry,
+    to_role: &VtcRole,
+    reason: Option<&str>,
+    type_uri: &str,
+    payload: &Value,
+) -> Result<RoleSetOutcome, AppError> {
+    let did = prior.did.as_str();
+    let result = match crate::ceremony::role_change_via_bound_step_up(
+        state,
+        actor,
+        did,
+        &prior.role.to_string(),
+        &to_role.to_string(),
+        type_uri,
+        payload,
+    )
+    .await?
+    {
+        crate::ceremony::RoleChangeOutcome::Changed(result) => result,
+        crate::ceremony::RoleChangeOutcome::StepUpRequired(request) => {
+            return Ok(RoleSetOutcome::StepUpRequired(request));
         }
-        v
+        crate::ceremony::RoleChangeOutcome::Refused(refusal) => {
+            return Ok(RoleSetOutcome::Refused(refusal));
+        }
     };
+
+    // The ceremony's executor owns the write; re-read and stamp provenance
+    // (item 15: `updatedAt`, `updatedBy`).
     let acl = state.acl_ks.clone();
-    let entry = get_acl_entry(&acl, &did)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
-    if entry.role != req.from_role {
-        return Err(AppError::Conflict(format!(
-            "state mismatch: {did} currently holds role {}, not {}",
-            entry.role, req.from_role
-        )));
-    }
-    if !expressible_in_v0_1(&entry) {
-        return Err(inexpressible(&did, "moved"));
-    }
-    let actor_e = actor_entry(state, &actor.did).await?;
-    if !granting::covers_entry(&actor_e, &entry, now_epoch()) {
-        return Err(not_covered(&did, "change the role of"));
-    }
-
-    req.to_role.refuse_unassignable()?;
-    let promoting = matches!(req.to_role, VtcRole::Admin);
-    let granted = match source {
-        crate::ceremony::StepUpSource::Session { .. } => {
-            crate::ceremony::role_change_via_pipeline(
-                state,
-                actor,
-                &did,
-                &entry.role.to_string(),
-                &req.to_role.to_string(),
-                Some(crate::acl::admin_consent::Operation {
-                    type_uri: crate::trust_tasks::ACL_CHANGE_ROLE_TYPE,
-                    payload: &op_payload,
-                }),
-            )
-            .await?
-        }
-        crate::ceremony::StepUpSource::BoundTo { type_uri, payload } => {
-            match crate::ceremony::role_change_via_bound_step_up(
-                state,
-                actor,
-                &did,
-                &entry.role.to_string(),
-                &req.to_role.to_string(),
-                type_uri,
-                payload,
-            )
-            .await?
-            {
-                crate::ceremony::RoleChangeOutcome::Changed(result) => result,
-                crate::ceremony::RoleChangeOutcome::StepUpRequired(request) => {
-                    return Ok(ChangeRoleOutcome::StepUpRequired(request));
-                }
-            }
-        }
-    };
-
-    // The ceremony's executor owns the write; re-read and stamp provenance.
-    let mut written = get_acl_entry(&acl, &did)
+    let mut written = get_acl_entry(&acl, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
     written.updated_at = Some(now_epoch());
     written.updated_by = Some(actor.did.clone());
-    if written.admin.is_administrator() && written.admin != entry.admin {
+    if written.admin.is_administrator() && written.admin != prior.admin {
         written.delegated_by = Some(actor.did.clone());
     }
     store_acl_entry(&acl, &written).await?;
 
     if written.admin.is_administrator() {
-        ensure_admin_sister_record(state, &did).await?;
+        ensure_admin_sister_record(state, did).await?;
     }
-    let reduced = written.admin.narrows_from(&entry.admin);
+    // Item 15: a withdrawal applies at the subject's next decision — its
+    // sessions end now — and the entries it delegated are re-evaluated.
+    let reduced = written.admin.narrows_from(&prior.admin);
     if reduced {
-        let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, &did).await?;
+        let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, did).await?;
         info!(did = %did, revoked, "subject sessions revoked after ACL privilege reduction");
-        delegation::on_granter_changed(state, &did, Some(&written)).await?;
+        delegation::on_granter_changed(state, did, Some(&written)).await?;
     }
-    delegation::clear(state, &did).await?;
+    delegation::clear(state, did).await?;
 
+    // Item 18.
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
                 &actor.did,
-                Some(&did),
+                Some(did),
                 AuditEvent::AclUpdated(audit_data(&written)),
             )
             .await?;
-        if promoting {
+        writer
+            .write(
+                &actor.did,
+                Some(did),
+                AuditEvent::CommunityRoleSet({
+                    let mut data = CommunityRoleSetData::new(
+                        result.previous_role.clone(),
+                        result.new_role.clone(),
+                        crate::acl_cli::describe_authority(&prior.admin),
+                        crate::acl_cli::describe_authority(&written.admin),
+                        result.approval.as_str(),
+                    );
+                    data.action_id = crate::admin_actions::executing().map(|e| e.action_id);
+                    data.reason = reason.map(str::to_string);
+                    data
+                }),
+            )
+            .await?;
+        if matches!(to_role, VtcRole::Admin) {
             writer
                 .write(
                     &actor.did,
-                    Some(&did),
+                    Some(did),
                     AuditEvent::AdminPromoted(AdminPromotedData {
-                        previous_role: granted.previous_role.clone(),
+                        previous_role: result.previous_role.clone(),
                         authorising_credential_id: String::new(),
                         authorising_session_id: actor.session_id.clone(),
                     }),
@@ -1738,14 +1455,16 @@ pub(crate) async fn change_role_inner(
     }
     info!(
         did = %did,
-        from = %granted.previous_role,
-        to = %granted.new_role,
-        reason = req.reason.as_deref().unwrap_or(""),
-        "ACL role changed",
+        from = %result.previous_role,
+        to = %result.new_role,
+        approval = result.approval.as_str(),
+        reason = reason.unwrap_or(""),
+        "community role set",
     );
-    Ok(ChangeRoleOutcome::Changed(Box::new(AclEntryEnvelope {
-        entry: AclEntryResponse::v0_1(written),
-    })))
+    Ok(RoleSetOutcome::Changed {
+        entry: Box::new(written),
+        result: Box::new(result),
+    })
 }
 
 /// The admin sister record that lets a new administrator enrol a device for
@@ -1818,49 +1537,6 @@ impl From<AppError> for ChangeRoleV02Error {
 }
 
 // ---------- acl/revoke ----------
-
-/// The generated `acl/revoke/0.1` response.
-fn revoke_response(
-    entry: Option<AclEntryResponse>,
-) -> Result<vta_sdk::openapi::AclRevoke01Response, TaskError> {
-    serde_json::to_value(&entry)
-        .and_then(|entry| serde_json::from_value(json!({ "entry": entry })))
-        .map(vta_sdk::openapi::AclRevoke01Response)
-        .map_err(|e| AppError::Internal(format!("acl/revoke response: {e}")).into())
-}
-
-/// `acl/revoke/0.1`. `scopes: Some` names scopes to drop — a community entry
-/// holds none, so it is refused as naming nothing held. `None` removes the
-/// entry ([`remove_entry`]).
-pub(crate) async fn revoke_entry(
-    state: &AppState,
-    actor: &AuthClaims,
-    did: &str,
-    scopes: Option<&[String]>,
-    reason: Option<&str>,
-    op: crate::acl::admin_consent::Operation<'_>,
-) -> Result<vta_sdk::openapi::AclRevoke01Response, TaskError> {
-    use trust_tasks_rs::specs::acl::revoke::v0_1::error_codes;
-    if let Some(scopes) = scopes {
-        return Err(AppError::NotFound(format!(
-            "none of the requested scopes ({}) are held by {did}: a community entry holds no \
-             contexts (VTI-VTC-010)",
-            scopes.join(", ")
-        ))
-        .into());
-    }
-    remove_entry(
-        state,
-        &actor.did,
-        did,
-        reason,
-        op,
-        error_codes::SUBJECT_NOT_PRESENT.code,
-        error_codes::LAST_AUTHORITY_PROTECTED.code,
-    )
-    .await?;
-    revoke_response(None)
-}
 
 /// Remove `did`'s entry: every door's full revocation.
 ///
@@ -2369,53 +2045,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn grant_request_parses_minimal_body() {
-        let body = json!({ "entry": { "subject": "did:key:zABC", "role": "admin" } });
-        let req: CreateAclRequest = serde_json::from_value(body).expect("minimal body");
-        assert_eq!(req.entry.subject, "did:key:zABC");
-        assert_eq!(req.entry.role, VtcRole::Admin);
-        assert!(req.entry.scopes.is_empty(), "defaults to empty");
-    }
-
-    /// Server-owned provenance must not be settable by the caller.
-    #[test]
-    fn grant_request_rejects_caller_supplied_provenance() {
-        for field in ["createdAt", "createdBy", "updatedAt", "updatedBy"] {
-            let body = json!({
-                "entry": { "subject": "did:key:zA", "role": "admin", field: "x" }
-            });
-            serde_json::from_value::<CreateAclRequest>(body)
-                .expect_err(&format!("{field} must not be accepted"));
-        }
-    }
-
-    #[test]
-    fn grant_request_rejects_unknown_role() {
-        let body = json!({ "entry": { "subject": "did:key:zA", "role": "godmode" } });
-        serde_json::from_value::<CreateAclRequest>(body).expect_err("unknown role must not parse");
-    }
-
-    #[test]
-    fn change_role_request_requires_both_roles() {
-        let ok: UpdateAclRequest =
-            serde_json::from_value(json!({ "fromRole": "member", "toRole": "moderator" }))
-                .expect("both roles");
-        assert_eq!(ok.to_role, VtcRole::Moderator);
-        serde_json::from_value::<UpdateAclRequest>(json!({ "toRole": "admin" }))
-            .expect_err("fromRole is mandatory");
-    }
-
-    /// VTI-VTC-010: a 0.1 scope list names contexts a community does not hold.
-    #[test]
-    fn vti_vtc_010_a_0_1_scope_list_is_refused() {
-        assert!(refuse_scopes(&[]).is_ok());
-        assert!(matches!(
-            refuse_scopes(&["ctx-a".into()]),
-            Err(AppError::Validation(_))
-        ));
-    }
-
     /// CONVENTIONS §8: an entry renders to 0.1 only when its role says
     /// everything about its authority.
     #[test]
@@ -2465,7 +2094,7 @@ mod tests {
     /// with every axis explicit.
     #[test]
     fn a_0_2_rendering_conforms_and_states_every_axis() {
-        use trust_tasks_rs::specs::acl::show::v0_2 as show;
+        use vti_specs::acl::show::v0_2 as show;
         let mut admin = AdminAuthority::for_role(AdminRole::RepoManager);
         admin.capabilities = CapabilityScope::listed(vec![
             "git.repo.manage@git-ns:github.com/acme"
@@ -2505,7 +2134,7 @@ mod tests {
     /// only those governing the resource see (`git-ns/view`).
     #[test]
     fn resource_grants_render_in_ext_without_their_reason() {
-        use trust_tasks_rs::specs::acl::show::v0_2 as show;
+        use vti_specs::acl::show::v0_2 as show;
         let mut e = entry(VtcRole::Member, AdminAuthority::none());
         e.resource_grants
             .push(crate::acl::resource_grant::ResourceGrant {

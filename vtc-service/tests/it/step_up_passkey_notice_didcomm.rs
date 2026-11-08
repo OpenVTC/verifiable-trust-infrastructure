@@ -1,5 +1,5 @@
 //! A step-up passkey change notice actually reaches the member, over a real
-//! mediator (`spec/vtc/members/step-up-passkey-notice/0.1`).
+//! mediator (`spec/vtc/members/step-up-passkey-notice/0.2`).
 //!
 //! What this pins that the unit tests
 //! (`ceremony::step_up_passkey_notice::tests`) cannot: those assert the
@@ -16,11 +16,11 @@
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
-use trust_tasks_rs::specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
-use trust_tasks_rs::specs::auth::passkey::revoke::start::v0_2 as revoke_start;
+use vti_specs::auth::passkey::enroll::invite::v0_3 as invite;
+use vti_specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
+use vti_specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
+use vti_specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
+use vti_specs::auth::passkey::revoke::start::v0_2 as revoke_start;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
@@ -31,7 +31,7 @@ use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.test";
 const WAIT: Duration = Duration::from_secs(20);
-const NOTICE_TYPE: &str = "https://trusttasks.org/spec/vtc/members/step-up-passkey-notice/0.1";
+const NOTICE_TYPE: &str = "https://trusttasks.org/spec/vtc/members/step-up-passkey-notice/0.2";
 
 async fn seed(mock: &MockVtcTransport, did: &str, role: VtcRole) {
     store_acl_entry(

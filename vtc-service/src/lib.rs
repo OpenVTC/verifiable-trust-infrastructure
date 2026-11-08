@@ -21,6 +21,8 @@ pub mod admin_ui;
 pub mod audit_checkpoint;
 pub mod auth;
 pub mod backup;
+pub mod badges;
+pub mod boards;
 pub mod capability_modules;
 pub mod ceremony;
 pub mod community;
@@ -50,6 +52,8 @@ pub mod member_portal;
 pub mod member_push;
 pub mod members;
 pub mod messaging;
+pub mod networks;
+pub mod notifications;
 pub mod oid4vp;
 pub mod oid4vp_cli;
 /// The one place this service packs a Trust Task for the wire.

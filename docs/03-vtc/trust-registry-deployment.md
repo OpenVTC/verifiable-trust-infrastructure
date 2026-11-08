@@ -496,7 +496,7 @@ before expecting sync to work.
 
 ### What the health probe now means
 
-The probe is a read-only `registry/record/query/0.1` round trip
+The probe is a read-only `registry/record/query/0.3` round trip (0.1 to a registry that predates it)
 over the selected transport. It needs no proof and no admin ACL,
 so it works even on a registry that would refuse your writes —
 but unlike the old `GET /.well-known/did.json` it exercises the

@@ -172,6 +172,160 @@ pub(crate) fn extend_state_with_eddsa(
 }
 
 // ---------------------------------------------------------------------------
+// The passkey install (`vtc/install/claim/passkey/{start,finish}/0.1`)
+// ---------------------------------------------------------------------------
+
+/// COSE algorithm identifier for ES256 (ECDSA over P-256 with SHA-256).
+pub const ES256_ALG: i64 = -7;
+
+/// Start the registration of a passkey whose key **names the administrator**:
+/// `vtc/install/claim/passkey/start/0.1` item 3 offers exactly EdDSA (-8) and
+/// ES256 (-7), the two algorithms a `did:key` this task defines can name, and
+/// item 5 puts no DID in the `user` members — the DID does not exist until
+/// finish derives it from the credential.
+///
+/// The ceremony state accepts the same two, so webauthn-rs refuses any other
+/// algorithm at finish with `CredentialAlteredAlgFromRequest`, which the
+/// install answers as `unsupportedAlgorithm`.
+pub fn start_install_passkey_registration(
+    webauthn: &Webauthn,
+    user_unique_id: uuid::Uuid,
+) -> Result<(CreationChallengeResponse, PasskeyRegistration), AppError> {
+    const NAMES_NO_ONE: &str = "first administrator";
+    let (mut ccr, reg_state) = webauthn
+        .start_passkey_registration(user_unique_id, NAMES_NO_ONE, NAMES_NO_ONE, None)
+        .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
+    ccr.public_key.pub_key_cred_params = [EDDSA_ALG, ES256_ALG]
+        .into_iter()
+        .map(|alg| PubKeyCredParams {
+            type_: "public-key".to_string(),
+            alg,
+        })
+        .collect();
+    let reg_state = set_state_algorithms(&reg_state, &["EDDSA", "ES256"])?;
+    Ok((ccr, reg_state))
+}
+
+/// Replace `rs.credential_algorithms` in a registration state (see
+/// [`extend_state_with_eddsa`] for why this goes through JSON).
+fn set_state_algorithms(
+    state: &PasskeyRegistration,
+    algorithms: &[&str],
+) -> Result<PasskeyRegistration, AppError> {
+    let mut value = serde_json::to_value(state).map_err(|e| {
+        AppError::Internal(format!(
+            "failed to serialise passkey registration state: {e}"
+        ))
+    })?;
+    let slot = value
+        .pointer_mut("/rs/credential_algorithms")
+        .ok_or_else(|| {
+            AppError::Internal(
+                "passkey registration state missing 'rs.credential_algorithms'".into(),
+            )
+        })?;
+    *slot = serde_json::json!(algorithms);
+    serde_json::from_value(value).map_err(|e| {
+        AppError::Internal(format!(
+            "failed to deserialise rewritten passkey registration state: {e}"
+        ))
+    })
+}
+
+/// Why a registered credential's key names no administrator DID.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PasskeyDidError {
+    /// Neither EdDSA over Ed25519 nor ES256 over P-256
+    /// (`vtc/install/claim/passkey/finish:unsupportedAlgorithm`).
+    UnsupportedAlgorithm,
+    /// One of the two, but malformed: the wrong length, or a P-256 point not
+    /// on the curve (`bindingInvalid`, finish item 4).
+    Malformed(&'static str),
+}
+
+/// The `did:key` of a passkey credential's own public key
+/// (`vtc/install/claim/passkey/finish/0.1` item 5):
+///
+/// - **Ed25519** (COSE -8, OKP crv 6): multicodec `0xed01` + the 32-byte `x`,
+///   a DID beginning `did:key:z6Mk`;
+/// - **P-256** (COSE -7, EC2 crv 1): multicodec `0x1200` (varint `0x80 0x24`)
+///   + the 33-byte SEC1 **compressed** point, a DID beginning `did:key:zDn`.
+///
+/// Read from the attested credential data alone — never from the install token
+/// or anything else in the request.
+pub fn passkey_did_key(passkey: &Passkey) -> Result<String, PasskeyDidError> {
+    use webauthn_rs::prelude::{COSEAlgorithm, COSEKeyType, ECDSACurve, EDDSACurve};
+    let key = passkey.get_public_key();
+    let multicodec: Vec<u8> = match (&key.type_, &key.key) {
+        (COSEAlgorithm::EDDSA, COSEKeyType::EC_OKP(okp)) if okp.curve == EDDSACurve::ED25519 => {
+            let x: &[u8] = okp.x.as_ref();
+            if x.len() != 32 {
+                return Err(PasskeyDidError::Malformed("an Ed25519 key is 32 bytes"));
+            }
+            [&[0xed, 0x01][..], x].concat()
+        }
+        (COSEAlgorithm::ES256, COSEKeyType::EC_EC2(ec2)) if ec2.curve == ECDSACurve::SECP256R1 => {
+            let (x, y): (&[u8], &[u8]) = (ec2.x.as_ref(), ec2.y.as_ref());
+            if x.len() != 32 || y.len() != 32 {
+                return Err(PasskeyDidError::Malformed(
+                    "a P-256 key's coordinates are 32 bytes each",
+                ));
+            }
+            let uncompressed = [&[0x04][..], x, y].concat();
+            let point = p256::PublicKey::from_sec1_bytes(&uncompressed)
+                .map_err(|_| PasskeyDidError::Malformed("the P-256 point is not on the curve"))?;
+            use p256::elliptic_curve::sec1::ToSec1Point;
+            let compressed = point.to_sec1_point(true);
+            [&[0x80, 0x24][..], compressed.as_bytes()].concat()
+        }
+        _ => return Err(PasskeyDidError::UnsupportedAlgorithm),
+    };
+    Ok(format!(
+        "did:key:{}",
+        multibase::encode(multibase::Base::Base58Btc, multicodec)
+    ))
+}
+
+/// Verify `assertion` — one `navigator.credentials.get()` by `passkey` — over
+/// `challenge`, bytes this service issued at start rather than ones
+/// webauthn-rs minted (`vtc/install/claim/passkey/finish/0.1` item 6).
+///
+/// webauthn-rs verifies only against a state it started, so a state is started
+/// over exactly this one credential and its challenge replaced with the issued
+/// one, as `acl::bound_step_up::verify_assertion_over_challenge` does. Every
+/// check webauthn-rs makes still runs: `webauthn.get`, the challenge, the
+/// origin, the RP ID hash, user presence and verification, the credential
+/// offered being this one, and the signature under its key.
+pub fn verify_install_assertion(
+    webauthn: &Webauthn,
+    passkey: &Passkey,
+    challenge: &[u8],
+    assertion: &serde_json::Value,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    use webauthn_rs::prelude::{PasskeyAuthentication, PublicKeyCredential};
+    let (_, auth_state) = webauthn
+        .start_passkey_authentication(std::slice::from_ref(passkey))
+        .map_err(|e| format!("could not start the assertion: {e}"))?;
+    let mut state_json =
+        serde_json::to_value(&auth_state).map_err(|e| format!("assertion state: {e}"))?;
+    let slot = state_json
+        .pointer_mut("/ast/challenge")
+        .ok_or("assertion state has no challenge")?;
+    *slot = serde_json::Value::String(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(challenge),
+    );
+    let auth_state: PasskeyAuthentication =
+        serde_json::from_value(state_json).map_err(|e| format!("assertion state: {e}"))?;
+    let credential: PublicKeyCredential = serde_json::from_value(assertion.clone())
+        .map_err(|e| format!("webauthnAssertion does not parse: {e}"))?;
+    webauthn
+        .finish_passkey_authentication(&credential, &auth_state)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

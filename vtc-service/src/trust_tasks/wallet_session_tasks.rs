@@ -11,9 +11,7 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::vtc::join_requests::wallet_session::{
-    start::v0_1 as start, status::v0_1 as status,
-};
+use vti_specs::vtc::join_requests::wallet_session::{start::v0_1 as start, status::v0_1 as status};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, parse_payload, reject_with_code,

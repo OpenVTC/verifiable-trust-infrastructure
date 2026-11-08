@@ -34,9 +34,13 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::vtc::website::{
+use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use uuid::Uuid;
+use vti_common::backup_transfer::bundle_store::{self, BundleState};
+use vti_common::backup_transfer::chunked::{self, ChunkRateLimiter, ChunkWrite, ChunkedError};
+use vti_specs::vtc::website::{
     deploy::v0_1 as deploy,
-    files::{delete::v0_1 as files_delete, list::v0_1 as files_list, show::v0_1 as files_show},
+    files::{delete::v0_1 as files_delete, list::v0_3 as files_list, show::v0_1 as files_show},
     generations::list::v0_1 as generations_list,
     rollback::v0_1 as rollback,
     upload::{
@@ -44,10 +48,6 @@ use trust_tasks_rs::specs::vtc::website::{
         commit::v0_1 as upload_commit,
     },
 };
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use uuid::Uuid;
-use vti_common::backup_transfer::bundle_store::{self, BundleState};
-use vti_common::backup_transfer::chunked::{self, ChunkRateLimiter, ChunkWrite, ChunkedError};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
@@ -801,7 +801,7 @@ async fn handle_files_show(state: &AppState, doc: TrustTask<Value>) -> TrustTask
 
 // ─── files/list, files/delete, generations/list, rollback ───────────────
 
-/// `vtc/website/files/list/0.1` — the paginated listing
+/// `vtc/website/files/list/0.3` — the paginated listing
 /// `GET /v1/website/files` used to serve.
 async fn handle_files_list(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
     let payload: files_list::Payload = match parse_spec_payload(&doc) {

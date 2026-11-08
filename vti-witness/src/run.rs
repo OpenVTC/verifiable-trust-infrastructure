@@ -21,6 +21,9 @@ use crate::store::WitnessStore;
 use crate::witness::{WitnessPolicy, Witnessing};
 
 /// How long a stop waits for every session to close its socket.
+/// The keyspace of the durable TSP relationship store.
+const TSP_RELATIONSHIPS: &str = "tsp_relationships";
+
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(15);
 
 /// Load the configuration and keys, then supervise one mediator session per
@@ -43,7 +46,24 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     let store = vti_secrets::create_seed_store(&config.secrets, &config.data_dir)
         .map_err(|e| anyhow::anyhow!("open the secret store: {e}"))?;
     let keyring = WitnessKeyring::load(&*store).await?;
-    let witness_store = WitnessStore::open(&config.data_dir)?;
+    let local = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+        data_dir: config.data_dir.join("store"),
+    })
+    .map_err(|e| anyhow::anyhow!("open the witness store: {e}"))?;
+    let witness_store = WitnessStore::from_store(&local)?;
+    // TSP relationships are kept on disk: a community that formed one keeps its half across
+    // our restart and sends without re-inviting, and TSP §7.2.2 has us drop — unanswered —
+    // every frame from a VID we hold no relationship with. Kept in memory, a restart (or a
+    // reconnect, which builds a fresh ATM) silently stopped every `witness/session`.
+    let relationships = vti_common::relationship_store::build_relationship_store(
+        local
+            .keyspace(TSP_RELATIONSHIPS)
+            .map_err(|e| anyhow::anyhow!("open keyspace {TSP_RELATIONSHIPS}: {e}"))?,
+    );
+    // Once per process, never per session.
+    tokio::spawn(vti_common::relationship_store::maintenance_loop(
+        relationships.clone(),
+    ));
     // Built before the identities: each verifies its proofs through this one
     // resolver, and every ATM resolves through it too.
     let did_resolver = DIDCacheClient::new(vta_sdk::resolver::build_did_cache_config(
@@ -81,11 +101,14 @@ pub async fn run(config_path: &Path) -> anyhow::Result<()> {
         let identity = IdentityContext::new(&witness.name, &witness.did, holder, witnessing)?;
         let secrets = vta_sdk::did_key::secrets_from_bundle(bundle)
             .map_err(|e| anyhow::anyhow!("witness {:?}: {e}", witness.name))?;
-        sessions.push(IdentitySession::new(
-            WitnessResponder::new(identity, vm_resolver.clone()),
-            witness.mediator_did.clone(),
-            secrets,
-        ));
+        sessions.push(
+            IdentitySession::new(
+                WitnessResponder::new(identity, vm_resolver.clone()),
+                witness.mediator_did.clone(),
+                secrets,
+            )
+            .with_relationship_store(relationships.clone()),
+        );
     }
 
     let shared = Arc::new(Shared {

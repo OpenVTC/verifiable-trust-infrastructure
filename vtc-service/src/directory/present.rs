@@ -102,7 +102,7 @@ pub struct Presented {
 /// The `kid` of an SD-JWT presentation's key-binding JWT: the last `~`
 /// segment's protected header. Read only to find which of the member's keys
 /// the holder key claims to be; the signature under it has already verified.
-fn kb_jwt_kid(compact: &str) -> Option<String> {
+pub(crate) fn kb_jwt_kid(compact: &str) -> Option<String> {
     let kb = compact.rsplit('~').next().filter(|s| !s.is_empty())?;
     let header = kb.split('.').next()?;
     let bytes = URL_SAFE_NO_PAD.decode(header).ok()?;
@@ -114,7 +114,7 @@ fn kb_jwt_kid(compact: &str) -> Option<String> {
 /// member (item 3): the membership DID itself, or, for an SD-JWT whose holder
 /// key is a `did:key`, a key the member's own DID document lists for
 /// authentication and the key-binding JWT names (`kid` under the member's DID).
-async fn holder_is_member(
+pub(crate) async fn holder_is_member(
     state: &AppState,
     holder: &str,
     kb_kid: Option<&str>,
@@ -155,7 +155,7 @@ fn base_did(did: &str) -> &str {
 /// binding rests on the presentation's own `nonce` and `domain`, which the
 /// holder proof covers; a proof that names others is refused rather than read
 /// past.
-fn proof_options_agree(vp: &Value, document_id: &str, community: &str) -> bool {
+pub(crate) fn proof_options_agree(vp: &Value, document_id: &str, community: &str) -> bool {
     let proofs: Vec<&Value> = match vp.get("proof") {
         Some(Value::Array(a)) => a.iter().collect(),
         Some(p) => vec![p],

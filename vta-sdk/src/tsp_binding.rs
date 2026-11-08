@@ -18,7 +18,7 @@
 //! ```text
 //! refused a TSP frame that is not a binding envelope
 //!   reason=TSP payload is not a `…/binding/tsp/0.1/envelope` envelope
-//!          (got `…/spec/messaging/ping/0.1`)
+//!          (got `…/spec/messaging/ping/0.2`)
 //! ```
 //!
 //! A binding that only one end of the workspace can see is the same private
@@ -137,7 +137,7 @@ mod tests {
     /// a bare document is something the other end can tell apart.
     #[test]
     fn a_bare_document_is_not_an_envelope() {
-        let bare = br#"{"id":"urn:uuid:1","type":"https://trusttasks.org/spec/messaging/ping/0.1","payload":{}}"#;
+        let bare = br#"{"id":"urn:uuid:1","type":"https://trusttasks.org/spec/messaging/ping/0.2","payload":{}}"#;
 
         let err = open_envelope(bare).expect_err("a bare document is not carriage");
 

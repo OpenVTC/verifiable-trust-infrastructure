@@ -1,1 +1,11 @@
 /* Layout particular to the roles screen. Shared look lives in components.css. */
+
+/* A role's capabilities in a table cell: wrapped codes, not a bulleted list. */
+.cap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}

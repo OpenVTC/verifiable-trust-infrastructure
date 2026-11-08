@@ -102,19 +102,19 @@ pub const KIND_MEMBER_ADMIT: &str = "member.admit";
 /// existing ACL entry a membership (`vtc/members/make-membership/0.1`).
 pub const KIND_MEMBER_MAKE_MEMBERSHIP: &str = "member.makeMembership";
 
-/// Adding a storage config (`vtc/storage/configs/create/0.1`).
+/// Adding a storage config (`vtc/storage/configs/create/0.3`).
 pub const KIND_STORAGE_CONFIG_CREATE: &str = "storage.config.create";
-/// Changing a storage config (`vtc/storage/configs/update/0.1`).
+/// Changing a storage config (`vtc/storage/configs/update/0.3`).
 pub const KIND_STORAGE_CONFIG_UPDATE: &str = "storage.config.update";
-/// Setting a `sealed` storage config's credential (`vtc/storage/credentials/set/0.2`).
+/// Setting a `sealed` storage config's credential (`vtc/storage/credentials/set/0.3`).
 /// Approvers see the config and the sealed block's digest, never the credential.
 pub const KIND_STORAGE_CREDENTIAL_SET: &str = "storage.credential.set";
-/// Retiring a storage config (`vtc/storage/configs/retire/0.1`).
+/// Retiring a storage config (`vtc/storage/configs/retire/0.3`).
 pub const KIND_STORAGE_CONFIG_RETIRE: &str = "storage.config.retire";
-/// Pointing a room's new uploads at another config (`vtc/rooms/storage/assign/0.1`).
+/// Pointing a room's new uploads at another config (`vtc/rooms/storage/assign/0.2`).
 pub const KIND_ROOM_STORAGE_ASSIGN: &str = "rooms.storage.assign";
 /// Moving a room's existing files onto its assigned config
-/// (`vtc/rooms/storage/migrate/0.1` and `/0.2`).
+/// (`vtc/rooms/storage/migrate/0.3`).
 pub const KIND_ROOM_STORAGE_MIGRATE: &str = "rooms.storage.migrate";
 
 /// The record type a break-glass review is raised under.
@@ -124,24 +124,35 @@ pub const JOIN_REVIEW_URI: &str = "urn:openvtc:vtc:join:review";
 /// The record type a vetting withdrawal review is raised under.
 pub const VETTING_REVIEW_URI: &str = "urn:openvtc:vtc:vetting:withdrawal-review";
 
-const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const ACL_UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
-const ACL_CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
-pub(crate) const ACL_REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+/// `acl/change-role/0.1`, no longer served: the community role moves with
+/// `vtc/members/role/set/0.1` ([`MEMBERS_ROLE_SET`]). Its templates stay so a move
+/// parked under it still renders in the history. Spelled with `concat!` so the
+/// conformance sweep does not count a history-only URI as one this service
+/// serves.
+const ACL_CHANGE_ROLE: &str = concat!("https://trusttasks.org/spec/", "acl/change-role/0.1");
+/// `vtc/members/role/set/0.1` — a community-role move.
+const MEMBERS_ROLE_SET: &str = crate::trust_tasks::member_role_tasks::ROLE_SET_TYPE;
 const ACL_GRANT_V0_2: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 const ACL_UPDATE_V0_2: &str = "https://trusttasks.org/spec/acl/update/0.2";
 const ACL_CHANGE_ROLE_V0_2: &str = "https://trusttasks.org/spec/acl/change-role/0.2";
 const ACL_REVOKE_V0_2: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
-/// `vtc/operator/offline-write/0.1` — the record type an operator's offline
+/// `vtc/operator/offline-write/0.2` — the record type an operator's offline
 /// write is named by (VTI-VTC-023). Never sent; see
 /// [`super::OPERATOR_OFFLINE_WRITE_URI`].
 const OFFLINE_WRITE: &str = super::OPERATOR_OFFLINE_WRITE_URI;
 const ACL_MIGRATION: &str = super::OPERATOR_ACL_MIGRATION_URI;
-const INVITES_CREATE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
+const INVITES_CREATE: &str = crate::trust_tasks::admin_tasks::INVITES_CREATE_TYPE;
+/// `vtc/admin/invites/create/0.1`, no longer served. Its template stays so an
+/// invite parked under it still renders in the history; spelled with `concat!`
+/// for the reason [`ELECTIONS_CREATE_V0_1`] is.
+const INVITES_CREATE_V0_1: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/admin/invites/create/0.1"
+);
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const CONFIG_PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const CONFIG_IMPORT: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
-const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const ACCEPTS_REGISTER: &str = crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_TYPE;
 const ACCEPTS_DELETE: &str = crate::trust_tasks::surface_tasks::ACCEPTS_DELETE_TYPE;
@@ -149,29 +160,83 @@ const ACCEPTS_DELETE: &str = crate::trust_tasks::surface_tasks::ACCEPTS_DELETE_T
 /// `vetting::pcs_tasks`, which is compiled only with `vetting-pcs`: a build
 /// without the feature still pins the template the console holds.
 pub(crate) const HIDDEN_PUBLISH: &str =
-    <trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::vetting::hidden::publish::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `vtc/vetting/hidden/withdraw/0.1`.
 pub(crate) const HIDDEN_WITHDRAW: &str =
-    <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const DIRECTORY_FIELDS_UPDATE: &str = crate::trust_tasks::directory_tasks::FIELDS_UPDATE_TYPE;
-/// `vtc/elections/create/0.1`, off the generated type: a build without `voting`
+/// `vtc/elections/create/0.5`, off the generated type: a build without `voting`
 /// still pins the template the console holds.
 pub(crate) const ELECTIONS_CREATE: &str =
-    <trust_tasks_rs::specs::vtc::elections::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::elections::create::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/elections/create/0.4`, still served (its manifest carries no credential roll): a
+/// binding election a client parks under it renders as one under 0.5 does.
+#[allow(deprecated)]
+pub(crate) const ELECTIONS_CREATE_V0_4: &str =
+    <vti_specs::vtc::elections::create::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/elections/create/0.3`, still served (its manifest's `textReleaseThreshold` is 10 or
+/// more): a binding election a client parks under it renders as one under 0.4 does.
+#[allow(deprecated)]
+pub(crate) const ELECTIONS_CREATE_V0_3: &str =
+    <vti_specs::vtc::elections::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/elections/create/0.1`, no longer served. Its template stays so a binding
+/// election parked under it still renders in the history. Spelled with `concat!` so the
+/// conformance sweep, which reads whole `spec/vtc/…` literals as bindings, does not count
+/// a history-only URI as one this service serves.
+const ELECTIONS_CREATE_V0_1: &str =
+    concat!("https://trusttasks.org/spec/", "vtc/elections/create/0.1");
 const ROLES_DEFINE: &str = "https://trusttasks.org/spec/vtc/roles/define/0.1";
 const ROLES_DELETE: &str = "https://trusttasks.org/spec/vtc/roles/delete/0.1";
 const BACKUP_FINALIZE_IMPORT: &str = "https://trusttasks.org/spec/backup/finalize-import/0.1";
 const MEMBERS_ADMIT: &str = crate::trust_tasks::admission_tasks::ADMIT_TYPE;
 const MEMBERS_MAKE_MEMBERSHIP: &str = crate::trust_tasks::admission_tasks::MAKE_MEMBERSHIP_TYPE;
+// The storage operations this build parks, at the versions it serves.
 const STORAGE_CREATE: &str = crate::trust_tasks::storage_tasks::CREATE_TYPE;
 const STORAGE_UPDATE: &str = crate::trust_tasks::storage_tasks::UPDATE_TYPE;
 const STORAGE_RETIRE: &str = crate::trust_tasks::storage_tasks::RETIRE_TYPE;
-const STORAGE_CREATE_V0_2: &str = crate::trust_tasks::storage_tasks::CREATE_V0_2_TYPE;
-const STORAGE_UPDATE_V0_2: &str = crate::trust_tasks::storage_tasks::UPDATE_V0_2_TYPE;
 const STORAGE_CREDENTIAL_SET: &str = crate::trust_tasks::storage_tasks::CREDENTIALS_SET_TYPE;
 const ROOM_STORAGE_ASSIGN: &str = crate::trust_tasks::storage_tasks::ASSIGN_TYPE;
 const ROOM_STORAGE_MIGRATE: &str = crate::trust_tasks::storage_tasks::MIGRATE_TYPE;
-const ROOM_STORAGE_MIGRATE_V2: &str = crate::trust_tasks::storage_tasks::MIGRATE_V2_TYPE;
+// The versions they were parked under before. None is served any more; their
+// templates stay so an action recorded under one still renders in the history.
+// Spelled with `concat!` so the conformance census, which reads `spec/vtc/…`
+// literals as bindings, does not count them as served.
+const STORAGE_CREATE_V0_1: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/storage/configs/create/0.1"
+);
+const STORAGE_UPDATE_V0_1: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/storage/configs/update/0.1"
+);
+const STORAGE_RETIRE_V0_1: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/storage/configs/retire/0.1"
+);
+const STORAGE_CREATE_V0_2: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/storage/configs/create/0.2"
+);
+const STORAGE_UPDATE_V0_2: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/storage/configs/update/0.2"
+);
+const STORAGE_CREDENTIAL_SET_V0_2: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/storage/credentials/set/0.2"
+);
+const ROOM_STORAGE_ASSIGN_V0_1: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/rooms/storage/assign/0.1"
+);
+const ROOM_STORAGE_MIGRATE_V0_1: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/rooms/storage/migrate/0.1"
+);
+const ROOM_STORAGE_MIGRATE_V0_2: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/rooms/storage/migrate/0.2"
+);
 const GROUPS_MEMBERS_ADD: &str = crate::trust_tasks::group_tasks::MEMBERS_ADD_TYPE;
 const GROUPS_MEMBERS_REMOVE: &str = crate::trust_tasks::group_tasks::MEMBERS_REMOVE_TYPE;
 const GROUPS_BINDINGS_ADD: &str = crate::trust_tasks::group_tasks::BINDINGS_ADD_TYPE;
@@ -238,6 +303,11 @@ const fn f(name: &'static str, pointer: &'static str, format: &'static str) -> F
 
 const GRANT_EFFECT: &str = "{subject} will be able to grant and remove any authority in this \
                             community, including yours.";
+const INVITE_EFFECT: &str = "Whoever claims this invitation becomes an unrestricted administrator, \
+                             able to grant and remove any authority in this community, including \
+                             yours. A wallet invitation can be claimed only by the invitee DID \
+                             shown; a passkey invitation, which shows none, by whoever holds its \
+                             install URL and claim code, under their passkey's own DID.";
 const REDUCE_EFFECT: &str = "{subject} loses unrestricted authority in this community. They are \
                              not asked: a party to a removal never decides it.";
 // Role-based administration (`vtc-admin-roles.md` §7): what the capabilities
@@ -449,29 +519,6 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         kind: KIND_GRANT_AUTHORITY,
-        type_uri: ACL_GRANT,
-        title: "Make {subject} an unrestricted administrator",
-        effect: GRANT_EFFECT,
-        fields: &[
-            f("subject", "/entry/subject", "did"),
-            f("role", "/entry/role", "text"),
-            f("scopes", "/entry/scopes", "capabilityList"),
-            f("expiresAt", "/entry/expiresAt", "datetime"),
-        ],
-    },
-    Template {
-        kind: KIND_GRANT_AUTHORITY,
-        type_uri: ACL_UPDATE,
-        title: "Widen {subject} to an unrestricted administrator",
-        effect: GRANT_EFFECT,
-        fields: &[
-            f("subject", "/subject", "did"),
-            f("scopes", "/scopes", "capabilityList"),
-            f("expiresAt", "/expiresAt", "datetime"),
-        ],
-    },
-    Template {
-        kind: KIND_GRANT_AUTHORITY,
         type_uri: ACL_CHANGE_ROLE,
         title: "Promote {subject} from {fromRole} to unrestricted administrator",
         effect: GRANT_EFFECT,
@@ -481,23 +528,46 @@ pub const TEMPLATES: &[Template] = &[
             f("toRole", "/toRole", "text"),
         ],
     },
+    // create 0.2: `did` names a wallet invitation's administrator, and is
+    // absent from a passkey invitation, whose administrator's DID does not
+    // exist until it is claimed — so the title names no DID.
     Template {
-        kind: KIND_INVITE_CREATE,
-        type_uri: INVITES_CREATE,
-        title: "Invite {subject} to become an unrestricted administrator",
-        effect: GRANT_EFFECT,
-        fields: &[f("subject", "/did", "did"), f("label", "/label", "text")],
+        kind: KIND_GRANT_AUTHORITY,
+        type_uri: MEMBERS_ROLE_SET,
+        title: "Move {subject} from {fromRole} to {toRole}",
+        effect: GRANT_CAPABILITY_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("fromRole", "/fromRole", "text"),
+            f("toRole", "/toRole", "text"),
+            f("reason", "/reason", "text"),
+        ],
     },
     Template {
         kind: KIND_REDUCE_AUTHORITY,
-        type_uri: ACL_REVOKE,
-        title: "Remove unrestricted administrator {subject}",
-        effect: REDUCE_EFFECT,
+        type_uri: MEMBERS_ROLE_SET,
+        title: "Move administrator {subject} from {fromRole} to {toRole}",
+        effect: REDUCE_CAPABILITY_EFFECT,
         fields: &[
             f("subject", "/subject", "did"),
-            f("scopes", "/scopes", "capabilityList"),
+            f("fromRole", "/fromRole", "text"),
+            f("toRole", "/toRole", "text"),
             f("reason", "/reason", "text"),
         ],
+    },
+    Template {
+        kind: KIND_INVITE_CREATE,
+        type_uri: INVITES_CREATE,
+        title: "Invite a new unrestricted administrator",
+        effect: INVITE_EFFECT,
+        fields: &[f("invitee", "/did", "did"), f("label", "/label", "text")],
+    },
+    Template {
+        kind: KIND_INVITE_CREATE,
+        type_uri: INVITES_CREATE_V0_1,
+        title: "Invite {subject} to become an unrestricted administrator",
+        effect: GRANT_EFFECT,
+        fields: &[f("subject", "/did", "did"), f("label", "/label", "text")],
     },
     Template {
         kind: KIND_REDUCE_AUTHORITY,
@@ -507,28 +577,6 @@ pub const TEMPLATES: &[Template] = &[
         fields: &[
             f("subject", "/subject", "did"),
             f("toRole", "/toRole", "text"),
-        ],
-    },
-    Template {
-        kind: KIND_REDUCE_AUTHORITY,
-        type_uri: ACL_UPDATE,
-        title: "Narrow unrestricted administrator {subject}",
-        effect: REDUCE_EFFECT,
-        fields: &[
-            f("subject", "/subject", "did"),
-            f("scopes", "/scopes", "capabilityList"),
-            f("expiresAt", "/expiresAt", "datetime"),
-        ],
-    },
-    Template {
-        kind: KIND_REDUCE_AUTHORITY,
-        type_uri: ACL_GRANT,
-        title: "Rewrite unrestricted administrator {subject} as {role}",
-        effect: REDUCE_EFFECT,
-        fields: &[
-            f("subject", "/entry/subject", "did"),
-            f("role", "/entry/role", "text"),
-            f("scopes", "/entry/scopes", "capabilityList"),
         ],
     },
     Template {
@@ -585,6 +633,49 @@ pub const TEMPLATES: &[Template] = &[
     Template {
         kind: KIND_ELECTION_BINDING_CREATE,
         type_uri: ELECTIONS_CREATE,
+        title: "Create the binding election {electionId}",
+        effect: ELECTION_CREATE_EFFECT,
+        fields: &[
+            f("electionId", "/manifest/electionId", "text"),
+            f("title", "/manifest/title", "text"),
+            f("ballotBox", "/manifest/ballotBox", "did"),
+            f("roll", "/manifest/roll/rule", "text"),
+            f("votingOpens", "/manifest/votingOpensAt", "datetime"),
+            f("votingCloses", "/manifest/votingClosesAt", "datetime"),
+            f("memberOf", "/manifest/roll/memberOf", "did"),
+        ],
+    },
+    Template {
+        kind: KIND_ELECTION_BINDING_CREATE,
+        type_uri: ELECTIONS_CREATE_V0_4,
+        title: "Create the binding election {electionId}",
+        effect: ELECTION_CREATE_EFFECT,
+        fields: &[
+            f("electionId", "/manifest/electionId", "text"),
+            f("title", "/manifest/title", "text"),
+            f("ballotBox", "/manifest/ballotBox", "did"),
+            f("roll", "/manifest/roll/rule", "text"),
+            f("votingOpens", "/manifest/votingOpensAt", "datetime"),
+            f("votingCloses", "/manifest/votingClosesAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_ELECTION_BINDING_CREATE,
+        type_uri: ELECTIONS_CREATE_V0_3,
+        title: "Create the binding election {electionId}",
+        effect: ELECTION_CREATE_EFFECT,
+        fields: &[
+            f("electionId", "/manifest/electionId", "text"),
+            f("title", "/manifest/title", "text"),
+            f("ballotBox", "/manifest/ballotBox", "did"),
+            f("roll", "/manifest/roll/rule", "text"),
+            f("votingOpens", "/manifest/votingOpensAt", "datetime"),
+            f("votingCloses", "/manifest/votingClosesAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_ELECTION_BINDING_CREATE,
+        type_uri: ELECTIONS_CREATE_V0_1,
         title: "Create the binding election {electionId}",
         effect: ELECTION_CREATE_EFFECT,
         fields: &[
@@ -696,7 +787,7 @@ pub const TEMPLATES: &[Template] = &[
             f("command", "/command", "text"),
             f("dids", "/dids", "capabilityList"),
             f("host", "/host", "text"),
-            f("at", "/at", "datetime"),
+            f("at", "/writtenAt", "datetime"),
         ],
     },
     Template {
@@ -769,36 +860,6 @@ pub const TEMPLATES: &[Template] = &[
         ],
     },
     Template {
-        kind: KIND_STORAGE_CONFIG_CREATE,
-        type_uri: STORAGE_CREATE_V0_2,
-        title: "Add the storage config {id}",
-        effect: STORAGE_CREATE_EFFECT,
-        fields: &[
-            f("id", "/id", "text"),
-            f("label", "/label", "text"),
-            f("settings", "/settings", "text"),
-            f("auth", "/auth", "text"),
-            f("capacityBytes", "/capacityBytes", "text"),
-            f("isDefault", "/isDefault", "text"),
-            f("reason", "/reason", "text"),
-        ],
-    },
-    Template {
-        kind: KIND_STORAGE_CONFIG_UPDATE,
-        type_uri: STORAGE_UPDATE_V0_2,
-        title: "Change the storage config {configId}",
-        effect: STORAGE_UPDATE_EFFECT,
-        fields: &[
-            f("configId", "/configId", "text"),
-            f("label", "/label", "text"),
-            f("settings", "/settings", "text"),
-            f("auth", "/auth", "text"),
-            f("capacityBytes", "/capacityBytes", "text"),
-            f("isDefault", "/isDefault", "text"),
-            f("reason", "/reason", "text"),
-        ],
-    },
-    Template {
         kind: KIND_STORAGE_CREDENTIAL_SET,
         type_uri: STORAGE_CREDENTIAL_SET,
         title: "Set the sealed credential of the storage config {configId}",
@@ -834,6 +895,110 @@ pub const TEMPLATES: &[Template] = &[
         kind: KIND_ROOM_STORAGE_MIGRATE,
         type_uri: ROOM_STORAGE_MIGRATE,
         title: "Move room {roomId}'s files to its assigned storage",
+        effect: ROOM_STORAGE_MIGRATE_V2_EFFECT,
+        fields: &[
+            f("roomId", "/roomId", "text"),
+            f("maxBytesPerSecond", "/maxBytesPerSecond", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    // History only: the same operations as parked under versions no longer served.
+    Template {
+        kind: KIND_STORAGE_CONFIG_CREATE,
+        type_uri: STORAGE_CREATE_V0_1,
+        title: "Add the storage config {id}",
+        effect: STORAGE_CREATE_EFFECT,
+        fields: &[
+            f("id", "/id", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_UPDATE,
+        type_uri: STORAGE_UPDATE_V0_1,
+        title: "Change the storage config {configId}",
+        effect: STORAGE_UPDATE_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_CREATE,
+        type_uri: STORAGE_CREATE_V0_2,
+        title: "Add the storage config {id}",
+        effect: STORAGE_CREATE_EFFECT,
+        fields: &[
+            f("id", "/id", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_UPDATE,
+        type_uri: STORAGE_UPDATE_V0_2,
+        title: "Change the storage config {configId}",
+        effect: STORAGE_UPDATE_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CREDENTIAL_SET,
+        type_uri: STORAGE_CREDENTIAL_SET_V0_2,
+        title: "Set the sealed credential of the storage config {configId}",
+        effect: STORAGE_CREDENTIAL_SET_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("digest", "/digestMultibase", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_RETIRE,
+        type_uri: STORAGE_RETIRE_V0_1,
+        title: "Retire the storage config {configId}",
+        effect: STORAGE_RETIRE_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_ROOM_STORAGE_ASSIGN,
+        type_uri: ROOM_STORAGE_ASSIGN_V0_1,
+        title: "Store room {roomId}'s new files on {configId}",
+        effect: ROOM_STORAGE_ASSIGN_EFFECT,
+        fields: &[
+            f("roomId", "/roomId", "text"),
+            f("configId", "/configId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_ROOM_STORAGE_MIGRATE,
+        type_uri: ROOM_STORAGE_MIGRATE_V0_1,
+        title: "Move room {roomId}'s files to its assigned storage",
         effect: ROOM_STORAGE_MIGRATE_EFFECT,
         fields: &[
             f("roomId", "/roomId", "text"),
@@ -843,7 +1008,7 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         kind: KIND_ROOM_STORAGE_MIGRATE,
-        type_uri: ROOM_STORAGE_MIGRATE_V2,
+        type_uri: ROOM_STORAGE_MIGRATE_V0_2,
         title: "Move room {roomId}'s files to its assigned storage",
         effect: ROOM_STORAGE_MIGRATE_V2_EFFECT,
         fields: &[
@@ -987,43 +1152,33 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     ),
     (
         KIND_GRANT_AUTHORITY,
-        ACL_GRANT,
-        "zQmPrXgyRpZ57y4AekuZPspEkunnEbEhxvZuqrfoxrgsvr4",
-    ),
-    (
-        KIND_GRANT_AUTHORITY,
-        ACL_UPDATE,
-        "zQmbvgey1akTyTq74Vhe4fuXGvpTKKTVw34mo3y4hVEKSEQ",
-    ),
-    (
-        KIND_GRANT_AUTHORITY,
         ACL_CHANGE_ROLE,
         "zQmQX9Dx7cDqLtcoTNuDSWWo5nJTGecB9CqRLKgpd4es1c9",
     ),
     (
-        KIND_INVITE_CREATE,
-        INVITES_CREATE,
-        "zQmSXC2GaMpizs4kKRhz4nBchZikWjqHAoeDfA5D7fVizgp",
+        KIND_GRANT_AUTHORITY,
+        MEMBERS_ROLE_SET,
+        "zQmeeEJA8obiMqBSq33xo2prbmZcPzPd3SfenmT58Km7LRZ",
     ),
     (
         KIND_REDUCE_AUTHORITY,
-        ACL_REVOKE,
-        "zQmbvSkPZnzCqq5idfR5DKfFyiHFRCeimT48C4c6jtZfG1Z",
+        MEMBERS_ROLE_SET,
+        "zQmPDwBktx52yrW3HneQuL8AbdZ44d6bq5K5WkU51jN38jD",
+    ),
+    (
+        KIND_INVITE_CREATE,
+        INVITES_CREATE,
+        "zQmXg9RsQh74pTGLccB8ENC4trXmhB5MfYzN8VG7Mzb6Zuw",
+    ),
+    (
+        KIND_INVITE_CREATE,
+        INVITES_CREATE_V0_1,
+        "zQmSXC2GaMpizs4kKRhz4nBchZikWjqHAoeDfA5D7fVizgp",
     ),
     (
         KIND_REDUCE_AUTHORITY,
         ACL_CHANGE_ROLE,
         "zQmfHspRZaXfEPkeAyqcFkpgqYT2RCqXjjnXVZmFhsaJQcu",
-    ),
-    (
-        KIND_REDUCE_AUTHORITY,
-        ACL_UPDATE,
-        "zQmXcYLQhsgDQEgDZuf2mvmkxDDKEd1c9C47tmRAGLofPgM",
-    ),
-    (
-        KIND_REDUCE_AUTHORITY,
-        ACL_GRANT,
-        "zQmVrvxot9bAts7S22CfXQgqR8vC5aZHWQz97UjfMWveT7o",
     ),
     (
         KIND_REDUCE_AUTHORITY,
@@ -1052,8 +1207,23 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     ),
     (
         KIND_ELECTION_BINDING_CREATE,
-        ELECTIONS_CREATE,
+        ELECTIONS_CREATE_V0_1,
         "zQmRruPSiJx9JHEBJCdQiH1qXMTdqf2Dy6yL1WmUJqTU8mX",
+    ),
+    (
+        KIND_ELECTION_BINDING_CREATE,
+        ELECTIONS_CREATE_V0_3,
+        "zQmSCbudt2Arz4PCwpWmzhMhA4gLfVjxmAd5UMZi8bef7hq",
+    ),
+    (
+        KIND_ELECTION_BINDING_CREATE,
+        ELECTIONS_CREATE_V0_4,
+        "zQmR79wDEhh2mEJLRAbTgWiYWgtEby8xcwzEQFQQJ63mqZs",
+    ),
+    (
+        KIND_ELECTION_BINDING_CREATE,
+        ELECTIONS_CREATE,
+        "zQmVDaP58EusQDuDEKJ9TU289EvDHpbQwdYbzZhZoF5BSEE",
     ),
     (
         KIND_DIRECTORY_FIELD_WIDEN,
@@ -1063,7 +1233,7 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     (
         KIND_POLICY_RECOGNITION,
         POLICY_UPSERT,
-        "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",
+        "zQmbvZxPwfxKg7j3MNguVQNJXVwVcfrRbBQZiWrWyfszTm3",
     ),
     (
         KIND_POLICY_RECOGNITION,
@@ -1093,7 +1263,7 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     (
         KIND_POLICY_AUTHORITY,
         POLICY_UPSERT,
-        "zQma1zFb7cvRpSH7erp14W83wYZW5vP7cke1yLwcwQZdEie",
+        "zQmTE3m6nY2PUjccPc1kXE8E3qUg1B44XhN2Tvgy5JHNPLv",
     ),
     (
         KIND_POLICY_AUTHORITY,
@@ -1103,7 +1273,7 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     (
         KIND_OPERATOR_WRITE,
         OFFLINE_WRITE,
-        "zQmQZTPg2MeWt1C8oAvoLMGJNY9DpxvB6bRjvQwJT7ns9Ah",
+        "zQmaFWSdUF1Ais5qw1yGuSM6oxkarq9VQ4ZKd52ikKXiRcR",
     ),
     (
         KIND_OPERATOR_WRITE,
@@ -1157,27 +1327,27 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     ),
     (
         KIND_STORAGE_CONFIG_CREATE,
-        STORAGE_CREATE,
+        STORAGE_CREATE_V0_1,
         "zQmbKUbMCxeKhULY9Ea5CL5SYQozDAE4ithNpnKx7jCQZAJ",
     ),
     (
         KIND_STORAGE_CONFIG_UPDATE,
-        STORAGE_UPDATE,
+        STORAGE_UPDATE_V0_1,
         "zQmUr4boR7Uk2yrYFGFggoTMbcK33AVKA8DbZUKct3bbGqN",
     ),
     (
         KIND_STORAGE_CONFIG_RETIRE,
-        STORAGE_RETIRE,
+        STORAGE_RETIRE_V0_1,
         "zQmW4jo3NSHqJGAeDeEPzJt1fUgdDAeAsur9ehhSCyA4bEh",
     ),
     (
         KIND_ROOM_STORAGE_ASSIGN,
-        ROOM_STORAGE_ASSIGN,
+        ROOM_STORAGE_ASSIGN_V0_1,
         "zQmZWR9odGdRi5noLhZxgzSrNk3YRF5ZWH4JaNVBYMqMKja",
     ),
     (
         KIND_ROOM_STORAGE_MIGRATE,
-        ROOM_STORAGE_MIGRATE,
+        ROOM_STORAGE_MIGRATE_V0_1,
         "zQmZamMHumTwGimMGYsuEGBoxvuYmEozzpkSStPjrZHrShX",
     ),
     (
@@ -1192,13 +1362,43 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     ),
     (
         KIND_STORAGE_CREDENTIAL_SET,
-        STORAGE_CREDENTIAL_SET,
+        STORAGE_CREDENTIAL_SET_V0_2,
         "zQmTzhrbBfZEaijm2CMzMvNzeYzPBA4RW1DBJRWPTwJc3XL",
     ),
     (
         KIND_ROOM_STORAGE_MIGRATE,
-        ROOM_STORAGE_MIGRATE_V2,
+        ROOM_STORAGE_MIGRATE_V0_2,
         "zQmR7m9q28aLudzaema3wPTgyt9VJnPAVoSykoCL14YiVAN",
+    ),
+    (
+        KIND_STORAGE_CONFIG_CREATE,
+        STORAGE_CREATE,
+        "zQmPUm3o1m98v5TKrsQ6RsAXMRWw1fqSDnwN3iFrJK5Awrx",
+    ),
+    (
+        KIND_STORAGE_CONFIG_UPDATE,
+        STORAGE_UPDATE,
+        "zQmc2DLfT3ZNgo31ctpTvACDFoy1yiWAbdEBmtAbswkFfKT",
+    ),
+    (
+        KIND_STORAGE_CREDENTIAL_SET,
+        STORAGE_CREDENTIAL_SET,
+        "zQmf4q7oZzgLTPjF4bavNePfvEhwPdG53CG2XVMgYfKHYex",
+    ),
+    (
+        KIND_STORAGE_CONFIG_RETIRE,
+        STORAGE_RETIRE,
+        "zQmdCZnjZerPoDQQaiDinpjZbxKPkB1d5MLLwV1iYDbt75M",
+    ),
+    (
+        KIND_ROOM_STORAGE_ASSIGN,
+        ROOM_STORAGE_ASSIGN,
+        "zQmer3KKgKaxJV2UUTH3jyEVyQeaQ2MuBHZvfYxAerEka2L",
+    ),
+    (
+        KIND_ROOM_STORAGE_MIGRATE,
+        ROOM_STORAGE_MIGRATE,
+        "zQmdLkFUd8giwGZH79H1htDfCrSxJWE9mKwpSSkbhhQRjGy",
     ),
 ];
 

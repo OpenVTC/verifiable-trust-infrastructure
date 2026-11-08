@@ -6,6 +6,7 @@ pub mod get;
 pub mod list;
 pub mod swap;
 pub mod update;
+pub mod v0_2;
 
 pub const PROTOCOL_BASE: &str = "https://firstperson.network/protocols/acl-management/1.0";
 

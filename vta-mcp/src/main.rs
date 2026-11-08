@@ -32,8 +32,8 @@
 //! a *tool* and `vta_call` is one tool that reaches the entire management
 //! surface. See `docs/02-vta/vta-mcp.md`.
 
-mod guard;
-mod observability;
+#[cfg(test)]
+mod census;
 mod server;
 
 use std::path::PathBuf;
@@ -47,9 +47,9 @@ use vta_sdk::agent_session::{AgentConfig, AgentSession};
 use vta_sdk::client::VtaClient;
 use vta_sdk::session::TransportChoice;
 
-use guard::{ConfirmLevel, Guard};
-use observability::{LogFormat, Recorder};
 use server::{BridgeIdentity, VtaMcp};
+use vti_mcp_common::guard::{ConfirmLevel, Guard};
+use vti_mcp_common::observability::{self, LogFormat, Recorder};
 
 #[derive(Parser)]
 #[command(
@@ -232,7 +232,7 @@ async fn main() -> anyhow::Result<()> {
     // before anything else can want to log, and *on* by default: a bridge that
     // says nothing unless RUST_LOG happens to be set is one nobody can debug.
     let log_format = LogFormat::parse(&args.log_format).map_err(|e| anyhow::anyhow!(e))?;
-    observability::init_tracing(&args.log_level, log_format);
+    observability::init_tracing("vta_mcp", &args.log_level, log_format);
 
     // Two kinds of startup failure, handled differently on purpose:
     //
@@ -248,6 +248,7 @@ async fn main() -> anyhow::Result<()> {
         allow: args.allow.clone(),
         deny: args.deny.clone(),
         confirm: ConfirmLevel::parse(&args.confirm).map_err(|e| anyhow::anyhow!(e))?,
+        node: "VTA",
     };
     let recorder = match &args.audit_log {
         Some(path) => Arc::new(

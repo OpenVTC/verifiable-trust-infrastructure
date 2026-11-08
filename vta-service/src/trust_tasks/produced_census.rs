@@ -76,12 +76,46 @@ const PRODUCED_UNPUBLISHED: &[(&str, &str)] = &[
 /// to infer "is this inside a test module" from source text would be wrong
 /// occasionally and silently, and this census only works if a failure means
 /// something.
-const NOT_PRODUCED: &[(&str, &str)] = &[(
-    "https://trusttasks.org/spec/does-not-exist/9.9",
-    "Negative fixture: `class_for` must return `None` for an unknown URI, and \
+const NOT_PRODUCED: &[(&str, &str)] = &[
+    (
+        "https://trusttasks.org/spec/does-not-exist/9.9",
+        "Negative fixture: `class_for` must return `None` for an unknown URI, and \
          `method_not_found` must reject an unknown *family* as `unsupportedType` \
          rather than as a version skew. Deliberately names nothing.",
-)];
+    ),
+    // Superseded versions named only to be refused or mapped, and the pin
+    // census's own exceptions. Each is published; none is pinned, because this
+    // VTA neither sends nor serves it — so `vti_specs::schema_index` answers
+    // `None` for it.
+    (
+        "https://trusttasks.org/spec/acl/grant/0.1",
+        "superseded by 0.2; named by tests that a 0.1 grant is refused",
+    ),
+    (
+        "https://trusttasks.org/spec/auth/revoke-session/0.1",
+        "superseded by 0.2; named by tests of an unserved version",
+    ),
+    (
+        "https://trusttasks.org/spec/policy/upsert/0.2",
+        "superseded by 0.3; named by the test that a rule naming it is refused",
+    ),
+    (
+        "https://trusttasks.org/spec/witness/session/0.1",
+        "superseded by 0.2; named by the test that a 0.1 session is refused",
+    ),
+    (
+        "https://trusttasks.org/spec/git-ns/right/grant/0.1",
+        "listed in `spec_pin_census::NOT_PINNED`: a framework label, not a task",
+    ),
+    (
+        "https://trusttasks.org/spec/provision/integration/0.1",
+        "listed in `spec_pin_census::NOT_PINNED`: a historical wire form, never sent",
+    ),
+    (
+        "https://trusttasks.org/spec/provision/integration/0.2",
+        "listed in `spec_pin_census::NOT_PINNED`: a historical wire form, never sent",
+    ),
+];
 
 /// Repo root, from this test binary's manifest directory.
 fn workspace_root() -> PathBuf {
@@ -152,7 +186,7 @@ fn every_produced_uri_is_published_or_tracked() {
 
     let untracked: Vec<&String> = named
         .iter()
-        .filter(|u| trust_tasks_rs::schema_index::schema_for(u).is_none())
+        .filter(|u| vti_specs::schema_index::schema_for(u).is_none())
         // The framework's own error envelope, not a task. It *is* in the
         // registry (`trust-task-error/0.1` … `/0.5`), but `schema_index`
         // carries payload schemas for tasks, so `schema_for` answers `None`
@@ -190,7 +224,7 @@ fn no_tracked_entry_outlives_its_spec() {
     let published: Vec<&str> = PRODUCED_UNPUBLISHED
         .iter()
         .map(|(u, _)| *u)
-        .filter(|u| trust_tasks_rs::schema_index::schema_for(u).is_some())
+        .filter(|u| vti_specs::schema_index::schema_for(u).is_some())
         .collect();
 
     assert!(

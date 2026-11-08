@@ -82,7 +82,7 @@ use vti_common::store::{Batch, KeyspaceHandle};
 
 /// The longest a delegation lives, and the lifetime one gets when its
 /// enrolment asked for none: 30 days, the ceiling
-/// `auth/signing-key/enroll/0.1` item 6 sets.
+/// `auth/signing-key/enroll/0.2` item 6 sets.
 pub const MAX_LIFETIME_DAYS: i64 = 30;
 
 /// How many active delegations one identity may hold

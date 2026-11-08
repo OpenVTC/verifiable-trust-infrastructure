@@ -9,11 +9,11 @@ impl VtaClient {
         &self,
         params: &crate::protocols::audit_management::list::ListAuditLogsBody,
     ) -> Result<crate::protocols::audit_management::list::ListAuditLogsResultBody, VtaError> {
-        // `ListAuditLogsBody` serializes to the canonical `audit/list/0.1`
+        // `ListAuditLogsBody` serializes to the canonical `audit/list/0.2`
         // payload (omitted filters are absent, not null) — conformance is
         // asserted server-side in `trust_tasks::audit::tests`.
         self.rpc_tt(
-            crate::trust_tasks::TASK_AUDIT_LIST_0_1,
+            crate::trust_tasks::TASK_AUDIT_LIST_0_2,
             serde_json::to_value(params)?,
             30,
         )

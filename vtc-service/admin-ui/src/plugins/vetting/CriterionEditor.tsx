@@ -169,7 +169,7 @@ export function CriterionEditor({
               ["review", "Refer them to an administrator, who decides"],
             ] as const
           ).map(([value, label]) => (
-            <label key={value} className="switch-field">
+            <label key={value} className="checkbox">
               <input
                 type="radio"
                 name="criterion-admission"
@@ -177,7 +177,7 @@ export function CriterionEditor({
                 checked={draft.admission === value}
                 onChange={() => set({ admission: value as Admission })}
               />
-              <span className="switch-text">{label}</span>
+              <span className="checkbox-text">{label}</span>
             </label>
           ))}
           <p className="muted">
@@ -386,7 +386,7 @@ function VettingFields({
         <legend>Methods that count</legend>
         <div className="vet-method-checks">
           {VETTING_METHODS.map((method) => (
-            <label key={method} className="switch-field">
+            <label key={method} className="checkbox">
               <input
                 type="checkbox"
                 checked={draft.acceptedMethods[method]}
@@ -399,7 +399,7 @@ function VettingFields({
                   })
                 }
               />
-              <span className="switch-text">{methodLabel(method)}</span>
+              <span className="checkbox-text">{methodLabel(method)}</span>
             </label>
           ))}
         </div>

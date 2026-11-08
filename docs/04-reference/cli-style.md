@@ -118,7 +118,11 @@ given subsystem picked.
   non-interactive run passes to consent to a destructive command
   (`contexts delete`, `vta delete`, `community delete`, `memory wipe`,
   `vta vault wipe`, offline `vta did-mgmt dids delete`, `vta acl delete`). It
-  never changes *what* is deleted.
+  never changes *what* is deleted — and it never answers a *second* question.
+  `contexts delete` asks again when a DID's hosting server cannot confirm
+  removing its log (nothing has been deleted at that point): leave those logs
+  published and finish, or wait for the host and retry. A non-interactive run
+  answers it in advance with `--abandon-host-copies`, never with `--yes`.
 - **On a delete, `--force` means "skip the soft delete"** — delete immediately
   and irreversibly — and only where a soft (recoverable) path exists
   (`vault delete --force`, `cred-vault delete --force`; `purge` is the same

@@ -19,53 +19,19 @@ use crate::error::VtaError;
 use crate::protocols::did_template_management as proto;
 use crate::trust_tasks;
 
-/// The task URI to carry `template` on: 3.0 when the template needs it, 2.0
-/// otherwise.
-///
-/// # Why not simply always send 3.0
-///
-/// Because that would break this client against every VTA deployed before
-/// 3.0 existed, for templates those VTAs can serve perfectly well. The rule
-/// that avoids it is that **the task version follows the template version**: a
-/// `schemaVersion` 1 template has nothing 2.0 cannot express, so demanding 3.0
-/// buys nothing and costs compatibility; a `schemaVersion` 2 template genuinely
-/// cannot travel on 2.0, so demanding 3.0 is the honest failure rather than a
-/// silent one.
-///
-/// A caller sending a v2 template to an older VTA gets `UnsupportedType` naming
-/// the 3.0 URI, which is the correct answer — that VTA cannot mint the keys the
-/// template asks for either.
-fn create_uri(template: &DidTemplate) -> &'static str {
-    if template.schema_version >= 2 {
-        trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0
-    } else {
-        trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0
-    }
-}
-
-/// As [`create_uri`], for replacement.
-fn update_uri(template: &DidTemplate) -> &'static str {
-    if template.schema_version >= 2 {
-        trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0
-    } else {
-        trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0
-    }
-}
-
 impl VtaClient {
     // ── DID templates — global scope ─────────────────────────────────────
 
     /// List all global templates.
     ///
-    /// REST: `GET /did-templates`. DIDComm: `vta/did-templates/list/2.0`
+    /// REST: `GET /did-templates`. DIDComm: `vta/did-templates/list/3.1`
     /// without `contextId`.
     pub async fn list_did_templates(&self) -> Result<Vec<DidTemplateRecord>, VtaError> {
         let resp: proto::list::ListDidTemplatesResultBody = self
             .rpc_tt(
-                // 3.0 unconditionally: a 2.0 read refuses to return a v2 template
-                // (it cannot express one), so staying on 2.0 would make this client
-                // unable to see post-quantum templates at all.
-                trust_tasks::TASK_DID_TEMPLATES_LIST_3_0,
+                // 3.1, the only version served: it returns every template,
+                // `schemaVersion` 2 (a `keys` block) included.
+                trust_tasks::TASK_DID_TEMPLATES_LIST_3_1,
                 serde_json::to_value(proto::list::ListDidTemplatesBody { context_id: None })?,
                 30,
             )
@@ -76,11 +42,10 @@ impl VtaClient {
     /// Fetch one global template by name.
     ///
     /// REST: `GET /did-templates/{name}`. DIDComm:
-    /// `vta/did-templates/get/2.0` without `contextId`.
+    /// `vta/did-templates/get/3.1` without `contextId`.
     pub async fn get_did_template(&self, name: &str) -> Result<DidTemplateRecord, VtaError> {
         self.rpc_tt(
-            // 3.0 for the same reason as `list` above.
-            trust_tasks::TASK_DID_TEMPLATES_GET_3_0,
+            trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             serde_json::to_value(proto::get::GetDidTemplateBody {
                 context_id: None,
                 name: name.to_string(),
@@ -93,22 +58,23 @@ impl VtaClient {
     /// Create a global template. Super admin only.
     ///
     /// REST: `POST /did-templates`. DIDComm:
-    /// `vta/did-templates/create/2.0` without `contextId`.
+    /// `vta/did-templates/create/3.1` without `contextId`.
     pub async fn create_did_template(
         &self,
         template: DidTemplate,
     ) -> Result<DidTemplateRecord, VtaError> {
         let payload = serde_json::to_value(proto::create::CreateDidTemplateBody {
             context_id: None,
-            template: template.clone(),
+            template,
         })?;
-        self.rpc_tt(create_uri(&template), payload, 30).await
+        self.rpc_tt(trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1, payload, 30)
+            .await
     }
 
     /// Replace a global template. Super admin only.
     ///
     /// REST: `PUT /did-templates/{name}`. DIDComm:
-    /// `vta/did-templates/update/2.0` without `contextId`.
+    /// `vta/did-templates/update/3.1` without `contextId`.
     pub async fn update_did_template(
         &self,
         name: &str,
@@ -117,9 +83,10 @@ impl VtaClient {
         let payload = serde_json::to_value(proto::update::UpdateDidTemplateBody {
             context_id: None,
             name: name.to_string(),
-            template: template.clone(),
+            template,
         })?;
-        self.rpc_tt(update_uri(&template), payload, 30).await
+        self.rpc_tt(trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1, payload, 30)
+            .await
     }
 
     /// Delete a global template. Super admin only.
@@ -166,17 +133,16 @@ impl VtaClient {
     /// List context-scoped templates.
     ///
     /// REST: `GET /contexts/{id}/did-templates`. DIDComm:
-    /// `vta/did-templates/list/2.0` with `contextId` set.
+    /// `vta/did-templates/list/3.1` with `contextId` set.
     pub async fn list_context_did_templates(
         &self,
         context_id: &str,
     ) -> Result<Vec<DidTemplateRecord>, VtaError> {
         let resp: proto::list::ListDidTemplatesResultBody = self
             .rpc_tt(
-                // 3.0 unconditionally: a 2.0 read refuses to return a v2 template
-                // (it cannot express one), so staying on 2.0 would make this client
-                // unable to see post-quantum templates at all.
-                trust_tasks::TASK_DID_TEMPLATES_LIST_3_0,
+                // 3.1, the only version served: it returns every template,
+                // `schemaVersion` 2 (a `keys` block) included.
+                trust_tasks::TASK_DID_TEMPLATES_LIST_3_1,
                 serde_json::to_value(proto::list::ListDidTemplatesBody {
                     context_id: Some(context_id.to_string()),
                 })?,
@@ -189,15 +155,14 @@ impl VtaClient {
     /// Fetch one context-scoped template.
     ///
     /// REST: `GET /contexts/{id}/did-templates/{name}`. DIDComm:
-    /// `vta/did-templates/get/2.0` with `contextId` set.
+    /// `vta/did-templates/get/3.1` with `contextId` set.
     pub async fn get_context_did_template(
         &self,
         context_id: &str,
         name: &str,
     ) -> Result<DidTemplateRecord, VtaError> {
         self.rpc_tt(
-            // 3.0 for the same reason as `list` above.
-            trust_tasks::TASK_DID_TEMPLATES_GET_3_0,
+            trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             serde_json::to_value(proto::get::GetDidTemplateBody {
                 context_id: Some(context_id.to_string()),
                 name: name.to_string(),
@@ -210,7 +175,7 @@ impl VtaClient {
     /// Create a context-scoped template. Context admin or super admin.
     ///
     /// REST: `POST /contexts/{id}/did-templates`. DIDComm:
-    /// `vta/did-templates/create/2.0` with `contextId` set.
+    /// `vta/did-templates/create/3.1` with `contextId` set.
     pub async fn create_context_did_template(
         &self,
         context_id: &str,
@@ -218,15 +183,16 @@ impl VtaClient {
     ) -> Result<DidTemplateRecord, VtaError> {
         let payload = serde_json::to_value(proto::create::CreateDidTemplateBody {
             context_id: Some(context_id.to_string()),
-            template: template.clone(),
+            template,
         })?;
-        self.rpc_tt(create_uri(&template), payload, 30).await
+        self.rpc_tt(trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1, payload, 30)
+            .await
     }
 
     /// Replace a context-scoped template.
     ///
     /// REST: `PUT /contexts/{id}/did-templates/{name}`. DIDComm:
-    /// `vta/did-templates/update/2.0` with `contextId` set.
+    /// `vta/did-templates/update/3.1` with `contextId` set.
     pub async fn update_context_did_template(
         &self,
         context_id: &str,
@@ -236,9 +202,10 @@ impl VtaClient {
         let payload = serde_json::to_value(proto::update::UpdateDidTemplateBody {
             context_id: Some(context_id.to_string()),
             name: name.to_string(),
-            template: template.clone(),
+            template,
         })?;
-        self.rpc_tt(update_uri(&template), payload, 30).await
+        self.rpc_tt(trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1, payload, 30)
+            .await
     }
 
     /// Delete a context-scoped template.

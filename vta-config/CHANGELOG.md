@@ -2,6 +2,135 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.37.0...vta-config-v0.38.0) — 2026-11-05
+
+
+### Added
+
+- **collection**: Collection by default is a stored setting of each trust context, with an off-only operator suspension (VTI-NTF-094 – 098) ([#2467](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2467))
+
+
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.36.0...vta-config-v0.37.0) — 2026-11-05
+
+
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.35.0...vta-config-v0.36.0) — 2026-11-05
+
+
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.34.0...vta-config-v0.35.0) — 2026-11-04
+
+
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.33.0...vta-config-v0.34.0) — 2026-11-04
+
+
+### Added
+
+- **rate-limit**: VTA and VTC limits run on affinidi-rate-limit ([#2414](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2414))
+
+* feat(rate-limit)!: VTA and VTC limits run on affinidi-rate-limit
+
+  The per-IP limits and the trusted-proxy client-address rule now come from
+  affinidi-rate-limit, the crate the mediator, the DID resolver cache and the
+  DID hosting service use, rather than three separate copies of the rule.
+
+  - vti-common's TrustedProxyKeyExtractor delegates to the crate's
+    ClientIpExtractor. Its constructor now returns a Result: a range covering
+    every address (0.0.0.0/0, ::/0) is refused.
+  - The VTA's limiters run on the crate with the same quotas, runtime quota
+    swaps and 429 contract.
+  - The VTC's unauthenticated limiter is the crate's layer, sharing one
+    budget with the Trust Task admission limits, which also run on the crate.
+
+  Behaviour changes. An X-Forwarded-For chain from a trusted proxy that
+  cannot be read (a malformed entry, more than 64 entries) is refused with
+  400 instead of being charged to the proxy, which gave its sender a second
+  bucket and hid a misbehaving proxy. trust_xff_cidrs refuses 0.0.0.0/0 and
+  ::/0 at load, on the VTA and the VTC. The VTC's sign-in and room limiters
+  refuse a new address once 10,000 are live, where they used to sweep and
+  grow. The VTC's unauthenticated 429 no longer carries tower_governor's
+  informational x-ratelimit-after header; Retry-After is unchanged.
+
+
+
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.32.0...vta-config-v0.33.0) — 2026-11-04
+
+
+### Added
+
+- **vta**: Collection for the principal's identifiers — claims, the collector, collection by default off (VTI-NTF-080 – 093) ([#2421](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2421))
+
+* feat(vti-specs): pin vta/collection/{claim,release,list} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1023 and #1024: a client's
+  collection claim on a persona DID, its release, and the listing of who
+  collects for each of a context's identifiers (VTI-NTF-080 – VTI-NTF-093).
+
+
+
+## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.31.0...vta-config-v0.32.0) — 2026-11-03
+
+
+### Added
+
+- **notifications**: Notify/relay, the VTA's held notifications and the election notice (VTI-NTF-001 – 063) ([#2397](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2397))
+
+* feat(notifications)!: notifications/notify + relay, the VTA's held notifications, and the election notice to a member party (VTI-NTF-001 – 063)
+
+  Implements the Notifications chapter of the VTI specification
+  (dtgwg-vti-spec #91, VTI-NTF-001 – 063, Appendix G `election`) over the
+  tasks pinned from dtgwg-trust-tasks-tf #1012: notifications/notify/0.1 and
+  notifications/relay/0.1 (vti-specs-core), vta/notifications/{list,show,
+  dismiss}/0.1 (vti-specs-vta).
+
+  - vta-sdk: `notifications::verify_delivery` -> `VerifiedDelivery`, the one
+    way to a notification's members: every layer's type and pinned schema,
+    each proof over the JSON as received as its own issuer, each forwarded
+    document addressed to the relay carrying it, at most four relays,
+    `relayable` honoured (VTI-NTF-042). TASK_* constants, retry_safety
+    (notify/relay/dismiss RetrySafe, list/show ReadOnly), typed and `_json`
+    client methods for list/show/dismiss.
+  - VTA: notify/relay are counterparty tasks (zero-authority claim for a
+    sender the ACL does not know); the stated acceptance policy
+    (`[notifications]`: an ACL entry, an issuer of a membership credential or
+    a party of a relationship credential held in the context, `accept_from`,
+    `accept_any`) counts the delivering relayer, never the originator
+    (VTI-NTF-030/031); one record per (addressee, originator, notificationId),
+    higher revision replaces, dismissal kept (VTI-NTF-022); the same receipt
+    whatever was done (VTI-NTF-023); bounds per originator and deliverer
+    (VTI-NTF-033); held per context in the new `notifications` keyspace
+    (backed up), listed/read/dismissed only with standing there
+    (VTI-NTF-050 – 052); lapsed records swept after `retain_lapsed_days`.
+  - VTC as originator: an election under a credential roll naming a member
+    party is notified to that party once registered and withdrawn (higher
+    revision) if cancelled or closed before voting closes (VTI-NTF-060/061);
+    the notice is recorded before it is sent and queued on the durable member
+    push by the election sweeper, its one sender.
+  - VTC as recipient and relayer: notify/relay on the open door, verified and
+    held by its stated policy in its own `notifications` keyspace (backed up);
+    a relay engine that refuses a decision which has not acknowledged what
+    the relay discloses (VTI-NTF-046), relays the document exactly as
+    received to every member, keeps whom it relayed to until the period ends
+    (30 days without one) and relays every later revision, withdrawals
+    included, to them (VTI-NTF-044). No remote surface for the relay decision
+    yet: the specification defines no administrator task for it.
+  - pnm: `pnm notifications list|show|dismiss`.
+
+
+
+## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.30.0...vta-config-v0.31.0) — 2026-11-02
+
+
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.29.0...vta-config-v0.30.0) — 2026-10-30
+
+
+## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.28.0...vta-config-v0.29.0) — 2026-10-30
+
+
+## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.27.0...vta-config-v0.28.0) — 2026-10-28
+
+
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.26.0...vta-config-v0.27.0) — 2026-10-27
+
+
 ## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.25.0...vta-config-v0.26.0) — 2026-10-26
 
 

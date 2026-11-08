@@ -103,10 +103,17 @@ const SESSION_TIMEOUT_SECS: u64 = 60;
 
 pub mod acl;
 pub mod actions;
+pub mod boards;
+mod connect;
 pub mod elections;
 pub mod git_ns;
 pub mod members;
 pub mod rooms;
+mod send;
+pub mod signin;
+
+pub use connect::SessionIdentity;
+pub use send::{VtcTransport, supported_type_uris};
 
 /// The Trust Task type URI of each admin verb this client sends as a signed
 /// document.
@@ -122,9 +129,9 @@ pub mod task {
     pub const JOIN_REQUESTS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
     pub const JOIN_REQUESTS_DECIDE: &str =
         "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
-    pub const POLICY_LIST: &str = "https://trusttasks.org/spec/policy/list/0.2";
+    pub const POLICY_LIST: &str = "https://trusttasks.org/spec/policy/list/0.3";
     pub const POLICY_GET: &str = "https://trusttasks.org/spec/policy/get/0.1";
-    pub const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+    pub const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
     pub const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
     pub const VETTING_VETTERS_GRANT: &str =
         "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
@@ -138,12 +145,10 @@ pub mod task {
     pub const MEMBERS_ROTATE: &str = "https://trusttasks.org/spec/vtc/members/rotate/0.1";
     pub const MEMBERS_PERSONHOOD_REVOKE: &str =
         "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1";
-    pub const RELATIONSHIPS_LIST: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.2";
+    pub const RELATIONSHIPS_LIST: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.3";
     pub const RELATIONSHIPS_PUBLISH: &str =
         "https://trusttasks.org/spec/vtc/relationships/publish/0.2";
     pub const RELATIONSHIPS_REVOKE: &str =
-        "https://trusttasks.org/spec/vtc/relationships/revoke/0.1";
-    pub const RELATIONSHIPS_REVOKE_0_2: &str =
         "https://trusttasks.org/spec/vtc/relationships/revoke/0.2";
     pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
     pub const MEMBERS_CREDENTIALS: &str =
@@ -274,29 +279,29 @@ const MAX_DOCUMENT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 /// driving the join ceremony depends on one crate.
 pub use vta_sdk::protocols::join_requests;
 
-/// `did-management/did/register` — how a self-hosted community is handed a
-/// new log for its own DID ([`VtcClient::install_did_log`]).
-pub use trust_tasks_rs::specs::did_management::did::register as did_register;
 /// Re-export of the peer identity vetting wire types — the vetter grant, the
 /// grant listing and the automatic-grant configuration this client's vetting
 /// admin verbs send and return.
 pub use vta_sdk::protocols::vetting;
+/// `did-management/did/register` — how a self-hosted community is handed a
+/// new log for its own DID ([`VtcClient::install_did_log`]).
+pub use vti_specs::did_management::did::register as did_register;
 
-/// `policy/upsert/0.2` — the body [`VtcClient::upload_policy`] sends.
-pub use trust_tasks_rs::specs::policy::upsert::v0_2 as policy_upsert;
+/// `policy/upsert/0.3` — the body [`VtcClient::upload_policy`] sends.
+pub use vti_specs::policy::upsert::v0_3 as policy_upsert;
 
 /// `vtc/members/credentials/0.1` — what [`VtcClient::member_credentials`]
 /// returns, and the error code it maps to [`VtcError::NotFound`].
-pub use trust_tasks_rs::specs::vtc::members::credentials::v0_1 as members_credentials;
+pub use vti_specs::vtc::members::credentials::v0_1 as members_credentials;
 
 /// `vtc/rooms/community/*` — the rooms a community owns, as its administrators run
 /// them: create, list, get and update (a room's label, description and tags — at 0.2
 /// the reads carry them), and members add, remove and list.
-pub use trust_tasks_rs::specs::vtc::rooms::community as community_rooms;
+pub use vti_specs::vtc::rooms::community as community_rooms;
 
 /// `vtc/rooms/offers/*` — a member's offers of admission to the community's own rooms,
 /// and accepting one.
-pub use trust_tasks_rs::specs::vtc::rooms::offers as room_offers;
+pub use vti_specs::vtc::rooms::offers as room_offers;
 
 /// The `ext` key under which a VTC binds an uploaded policy module to the
 /// decision slot (purpose) it serves.
@@ -379,6 +384,40 @@ pub enum VtcError {
     /// bound, …). Caught before anything is sent.
     #[error("invalid request payload: {0}")]
     InvalidPayload(String),
+    /// [`VtcClient::send_task`] was asked for a Type URI it will not send: a
+    /// version this client does not pin, or a `#response` URI. Nothing was
+    /// sent — an unpinned version has no schema to check a payload against,
+    /// and "nothing to check" is not a reason to send it.
+    #[error("will not send {type_uri}: {reason}")]
+    UnpinnedTask {
+        /// The Type URI as the caller gave it.
+        type_uri: String,
+        /// Why it is not sendable.
+        reason: String,
+    },
+    /// [`VtcClient::connect_resolved`] found no transport it may use: the
+    /// community advertises none the choice permits, or advertises one that
+    /// could not be opened. A session the community advertises is never
+    /// silently replaced by HTTPS.
+    #[error("no usable transport to {vtc_did}: {detail}")]
+    NoTransport {
+        /// The community.
+        vtc_did: String,
+        /// What was advertised, what was tried, and what would permit HTTPS.
+        detail: String,
+    },
+    /// Wallet sign-in ([`VtcClient::sign_in_request`] and its siblings) was
+    /// refused, or the portal answered in a shape this client cannot use.
+    /// `code` is the community's own (`auth/oob/request:purposeUnsupported`,
+    /// …) or this client's (`wrongCommunity`, `audienceNotServed`,
+    /// `linkTooLong`, `unexpectedShape`).
+    #[error("sign-in refused ({code}): {message}")]
+    SignIn {
+        code: String,
+        message: String,
+        /// The refusal's `details`, as sent.
+        details: serde_json::Value,
+    },
     /// The VTC refused a Trust Task sent over a DIDComm or TSP session.
     ///
     /// Carries the `trust-task-error` document as the VTC wrote it — the
@@ -409,10 +448,9 @@ pub enum VtcError {
 pub const NEXT_STEP_TYPE: &str =
     <trust_tasks_rs::specs::trust_task_next_step::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `vtc/admin/actions/show/0.2` — what a parked operation's next step expects
-/// (a VTC that predates it names `show/0.1`, which answers the same request).
+/// `vtc/admin/actions/show/0.3` — what a parked operation's next step expects
 pub const ACTION_SHOW_TYPE: &str =
-    <trust_tasks_rs::specs::vtc::admin::actions::show::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::admin::actions::show::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The parked action a `trust-task-next-step/0.1` document names, as
 /// [`VtcError::Parked`] — `None` for any other document.
@@ -635,7 +673,7 @@ pub struct PersonhoodRevocation {
 }
 
 /// One Verifiable Relationship Credential recorded for a member
-/// (`vtc/relationships/list/0.2`).
+/// (`vtc/relationships/list/0.3`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -662,7 +700,7 @@ pub struct RelationshipPublished {
 }
 
 /// The result of revoking a Verifiable Relationship Credential
-/// (`vtc/relationships/revoke/0.1`).
+/// (`vtc/relationships/revoke/0.2`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -946,7 +984,13 @@ impl VtcClient {
         )
         .await
         .map_err(|e| VtcError::Session(e.to_string()))?;
-        Ok(Self::over_session(documents, client_did, vtc_did, rest_url))
+        Ok(Self::over_session(
+            documents,
+            client_did,
+            vtc_did,
+            rest_url,
+            HolderKey::from_did_key(client_did, private_key_multibase).ok(),
+        ))
     }
 
     /// The same, over **TSP**, for a community that advertises `#tsp`.
@@ -974,17 +1018,28 @@ impl VtcClient {
         )
         .await
         .map_err(|e| VtcError::Session(e.to_string()))?;
-        Ok(Self::over_session(documents, client_did, vtc_did, rest_url))
+        Ok(Self::over_session(
+            documents,
+            client_did,
+            vtc_did,
+            rest_url,
+            HolderKey::from_did_key(client_did, private_key_multibase).ok(),
+        ))
     }
 
     /// Wrap a connected session. One place to build the pairing, so a further
     /// `connect_*` variant cannot forget the REST half.
     #[cfg(feature = "didcomm")]
+    ///
+    /// `signer` is the session identity's own key, kept for what only the
+    /// HTTPS door serves — wallet sign-in ([`signin`]) — and never for the
+    /// admin verbs, which go over the session while there is one.
     fn over_session(
         documents: vta_sdk::client::VtaClient,
         client_did: &str,
         vtc_did: &str,
         rest_url: Option<&str>,
+        signer: Option<HolderKey>,
     ) -> Self {
         Self {
             http: vta_sdk::http::rest_client(),
@@ -993,7 +1048,7 @@ impl VtcClient {
                 .trim_end_matches('/')
                 .to_string(),
             vtc_did: vtc_did.to_string(),
-            signer: None,
+            signer,
             documents: Some(documents),
             session_did: Some(client_did.to_string()),
         }
@@ -1236,9 +1291,9 @@ impl VtcClient {
     /// approver's authority.
     pub async fn decide_task_consent(
         &self,
-        decision: &trust_tasks_rs::specs::task_consent::decision::v0_1::Payload,
-    ) -> Result<trust_tasks_rs::specs::task_consent::decision::v0_1::Response, VtcError> {
-        use trust_tasks_rs::specs::task_consent::decision::v0_1 as spec;
+        decision: &vti_specs::task_consent::decision::v0_2::Payload,
+    ) -> Result<vti_specs::task_consent::decision::v0_2::Response, VtcError> {
+        use vti_specs::task_consent::decision::v0_2 as spec;
         let payload =
             serde_json::to_value(decision).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
         let reply = self
@@ -1253,7 +1308,7 @@ impl VtcClient {
     }
 
     /// One page of the administrator action list
-    /// (`vtc/admin/actions/list/0.2`): `view` is `waitingForMe`,
+    /// (`vtc/admin/actions/list/0.3`): `view` is `waitingForMe`,
     /// `requestedByMe`, `history` or `all`. The whole response payload —
     /// `actions`, the badge `counts`, and `nextCursor` when more follow.
     pub async fn list_actions(
@@ -1261,7 +1316,7 @@ impl VtcClient {
         view: &str,
         cursor: Option<&str>,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::vtc::admin::actions::list::v0_2 as spec;
+        use vti_specs::vtc::admin::actions::list::v0_3 as spec;
         let mut payload = serde_json::json!({ "view": view });
         if let Some(c) = cursor {
             payload["cursor"] = serde_json::json!(c);
@@ -1275,11 +1330,11 @@ impl VtcClient {
         .await
     }
 
-    /// One action as this caller may see it (`vtc/admin/actions/show/0.2`) —
+    /// One action as this caller may see it (`vtc/admin/actions/show/0.3`) —
     /// the `action` member, carrying this approver's own `challenge` when they
     /// may decide it now.
     pub async fn show_action(&self, action_id: &str) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::vtc::admin::actions::show::v0_2 as spec;
+        use vti_specs::vtc::admin::actions::show::v0_3 as spec;
         let reply = self
             .document(
                 ACTION_SHOW_TYPE,
@@ -1291,13 +1346,13 @@ impl VtcClient {
         Ok(reply["action"].clone())
     }
 
-    /// Withdraw this caller's own open action (`vtc/admin/actions/cancel/0.2`).
+    /// Withdraw this caller's own open action (`vtc/admin/actions/cancel/0.3`).
     pub async fn cancel_action(
         &self,
         action_id: &str,
         reason: Option<&str>,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::vtc::admin::actions::cancel::v0_2 as spec;
+        use vti_specs::vtc::admin::actions::cancel::v0_3 as spec;
         let mut payload = serde_json::json!({ "actionId": action_id });
         if let Some(r) = reason {
             payload["reason"] = serde_json::json!(r);
@@ -1320,9 +1375,9 @@ impl VtcClient {
     /// by a delegated key.
     pub async fn decide_action(
         &self,
-        decision: &trust_tasks_rs::specs::task_consent::decision::v0_2::Payload,
-    ) -> Result<trust_tasks_rs::specs::task_consent::decision::v0_2::Response, VtcError> {
-        use trust_tasks_rs::specs::task_consent::decision::v0_2 as spec;
+        decision: &vti_specs::task_consent::decision::v0_2::Payload,
+    ) -> Result<vti_specs::task_consent::decision::v0_2::Response, VtcError> {
+        use vti_specs::task_consent::decision::v0_2 as spec;
         let payload =
             serde_json::to_value(decision).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
         let reply = self
@@ -1494,10 +1549,35 @@ impl VtcClient {
     }
 
     /// List the community's policies (opaque JSON descriptors,
-    /// `policy/list/0.2`), following the cursor to completion. Administrator.
+    /// `policy/list/0.3`), following the cursor to completion. Administrator.
+    ///
+    /// Not [`Self::document_pages`]: `policy/list` names its rows `policies`,
+    /// not `items`.
     pub async fn list_policies(&self) -> Result<Vec<serde_json::Value>, VtcError> {
-        self.document_pages(task::POLICY_LIST, serde_json::json!({}), "policy/list")
-            .await
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PoliciesPage {
+            policies: Vec<serde_json::Value>,
+            next_cursor: Option<String>,
+        }
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut payload = serde_json::json!({});
+            if let Some(cursor) = &cursor {
+                payload["cursor"] = serde_json::json!(cursor);
+            }
+            let reply = self
+                .document(task::POLICY_LIST, payload, &[], MAX_DOCUMENT_RESPONSE_BYTES)
+                .await?;
+            let page: PoliciesPage = decode_payload(reply, "policy/list")?;
+            out.extend(page.policies);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(out)
     }
 
     /// The membership pair's **bodies** for one member
@@ -1544,7 +1624,7 @@ impl VtcClient {
     }
 
     /// Upload a new Rego policy module for `purpose` (`"join"`, `"removal"`,
-    /// …) — `policy/upsert/0.2`. Returns the `policy/upsert` response
+    /// …) — `policy/upsert/0.3`. Returns the `policy/upsert` response
     /// (`{ policy, created }`, with the id, version and source hash on
     /// `policy`). Administrator. Upload alone does not activate it — call
     /// [`activate_policy`](Self::activate_policy).
@@ -1815,7 +1895,7 @@ impl VtcClient {
 
     /// List the Verifiable Relationship Credentials recorded for member
     /// `did`, following the cursor to completion
-    /// (`vtc/relationships/list/0.2`). Any current member or administrator.
+    /// (`vtc/relationships/list/0.3`). Any current member or administrator.
     pub async fn list_relationships(&self, did: &str) -> Result<Vec<RelationshipRecord>, VtcError> {
         self.document_pages(
             task::RELATIONSHIPS_LIST,
@@ -1873,7 +1953,7 @@ impl VtcClient {
         }
         let reply = self
             .document(
-                task::RELATIONSHIPS_REVOKE_0_2,
+                task::RELATIONSHIPS_REVOKE,
                 payload,
                 &[],
                 MAX_DOCUMENT_RESPONSE_BYTES,
@@ -2109,7 +2189,7 @@ impl VtcClient {
         password: &str,
         include_audit: bool,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::backup::{
+        use vti_specs::backup::{
             complete_export::v0_1 as complete, get_chunk::v0_1 as get_chunk,
             initiate_export::v0_1 as initiate,
         };
@@ -2205,7 +2285,7 @@ impl VtcClient {
         password: &str,
         confirm: bool,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::backup::{
+        use vti_specs::backup::{
             finalize_import::v0_1 as finalize, initiate_import::v0_1 as initiate,
             put_chunk::v0_1 as put_chunk,
         };
@@ -2327,7 +2407,7 @@ fn document_error(
     VtcError::Http { status, body }
 }
 
-/// The `policy/upsert/0.2` payload for a module serving `purpose`, built on
+/// The `policy/upsert/0.3` payload for a module serving `purpose`, built on
 /// the generated type so the schema's bounds are checked before sending.
 fn policy_upload_payload(
     purpose: &str,
@@ -2738,7 +2818,7 @@ mod tests {
         ));
     }
 
-    /// The upload body is the canonical `policy/upsert/0.2` shape, asserted on
+    /// The upload body is the canonical `policy/upsert/0.3` shape, asserted on
     /// the serialised JSON — what the VTC's `deny_unknown_fields` body sees.
     #[test]
     fn policy_upload_sends_the_canonical_upsert_shape() {

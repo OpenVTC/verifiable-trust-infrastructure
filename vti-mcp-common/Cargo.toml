@@ -1,0 +1,26 @@
+[package]
+name = "vti-mcp-common"
+description = "What the VTI MCP bridges share: the per-operation risk guard (classifier, allow/deny globs, confirm levels), and the redacting call recorder with its stderr and JSONL audit logs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+# Shared only by the workspace's own MCP bridges (`vta-mcp`, `vtc-mcp`), which
+# are themselves unpublished; nothing outside the workspace depends on it.
+publish = false
+
+[dependencies]
+chrono = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# The pinned Type URI index, for the census that holds every pinned request
+# URI to a classified verb.
+vti-specs = { path = "../vti-specs", version = "0.10" }
+
+[lints]
+workspace = true

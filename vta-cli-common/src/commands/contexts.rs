@@ -559,10 +559,16 @@ pub fn confirm_destructive(prompt: &str) -> Result<bool, Box<dyn std::error::Err
     Ok(input == "y" || input == "yes")
 }
 
+/// `abandon_host_copies` is the operator saying, before the fact, that a DID
+/// whose hosting server cannot confirm removing its log may be left behind.
+/// Without it the deletion is tried with host copies required gone, and if one
+/// is not, the operator is shown which and asked — `force` (`--yes`) skips the
+/// *deletion* prompt, never this one, because it is a different decision.
 pub async fn cmd_context_delete(
     client: &VtaClient,
     id: &str,
     force: bool,
+    abandon_host_copies: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Fetch a preview of what will be removed
     let preview = client.preview_delete_context(id).await?;
@@ -581,21 +587,111 @@ pub async fn cmd_context_delete(
         return Ok(());
     }
 
-    let result = client.delete_context_with_outcome(id, true).await?;
+    use vta_sdk::protocols::context_management::delete::{
+        HostCleanupRefusal, host_cleanup_refusal,
+    };
+    let result = match client
+        .delete_context_settling_hosts(id, true, abandon_host_copies)
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            let failures = match host_cleanup_refusal(&e) {
+                None => return Err(e.into()),
+                Some(HostCleanupRefusal::Evidenced(failures)) => failures,
+                // The refusal stands, but it names no DID the operator could
+                // weigh, so there is nothing to base an abandonment on: report
+                // it and offer only the plain retry (#2404).
+                Some(HostCleanupRefusal::Unreadable { why }) => {
+                    let bin = crate::render::bin_name();
+                    eprintln!(
+                        "\nwarning: context `{id}` was NOT deleted — the VTA could not confirm \
+                         removing published DID logs from their hosting server, but did not \
+                         say which ({why})."
+                    );
+                    println!(
+                        "Nothing was deleted. Retry once the host is back:\n  \
+                         {bin} contexts delete {id}"
+                    );
+                    return Err(e.into());
+                }
+                // A refusal shape this build does not know: keep it as is.
+                Some(_) => return Err(e.into()),
+            };
+            render_host_cleanup_failures(id, &failures);
+            let asked = io::IsTerminal::is_terminal(&io::stdin())
+                && confirm_destructive(
+                    "Delete the context anyway, leaving these logs published for you to remove?",
+                )?;
+            if !asked {
+                let bin = crate::render::bin_name();
+                println!(
+                    "Nothing was deleted. Retry once the host is back:\n  \
+                     {bin} contexts delete {id}\nor finish now, leaving those logs behind:\n  \
+                     {bin} contexts delete {id} --yes --abandon-host-copies"
+                );
+                return Err(e.into());
+            }
+            client.delete_context_settling_hosts(id, true, true).await?
+        }
+    };
+    let orphans = deletion_outcome(id, result)?;
     println!("Context deleted: {id}");
     // The deletion succeeded and is still not finished. Said plainly, and
     // last, so it is the thing left on screen.
-    if !result.daemon_cleanup_errors.is_empty() {
+    if !orphans.is_empty() {
         eprintln!(
             "\nwarning: {} DID(s) may still resolve — their hosting server did not confirm \
              removal of the published log. Clean these up out-of-band:",
-            result.daemon_cleanup_errors.len()
+            orphans.len()
         );
-        for line in &result.daemon_cleanup_errors {
+        for line in &orphans {
             eprintln!("  - {line}");
         }
     }
     Ok(())
+}
+
+/// What a successful `vta/contexts/delete/1.1` response actually reports.
+///
+/// A success carrying `deleted: false` is the VTA declining to act, and the
+/// specification forbids reporting the deletion as done on the response
+/// status alone — so it is an error here, never "Context deleted". Otherwise
+/// the DIDs the deletion left published.
+fn deletion_outcome(
+    id: &str,
+    result: vta_sdk::specs::vta::contexts::delete::v1_1::Response,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if !result.deleted {
+        return Err(format!(
+            "the VTA answered without deleting context `{id}` (deleted: false); nothing was removed"
+        )
+        .into());
+    }
+    Ok(result.daemon_cleanup_errors)
+}
+
+/// Say, loudly and on stderr, which DIDs' logs a refused deletion could not
+/// get removed — before asking whether to leave them.
+fn render_host_cleanup_failures(
+    id: &str,
+    failures: &[vta_sdk::protocols::context_management::delete::HostCleanupFailure],
+) {
+    eprintln!(
+        "\nwarning: context `{id}` was NOT deleted — {} published DID(s) could not be removed \
+         from their hosting server:",
+        failures.len()
+    );
+    for f in failures {
+        match &f.server {
+            Some(server) => eprintln!("  - {} (server `{server}`): {}", f.did, f.reason),
+            None => eprintln!("  - {}: {}", f.did, f.reason),
+        }
+    }
+    eprintln!(
+        "\nIf the host may come back, wait and retry. If you go ahead now, these DIDs may keep \
+         resolving, and removing them from their host is up to you.\n"
+    );
 }
 
 pub async fn cmd_context_provision(
@@ -750,7 +846,9 @@ pub async fn cmd_context_reprovision(
         credential_from_key(client, kid, vta_did, config.public_url()).await?
     } else {
         // Interactive: list existing Ed25519 keys and let user choose
-        let keys_resp = client.list_keys(0, 10000, Some("active"), Some(id)).await?;
+        let keys_resp = client
+            .list_keys(None, 10000, Some("active"), Some(id))
+            .await?;
         let ed25519_keys: Vec<_> = keys_resp
             .keys
             .iter()
@@ -867,7 +965,39 @@ pub async fn cmd_context_reprovision(
 
 #[cfg(test)]
 mod tests {
-    use super::create_request_for_path;
+    use super::{create_request_for_path, deletion_outcome};
+
+    fn response(
+        deleted: bool,
+        orphans: &[&str],
+    ) -> vta_sdk::specs::vta::contexts::delete::v1_1::Response {
+        serde_json::from_value(serde_json::json!({
+            "id": "ctx",
+            "deleted": deleted,
+            "daemonCleanupErrors": orphans,
+        }))
+        .unwrap()
+    }
+
+    /// A success carrying `deleted: false` is never reported as a deletion.
+    #[test]
+    fn a_declined_deletion_is_not_reported_as_done() {
+        let err = deletion_outcome("ctx", response(false, &[])).unwrap_err();
+        assert!(err.to_string().contains("deleted: false"), "{err}");
+    }
+
+    #[test]
+    fn a_deletion_reports_what_it_left_published() {
+        assert_eq!(
+            deletion_outcome("ctx", response(true, &["did:webvh:a: unreachable"])).unwrap(),
+            vec!["did:webvh:a: unreachable".to_string()]
+        );
+        assert!(
+            deletion_outcome("ctx", response(true, &[]))
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn a_path_splits_into_parent_and_leaf() {

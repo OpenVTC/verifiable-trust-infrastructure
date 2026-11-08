@@ -208,7 +208,7 @@ pub enum AuditEvent {
     OperationStepUpRecorded(OperationStepUpData),
 
     /// A step in the life of a member's **step-up passkey**
-    /// (`auth/passkey/enroll/invite/0.2`, `purpose: stepUp`): an administrator
+    /// (`auth/passkey/enroll/invite/0.3`, `purpose: stepUp`): an administrator
     /// invited the member to enrol one, the member redeemed the invite, an
     /// invite was invalidated after too many wrong claim codes, or the
     /// credential was revoked. A step-up passkey never opens a session; it
@@ -243,7 +243,7 @@ pub enum AuditEvent {
     AdminWalletSignIn(MemberWalletSignInData),
 
     /// A document a **member-portal sign-in key** signed was accepted as the
-    /// member's (`auth/oob/grant/0.2` consumer item 7): one row per document,
+    /// member's (`auth/oob/grant/0.3` consumer item 7): one row per document,
     /// against the member, naming the key that acted and the grant that let it.
     /// Written before the document's own effect, and the document is refused
     /// when it cannot be — a delegated document is never unaudited.
@@ -259,10 +259,10 @@ pub enum AuditEvent {
     StepUpApproverChanged(StepUpApproverData),
 
     /// An operation-bound step-up answered by a **step-up approver's signed
-    /// statement** (`auth/step-up/approve-response/0.6`, evidence
+    /// statement** (`auth/step-up/approve-response/0.7`, evidence
     /// `approverSigned`) rather than a passkey. Kept beside
     /// [`Self::OperationStepUpRecorded`] so the row names the evidence kind and
-    /// the approver DID (approve-response 0.6, consumer item 7). Nothing is
+    /// the approver DID (approve-response 0.7, consumer item 7). Nothing is
     /// elevated, exactly as for a passkey.
     OperationStepUpApproved(OperationStepUpApprovedData),
 
@@ -339,6 +339,15 @@ pub enum AuditEvent {
     /// by single-administrator mode's waiver. The actor is the requesting
     /// administrator; the subject is the DID admitted.
     MemberAdmittedDirectly(MemberAdmittedDirectlyData),
+
+    /// An administrator moved a subject's **community** role (VTC
+    /// `vtc/members/role/set/0.1`, item 18): from which role to which, the
+    /// administrative authority the entry held before and after, how the move
+    /// was allowed — by the community's role-change policy outright, by other
+    /// administrators' approval of the parked action, or by
+    /// single-administrator mode's waiver — and why. The actor is the
+    /// requesting administrator; the subject is the DID whose role moved.
+    CommunityRoleSet(CommunityRoleSetData),
 
     /// Member row removed (or anonymised) per spec §10.2. Spec §5
     /// `Disposition` decides whether the row is purged outright,
@@ -563,6 +572,24 @@ pub enum AuditEvent {
     /// the community signed.
     HiddenVetterTokensIssued(HiddenVetterTokensIssuedData),
 
+    /// An administrator reset a vetter's hidden-vetting identifier binding,
+    /// because the key behind it was lost
+    /// (`vtc/vetting/vetters/pcs-binding/reset/0.1`). The actor is the
+    /// administrator, the target the member. Carries the reason and the labels
+    /// the reset waits on — never the identifier.
+    HiddenVetterBindingReset(HiddenVetterBindingResetData),
+
+    /// A reset binding was cancelled because the member enrolled again with the
+    /// identifier they were bound to: the key was found, and nothing changes
+    /// about who the member is. The actor is the community.
+    HiddenVetterResetCancelled(HiddenVetterResetCancelledData),
+
+    /// A member whose binding was reset enrolled under a new PCS identifier,
+    /// once no label the old one enrolled under was live. The old labels are
+    /// retired for good. The actor is the community; never carries either
+    /// identifier.
+    HiddenVetterRebound(HiddenVetterReboundData),
+
     /// An administrator turned hidden vetting on for a criterion, changed what
     /// it publishes (labels, drip rate, events, an event's approval), or turned
     /// it off (`vtc/vetting/hidden/{publish,withdraw}/0.1`).
@@ -654,6 +681,20 @@ pub enum AuditEvent {
     /// reference: the group, what changed and the reason given — never a name
     /// or description.
     GroupChanged(GroupChangedData),
+
+    /// A community board changed (VTI-BRD-080): a board created, changed, closed or
+    /// archived; an idea accepted, declined, merged, reopened or selected; a note hidden
+    /// or shown again.
+    ///
+    /// Carries identifiers only — never an idea's or a note's text, and never anything
+    /// about an election's tickets or ballots (VTI-VOT-100).
+    BoardChanged(BoardChangedData),
+
+    /// A badge was defined, changed, retired or promoted; an award was offered,
+    /// accepted, declined, withdrawn or taken back; a holder hid or showed a badge; the
+    /// badge settings changed (`vtc/badges/*`, VTI-BDG-091). By reference — the badge,
+    /// the award and the entries — never a note or a picture.
+    BadgeChanged(BadgeChangedData),
 
     /// A member joined or left a community group, or a request to join one was
     /// made or decided (`vtc/groups/*`). By reference: the group and the
@@ -821,7 +862,7 @@ pub enum AuditEvent {
     /// right and the reason is the granter's, not the community's.
     GitNsOperation(GitNsOperationData),
 
-    /// A **break-glass** on a git right (`git-ns/right/break-glass/0.1`): a
+    /// A **break-glass** on a git right (`git-ns/right/break-glass/0.2`): a
     /// member recorded an elevated right for themselves, bypassing separation
     /// of duties — or another administrator ratified or revoked such a record.
     ///
@@ -916,6 +957,13 @@ pub enum AuditEvent {
     /// administrator's entry, which [`Self::AclGranted`] and its neighbours
     /// record.
     CapabilityModuleChanged(CapabilityModuleChangedData),
+    /// The community's membership of a Verifiable Trust Network changed, or it relayed one of
+    /// the network's broadcasts to a group (`vtc/networks/*`).
+    NetworkMembershipChanged(NetworkMembershipChangedData),
+    /// An administrator decided that the community relays a notification it received to its
+    /// members (`vtc/notifications/relay`, VTI-NTF-073). Names the selection and how many it
+    /// added, never whom it reached.
+    NotificationRelayDecided(NotificationRelayDecidedData),
 
     /// A change to where a community keeps its rooms' files: a storage config
     /// created, changed or retired (`vtc/storage/configs/*`), a room pointed
@@ -1006,8 +1054,10 @@ pub struct RoomLimitsChangedData {
 #[serde(rename_all = "camelCase")]
 pub struct CommunityRoomChangedData {
     /// `created`, `detailsUpdated`, `memberOffered`, `memberAdmitted`,
-    /// `memberRemoved`, `offerWithdrawn`, `authorityRenewed` or
-    /// `authorityRenewalFailed`.
+    /// `memberRemoved`, `offerWithdrawn`, `authorityRenewed`,
+    /// `authorityRenewalFailed`, or — a room's owner lifecycle — `archived`,
+    /// `unarchived`, `removalScheduled`, `removedNow`, `removalCancelled`,
+    /// `purgeStarted`, `removed` or `memberRestored`.
     pub event: String,
     /// The room: its DID.
     pub room_id: String,
@@ -1032,7 +1082,7 @@ pub struct CommunityRoomChangedData {
     /// The room's details that changed — `field` is `label`, `description` or
     /// `tags` — each with its value before (`old`, absent when it had none)
     /// and after (`new`, absent when removed): on `detailsUpdated`
-    /// (`vtc/rooms/community/update/0.1` item 6), and on `created` the details
+    /// (`vtc/rooms/community/update/0.3` item 6), and on `created` the details
     /// it was created with. The earlier values are kept here and nowhere on
     /// the wire.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1059,6 +1109,55 @@ pub struct CapabilityModuleChangedData {
     /// Why a projection failed (`projectionFailed` only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// Payload for [`AuditEvent::NotificationRelayDecided`] (VTI-NTF-073): the administrator is
+/// the row's actor. **Never** carries the parties the decision reached (VTI-NTF-044).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationRelayDecidedData {
+    /// The community's record of the received notification.
+    pub record_id: String,
+    /// The notification's originator and identifier.
+    pub originator: String,
+    pub notification_id: String,
+    /// The revision relayed.
+    pub revision: u64,
+    /// `allMembers`, `group` or `role`.
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// How many parties the decision added.
+    pub recipient_count: u32,
+    /// Whether the administrator acknowledged what the relay discloses (VTI-NTF-046).
+    pub disclosure_acknowledged: bool,
+}
+
+/// Payload for [`AuditEvent::NetworkMembershipChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkMembershipChangedData {
+    /// The network's DID.
+    pub network: String,
+    /// `joined`, `repudiated`, `left`, `groupRegistered` or `broadcastRelayed`.
+    pub event: String,
+    /// The network role a group was registered for, or a broadcast was addressed to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// The community group concerned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// The administrator's reason, for a repudiation or a departure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// For `broadcastRelayed`: the broadcast's message id and how many members it was
+    /// queued for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipients: Option<u32>,
 }
 
 /// Payload for [`AuditEvent::AdminRoleDefined`] / [`AuditEvent::AdminRoleDeleted`].
@@ -1163,6 +1262,7 @@ impl AuditEvent {
             Self::JoinRequestSupplemented(..) => "JoinRequestSupplemented",
             Self::MemberAdded(..) => "MemberAdded",
             Self::MemberAdmittedDirectly(..) => "MemberAdmittedDirectly",
+            Self::CommunityRoleSet(..) => "CommunityRoleSet",
             Self::MemberRemoved(..) => "MemberRemoved",
             Self::MembershipReciprocated(..) => "MembershipReciprocated",
             Self::PolicyUploaded(..) => "PolicyUploaded",
@@ -1194,6 +1294,9 @@ impl AuditEvent {
             Self::HiddenVetterEnrolled(..) => "HiddenVetterEnrolled",
             Self::HiddenVetterReissued(..) => "HiddenVetterReissued",
             Self::HiddenVetterTokensIssued(..) => "HiddenVetterTokensIssued",
+            Self::HiddenVetterBindingReset(..) => "HiddenVetterBindingReset",
+            Self::HiddenVetterResetCancelled(..) => "HiddenVetterResetCancelled",
+            Self::HiddenVetterRebound(..) => "HiddenVetterRebound",
             Self::HiddenVettingChanged(..) => "HiddenVettingChanged",
             Self::ElectionChanged(..) => "ElectionChanged",
             Self::ElectionTicketIssued(..) => "ElectionTicketIssued",
@@ -1211,6 +1314,8 @@ impl AuditEvent {
             Self::DirectoryNoteAccessed(..) => "DirectoryNoteAccessed",
             Self::DirectoryExported(..) => "DirectoryExported",
             Self::GroupChanged(..) => "GroupChanged",
+            Self::BoardChanged(..) => "BoardChanged",
+            Self::BadgeChanged(..) => "BadgeChanged",
             Self::GroupMembershipChanged(..) => "GroupMembershipChanged",
             Self::GroupGrantsChanged(..) => "GroupGrantsChanged",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
@@ -1257,6 +1362,8 @@ impl AuditEvent {
             Self::AdminRoleDeleted(..) => "AdminRoleDeleted",
             Self::AclKeyRotated(..) => "AclKeyRotated",
             Self::CapabilityModuleChanged(..) => "CapabilityModuleChanged",
+            Self::NetworkMembershipChanged(..) => "NetworkMembershipChanged",
+            Self::NotificationRelayDecided(..) => "NotificationRelayDecided",
             Self::RoomStorageChanged(..) => "RoomStorageChanged",
             Self::RoomLimitsChanged(..) => "RoomLimitsChanged",
             Self::CommunityRoomChanged(..) => "CommunityRoomChanged",
@@ -1507,7 +1614,7 @@ pub struct SingleAdminModeData {
     /// where another party's consent would otherwise be required;
     /// `selfGrantWaived` — a VTC recorded an elevated git right for the
     /// requester themselves (separation of duties, fixed rule 7 of
-    /// `git-ns/right/grant/0.3`) under the mode; `selfEditWaived` — a subject
+    /// `git-ns/right/grant/0.4`) under the mode; `selfEditWaived` — a subject
     /// with unrestricted act scope modified its own ACL entry under the mode
     /// (VTI-ACL-052 item 3); `reductionImmediate` — a VTC reduced another
     /// administrator now, or landed an open cooling-off now, under the mode
@@ -1515,7 +1622,7 @@ pub struct SingleAdminModeData {
     pub event: String,
     /// For `consentWaived`: the requirement whose consent was waived
     /// (`VTI-APV-018`, `VTI-APV-020`, `VTI-VTC-022`). For `selfGrantWaived`:
-    /// the rule waived (`git-ns/right/grant/0.3#rule-7`). For
+    /// the rule waived (`git-ns/right/grant/0.4#rule-7`). For
     /// `selfEditWaived`: `VTI-ACL-052`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirement: Option<String>,
@@ -1573,7 +1680,7 @@ pub struct GitNsBreakGlassData {
     /// The record's `breakGlass.at` — which break-glass this row is about.
     pub break_glass_at: DateTime<Utc>,
     /// The subject's justification, verbatim. Required by
-    /// `git-ns/right/break-glass/0.1` step 9 to be in the audit record.
+    /// `git-ns/right/break-glass/0.2` step 9 to be in the audit record.
     pub justification: String,
     /// The ratifier's statement or the revoker's reason, where given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1595,7 +1702,7 @@ pub struct GitNsBreakGlassData {
     #[serde(default)]
     pub notified: u32,
     /// The administrators whose notice could not be queued
-    /// (`git-ns/right/break-glass-notice/0.1`, producer requirement 5). A
+    /// (`git-ns/right/break-glass-notice/0.2`, producer requirement 5). A
     /// break-glass nobody could be told about has `notified == 0`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undeliverable: Vec<String>,
@@ -2055,7 +2162,7 @@ pub struct MemberPortalKeyUsedData {
     /// The portal sign-in key that signed it (`K_b`, a `did:key`): the
     /// acting credential.
     pub start_key_did: String,
-    /// The `id` of the `auth/oob/grant/0.2` that delegated to the key: the
+    /// The `id` of the `auth/oob/grant/0.3` that delegated to the key: the
     /// authority. Absent only for a delegation armed before it was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant_id: Option<String>,
@@ -2218,6 +2325,53 @@ impl MemberAdmittedDirectlyData {
             role: role.into(),
             label: None,
             returning: false,
+            approval: approval.into(),
+            action_id: None,
+            reason: None,
+        }
+    }
+}
+
+/// Payload for [`AuditEvent::CommunityRoleSet`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct CommunityRoleSetData {
+    /// The community role the subject held before the move.
+    pub from_role: String,
+    /// The community role the subject holds now.
+    pub to_role: String,
+    /// The administrative authority the entry held before, as the service
+    /// describes it (its administrative role and capabilities).
+    pub authority_before: String,
+    /// The administrative authority the entry holds now.
+    pub authority_after: String,
+    /// How it was allowed: `policyAllowed`, `approved` or `waived`.
+    pub approval: String,
+    /// The administrator action it ran as, when other administrators approved
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
+    /// The requester's stated reason, when they gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl CommunityRoleSetData {
+    /// A record of one community-role move. `#[non_exhaustive]`, so a field can
+    /// be added later without breaking a caller.
+    pub fn new(
+        from_role: impl Into<String>,
+        to_role: impl Into<String>,
+        authority_before: impl Into<String>,
+        authority_after: impl Into<String>,
+        approval: impl Into<String>,
+    ) -> Self {
+        Self {
+            from_role: from_role.into(),
+            to_role: to_role.into(),
+            authority_before: authority_before.into(),
+            authority_after: authority_after.into(),
             approval: approval.into(),
             action_id: None,
             reason: None,
@@ -2649,6 +2803,42 @@ pub struct HiddenVetterTokensIssuedData {
     pub issued: usize,
 }
 
+/// Payload for [`AuditEvent::HiddenVetterBindingReset`].
+///
+/// Carries no PCS identifier, for the same reason [`HiddenVetterEnrolledData`]
+/// does not.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVetterBindingResetData {
+    /// Why, in the administrator's words.
+    pub reason: String,
+    /// The labels the old identifier enrolled under that were still live when
+    /// the binding was reset. A new identifier is accepted once none is.
+    #[serde(default)]
+    pub waiting_on: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::HiddenVetterResetCancelled`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVetterResetCancelledData {
+    /// The class label the enrolment that cancelled the reset was issued under.
+    pub label: String,
+}
+
+/// Payload for [`AuditEvent::HiddenVetterRebound`].
+///
+/// Carries no PCS identifier, old or new.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenVetterReboundData {
+    /// The class label the new identifier was first issued under.
+    pub label: String,
+    /// The labels the old identifier held, now retired: the community will not
+    /// make any of them live again.
+    pub retired_labels: Vec<String>,
+}
+
 /// Payload for [`AuditEvent::ElectionChanged`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -2670,6 +2860,10 @@ pub struct ElectionChangedData {
     /// The ballot box's answer: `success`, `pending`, or the code it refused with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ballot_box_answer: Option<String>,
+    /// Under a credential roll, the DID it names (`roll.memberOf`, create/0.5 Conformance item
+    /// 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll_member_of: Option<String>,
     /// The requester's stated reason (close, cancel).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -2692,6 +2886,10 @@ pub struct ElectionChangedData {
 pub struct ElectionTicketIssuedData {
     /// The election the ticket is for.
     pub election_id: String,
+    /// Under a credential roll, the issuer of the membership credential the claim presented
+    /// (tickets/issue/0.3 Conformance item 12) — never the presentation or the credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_issuer: Option<String>,
 }
 
 /// Payload for [`AuditEvent::HiddenVettingChanged`].
@@ -2881,6 +3079,57 @@ pub struct GroupChangedData {
     pub fields: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Payload for [`AuditEvent::BadgeChanged`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BadgeChangedData {
+    pub badge_id: String,
+    /// The award the change concerns, by identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub award_id: Option<String>,
+    /// The member the change concerns, by directory entry — never a DID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
+    /// `created`, `updated`, `retired`, `promoted`, `settingsChanged`, `offered`,
+    /// `accepted`, `declined`, `withdrawn`, `expired`, `revoked`, `kudosGiven`, `hidden`,
+    /// `shown`, `arranged` or `imageUploaded`.
+    pub change: String,
+    /// The settings a change named, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    /// The badge group behind a community badge, where the change made or removed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+}
+
+/// Payload for [`AuditEvent::BoardChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardChangedData {
+    pub board_id: String,
+    /// The idea the change concerns, by identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idea_id: Option<String>,
+    /// The note the change concerns, by identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<String>,
+    /// `created`, `updated`, `closed`, `archived`, `ideaAccepted`, `ideaDeclined`,
+    /// `ideaMerged`, `ideaReopened`, `ideaSelected`, `ideaNotSelected`, `noteHidden`,
+    /// `noteShown`, `facilitatorAppointed`, `facilitatorRemoved` or `facilitatorWithdrawn` (each
+    /// with the facilitator's `entry:<entryId>` in `fields`, never a DID).
+    pub change: String,
+    /// The election an accepted idea was put to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub election_id: Option<String>,
+    /// The settings an update named, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    /// A facilitator deciding their own idea because no other facilitator existed
+    /// (VTI-BRD-013).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_idea: bool,
 }
 
 /// Payload for [`AuditEvent::GroupMembershipChanged`].
@@ -3243,7 +3492,7 @@ mod tests {
     #[test]
     fn vti_apv_019_an_unopposed_authority_reduction_is_critical_and_round_trips() {
         let e = AuditEvent::AuthorityReducedUnopposed(AuthorityReducedUnopposedData {
-            task: "https://trusttasks.org/spec/acl/revoke/0.1".into(),
+            task: "https://trusttasks.org/spec/acl/revoke/0.2".into(),
             prior_role: "admin".into(),
             prior_scopes: vec![],
         });
@@ -3279,8 +3528,8 @@ mod tests {
         assert_eq!(boot.severity(), AuditSeverity::Critical);
         let self_grant = AuditEvent::SingleAdminMode(SingleAdminModeData {
             event: "selfGrantWaived".into(),
-            requirement: Some("git-ns/right/grant/0.3#rule-7".into()),
-            task: Some("https://trusttasks.org/spec/git-ns/repo/adopt/0.1".into()),
+            requirement: Some("git-ns/right/grant/0.4#rule-7".into()),
+            task: Some("https://trusttasks.org/spec/git-ns/repo/adopt/0.3".into()),
             digest: Some("zQm".into()),
             kind: Some("repo.adopt".into()),
             right: Some("git.repo.own".into()),
@@ -3938,6 +4187,37 @@ mod tests {
         round_trip(&e);
     }
 
+    /// A binding reset, a cancelled reset and a re-binding carry labels and a
+    /// reason — never a PCS identifier.
+    #[test]
+    fn hidden_vetter_binding_events_round_trip() {
+        let e = AuditEvent::HiddenVetterBindingReset(HiddenVetterBindingResetData {
+            reason: "lost the key".into(),
+            waiting_on: vec!["vetter/2026-10".into()],
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "HiddenVetterBindingReset");
+        assert_eq!(e.variant_name(), "HiddenVetterBindingReset");
+        assert_eq!(v["data"]["waitingOn"][0], "vetter/2026-10");
+        round_trip(&e);
+
+        let e = AuditEvent::HiddenVetterResetCancelled(HiddenVetterResetCancelledData {
+            label: "vetter/2026-11".into(),
+        });
+        assert_eq!(e.variant_name(), "HiddenVetterResetCancelled");
+        round_trip(&e);
+
+        let e = AuditEvent::HiddenVetterRebound(HiddenVetterReboundData {
+            label: "vetter/2026-12".into(),
+            retired_labels: vec!["vetter/2026-10".into()],
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "HiddenVetterRebound");
+        assert_eq!(v["data"]["retiredLabels"][0], "vetter/2026-10");
+        assert_eq!(v["data"].as_object().unwrap().len(), 2, "{v}");
+        round_trip(&e);
+    }
+
     #[test]
     fn vetter_registry_events_round_trip() {
         let events = [
@@ -4063,7 +4343,7 @@ mod tests {
             member: "did:webvh:x".into(),
             start_key_did: "did:key:z6Mk".into(),
             grant_id: Some("urn:uuid:g".into()),
-            task_type: "https://trusttasks.org/spec/git-ns/view/0.4".into(),
+            task_type: "https://trusttasks.org/spec/git-ns/view/0.6".into(),
             document_id: "urn:uuid:d".into(),
         });
         let v = wire_value(&e);
@@ -4470,6 +4750,31 @@ mod tests {
                     reason: Some("the working group starts".into()),
                 }),
                 "GroupChanged",
+            ),
+            (
+                AuditEvent::BoardChanged(BoardChangedData {
+                    board_id: "brd_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    idea_id: Some("ida_AAAAAAAAAAAAAAAAAAAAAA".into()),
+                    note_id: None,
+                    change: "ideaAccepted".into(),
+                    election_id: Some(
+                        "board.brd_AAAAAAAAAAAAAAAAAAAAAA.ida_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    ),
+                    fields: Vec::new(),
+                    own_idea: false,
+                }),
+                "BoardChanged",
+            ),
+            (
+                AuditEvent::BadgeChanged(BadgeChangedData {
+                    badge_id: "bdg_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    award_id: Some("awd_AAAAAAAAAAAAAAAAAAAAAA".into()),
+                    entry_id: Some("dir_aaaaaaaaaaaaaaaa".into()),
+                    change: "accepted".into(),
+                    fields: Vec::new(),
+                    group_id: None,
+                }),
+                "BadgeChanged",
             ),
             (
                 AuditEvent::GroupMembershipChanged(GroupMembershipChangedData {

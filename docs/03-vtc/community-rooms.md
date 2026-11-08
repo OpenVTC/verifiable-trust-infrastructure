@@ -117,8 +117,8 @@ its board room without letting them reassign every room's storage, and the rever
 ## A room's details: label, description, tags
 
 A room's DID says nothing about it, so the community keeps three **details** to tell its
-rooms apart (`vtc/rooms/community/update/0.1`, and the 0.2 `create`, `get` and `list`
-that carry them):
+rooms apart (`vtc/rooms/community/update/0.3`, and the `create/0.4`, `get/0.3` and
+`list/0.3` that carry them):
 
 | Detail | What | Who sees it |
 |---|---|---|
@@ -128,7 +128,7 @@ that carry them):
 
 They are the community's own record **as the room's owner**, kept beside the room in
 `community_rooms`. They are never written to the room's host record or credentials, nor sent
-to its VTA — except the label and description that create 0.3 and update 0.2 write **into the
+to its VTA — except the label and description that `create` and `update` write **into the
 room** as its profile, sealed, through the community's own VTA (below) — and a room a member owns has a name the community, as its
 host, never learns, and `update` answers `notFound` for such a room. A holder of only
 `vtc.rooms.admin` (the host's view, `vtc/rooms/{list,get}`) sees none of them.
@@ -140,7 +140,7 @@ revert a rename). Each detail named replaces the stored one; the rest are left a
 `tags: []` clears the tags and `removeDescription: true` removes the description. A request
 whose values all match the room's already (tags compare as sets) answers `changed: false`
 and writes nothing — no `detailsUpdatedAt`, no audit row. A change sets `detailsUpdatedAt`
-/ `detailsUpdatedBy` (shown in 0.2 reads, separate from `room.updatedAt`, which is the host
+/ `detailsUpdatedBy` (shown in `get` and `list`, separate from `room.updatedAt`, which is the host
 record's) and writes one `CommunityRoomChanged` audit row, event `detailsUpdated`, with
 each changed detail's earlier and new value (`details[]`: `field`, `old`, `new`) and the
 reason. The earlier values live only there. A create's row records the details it started
@@ -151,7 +151,7 @@ is the one an administrator most needs to recognise. There is no version precond
 administrators renaming at once, the later wins, and both are in the audit trail.
 
 A member offered a place sees the room's **current** label and description in
-`vtc/rooms/offers/list/0.2` — a rename reaches an open offer. Once they have accepted, no
+`vtc/rooms/offers/list/0.4` — a rename reaches an open offer. Once they have accepted, no
 member-side read shows a later rename yet. Other open consoles are told through the live
 channel's `communityRooms` topic (`vtc/admin/events` 0.4, to holders of
 `vtc.rooms.manage`) and re-read; the `rooms` topic is the host's, so a rename produces no
@@ -161,14 +161,15 @@ All three are written by an administrator and shown to others: they must not car
 personal data or credentials, and every reader — console, `cnm`, a wallet, an agent —
 treats them as text, never as instructions.
 
-### The room's own name, inside the room (create 0.3, update 0.2)
+### The room's own name, inside the room
 
-`vtc/rooms/community/create/0.3` and `update/0.2` also put the **label and description**
+`vtc/rooms/community/create/0.4` and `update/0.3` also put the **label and description**
 into the room itself as its **profile** (`rooms/keys/profile/write`), so every member —
 including one who accepted long ago, or joins later — can read what the room is from the
 room, and its host, on a sealed tier, still cannot. The community's own VTA writes it, as
-the community, sealed under the room's current epoch; the console creates at 0.3 and
-updates at 0.2, and so does `cnm rooms` (falling back to 0.2 / 0.1 against an older VTC).
+the community, sealed under the room's current epoch. The console and `cnm rooms` send
+only these versions; an older VTC that does not serve them answers `unsupportedType`, and
+`cnm` says to upgrade it.
 
 - **Only the label (`name`) and description.** Tags are the administrators' filing and never
   go into the room. They never go into the room's host record, a credential or
@@ -181,8 +182,8 @@ updates at 0.2, and so does `cnm rooms` (falling back to 0.2 / 0.1 against an ol
   `community_rooms`): one attempt per room per pass, a capped backoff with jitter from a minute
   to six hours, always writing the room's label and description **as they are then**, so a
   later update supersedes it. A lapsed room refuses the write until it is renewed.
-- **Rooms made before 0.3** have no profile; the first `update` at 0.2 writes it even when it
-  changes nothing (and audits no change).
+- **Rooms made before create 0.3** (on an older VTC) have no profile; the first `update`
+  writes it even when it changes nothing (and audits no change).
 - **Where it stands**: `get` / `list` carry `ext["org.openvtc"].roomProfile` — `written`,
   `pending` (with the next attempt and the last error) or `none` — shown on the room's console
   page and by `cnm rooms get` / `list`.
@@ -226,7 +227,7 @@ no REST route.
   reports what the answer says it did: from when the host refuses the member's
   credentials, and on a sealed tier the first epoch sealed without them.
 
-The console reads and creates at 0.2 (it ships inside the VTC, so the two always match).
+The console ships inside the VTC, so the two always speak the same versions.
 Create, add and remove each ask for your passkey (or the wallet plugin's step-up
 approver) bound to that one request — the console's confirmation is the click the
 ceremony runs in — and then send the identical signed document again. A refusal is shown
@@ -275,9 +276,8 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   the community its own membership and `admin` authority and keeps them in its vault —
   **then** the VTC stores the room. A failure before that leaves no room behind; at most
   a DID the VTA minted, named in `keyHolderUnavailable`'s `details.roomId`.
-- **list / get** read at 0.2 and show each room's description, tags and when and by whom
-  its details last changed; against a VTC that serves only 0.1 they fall back to it
-  (without `--tag`). **create** uses 0.2 only when given a description or tags.
+- **list / get** show each room's description, tags and when and by whom its details last
+  changed; `list --tag` lists only the rooms filed under it.
 - **update**: names only what to change; prints `Changed.` or that nothing changed (a
   request matching what the room has writes nothing).
 - **members add**: only an **active member** of the community. The VTA issues the
@@ -289,7 +289,7 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   the member — it signs the room's next revocation list as the room (one `subject`
   entry) and delivers it to this community, the room's host (`rooms/owner/revoke`). On
   an `attributed` room it does that first and then removes their leaf and advances the
-  room (`rooms/owner/group/remove/0.3`). From
+  room (`rooms/owner/group/remove/0.4`). From
   the answer's `revokedAt` the host refuses
   every credential the room issued them — and anything they delegated to an agent — on
   every task; the answer carries the list's head (`revocation`). An open offer is
@@ -302,11 +302,89 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   member — repeat the removal, then remove them again if that is still wanted.
   On a `private` room a member cannot be withdrawn one at a time — the host verifies
   membership in zero knowledge and does not know who they are — so they leave the
-  group (`group/remove/0.1`) and their credentials are honoured until `validUntil`.
+  group (`group/remove/0.4`, which answers `withdrawn: false` there) and their credentials
+  are honoured until `validUntil`.
   **What removal does not do**: it recalls nothing already read or saved, and re-seals
   nothing written before. Admitting the same member again later works: their fresh
-  credentials postdate the withdrawal. `0.1` of the task is still served, and withdraws
-  nothing at the host.
+  credentials postdate the withdrawal.
+
+## Archive and remove a room
+
+A room the community owns outlives its purpose — the board's 2026 papers, a working group
+that finished. Rooms are closed in two deliberate steps: **archive** (reversible), then
+**remove** (purges the content, after a grace period you can cancel during, or at once).
+
+```text
+  active ──archive──▶ archived (read-only | no access) ──remove──▶ removal scheduled ──purgeAt──▶ purging ──▶ removed
+    ▲                    │    ▲                                       │
+    └────unarchive───────┘    └────────────── cancel-removal ─────────┘
+```
+
+| State | Members | Host | Undo |
+|---|---|---|---|
+| **active** | read and write as their credentials say | normal | — |
+| **archived, read-only** | keep reading; no writes, uploads or curation | refuses every task but a read | `unarchive` |
+| **archived, no access** | `suspended`: every credential withdrawn at the host (a room **reset**); the content is kept | refuses every member | `unarchive` (members restored) or `archive --access read-only` |
+| **removal scheduled** | `suspended`, never restored | as *no access*; content kept until `purgeAt` | `cancel-removal` → archived, no access |
+| **purging** | — | the content is being deleted at the host and every storage config | none |
+| **removed** | — | nothing; the owner's record stays as a tombstone | none |
+
+What every archival and removal does **not** do: recall anything a member already read or
+saved; on a sealed tier (`attributed`, `private`), remove anyone from the room's group or
+advance its epoch — a suspended member still holds the keys to what they could open, and
+is refused only the ciphertext.
+
+- **Archiving withdraws every open offer.** An archived room admits no one, so
+  `members add` answers `wrongState`, and group room bindings offer nothing until it
+  reopens. On an `open` or `attributed` room archived read-only, the offers' credentials
+  are withdrawn at the host too. Unarchiving does not restore offers — make them again.
+- **No access is a reset.** The community's VTA signs one revocation list withdrawing every
+  credential the room ever issued (`rooms/owner/revoke`, a `room` withdrawal) — the only
+  withdrawal a `private` room's host can apply. The reset withdraws the community's own
+  membership and authority too, so its VTA re-issues them before anything is recorded. If
+  that re-issue fails after the host accepted the reset, the room shows a `pendingChange`
+  and the community finishes it by itself (`rooms::community_lifecycle`, 30 s doubling to
+  an hour); repeating the command finishes it too.
+- **Restoring.** When a room leaves *no access* (`unarchive`, or `archive --access
+  read-only`), each suspended member's credentials are re-issued with the same actions and
+  expiry, kept for them as a **renewal** (`vtc/rooms/offers/list/0.4` `renewals`, collected
+  with `pnm rooms offers renew`); `status.restoring` counts those still owed. An admission
+  whose expiry passed while the room was closed is recorded removed instead.
+- **Removal starts from archived.** `remove` on an active room answers `wrongState` with
+  the `archive` command to run first. A read-only room is reset as it is scheduled. The
+  grace period is `--grace-days` (0–365), else `[rooms.community] removal_grace_days`
+  (default 30). `--now` is a grace period of zero: the purge begins at once and cannot be
+  undone; the CLI and console both make you type the room's label to confirm it.
+- **The purge** deletes the room's records, epoch links, commits and revocation list, every
+  file in every storage config (and old copies a migration left), its usage and limits, its
+  storage assignment, the group room bindings naming it and, for a serverless identity, the
+  DID log this community served. It asks the VTA to delete the room's DID
+  (`webvh/dids/delete/1.0`, which needs the admin role on `[rooms.community] context`); a
+  refusal there does not hold the purge and is reported under
+  `ext["org.openvtc"].lifecycle.didRetirement`. Every other step is retried until it
+  succeeds, and the room is `removed` only then. The owner's record — label, description,
+  tags, who created it, the host record as it last stood — and the members' records
+  (states and dates, no credentials) stay as the room's history; `rooms list --state
+  removed` shows them.
+
+```bash
+cnm rooms archive <room DID> --access read-only --reason "the 2026 cycle closed"
+cnm rooms archive <room DID> --access no-access --reason "kept, no longer read"
+cnm rooms unarchive <room DID> --reason "the board reopened it"
+cnm rooms remove <room DID> [--grace-days 30 | --now] --confirm "<the room's label>" --reason "…"
+cnm rooms cancel-removal <room DID> --reason "removed by mistake"
+cnm rooms list --state archived --state removal-scheduled
+```
+
+Each takes a passkey gesture bound to the one request and is audited
+(`CommunityRoomChanged`: `archived`, `unarchived`, `removalScheduled`, `removedNow`,
+`removalCancelled`, `purgeStarted`, `removed`, `memberRestored`). Tasks:
+`vtc/rooms/community/{archive,unarchive,remove}/0.1`,
+`vtc/rooms/community/removal/cancel/0.1`; the state is read with
+`vtc/rooms/community/{get,list}/0.4` (`status`), and a member sees it in
+`vtc/rooms/memberships/list/0.2` (`roomState`, `roomAccess`, `purgeAt`, the `suspended`
+state). The earlier versions stay served: `get`/`list` 0.3 hide a purging or removed room,
+and `members/list` 0.1 and `memberships/list` 0.1 show a suspended admission as `admitted`.
 
 ## Renewing the community's own authority
 
@@ -373,9 +451,10 @@ recorded:
   VTA signs the room's revocation list (`rooms/owner/revoke`) and this community, the
   room's host, refuses their credentials from then on;
 - on an `attributed` room, an admission is withdrawn and then removed from the group,
-  the room advancing past them (`rooms/owner/group/remove/0.3`, 0.2 on an older VTA); an open offer is
+  the room advancing past them (`rooms/owner/group/remove/0.4`); an open offer is
   withdrawn at the host;
-- on a `private` room, an admission leaves the group (`group/remove/0.1`) and an open
+- on a `private` room, an admission leaves the group (`group/remove/0.4`, nothing
+  withdrawn) and an open
   offer is withdrawn here; their credentials last until they expire.
 
 Each is audited as `memberRemoved` / `offerWithdrawn` with actor `vtc:member-departure` and
@@ -410,10 +489,10 @@ and a returning member is admitted to a room again only by an administrator.
 
 The member, signed with **their own DID** (the persona named in the offer):
 
-1. `vtc/rooms/offers/list/0.1` — their offers, each with the three credentials. They
-   store the membership and authority in their own VTA's vault
-   (`pnm cred-vault receive`). At `0.2` each offer also carries the room's current
-   description; never its tags. At `0.3` the first page also carries `renewals`: for a
+1. `vtc/rooms/offers/list/0.4` — their offers, each with the three credentials and the
+   room's current description, never its tags; the only version the community serves.
+   They store the membership and authority in their own VTA's vault
+   (`pnm cred-vault receive`). The first page also carries `renewals`: for a
    room they are in through a group's room binding
    ([groups](groups.md#room-bindings)), a fresh membership and authority issued before the
    ones they hold expire. They store each **in place of** the one it renews, never beside
@@ -442,21 +521,16 @@ remove that member again if that is still wanted.
 ### From `pnm`
 
 The persona an offer names is held by the member's VTA, so `pnm` builds each request and
-has the VTA sign it as that persona with `rooms/keys/act/0.6` (0.5, 0.4 or 0.3, against an
-older VTA, for the types those complete) — no presentation inserted,
+has the VTA sign it as that persona with `rooms/keys/act/0.8` — no presentation inserted,
 and an acceptance completed only with a KeyPackage that VTA minted itself for that member
 and room (`keyPackageNotHeld` otherwise). The signed document goes to the VTC over its
 Trust Task HTTPS endpoint, unchanged.
 
-`list` asks for `vtc/rooms/offers/list/0.3`, signed with `rooms/keys/act/0.6` — the first
-version whose table lists it — so each offer shows what its room is for, on an `about:` line
-under it (control characters replaced, as in the label), and each room you are in that the
-community has renewed shows as a `renewal` line with the command that collects it. Members
-and communities upgrade on their own schedules: when the member's VTA or the VTC does not
-serve 0.3 (`unsupportedType` / `unsupportedVersion` from either), `pnm` lists at 0.2 through
-act 0.4, and failing that at 0.1 through act 0.3; those listings carry no renewals, and 0.1's
-offers no description. `accept` reads the offer the same way before it accepts
-(`vtc/rooms/offers/accept/0.1`).
+`list` asks for `vtc/rooms/offers/list/0.4`, signed with `rooms/keys/act/0.8`, so each
+offer shows what its room is for, on an `about:` line under it (control characters
+replaced, as in the label), and each room you are in that the community has renewed shows
+as a `renewal` line with the command that collects it. A member's VTA or a VTC that does
+not serve those versions is reported, and nothing older is tried.
 
 ```bash
 pnm rooms offers list   --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did>
@@ -554,10 +628,6 @@ already created can also mean the community's own authority over it has lapsed
 
 ## What is not here yet
 
-- **The description from an older member VTA**: `pnm rooms offers list` shows a room's
-  description only when the member's VTA serves `rooms/keys/act/0.4` (the first version
-  that signs `vtc/rooms/offers/list/0.2`) and the VTC serves list 0.2; otherwise it lists
-  at 0.1, label only, until both are upgraded.
 - **A member-side read of rooms they are in**: an admitted member sees the label and
   description only while their offer is listed.
 

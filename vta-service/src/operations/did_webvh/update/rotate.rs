@@ -308,6 +308,7 @@ pub async fn rotate_did_webvh_keys(
             ttl: None,
             label,
             expected_version_id: Some(prior_version_id.clone()),
+            scid_also_known_as: None,
         },
         vta_did,
         channel,

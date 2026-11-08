@@ -3,7 +3,7 @@
 // GitHub account").
 //
 // Read from the same two signed Trust Tasks the Repos plugin renders —
-// `git-ns/right/list/0.1` and `git-ns/account/list/0.1` — under the same
+// `git-ns/right/list/0.3` and `git-ns/account/list/0.2` — under the same
 // query keys, so the two pages share one cache and one refresh. Both span
 // every namespace and answer the community-administrator capability alone; a
 // scoped administrator is told that rather than shown an empty column.

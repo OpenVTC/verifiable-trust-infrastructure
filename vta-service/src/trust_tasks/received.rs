@@ -58,6 +58,16 @@ fn received_form_of(doc: &TrustTask<Value>) -> Option<Arc<Value>> {
     (&parsed == doc).then_some(received)
 }
 
+/// `doc` as received when this dispatch recorded it; its typed form re-serialised otherwise
+/// (a direct handler call in a test). A handler that keeps a document whole — a held
+/// notification, so a client can verify it later (VTI-NTF-050) — keeps this.
+pub(crate) fn document_as_received(doc: &TrustTask<Value>) -> Value {
+    match received_form_of(doc) {
+        Some(received) => (*received).clone(),
+        None => serde_json::to_value(doc).unwrap_or(Value::Null),
+    }
+}
+
 /// Verify `doc`'s proof over the JSON it arrived as, when this dispatch
 /// recorded it; over its typed form otherwise. See the module docs.
 pub(crate) async fn verify_trust_task_proof(
@@ -93,7 +103,7 @@ mod tests {
         let now = crate::test_support::javascript_whole_second_now();
         let mut doc = json!({
             "id": "urn:uuid:45454545-4545-4545-8545-000000000001",
-            "type": "https://trusttasks.org/spec/task-consent/decision/0.1",
+            "type": "https://trusttasks.org/spec/task-consent/decision/0.2",
             "issuer": crate::test_support::test_admin_did().0,
             "recipient": "did:key:z6MkVta",
             "issuedAt": now,

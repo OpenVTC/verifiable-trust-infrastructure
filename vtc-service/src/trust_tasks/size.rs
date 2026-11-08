@@ -12,7 +12,7 @@
 //!
 //! From the task's own specification: its front matter's `maxDocumentBytes`,
 //! which the codegen emits as `Payload::MAX_DOCUMENT_BYTES` and answers by Type
-//! URI through [`trust_tasks_rs::schema_index::max_document_bytes_for`]. Every
+//! URI through [`vti_specs::schema_index::max_document_bytes_for`]. Every
 //! type that declares nothing takes [`DEFAULT_MAX_DOCUMENT_BYTES`]. This module
 //! keeps no table of its own, except [`AWAITING_DECLARATION`]: the two served
 //! tasks that need more than the default and whose specifications do not yet
@@ -83,9 +83,14 @@ use crate::server::AppState;
 /// Every type that declares nothing accepts a document of at most 64 KiB —
 /// generous for a document of identifiers, a credential or a presentation, and
 /// small enough that an unauthenticated flood of them is cheap to refuse.
-pub(crate) const DEFAULT_MAX_DOCUMENT_BYTES: usize = 64 * 1024;
+/// The spine's own default (`vti_trust_task_server::size`).
+pub(crate) use vti_trust_task_server::size::DEFAULT_MAX_DOCUMENT_BYTES;
+/// The `details` member naming the limit a refused document exceeded.
+#[cfg(test)]
+use vti_trust_task_server::size::DETAILS_MAX_BYTES;
+use vti_trust_task_server::size::{peek_issuer, peek_type};
 
-/// `policy/upsert/0.2`: 192 KiB.
+/// `policy/upsert/0.3`: 192 KiB.
 ///
 /// The payload's `module` is a Rego source of up to
 /// [`crate::policy::POLICY_SOURCE_MAX_BYTES`] (64 KiB). JSON escaping of
@@ -111,11 +116,11 @@ pub(crate) const DID_REGISTER_MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 /// (`every_awaiting_entry_is_still_undeclared_upstream`).
 pub(crate) const AWAITING_DECLARATION: &[(&str, usize)] = &[
     (
-        <trust_tasks_rs::specs::policy::upsert::v0_2::Payload as Payload>::TYPE_URI,
+        <vti_specs::policy::upsert::v0_3::Payload as Payload>::TYPE_URI,
         POLICY_UPSERT_MAX_DOCUMENT_BYTES,
     ),
     (
-        <trust_tasks_rs::specs::did_management::did::register::v0_1::Payload as Payload>::TYPE_URI,
+        <vti_specs::did_management::did::register::v0_1::Payload as Payload>::TYPE_URI,
         DID_REGISTER_MAX_DOCUMENT_BYTES,
     ),
 ];
@@ -123,7 +128,7 @@ pub(crate) const AWAITING_DECLARATION: &[(&str, usize)] = &[
 /// What `type_uri`'s specification declares, or its [`AWAITING_DECLARATION`]
 /// entry.
 fn declared(type_uri: &str) -> Option<usize> {
-    trust_tasks_rs::schema_index::max_document_bytes_for(type_uri).or_else(|| {
+    vti_specs::schema_index::max_document_bytes_for(type_uri).or_else(|| {
         AWAITING_DECLARATION
             .iter()
             .find(|(uri, _)| *uri == type_uri)
@@ -150,9 +155,6 @@ fn largest_in(served: &[&str], declared: impl Fn(&str) -> Option<usize>) -> usiz
         .filter_map(|uri| declared(uri))
         .fold(DEFAULT_MAX_DOCUMENT_BYTES, usize::max)
 }
-
-/// The `details` member naming the limit a refused document exceeded.
-pub(crate) const DETAILS_MAX_BYTES: &str = "maxBytes";
 
 /// The largest document `type_uri` accepts, in bytes, from a known issuer.
 pub(crate) fn max_document_bytes(type_uri: &str) -> usize {
@@ -447,7 +449,7 @@ async fn has_standing(state: &AppState, body: &[u8], issuer: &str) -> bool {
         return true;
     }
     // A member-portal sign-in key the member delegated this type's family to
-    // (`auth/oob/grant/0.2`) stands in for the member: the portal uploads a
+    // (`auth/oob/grant/0.3`) stands in for the member: the portal uploads a
     // member's picture (`vtc/directory/images/upload`, up to 360 KiB) signed by
     // it. Only while that delegation is live, and only for a type it covers.
     if let Some(type_uri) = peek_type(body)
@@ -527,77 +529,57 @@ async fn is_known_issuer(state: &AppState, issuer: &str) -> bool {
     }
 }
 
-/// The longest `type` a refusal names. A caller's own `type` is echoed back
-/// only when it is short enough to be a Type URI; anything longer is not one,
-/// and repeating it would turn the refusal into an echo of the caller's body.
-const MAX_NAMED_TYPE_CHARS: usize = 256;
-
+/// [`vti_trust_task_server::size::check_size`] against this node's default.
 fn check_with(body: &[u8], limit: impl Fn(&str) -> usize) -> Result<(), TrustTaskOutcome> {
-    if body.len() <= DEFAULT_MAX_DOCUMENT_BYTES {
-        return Ok(());
-    }
-    let type_uri = peek_type(body);
-    let max = type_uri
-        .as_deref()
-        .map_or(DEFAULT_MAX_DOCUMENT_BYTES, &limit);
-    if body.len() <= max {
-        return Ok(());
-    }
-    let named = match type_uri.as_deref() {
-        Some(t) if t.chars().count() <= MAX_NAMED_TYPE_CHARS => t,
-        Some(_) => "its type",
-        None => "a document of no readable type",
-    };
-    let payload: ErrorPayload = RejectReason::MalformedRequest {
-        reason: format!(
-            "the document is {} bytes; {named} accepts at most {max}",
-            body.len()
-        ),
-    }
-    .into();
-    Err(unrouted_error_response(payload.with_details(
-        serde_json::json!({ DETAILS_MAX_BYTES: max }),
-    )))
+    vti_trust_task_server::size::check_size(body, DEFAULT_MAX_DOCUMENT_BYTES, limit)
 }
 
-/// The document's top-level `type`, read without keeping anything else.
-///
-/// `None` for a body that is not a JSON object with a string `type` — which
-/// then takes the default limit, as a type that declares nothing does.
-fn peek_type(body: &[u8]) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct TypeOnly {
-        #[serde(rename = "type")]
-        type_uri: String,
-    }
-    serde_json::from_slice::<TypeOnly>(body)
-        .ok()
-        .map(|t| t.type_uri)
+/// The spine's size gate for this community: [`check_for_known_issuer_with`]
+/// on admission, [`settle_large_document_charge`] once the proof has been
+/// checked.
+pub(crate) struct KnownIssuerSizeGate<'a> {
+    pub(crate) state: &'a AppState,
+    /// The address a raised-limit document's budget is charged to.
+    pub(crate) address: &'a str,
+    /// The transport has already charged this document to a room budget.
+    pub(crate) room_precharged: bool,
 }
 
-/// The document's top-level `issuer`, read the same way as [`peek_type`]: a
-/// duplicated or non-string one reads as none, and the body is held to the
-/// default.
-fn peek_issuer(body: &[u8]) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct IssuerOnly {
-        issuer: String,
+#[async_trait::async_trait]
+impl vti_trust_task_server::SizeGate for KnownIssuerSizeGate<'_> {
+    async fn admit(
+        &self,
+        body: &[u8],
+    ) -> Result<Option<vti_trust_task_server::SizeCharge>, TrustTaskOutcome> {
+        let charge = check_for_known_issuer_with(
+            self.state,
+            body,
+            self.address,
+            crate::auth::session::now_epoch(),
+            self.room_precharged,
+        )
+        .await?;
+        Ok(charge.map(vti_trust_task_server::SizeCharge::new))
     }
-    serde_json::from_slice::<IssuerOnly>(body)
-        .ok()
-        .map(|t| t.issuer)
+
+    fn settle(&self, charge: &vti_trust_task_server::SizeCharge, verified_signer: Option<&str>) {
+        settle_large_document_charge(
+            &self.state.large_document_budget,
+            charge.downcast_ref::<LargeDocumentCharge>(),
+            verified_signer,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const POLICY_UPSERT: &str =
-        <trust_tasks_rs::specs::policy::upsert::v0_2::Payload as Payload>::TYPE_URI;
+    const POLICY_UPSERT: &str = <vti_specs::policy::upsert::v0_3::Payload as Payload>::TYPE_URI;
     const MEMBERS_UPDATE: &str =
-        <trust_tasks_rs::specs::vtc::members::update::v0_1::Payload as Payload>::TYPE_URI;
+        <vti_specs::vtc::members::update::v0_1::Payload as Payload>::TYPE_URI;
     const WEBSITE_CHUNK: &str =
-        <trust_tasks_rs::specs::vtc::website::upload::chunk::v0_1::Payload as Payload>::TYPE_URI;
+        <vti_specs::vtc::website::upload::chunk::v0_1::Payload as Payload>::TYPE_URI;
 
     /// `policy/upsert` as though this node served it.
     fn served_upsert(type_uri: &str) -> usize {
@@ -636,11 +618,11 @@ mod tests {
     fn every_awaiting_entry_is_still_undeclared_upstream() {
         for (uri, max) in AWAITING_DECLARATION {
             assert!(
-                trust_tasks_rs::schema_index::schema_for(uri).is_some(),
+                vti_specs::schema_index::schema_for(uri).is_some(),
                 "{uri} names no published specification"
             );
             assert!(
-                trust_tasks_rs::schema_index::max_document_bytes_for(uri).is_none(),
+                vti_specs::schema_index::max_document_bytes_for(uri).is_none(),
                 "{uri} now declares maxDocumentBytes; drop its AWAITING_DECLARATION entry"
             );
             assert!(
@@ -654,7 +636,7 @@ mod tests {
     /// 352 KiB, and a type that declares nothing takes the default.
     #[test]
     fn a_declared_limit_is_the_specifications_own() {
-        let chunk = trust_tasks_rs::schema_index::max_document_bytes_for(WEBSITE_CHUNK)
+        let chunk = vti_specs::schema_index::max_document_bytes_for(WEBSITE_CHUNK)
             .expect("the chunk declares a limit");
         assert_eq!(max_in(WEBSITE_CHUNK, &[WEBSITE_CHUNK], declared), chunk);
         assert_eq!(served_upsert(MEMBERS_UPDATE), DEFAULT_MAX_DOCUMENT_BYTES);

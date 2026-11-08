@@ -1,6 +1,6 @@
 // Send a signed document whose act may need an operation-bound passkey
 // gesture first — granting or promoting to `admin` (`acl/grant`,
-// `acl/change-role`).
+// `vtc/members/role/set`).
 //
 // The VTC runs every check that decides the act, then refuses it with the
 // step-up it needs as `details.stepUpRequest`. This asks the operator to

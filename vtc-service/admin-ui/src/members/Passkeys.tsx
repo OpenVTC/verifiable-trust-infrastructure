@@ -57,8 +57,8 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
         <h2 id="passkeys-heading">Passkeys</h2>
       </div>
       <p className="muted">
-        A passkey signs you in to this portal on this device without going
-        through your VTA. It works here only — never in the operator console.
+        Sign in to this portal on this device without your VTA. A portal
+        passkey works here only — never in the operator console.
       </p>
 
       {list.isPending ? (

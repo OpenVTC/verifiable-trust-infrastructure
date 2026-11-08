@@ -34,6 +34,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
 import { NamedDid } from "@/components/NamedDid";
 import { PageHeader } from "@/components/PageHeader";
+import { Protected } from "@/components/Protected";
 import { Tabs } from "@/components/Tabs";
 import {
   ABSENT,
@@ -287,7 +288,21 @@ export function useVerifiedSummary(action: Action): SummaryState {
   return state;
 }
 
-export function ActionCard({ action, detail = false }: { action: Action; detail?: boolean }) {
+/**
+ * One action, out of the community theme's reach (`vtc/community/theme/show/0.1`,
+ * client item 2): the whole card is what an approval is given on — the verified
+ * summary, the match code, who asked, the facts and the buttons — so all of it
+ * is isolated, and the list around it (header, tabs, empty state) takes the theme.
+ */
+export function ActionCard(props: { action: Action; detail?: boolean }) {
+  return (
+    <Protected ground="card">
+      <ActionCardSurface {...props} />
+    </Protected>
+  );
+}
+
+function ActionCardSurface({ action, detail = false }: { action: Action; detail?: boolean }) {
   const summary = useVerifiedSummary(action);
   const book = useNameBook();
   const ext = actionExt(action);
@@ -600,7 +615,7 @@ function ApprovalList({ action, book }: { action: Action; book: NameBook }) {
     <ul className="action-approvers">
       {action.approvals.map((a) => (
         <li key={a.subject}>
-          <NamedDid book={book} did={a.subject} /> <small>{formatIso(a.at)}</small>
+          <NamedDid book={book} did={a.subject} /> <small>{formatIso(a.decidedAt)}</small>
         </li>
       ))}
     </ul>

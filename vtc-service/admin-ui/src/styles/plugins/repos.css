@@ -426,26 +426,6 @@
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
   gap: var(--space-4);
 }
-.gitns-fieldset {
-  border: 0;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.gitns-fieldset legend {
-  font-weight: 600;
-  margin-bottom: var(--space-2);
-}
-.gitns-radio {
-  display: flex;
-  gap: var(--space-3);
-  align-items: flex-start;
-}
-.gitns-radio input {
-  margin-top: 3px;
-}
 .gitns-facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));

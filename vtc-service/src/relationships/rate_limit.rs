@@ -23,8 +23,8 @@
 //! A rate limit is about the recent past, and losing it on restart fails open
 //! for one window rather than corrupting anything. Persisting it would put a
 //! write on the hot path of every publish to defend against an attacker who
-//! can already restart the process. `tower-governor`, in front of the same
-//! route, makes the same trade.
+//! can already restart the process. The per-IP limiter in front of the same
+//! route makes the same trade.
 //!
 //! The consequence to know: the window is **per process**. Several replicas
 //! behind a load balancer each enforce it separately, so the effective limit

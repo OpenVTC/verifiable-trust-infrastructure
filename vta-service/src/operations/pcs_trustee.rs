@@ -34,7 +34,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256, Sha512};
-use trust_tasks_rs::specs::voting::election::register::v0_1 as register;
+use vti_specs::voting::election::register::v0_4 as register;
 use vti_voting::{
     election::{Election, ElectionId},
     rand::{SeedableRng, rngs::OsRng, rngs::StdRng},
@@ -181,7 +181,9 @@ async fn document(
 
 /// `vta/pcs/trustee/read` items 3 – 5: `voting/trustees/status` or `voting/election/show` for
 /// one election, signed as `trustee` and addressed to `ballot_box` — nothing else, and nothing
-/// kept. `read` has already been held to the two the task names.
+/// kept. `read` has already been held to the two the task names; `election_show` is the
+/// `voting/election/show` version the task's own version names (0.2 under trustee/read 0.2,
+/// 0.3 under 0.3).
 ///
 /// # Errors
 /// [`PcsError::TrusteeNotHeld`] for a DID this VTA holds no authentication key of the caller may
@@ -194,10 +196,11 @@ pub async fn sign_read(
     election_id: &str,
     ballot_box: &str,
     read: &str,
+    election_show: &str,
 ) -> Result<Value> {
     let type_uri = match read {
         "status" => task_uri("status"),
-        "election" => "https://trusttasks.org/spec/voting/election/show/0.1".to_string(),
+        "election" => election_show.to_string(),
         other => {
             return Err(malformed(format!(
                 "`{other}` is not a read this task signs"
@@ -313,7 +316,7 @@ pub async fn enrol(
                 trustees: n,
                 manifest_digest: digest_text,
                 ballot_box: manifest.ballot_box.as_str().to_string(),
-                voting_closes: manifest.voting_closes,
+                voting_closes: manifest.voting_closes_at,
                 path,
                 seed_id,
                 transport_key: Value::Null,
@@ -343,7 +346,7 @@ pub async fn enrol(
 
 /// The ceremony as its signed steps establish it (CONVENTIONS §9.6): every request verified
 /// here — its proof resolved and checked by this VTA, never taken as passed along — then replayed,
-/// with the deadline once `votingOpens` has come.
+/// with the deadline once `votingOpensAt` has come.
 async fn ceremony_from(
     state: &AppState,
     rec: &TrusteeRecord,
@@ -377,7 +380,7 @@ async fn ceremony_from(
         threshold(rec)?,
         election_ctx(rec)?,
         &proven,
-        now >= manifest.voting_opens,
+        now >= manifest.voting_opens_at,
     )
     .map_err(PcsError::CeremonyInvalid)
 }
@@ -420,7 +423,7 @@ fn dealing_for(
     ))
 }
 
-/// `vta/pcs/trustee/deal/0.2`: the dealing, sealed to the transport keys the ceremony's signed
+/// `vta/pcs/trustee/deal/0.3`: the dealing, sealed to the transport keys the ceremony's signed
 /// enrolments establish — and only ever to those first dealt to.
 #[allow(clippy::too_many_arguments)]
 pub async fn deal_task(
@@ -483,7 +486,7 @@ pub async fn deal_task(
     Ok(json!({ "document": doc }))
 }
 
-/// `vta/pcs/trustee/keys/0.2`: open and check the shares dealt to this trustee, confirm, and — once
+/// `vta/pcs/trustee/keys/0.3`: open and check the shares dealt to this trustee, confirm, and — once
 /// the ceremony forms the key — compute and keep this trustee's key share, never replacing one held.
 #[allow(clippy::too_many_arguments)]
 pub async fn keys(
@@ -596,7 +599,7 @@ pub async fn keys(
     Ok(json!({ "complaints": complaints, "keyHeld": true }))
 }
 
-/// `vta/pcs/trustee/justify/0.2`: the share this trustee dealt to `recipient`, in the clear — only
+/// `vta/pcs/trustee/justify/0.3`: the share this trustee dealt to `recipient`, in the clear — only
 /// for a complaint that `recipient` itself signed (CONVENTIONS §9.6).
 #[allow(clippy::too_many_arguments)]
 pub async fn justify(

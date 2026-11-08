@@ -42,11 +42,12 @@ pub const ENDORSEMENTS: &str = "endorsements";
 /// here would make the room unmovable and make this service part of its membership.
 pub use vti_rooms::ROOMS_KEYSPACE as ROOMS;
 
-/// Room records at `room_records:<roomId>:<key>`. Ciphertext on the sealed tiers.
+/// Room records at `room_records/v2:<len>:<roomId>:<key>` (`vti_rooms::storage`).
+/// Ciphertext on the sealed tiers.
 pub use vti_rooms::ROOM_RECORDS_KEYSPACE as ROOM_RECORDS;
 
-/// The epoch key chain at `room_epoch_links:<roomId>:<epoch>`. Wrapped key material this
-/// service cannot read — the key that opens a rung is a storage key no host ever holds.
+/// The epoch key chain at `room_epoch_links/v2:<len>:<roomId>:<epoch>`, and relayed commits
+/// beside it. Wrapped key material this service cannot read — the key that opens a rung is a storage key no host ever holds.
 ///
 /// **Backed up, and not optionally.** A room's records survive a restore as ciphertext; the
 /// chain is what makes anything written before the last membership change openable at all.
@@ -61,6 +62,12 @@ pub use vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE as ROOM_EPOCH_LINKS;
 /// **Backed up.** It is the room's state, not this host's: a restore without it would
 /// honour again every credential the room withdrew, until somebody re-delivered the list.
 pub use vti_rooms::ROOM_REVOCATIONS_KEYSPACE as ROOM_REVOCATIONS;
+
+/// The watches members armed on hosted rooms (`rooms/watch/0.1`): room, address, watermark,
+/// lease. This host's state, never the room's — consulted to authorize nothing, and it
+/// does not move with the room. **Not backed up**: a watch lapses within 30 days anyway, and
+/// a restore must not signal addresses on the strength of watches nobody re-armed.
+pub use vti_rooms::watch::ROOM_WATCHES_KEYSPACE as ROOM_WATCHES;
 /// The VTC's OpenID4VP verifier identities (`crate::oid4vp`): one record per
 /// identity, each holding the private P-256 key its request objects are
 /// signed with. Encrypted at rest under the storage key, like `install` and
@@ -85,7 +92,7 @@ pub const STORAGE_CONFIGS: &str = "storage_configs";
 
 /// `sealed` storage configs' credentials (`crate::rooms::storage_credentials`), one per
 /// config, encrypted at rest under the storage key. **Never backed up**
-/// (`vtc/storage/credentials/set/0.2` item 3), and cleared when a backup is imported,
+/// (`vtc/storage/credentials/set/0.3` item 3), and cleared when a backup is imported,
 /// so a restored config reports its credential `required` until it is set again (item 7).
 pub const STORAGE_CREDENTIALS: &str = "storage_credentials";
 
@@ -120,6 +127,39 @@ pub const DIRECTORY: &str = "directory";
 /// issue a second one to the same member (VTI-VOT-022), and certification holds the
 /// board to the number issued (VTI-VOT-072).
 pub const ELECTIONS: &str = "elections";
+
+/// Notifications addressed to this community (`notifications/notify`, `notifications/relay`,
+/// VTI-NTF-040 – 046): one record per (originator, `notificationId`) it accepted, the
+/// delivering document kept exactly as received so it can be relayed whole, and whom each
+/// revision was relayed to — kept until the notification's period ends, and used for nothing
+/// but relaying its later revisions (VTI-NTF-044). See `crate::notifications`.
+///
+/// **Backed up**: the relay record is the only account of whom the community told, and a
+/// restore without it could never tell them of a withdrawal (VTI-NTF-044).
+pub const NOTIFICATIONS: &str = "notifications";
+
+/// Community boards (`crate::boards`, VTI-BRD-*): each board (`board:<boardId>`), its ideas
+/// (`idea:<ideaId>`, indexed `bidea:<boardId>:<ideaId>`) and notes (`note:<noteId>`,
+/// indexed `bnote:<boardId>:<noteId>`). An accepted idea keeps only its election's
+/// identifier; where that election stands is read from `ELECTIONS`, never copied here.
+///
+/// **Backed up**: what members proposed and wrote, and which election each idea is put to,
+/// are the community's own records; a restore without them would orphan every board election.
+pub const BOARDS: &str = "boards";
+
+/// Member badges (`crate::badges`, VTI-BDG-*): the community's badge settings, each badge
+/// (`badge:<badgeId>`), each award (`award:<awardId>`, indexed by badge, recipient and
+/// giver) and each holder's own preferences (`prefs:<entryId>`). The badge group behind a
+/// community badge is the groups' (`DIRECTORY`).
+///
+/// **Backed up**: what members earned and gave is the community's own record; a restore
+/// without it would orphan every badge group.
+pub const BADGES: &str = "badges";
+
+/// Badge pictures, re-encoded by the community, keyed by digest as the directory keeps
+/// a card picture (`crate::directory::images` over this keyspace). **Backed up** with
+/// the badges they belong to.
+pub const BADGE_IMAGES: &str = "badge_images";
 
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
 /// host starts with none, and a client resumes from `begin`.
@@ -204,7 +244,7 @@ pub const CONSOLE_KEYS: &str = "console_keys";
 /// `crate::acl::bound_step_up`.
 pub const STEP_UP_MARKS: &str = "step_up_marks";
 
-/// Members' step-up passkeys (`auth/passkey/enroll/invite/0.2`,
+/// Members' step-up passkeys (`auth/passkey/enroll/invite/0.3`,
 /// `purpose: stepUp`): the invites (`invite:<tokenHash>`), redemption and
 /// revocation ceremonies, and the credentials themselves in the passkey
 /// store's own row format. A keyspace of its own **by construction**: login and
@@ -288,6 +328,7 @@ pub const ALL: &[&str] = &[
     ROOM_RECORDS,
     ROOM_EPOCH_LINKS,
     ROOM_REVOCATIONS,
+    ROOM_WATCHES,
     ROOM_BLOBS,
     ROOM_BLOB_TRANSFERS,
     STORAGE_CONFIGS,
@@ -295,6 +336,10 @@ pub const ALL: &[&str] = &[
     COMMUNITY_ROOMS,
     DIRECTORY,
     ELECTIONS,
+    NOTIFICATIONS,
+    BOARDS,
+    BADGES,
+    BADGE_IMAGES,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -362,6 +407,12 @@ pub const BACKED_UP: &[&str] = &[
     DIRECTORY,
     // Who took a ticket, the manifests, the checkpoints and certifications.
     ELECTIONS,
+    NOTIFICATIONS,
+    // Ideas, notes and which election each idea is put to.
+    BOARDS,
+    // Badges, awards and holders' preferences; the pictures with them.
+    BADGES,
+    BADGE_IMAGES,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -439,6 +490,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // files on this host that a backup does not carry. A client resumes from
     // `begin` against the restored host.
     ROOM_BLOB_TRANSFERS,
+    // Watches on hosted rooms (`rooms/watch/0.1`): this host's state, not the
+    // rooms', lapsing within 30 days. A watch does not move with a room, and a
+    // restored one would signal an address nobody re-armed.
+    ROOM_WATCHES,
     // Console signing-key delegations. Excluded deliberately, and it is the
     // one exclusion here that is a security decision rather than a
     // housekeeping one: a delegation names a browser profile on a particular
@@ -505,7 +560,8 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 44 top-level `*_ks` fields (the member portal's two among them) plus
+        // 48 top-level `*_ks` fields (the member portal's two, `notifications_ks`, `boards_ks`, `badges_ks` and `badge_images_ks`
+        // among them) plus
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch, plus the two room-file keyspaces
@@ -513,8 +569,9 @@ mod tests {
         // two `AppState::room_storage` holds (`STORAGE_CONFIGS`, `STORAGE_CREDENTIALS`), plus the one
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
         // `AppState::directory` holds (`DIRECTORY`), plus the one
-        // `AppState::elections` holds (`ELECTIONS`).
-        assert_eq!(ALL.len(), 56, "ALL must list every AppState keyspace");
+        // `AppState::elections` holds (`ELECTIONS`), plus the one
+        // `AppState::room_watches` holds (`ROOM_WATCHES`).
+        assert_eq!(ALL.len(), 61, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

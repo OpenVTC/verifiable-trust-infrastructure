@@ -369,6 +369,7 @@ async fn a_mirror_accepts_the_list() {
         record_retention: None,
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
         ..f.room.clone()
     };
     let list = signed_list(

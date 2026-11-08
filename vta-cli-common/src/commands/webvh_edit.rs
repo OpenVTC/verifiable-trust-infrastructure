@@ -346,6 +346,8 @@ pub fn build_options_from_flags(flags: &EditFlags) -> Result<UpdateDidWebvhBody,
         // cycle gets a 409; scripted callers opt in by passing
         // `--expected-version-id` (wired separately).
         expected_version_id: None,
+        // `pnm did-mgmt dids scid-alias` sets this; the edit flow never does.
+        scid_also_known_as: None,
     })
 }
 

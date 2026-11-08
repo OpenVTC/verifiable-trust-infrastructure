@@ -3,58 +3,43 @@
 //
 // The list, one election's page (its disclosure, tickets issued, board
 // checkpoints and, once certified, the result), and the administrator's four
-// acts: create from a manifest, close early, cancel, and certify. Certifying
+// acts: create from a manifest (`ElectionBuilder.tsx`), close early, cancel, and certify. Certifying
 // is the VTC re-verifying the ballot box's whole board from its own voting key,
 // so a refusal there names what the board got wrong.
 //
 // Members take tickets and vote through their own VTA; nothing here can see or
 // cast a ballot, and nothing here shows who took a ticket.
 
-import { useState } from "react";
-import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, Route, Routes, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
-import { ErrorOrParked } from "@/components/ParkedNotice";
 import { Field } from "@/components/Field";
-import { vtcDid } from "@/lib/api";
 import {
   ELECTIONS_KEY,
   STATE_LABEL,
   cancelElection,
   certifyElection,
   closeElection,
-  createElection,
   fetchElection,
   fetchElections,
   fetchElectionsServed,
-  refusalHint,
-  sampleManifest,
   type Election,
   type ElectionListItem,
   type ElectionResult,
+  type QuestionResult,
 } from "@/lib/elections-api";
+import { listBoards } from "@/lib/boards";
+import { MEMBER_OF_KIND_TEXT, textReleaseWarning } from "@/lib/election-manifest";
+import { groupByBoard, stageSummary } from "@/lib/election-origin";
 import { formatIso, shorten } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
-
-function codeOf(e: unknown): string | undefined {
-  const c = (e as { code?: unknown } | null)?.code;
-  return typeof c === "string" ? c : undefined;
-}
-
-function Refusal({ title, error }: { title: string; error: unknown }) {
-  if (!error) return null;
-  const hint = refusalHint(codeOf(error));
-  return (
-    <>
-      <ErrorOrParked title={title} error={error} />
-      {hint && <p className="community-fix">{hint}</p>}
-    </>
-  );
-}
+import { NewElection } from "@/plugins/ElectionBuilder";
+import { Refusal } from "@/plugins/ElectionRefusal";
 
 export function Elections() {
   const served = useQuery({
@@ -98,6 +83,13 @@ function ElectionRoute() {
 
 function ElectionList() {
   const list = useQuery({ queryKey: [...ELECTIONS_KEY, "list"], queryFn: fetchElections });
+  // Only to name the boards elections came from: a viewer who may not list boards, or a read
+  // that fails, still sees every election, grouped under the board's identifier.
+  const boards = useQuery({ queryKey: ["boards"], queryFn: listBoards, retry: false });
+  const titles = useMemo(
+    () => (boards.data ? new Map(boards.data.map((b) => [b.boardId, b.title])) : null),
+    [boards.data],
+  );
   return (
     <div className="page">
       <header className="page-header">
@@ -115,16 +107,74 @@ function ElectionList() {
       {list.data && list.data.length === 0 && (
         <EmptyState title="No elections yet">Create one from its manifest.</EmptyState>
       )}
-      {list.data && list.data.length > 0 && <ElectionsTable items={list.data} />}
+      {list.data && list.data.length > 0 && <GroupedElections items={list.data} titles={titles} />}
     </div>
   );
 }
 
-function ElectionsTable({ items }: { items: ElectionListItem[] }) {
+const ALL = "all";
+const STANDALONE = "standalone";
+
+/**
+ * Stand-alone elections first, then one group per board its ideas' elections came from
+ * (`board.<boardId>.<ideaId>`, VTI-BRD-031). `titles` is `null` until the boards are read, or
+ * when they cannot be: the groups are then named by the board's identifier.
+ */
+function GroupedElections({ items, titles }: { items: ElectionListItem[]; titles: ReadonlyMap<string, string> | null }) {
+  const grouped = useMemo(() => groupByBoard(items, titles, "Deleted board"), [items, titles]);
+  const [show, setShow] = useState(ALL);
+  if (grouped.boards.length === 0) return <ElectionsTable items={grouped.standalone} />;
+  const label = (e: ElectionListItem) => STATE_LABEL[e.state] ?? e.state;
+  const boards = show === ALL ? grouped.boards : grouped.boards.filter((b) => b.boardId === show);
+  return (
+    <>
+      <div className="toolbar">
+        <Field label="Show">
+          <select value={show} onChange={(e) => setShow(e.target.value)} aria-label="Show">
+            <option value={ALL}>All elections</option>
+            <option value={STANDALONE}>Stand-alone only</option>
+            {grouped.boards.map((b) => (
+              <option key={b.boardId} value={b.boardId}>
+                {b.title} ({b.items.length})
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      {(show === ALL || show === STANDALONE) && grouped.standalone.length > 0 && (
+        <section aria-label="Stand-alone elections">
+          <h2>Stand-alone</h2>
+          <ElectionsTable items={grouped.standalone} />
+        </section>
+      )}
+      {show === STANDALONE && grouped.standalone.length === 0 && (
+        <EmptyState title="No stand-alone elections">Every election here came from a board.</EmptyState>
+      )}
+      {show !== STANDALONE &&
+        boards.map((b) => (
+          <details key={b.boardId} className="card election-group" open>
+            <summary>
+              <strong>{b.title}</strong> · {b.items.length} election{b.items.length === 1 ? "" : "s"}
+              <span className="muted"> · {stageSummary(b.items, label)}</span>
+            </summary>
+            {b.known && (
+              <p className="muted rooms-sub">
+                <Link to={`/boards/${encodeURIComponent(b.boardId)}`}>Open the board</Link>
+              </p>
+            )}
+            <ElectionsTable items={b.items} fromBoard />
+          </details>
+        ))}
+    </>
+  );
+}
+
+/** `fromBoard`: the rows are one board's ideas, so their generated identifier is left out. */
+function ElectionsTable({ items, fromBoard = false }: { items: ElectionListItem[]; fromBoard?: boolean }) {
   return (
     <DataTable
       columns={[
-        { key: "election", label: "Election" },
+        { key: "election", label: fromBoard ? "Idea" : "Election" },
         { key: "state", label: "State" },
         { key: "voting", label: "Voting" },
         { key: "binding", label: "Binding" },
@@ -134,7 +184,7 @@ function ElectionsTable({ items }: { items: ElectionListItem[] }) {
         <tr key={e.electionId}>
           <td>
             <Link to={encodeURIComponent(e.electionId)}>{e.title || e.electionId}</Link>
-            {e.title && (
+            {e.title && !fromBoard && (
               <div className="muted rooms-sub">
                 <code>{e.electionId}</code>
               </div>
@@ -142,95 +192,13 @@ function ElectionsTable({ items }: { items: ElectionListItem[] }) {
           </td>
           <td>{STATE_LABEL[e.state] ?? e.state}</td>
           <td>
-            {formatIso(e.votingOpens)}
-            <div className="muted rooms-sub">to {formatIso(e.votingCloses)}</div>
+            {formatIso(e.votingOpensAt)}
+            <div className="muted rooms-sub">to {formatIso(e.votingClosesAt)}</div>
           </td>
           <td>{e.binding ? "Binding" : ""}</td>
         </tr>
       ))}
     </DataTable>
-  );
-}
-
-function NewElection() {
-  const confirm = useConfirm();
-  const toast = useToast();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const [text, setText] = useState("");
-  const [box, setBox] = useState("");
-  let parsed: Record<string, unknown> | null = null;
-  let parseError: string | undefined;
-  if (text.trim()) {
-    try {
-      const v: unknown = JSON.parse(text);
-      if (v && typeof v === "object" && !Array.isArray(v)) parsed = v as Record<string, unknown>;
-      else parseError = "The manifest is a JSON object.";
-    } catch (e) {
-      parseError = `Not JSON: ${(e as Error).message}`;
-    }
-  }
-  const create = useMutation({
-    mutationFn: () => createElection(parsed ?? {}, gestureFromConfirm(confirm)),
-    onSuccess: (r) => {
-      toast.push(
-        "success",
-        r.state === "registered"
-          ? `Created ${r.electionId}; the ballot box registered it.`
-          : `Created ${r.electionId}; the community keeps delivering it to the ballot box.`,
-      );
-      void queryClient.invalidateQueries({ queryKey: ELECTIONS_KEY });
-      navigate(`../${encodeURIComponent(r.electionId)}`);
-    },
-  });
-  return (
-    <div className="page">
-      <header className="page-header">
-        <h1>New election</h1>
-        <Link to="..">All elections</Link>
-      </header>
-      <section className="card">
-        <p className="muted">
-          The manifest says what is asked, who may vote, when, and which ballot box counts. It is
-          sent exactly as written: every ticket and every vote is bound to its digest. The ballot
-          box must be one of this community&rsquo;s trusted voting services. A binding election
-          (<code>&quot;binding&quot;: true</code>) is sent for another administrator&rsquo;s
-          approval before it is created.
-        </p>
-        <form
-          className="form-stack"
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate();
-          }}
-        >
-          <Field label="Ballot box DID" hint="To start from a sample manifest that names it.">
-            <input value={box} onChange={(e) => setBox(e.target.value)} placeholder="did:webvh:…" />
-          </Field>
-          <button
-            type="button"
-            className="secondary"
-            disabled={!box.trim()}
-            onClick={async () => setText(sampleManifest(await vtcDid(), box.trim()))}
-          >
-            Start from a sample
-          </button>
-          <Field label="Manifest" error={parseError}>
-            <textarea
-              rows={24}
-              spellCheck={false}
-              className="mono"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-            />
-          </Field>
-          <button type="submit" disabled={!parsed || create.isPending}>
-            Create
-          </button>
-        </form>
-      </section>
-      <Refusal title="The election was not created" error={create.error} />
-    </div>
   );
 }
 
@@ -253,10 +221,15 @@ function ElectionPage({ electionId }: { electionId: string }) {
 
 function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) {
   const d = e.disclosure;
+  // VTI-VOT-090: below 10, members are told that a written answer may identify its author.
+  const release = e.manifest.textReleaseThreshold;
+  const releaseWarning = textReleaseWarning(release);
+  // VTI-VOT-090: under a credential roll, whose membership credential counts.
+  const roll = d.rollCredential;
   return (
     <>
       <section className="card">
-        <dl className="detail-list">
+        <dl className="kv">
           <dt>State</dt>
           <dd>{STATE_LABEL[e.state] ?? e.state}</dd>
           <dt>Identifier</dt>
@@ -264,15 +237,24 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
             <code>{electionId}</code>
           </dd>
           <dt>Tickets from</dt>
-          <dd>{formatIso(e.manifest.registrationOpens)}</dd>
+          <dd>{formatIso(e.manifest.registrationOpensAt)}</dd>
           <dt>Voting</dt>
           <dd>
-            {formatIso(e.manifest.votingOpens)} to {formatIso(e.manifest.votingCloses)}
+            {formatIso(e.manifest.votingOpensAt)} to {formatIso(e.manifest.votingClosesAt)}
           </dd>
           <dt>Binding</dt>
           <dd>{e.manifest.binding ? "Yes — the result decides something in the community's name" : "No"}</dd>
           <dt>Tickets issued</dt>
-          <dd>{e.ticketsIssued ?? "—"}</dd>
+          <dd>
+            {e.ticketsIssued ?? "—"}
+            {roll && (
+              // VTI-VOT-028: the community cannot know how many the roll admits.
+              <div className="muted">
+                Who may vote is proven when each ticket is claimed, so there is no roll size:
+                turnout is counted ballots against tickets issued.
+              </div>
+            )}
+          </dd>
           <dt>Manifest digest</dt>
           <dd>
             <code title={e.manifestDigest}>{shorten(e.manifestDigest, 12, 6)}</code>
@@ -282,47 +264,93 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
       <section className="card">
         <h2>What members are told</h2>
         <p className="muted">
-          Generated from the manifest and the trusted ballot box&rsquo;s entry, and shown to every
-          member before they take a ticket.
+          Every member sees this before taking a ticket, so they know who could learn what about
+          their vote. It comes from the election&rsquo;s settings and the ballot box you chose.
         </p>
-        <dl className="detail-list">
+        <dl className="kv">
           <dt>Ballot box</dt>
           <dd>
-            <code title={d.ballotBox}>{shorten(d.ballotBox, 16, 6)}</code>, run by {d.ballotBoxOperator}
+            Run by {d.ballotBoxOperator} (<code title={d.ballotBox}>{shorten(d.ballotBox, 16, 6)}</code>).
+            Members send their votes there directly, never through this community.
             {d.sameOperator && (
               <div className="warning-text">
-                Run by the same operator as this community: they could see who took a ticket and
-                every ballot.
+                {d.ballotBoxOperator} also runs this community. Tickets are signed blind, so a
+                ballot cannot be matched to a member from the data alone, but an operator that runs
+                both could match them by when a ticket was taken and when a vote arrived. Fine for
+                informal polls; use an independent ballot box for anything sensitive.
               </div>
             )}
           </dd>
-          <dt>Board</dt>
+          <dt>Who can see the ballots</dt>
           <dd>
-            {d.boardVisibility}
-            {d.auditors.length > 0 && `, auditors: ${d.auditors.join(", ")}`}
+            {d.boardVisibility === "public"
+              ? "Anyone. The ballot box publishes every ballot on its board, under one-time keys that never name the member."
+              : "Only this community and its auditors can read the ballot box's board."}
+            {d.auditors.length > 0 && ` Auditors: ${d.auditors.join(", ")}.`}
           </dd>
           <dt>Changing a vote</dt>
-          <dd>{d.revote === "replace" ? "A later vote replaces the earlier one" : "The first vote stands"}</dd>
-          <dt>Coercion</dt>
-          <dd>Not resisted: a member can prove how they voted.</dd>
+          <dd>
+            {d.revote === "replace"
+              ? "Allowed: a member can vote again, and only their latest vote counts."
+              : "Not allowed: a member's first vote is final."}
+          </dd>
+          {release !== undefined && (
+            <>
+              <dt>Written answers</dt>
+              <dd>
+                Released once {release} {release === 1 ? "ballot is" : "ballots are"} counted,
+                never while voting is open.
+                {releaseWarning && <div className="warning-text">{releaseWarning}</div>}
+              </dd>
+            </>
+          )}
+          {roll && (
+            <>
+              <dt>Whose credential counts</dt>
+              <dd>
+                A membership credential issued by{" "}
+                {roll.memberOfName ? <strong>{roll.memberOfName}</strong> : "the party"} (
+                <code title={roll.memberOf}>{shorten(roll.memberOf, 16, 6)}</code>),{" "}
+                {MEMBER_OF_KIND_TEXT[roll.memberOfKind] ?? roll.memberOfKind}. Claiming a ticket shows
+                this community the member&rsquo;s membership of that party.
+                {roll.memberOfKind === "memberParty" && (
+                  <div className="muted">
+                    Shown only to this community&rsquo;s election managers, the party itself, and a
+                    reader who presents that party&rsquo;s membership in reading it — so reading it
+                    already shows the community that membership. It never appears in members&rsquo;
+                    election lists.
+                  </div>
+                )}
+              </dd>
+            </>
+          )}
+          <dt>Pressure to vote a certain way</dt>
+          <dd>
+            Not protected against. A member can prove how they voted, so someone could demand that
+            proof from them.
+          </dd>
         </dl>
       </section>
       {e.certified && (
         <section className="card success">
           <h2>Certified result</h2>
           <p className="muted">
-            Certified {formatIso(e.certified.certifiedAt)}: {e.certified.result.ballotsCounted}{" "}
-            ballots counted, from a board of {e.certified.result.head.treeSize} entries the
-            community verified itself.
+            Certified {formatIso(e.certified.certifiedAt)}. {e.certified.result.ballotsCounted}{" "}
+            {e.certified.result.ballotsCounted === 1 ? "ballot" : "ballots"} counted. The ballot
+            box&rsquo;s board holds {e.certified.result.head.treeSize}{" "}
+            {e.certified.result.head.treeSize === 1 ? "entry" : "entries"} (every vote cast,
+            including any a later vote replaced), and this community checked it itself.
           </p>
-          <ResultTable result={e.certified.result} />
+          <ResultTable result={e.certified.result} manifest={e.manifest} />
         </section>
       )}
       <section className="card">
         <h2>Board checkpoints</h2>
         <p className="muted">
-          Heads of the ballot box&rsquo;s board the community read and kept. Certification
-          checks the final board extends every one.
+          Each time this community reads the ballot box&rsquo;s board, it keeps a fingerprint of
+          it. Certifying the result checks the final board still holds everything every
+          fingerprint covered, so no ballot can be dropped or changed afterwards without it
+          showing.
         </p>
         {e.checkpoints.length === 0 ? (
           <p className="muted">None yet.</p>
@@ -330,8 +358,9 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
           <ul>
             {e.checkpoints.map((c) => (
               <li key={`${c.head.treeSize}-${c.head.rootHash}`}>
-                {formatIso(c.head.issuedAt)} — {c.head.treeSize} entries,{" "}
-                <code>{shorten(c.head.rootHash, 10, 4)}</code>
+                {formatIso(c.head.issuedAt)}: {c.head.treeSize}{" "}
+                {c.head.treeSize === 1 ? "ballot" : "ballots"} on the board, fingerprint{" "}
+                <code title={c.head.rootHash}>{shorten(c.head.rootHash, 10, 4)}</code>
               </li>
             ))}
           </ul>
@@ -342,24 +371,142 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
   );
 }
 
-function ResultTable({ result }: { result: ElectionResult }) {
+type ManifestQuestion = Election["manifest"]["questions"][number];
+
+function optionLabel(q: ManifestQuestion | undefined, key: string): string {
+  return q?.options?.find((o) => o.key === key)?.label || key;
+}
+
+function abstainedLine(n: number) {
+  return n > 0 ? (
+    <p className="muted">
+      {n} {n === 1 ? "ballot" : "ballots"} left this question blank.
+    </p>
+  ) : null;
+}
+
+/** One question's totals, in the words the members were asked in. */
+function QuestionTotals({
+  r,
+  q,
+  counted,
+  threshold,
+}: {
+  r: QuestionResult;
+  q: ManifestQuestion | undefined;
+  counted: number;
+  threshold: number | undefined;
+}) {
+  if (r.choice) {
+    const rows = Object.entries(r.choice).sort((a, b) => b[1] - a[1]);
+    return (
+      <>
+        <ul>
+          {rows.map(([k, n]) => (
+            <li key={k}>
+              {optionLabel(q, k)}: <strong>{n}</strong>
+            </li>
+          ))}
+        </ul>
+        {abstainedLine(r.abstained)}
+      </>
+    );
+  }
+  if (r.ranking) {
+    const rows = Object.entries(r.ranking).sort((a, b) => (b[1][0] ?? 0) - (a[1][0] ?? 0));
+    return (
+      <>
+        <p className="muted">How many ballots put each option in each place.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Option</th>
+              {(rows[0]?.[1] ?? []).map((_, i) => (
+                <th key={i}>#{i + 1}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(([k, places]) => (
+              <tr key={k}>
+                <td>{optionLabel(q, k)}</td>
+                {places.map((n, i) => (
+                  <td key={i}>{n}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {abstainedLine(r.abstained)}
+      </>
+    );
+  }
+  if (r.score) {
+    return (
+      <>
+        <ul>
+          {Object.entries(r.score).map(([k, v]) => {
+            const { sum, count } = v as { sum: number; count: number };
+            return (
+              <li key={k}>
+                {optionLabel(q, k)}: average <strong>{count ? (sum / count).toFixed(1) : "—"}</strong> from{" "}
+                {count} {count === 1 ? "score" : "scores"}
+              </li>
+            );
+          })}
+        </ul>
+        {abstainedLine(r.abstained)}
+      </>
+    );
+  }
+  if (r.text) {
+    return (
+      <>
+        {r.text.length === 0 ? (
+          <p className="muted">No answers.</p>
+        ) : (
+          <ul className="election-texts">
+            {r.text.map((t, i) => (
+              <li key={i} className="election-description">
+                {String(t)}
+              </li>
+            ))}
+          </ul>
+        )}
+        {abstainedLine(r.abstained)}
+      </>
+    );
+  }
+  if (r.withheld) {
+    return (
+      <p className="muted">
+        Answers held back: written answers are shown only once at least {threshold ?? "the set number of"}{" "}
+        ballots are counted, and this election counted {counted}. With so few, an answer could point to
+        who wrote it. Set a lower &ldquo;text release threshold&rdquo; on a future election if that is
+        acceptable for it.
+      </p>
+    );
+  }
+  return abstainedLine(r.abstained);
+}
+
+function ResultTable({ result, manifest }: { result: ElectionResult; manifest: Election["manifest"] }) {
   return (
     <>
-      {result.questions.map((q) => (
-        <div key={q.question}>
-          <h3>{q.question}</h3>
-          {q.choice && (
-            <ul>
-              {Object.entries(q.choice).map(([k, n]) => (
-                <li key={k}>
-                  {k}: {n}
-                </li>
-              ))}
-              <li className="muted">abstained: {q.abstained}</li>
-            </ul>
-          )}
-        </div>
-      ))}
+      {result.questions.map((r) => {
+        const q = manifest.questions.find((x) => x.key === r.question);
+        return (
+          <div key={r.question}>
+            <h3>{q?.text || r.question}</h3>
+            <QuestionTotals
+              r={r}
+              q={q}
+              counted={result.ballotsCounted}
+              threshold={manifest.textReleaseThreshold}
+            />
+          </div>
+        );
+      })}
     </>
   );
 }
@@ -421,7 +568,7 @@ function ElectionActions({ electionId, e }: { electionId: string; e: Election })
       <Field label="Reason" hint="Kept in the audit trail. Required to cancel.">
         <input value={reason} onChange={(ev) => setReason(ev.target.value)} />
       </Field>
-      <div className="button-row">
+      <div className="form-actions">
         {open && e.manifest.allowEarlyClose && (
           <button type="button" className="secondary" onClick={() => close.mutate()} disabled={close.isPending}>
             Close early
@@ -430,7 +577,7 @@ function ElectionActions({ electionId, e }: { electionId: string; e: Election })
         {!ended && (
           <button
             type="button"
-            className="danger"
+            className="secondary destructive"
             onClick={() => cancel.mutate()}
             disabled={cancel.isPending || !reason.trim()}
           >
@@ -453,7 +600,7 @@ function ElectionActions({ electionId, e }: { electionId: string; e: Election })
               onChange={(ev) => setAttestations(ev.target.value)}
             />
           </Field>
-          <button
+          <button className="primary"
             type="button"
             onClick={() => certify.mutate()}
             disabled={certify.isPending || parsedAttestations === null}

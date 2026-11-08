@@ -1,7 +1,7 @@
 [package]
 name = "vtc-client"
 description = "Client SDK for Verifiable Trust Communities (VTC) — auth, members, join, removal, policies"
-version = "0.28.0"
+version = "0.40.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -38,17 +38,20 @@ tsp = ["didcomm", "vta-sdk/tsp"]
 # Reuses the VTA SDK's challenge-response auth (audience-agnostic) and the
 # published join-request protocol types. `session` gates `auth_light` +
 # `protocols`.
-vta-sdk = { path = "../vta-sdk", version = "0.73", features = ["session"] }
+vta-sdk = { path = "../vta-sdk", version = "0.85", features = ["session"] }
 
 # The room's wire types, and — under the `mls` feature — its group-key and
 # sealing layers, which this crate re-exports rather than owning. A VTA needs
 # both and must not depend on a VTC client, so they live in the shared leaf.
-vti-rooms = { path = "../vti-rooms", version = "0.20" }
+vti-rooms = { path = "../vti-rooms", version = "0.32" }
 
 # `TrustTask` — the join-submit document this client signs, and the `#response`
 # envelope the VTC answers it with. Same crate `vta-sdk` builds the document
 # from, so one shape crosses the boundary.
 trust-tasks-rs = { workspace = true }
+# The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
+# "Pinning a task version").
+vti-specs = { path = "../vti-specs", version = "0.10" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -62,6 +65,8 @@ multibase = { workspace = true }
 ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
 thiserror = { workspace = true }
+# The portal origin a wallet sign-in request presents (`signin`).
+url = { workspace = true }
 chrono = { workspace = true }
 # A room read waits out a short `Retry-After` before asking again (`rooms::room_task`).
 tokio = { workspace = true }

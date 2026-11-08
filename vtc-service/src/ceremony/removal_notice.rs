@@ -138,6 +138,11 @@ async fn try_send(
     let doc = build_document(&vtc_did, target_did, MEMBER_REMOVAL_NOTICE_TYPE, payload);
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise removal-notice document: {e}")))?;
+    vti_common::trust_task_push::state_delivery_expiry(
+        &mut doc_value,
+        crate::server::REMOVAL_NOTICE_DELIVER_BY,
+        chrono::Utc::now(),
+    )?;
     signer.sign_operational_doc(&mut doc_value).await?;
 
     // Over whichever transport the removed member speaks — TSP, DIDComm or
@@ -254,7 +259,7 @@ mod tests {
     #[test]
     fn payload_validates_against_the_published_schema() {
         use trust_tasks_rs::validate::ValidatedPayload;
-        type Notice = trust_tasks_rs::specs::vtc::members::removal_notice::v0_1::Payload;
+        type Notice = vti_specs::vtc::members::removal_notice::v0_1::Payload;
 
         for (code, reason) in [
             (RemovalCode::AdminRemoved, Some("because".to_string())),

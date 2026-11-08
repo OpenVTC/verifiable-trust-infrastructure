@@ -23,8 +23,8 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::vtc::members::admit::v0_1 as admit;
-use trust_tasks_rs::specs::vtc::members::make_membership::v0_1 as make;
+use vti_specs::vtc::members::admit::v0_1 as admit;
+use vti_specs::vtc::members::make_membership::v0_1 as make;
 
 use super::helpers::{TrustTaskOutcome, success_response, task_error_to_reject};
 use super::{JoinAuthCtx, capable_signer, parse_spec_payload};

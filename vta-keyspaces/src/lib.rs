@@ -32,6 +32,42 @@ pub struct Keyspaces<'a> {
     pub did_templates: &'a KeyspaceHandle,
     pub audit: &'a KeyspaceHandle,
     pub imported: &'a KeyspaceHandle,
+    /// Per-context agent memory ([`MEMORY`]). Here so a context deletion can
+    /// take the context's entries with it.
+    pub memory: &'a KeyspaceHandle,
+    /// Per-context application state ([`APP_STATE`]). Here so a context
+    /// deletion can take the context's records with it — left behind, they
+    /// reappear in any new context created under the same id.
+    pub app_state: &'a KeyspaceHandle,
+    /// Non-extractable internal key material ([`INTERNAL_KEYS`]), so a context
+    /// deletion takes the material of the context's internal keys with their
+    /// records.
+    pub internal: &'a KeyspaceHandle,
+    /// The holder's credential vault ([`VAULT`]): credentials and vault entries
+    /// in a context's custody go with the context.
+    pub vault: &'a KeyspaceHandle,
+    /// Inbound-messaging consent ([`CONSENT`]): grants and pending requests
+    /// decided in a context go with it.
+    pub consent: &'a KeyspaceHandle,
+    /// Per-(platform, context) approver bindings ([`CONSENT_APPROVERS`]).
+    pub consent_approvers: &'a KeyspaceHandle,
+    /// The persona store ([`PERSONA`]): its context-scoped half goes with the
+    /// context.
+    pub persona: &'a KeyspaceHandle,
+    /// Hidden-vetting and voting engine state ([`PCS_ENGINE`]), each record
+    /// naming the context its key is derived under.
+    pub pcs_engine: &'a KeyspaceHandle,
+    /// Notifications held for the principal ([`NOTIFICATIONS`]), per context.
+    pub notifications: &'a KeyspaceHandle,
+    /// External accounts ([`EXTERNAL_ACCOUNTS`]), keyed by context.
+    pub external_accounts: &'a KeyspaceHandle,
+    /// The wrapped secrets of external accounts ([`EXTERNAL_SECRETS`]).
+    pub external_secrets: &'a KeyspaceHandle,
+    /// Collection claims, conflicts and settings ([`COLLECTION`]). Here so a
+    /// context deletion ends every claim for its identifiers (VTI-NTF-090) and
+    /// drops its setting, so a context created again under the id starts
+    /// enabled (VTI-NTF-094).
+    pub collection: &'a KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh: &'a KeyspaceHandle,
 }
@@ -265,6 +301,19 @@ pub const TRUST_TASK_PUSHES: &str = "trust_task_pushes";
 /// `vta_sweepers::idempotency_sweeper`. Runtime state, not backed up.
 pub const IDEMPOTENCY: &str = "idempotency";
 
+/// The record of accepted Trust Task document identifiers (VTI-OPS-025 … 027,
+/// SPEC §7.2 item 11): one row per document `id` accepted for execution,
+/// `accepted:<id>`, holding the digest of the document accepted under it, the
+/// instant the row may be dropped (the end of that document's acceptance
+/// window) and, for a task whose response may be replayed, that response.
+///
+/// Persistent rather than in-memory because the acceptance window outlives a
+/// restart: a document accepted a minute before one is still acceptable after
+/// it, and must still be refused. Shared by every binding (VTI-OPS-027).
+/// Swept on its deadline (`vti_trust_task_server::accepted_store::sweep_expired`).
+/// Runtime state, not backed up.
+pub const ACCEPTED_IDS: &str = "accepted_ids";
+
 /// Durable TSP relationship state, backing the SDK's `RelationshipStore` for the
 /// TSP transport. One record per facet per `(our_vid, their_vid)` pair — the
 /// relationship FSM state, thread digests, reply path and learned capability.
@@ -302,8 +351,11 @@ pub const EXTERNAL_ACCOUNTS: &str = "external_accounts";
 pub const EXTERNAL_SECRETS: &str = "external_secrets";
 
 /// The VTA's hidden-vetting **PCS engine** state (`vta/pcs/*`): one vetter
-/// engine per (context, community), keyed `vetter:<context>:<community>`, and
-/// one applicant engine per application, keyed `app:<applicationId>`.
+/// engine per (context, community), keyed `vetter:<digest(context, community)>`,
+/// one applicant engine per application, keyed `app:<applicationId>`, and the
+/// voter and trustee engines (`voter:<digest>`, `trustee:<digest>`). The keys
+/// are digests, so finding a context's records means reading each record's
+/// `contextId`; the wrapped state sits beside each under `secret:<key>`.
 ///
 /// Never a `usk`: each member key is re-derived from its context's base on
 /// every use (VTI-KEY-030). The rest of an engine — class credentials, unspent
@@ -327,6 +379,50 @@ pub const PCS_ENGINE: &str = "pcs_engine";
 /// name a session the witness has long since expired, and the VWC a completed
 /// session produced is in the credential vault, which is backed up.
 pub const WITNESS_SESSIONS: &str = "witness_sessions";
+
+/// The **notifications** this VTA holds for its principal (`notifications/notify`,
+/// `notifications/relay`, `vta/notifications/*`, VTI-NTF-050): one record per
+/// (originator, `notificationId`) a DID it holds keys of was sent, keyed
+/// `held:<contextId>\0<recordId>` with the dedup index `dedup:<digest of addressee,
+/// originator and notificationId>` beside it. Each record keeps the delivering document exactly
+/// as received, so a client can verify every proof itself.
+///
+/// In [`BACKED_UP`]: a held notification cannot be fetched again — an originator
+/// delivers each revision once, and a relayer re-sends only later revisions — so a
+/// restore without it would lose what the principal was told they may take part
+/// in, a member-party election among it (VTI-NTF-063).
+pub const NOTIFICATIONS: &str = "notifications";
+
+/// **Collection** of the principal's identifiers (`vta/collection/*`,
+/// VTI-NTF-080 – 098): the collection claims — `claim:<contextId>\0<did>`, a
+/// client's lease on being a persona DID's one collector at its mediator — the
+/// identifiers the VTA stopped collecting for after another connection kept
+/// closing its own (`conflict:<contextId>\0<did>`), the identities provisioned
+/// for another party, which their holders collect for (`provisioned:<did>`),
+/// each context's collection-by-default setting once changed
+/// (`context-setting:<contextId>`, VTI-NTF-094), the operator's suspension as
+/// last applied at boot (`suspension`, VTI-NTF-098), and the record that the
+/// upgrade backfill of `provisioned:` has run (`backfill:provisioned`).
+///
+/// In [`BACKED_UP`]: a claim names a client that is connected for the
+/// identifier until the claim ends. A restore without it would make the
+/// restored VTA the second connection to every claimed persona, which is the
+/// eviction fight the claim exists to prevent (VTI-NTF-081).
+pub const COLLECTION: &str = "collection";
+
+/// The watches this VTA holds for its principal's clients (`rooms/keys/watch/0.1`): one
+/// record per armed watch, keyed by a digest of (caller, member, host, room), holding
+/// exactly what Recipient item 6 lets it keep — the caller, the member, the room, the
+/// host, the address it armed with and that address's key material, and when the watch
+/// lapses. Never a watermark, a signalled version or the time a signal arrived. A record
+/// is deleted when its watch fires, is cancelled or lapses (30 days at most), when the
+/// caller's standing to act as the member is withdrawn, or when the member's credentials
+/// for the room are gone.
+///
+/// In [`EXCLUDED_FROM_BACKUP`]: a backup is a durable copy, and the specification asks the
+/// VTA not to keep an address, or a history of watches, once it has forgotten the watch.
+/// A restored VTA holds no watches; a client re-arms after its next read, or polls.
+pub const ROOM_KEY_WATCHES: &str = "room_key_watches";
 
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
@@ -364,11 +460,15 @@ pub const ALL: &[&str] = &[
     OUTBOX,
     TRUST_TASK_PUSHES,
     IDEMPOTENCY,
+    ACCEPTED_IDS,
     RELATIONSHIPS,
     EXTERNAL_ACCOUNTS,
     EXTERNAL_SECRETS,
     PCS_ENGINE,
     WITNESS_SESSIONS,
+    NOTIFICATIONS,
+    COLLECTION,
+    ROOM_KEY_WATCHES,
 ];
 
 /// Keyspaces a backup carries, **every row of each**, as a raw dump.
@@ -440,6 +540,12 @@ pub const BACKED_UP: &[&str] = &[
     // Hidden-vetting engine state, wrapped. An applicant's attestations are not
     // replaceable without its vetters sitting again.
     PCS_ENGINE,
+    // What the principal was told they may take part in. An originator sends each
+    // revision once, so a lost record is not fetched again (VTI-NTF-050).
+    NOTIFICATIONS,
+    // Who collects for each persona. A restored VTA without the claims would be
+    // the second connection to every claimed persona (VTI-NTF-081).
+    COLLECTION,
 ];
 
 /// Keyspaces deliberately **not** in a backup, each for a stated reason.
@@ -470,6 +576,12 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // request — restoring one elsewhere would claim to have already performed
     // operations that instance never did.
     IDEMPOTENCY,
+    // The accepted-document-id record. Its horizon is the acceptance window —
+    // minutes — so a restored row is all but certainly expired, and an expired
+    // row refuses nothing. It is execution bookkeeping of the VTA that did the
+    // executing, and it holds recorded task responses, which a backup's scope
+    // (the agent's durable state) does not take.
+    ACCEPTED_IDS,
     // TSP relationship state: durable across a restart, but re-establishable by
     // a re-handshake (design note D2/D3) and scoped to this VTA's DIDs — so a
     // restore re-drives it, like [`SESSIONS`], rather than carrying it.
@@ -482,6 +594,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // has expired its own side. A completed session's VWC and evidence are in
     // the credential vault, which is carried.
     WITNESS_SESSIONS,
+    // Watches armed for the principal's clients (`rooms/keys/watch/0.1`): each lapses
+    // within 30 days, holds a per-watch address's key material, and the specification
+    // asks that no copy of an address outlive its watch (Recipient item 6).
+    ROOM_KEY_WATCHES,
 ];
 
 /// Rows inside a [`BACKED_UP`] keyspace that belong to the **deployment**, not
@@ -606,7 +722,18 @@ mod tests {
 /// The classifications below are judgements and several are arguable. That is
 /// fine — the point of the census is to force the question to be asked, not to
 /// claim these answers are the last word.
+///
+/// # A label is a claim about the code
+///
+/// `Cascade`, `Blocks` and `Revoke` say what a DID deletion *does*, and
+/// `vta-service`'s `did_delete_labels_match_the_cascade` test holds them to the
+/// cascade's own list of what it reaches. A keyspace whose rows should go with
+/// the DID (or should stop the deletion) but which the cascade does not reach
+/// yet is [`Orphaned`](DidDeleteEffect::Orphaned), with the effect it should
+/// have written beside it — labelling it `Cascade` would be the comfortable
+/// version of the orphan this census exists to catch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DidDeleteEffect {
     /// Rows belonging to the DID are removed with it.
     Cascade,
@@ -619,6 +746,10 @@ pub enum DidDeleteEffect {
     Revoke,
     /// Nothing here is keyed to a DID.
     Unrelated,
+    /// Rows here can name the DID, and a DID deletion leaves them in place
+    /// today. The comment beside each says what the deletion should do with
+    /// them. A known gap, stated rather than labelled away.
+    Orphaned,
 }
 
 /// The effect a DID deletion has on `keyspace`, or `None` if the name is not a
@@ -631,77 +762,85 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
     use DidDeleteEffect::*;
     // `const fn` cannot match on `&str`, so this is a byte-slice match.
     Some(match keyspace.as_bytes() {
-        // ---- Owned by the DID -------------------------------------------
-        // Key material derived under it, its own log, its advertised name.
-        b"keys" | b"internal_keys" | b"imported_secrets" | b"webvh" => Cascade,
-        // Resolution + protocol caches keyed by DID: stale the moment it goes.
-        b"outbox" | b"trust_task_pushes" => Cascade,
-        // TSP relationships name this VTA's DID as one half of each `(our_vid,
-        // their_vid)` pair; with that VID gone the relationship can neither send
-        // nor be sent to, so its rows go with it — the same reasoning as the
-        // protocol caches above. (The cascade removes rows keyed on the deleted
-        // VID as `our_vid`; a peer VID appearing as `their_vid` of a *surviving*
-        // local VID is a different pair and stays.)
-        b"relationships" => Cascade,
-
-        // ---- Names the DID as a subject of authorization -----------------
+        // ---- Removed with the DID ----------------------------------------
+        // Its key records (`<did>#key-N`, `#pre-rotation-N`) and its own log.
+        b"keys" | b"webvh" => Cascade,
         // An ACL entry outliving its DID is the worst of the orphans: live
         // authority for an identity that can no longer be resolved or rotated.
-        // The VTC learned this the expensive way (#1194, #1196).
-        b"acl" | b"sessions" | b"passkey_vms" => Cascade,
-        // Consent state and the vault are held *for* a holder; with the holder
-        // gone they are unreachable by anyone.
-        b"consent" | b"task_consent" | b"vault" => Cascade,
-        // Per-DID application state the VTA stores on a holder's behalf.
-        b"app_state" | b"memory" => Cascade,
-        // A member's room groups, and the invitations they were joined under.
-        // Held for the holder in the same sense the vault is: the group state
-        // decrypts a room *that member* belongs to, and with the member gone
-        // nobody can use it or ever will again. Keeping it would leave group
-        // secrets on disk outliving the only party they were for.
-        //
-        // The consumed-invitation records go with them and not before: while
-        // the member exists, a consumed invitation MUST outlive the group it
-        // let them join, or leaving a room would make the same invitation work
-        // twice. Single use means single use, and the record is the only thing
-        // that remembers.
-        b"room_groups" | b"room_invitations" => Cascade,
-        // Hidden-vetting engines: a vetter's names the member DID it draws
-        // tokens as, an applicant's the DID it joins as. Held for that holder in
-        // the vault's sense, and useless to anyone once the DID is gone.
-        b"pcs_engine" => Cascade,
-        // A witnessed session in flight is the relationship DID's: it can be
-        // neither presented nor accepted once that DID's key is gone.
-        b"witness_sessions" => Cascade,
-
-        // Persona is two scopes in one keyspace and only one half is DID-keyed,
-        // which the per-keyspace enum cannot say — so it is said here. The
-        // context-scoped rows DO belong to a DID: a binding is keyed by the
-        // persona DID, and a contact records the persona that knows it. Those
-        // cascade, because a binding for a DID that can no longer be resolved is
-        // the ACL orphan again in a different keyspace. The agent-scoped rows —
-        // the attribute pool, the profiles, and their indexes — are keyed to no
-        // DID and survive, which is correct: a profile may be bound to several
-        // personas, and deleting one persona must not destroy facts the holder
-        // still presents through another.
-        b"persona" => Cascade,
+        // The VTC learned this the expensive way (#1194, #1196). Sessions are
+        // authority already issued, and go the same way.
+        b"acl" | b"sessions" => Cascade,
 
         // ---- Depends on the DID to function ------------------------------
-        // A context whose `did` is this one, a DID named in an advertised
-        // service entry (or its rollback snapshot), a policy or approver set
-        // that names it. Cascading any of these breaks something that is still
-        // in use; refusing tells the operator what to unpick.
-        b"contexts" | b"service_state" | b"service_prev_config" => Blocks,
-        b"policy" | b"consent_approvers" => Blocks,
-        // An external account's binding names its consumer's DID. Deleting the
-        // consumer while the binding stands leaves a grant of provider access
-        // to an identity nobody can rotate; revoke the binding first.
-        b"external_accounts" => Blocks,
+        // A context whose `did` is this one: deleting the DID would strand it,
+        // so the operator is told to reassign it first.
+        b"contexts" => Blocks,
 
         // ---- Cannot be deleted, only revoked -----------------------------
         // Third parties hold copies. Deleting our record achieves nothing but
         // losing our ability to revoke it.
         b"issued_credentials" => Revoke,
+
+        // ---- Should go with the DID; the cascade does not reach them -----
+        // Material of the DID's imported / internal keys. The cascade removes
+        // the key *records* only. (A context deletion takes both.)
+        b"internal_keys" | b"imported_secrets" => Orphaned,
+        // Delivery and protocol state keyed by DID: stale the moment it goes.
+        // TSP relationships name this VTA's DID as one half of each
+        // `(our_vid, their_vid)` pair; with that VID gone the relationship can
+        // neither send nor be sent to.
+        b"outbox" | b"trust_task_pushes" | b"relationships" => Orphaned,
+        // In-flight passkey enrolment for the DID (TTL'd).
+        b"passkey_vms" => Orphaned,
+        // Consent state and the vault are held *for* a holder; with the holder
+        // gone they are unreachable by anyone.
+        b"consent" | b"task_consent" | b"vault" => Orphaned,
+        // Per-holder application state and memory. Keyed by context, not DID,
+        // and purged by a context deletion; a lone DID deletion leaves them.
+        b"app_state" | b"memory" => Orphaned,
+        // A member's room groups, and the invitations they were joined under.
+        // Held for the holder in the same sense the vault is: the group state
+        // decrypts a room *that member* belongs to, and with the member gone
+        // nobody can use it or ever will again.
+        //
+        // The consumed-invitation records should go with them and not before:
+        // while the member exists, a consumed invitation MUST outlive the group
+        // it let them join, or leaving a room would make the same invitation
+        // work twice.
+        b"room_groups" | b"room_invitations" => Orphaned,
+        // Hidden-vetting engines: a vetter's names the member DID it draws
+        // tokens as, an applicant's the DID it joins as. Purged with their
+        // context; a lone DID deletion leaves them.
+        b"pcs_engine" => Orphaned,
+        // A witnessed session in flight is the relationship DID's (minutes long).
+        b"witness_sessions" => Orphaned,
+        // A held notification was addressed to the DID.
+        b"notifications" => Orphaned,
+        // A collection claim, conflict or provisioned marker names the DID. Not
+        // reached by the cascade; the collector's sweep drops claims and
+        // conflicts on an identifier that is no longer collectable within one
+        // pass, and such a claim is not in force meanwhile (VTI-NTF-090). A
+        // context's setting, the suspension and the backfill record name no
+        // DID as their subject.
+        b"collection" => Orphaned,
+        // A watch names its member and its caller. Not reached by the cascade; the
+        // watch sweep forgets a watch whose caller may no longer act as the member
+        // (`rooms/keys/watch/0.1` Recipient item 7) within one pass, and every watch
+        // lapses within 30 days.
+        b"room_key_watches" => Orphaned,
+        // Persona is two scopes in one keyspace and only one half is DID-keyed:
+        // a binding is keyed by the persona DID, and a contact records the
+        // persona that knows it. Those should cascade (a context deletion takes
+        // them); the agent-scoped rows — the attribute pool, the profiles, and
+        // their indexes — are keyed to no DID and must survive, because a
+        // profile may be bound to several personas.
+        b"persona" => Orphaned,
+        // These should *block*: a DID named in an advertised service entry (or
+        // its rollback snapshot), a policy or approver set that names it, an
+        // external account binding whose consumer it is. Cascading breaks
+        // something still in use; but nothing checks them yet.
+        b"service_state" | b"service_prev_config" => Orphaned,
+        b"policy" | b"consent_approvers" | b"external_accounts" => Orphaned,
 
         // ---- Not keyed to a DID ------------------------------------------
         // The audit log is deliberately here: it is append-only, and the record
@@ -709,6 +848,11 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         b"audit" | b"audit_key" => Unrelated,
         b"did_templates" | b"sealed_nonces" | b"backup_bundles" => Unrelated,
         b"drains" | b"bootstrap" | b"idempotency" => Unrelated,
+        // Keyed by Trust Task document `id`, and gone within the document's
+        // acceptance window. Cascading would hand a deleted DID's accepted ids
+        // back while their documents can still arrive — the replay the record
+        // exists to refuse.
+        b"accepted_ids" => Unrelated,
         // Keyed by account, never by DID; the account row carries the bindings.
         b"external_secrets" => Unrelated,
 
@@ -774,5 +918,134 @@ mod did_delete_tests {
     #[test]
     fn the_audit_log_is_never_cascaded() {
         assert_eq!(did_delete_effect(AUDIT), Some(DidDeleteEffect::Unrelated));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What a context deletion means for each keyspace
+// ---------------------------------------------------------------------------
+
+/// What happens to a keyspace's context-scoped contents when that context is
+/// deleted (`vta/contexts/delete`).
+///
+/// The question that matters is narrower than "is this tidy": a context can be
+/// created again **under the same id**, and anything keyed by (or carrying) the
+/// old id that survives the deletion is inherited by the new one. That has
+/// happened twice — application state syncing a deleted profile's personas back
+/// (#2415), and a vetter engine record pinning the old member DID so the new
+/// context's `vta/pcs/root-request` failed with `memberMismatch`.
+///
+/// Same rail as [`DidDeleteEffect`]: every keyspace in [`ALL`] must be
+/// classified, and `vta-service`'s `context_delete_labels_match_the_cascade`
+/// test holds the [`Purged`](ContextDeleteEffect::Purged) set to the list the
+/// cascade itself declares, so a label cannot claim a purge the code does not do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ContextDeleteEffect {
+    /// The context's rows are removed with it.
+    Purged,
+    /// Context-scoped rows are deliberately kept; the reason is beside each.
+    Retained,
+    /// Context-scoped rows are not removed, but each expires on its own within
+    /// a bounded time, and none is found again through a recreated context.
+    Lapses,
+    /// Nothing here is scoped to a context.
+    Unrelated,
+}
+
+/// The effect a context deletion has on `keyspace`, or `None` if the name is
+/// not a keyspace this build knows.
+#[must_use]
+pub const fn context_delete_effect(keyspace: &str) -> Option<ContextDeleteEffect> {
+    use ContextDeleteEffect::*;
+    Some(match keyspace.as_bytes() {
+        // ---- Removed with the context -----------------------------------
+        // The context record and its daily quota counters; its key records and
+        // the material of its imported / internal keys; its DIDs (through the
+        // full DID deletion); its ACL scope; its DID templates.
+        b"contexts" | b"keys" | b"imported_secrets" | b"internal_keys" => Purged,
+        b"webvh" | b"acl" | b"did_templates" => Purged,
+        // Data held for the principal in the context.
+        b"app_state" | b"memory" | b"persona" | b"vault" => Purged,
+        b"consent" | b"consent_approvers" | b"notifications" => Purged,
+        // Engine records name the context their key is derived under; left
+        // behind, a recreated context inherits a vetter pinned to the old
+        // member DID and an old derivation path.
+        b"pcs_engine" => Purged,
+        // Live accounts are deleted the way `external/accounts/delete` deletes
+        // one: secret gone, id retired. The `retired:` tombstones are kept —
+        // see `Retained` below for why that is not a resurrection.
+        b"external_accounts" | b"external_secrets" => Purged,
+        // Collection claims and conflicts on the context's identifiers end with
+        // it (VTI-NTF-090), and so does its setting, so a context created again
+        // under the id starts enabled (VTI-NTF-094).
+        b"collection" => Purged,
+
+        // ---- Kept on purpose --------------------------------------------
+        // Append-only; the record that a context was deleted must survive it.
+        b"audit" | b"audit_key" => Retained,
+        // Credentials the VTA issued: third parties hold copies, so the record
+        // is what revokes them. The context's DIDs are deleted through the DID
+        // cascade, which revokes what was issued to them.
+        b"issued_credentials" => Retained,
+        // Operator policy. An approval rule naming a context id is the
+        // operator's statement about that id, not data the context owned.
+        b"policy" => Retained,
+        // Keyed by member persona DID and by credential id, never by context. A
+        // recreated context's personas are new DIDs and cannot reach them; a
+        // consumed invitation must stay consumed (single use).
+        b"room_groups" | b"room_invitations" => Retained,
+
+        // ---- Expire on their own ----------------------------------------
+        // Live sessions keep the context in their access token's `contexts`
+        // claim until it expires; a refresh re-reads the ACL, which the
+        // deletion already narrowed. TTL'd consent, enrolment, idempotency and
+        // witness records likewise.
+        b"sessions" | b"task_consent" | b"passkey_vms" => Lapses,
+        b"idempotency" | b"accepted_ids" | b"witness_sessions" => Lapses,
+        // A watch whose caller loses standing in the context is forgotten by the
+        // watch sweep's next pass, and every watch lapses within 30 days. Its member
+        // is a persona DID, which a recreated context never holds again.
+        b"room_key_watches" => Lapses,
+
+        // ---- Not scoped to a context ------------------------------------
+        b"service_state" | b"service_prev_config" | b"sealed_nonces" => Unrelated,
+        b"backup_bundles" | b"drains" | b"bootstrap" => Unrelated,
+        b"outbox" | b"trust_task_pushes" | b"relationships" => Unrelated,
+
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod context_delete_tests {
+    use super::*;
+
+    /// Every keyspace must answer "what happens to this context's rows here
+    /// when the context is deleted" — a keyspace added without an answer is
+    /// the next one whose rows a recreated context inherits.
+    #[test]
+    fn every_keyspace_is_classified_for_context_deletion() {
+        let unclassified: Vec<&str> = ALL
+            .iter()
+            .copied()
+            .filter(|ks| context_delete_effect(ks).is_none())
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "these keyspaces have no context-deletion effect declared: {unclassified:?}\n\
+             Add them to `context_delete_effect`, and if their rows are scoped to a \
+             context, purge them in `vta-service`'s `delete_context`."
+        );
+        assert_eq!(context_delete_effect("not_a_keyspace"), None);
+    }
+
+    /// The audit log survives the deletion it records.
+    #[test]
+    fn the_audit_log_is_never_purged() {
+        assert_eq!(
+            context_delete_effect(AUDIT),
+            Some(ContextDeleteEffect::Retained)
+        );
     }
 }

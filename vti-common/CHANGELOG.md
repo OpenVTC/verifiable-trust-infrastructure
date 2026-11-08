@@ -2,6 +2,834 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.61.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.60.0...vti-common-v0.61.0) — 2026-11-05
+
+
+### Added
+
+- **vti-common**: Host sessions send Trust Tasks and await their answers ([#2465](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2465))
+
+* feat(vti-common): host sessions send Trust Tasks and await their answers (host_session::Requester)
+
+  A host service reached through its own mediator session (the witness, the
+  ballot box, and now the VTN) could only answer. `IdentitySession::with_requester`
+  hands it a `Requester` that sends a signed Trust Task document to a DID over
+  DIDComm, authcrypted as the identity in the binding envelope, and waits for the
+  answer. The waiter is registered under the request document's `id` before the
+  send. An inbound envelope completes it when its DIDComm `thid` or its document's
+  `threadId` names that id and it comes from the DID the request went to; it is
+  then not dispatched to the `Responder`. A send is "handed to the mediator",
+  never "delivered": no answer within the window is `RequestError::Timeout`, and
+  no live session is `NotConnected`. DIDComm only; TSP requests are not sent yet.
+
+
+
+## [0.60.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.59.0...vti-common-v0.60.0) — 2026-11-05
+
+
+### Added
+
+- **boards**: Appoint a board's facilitators (VTI-BRD-090 – 093) ([#2459](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2459))
+
+Serves vtc/boards/facilitators/{add,remove,list}/0.1. Any facilitator of a board
+  appoints an active member to facilitate it: a resource grant of vtc.boards.manage
+  at board:<boardId> on the member's own entry, beside their role, delegated by and
+  bounded to the signer's own holding, so a member with no administrative role can
+  run one board and nothing else. A facilitator steps down; only a holder of
+  vtc.boards.manage unqualified ends someone else's appointment. When the appointer
+  departs or stops facilitating the board, the appointment goes to an
+  acl.grants.review item (boardGrants) and is withdrawn on decline or at the
+  deadline; deleting the board withdraws every appointment to it. Every change is
+  audited as BoardChanged by entry, never DID.
+
+  The grant/review/withdraw machinery of group managers moves to
+  acl::appointment and now serves both kinds; ResourceGrant::confers answers
+  vtc.boards.manage for the exact board only.
+
+
+
+## [0.59.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.58.0...vti-common-v0.59.0) — 2026-11-05
+
+
+## [0.58.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.57.0...vti-common-v0.58.0) — 2026-11-04
+
+
+## [0.57.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.56.0...vti-common-v0.57.0) — 2026-11-04
+
+
+### Added
+
+- **rate-limit**: VTA and VTC limits run on affinidi-rate-limit ([#2414](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2414))
+
+* feat(rate-limit)!: VTA and VTC limits run on affinidi-rate-limit
+
+  The per-IP limits and the trusted-proxy client-address rule now come from
+  affinidi-rate-limit, the crate the mediator, the DID resolver cache and the
+  DID hosting service use, rather than three separate copies of the rule.
+
+  - vti-common's TrustedProxyKeyExtractor delegates to the crate's
+    ClientIpExtractor. Its constructor now returns a Result: a range covering
+    every address (0.0.0.0/0, ::/0) is refused.
+  - The VTA's limiters run on the crate with the same quotas, runtime quota
+    swaps and 429 contract.
+  - The VTC's unauthenticated limiter is the crate's layer, sharing one
+    budget with the Trust Task admission limits, which also run on the crate.
+
+  Behaviour changes. An X-Forwarded-For chain from a trusted proxy that
+  cannot be read (a malformed entry, more than 64 entries) is refused with
+  400 instead of being charged to the proxy, which gave its sender a second
+  bucket and hid a misbehaving proxy. trust_xff_cidrs refuses 0.0.0.0/0 and
+  ::/0 at load, on the VTA and the VTC. The VTC's sign-in and room limiters
+  refuse a new address once 10,000 are live, where they used to sweep and
+  grow. The VTC's unauthenticated 429 no longer carries tower_governor's
+  informational x-ratelimit-after header; Retry-After is unchanged.
+
+- **discovery**: Answer trust-task-discovery 0.4 and advertise the expiry horizon ([#2437](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2437))
+
+The VTA, the VTC and the witness answer trust-task-discovery/0.4
+  (trust-tasks-tf #1030, trust-tasks-rs 0.37.2). Its acceptance window carries
+  the thirty-day expiry horizon up to which a stated expiresAt is honoured
+  (VTI-OPS-028), so a sender can state an expiry within it instead of issuing a
+  new attempt every max_age (VTI-TRN-047).
+
+  AcceptanceWindow gains expiry_horizon. VTI_ACCEPTANCE_WINDOW sets it to
+  EXPIRY_HORIZON, and freshness_policy applies it, so the advertised horizon is
+  the applied one by construction. Each node's test reads the horizon back out
+  of its own answer and checks it against the spine's policy.
+
+  The superseded 0.3 is still answered, with the same list and a window without
+  the horizon, for the clients that still ask it (the SDK, the console and the
+  git-ns bridge probe).
+
+
+
+## [0.56.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.55.0...vti-common-v0.56.0) — 2026-11-04
+
+
+### Added
+
+- **trust-task-push**: Pushed documents state their delivery deadline as expiresAt (VTI-TRN-048) ([#2428](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2428))
+
+A pushed document stated no expiry, so a recipient accepted it for ten
+  minutes after its issuedAt. A push runs for hours or days (thirty for a
+  removal notice), so a copy a mediator held while the recipient was offline
+  was refused as stale when collected, and the engine had to keep issuing new
+  documents under VTI-TRN-046 for the delivery to land. Since #2423 a VTI
+  consumer accepts a document until its stated expiresAt, up to thirty days
+  (VTI-OPS-024, VTI-OPS-028), so stating the deadline keeps the document
+  acceptable for as long as it is pursued.
+
+  vti-common trust_task_push:
+  - `state_delivery_expiry` stamps an unsigned document's expiresAt at its
+    push's deadline, counted from issuedAt in whole seconds, keeping an earlier
+    expiry the task already states, and refusing a signed document. New
+    attempts already carry it unchanged.
+  - The engine places a document by its acceptance end (VTI-TRN-044): the
+    stated expiry, bounded by the horizon, or issuedAt + the maximum age
+    without one. It no longer issues new attempts at ten minutes for a
+    document that is still acceptable, and counts a copy collected inside its
+    stated expiry as delivered.
+
+  Stated at every push whose window outlasts the ten-minute maximum age: the
+  VTC's removal, authority-reduced, authority-reduction-pending, step-up passkey
+  and break-glass notices, its notifications, and its consent requests (the
+  action's expiry, capped at a week); the VTA's credential-exchange steps.
+  The VTA's step-up and consent pushes run five to ten minutes, inside the
+  maximum age, and are unchanged.
+
+- **idempotency**: Keep a keyed operation's record until the latest acceptance end under its key (VTI-OPS-066) ([#2426](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2426))
+
+A keyed Trust Task's idempotency record lived 24 hours (the NonDestructive
+  class TTL). The attempts at one operation are separate documents, and since
+  #2423 a document stating an expiresAt is acceptable for up to thirty days
+  (VTI-OPS-028), so an attempt arriving after the 24 hours would perform the
+  operation again. VTI-OPS-066 requires the record to last until the latest
+  acceptance end, plus the skew, of any document carrying the key that the node
+  has accepted.
+
+- **trust-tasks**: Honour a stated expiresAt up to 30 days, and keep the replay record to the acceptance end (VTI-OPS-024, VTI-OPS-028, VTI-OPS-029) ([#2423](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2423))
+
+trust-tasks-rs 0.37 (trustoverip/dtgwg-trust-tasks-tf #1021), with
+  affinidi-tdk 0.37, affinidi-messaging-sdk 0.45 (affinidi-tdk-rs #983) and
+  mediator 0.50 (affinidi-messaging-mediator #55), which move with it.
+
+  Acceptance. A document that states an expiresAt is accepted until then, up to
+  thirty days after its issuedAt, whatever the ten-minute maximum age
+  (VTI-OPS-024, VTI-OPS-028). An expiry beyond the horizon is clamped, not
+  refused. A document without one keeps the ten-minute window. The horizon is
+  `vti_common::trust_task::acceptance::EXPIRY_HORIZON`, applied by
+  `AcceptanceWindow::freshness_policy`, so every VTI consumer takes it.
+
+  Retention. Every record of an accepted document was capped at
+  issuedAt + max_age + skew, relying on the freshness check to refuse anything
+  older. Under 0.37 that check accepts a document with a later expiresAt, so
+  the record would be dropped while its document was still acceptable and a
+  replay would execute twice. One rule now decides retention for every consumer,
+  `vti_common::trust_task::acceptance::retain_until`: the acceptance end plus the
+  skew (VTI-OPS-029), bounded by the horizon. It is used by the shared receive
+  pipeline (VTA and VTC accepted-id records), the VTC's spent step-up approver
+  statements, vti-witness and room-host.
+
+  Behaviour change for producers: a document stating a long expiresAt is no
+  longer refused as stale after ten minutes. Step-up approver statements are
+  included, as VTI-OPS-028 requires of any document that states an expiry.
+
+  Not here: idempotency records still live 24 hours although a keyed document
+  can now be acceptable for 30 days (VTI-OPS-066, next step); room-host's replay
+  record is still in memory and lost on restart (VTI-OPS-029).
+
+- **vtc-service**: Community boards — members propose ideas and leave notes, each accepted idea is its own election (VTI-BRD-001 – VTI-BRD-080) ([#2420](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2420))
+
+* build(vti-specs-vtc): pin vtc/boards/*/0.1
+
+  The thirteen Community Boards tasks (VTI-BRD-001 – VTI-BRD-080): create, update, list and show a board; propose, update, withdraw, decide and select ideas; add, list, withdraw and hide notes. Resolved against a local build of dtgwg-trust-tasks-tf feat/vtc-boards — re-pin against trusttasks.org once that publishes.
+
+
+
+### Fixed
+
+- **vtc,voting**: Recover a TSP relationship the peer forgot ([#2427](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2427))
+
+A ballot box restarted under a live community stopped answering it: the
+  voting service kept TSP relationships in memory, so after a restart (or
+  a reconnect, which builds a fresh ATM) it held none with the community
+  and, by TSP §7.2.2, dropped every frame unanswered. The VTC's durable
+  half still read "related", so it never re-invited, and every election
+  registration timed out for good.
+
+  Both halves are fixed:
+
+  - vtc-service: `PeerTasks::exchange` resets the TSP relationship on a
+    reply timeout (D4 of tsp-relationship-recovery.md, as the registry
+    client already does), so the caller's next attempt re-forms it through
+    `send_reestablishing`. Repair only; the caller's backoff stays the one
+    retry owner.
+  - vti-common: `IdentitySession::with_relationship_store` lets a host
+    service keep its relationships in a durable store.
+  - vti-voting-service: keeps them in `data_dir/store` (`tsp_relationships`)
+    and runs the store's maintenance loop once per process.
+
+- **contexts**: Purge every context-scoped record on delete ([#2419](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2419))
+
+vta/contexts/delete removed a context's keys, DIDs, ACL scope, DID
+  templates, app state and memory ([#2415](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2415)), but every other store that holds
+  data for a context kept its rows. Most are keyed by the context id, or by a
+  digest of it, so a context later created under the same id inherited them.
+
+  Seen with OpenVTC: a context deleted and recreated under the same id failed
+  vta/pcs/root-request with memberMismatch. The vetter engine record
+  (pcs_engine vetter:<sha256(ctx, community)>) had survived, still pinned to
+  the old member DID and to a derivation path under the old context's base.
+
+  delete_context now purges, for every context in the subtree:
+
+  - pcs_engine: vetter, applicant, voter and trustee records whose contextId
+    is the context, with the wrapped state beside each (secret:<key>, and a
+    voter's secret:voter-casts:<digest>). The keys are digests, so the purge
+    scans each record prefix and matches the record's own contextId.
+  - persona: every context-scoped prefix (pb, pc, pcr, pca, pcl, pd, plp, plb),
+    driven from PREFIX_SCOPES so a new context-scoped prefix is purged without
+    anyone remembering to; and the agent-scoped face-value edges that name one
+    of the context's local profiles.
+  - vault: credentials in the context's custody (with their index rows) and
+    vault entries, hard-deleted whatever their lifecycle state.
+  - notifications: held records with their dedup and bound rows (the sweep's
+    removal, factored out and shared).
+  - consent: grants decided in, and pending requests scoped to, the context;
+    consent_approvers: its approver bindings.
+  - external_accounts / external_secrets: each live account deleted the way
+    external/accounts/delete deletes one (secret gone, id retired).
+  - contexts: the daily quota counters (quota:<ctx>:...).
+  - imported_secrets / internal_keys: the material of each key record the
+    purge removes, as revoke_key does for an imported key.
+
+  Each store purges itself next to the code that writes it, and the counts go
+  in the deletion's log line. As in #2415 none of this is in the not-empty
+  gate: the gate must agree with preview-delete, whose wire shape has no
+  member for these, so surfacing them needs a spec revision.
+
+  Kept on purpose: the audit log; issued credentials (revoked through the DID
+  cascade, never deleted); operator policy; room groups and invitations (keyed
+  by persona DID / credential id, unreachable from a recreated context); and
+  external accounts' retired: tombstones, which hold no data and stop a
+  recreated context reusing an account id a provider-side trust policy may
+  still name.
+
+  The census is now a claim the code is held to:
+
+  - vta_keyspaces::context_delete_effect classifies every keyspace for a
+    context deletion (Purged / Retained / Lapses / Unrelated), and
+    context_delete_labels_match_the_cascade ties the Purged set to the
+    cascade's own list.
+  - did_delete_effect labelled most keyspaces Cascade (and five Blocks) though
+    the DID deletion reaches only keys, webvh, acl, sessions, issued
+    credentials and contexts. Those labels are now Orphaned, with the intended
+    effect beside each, and did_delete_labels_match_the_cascade holds
+    Cascade / Blocks / Revoke to DID_DELETE_REACHES.
+
+
+
+## [0.55.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.54.0...vti-common-v0.55.0) — 2026-11-03
+
+
+### Added
+
+- **vetting**: Recover or reset a lost hidden-vetting key (pcs-binding/show, pcs-binding/reset, vta/pcs/vetter/recover) ([#2406](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2406))
+
+* feat(vtc): recover or reset a lost hidden-vetting key (pcs-binding/show, pcs-binding/reset)
+
+  A vetter is bound to the PCS identifier of their first enrolment, and a
+  second identifier is refused with pcs-root:identifierRebound. The binding
+  was never cleared, so a vetter whose key was lost was locked out of hidden
+  vetting for as long as they stayed a member; revoking and re-granting the
+  role did not help.
+
+  - vtc/vetting/vetters/pcs-binding/show/0.1: a member reads their own
+    binding (identifier, enrolled labels, any pending reset), so their client
+    can recover the matching key. Membership is the entitlement;
+    notAMember otherwise.
+  - vtc/vetting/vetters/pcs-binding/reset/0.1: an administrator holding
+    vtc.vetting.manage (as vetters/grant) resets a member's binding with a
+    reason. Idempotent; notBound for a member who never enrolled. Audited as
+    HiddenVetterBindingReset, never with the identifier.
+  - Enrolment after a reset: the recorded identifier cancels it
+    (HiddenVetterResetCancelled); a new one is refused (identifierRebound)
+    while any label the old one enrolled under is live, judged at each
+    request against the caller's configuration and the stored one under the
+    enrolment lock, and bound once none is (HiddenVetterRebound) with its
+    labels afresh. The old labels are retired on the record.
+  - vtc/vetting/hidden/publish refuses to make a retired label live again,
+    checked before the consent gate and again under the enrolment lock
+    before the write. publish/0.1 declares no code for it, so it is a
+    validation refusal.
+  - Admin console: a "Reset a hidden-vetting key" card under Vetting ->
+    Vetters, shown when discovery lists the task.
+  - EnrolmentRecord gains optional reset and retiredLabels members; rows
+    without them read and write as before.
+
+  The two specifications are pinned from a locally built registry ahead of
+  their publication; trust-tasks.lock records that registry until they are
+  re-pinned against trusttasks.org.
+
+- **notifications**: Deposit to the VTA, a community's received notifications and relay decision, and four fixes (VTI-NTF-005, 034, 041, 047, 054 – 056, 070 – 074) ([#2405](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2405))
+
+* feat(vti-specs): pin vta/notifications/deposit 0.1 and vtc/notifications/{list,show,relay} 0.1
+
+  From trustoverip/dtgwg-trust-tasks-tf#1017: the client's hand-over of a
+  notification received for a persona DID (vti-specs-vta), and a
+  community's administrators' view and relay decision (vti-specs-vtc).
+  notifications/notify and relay 0.1 changed in prose only; their pinned
+  digests are unchanged.
+
+- **vtc**: A community's side of Verifiable Trust Network membership ([#2399](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2399))
+
+* feat(vti-specs-vtc): pin vtc/networks/* 0.1
+
+  list, show, join, repudiate, leave, groups/register, notice and evidence
+  (trustoverip/dtgwg-trust-tasks-tf#1014): a community's side of
+  Verifiable Trust Network membership.
+
+- **voting**: Credential rolls proven at the ticket claim, and elections shown only to whom they concern (VTI-VOT-015 – 018, VTI-VOT-025 – 029) ([#2395](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2395))
+
+* build(specs): pin the credential-roll and election-privacy task versions
+
+  voting/_shared/0.4 and every task carrying it (dtgwg-trust-tasks-tf #1008,
+  #1010, #1011): voting/election/register/0.4, show/0.4;
+  vtc/elections/create/0.5, show/0.6, list/0.5, tickets/issue/0.3;
+  vta/pcs/voter/register/0.5, voter/read/0.6, vote/0.4, vote-encrypted/0.5,
+  trustee/{deal,justify,keys}/0.5, enrol/0.4, read/0.4. Older versions stay
+  pinned.
+
+
+
+### Fixed
+
+- **idempotency**: Never re-run a keyed Trust Task whose earlier attempt died ([#2409](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2409))
+
+VTI-OPS-061 requires a node to perform a keyed operation at most once per
+  key. The dispatcher claims the key, the handler commits its effect, then
+  `record_outcome` marks the key done. Those are separate writes. A process
+  that died between the effect and the record left an in-flight claim, and
+  after the 10-minute grace `IdempotencyStore::claim` reclaimed it and ran the
+  handler again. The new restart test shows the result: a retry of
+  `keys/create` minted a second key ([#2402](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2402)).
+
+  A stale in-flight claim is now `ClaimOutcome::Abandoned { claimed_at }` and
+  is never reclaimed while its record lives. The VTA answers it with
+  `taskFailed` ("outcome unknown", `details.claimedAt`). The caller checks
+  whether the effect exists and uses a new key if it is still wanted. Inside
+  the grace a retry still gets `unavailable`. An expired record is claimed
+  afresh, as before.
+
+  A store error while claiming now answers `unavailable` rather than
+  dispatching unguarded. A keyed request run without its claim is one a
+  later retry can run again.
+
+  BREAKING CHANGE (vti-common): `ClaimOutcome` gains `Abandoned` and is now
+  `#[non_exhaustive]`; `claim` no longer reclaims a stale in-flight record.
+
+- **store**: A templated test store copies the template's empty directories too ([#2388](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2388))
+
+
+## [0.54.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.53.1...vti-common-v0.54.0) — 2026-11-02
+
+
+### Added
+
+- **vtc**: Archive, unarchive and remove a community-owned data room ([#2380](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2380))
+
+A community could create, describe and staff a room it owns, but never close
+  or remove one. This adds the owner's lifecycle beside the host's computed one,
+  stored on the owner's record: active -> archived (readOnly | noAccess) ->
+  removalScheduled -> purging -> removed
+  (vtc/rooms/community/{archive,unarchive,remove}/0.1,
+  vtc/rooms/community/removal/cancel/0.1).
+
+  - readOnly freezes the host record (vti_rooms::Room::frozen_at): the host
+    refuses every task but a read, except the owner's own Admin acts. Open
+    offers are withdrawn.
+  - noAccess, and every removal, resets the room: one `room` withdrawal through
+    rooms/owner/revoke, the only withdrawal a private room's host applies.
+    Admitted members become `suspended`. The community's own credentials are
+    re-issued after the second the reset falls in, because a credential whose
+    validFrom is before revokedAt is withdrawn. The reset is recorded as a
+    pending change before it is asked for, and rooms::community_lifecycle (the
+    one retry owner) finishes it; a reset the host accepted is never repeated.
+  - Unarchiving restores suspended members with fresh credentials (same actions
+    and expiry), delivered as an offers/list renewal.
+  - Removal only from archived, with a grace period (default 30 days,
+    `[rooms.community] removal_grace_days`) or at once. The purge deletes host
+    rows, every blob (including moved copies), usage, the storage assignment,
+    group bindings and the served DID log; it asks the VTA to delete the DID (a
+    SHOULD, reported and never holding the purge); and it keeps a tombstone.
+  - get/list 0.4 carry `status`, members/list 0.2 and memberships/list 0.2 the
+    `suspended` state, and members/add 0.2 refuses `wrongState`. The 0.3 and 0.1
+    reads stay served: purged rooms are hidden from them, and a suspended
+    admission reads as admitted. members/add 0.1 is no longer served.
+  - The VTA serves rooms/keys/act 0.10, which adds memberships/list 0.2.
+    vta-sdk and pnm move to it.
+  - cnm rooms archive|unarchive|remove|cancel-removal, list --state; the admin
+    console's state chips, filter, Lifecycle card and dialogs (remove requires
+    typing the room's label); the member portal's room-state wording.
+
+
+
+## [0.53.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.53.0...vti-common-v0.53.1) — 2026-11-01
+
+
+### Added
+
+- **voting-service**: GET /health and /health/ready ([#2366](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2366))
+
+The voting service served only `POST /trust-tasks`, so an operator had
+  no health path, and nothing showed whether the mediator session —
+  how communities register, close and cancel elections — was up.
+
+  - `vti_common::host_session::supervise_reporting`: `supervise`, also
+    reporting on a `watch` whether the identity is reachable through its
+    mediator. True only while a session is served and its socket reports
+    `ConnState::Connected`; false again on a socket drop, a lost session,
+    or return. Driven by the transport's own state, never latched (R6.2).
+    `supervise` is unchanged and delegates to it.
+  - `GET /health`: always 200 while serving, with `messaging` in the body.
+    For a proxy's upstream check: casts arrive over HTTPS and keep working
+    while the mediator is away, so this never pulls the cast door.
+  - `GET /health/ready`: 200 only while the mediator session is connected,
+    503 otherwise (and always without an `[identity]`). For alerting.
+
+
+
+## [0.53.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.52.0...vti-common-v0.53.0) — 2026-10-30
+
+
+## [0.52.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.51.0...vti-common-v0.52.0) — 2026-10-30
+
+
+### Added
+
+- **vtc**: Move a community role with vtc/members/role/set/0.1 and stop serving acl/change-role/0.1 ([#2347](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2347))
+
+* feat(vtc)!: move a community role with vtc/members/role/set/0.1 and stop serving acl/change-role/0.1
+
+  The community-role move (member, moderator, issuer, admin, custom roles) is
+  now `vtc/members/role/set/0.1`; `acl/change-role/0.1` is no longer served,
+  sent or pinned. `acl/change-role/0.2` still moves the administrative role.
+
+  The handler makes the specification's checks 1-7 in order, each with its
+  declared code: vtc.roles.assign (permissionDenied), no self-move in either
+  direction (VTI-OPS-050, VTI-ACL-052), notFound, roleNotRecognized
+  (details.offendingRole) / roleNotAssignable (`application` onto or off),
+  stateMismatch (details.currentRole), the requester covering the entry
+  (VTI-ACL-050), and fromRole == toRole answered `changed: false` with no
+  gesture and no write (SPEC 7.2).
+
+  The role-change ceremony carries items 8-18: authority follows the role
+  only where it is exactly the one the current role implies;
+  delegationExceedsGranter (axes); lastRoleAssigner checked before the policy
+  and again under the write's lock (VTI-APV-009); the policy sees whether the
+  move confers or withdraws authority and may not choose a different role
+  (deniedByPolicy); the bound step-up and parked consent (VTI-OPS-051,
+  VTI-APV-018/019); the compare-and-swap re-checked under LAST_ADMIN_LOCK
+  (item 14); the role credential returned as roleVac; and a new
+  CommunityRoleSet audit event (from/to, authority before/after, approval,
+  action id, reason).
+
+  The response is the generated type: subject, role, previousRole, changed,
+  approval, entry (AclEntry 0.2) and roleVac. vtc-client's acl_change_role
+  becomes members_role_set; `cnm access change-role` and the admin console
+  send the new task. Approver summary templates are added for the new task
+  (server and console pins); the 0.1 templates stay for history.
+
+- **auth**: Answer step-ups with auth/step-up/approve-response/0.7, and stop serving 0.4 and 0.6 ([#2346](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2346))
+
+Every step-up answer moves to approve-response 0.7
+  (trustoverip/dtgwg-trust-tasks-tf#983). A user-verified WebAuthn assertion
+  by the approver's own registered passkey is evidence on its own, so the admin
+  console answers unsigned. A delegated key's proof never counts as the
+  approver's. A didSigned or approverSigned answer, and every denial, still
+  needs the approver's own proof.
+
+
+
+### Changed
+
+- **specs**: Take every Trust Task wire type from the generated vti-specs crates ([#2343](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2343))
+
+Every `trust_tasks_rs::specs::<family>` path becomes `vti_specs::<family>`
+  (`vti_specs_rooms::rooms` in vti-rooms, which stays wasm-light), and every
+  `trust_tasks_rs::schema_index::*` call becomes `vti_specs::schema_index::*`,
+  which answers for exactly the versions the vti-specs-* locks pin. The
+  framework's own specs are re-exported from vti_specs unchanged.
+
+  No crate turns a trust-tasks-rs spec family on any more: the workspace
+  compiles none of the deprecated prebuilt modules, only `validate`.
+
+  The generated types are the same generator's output at the same module paths,
+  but they are distinct Rust types from the prebuilt ones: a downstream crate
+  that passes a `trust_tasks_rs::specs` value into a vta-sdk API must move its
+  import to `vta_sdk::specs` (a find-and-replace).
+
+  CLAUDE.md's rule now points at the generated crates and says how to pin a
+  version; the SPEC FAMILIES notes in Cargo.toml are replaced.
+
+- **vtc**: Approve-response 0.4 only for the console's unsigned answer; drop the unused acl/revoke 0.1 OpenAPI wrapper ([#2333](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2333))
+
+The superseded auth/acl Trust Task versions, narrowed to what still needs
+  them.
+
+  auth/step-up/approve-response/0.4 (superseded by 0.6). The VTC now hears 0.4
+  only as the admin console's unsigned session-passkey answer. Every signed
+  answer — a member's step-up passkey beside their own proof, a refusal, a
+  wallet's approver statement — is 0.6, and a signed 0.4 is refused with a
+  pointer to 0.6. The 0.4 document is checked against 0.4's schema and then
+  handled as the 0.6 payload it is wire-identical to, so
+  `bound_step_up::approve` and everything past the door read 0.6 only. The
+  console's Decline now sends 0.6.
+
+  0.4 itself stays: approve-response 0.5 onward require the approver's own
+  assertionMethod proof, and the console holds only a delegated key, which
+  auth/signing-key/enroll/0.2 item 7 refuses as an approver's attestation. The
+  console's unsigned answer has no successor in the specification yet.
+
+  acl/change-role/0.1 (superseded by 0.2) stays as the community-role door,
+  as #2323 kept it: 0.2 moves an AclEntry 0.2's administrative role, and the
+  community role (member <-> admin, role-VAC re-mint, promotion serialisation)
+  has no 0.2 task. Its uses now carry a per-item #[allow(deprecated)] naming
+  that gap.
+
+
+
+### Fixed
+
+- **step-up**: One approve-request version, 0.5, across the VTA, the VTC and the mobile approver ([#2327](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2327))
+
+`auth/step-up/approve-request` was minted at three versions: the VTA at 0.2
+  (a hand-built JSON payload), vtc-service at 0.4 (inline in a refusal) and the
+  did-hosting RP at 0.5. An approver therefore had to read all three, and
+  vta-mobile-core read only 0.1 and 0.2 — so it could answer the VTA but not
+  the RP or the VTC.
+
+  - vta-service mints 0.5, built through the generated
+    `approve_request::v0_5::Payload` and its schema check (as vtc-service
+    already does) rather than a hand-written `json!`; the type URI comes from
+    `<Payload as trust_tasks_rs::Payload>::TYPE_URI`. On the wire:
+    `acceptableEvidence` -> a required `accepts`, `ttl` -> `ttlSeconds`;
+    `sessionId` is still sent, since this is a session step-up.
+  - vtc-service's inline request moves 0.4 -> 0.5 (`ttl` -> `ttlSeconds`).
+    `bound_step_up::ApproveRequest` is now the 0.5 payload, hence `!`.
+  - vta-mobile-core's `parse_step_up_request` accepts 0.5 only, matched
+    exactly, and reads `accepts`. `approverSigned` is surfaced as
+    `approver-signed` rather than dropped. The UniFFI record keeps its shape: a
+    request that names no session (0.5 makes `sessionId` optional) surfaces an
+    empty `session_id`, the convention `stepup`'s response draft already reads.
+  - The VTC console reads `accepts` only (the 0.3 `acceptableEvidence`
+    fallback is gone) and shows `ttlSeconds`.
+
+  The browser wallet cuts over with this: pnm-browser-plugin matches the
+  agent's request at 0.2 today and moves to the single 0.5 pin it already
+  holds for the RP.
+
+
+
+## [0.51.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.50.0...vti-common-v0.51.0) — 2026-10-28
+
+
+### Added
+
+- **vta**: Speak AclEntry 0.2 — acl/*/0.2 and acl/list/0.3 ([#2324](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2324))
+
+The VTA moves its ACL surface to AclEntry 0.2 (`acl/_shared/0.2`), where every
+  authority axis is explicit, and stops serving acl/{grant,show,update,
+  change-role,revoke}/0.1 and acl/list/0.1. `operations::acl_v0_2` maps each
+  0.2 value onto the stored (role, contexts) model and refuses the ones the
+  store cannot hold (`act: all` on a non-admin, `act: none` on admin →
+  invalidActScope) rather than approximating them. change-role carries the act
+  scope across unchanged; update never narrows act (revoke {kind: act} does);
+  list/0.3 pages with signed, filter-bound cursors and honours role,
+  subjectPrefix and capability. RETIRED_TASK_TYPES moves approval rules naming
+  the 0.1 URIs to their successors at boot.
+
+- **auth**: Serve only the current passkey invite, approver invite, passkey revoke and login versions ([#2321](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2321))
+
+The VTC now serves:
+
+  - auth/passkey/enroll/invite/0.3 (was 0.2) and
+    auth/step-up/approver/invite/0.2 (was 0.1): the invite lifetime is
+    `ttlSeconds`, not `ttl`. Nothing else in either payload moved.
+  - auth/passkey/revoke/{start,finish}/0.2 for an administrator's own
+    session (login) passkeys too, which were still on 0.1. One Type URI
+    now serves both purposes: start resolves the credential among the
+    subject's session and step-up credentials, and finish routes the
+    handle back to whichever started it. For a session credential, per
+    0.2: lastCredential is refused at start before a challenge is issued
+    (and re-checked at finish), the handle is bound to its producer
+    (another producer's handle is revocationNotFound), the assertion must
+    carry the UV flag, and the response carries `subject` and
+    `purpose: "session"`. An administrator naming another administrator's
+    session passkey as `subject` is notAuthorized: a login passkey is
+    revoked only by its owner on this door.
+
+  The VTA's REST passkey-login routes declare only
+  auth/passkey/login/{start,finish}/0.2; the 0.1 constants are removed
+  from vta-sdk (TASK_AUTH_PASSKEY_LOGIN_{START,FINISH}_0_1). The routes
+  never read `purpose`, the only member 0.1 spelt differently
+  (`step-up` vs `stepUp`), so no wire behaviour changes there. The VTC
+  already served login 0.2.
+
+  The admin console sends ttlSeconds and the 0.2 revoke URIs; openapi.json
+  and wire.ts are regenerated for the revoke/finish response.
+
+- **auth**: Serve only the current auth, audit/list, policy, task-consent and discovery versions ([#2313](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2313))
+
+The VTA, the VTC and every client in the workspace move off superseded Trust
+  Task versions of these families, and the services stop serving the old ones:
+
+  - auth/authenticate 0.1/0.2 -> 0.3 (proxied-login members; a `principal` that
+    is not the signer is refused `delegationNotRecognized`), auth/refresh 0.1 ->
+    0.2, auth/revoke-session -> 0.2, auth/signing-key/enroll 0.1 -> 0.2.
+  - auth/step-up/approve-response 0.1/0.2/0.3 -> 0.6 on the VTA (one typed
+    handler; vta-mobile-core builds 0.6, a bound approval may carry no
+    `sessionId`).
+  - auth/oob/{request,redeem,claim} 0.1 -> 0.2, grant 0.1/0.2 -> 0.3, respond
+    0.1 -> 0.3 (`claimClosesAt`, `decisionClosesAt`, `sessionEndsAt` as RFC 3339
+    instants rather than epoch seconds), on the VTC and the member portal.
+  - audit/list 0.1 -> 0.2 and policy/list 0.2 -> 0.3 (`limit`/`nextCursor`),
+    policy/upsert 0.1/0.2 -> 0.3 (`created` -> `wasCreated`), on both services
+    and their clients.
+  - task-consent/decision 0.1 -> 0.2, trust-task-discovery 0.1 -> 0.3.
+
+  An approval rule names its task by exact versioned Type URI, so a stored rule
+  naming a version the VTA no longer serves would never match again and the task
+  it gated would run ungated. `vta_policy::approvals::RETIRED_TASK_TYPES` maps
+  each retired version to its successor; boot moves stored rules onto it, and the
+  policy write path refuses a new rule naming a retired type.
+
+  Deliberately not moved, because a peer outside this workspace pins them:
+
+  - auth/step-up/approve-request stays at 0.2 on the VTA: the fielded approvers
+    (vta-mobile-agent-ios, which routes by a hard-coded 0.1/0.2 type list, and the
+    browser plugin) accept only 0.1 and 0.2.
+  - the VTC still serves auth/step-up/approve-response/0.4 beside 0.6, for the
+    console's unsigned session-passkey answer, which 0.5 onward forbids.
+
+- **external**: Serve and send only the current external/* versions ([#2311](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2311))
+
+trust-tasks-rs 0.35 deprecates every superseded Trust Task version and withdraws each about 90 days later. Every current `external/*` version is already in 0.35, so the VTA serves it now and stops serving the old one, and every client in the workspace sends it.
+
+  Served now (the old versions are refused `unsupportedVersion`/`unsupportedType`):
+
+  - `external/accounts/{list,get,create,update,bindings/grant,bindings/revoke,probe,keys/rotate,suspend,resume,archive,restore}` 0.2 (from 0.1). `secret/set`, `setup` and `delete` stay at 0.1, their current version.
+  - `external/credentials/issue` 0.3 only (0.1 and 0.2 are no longer served).
+
+  On the wire:
+
+  - An account's `lastProbe` (`AccountProbeReport`, `external/_shared/0.2`) names when the probe ran `probedAt`, not `at`. A report stored by an earlier VTA is answered under the new name; nothing is rewritten.
+  - Issuance is 0.3's: a `scope` for every brokered model but `s3-static-presign`, which takes a `presign` batch of at most 64 operations (a 65th is `malformedRequest`); a batch whose sealed answer would not fit is `responseTooLarge` and costs none of the binding's rate. 0.1's single, unbound presigned request is gone with it.
+
+  Clients move with it:
+
+  - `vta-sdk`: `TASK_EXTERNAL_ACCOUNTS_*_0_1` become `_0_2`; `TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1`/`_0_2` are removed. `VtaClient::external_credentials_issue` sends 0.3 (it took the 0.1 payload); `external_credentials_issue_v2`/`_v3` are removed, and `external_credentials_issue_presign` no longer falls back to 0.2.
+  - `vta-external`: `batch::PresignBatch`/`PresignRequest` are 0.3's types and `MAX_OPERATIONS` is 64; `MAX_OPERATIONS_0_3` is removed.
+  - `pnm external issue` drops `--object-key` (0.3's `scope` takes none; an `s3-static-presign` account is asked with `--presign`).
+  - The VTC (`auth: vta-account` storage) asks its VTA only at 0.3: the account check is a one-`get` batch on the canary, reads and deletes are batches of one, and a write the VTC makes itself is presigned as a `put` bound to its length and SHA-256 (`PresignedBlobs::put` hashes the staged file whenever its presigner `presigns_ops`). It no longer falls back to 0.2 for a VTA without 0.3.
+
+- **git-ns**: Serve and send only the current git-ns/* versions ([#2314](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2314))
+
+trust-tasks-rs 0.35 deprecates every superseded Trust Task version and
+  withdraws each about 90 days later. Every current git-ns version is already
+  in 0.35, so the VTC moves to it and stops serving the old ones (refused
+  `unsupportedVersion`).
+
+  Served now, at the current version only:
+  - git-ns/namespace/bind 0.2 (from 0.1), namespace/reseat 0.4 (from 0.3)
+  - git-ns/repo/adopt 0.3, repo/archive 0.3, repo/transfer 0.3 (from 0.1),
+    repo/create 0.4 (from 0.3)
+  - git-ns/right/grant 0.4 and right/revoke 0.4 (from 0.3),
+    right/break-glass 0.2 and right/ratify 0.2 (from 0.1)
+  - git-ns/drift/resolve 0.4 (from 0.1 revert-only and 0.3)
+  - git-ns/roles/reproject 0.2 (from 0.1)
+  - git-ns/view 0.6 (from 0.1, 0.2, 0.4 and 0.5): one handler for the member's
+    view and `scope: administrator`
+  - the administrator's reads: namespace/list 0.2, repo/list 0.2,
+    right/list 0.3, right/issued-by-departed 0.3, bridge/job/list 0.4 (from
+    0.1 and 0.2), projection/show 0.3, account/list 0.2, activity/list 0.3
+  - git-ns/right/break-glass-notice is sent at 0.2 (from 0.1)
+
+  On the wire: a record's `breakGlass.at` is `recordedAt`
+  (git-ns/_shared/0.6), a break-glass notice's `at` is `occurredAt`, an
+  activity item's `at` is `occurredAt`, and a repository's `lastCheck.at` is
+  `concludedAt`. Ratifying names `breakGlassAt` as before, read from
+  `breakGlass.recordedAt`.
+
+  Nested repository paths (git-ns/_shared/0.6): a repository resource is
+  `<forge-host>/<owner>/<repo-path>` with 1 to 21 path segments of up to 255
+  characters, so `gitlab.com/acme/platform/tools/cli` is one repository of the
+  namespace `gitlab.com/acme`. A repository contains only itself: a right on
+  `gitlab.com/acme/platform` is no right on `gitlab.com/acme/platform/tools/cli`.
+
+  The bridge's own tasks keep their older versions beside the current ones,
+  because the released bridge (OpenVTC/verifiable-git-infrastructure
+  `vgi-bridge` v0.25.0) still speaks only them: it sends `git-ns/bridge/event`
+  0.3 by default (0.1, 0.2 or 0.4 as configured) and `git-ns/bridge/result`
+  0.1, and takes `git-ns/bridge/job` 0.4 and 0.5. So the VTC now accepts
+  bridge/event 0.1 to 0.5 and bridge/result 0.1 and 0.2, and sends each job
+  as the newest bridge/job version the bridge lists in `trust-task-discovery`
+  — 0.6, else 0.5, else 0.4 — and a job naming a repository only 0.6 can
+  carry to no bridge without 0.6 (bridge/job 0.6, *Changes from 0.5*). Those
+  older bridge versions go once a bridge release speaking the current ones is
+  deployed.
+
+  One divergence kept, not introduced here: git-ns/drift/resolve 0.3 and 0.4
+  read an unreported role map as the default one; this VTC still refuses an
+  adopt with `git-ns:roleMapUnknown` until the bridge reports its map,
+  failing closed.
+
+  Clients move with it: the admin console (Repos plugin, member portal,
+  openapi.json and wire.ts regenerated, list-limits.json), `cnm git`, and
+  vtc-client, whose `git_ns_view` now takes `administrator` and `break_glass`
+  and replaces `git_ns_view_v2`, `git_ns_view_v4` and `git_ns_view_v5`;
+  `git_ns_drift_resolve` (0.4) replaces `git_ns_drift_resolve_v3` and the
+  deprecated 0.1 form, and `GIT_NS_DRIFT_RESOLVE_TYPE` replaces
+  `GIT_NS_DRIFT_RESOLVE_V3_TYPE`. vta_sdk::openapi's `GitNsView01*` wrappers
+  are `GitNsView06*`.
+
+- **vtc**: Serve only the current vtc/rooms, storage, groups, directory, registry and relationships tasks ([#2308](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2308))
+
+trust-tasks-rs 0.35 deprecates every superseded Trust Task version and
+  withdraws each about 90 days later. Every current version below is already
+  in 0.34, so the VTC moves to it now and stops serving the old one.
+
+  Served now (old versions refused `unsupportedVersion`):
+  - vtc/directory/entries/list 0.2, vtc/directory/export 0.2,
+    vtc/directory/notes/list 0.2 (from 0.1)
+  - vtc/groups/list, vtc/groups/members/list, vtc/groups/requests/list 0.2
+    (from 0.1)
+  - vtc/registry/records/list 0.2, vtc/registry/sync-jobs/list 0.2,
+    vtc/registry/sync-jobs/retry 0.2 (from 0.1)
+  - vtc/relationships/list 0.3 (from 0.2), vtc/relationships/revoke 0.2
+    (from 0.1)
+  - vtc/rooms/community/create 0.4 (from 0.1-0.3), get 0.3 and list 0.3
+    (from 0.1-0.2), update 0.3 (from 0.1-0.2), members/remove 0.2 (from 0.1)
+  - vtc/rooms/get 0.3 (from 0.1-0.2), vtc/rooms/list 0.2 (from 0.1)
+  - vtc/storage/configs/get and list 0.2 (from 0.1)
+
+  On the wire: a paged response's `nextCursor` is absent on the last page,
+  never null; a hosted room's `createdAt`, `updatedAt` and `epochExpiresAt`
+  are RFC 3339 strings (vtc/_shared/0.3/room-storage); sync-jobs/retry
+  reports an in-flight job `inFlight` (was `notFailed`). A community room is
+  always created with its profile written into it, and a removal always
+  withdraws the member at an open or attributed room's host.
+
+  Clients move with it: the admin console (openapi.json and wire.ts
+  regenerated), vtc-client, and `cnm rooms`, which no longer falls back to
+  older versions and tells the operator to upgrade a VTC that does not
+  serve the current one. vta_sdk::openapi drops the superseded wrappers.
+
+
+
+### Build & CI
+
+- **deps**: Compile only the trust-tasks-rs spec families each crate uses ([#2326](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2326))
+
+The workspace `trust-tasks-rs` entry enabled `all-specs`, so every crate that
+  depends on it, and every consumer of a published VTI crate, compiled all 34
+  generated spec families (~70 MB of Rust, 14 GB peak rustc RSS). The workspace
+  entry now enables `validate` only, and each crate lists the families it names:
+  a `trust_tasks_rs::specs::<family>` path, or a Type URI it sends, serves or
+  looks up in `schema_index`.
+
+  The workspace union is 29 families. The five dropped (chat, process-attestation,
+  sync, vrc, webvh) appear nowhere in VTI: no path, no Type URI, no handler. A
+  received document of one of those types was already refused as unsupported;
+  it is now dispatched to that refusal without a schema check first.
+
+  What shrinks: `vti-rooms-wasm` compiles `rooms` alone (trust-tasks-rs dev
+  build 14.2 GB / 174 s -> 1.5 GB / 7 s). Everything that depends on vta-sdk
+  still needs 23-29 families, so the workspace, service and mobile builds are
+  roughly unchanged (mobile `check` 12.9 -> 11.1 GB); the swap safety nets stay.
+
+
+
+## [0.50.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.49.0...vti-common-v0.50.0) — 2026-10-27
+
+
+### Added
+
+- **vtc**: Serve the current vtc/auth, list, manifest and resend versions only ([#2298](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2298))
+
+The VTC stops serving superseded Trust Task versions in the vtc/auth,
+  join-requests, members, endorsements, endorsement-types and vetting
+  families, and every in-repo sender (admin console, member portal,
+  vtc-client, cnm-cli) moves to the current version:
+
+  - vtc/auth/admin-session 0.1 -> 0.2: `expiresAt` is an RFC 3339
+    date-time, not Unix seconds.
+  - vtc/auth/recognise/challenge 0.1 -> 0.2: `expiresAt` RFC 3339.
+  - vtc/auth/recognise 0.2 -> 0.3: `data.accessExpiresAt` RFC 3339.
+  - vtc/{members,join-requests,endorsements,endorsement-types}/list
+    0.1 -> 0.2: `nextCursor` is absent on the last page, never `null`.
+    Fixed at the cause: `vti_common::pagination::Paginated` now omits a
+    `None` cursor (no list schema requires the member, so 0.1 lists
+    still conform).
+  - vtc/join-requests/manifest: 0.3 no longer served (0.4 only); the
+    0.2/0.3 generated vocabulary types (VettingRequirements,
+    CommunityBranding, RequestedAttribute, Criterion) are replaced by
+    0.4's throughout, including vta_sdk::openapi wrappers
+    (JoinManifest04*), vtc-client and cnm-cli.
+  - vtc/vetting/vetters/resend 0.1 no longer served (0.2 only);
+    VETTING_VETTER_RESEND_TYPE now names 0.2 and the *_0_2_* constants
+    are removed. A non-administrator naming `memberDid` is refused
+    permissionDenied (0.2 Conformance item 2).
+
+  vtc/install/claim/{start,finish} 0.2 is deliberately left served: 0.3
+  is a different ceremony (claim under a DID the founder already holds,
+  with a step-up approver), and its own specification says "a passkey
+  install keeps using 0.2". Retiring 0.2 would remove passkey install.
+
+  admin-ui openapi.json and wire.ts regenerated.
+
+
+
 ## [0.49.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.48.0...vti-common-v0.49.0) — 2026-10-26
 
 

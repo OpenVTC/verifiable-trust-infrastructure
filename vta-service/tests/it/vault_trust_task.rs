@@ -36,7 +36,7 @@ use serde_json::{Value, json};
 /// against the published schema at the gate, so the tests have to mean what they
 /// say.
 fn site_target() -> Value {
-    json!({ "kind": "web-origin", "origin": "https://rp.example" })
+    json!({ "kind": "webOrigin", "origin": "https://rp.example" })
 }
 
 /// A well-formed Trust Task for `vault/sign-trust-task` to be asked to sign.
@@ -64,17 +64,17 @@ use vti_common::vault::{
 };
 
 // URIs (kept as literals so a constant rename in the SDK surfaces here too).
-const LIST: &str = "https://trusttasks.org/spec/vault/list/0.1";
-const GET: &str = "https://trusttasks.org/spec/vault/get/0.1";
-const UPSERT: &str = "https://trusttasks.org/spec/vault/upsert/0.1";
+const LIST: &str = "https://trusttasks.org/spec/vault/list/0.4";
+const GET: &str = "https://trusttasks.org/spec/vault/get/0.3";
+const UPSERT: &str = "https://trusttasks.org/spec/vault/upsert/0.4";
 const DELETE: &str = "https://trusttasks.org/spec/vault/delete/0.1";
 const ARCHIVE: &str = "https://trusttasks.org/spec/vault/archive/0.1";
 const UNARCHIVE: &str = "https://trusttasks.org/spec/vault/unarchive/0.1";
 const RESTORE: &str = "https://trusttasks.org/spec/vault/restore/0.1";
 const PURGE: &str = "https://trusttasks.org/spec/vault/purge/0.1";
-const RELEASE: &str = "https://trusttasks.org/spec/vault/release/0.1";
-const PROXY_LOGIN: &str = "https://trusttasks.org/spec/vault/proxy-login/0.1";
-const SIGN_TT: &str = "https://trusttasks.org/spec/vault/sign-trust-task/0.1";
+const RELEASE: &str = "https://trusttasks.org/spec/vault/release/0.2";
+const PROXY_LOGIN: &str = "https://trusttasks.org/spec/vault/proxy-login/0.2";
+const SIGN_TT: &str = "https://trusttasks.org/spec/vault/sign-trust-task/0.2";
 
 /// A fixed holder `did:key` (Ed25519, multicodec 0xed01). Vault auth is bearer,
 /// so the key is never used to sign — only as a stable subject DID.
@@ -343,7 +343,10 @@ async fn delete_is_recoverable_soft_delete() {
         "tombstone is still gettable: {get_body}"
     );
     let g: Value = serde_json::from_str(&get_body).unwrap();
-    assert_eq!(g["payload"]["entry"]["status"], "deleted", "{get_body}");
+    assert_eq!(
+        g["payload"]["entry"]["ext"]["org.openvtc.vault-lifecycle"]["status"], "deleted",
+        "{get_body}"
+    );
 
     // ...but excluded from the default (active-only) list.
     let (_, list_body) = post_vault(&router, &token, LIST, json!({})).await;

@@ -246,6 +246,56 @@ const PREFIX_SCOPES: &[(&str, Scope)] = &[
     ("plb:", Scope::Context),
 ];
 
+/// Remove every context-scoped record of `context_id` — bindings, contacts and
+/// their revisions and annotations, contact lists, disclosure records,
+/// context-local profiles and their bindings — and the face-value index edges
+/// that name one of its context-local profiles. Returns how many rows went.
+///
+/// For a context deletion. Every context-scoped prefix in [`PREFIX_SCOPES`] is
+/// laid out `<prefix><contextId>:…`, so each is one prefix scan, and a prefix
+/// added there later is purged without anyone remembering to. The trailing
+/// `:` keeps a sibling whose id merely starts with this one (`acme2`) out; a
+/// sub-context (`acme/eng`) is a different segment and is purged with its own
+/// deletion. Left behind, every one of these would reappear in a context
+/// created again under the same id.
+///
+/// The agent-scoped half is untouched: the pool, the profiles and their
+/// history are the holder's, above every context. Of the agent-scoped indexes
+/// only the face-value edges can name a context (a context-local face is
+/// `l:<contextId>:<profileId>`); with the face gone the edge would report a
+/// linkage to something that no longer exists.
+pub async fn purge_context(
+    ks: &vti_common::store::KeyspaceHandle,
+    context_id: &str,
+) -> Result<usize, vti_common::error::AppError> {
+    let mut removed = 0;
+    for (prefix, scope) in PREFIX_SCOPES {
+        if *scope != Scope::Context {
+            continue;
+        }
+        let keys = ks.prefix_keys(format!("{prefix}{context_id}:")).await?;
+        for key in keys {
+            ks.remove(key).await?;
+            removed += 1;
+        }
+    }
+    let carrier = format!(":{}", face_carrier(Some(context_id), ""));
+    for key in ks.prefix_keys(FACE_VALUE_PREFIX).await? {
+        // `pxf:{hex}:{carrier}` — the hex holds no `:`, so the carrier is
+        // everything after the first separator past the prefix.
+        let names_context = std::str::from_utf8(&key)
+            .ok()
+            .and_then(|k| k.strip_prefix(FACE_VALUE_PREFIX))
+            .and_then(|rest| rest.find(':').map(|i| &rest[i..]))
+            .is_some_and(|tail| tail.starts_with(&carrier));
+        if names_context {
+            ks.remove(key).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Which side of the boundary a record sits on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {

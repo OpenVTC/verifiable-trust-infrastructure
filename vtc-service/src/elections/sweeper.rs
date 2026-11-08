@@ -9,6 +9,13 @@
 //!   final board to each.
 //! - **Pre-credentials** (tickets/issue item 10): discarded once voting has closed, when no
 //!   resend can be useful.
+//! - **Member-party notifications** (VTI-NTF-061): `crate::notifications::election`, whose
+//!   one sender this pass is.
+//! - **Ends a board's closing asked for** (VTI-BRD-006): the one retry owner for a close or
+//!   cancellation the ballot box has not answered.
+//! - **Deleted boards' tombstones** (VTI-BRD-008): removed once their retention has passed.
+//! - **Accepted presentations** (show/0.6 item 8.6): the `id` of a read whose presentation was
+//!   accepted is forgotten once its acceptance window has passed.
 
 use std::time::Duration;
 
@@ -25,6 +32,22 @@ const PASS_INTERVAL: Duration = Duration::from_secs(60);
 
 /// How often a head is kept while voting is open.
 pub const CHECKPOINT_EVERY: chrono::Duration = chrono::Duration::hours(6);
+
+/// How often, at most, a head is kept for a board's election while voting is open: a board
+/// shows the ballot count of the latest kept head (VTI-BRD-033), so it is read more often.
+pub const BOARD_CHECKPOINT_EVERY: chrono::Duration = chrono::Duration::minutes(30);
+
+/// The checkpoints a board's election spreads over its voting period, leaving room under the
+/// 256 an election keeps for the first head and the final one. Past 256 none is kept but the
+/// final, so a fixed 30-minute pace would freeze a board's ballot count after about five days.
+const BOARD_CHECKPOINTS_PER_PERIOD: i32 = 240;
+
+/// The pace of a board election's checkpoints: every 30 minutes, or slower where its voting
+/// period would otherwise outrun the checkpoints it may keep.
+fn board_checkpoint_every(rec: &store::ElectionRecord) -> chrono::Duration {
+    let spread = (rec.voting_closes - rec.voting_opens) / BOARD_CHECKPOINTS_PER_PERIOD;
+    spread.max(BOARD_CHECKPOINT_EVERY)
+}
 
 /// Run [`pass`] every minute until shutdown.
 pub fn spawn(
@@ -50,8 +73,35 @@ pub fn spawn(
 /// A store failure reading the elections; a failure on one election is logged and the pass
 /// goes on.
 pub async fn pass(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> {
+    if let Err(e) = store::prune_presentations(state.elections.ks(), now).await {
+        warn!(error = %e, "could not forget expired presentation acceptances this pass");
+    }
+    // A deleted board's tombstones go once their retention has passed (VTI-BRD-008).
+    match store::tombstones(state.elections.ks()).await {
+        Ok(ts) => {
+            for t in ts
+                .into_iter()
+                .filter(|t| t.remove_at.is_some_and(|at| at <= now))
+            {
+                if let Err(e) = store::remove_tombstone(state.elections.ks(), &t.election_id).await
+                {
+                    warn!(election = %t.election_id, error = %e, "could not remove a tombstone this pass");
+                } else {
+                    info!(election = %t.election_id, "a deleted board's tombstone reached its retention and was removed");
+                    audit(state, &t.election_id, "tombstoneRemoved", "success".into()).await;
+                }
+            }
+        }
+        Err(e) => warn!(error = %e, "could not read tombstones this pass"),
+    }
     for rec in store::all(state.elections.ks()).await? {
         let id = rec.election_id.clone();
+        // The member party a credential roll names is told once the election is
+        // registered, and told again if it is withdrawn (VTI-NTF-061). Before `settle`,
+        // which may move the record on: the notice reads the standing it was given.
+        if let Err(e) = crate::notifications::election::settle(state, &rec, now).await {
+            warn!(election = %id, error = %e, "could not settle a member-party notification this pass");
+        }
         if let Err(e) = settle(state, rec, now).await {
             warn!(election = %id, error = %e, "could not settle an election this pass");
         }
@@ -65,6 +115,23 @@ async fn settle(
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
     let ks = state.elections.ks();
+    // A close or cancellation its board's closing asked for and the ballot box has not yet
+    // answered: this pass is its one retry owner (VTI-BRD-006).
+    if let Some(p) = rec.pending_end.as_ref().filter(|p| p.next_at <= now) {
+        let (id, kind, reason) = (rec.election_id.clone(), p.kind, p.reason.clone());
+        match ops::request_end(state, &id, kind, &reason, now).await? {
+            ops::EndAttempt::Done => {
+                let change = match kind {
+                    store::EndKind::Close => "closedEarly",
+                    store::EndKind::Cancel => "cancelled",
+                };
+                info!(election = %id, change, "an end its board's closing asked for was answered");
+                audit(state, &id, change, "success".into()).await;
+            }
+            ops::EndAttempt::Pending | ops::EndAttempt::Settled => {}
+        }
+        return Ok(());
+    }
     match rec.standing {
         Standing::PendingRegistration
             if !rec.issuance_stopped && rec.delivery.as_ref().is_some_and(|d| d.next_at <= now) =>
@@ -73,17 +140,17 @@ async fn settle(
             let (answer, refused) = match ops::deliver_registration(state, rec, now).await? {
                 Delivered::Registered(_) => ("success".to_string(), false),
                 Delivered::Pending(_) => return Ok(()),
-                Delivered::Refused {
-                    mut rec,
-                    code,
-                    message,
-                } => {
-                    rec.standing = Standing::RegistrationRefused;
-                    rec.refusal = Some(store::BoxRefusal {
+                Delivered::Refused { rec, code, message } => {
+                    let refusal = store::BoxRefusal {
                         code: code.clone(),
                         message,
-                    });
-                    store::put(ks, &rec).await?;
+                    };
+                    store::update(ks, &rec.election_id, |cur| {
+                        cur.standing = Standing::RegistrationRefused;
+                        cur.refusal = Some(refusal);
+                        cur.delivery = None;
+                    })
+                    .await?;
                     (code, true)
                 }
             };
@@ -122,6 +189,18 @@ async fn settle(
             if now >= rec.voting_closes {
                 discard_pre_credentials(state, &rec.election_id).await?;
             }
+            // A board's facilitators select with the result in view (VTI-BRD-040): once voting
+            // has closed and the final head is kept, verify the published result and keep it,
+            // uncertified. Best effort: a result not published yet is tried on the next pass.
+            if closed
+                && rec.final_checkpoint
+                && rec.certified.is_none()
+                && rec.verified.is_none()
+                && crate::boards::is_board_election(&rec.election_id)
+                && let Err(e) = ops::verify_and_keep(state, &rec.election_id, now).await
+            {
+                tracing::debug!(election = %rec.election_id, error = ?e, "a board election's result is not verified yet");
+            }
         }
         // A pre-credential is discarded once voting is over, however it ended (tickets/issue
         // item 10).
@@ -138,8 +217,13 @@ async fn settle(
 /// that dated its heads ahead would put every later checkpoint off, leaving it free to show
 /// different boards in between.
 fn checkpoint_due(rec: &store::ElectionRecord, now: DateTime<Utc>) -> bool {
+    let every = if crate::boards::is_board_election(&rec.election_id) {
+        board_checkpoint_every(rec)
+    } else {
+        CHECKPOINT_EVERY
+    };
     rec.checkpoint_asked_at
-        .is_none_or(|at| now - at >= CHECKPOINT_EVERY || now < at)
+        .is_none_or(|at| now - at >= every || now < at)
 }
 
 async fn discard_pre_credentials(state: &AppState, election_id: &str) -> Result<(), AppError> {
@@ -164,6 +248,7 @@ async fn audit(state: &AppState, election_id: &str, change: &str, answer: String
         binding: None,
         action_id: None,
         ballot_box_answer: Some(answer),
+        roll_member_of: None,
         reason: None,
         head_tree_size: None,
         head_root_hash: None,
@@ -193,5 +278,24 @@ mod tests {
         assert!(checkpoint_due(&rec, now + CHECKPOINT_EVERY));
         // Its own clock set back: due again, rather than never.
         assert!(checkpoint_due(&rec, now - chrono::Duration::hours(1)));
+    }
+
+    #[test]
+    fn vti_brd_033_a_long_boards_ballot_count_keeps_moving_to_the_end() {
+        let now = Utc::now();
+        let mut rec = store::test_record(now);
+        rec.election_id = "board.brd_Uc7N2qLm4Rt8Vx1Z00.ida_Pk3Wq9Ls2Dn6Hy4B00".into();
+        // A short period is read every 30 minutes.
+        rec.voting_opens = now;
+        rec.voting_closes = now + chrono::Duration::days(2);
+        assert_eq!(board_checkpoint_every(&rec), BOARD_CHECKPOINT_EVERY);
+        // A long one is spread so its checkpoints never run out before it closes.
+        rec.voting_closes = now + chrono::Duration::days(30);
+        let every = board_checkpoint_every(&rec);
+        assert!(every > BOARD_CHECKPOINT_EVERY);
+        assert!((rec.voting_closes - rec.voting_opens).num_seconds() / every.num_seconds() <= 240);
+        rec.checkpoint_asked_at = Some(now);
+        assert!(!checkpoint_due(&rec, now + BOARD_CHECKPOINT_EVERY));
+        assert!(checkpoint_due(&rec, now + every));
     }
 }

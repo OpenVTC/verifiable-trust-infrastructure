@@ -1,4 +1,4 @@
-//! `git-ns/view/0.1` — what a member may see, and the administrator's
+//! `git-ns/view/0.6` — what a member may see, and the administrator's
 //! complete view the admin console reads.
 //!
 //! The member's view is the specification's (*Request*):
@@ -14,16 +14,14 @@
 //!
 //! A resource that matches nothing yields empty lists, not an error.
 //!
-//! `git-ns/view/0.5` adds the administrator's read (`scope: administrator`):
-//! every record in the namespaces the caller administers, reasons included —
-//! [`administrator_v5`] — and `breakGlass: true`, which narrows either answer
+//! With `scope: administrator` it is the administrator's read: every record
+//! in the namespaces the caller administers, reasons included —
+//! [`administrator`] — and `breakGlass: true`, which narrows either answer
 //! to break-glass records ([`narrow_to_break_glass`]).
 
 use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::git_ns::view::v0_1 as view_wire;
-use vti_common::error::AppError;
 
 use super::model::{RepoState, Resource};
 use super::ops::now;
@@ -174,15 +172,6 @@ fn build_with(
     v
 }
 
-/// The member's view, as the generated response type.
-pub fn for_member(
-    snap: &Snapshot,
-    did: &str,
-    filter: Option<&Resource>,
-) -> Result<view_wire::Response, AppError> {
-    wire::into(build(snap, Viewer::Member(did), filter))
-}
-
 /// `git-ns/view/0.2`'s `accounts`: the forge accounts linked to the caller's
 /// own DID, from their member row — never another member's, whoever is
 /// asking — narrowed to `filter`'s forge. Empty when there are none.
@@ -214,33 +203,8 @@ pub fn linked_accounts_of(
     out
 }
 
-/// The member's view as `git-ns/view/0.2`: 0.1's answer and their own
-/// linked accounts.
-pub fn for_member_v2(
-    snap: &Snapshot,
-    did: &str,
-    filter: Option<&Resource>,
-    member: Option<&crate::members::Member>,
-) -> Result<trust_tasks_rs::specs::git_ns::view::v0_2::Response, AppError> {
-    let mut v = build(snap, Viewer::Member(did), filter);
-    v["accounts"] = Value::Array(linked_accounts_of(member, filter));
-    wire::into(v)
-}
-
-/// The member's view as `git-ns/view/0.4`.
-pub fn for_member_v4(
-    snap: &Snapshot,
-    did: &str,
-    community_admin: bool,
-    filter: Option<&Resource>,
-    member: Option<&crate::members::Member>,
-) -> Result<trust_tasks_rs::specs::git_ns::view::v0_4::Response, AppError> {
-    wire::into(member_v4(snap, did, community_admin, filter, member))
-}
-
-/// `git-ns/view/0.4`'s answer, as JSON — also `git-ns/view/0.5`'s under
-/// `scope: member`.
-pub fn member_v4(
+/// `git-ns/view/0.6`'s answer under `scope: member`, as JSON.
+pub fn member(
     snap: &Snapshot,
     did: &str,
     community_admin: bool,
@@ -261,12 +225,12 @@ pub fn member_v4(
     v
 }
 
-/// `git-ns/view/0.5` under `scope: administrator`, as JSON: every namespace in
+/// `git-ns/view/0.6` under `scope: administrator`, as JSON: every namespace in
 /// `within` (every one, and every repository whose namespace is no longer
 /// bound, when it is `None` — a community administrator), with every
 /// repository and every live or unratified break-glass record in them,
 /// reasons and `breakGlass` in full. `accounts` is still the caller's own.
-pub fn administrator_v5(
+pub fn administrator(
     snap: &Snapshot,
     within: Option<&BTreeSet<String>>,
     filter: Option<&Resource>,
@@ -286,7 +250,7 @@ pub fn administrator_v5(
     v
 }
 
-/// `git-ns/view/0.5`'s `breakGlass: true`: keep only the records carrying
+/// `git-ns/view/0.6`'s `breakGlass: true`: keep only the records carrying
 /// `breakGlass`, and the namespaces and repositories that contain one.
 /// `accounts` is left as it is. It narrows and never widens: it can only drop
 /// what the answer already held.

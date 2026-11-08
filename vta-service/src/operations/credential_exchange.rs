@@ -1544,6 +1544,34 @@ pub async fn present_to_audience(
     purpose: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<PresentedTo, PresentToError> {
+    present_named(
+        state,
+        auth,
+        credential_id,
+        audience,
+        nonce,
+        claims,
+        purpose,
+        now,
+        false,
+    )
+    .await
+}
+
+/// [`present_to_audience`]; with `subject_only`, a presentation that discloses nothing about
+/// its subject but who they are — `claims` is `["id"]`, recorded as the one thing disclosed.
+#[allow(clippy::too_many_arguments)]
+async fn present_named(
+    state: &crate::server::AppState,
+    auth: &AuthClaims,
+    credential_id: &str,
+    audience: &str,
+    nonce: &str,
+    claims: &[String],
+    purpose: Option<&str>,
+    now: DateTime<Utc>,
+    subject_only: bool,
+) -> Result<PresentedTo, PresentToError> {
     let stored = vault::storage::get(&state.vault_ks, credential_id)
         .await?
         .filter(|c| {
@@ -1568,6 +1596,7 @@ pub async fn present_to_audience(
     let held = subject_claims(&stored)?;
     let missing: Vec<String> = claims
         .iter()
+        .filter(|c| !(subject_only && c.as_str() == "id"))
         .filter(|c| !held.selective.contains(*c) && !held.always.contains(*c))
         .cloned()
         .collect();
@@ -1662,6 +1691,89 @@ pub async fn present_to_audience(
         presentation,
         disclosed: disclosed.into_iter().collect(),
     })
+}
+
+/// A held credential this caller may present as `subject`, usable now: in the vault, active,
+/// in a context the caller acts in, about `subject`, of a format this agent presents to a named
+/// verifier, and not revoked, suspended or outside its validity period by its stored record.
+/// `vta/pcs/voter/register` item 9 and `vta/pcs/voter/read` item 5 check this before anything
+/// is allocated or signed; the presentation itself re-reads the status list.
+///
+/// # Errors
+/// [`PresentToError::NotFound`] for any of these failing, indistinguishably; a store failure as
+/// [`PresentToError::App`].
+pub async fn presentable_as(
+    state: &crate::server::AppState,
+    auth: &AuthClaims,
+    credential_id: &str,
+    subject: &str,
+    now: DateTime<Utc>,
+) -> Result<StoredCredential, PresentToError> {
+    let stored = vault::storage::get(&state.vault_ks, credential_id)
+        .await?
+        .filter(|c| {
+            c.is_active()
+                && vault::query::caller_may_access_custody(
+                    &auth.act_scope(),
+                    c.context_id.as_deref(),
+                )
+                && c.subject_did.as_deref() == Some(subject)
+                && matches!(
+                    c.format,
+                    CredentialFormat::SdJwtVc | CredentialFormat::EddsaJcs2022
+                )
+                && presentable_now(c, now)
+        })
+        .ok_or(PresentToError::NotFound)?;
+    Ok(stored)
+}
+
+/// Present `credential_id` to `audience`, bound to `nonce`, disclosing the least the
+/// credential can: the claims every presentation of it carries, and none it could withhold.
+/// A membership presentation (`vtc/elections/tickets/issue/0.3`, `vtc/elections/show/0.6`) is
+/// checked by its issuer, subject, proof, validity and status, never by a claim, so nothing
+/// selectively disclosable is disclosed. Recorded as a disclosure under `purpose` exactly as
+/// [`present_to_audience`] records one.
+///
+/// # Errors
+/// As [`present_to_audience`].
+pub async fn present_least(
+    state: &crate::server::AppState,
+    auth: &AuthClaims,
+    credential_id: &str,
+    audience: &str,
+    nonce: &str,
+    purpose: &str,
+    now: DateTime<Utc>,
+) -> Result<PresentedTo, PresentToError> {
+    let stored = vault::storage::get(&state.vault_ks, credential_id)
+        .await?
+        .ok_or(PresentToError::NotFound)?;
+    let claims: Vec<String> = subject_claims(&stored)
+        .map_err(|_| PresentToError::FormatUnsupported)?
+        .always
+        .into_iter()
+        .collect();
+    // A credential that says nothing of its subject but who they are discloses exactly that;
+    // the consent record names it, as a record of a disclosure names what it discloses.
+    let subject_only = claims.is_empty();
+    let claims = if subject_only {
+        vec!["id".to_string()]
+    } else {
+        claims
+    };
+    present_named(
+        state,
+        auth,
+        credential_id,
+        audience,
+        nonce,
+        &claims,
+        Some(purpose),
+        now,
+        subject_only,
+    )
+    .await
 }
 
 #[cfg(test)]

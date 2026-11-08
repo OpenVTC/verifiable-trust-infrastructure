@@ -285,7 +285,7 @@ impl ListQuery {
             .collect();
         filters.sort();
         serde_json::to_vec(&json!({
-            "task": "vtc/directory/entries/list/0.1",
+            "task": "vtc/directory/entries/list/0.2",
             "viewer": viewer,
             "query": self.query.as_deref().map(str::trim),
             "filters": filters,
@@ -364,7 +364,7 @@ fn sort_key(entry_id: &str, fields: &Map<String, Value>) -> String {
     format!("{name}\u{0}{entry_id}")
 }
 
-/// `vtc/directory/entries/list/0.1`.
+/// `vtc/directory/entries/list/0.2`.
 pub async fn list(state: &AppState, viewer: &Viewer, q: &ListQuery) -> Result<Value, ListError> {
     if !viewer.may_read() {
         return Err(ListError::PermissionDenied);
@@ -479,7 +479,11 @@ pub async fn list(state: &AppState, viewer: &Viewer, q: &ListQuery) -> Result<Va
         .iter()
         .filter_map(|(_, id, p)| project::entry_wire(id, p))
         .collect();
-    let mut body = json!({ "items": items, "nextCursor": next });
+    // On the last page `nextCursor` is absent, never `null` (0.2).
+    let mut body = json!({ "items": items });
+    if let Some(next) = next {
+        body["nextCursor"] = json!(next);
+    }
     if !facets.is_empty() {
         body["facets"] = Value::Array(facets);
     }

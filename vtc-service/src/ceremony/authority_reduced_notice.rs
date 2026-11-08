@@ -2,7 +2,7 @@
 //! (`spec/vtc/members/authority-reduced-notice/0.1`) — **VTI-APV-019**.
 //!
 //! Every gated reduction of an administrator's entry — `acl/revoke`, a
-//! downward `acl/change-role`, a narrowing `acl/update` or `acl/grant`
+//! downward `vtc/members/role/set`, a narrowing `acl/update` or `acl/grant`
 //! rewrite — sends this once it has landed, whether it ran on another
 //! administrator's consent (`agreement: consented`), after a cooling-off with
 //! nobody else able to consent, or on the requester's step-up alone
@@ -23,8 +23,8 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tracing::{info, warn};
-use trust_tasks_rs::specs::vtc::members::authority_reduced_notice::v0_1 as notice;
 use vti_common::capability_client::build_document;
+use vti_specs::vtc::members::authority_reduced_notice::v0_1 as notice;
 
 use crate::acl::VtcAclEntry;
 use crate::acl::admin_consent::Agreement;
@@ -106,7 +106,6 @@ async fn try_send(
     let doc = build_document(&vtc_did, &prior.did, NOTICE_TYPE, payload);
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise authority-reduced notice: {e}")))?;
-    signer.sign_operational_doc(&mut doc_value).await?;
 
     // A revoked subject has no ACL row left, so — like the removal notice — it
     // is given the longer window: this may be the only thing that tells them.
@@ -115,6 +114,12 @@ async fn try_send(
     } else {
         crate::server::EXCHANGE_DELIVER_BY
     };
+    vti_common::trust_task_push::state_delivery_expiry(
+        &mut doc_value,
+        deliver_by,
+        chrono::Utc::now(),
+    )?;
+    signer.sign_operational_doc(&mut doc_value).await?;
     crate::member_push::push_trust_task(state, &prior.did, doc_value, deliver_by).await?;
     info!(
         subject = %prior.did,

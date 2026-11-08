@@ -7,20 +7,21 @@
 // beside the community role its membership carries. The reads and the writes
 // that state administrative authority speak `acl/*/0.2`, where every axis is
 // explicit (`act`, `capabilities`, `approve`, `approveCapabilities`, `keys`)
-// and the community role travels in `ext["org.openvtc"].communityRole`. The
-// community-role move (`acl/change-role/0.1`) and the removal
-// (`acl/revoke/0.1`) stay at 0.1.
+// and the community role travels in `ext["org.openvtc"].communityRole`; the
+// listing is `acl/list/0.3`. The community-role move is
+// `vtc/members/role/set/0.1`: `acl/change-role/0.2` moves the administrative
+// role only.
 
 import { postSignedRead } from "./api";
 import { withImmediate } from "./immediate";
 import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 
-export const ACL_LIST_TASK = "https://trusttasks.org/spec/acl/list/0.2";
+export const ACL_LIST_TASK = "https://trusttasks.org/spec/acl/list/0.3";
 export const ACL_SHOW_TASK = "https://trusttasks.org/spec/acl/show/0.2";
 export const ACL_GRANT_TASK = "https://trusttasks.org/spec/acl/grant/0.2";
 export const ACL_UPDATE_TASK = "https://trusttasks.org/spec/acl/update/0.2";
-export const ACL_CHANGE_ROLE_TASK = "https://trusttasks.org/spec/acl/change-role/0.1";
-export const ACL_REVOKE_TASK = "https://trusttasks.org/spec/acl/revoke/0.1";
+export const MEMBERS_ROLE_SET_TASK = "https://trusttasks.org/spec/vtc/members/role/set/0.1";
+export const ACL_REVOKE_TASK = "https://trusttasks.org/spec/acl/revoke/0.2";
 
 // ── the model, as the wire states it (`acl/_shared/0.2`) ─────────────────
 
@@ -84,18 +85,18 @@ export interface AclSuspension {
 
 export interface AclListResponse {
   entries: AclEntry[];
-  truncated: boolean;
-  cursor?: string;
+  /** Present iff more entries match beyond this page. */
+  nextCursor?: string;
 }
 
-/** `acl/list/0.2` payload. `resource` needs a `direction`. */
+/** `acl/list/0.3` payload. `resource` needs a `direction`. */
 export interface AclListFilter {
   role?: string;
   capability?: string;
   resource?: string;
   direction?: "actingIn" | "subtree" | "any";
   subjectPrefix?: string;
-  pageSize?: number;
+  limit?: number;
   cursor?: string;
 }
 
@@ -160,10 +161,12 @@ export const CAPABILITIES: CapabilityInfo[] = [
   { id: "vtc.registry.admin", gates: "registry sync and recognition", conferring: false, qualifiers: [] },
   { id: "vtc.sessions.revoke", gates: "revoking others' sessions and console keys", conferring: false, qualifiers: [] },
   { id: "vtc.rooms.admin", gates: "hosting data rooms: storage configs, room storage, limits and usage", conferring: false, qualifiers: [] },
-  { id: "vtc.rooms.manage", gates: "running the rooms the community owns: create them, admit and remove their members", conferring: false, qualifiers: [] },
+  { id: "vtc.rooms.manage", gates: "running the rooms the community owns: create them, admit and remove their members, archive and remove them", conferring: false, qualifiers: [] },
   { id: "vtc.directory.admin", gates: "the member directory: its fields and their ceilings, administrator-asserted values, and reading every entry whole", conferring: false, qualifiers: [] },
   { id: "vtc.directory.notes", gates: "administrators' notes about members: writing them, reading them, and exporting a member's notes for their data request", conferring: false, qualifiers: [] },
   { id: "vtc.groups.manage", gates: "the community's groups: creating them, and their members, requests and settings; qualified by a group, that one group", conferring: false, qualifiers: ["group"] },
+  { id: "vtc.notifications.read", gates: "reading the notifications the community holds as their addressee, and the relay decisions made for them", conferring: false, qualifiers: [] },
+  { id: "vtc.notifications.relay", gates: "deciding that the community relays a notification it holds to its members; qualified by a group, to that group's members only", conferring: false, qualifiers: ["group"] },
   { id: "git.ns.admin", gates: "administering a git namespace", conferring: true, qualifiers: ["git-ns"] },
   { id: "git.repo.manage", gates: "creating, adopting, archiving and transferring repositories", conferring: false, qualifiers: ["git-ns", "git-repo"] },
 ];
@@ -303,21 +306,17 @@ export const fetchAclPage = (filter: AclListFilter = {}): Promise<AclListRespons
 const MAX_ACL_PAGES = 100;
 
 /**
- * Every entry, following the cursor to the end. A page that is truncated with
- * no cursor, or a list longer than the walk allows, is an error rather than a
- * partial list that reads as complete.
+ * Every entry, following `nextCursor` to the end. A list longer than the walk
+ * allows is an error rather than a partial list that reads as complete.
  */
 export async function fetchAllAcl(filter: AclListFilter = {}): Promise<AclEntry[]> {
   const out: AclEntry[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_ACL_PAGES; page++) {
-    const body = await fetchAclPage({ ...filter, pageSize: 200, ...(cursor ? { cursor } : {}) });
+    const body = await fetchAclPage({ ...filter, limit: 200, ...(cursor ? { cursor } : {}) });
     out.push(...body.entries);
-    if (!body.truncated) return out;
-    if (!body.cursor) {
-      throw new Error("acl/list answered a truncated page with no cursor");
-    }
-    cursor = body.cursor;
+    if (!body.nextCursor) return out;
+    cursor = body.nextCursor;
   }
   throw new Error(`the ACL is longer than ${MAX_ACL_PAGES} pages; narrow the filter`);
 }
@@ -405,22 +404,35 @@ export async function updateAcl(
 }
 
 /**
- * Change an entry's **community** role (member, moderator, issuer, admin) —
- * with the administrative role it implies. `fromRole` is a compare-and-swap
- * guard. Promotion to `admin` confers `vtc.roles.assign` and is parked for
+ * Move an entry's **community** role (member, moderator, issuer, admin) with
+ * `vtc/members/role/set/0.1` — carrying the administrative role it implies
+ * where the entry's authority is exactly its current role's. `fromRole` is a
+ * compare-and-swap guard: the role read from the community, never assumed. Promotion to `admin` confers `vtc.roles.assign` and is parked for
  * other administrators' approval; a demotion from it needs a gesture too
  * (VTI-APV-019).
  */
-export async function changeAclRole(
+export async function setCommunityRole(
   args: { subject: string; fromRole: string; toRole: string; reason?: string },
   confirmGesture: ConfirmGesture,
-): Promise<{ subject: string; role: string }> {
-  const body = await postSignedWithStepUp<{ entry: { subject: string; role: string } }>(
-    ACL_CHANGE_ROLE_TASK,
-    args,
-    confirmGesture,
-  );
-  return body.entry;
+): Promise<RoleSetResult> {
+  return postSignedWithStepUp<RoleSetResult>(MEMBERS_ROLE_SET_TASK, args, confirmGesture);
+}
+
+/** `vtc/members/role/set/0.1#response`. */
+export interface RoleSetResult {
+  subject: string;
+  /** The community role the subject now holds. */
+  role: string;
+  /** The community role it held before. */
+  previousRole: string;
+  /** False when it already held `role`: nothing was written. */
+  changed: boolean;
+  /** How the move was allowed; absent when nothing changed. */
+  approval?: "policyAllowed" | "approved" | "waived";
+  /** The entry as it now stands — `entry.role` is the administrative role. */
+  entry: AclEntry;
+  /** The role credential issued at the new role, for a member. */
+  roleVac?: Record<string, unknown>;
 }
 
 /**
@@ -432,7 +444,7 @@ export async function changeAclRole(
 export async function revokeAcl(subject: string, confirmGesture: ConfirmGesture): Promise<void> {
   await postSignedWithStepUp<{ entry: AclEntry | null }>(
     ACL_REVOKE_TASK,
-    { subject },
+    { subject, revocation: { kind: "entry" } },
     confirmGesture,
   );
 }
@@ -450,7 +462,7 @@ export async function revokeAclNow(
 ): Promise<void> {
   await postSignedWithStepUp<{ entry: AclEntry | null }>(
     ACL_REVOKE_TASK,
-    withImmediate({ subject }, typed),
+    withImmediate({ subject, revocation: { kind: "entry" } }, typed),
     confirmGesture,
   );
 }

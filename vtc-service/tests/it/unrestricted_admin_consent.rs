@@ -28,23 +28,23 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
 }
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+/// `vtc/members/role/set/0.1` — the community-role move.
+const CHANGE_ROLE: &str = "https://trusttasks.org/spec/vtc/members/role/set/0.1";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
-const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
-const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
-const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1";
-const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1";
-const DECISION_V0_1: &str = "https://trusttasks.org/spec/task-consent/decision/0.1";
+const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
+const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.2";
+const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
+const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 const NEXT_STEP: &str = "https://trusttasks.org/spec/trust-task-next-step/0.1";
-const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
 /// What a parked operation's next step expects: the 0.2 read, which can say a
 /// cooling-off in its own terms.
-const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
+const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
 const THRESHOLD_KEY: &str = "acl.unrestricted_admin_consent_threshold";
 
 struct Fixture {
@@ -119,7 +119,7 @@ async fn entry(fix: &Fixture, did: &str) -> Option<VtcAclEntry> {
 }
 
 fn grant_unrestricted(subject: &str) -> Value {
-    json!({ "entry": { "subject": subject, "role": "admin", "scopes": [] } })
+    crate::common::signed::grant_payload(subject, "admin")
 }
 
 /// Send `doc` as `by`, answer the gesture it asks for, and return the reply
@@ -1066,7 +1066,12 @@ async fn the_list_shows_each_caller_what_is_theirs_to_see() {
     let id = park(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": c.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": c.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
 
@@ -1203,7 +1208,12 @@ async fn vti_apv_019_a_reduction_parks_and_completes() {
     let id = park(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": subject.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": subject.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(action(&fix, &a, &id).await["kind"], "acl.reduce.authority");
@@ -1358,7 +1368,7 @@ async fn a_scoped_admin_grant_needs_no_approval() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "moderator", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "moderator"),
         )
         .await,
     )
@@ -1417,13 +1427,13 @@ async fn vti_apv_014_a_signed_request_is_answered_through_the_sdk() {
     let decision = verified.decision(true, Some("checked")).unwrap();
     let (status, ack) = post(
         &fix.vtc,
-        &signed(&b, DECISION_V0_1, serde_json::to_value(&decision).unwrap()).await,
+        &signed(&b, DECISION_V0_2, serde_json::to_value(&decision).unwrap()).await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{ack}");
     assert_eq!(ack["payload"]["status"], "granted", "{ack}");
     let _: vta_sdk::task_consent::decision::Response =
-        serde_json::from_value(ack["payload"].clone()).expect("the 0.1 response type");
+        serde_json::from_value(ack["payload"].clone()).expect("the 0.2 response type");
     assert!(entry(&fix, &subject.did).await.is_some());
 }
 
@@ -1473,7 +1483,12 @@ async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
     patch_threshold(&fix, &a, 2).await;
     let (status, body) = post(
         &fix.vtc,
-        &signed(&a, REVOKE, json!({ "subject": c.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": c.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -1492,7 +1507,12 @@ async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
     let (status, body) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");

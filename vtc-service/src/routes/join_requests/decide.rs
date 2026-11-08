@@ -33,7 +33,7 @@ use crate::server::AppState;
 
 const REJECT_REASON_MAX: usize = 1024;
 
-use trust_tasks_rs::specs::vtc::join_requests::decide::v0_1::error_codes as decide_codes;
+use vti_specs::vtc::join_requests::decide::v0_1::error_codes as decide_codes;
 
 /// `vtc/join-requests/decide:notFound` — no join request with that id.
 pub const DECIDE_ERR_NOT_FOUND: &str = decide_codes::NOT_FOUND.code;

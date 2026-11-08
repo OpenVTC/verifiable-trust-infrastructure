@@ -71,7 +71,7 @@ pub struct DescriptorDeps<'a> {
 // ─── initiate-export ──────────────────────────────────────────────────
 
 /// Stage the bytes for an export bundle and return the descriptor.
-/// Caller path: `spec/vta/backup/initiate-export/1.0` trust-task
+/// Caller path: `spec/vta/backup/initiate-export/1.1` (`stream`) trust-task
 /// handler.
 ///
 /// Steps:
