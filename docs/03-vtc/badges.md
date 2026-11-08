@@ -104,9 +104,30 @@ Neither names a holder or a count (VTI-BDG-071). A badge kept inside the communi
 logs and pass the host-surface gate on every host. Without `public_url` the credential names
 the Achievement and picture by URN and digest instead.
 
-Sharing an award outside (a public verification page and a baked image, per award and at
-the holder's choice, `vtc/badges/awards/share|unshare`) follows once those tasks are
-published; this build serves the badge's own artefacts.
+## Showing an award outside
+
+A holder shows one of their awards outside the community award by award, by their own
+choice (`vtc/badges/awards/share`, VTI-BDG-070), and only for a badge marked
+`shareableOutside`. The community answers two public locations under a token of 256
+random bits made for that share and derived from nothing:
+
+| Location | What |
+|---|---|
+| `<public_url>/badges/shared/<token>` | The holder's badge credential **exactly as issued**, with its status in the community's revocation list (`application/vc+ld+json`), to any verifier; to a browser (`Accept: text/html`), a page saying what the community verifies of it: issued by it, in its validity period, not revoked |
+| `<public_url>/badges/shared/<token>/image.png` | The badge's picture as a PNG with that credential baked in (an Open Badges `iTXt` chunk, keyword `openbadgecredential`), for a website or an email signature |
+
+Neither names another holder or how many hold the badge (VTI-BDG-071). The credential served
+is the one last issued to the holder for that badge, kept each time one is issued in the
+outside regime, so a repeat award or a renewal is served at the same locations. A holder
+whose credential predates that is issued it again on their first share. Sharing again
+answers the same locations. The share ends — the locations answer `404`, as a token never
+issued does — when the holder stops it (`vtc/badges/awards/unshare`, which revokes nothing),
+when the award is taken back, when the badge is retired and when the holder departs. Without
+`public_url`, `share` answers `publicLocationUnavailable`. A kudos badge, or one kept inside,
+answers `notShareable`.
+
+The credential names the holder by their membership identifier and carries each award's
+note, so the portal says so before a member shares.
 
 ## In the member portal and the console
 
@@ -128,7 +149,11 @@ owners for it, which is a request to join its badge group; giving a kudos badge 
 badge's page or from another member's card; and making a kudos badge of their own
 (`#/badges/new`), with a picture uploaded from the browser. A member's card shows their
 wall, pinned badges first, with their kudos total where the community shows totals. The
-home page says how many badges show and how many offers wait.
+home page says how many badges show and how many offers wait. On a badge they hold that may
+be shown outside, *Show it outside the community* lists their awards of it, each with
+**Share outside** and, once shared, the link to check it, the picture with the credential
+inside, and **Stop sharing** (`vtc/badges/show` answers the member's own awards as
+`myAwards`).
 
 **In the console** (*Community → Badges*): every badge the administrator or owner may see;
 the settings (on or off, who may make a kudos badge, the limits; `vtc.config.admin` and a
@@ -151,13 +176,15 @@ other badge holds, and an upload no badge takes up within 24 hours is erased.
 
 ## Departure and audit
 
-A member's departure ends their badge-group memberships, withdraws their open offers and
-their wall preferences, and leaves the awards they gave standing by entry reference; an
+A member's departure ends their badge-group memberships, withdraws their open offers, stops
+every share of theirs, removes their wall preferences, and leaves the awards they gave standing by entry reference; an
 erasure removes the notes they wrote. Every change is audited as `BadgeChanged` by
 reference — the badge, the award, the entries — never a note or a picture.
 
 ## Storage
 
 The `badges` keyspace (backed up): the settings, each badge, each award (indexed by badge,
-recipient and giver) and each holder's preferences. Pictures in `badge_images` (backed up).
+recipient and giver, with its share where there is one), each holder's preferences, each
+holder's status slot for a badge shown outside (`bslot:`), the credential last issued to them
+in that regime (`bcred:`), and each share token (`bshare:`). Pictures in `badge_images` (backed up).
 The badge group, its DID, its authority credential and its memberships are the groups'.

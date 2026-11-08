@@ -2959,6 +2959,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     badge_tasks::AWARDS_WITHDRAW_TYPE,
     badge_tasks::AWARDS_REVOKE_TYPE,
     badge_tasks::AWARDS_LIST_TYPE,
+    badge_tasks::AWARDS_SHARE_TYPE,
+    badge_tasks::AWARDS_UNSHARE_TYPE,
     badge_tasks::HOLDERS_LIST_TYPE,
     badge_tasks::WALL_SHOW_TYPE,
     badge_tasks::MINE_LIST_TYPE,

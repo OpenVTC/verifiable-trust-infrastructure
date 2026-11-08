@@ -1965,6 +1965,42 @@ fn witnesses() -> Vec<Witness> {
             "withdraw_and_revoke_refuse_what_their_specifications_declare"
         ),
         witness!(
+            s::badges::awards::share::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::SHARE_ERR_BADGES_OFF,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::share::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::SHARE_ERR_NOT_FOUND,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::share::v0_1::error_codes::NOT_SHAREABLE,
+            crate::trust_tasks::badge_tasks::SHARE_ERR_NOT_SHAREABLE,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::share::v0_1::error_codes::PUBLIC_LOCATION_UNAVAILABLE,
+            crate::trust_tasks::badge_tasks::SHARE_ERR_PUBLIC_LOCATION_UNAVAILABLE,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::unshare::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::UNSHARE_ERR_BADGES_OFF,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::unshare::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::UNSHARE_ERR_NOT_FOUND,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
             s::badges::awards::list::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::badge_tasks::AWARDS_LIST_ERR_NOT_FOUND,
             "badges.rs",

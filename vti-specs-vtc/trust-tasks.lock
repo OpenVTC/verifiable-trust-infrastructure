@@ -234,7 +234,7 @@ digest = "sha256:2af4176a429f11085f6b70e5781028208ab44bcfbd0aed2857a968b59b47026
 slug = "vtc/badges/show"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/badges/show/0.1"
-digest = "sha256:570c77589253f584220eadd5ee81c5fbad4923db2151832de16491793b261996"
+digest = "sha256:6f384c49086ad109524405962597d2b0c058ccf4a9c342ed5130b3006eafd805"
 
 [[task]]
 slug = "vtc/badges/update"

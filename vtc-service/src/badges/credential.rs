@@ -348,7 +348,7 @@ pub async fn issue(
         )
     };
     let endorsement = ensure_endorsement(state, &setup, badge, public_url.as_deref()).await?;
-    let (days, status) = if badge.shareable_outside {
+    let (days, status, outside_entry) = if badge.shareable_outside {
         let entry = match entry_id {
             Some(e) => e.to_string(),
             None => crate::directory::cards::entry_of(state.directory.ks(), member_did)
@@ -371,9 +371,10 @@ pub async fn issue(
                 .credential_valid_days
                 .unwrap_or(OUTSIDE_DEFAULT_DAYS),
             Some(status),
+            Some(entry),
         )
     } else {
-        (group_days, None)
+        (group_days, None, None)
     };
     let valid_from = Utc::now();
     let valid_until = valid_from + Duration::days(i64::from(days));
@@ -409,10 +410,18 @@ pub async fn issue(
                 None,
             )
         })?;
+    let credential = Value::Object(signed.document);
+    // The one its holder's shares serve from now on, at the same locations
+    // (`vtc/badges/awards/share` item 10).
+    if let Some(entry) = &outside_entry {
+        super::share::keep_credential(&state.badges_ks, &badge.badge_id, entry, &credential)
+            .await
+            .map_err(Failure::Local)?;
+    }
     Ok(Issued {
         credential_id,
         valid_until,
-        credential: Value::Object(signed.document),
+        credential,
     })
 }
 
@@ -551,6 +560,7 @@ mod tests {
             expires_at: None,
             credential_id: None,
             revoke_reason: None,
+            shared: None,
         };
         let endorsement = endorsement_document(
             "did:example:community",

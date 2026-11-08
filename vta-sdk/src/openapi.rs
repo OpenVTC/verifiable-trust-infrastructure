@@ -531,6 +531,14 @@ spec_types! {
     BadgesAwardsRevoke01Payload(badges::awards::revoke::v0_1::Payload);
     /// `vtc/badges/awards/revoke/0.1#response`.
     BadgesAwardsRevoke01Response(badges::awards::revoke::v0_1::Response);
+    /// `vtc/badges/awards/share/0.1` payload — the holder shows an award outside.
+    BadgesAwardsShare01Payload(badges::awards::share::v0_1::Payload);
+    /// `vtc/badges/awards/share/0.1#response`.
+    BadgesAwardsShare01Response(badges::awards::share::v0_1::Response);
+    /// `vtc/badges/awards/unshare/0.1` payload — the holder stops showing it.
+    BadgesAwardsUnshare01Payload(badges::awards::unshare::v0_1::Payload);
+    /// `vtc/badges/awards/unshare/0.1#response`.
+    BadgesAwardsUnshare01Response(badges::awards::unshare::v0_1::Response);
     /// `vtc/badges/awards/list/0.1` payload — a badge's awards, to its owners.
     BadgesAwardsList01Payload(badges::awards::list::v0_1::Payload);
     /// `vtc/badges/awards/list/0.1#response`.
@@ -1103,6 +1111,10 @@ mod tests {
         check::<BadgesAwardsWithdraw01Response>();
         check::<BadgesAwardsRevoke01Payload>();
         check::<BadgesAwardsRevoke01Response>();
+        check::<BadgesAwardsShare01Payload>();
+        check::<BadgesAwardsShare01Response>();
+        check::<BadgesAwardsUnshare01Payload>();
+        check::<BadgesAwardsUnshare01Response>();
         check::<BadgesAwardsList01Payload>();
         check::<BadgesAwardsList01Response>();
         check::<BadgesHoldersList01Payload>();

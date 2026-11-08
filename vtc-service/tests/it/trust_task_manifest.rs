@@ -1074,6 +1074,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/badges/awards/withdraw/0.1",
     "https://trusttasks.org/spec/vtc/badges/awards/revoke/0.1",
     "https://trusttasks.org/spec/vtc/badges/awards/list/0.1",
+    "https://trusttasks.org/spec/vtc/badges/awards/share/0.1",
+    "https://trusttasks.org/spec/vtc/badges/awards/unshare/0.1",
     "https://trusttasks.org/spec/vtc/badges/holders/list/0.1",
     "https://trusttasks.org/spec/vtc/badges/wall/show/0.1",
     "https://trusttasks.org/spec/vtc/badges/mine/list/0.1",

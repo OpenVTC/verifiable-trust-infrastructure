@@ -3284,6 +3284,18 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r#"{"awards": [{"awardId": "awd_Qz7TpLW5k2N8xRb3", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_NoorElSayed00000", "givenBy": "dir_Pr1yaNatarajan00", "note": "Resin pour workshop, 25 October 2026", "state": "offered", "offeredAt": "2026-11-06T18:00:01Z", "expiresAt": "2026-12-06T18:00:01Z"}], "skipped": [{"entryId": "dir_LenaWirth0000000", "reason": "alreadyOffered"}]}"#).unwrap()
         ),
         checked!(
+            s::badges::awards::share::v0_1::Payload,
+            s::badges::awards::share::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_Pr1yaNatarajan00", "givenBy": "dir_BenOkafor0000000", "note": "For the Saturday joinery workshop.", "state": "accepted", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-05T19:12:40Z", "credentialId": "urn:uuid:9f1b2c3d-4e5f-4a6b-8c7d-000000000777", "shared": {"verificationUrl": "https://harbourside.example/badges/shared/Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua", "bakedImageUrl": "https://harbourside.example/badges/shared/Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua/image.png", "since": "2026-11-06T12:00:01Z"}}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::unshare::v0_1::Payload,
+            s::badges::awards::unshare::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_Pr1yaNatarajan00", "givenBy": "dir_BenOkafor0000000", "note": "For the Saturday joinery workshop.", "state": "accepted", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-05T19:12:40Z", "credentialId": "urn:uuid:9f1b2c3d-4e5f-4a6b-8c7d-000000000777"}}"#).unwrap()
+        ),
+        checked!(
             s::badges::awards::revoke::v0_1::Payload,
             s::badges::awards::revoke::v0_1::Response,
             serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N", "reason": "The workshop was cancelled; nobody hosted it."}"#).unwrap(),
