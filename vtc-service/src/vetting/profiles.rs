@@ -605,7 +605,7 @@ fn filter_tag(body: &list_wire::Payload) -> String {
     filters.limit = None;
     filters.cursor = None;
     filters.ext = None;
-    let bytes = serde_json::to_vec(&filters).unwrap_or_default();
+    let bytes = serde_json_canonicalizer::to_vec(&filters).unwrap_or_default();
     hex::encode(&Sha256::digest(&bytes)[..8])
 }
 

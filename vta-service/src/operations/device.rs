@@ -749,7 +749,9 @@ fn list_filters(payload: &list_spec::Payload) -> Value {
 
 fn list_filter_digest(filters: &Value) -> String {
     use sha2::{Digest, Sha256};
-    let bytes = serde_json::to_vec(filters).unwrap_or_default();
+    // Canonical JSON, so the digest does not depend on member order (see
+    // `trust_tasks::idempotency::payload_hash`).
+    let bytes = serde_json_canonicalizer::to_vec(filters).unwrap_or_default();
     hex::encode(&Sha256::digest(bytes)[..8])
 }
 
