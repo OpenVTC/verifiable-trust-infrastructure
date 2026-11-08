@@ -21,6 +21,7 @@ import { Award as AwardIcon, Check, Gift, Pencil, Plus, Settings2, Sparkles, Tra
 import { BadgePicture, BadgePictureField } from "@/components/BadgePicture";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
+import { DidText } from "@/components/DidText";
 import { EmptyState } from "@/components/EmptyState";
 import { EntryName, useEntryFaces } from "@/components/EntryName";
 import { Field } from "@/components/Field";
@@ -67,6 +68,7 @@ import {
   showGroup,
 } from "@/lib/groups";
 import { type DynamicRule, RuleEditor, emptyRule, ruleReady, wireRule } from "@/plugins/GroupRule";
+import { vtcDid } from "@/lib/api";
 import { listRoles } from "@/lib/roles";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
@@ -758,6 +760,7 @@ function BadgeSummary({
     enabled: Boolean(badge.groupId),
     retry: false,
   });
+  const issuer = useQuery({ queryKey: ["vtc-did"], queryFn: vtcDid, retry: false, staleTime: Infinity });
   return (
     <section className="card" aria-labelledby="badge-summary-title">
       <div className="badge-summary">
@@ -798,15 +801,21 @@ function BadgeSummary({
                   )}
                 </dd>
                 <dt>Badge group</dt>
-                <dd>
+                <dd className="badge-fact-did">
                   {badge.groupId ? (
-                    <Link to={`/groups/${encodeURIComponent(badge.groupId)}`}>{group.data?.group.name ?? badge.groupId}</Link>
+                    <>
+                      <Link to={`/groups/${encodeURIComponent(badge.groupId)}`}>{group.data?.group.name ?? badge.groupId}</Link>
+                      {group.data?.group.groupDid && <DidText did={group.data.group.groupDid} />}
+                    </>
                   ) : (
                     "—"
                   )}
                 </dd>
                 <dt>Issued by</dt>
-                <dd>The badge group&rsquo;s own identity, the community as the badge&rsquo;s creator</dd>
+                <dd className="badge-fact-did">
+                  <span>The community, also the badge&rsquo;s creator</span>
+                  {issuer.data && <DidText did={issuer.data} />}
+                </dd>
               </>
             )}
             {badge.kind === "kudos" && (
