@@ -1049,6 +1049,9 @@ async fn run_enrol_approver_cli(
     eprintln!("their own DID through their wallet; their approver device signs the");
     eprintln!("enrolment statement. Five wrong codes void the invite.");
     eprintln!();
+    eprintln!("Use an approver key this subject uses at no other community: two communities");
+    eprintln!("holding the same approver DID can tell the same person stands behind both.");
+    eprintln!();
     eprintln!("Restart the daemon (`vtc`) first — it records this invite in the audit log");
     eprintln!("as an offline (break-glass) action when it starts.");
     Ok(())

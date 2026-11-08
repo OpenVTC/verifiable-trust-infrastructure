@@ -157,6 +157,11 @@ export function EnrolApproverPage() {
               Your wallet asks you twice: to sign the redemption as your DID, and to unlock the
               approver so it can prove it holds its key.
             </p>
+            <p className="muted">
+              Enrol an approver you use at no other community: two communities holding the same
+              approver DID can tell that the same person stands behind both. The VTA browser
+              plugin keeps a separate one for each community.
+            </p>
             {redeem.isError && (
               <p className="error" role="alert">
                 {approverErrorMessage(redeem.error)}

@@ -748,6 +748,7 @@ mod tests {
                 agent_did: Some(holder().holder_did().to_string()),
                 vtc_did: Some(VTC_DID.into()),
                 transport_choice: "rest".into(),
+                reuse_warning: None,
             },
             Guard {
                 confirm: ConfirmLevel::Never,

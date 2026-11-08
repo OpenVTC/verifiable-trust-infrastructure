@@ -12324,6 +12324,7 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "trust-tasks-rs",
