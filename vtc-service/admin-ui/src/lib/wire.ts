@@ -3520,6 +3520,142 @@ export interface components {
             ext?: components["schemas"]["VtcBadgesAwardsRevokeV0_1Ext"];
         };
         /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesAwardsShareV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsShareV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsShareV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsShareV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsShareV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsShareV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsShareV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsShareV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesAwardsShareV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesAwardsShareV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsShareV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsShareV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesAwardsShareV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsShareV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsShareV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsShareV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsShareV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsShareV0_1GroupCredentialId: string;
+        /** @description Show an accepted award outside the community: the community answers the public locations it serves the award's credential and verification at. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsShareV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesAwardsShareV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesAwardsShareV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/awards/share/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/share/0.1#response. */
+        VtcBadgesAwardsShareV0_1Response: {
+            award: components["schemas"]["VtcBadgesAwardsShareV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesAwardsShareV0_1Ext"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesAwardsUnshareV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesAwardsUnshareV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesAwardsUnshareV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesAwardsUnshareV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesAwardsUnshareV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesAwardsUnshareV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesAwardsUnshareV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesAwardsUnshareV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesAwardsUnshareV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesAwardsUnshareV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesAwardsUnshareV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesAwardsUnshareV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesAwardsUnshareV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesAwardsUnshareV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
+        /** @description Opaque identifier of a badge: `bdg_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-BDG-001). */
+        VtcBadgesAwardsUnshareV0_1BadgeId: string;
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcBadgesAwardsUnshareV0_1EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcBadgesAwardsUnshareV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesAwardsUnshareV0_1GroupCredentialId: string;
+        /** @description Stop showing an award outside the community: its public locations answer nothing from now on. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcBadgesAwardsUnshareV0_1Payload: {
+            awardId: components["schemas"]["VtcBadgesAwardsUnshareV0_1AwardId"];
+            ext?: components["schemas"]["VtcBadgesAwardsUnshareV0_1Ext"];
+        };
+        /** @description The success response to a vtc/badges/awards/unshare/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/badges/awards/unshare/0.1#response. */
+        VtcBadgesAwardsUnshareV0_1Response: {
+            award: components["schemas"]["VtcBadgesAwardsUnshareV0_1Award"];
+            ext?: components["schemas"]["VtcBadgesAwardsUnshareV0_1Ext"];
+        };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
         VtcBadgesAwardsWithdrawV0_1Award: {
             awardId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1AwardId"];
             badgeId: components["schemas"]["VtcBadgesAwardsWithdrawV0_1BadgeId"];
@@ -5449,6 +5585,54 @@ export interface components {
             ext?: components["schemas"]["VtcBadgesSettingsUpdateV0_1Ext"];
             settings: components["schemas"]["VtcBadgesSettingsUpdateV0_1BadgeSettings"];
         };
+        /** @description One giving of a badge to one member. `givenBy` is the giver's directory entry, absent for an award a dynamic badge group's rule made. `note` is shown to the recipient, the giver, the badge's owners and administrators, never to other members. `credentialId` is present on an accepted award of a community badge: the badge credential that evidences it, renewed or re-issued as the badge's regime requires. `shared` is present on an accepted award of a badge its holders may show outside while its holder shares it (vtc/badges/awards/share). */
+        VtcBadgesShowV0_1Award: {
+            awardId: components["schemas"]["VtcBadgesShowV0_1AwardId"];
+            badgeId: components["schemas"]["VtcBadgesShowV0_1BadgeId"];
+            credentialId?: components["schemas"]["VtcBadgesShowV0_1GroupCredentialId"];
+            /**
+             * Format: date-time
+             * @description When the recipient accepted or declined, the giver withdrew, the offer expired, or the award was revoked.
+             */
+            decidedAt?: string;
+            entryId: components["schemas"]["VtcBadgesShowV0_1EntryId"];
+            /**
+             * Format: date-time
+             * @description When an unanswered offer lapses, where the community expires offers.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["VtcBadgesShowV0_1Ext"];
+            givenBy?: components["schemas"]["VtcBadgesShowV0_1EntryId"];
+            note?: components["schemas"]["VtcBadgesShowV0_1AwardNote"];
+            /** Format: date-time */
+            offeredAt: string;
+            shared?: components["schemas"]["VtcBadgesShowV0_1AwardShare"];
+            state: components["schemas"]["VtcBadgesShowV0_1AwardState"];
+        };
+        /** @description Opaque identifier of one giving of a badge to one member: `awd_` followed by 16 to 64 base64url characters. Random and unique within the community. */
+        VtcBadgesShowV0_1AwardId: string;
+        /** @description What the award is for, from the giver, shown to the recipient and written as the award's evidence narrative where the badge carries a credential. Plain text; erased with its author (VTI-BDG-090). */
+        VtcBadgesShowV0_1AwardNote: string;
+        /** @description Where an accepted award is shown outside the community, by its holder's choice (VTI-BDG-070): the public location that answers a verification of exactly what the credential says, the baked image where the community serves one, and since when. Present only while the holder shares the award; absent once they stop, the award is taken back, the badge is retired or the holder departs. The locations are unguessable and name no other holder (VTI-BDG-071). */
+        VtcBadgesShowV0_1AwardShare: {
+            /**
+             * Format: uri
+             * @description The badge's picture with the credential baked into it, for a website or an email signature. Absent where the community serves no baked image.
+             */
+            bakedImageUrl?: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: uri
+             * @description The public location that answers the credential and a verification of it.
+             */
+            verificationUrl: string;
+        };
+        /**
+         * @description `offered`: waiting for the recipient. `accepted`: the recipient took it; for a community badge the credential was issued and the membership recorded. `declined`: the recipient declined; nothing was recorded in the group and nothing issued. `withdrawn`: the giver withdrew the offer before a decision. `expired`: the offer lapsed unanswered. `revoked`: taken back after acceptance (VTI-BDG-023).
+         * @enum {string}
+         */
+        VtcBadgesShowV0_1AwardState: "offered" | "accepted" | "declined" | "withdrawn" | "expired" | "revoked";
         /** @description A badge as a caller who may see it sees it. `groupId` is present exactly when `kind` is `community`. `holderCount` only to callers who may see the badge's holders, counted over holders who have not hidden it (VTI-BDG-030, VTI-BDG-033). `createdBy` is the directory entry of the administrator or member who made it, where they have one. */
         VtcBadgesShowV0_1Badge: {
             badgeId: components["schemas"]["VtcBadgesShowV0_1BadgeId"];
@@ -5529,6 +5713,8 @@ export interface components {
         VtcBadgesShowV0_1Ext: {
             [key: string]: unknown;
         };
+        /** @description Identifier (`id`) of a group membership credential issued to a member. Each renewal issues a new credential with a new identifier. Validity is the community's setting; a community SHOULD default to 30 days, renewed when 10 days remain. */
+        VtcBadgesShowV0_1GroupCredentialId: string;
         /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
         VtcBadgesShowV0_1GroupId: string;
         /**
@@ -5547,6 +5733,8 @@ export interface components {
             credentialRegime: components["schemas"]["VtcBadgesShowV0_1CredentialRegime"];
             ext?: components["schemas"]["VtcBadgesShowV0_1Ext"];
             maker?: components["schemas"]["VtcBadgesShowV0_1EntryId"];
+            /** @description The caller's own accepted awards of this badge, newest first, each with `shared` where they show it outside the community — what `vtc/badges/awards/share` and `unshare` name. Absent where the caller holds none. Never another member's award. */
+            myAwards?: components["schemas"]["VtcBadgesShowV0_1Award"][];
             /** @description Accepted awards of this badge the caller holds; 0 where none. */
             myCount: number;
             myState: components["schemas"]["VtcBadgesShowV0_1MyState"];

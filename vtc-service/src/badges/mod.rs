@@ -28,6 +28,7 @@
 
 pub mod credential;
 pub mod public;
+pub mod share;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +37,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use vti_common::error::AppError;
 use vti_common::store::{Batch, KeyspaceHandle};
+
+/// The path segment, under the badge artefacts, of the locations a holder's share
+/// answers at (`vtc/badges/awards/share`): `/badges/shared/<token>`.
+pub const BADGE_SHARED_PATH: &str = "badges/shared";
 
 /// Every write to the `badges` keyspace that reads before it writes takes this lock,
 /// so two offers of one badge to one member, or two accepts of one award, never race.
@@ -436,6 +441,10 @@ pub struct Award {
     /// holder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoke_reason: Option<String>,
+    /// Where the holder shows this award outside the community, while they do
+    /// (`vtc/badges/awards/share`, VTI-BDG-070).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<share::Shared>,
 }
 
 impl Award {
@@ -471,6 +480,9 @@ impl Award {
         }
         if let Some(c) = &self.credential_id {
             out["credentialId"] = json!(c);
+        }
+        if let Some(s) = &self.shared {
+            out["shared"] = s.wire();
         }
         out
     }
@@ -832,8 +844,9 @@ pub async fn holder_slots_of_entry(
 
 // ─── departure ───────────────────────────────────────────────────────────
 
-/// A member's departure (VTI-BDG-090): their open offers are withdrawn, their preferences
-/// go, and the awards they gave stand by entry reference. Their badge-group memberships
+/// A member's departure (VTI-BDG-090): their open offers are withdrawn, their shares stop
+/// (`vtc/badges/awards/share` item 9), their preferences go, and the awards they gave
+/// stand by entry reference. Their badge-group memberships
 /// end with the groups' own departure handling. Returns how many offers were withdrawn.
 pub async fn on_departure(ks: &KeyspaceHandle, entry_id: &str) -> Result<usize, AppError> {
     let _guard = WRITE_LOCK.lock().await;
@@ -845,6 +858,8 @@ pub async fn on_departure(ks: &KeyspaceHandle, entry_id: &str) -> Result<usize, 
             a.decided_at = Some(now);
             put_award(ks, &a).await?;
             n += 1;
+        } else {
+            share::stop(ks, &mut a).await?;
         }
     }
     ks.remove(prefs_key(entry_id)).await?;

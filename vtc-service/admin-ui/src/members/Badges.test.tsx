@@ -14,6 +14,8 @@ vi.mock("./directory-api", async (orig) => ({
 
 import { BadgePage, BadgesPage } from "./Badges";
 import {
+  AWARDS_SHARE_TASK,
+  AWARDS_UNSHARE_TASK,
   BADGES_HOLDERS_TASK,
   BADGES_IMAGES_GET_TASK,
   BADGES_LIST_TASK,
@@ -190,6 +192,58 @@ describe("one badge in the portal", () => {
       expect(sent(GROUPS_JOIN_TASK)).toEqual([{ groupId: GROUP_ID, message: "I ran the sharpening session." }]),
     );
     expect(await screen.findByText(/The badge's owners decide/)).toBeTruthy();
+  });
+
+  it("shows the member's own awards outside the community, one by one, and stops", async () => {
+    const AWARD = "awd_S5k2N8xRb3Qz7TpLAAAAAA";
+    const own = { awardId: AWARD, badgeId: BADGE_ID, entryId: ENTRY, state: "accepted", offeredAt: "2026-11-01T09:00:00Z", decidedAt: "2026-11-02T09:00:00Z" };
+    const SHARED = {
+      verificationUrl: "https://vtc.example.com/badges/shared/T0k3n",
+      bakedImageUrl: "https://vtc.example.com/badges/shared/T0k3n/image.png",
+      since: "2026-11-08T09:00:00Z",
+    };
+    let shared = false;
+    answer({
+      ...BASE,
+      [BADGES_SHOW_TASK]: () => ({
+        badge: badge({ shareableOutside: true }),
+        myState: "holder",
+        myCount: 1,
+        credentialRegime: "outside",
+        owners: [],
+        myAwards: [shared ? { ...own, shared: SHARED } : own],
+      }),
+      [BADGES_HOLDERS_TASK]: { total: 0, items: [] },
+      [AWARDS_SHARE_TASK]: () => {
+        shared = true;
+        return { award: { ...own, shared: SHARED } };
+      },
+      [AWARDS_UNSHARE_TASK]: () => {
+        shared = false;
+        return { award: own };
+      },
+    });
+    renderPage(<BadgePage badgeId={BADGE_ID} />);
+    expect(await screen.findByRole("heading", { name: "Show it outside the community" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Share outside" }));
+    await waitFor(() => expect(sent(AWARDS_SHARE_TASK)).toEqual([{ awardId: AWARD }]));
+    const link = await screen.findByRole("link", { name: "Link to check it" });
+    expect(link.getAttribute("href")).toBe(SHARED.verificationUrl);
+    expect(screen.getByRole("link", { name: "Picture with the credential" }).getAttribute("href")).toBe(SHARED.bakedImageUrl);
+    fireEvent.click(screen.getByRole("button", { name: "Stop sharing" }));
+    await waitFor(() => expect(sent(AWARDS_UNSHARE_TASK)).toEqual([{ awardId: AWARD }]));
+    expect(await screen.findByRole("button", { name: "Share outside" })).toBeTruthy();
+  });
+
+  it("offers no sharing for a badge kept inside", async () => {
+    answer({
+      ...BASE,
+      [BADGES_SHOW_TASK]: { badge: badge(), myState: "holder", myCount: 1, credentialRegime: "inside", owners: [] },
+      [BADGES_HOLDERS_TASK]: { total: 0, items: [] },
+    });
+    renderPage(<BadgePage badgeId={BADGE_ID} />);
+    expect(await screen.findByRole("heading", { name: "Workshop host" })).toBeTruthy();
+    expect(screen.queryByText("Show it outside the community")).toBeNull();
   });
 
   it("is not found when the member may not see it", async () => {

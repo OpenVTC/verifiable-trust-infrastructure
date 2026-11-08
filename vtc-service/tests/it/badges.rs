@@ -24,6 +24,13 @@ use crate::common::second_party::{GatedAdmin, step_up_request};
 use crate::common::signed::{call, seed_role};
 use vti_specs::vtc::badges as b;
 
+const SHARE_ERR_BADGES_OFF: &str = b::awards::share::v0_1::error_codes::BADGES_OFF.code;
+const SHARE_ERR_NOT_FOUND: &str = b::awards::share::v0_1::error_codes::NOT_FOUND.code;
+const SHARE_ERR_NOT_SHAREABLE: &str = b::awards::share::v0_1::error_codes::NOT_SHAREABLE.code;
+const SHARE_ERR_PUBLIC_LOCATION_UNAVAILABLE: &str =
+    b::awards::share::v0_1::error_codes::PUBLIC_LOCATION_UNAVAILABLE.code;
+const UNSHARE_ERR_BADGES_OFF: &str = b::awards::unshare::v0_1::error_codes::BADGES_OFF.code;
+const UNSHARE_ERR_NOT_FOUND: &str = b::awards::unshare::v0_1::error_codes::NOT_FOUND.code;
 const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.2";
 const SIGN_DOCUMENT: &str = "https://trusttasks.org/spec/keys/sign-document/0.1";
 const WEBVH_SERVERS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/servers/list/1.0";
@@ -1914,4 +1921,317 @@ async fn the_public_artefacts_of_a_badge_shown_outside_are_served_and_an_inside_
             .starts_with("urn:sha256:"),
         "{vc}"
     );
+}
+
+/// The path of a public location under the test community's origin.
+fn path_of(url: &str) -> String {
+    url.strip_prefix("https://vtc.example.com")
+        .expect("under the public origin")
+        .to_string()
+}
+
+async fn get_public(
+    fix: &Fixture,
+    path: &str,
+    accept: Option<&str>,
+) -> (StatusCode, String, Vec<u8>) {
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let mut req = axum::http::Request::get(path);
+    if let Some(a) = accept {
+        req = req.header(axum::http::header::ACCEPT, a);
+    }
+    let res = fix
+        .vtc
+        .router
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let media = res
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes().to_vec();
+    (status, media, bytes)
+}
+
+/// VTI-BDG-070 / 071: a holder shares an accepted award of a badge shown outside; the
+/// community serves the credential exactly as issued, a page verifying it and the picture
+/// with it baked in, at unguessable locations that answer nothing once the share stops,
+/// the award is taken back or the badge retired.
+#[tokio::test]
+async fn a_holder_shares_an_award_outside_and_the_locations_stop_with_the_share() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["shareableOutside"] = json!(true);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let award = fix.hold(&badge_id).await;
+    let issued = fix.vta.calls_of(SIGN_DOCUMENT).last().unwrap()["document"].clone();
+
+    let (status, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let shared = doc["payload"]["award"]["shared"].clone();
+    let verification = shared["verificationUrl"].as_str().unwrap().to_string();
+    let baked = shared["bakedImageUrl"].as_str().unwrap().to_string();
+    assert!(shared["since"].is_string(), "{doc}");
+    assert!(
+        !verification.contains(&award) && !verification.contains(&badge_id),
+        "the location is derived from nothing: {verification}"
+    );
+    assert!(verification.starts_with("https://vtc.example.com/badges/shared/"));
+    assert_eq!(baked, format!("{verification}/image.png"));
+    assert!(doc["payload"]["award"].get("token").is_none());
+
+    // `show` answers the holder their own awards, the share with them; another member none.
+    let (_, doc) = fix.as_member("show", json!({ "badgeId": badge_id })).await;
+    let mine = doc["payload"]["myAwards"].as_array().expect("myAwards");
+    assert_eq!(mine.len(), 1, "{doc}");
+    assert_eq!(mine[0]["awardId"], award.as_str());
+    assert_eq!(mine[0]["shared"]["verificationUrl"], verification);
+    let (other, _) = fix.another_member().await;
+    let (_, doc) = fix
+        .as_party(&other, "show", json!({ "badgeId": badge_id }))
+        .await;
+    assert!(doc["payload"].get("myAwards").is_none(), "{doc}");
+
+    // A share already in force answers its own locations.
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    assert_eq!(
+        doc["payload"]["award"]["shared"]["verificationUrl"],
+        verification
+    );
+
+    // A verifier gets the credential exactly as issued.
+    let (status, media, bytes) = get_public(&fix, &path_of(&verification), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(media.starts_with("application/vc+ld+json"), "{media}");
+    let served: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(served["id"], issued["id"]);
+    assert_eq!(served["credentialStatus"], issued["credentialStatus"]);
+    // A person gets a page verifying it, naming no other holder (VTI-BDG-071).
+    let (status, media, bytes) = get_public(&fix, &path_of(&verification), Some("text/html")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(media.starts_with("text/html"), "{media}");
+    let html = String::from_utf8(bytes).unwrap();
+    assert!(html.contains("Workshop host"), "{html}");
+    assert!(html.contains("Verified"), "{html}");
+    // The picture with the credential baked in.
+    let (status, media, bytes) = get_public(&fix, &path_of(&baked), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(media, "image/png");
+    let reader = png::Decoder::new(std::io::Cursor::new(&bytes))
+        .read_info()
+        .unwrap();
+    let chunk = reader
+        .info()
+        .utf8_text
+        .iter()
+        .find(|c| c.keyword == "openbadgecredential")
+        .expect("baked");
+    let baked_vc: Value = serde_json::from_str(&chunk.get_text().unwrap()).unwrap();
+    assert_eq!(baked_vc["id"], issued["id"]);
+
+    // Stopping: the locations answer as ones that never existed; sharing again answers
+    // new ones.
+    let (status, doc) = fix
+        .as_member("awards/unshare", json!({ "awardId": award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(doc["payload"]["award"].get("shared").is_none(), "{doc}");
+    let (status, _, _) = get_public(&fix, &path_of(&verification), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = get_public(&fix, &path_of(&baked), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, doc) = fix
+        .as_member("awards/unshare", json!({ "awardId": award }))
+        .await;
+    assert!(
+        doc["payload"]["award"].get("shared").is_none(),
+        "idempotent: {doc}"
+    );
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    let again = doc["payload"]["award"]["shared"]["verificationUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(again, verification);
+    let (status, _, _) = get_public(&fix, &path_of(&again), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Taken back: the share ends with it.
+    let (status, doc) = fix
+        .as_admin("awards/revoke", json!({ "awardId": award, "reason": "x" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(doc["payload"]["award"].get("shared").is_none(), "{doc}");
+    let (status, _, _) = get_public(&fix, &path_of(&again), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Retired: every share of the badge ends.
+    let award = fix.hold(&badge_id).await;
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    let last = doc["payload"]["award"]["shared"]["verificationUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let chair = GatedAdmin::new(&fix.vtc).await;
+    let (status, doc) = chair
+        .call(
+            &fix.vtc,
+            &task("retire"),
+            json!({ "badgeId": badge_id, "reason": "season over" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (status, _, _) = get_public(&fix, &path_of(&last), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let a = vtc_service::badges::get_award(&fix.vtc.state.badges_ks, &award)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(a.shared.is_none());
+}
+
+/// A holder whose credential was issued before the community kept one to serve is issued
+/// it again when they first share.
+#[tokio::test]
+async fn sharing_an_award_whose_credential_was_not_kept_issues_it_again() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["shareableOutside"] = json!(true);
+    let (_, doc) = fix.as_admin("create", body).await;
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let award = fix.hold(&badge_id).await;
+    fix.vtc
+        .state
+        .badges_ks
+        .remove(format!("bcred:{badge_id}:{}", fix.member_entry).into_bytes())
+        .await
+        .unwrap();
+    let signed_before = fix.vta.calls_of(SIGN_DOCUMENT).len();
+    let (status, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(fix.vta.calls_of(SIGN_DOCUMENT).len(), signed_before + 1);
+    let issued = fix.vta.calls_of(SIGN_DOCUMENT).last().unwrap()["document"].clone();
+    let url = doc["payload"]["award"]["shared"]["verificationUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _, bytes) = get_public(&fix, &path_of(&url), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let served: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(served["id"], issued["id"]);
+    assert_eq!(doc["payload"]["award"]["credentialId"], issued["id"]);
+}
+
+#[tokio::test]
+async fn share_and_unshare_refuse_what_their_specifications_declare() {
+    let fix = fixture().await;
+    // An award kept inside the community.
+    let inside = fix.community_badge("Inside", false).await["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let inside_award = fix.hold(&inside).await;
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": inside_award }))
+        .await;
+    assert_eq!(tt_error_code(&doc), SHARE_ERR_NOT_SHAREABLE, "{doc}");
+    assert_eq!(doc["payload"]["details"]["reason"], "insideOnly", "{doc}");
+
+    // A kudos badge.
+    let (giver, _) = fix.another_member().await;
+    let kudos = fix.kudos_badge(&giver, "Clamp whisperer").await;
+    let (_, doc) = fix
+        .as_party(
+            &giver,
+            "kudos/give",
+            json!({ "badgeId": kudos, "to": fix.member_entry }),
+        )
+        .await;
+    let kudos_award = doc["payload"]["award"]["awardId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, doc) = fix
+        .as_member("mine/accept", json!({ "awardId": kudos_award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": kudos_award }))
+        .await;
+    assert_eq!(tt_error_code(&doc), SHARE_ERR_NOT_SHAREABLE, "{doc}");
+    assert_eq!(doc["payload"]["details"]["reason"], "kudos", "{doc}");
+
+    // Another member's award, an open offer and an unknown one answer alike.
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Outside", &sha, true);
+    body["shareableOutside"] = json!(true);
+    let (_, doc) = fix.as_admin("create", body).await;
+    let outside = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let held = fix.hold(&outside).await;
+    let open = fix.offer(&outside, &fix.member_entry).await;
+    for id in [held.as_str(), open.as_str(), "awd_NoSuchAward000000"] {
+        let who = if id == held { &giver } else { &fix.member };
+        let (_, doc) = fix
+            .as_party(who, "awards/share", json!({ "awardId": id }))
+            .await;
+        assert_eq!(tt_error_code(&doc), SHARE_ERR_NOT_FOUND, "{id}: {doc}");
+    }
+    let (_, doc) = fix
+        .as_party(&giver, "awards/unshare", json!({ "awardId": held }))
+        .await;
+    assert_eq!(tt_error_code(&doc), UNSHARE_ERR_NOT_FOUND, "{doc}");
+
+    // No public origin: nothing is answered that would not be served.
+    let saved = fix.vtc.state.config.read().await.public_url.clone();
+    fix.vtc.state.config.write().await.public_url = None;
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": held }))
+        .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        SHARE_ERR_PUBLIC_LOCATION_UNAVAILABLE,
+        "{doc}"
+    );
+    fix.vtc.state.config.write().await.public_url = saved;
+
+    // Badges off.
+    set_settings(&fix, |s| s.enabled = false).await;
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": held }))
+        .await;
+    assert_eq!(tt_error_code(&doc), SHARE_ERR_BADGES_OFF, "{doc}");
+    let (_, doc) = fix
+        .as_member("awards/unshare", json!({ "awardId": held }))
+        .await;
+    assert_eq!(tt_error_code(&doc), UNSHARE_ERR_BADGES_OFF, "{doc}");
 }

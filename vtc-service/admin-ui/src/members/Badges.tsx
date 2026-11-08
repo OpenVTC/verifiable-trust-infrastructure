@@ -50,12 +50,15 @@ import {
   listHolders,
   listMine,
   makeBadgeHref,
+  shareAward,
   showBadge,
   showBadgeAgain,
   showSettings,
   showWall,
+  unshareAward,
   uploadBadgeImage,
   type Badge,
+  type MyAward,
   type MyBadge,
   type Offer,
   type WallVisibility,
@@ -539,6 +542,9 @@ export function BadgePage({ badgeId }: { badgeId: string }) {
             )}
             {badge.state === "active" && badge.kind === "kudos" && <GiveBadge badge={badge} />}
           </article>
+          {badge.state === "active" && q.data.credentialRegime === "outside" && (q.data.myAwards?.length ?? 0) > 0 && (
+            <ShareOutside badgeId={badge.badgeId} awards={q.data.myAwards ?? []} />
+          )}
           <section className="card bw-holders" aria-labelledby="bw-holders-title">
             <h2 id="bw-holders-title">Who holds it</h2>
             {holders.isPending && <p className="muted">Loading…</p>}
@@ -581,6 +587,89 @@ export function BadgePage({ badgeId }: { badgeId: string }) {
       )}
     </main>
   );
+}
+
+/** Showing one's own awards of a badge outside the community (VTI-BDG-070): each award
+ *  shared on its own, by the member's choice, at locations only those they give them to
+ *  know. Stopping is not a revocation. */
+function ShareOutside({ badgeId, awards }: { badgeId: string; awards: MyAward[] }) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const done = () => {
+    setError(null);
+    void qc.invalidateQueries({ queryKey: ["badges", "show", badgeId] });
+  };
+  const share = useMutation({ mutationFn: shareAward, onSuccess: done, onError: (e) => setError(refusal(e)) });
+  const stop = useMutation({ mutationFn: unshareAward, onSuccess: done, onError: (e) => setError(refusal(e)) });
+  const busy = share.isPending || stop.isPending;
+  return (
+    <section className="card bw-share" aria-labelledby="bw-share-title">
+      <h2 id="bw-share-title">Show it outside the community</h2>
+      <p className="muted">
+        Share an award to get a link anyone can open to check it, and a picture with the credential inside it for a
+        website or an email signature. Only people you give the link to can find it. The credential names you and
+        each award&rsquo;s note, so share only an award you are happy to show.
+      </p>
+      <ul className="bw-share-list">
+        {awards.map((a) => (
+          <li key={a.awardId} className="bw-share-item">
+            <span className="bw-share-when">
+              Awarded {a.decidedAt ? new Date(a.decidedAt).toLocaleDateString(undefined, { dateStyle: "medium" }) : ""}
+              {a.note && <span className="bw-offer-note"> &ldquo;{a.note}&rdquo;</span>}
+            </span>
+            {a.shared ? (
+              <span className="bw-share-links">
+                <CopyLink label="Link to check it" value={a.shared.verificationUrl} />
+                {a.shared.bakedImageUrl && <CopyLink label="Picture with the credential" value={a.shared.bakedImageUrl} />}
+                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => stop.mutate(a.awardId)}>
+                  Stop sharing
+                </button>
+              </span>
+            ) : (
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={() => share.mutate(a.awardId)}>
+                Share outside
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function CopyLink({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <span className="bw-copy">
+      <a href={value} target="_blank" rel="noreferrer noopener">
+        {label}
+      </a>
+      <button
+        type="button"
+        className="btn btn-ghost btn-small"
+        onClick={() => {
+          void navigator.clipboard?.writeText(value).then(() => setCopied(true));
+        }}
+      >
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </span>
+  );
+}
+
+/** What a refused share or stop says to the member. */
+function refusal(e: unknown): string {
+  const code = e instanceof DirectoryError ? e.code : "";
+  if (code.endsWith(":notShareable")) return "This badge can no longer be shown outside the community.";
+  if (code.endsWith(":publicLocationUnavailable"))
+    return "The community has no public address to show badges at yet. Try again later.";
+  if (code.endsWith(":notFound")) return "That award is no longer yours to share.";
+  return e instanceof Error ? e.message : "That did not work. Try again.";
 }
 
 /** Members named by their directory entry, as the directory shows them to this member. */

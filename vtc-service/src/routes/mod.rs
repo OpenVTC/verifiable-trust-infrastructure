@@ -257,6 +257,10 @@ use crate::server::AppState;
         vta_sdk::openapi::BadgesAwardsWithdraw01Response,
         vta_sdk::openapi::BadgesAwardsRevoke01Payload,
         vta_sdk::openapi::BadgesAwardsRevoke01Response,
+        vta_sdk::openapi::BadgesAwardsShare01Payload,
+        vta_sdk::openapi::BadgesAwardsShare01Response,
+        vta_sdk::openapi::BadgesAwardsUnshare01Payload,
+        vta_sdk::openapi::BadgesAwardsUnshare01Response,
         vta_sdk::openapi::BadgesAwardsList01Payload,
         vta_sdk::openapi::BadgesAwardsList01Response,
         vta_sdk::openapi::BadgesHoldersList01Payload,
@@ -1292,6 +1296,15 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
             "/badges/{id}/image",
             get(crate::badges::public::serve_image),
         )
+        // A holder's share of one award (VTI-BDG-070): unguessable, public, 404 once stopped.
+        .route(
+            "/badges/shared/{token}",
+            get(crate::badges::public::serve_shared),
+        )
+        .route(
+            "/badges/shared/{token}/image.png",
+            get(crate::badges::public::serve_shared_image),
+        )
         // API surface — existing TrustTaskRouter result nested at
         // the configured mount.
         .nest(&routing.api.mount, api);
@@ -1418,6 +1431,15 @@ pub fn assemble_with_website(
         .route(
             "/badges/{id}/image",
             get(crate::badges::public::serve_image),
+        )
+        // A holder's share of one award (VTI-BDG-070): unguessable, public, 404 once stopped.
+        .route(
+            "/badges/shared/{token}",
+            get(crate::badges::public::serve_shared),
+        )
+        .route(
+            "/badges/shared/{token}/image.png",
+            get(crate::badges::public::serve_shared_image),
         )
         .nest(&routing.api.mount, api);
     app = app.nest(&routing.admin_ui.mount, admin);

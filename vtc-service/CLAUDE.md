@@ -963,7 +963,17 @@ When adding a flow, add it here and a line to the root index.
   Achievement document) and `/badges/<id>/image` (the re-encoded picture), parent-root routes
   beside the identity logs, let through the host-surface gate (`is_badge_artefact_path`),
   unauthenticated, naming no holder or count (VTI-BDG-071); an inside-only or unknown badge is
-  the same `404` — never serve an inside badge's picture there (VTI-BDG-050). **Hidden is
+  the same `404` — never serve an inside badge's picture there (VTI-BDG-050). **Sharing**
+  (`badges::share`, `awards/share|unshare`, VTI-BDG-070): the holder's own choice, award by
+  award; a 256-bit token derived from nothing (`bshare:<token>` → award, `Award.shared`);
+  `/badges/shared/<token>` serves the credential **exactly as issued** — the one
+  `credential::issue` keeps at `bcred:<badge>:<entry>` in the outside regime, so a re-issue
+  is served at the same location — or an HTML verification page, and `…/image.png` the
+  picture with it baked in (`iTXt` `openbadgecredential`). `share::resolve` re-checks the
+  award, the token and the badge on every request, and every path that ends a holding
+  (`unshare`, take-back, retire, `badges::on_departure`) clears the share: a stopped share
+  answers the same `404` as a token never issued. `show` answers the holder's own awards
+  as `myAwards`; never another member's. **Hidden is
   portal-only** (`badges::Prefs`, VTI-BDG-030): walls, `holders/list` and counts leave a hidden
   holder out; `awards/list` shows owners `hidden: true`; memberships and credentials stand.
   Holder's tasks accept the portal's delegated key (`vtc/badges` in `PORTAL_SIGNING_SCOPE`);

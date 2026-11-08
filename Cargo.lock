@@ -12395,6 +12395,7 @@ dependencies = [
  "multibase",
  "object_store",
  "p256 0.14.0",
+ "png",
  "predicate-credential-system",
  "qrcode",
  "rand 0.10.2",

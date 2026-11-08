@@ -227,6 +227,9 @@ regress = "0.12"
 # re-encoded, so no metadata and no byte the member sent is stored. Pure-Rust
 # decoders only, and only the formats a `CardBlobRef` admits that it can decode.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+# Baking a shared badge credential into its picture (Open Badges 3.0 baking: an iTXt
+# chunk); the version `image` already builds on.
+png = "0.18"
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
