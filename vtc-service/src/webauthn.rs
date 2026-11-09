@@ -47,7 +47,7 @@ use webauthn_rs::prelude::{
 };
 use webauthn_rs_proto::PubKeyCredParams;
 
-use vti_common::auth::passkey::clamp_authenticator_name;
+use vti_common::auth::passkey::AuthenticatorName;
 
 use crate::error::AppError;
 
@@ -64,28 +64,22 @@ pub const EDDSA_ALG: i64 = -8;
 /// authenticator produces is purely an auth-factor choice — not an
 /// identity input.
 ///
-/// `user_name` and `user_display_name` are what the authenticator shows the
-/// passkey as, and both are held to
-/// [`MAX_AUTHENTICATOR_NAME_BYTES`](vti_common::auth::passkey::MAX_AUTHENTICATOR_NAME_BYTES)
-/// here, because some authenticators refuse a longer `user.name` outright. For
-/// a passkey named by a DID, pass
-/// [`authenticator_name_for_did`](vti_common::auth::passkey::authenticator_name_for_did)
-/// rather than the DID itself.
+/// `name` is what the authenticator shows the passkey as — for a passkey whose
+/// subject is a DID, [`AuthenticatorName::for_did`]. Its type holds it to the
+/// 64 bytes some authenticators refuse to go past.
 pub fn start_passkey_registration(
     webauthn: &Webauthn,
     user_unique_id: uuid::Uuid,
-    user_name: &str,
-    user_display_name: &str,
+    name: &AuthenticatorName,
     exclude_credentials: Option<Vec<webauthn_rs::prelude::CredentialID>>,
 ) -> Result<(CreationChallengeResponse, PasskeyRegistration), AppError> {
-    let (mut ccr, reg_state) = webauthn
-        .start_passkey_registration(
-            user_unique_id,
-            &clamp_authenticator_name(user_name),
-            &clamp_authenticator_name(user_display_name),
-            exclude_credentials,
-        )
-        .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
+    let (mut ccr, reg_state) = vti_common::auth::passkey::start_passkey_registration(
+        webauthn,
+        user_unique_id,
+        name,
+        exclude_credentials,
+    )
+    .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
 
     extend_ccr_with_eddsa(&mut ccr);
     let reg_state = extend_state_with_eddsa(&reg_state)?;
@@ -201,10 +195,14 @@ pub fn start_install_passkey_registration(
     webauthn: &Webauthn,
     user_unique_id: uuid::Uuid,
 ) -> Result<(CreationChallengeResponse, PasskeyRegistration), AppError> {
-    const NAMES_NO_ONE: &str = "first administrator";
-    let (mut ccr, reg_state) = webauthn
-        .start_passkey_registration(user_unique_id, NAMES_NO_ONE, NAMES_NO_ONE, None)
-        .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
+    let names_no_one = AuthenticatorName::from_label("first administrator");
+    let (mut ccr, reg_state) = vti_common::auth::passkey::start_passkey_registration(
+        webauthn,
+        user_unique_id,
+        &names_no_one,
+        None,
+    )
+    .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
     ccr.public_key.pub_key_cred_params = [EDDSA_ALG, ES256_ALG]
         .into_iter()
         .map(|alg| PubKeyCredParams {
@@ -349,33 +347,16 @@ mod tests {
         build_webauthn("https://vtc.example.com").expect("webauthn builder")
     }
 
-    /// The wrapper holds whatever it is given to the authenticator limit, so a
-    /// caller that passes a long name cannot reproduce the YubiKey refusal.
-    #[test]
-    fn registration_names_never_exceed_the_authenticator_limit() {
-        use vti_common::auth::passkey::MAX_AUTHENTICATOR_NAME_BYTES;
-        let long = "did:webvh:QmSyntheticExampleScid000000000000000000000000:dids.example.org:example-member-000001";
-        let (ccr, _) =
-            start_passkey_registration(&webauthn(), Uuid::new_v4(), long, long, None).unwrap();
-        let user = &ccr.public_key.user;
-        assert!(
-            user.name.len() <= MAX_AUTHENTICATOR_NAME_BYTES,
-            "{}",
-            user.name
-        );
-        assert!(
-            user.display_name.len() <= MAX_AUTHENTICATOR_NAME_BYTES,
-            "{}",
-            user.display_name
-        );
-    }
-
     #[test]
     fn start_advertises_eddsa_alongside_default_algorithms() {
         let w = webauthn();
-        let (ccr, _state) =
-            start_passkey_registration(&w, Uuid::new_v4(), "did:key:zABC", "did:key:zABC", None)
-                .unwrap();
+        let (ccr, _state) = start_passkey_registration(
+            &w,
+            Uuid::new_v4(),
+            &AuthenticatorName::for_did("did:key:zABC"),
+            None,
+        )
+        .unwrap();
 
         // EdDSA must be in the advertised list so Ed25519-capable
         // authenticators (YubiKey 5+, soft test harness) work.
@@ -398,9 +379,13 @@ mod tests {
     #[test]
     fn start_state_credential_algorithms_includes_eddsa() {
         let w = webauthn();
-        let (_ccr, state) =
-            start_passkey_registration(&w, Uuid::new_v4(), "did:key:zABC", "did:key:zABC", None)
-                .unwrap();
+        let (_ccr, state) = start_passkey_registration(
+            &w,
+            Uuid::new_v4(),
+            &AuthenticatorName::for_did("did:key:zABC"),
+            None,
+        )
+        .unwrap();
 
         // `PasskeyRegistration` exposes no public algorithms accessor;
         // inspect the JSON instead.

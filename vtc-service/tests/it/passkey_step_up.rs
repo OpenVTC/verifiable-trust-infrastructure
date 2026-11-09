@@ -89,8 +89,7 @@ async fn build_fixture() -> (Fixture, String) {
         let (ccr, reg_state) = vtc_service::webauthn::start_passkey_registration(
             &webauthn,
             user_uuid,
-            "did:key:zPlaceholder",
-            "did:key:zPlaceholder",
+            &vti_common::auth::passkey::AuthenticatorName::for_did("did:key:zPlaceholder"),
             None,
         )
         .unwrap();

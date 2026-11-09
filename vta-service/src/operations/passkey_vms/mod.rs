@@ -54,7 +54,7 @@ use vta_sdk::protocols::did_management::passkey_vms::{
     EnrollPasskeyChallengeResponse, EnrollPasskeySubmitBody, EnrollPasskeySubmitResponse,
     ListPasskeyVmsResponse, PasskeyVerificationMethod as ApiVerificationMethod,
 };
-use vti_common::auth::passkey::build_webauthn;
+use vti_common::auth::passkey::{AuthenticatorName, build_webauthn, start_passkey_registration};
 
 use crate::auth::AuthClaims;
 use crate::operations::did_webvh::{UpdateDidWebvhOptions, update_did_webvh};
@@ -154,33 +154,6 @@ fn user_handle_for_did(did: &str) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-/// The WebAuthn `user.name` / `user.displayName` for an enrolment.
-///
-/// **Not the raw DID.** This is the string an authenticator shows in the
-/// credential picker, and it is held to
-/// [`MAX_AUTHENTICATOR_NAME_BYTES`](vti_common::auth::passkey::MAX_AUTHENTICATOR_NAME_BYTES)
-/// bytes — which the registry's `maxLength: 64` on `userName` /
-/// `userDisplayName` mirrors, and past which a YubiKey 5 refuses the
-/// registration outright. A `did:webvh` is routinely longer than that: the
-/// SCID alone is ~46 characters before the host and path.
-///
-/// Nothing is lost by not sending it. `userHandle` is the DID-derived binding
-/// (see [`user_handle_for_did`]) and is unbounded; `user.name` is a label for a
-/// human, so it gets one:
-///
-/// * the operator's `label` when the enrolment supplied one, else
-/// * [`authenticator_name_for_did`](vti_common::auth::passkey::authenticator_name_for_did):
-///   the host and path of a `did:webvh`, the part a person recognises.
-///
-/// The VTC names its passkeys with the same helpers.
-fn display_name_for(did: &str, label: Option<&str>) -> String {
-    use vti_common::auth::passkey::{authenticator_name_for_did, clamp_authenticator_name};
-    match label.map(str::trim) {
-        Some(l) if !l.is_empty() => clamp_authenticator_name(l),
-        _ => authenticator_name_for_did(did),
-    }
-}
-
 /// VM fragment derivation: `passkey-<base64url(sha256(credential_id))>`.
 fn fragment_for_credential(credential_id: &[u8]) -> String {
     let hash = Sha256::digest(credential_id);
@@ -220,9 +193,11 @@ pub async fn start_enrollment(
     let user_uuid = Uuid::from_slice(&user_handle[..16])
         .map_err(|e| PasskeyVmError::Internal(format!("derive user uuid from handle: {e}")))?;
 
-    let display = display_name_for(did, label.as_deref());
-    let (ccr, registration) = webauthn
-        .start_passkey_registration(user_uuid, &display, &display, None)
+    // Not the raw DID: `user.name` is what the authenticator shows, held to
+    // 64 bytes (a YubiKey 5 refuses more), while `userHandle` above is the
+    // unbounded DID-derived binding. The operator's label wins when given.
+    let name = AuthenticatorName::for_did_or_label(did, label.as_deref());
+    let (ccr, registration) = start_passkey_registration(&webauthn, user_uuid, &name, None)
         .map_err(|e| PasskeyVmError::Internal(format!("start_passkey_registration: {e}")))?;
 
     // Persist ceremony state. Use a fresh UUID as the ceremony id
@@ -1037,71 +1012,5 @@ mod tests {
             matches!(err, PasskeyVmError::FragmentNotFound),
             "expected FragmentNotFound, got {err:?}"
         );
-    }
-}
-
-#[cfg(test)]
-mod display_name_tests {
-    use super::display_name_for;
-
-    /// The case that broke: a real `did:webvh` is longer than the schema's
-    /// `maxLength: 64`, and the part a person recognises is the tail.
-    #[test]
-    fn a_webvh_did_loses_its_scid_and_fits() {
-        let did =
-            "did:webvh:QmSRTjKQF54iQfv58QjbbcunzZ1GiDzvuFFPERVHwUF4kX:webvh-host.test:dids:persona";
-        assert!(
-            did.chars().count() > 64,
-            "the fixture must be over the bound"
-        );
-        let got = display_name_for(did, None);
-        assert_eq!(got, "webvh-host.test:dids:persona");
-        assert!(got.len() <= 64);
-    }
-
-    /// An operator-supplied label wins — it is the whole reason `label` is on
-    /// the enrolment payload.
-    #[test]
-    fn a_label_is_preferred() {
-        assert_eq!(
-            display_name_for("did:webvh:QmScid:example.com:dids:x", Some("Ops laptop")),
-            "Ops laptop"
-        );
-    }
-
-    /// Whitespace-only is not a label.
-    #[test]
-    fn a_blank_label_falls_back_to_the_did() {
-        assert_eq!(
-            display_name_for("did:webvh:QmScid:example.com:dids:x", Some("   ")),
-            "example.com:dids:x"
-        );
-    }
-
-    /// A DID that is not `did:method:scid:tail` shaped is left alone rather
-    /// than mangled — `did:key` has no SCID to drop.
-    #[test]
-    fn a_short_did_key_is_left_whole() {
-        let did = "did:key:z6MkAgent";
-        assert_eq!(display_name_for(did, None), did);
-    }
-
-    /// Over-long input is clamped on a char boundary, keeping the tail.
-    #[test]
-    fn an_over_long_label_is_clamped_without_splitting_a_char() {
-        let label = "é".repeat(200);
-        let got = display_name_for("did:key:z6Mk", Some(&label));
-        assert!(got.len() <= 64, "clamped to the bound in bytes");
-        assert!(got.starts_with('…'));
-    }
-
-    /// The bug a YubiKey 5 showed: the old clamp counted characters, and its
-    /// long branch emitted `…` plus 63 of them — 66 bytes even for ASCII.
-    #[test]
-    fn a_long_webvh_path_fits_in_64_bytes() {
-        let did = format!("did:webvh:QmScid:example.com:{}:persona", "a".repeat(80));
-        let got = display_name_for(&did, None);
-        assert!(got.len() <= 64, "{} bytes: {got}", got.len());
-        assert!(got.ends_with(":persona"));
     }
 }
