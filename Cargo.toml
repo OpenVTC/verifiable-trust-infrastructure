@@ -964,7 +964,7 @@ affinidi-did-common = "0.4.4"
 # VTC (install + admin login) consume it. The version pin matches what
 # `affinidi-webvh-service` ships against, since we adopt that crate's
 # passkey module pattern.
-webauthn-rs = { version = "0.5", features = [
+webauthn-rs = { version = "0.6", features = [
   "danger-allow-state-serialisation",
 ] }
 
