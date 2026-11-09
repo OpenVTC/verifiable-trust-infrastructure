@@ -340,6 +340,16 @@ operator page's §2.1):
 - **No `Origin`, loopback `Host`** (rmcp's checks, both enforced), so a page in
   a browser cannot reach the port by DNS rebinding.
 
+**The protocol version is capped at `2025-11-25`** (`VtcMcp::supported_protocol_versions`).
+`2026-07-28` forbids server-to-client requests and has no `initialize`; rmcp
+serves a host that speaks it statelessly, with no client capabilities, so
+every confirmation (`--confirm`, `vtc_actions_decide`) would be refused as
+"this host cannot ask you". Refused with the versions it does serve, a host
+falls back to `initialize` and keeps elicitation. Observed with Claude Code
+over `--listen`: it probes with `2026-07-28`, is refused, and initializes at
+`2025-11-25`. The cap lifts once confirmation is answered with an
+`InputRequiredResult`.
+
 stdio stays the default: one host, no listener, no token. `vta-mcp` has the same
 one-socket-per-DID constraint and could take the same listener; if it does, the
 listener belongs in `vti-mcp-common`.

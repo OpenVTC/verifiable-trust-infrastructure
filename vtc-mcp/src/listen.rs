@@ -454,6 +454,53 @@ mod tests {
             cancel.cancel();
         }
 
+        /// A host speaking `2026-07-28` — no `initialize`, the version in each
+        /// request's `_meta` — is refused with the versions the bridge does
+        /// serve, so it falls back to `initialize` and keeps a session, its
+        /// capabilities, and with them the elicitation `--confirm` asks
+        /// through (see `VtcMcp::supported_protocol_versions`). Served at
+        /// `2026-07-28` it would be stateless, and every confirmation refused
+        /// as "this host cannot ask you".
+        #[tokio::test]
+        async fn a_host_speaking_2026_07_28_is_sent_back_to_a_version_that_can_ask() {
+            let (url, cancel) = spawn().await;
+            let stateless = json!({
+                "jsonrpc": "2.0", "id": 7, "method": "tools/list",
+                "params": { "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": { "elicitation": {} },
+                    "io.modelcontextprotocol/clientInfo": { "name": "host", "version": "0" }
+                } }
+            });
+            let response = post(&url, &stateless)
+                .bearer_auth(TOKEN)
+                .header("mcp-protocol-version", "2026-07-28")
+                .header("mcp-method", "tools/list")
+                .send()
+                .await
+                .unwrap();
+            let refusal = message(response).await;
+            assert_eq!(
+                refusal["error"]["message"], "Unsupported protocol version",
+                "{refusal}"
+            );
+            let supported = refusal["error"]["data"]["supported"].to_string();
+            assert!(supported.contains("2025-11-25"), "{supported}");
+            assert!(!supported.contains("2026-07-28"), "{supported}");
+
+            // The fallback: `initialize` at the newest version offered.
+            let mut offer = initialize();
+            offer["params"]["protocolVersion"] = json!("2025-11-25");
+            let response = post(&url, &offer).bearer_auth(TOKEN).send().await.unwrap();
+            assert!(
+                response.headers().contains_key("mcp-session-id"),
+                "a session, not stateless"
+            );
+            let init = message(response).await;
+            assert_eq!(init["result"]["protocolVersion"], "2025-11-25", "{init}");
+            cancel.cancel();
+        }
+
         #[tokio::test]
         async fn several_hosts_share_one_bridge_each_in_its_own_session() {
             let (url, cancel) = spawn().await;

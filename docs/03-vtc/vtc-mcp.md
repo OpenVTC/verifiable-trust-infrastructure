@@ -472,6 +472,11 @@ VTC_MCP_AGENT_KEY=z3u2… vtc-mcp \
   rotate it by deleting the file and restarting.
 - **No browsers.** A request with an `Origin` header is refused, and the
   `Host` must be a loopback name, so a web page cannot reach the port.
+- **Confirmations work over HTTP.** The bridge serves MCP up to `2025-11-25`:
+  `2026-07-28` forbids the server-to-client request a confirmation is, so a
+  host that asks for it is refused and falls back to a version that can ask
+  you. After upgrading the bridge, reconnect the host once (`/mcp` in Claude
+  Code) so it renegotiates.
 - **Stops cleanly** on SIGINT or SIGTERM, closing every MCP session and then
   the community session.
 
