@@ -879,6 +879,17 @@ pub async fn cmd_rooms_read(
                 if let Some(author) = author {
                     println!("  Written by {}.", author_line(author, &names));
                 }
+                // As `rooms get` shows it: these keys were asked for by name, so an expired
+                // record is shown, marked (`RecordValidUntil`: only on explicit request).
+                let open_tier = r.get("cleartext").is_some();
+                if !open_tier || vti_rooms::provenance::carries_any(obj) {
+                    let unsigned = if open_tier {
+                        " (unsigned on an open room)"
+                    } else {
+                        ""
+                    };
+                    println!("  {}{unsigned}", provenance_line(obj).replace('\n', "\n  "));
+                }
             }
         }
         if let Some(line) = stored_line(r) {
@@ -910,14 +921,17 @@ pub async fn cmd_rooms_put(
     let members = writer_members(client, &target, wanted.clone()).await?;
 
     if !sealed_tier {
-        if provenance.is_stated() {
-            return Err(open_tier_provenance_refused(&target).into());
-        }
         let mut payload = serde_json::json!({
             "roomId": target.room_id,
             "key": key,
             "cleartext": CleartextContent { title, body, ..Default::default() },
         });
+        // Provenance rides the cleartext from put/0.3 on, unsigned and stored as received
+        // (`rooms/records/put/0.5` Producer item 9, Host item 11), and no room profile
+        // governs it — so both versions below carry it.
+        for (k, v) in provenance.members()? {
+            payload["cleartext"][k] = v;
+        }
         if let Some(v) = expected_version {
             payload["expectedVersion"] = serde_json::json!(v);
         }
@@ -1429,11 +1443,20 @@ impl RecordProvenance {
             || self.valid_until.is_some()
     }
 
-    /// Put these members on `body`, checked against the specification's types before the
-    /// VTA is asked to sign anything.
-    pub fn apply(&self, body: &mut SealedRecordBody) -> Result<(), String> {
-        body.basis = self.basis;
-        body.confidence = self.confidence.map(|c| serde_json::json!(c));
+    /// The members as they are spelled on the wire (`vti_rooms::provenance::MEMBERS`),
+    /// checked against the specification's types before anything is signed or sent. Empty
+    /// when nothing is stated and `basis` is unstated.
+    pub fn members(&self) -> Result<serde_json::Map<String, Value>, String> {
+        let mut out = serde_json::Map::new();
+        if let Some(basis) = self.basis {
+            out.insert(
+                "basis".into(),
+                serde_json::to_value(basis).map_err(|e| e.to_string())?,
+            );
+        }
+        if let Some(c) = self.confidence {
+            out.insert("confidence".into(), serde_json::json!(c));
+        }
         let mut evidence = Vec::new();
         for cite in &self.cite_records {
             let (key, version) = match cite.rsplit_once('@') {
@@ -1454,7 +1477,9 @@ impl RecordProvenance {
         for id in &self.cite_credentials {
             evidence.push(serde_json::json!({ "kind": "credential", "credentialId": id }));
         }
-        body.evidence = (!evidence.is_empty()).then_some(Value::Array(evidence));
+        if !evidence.is_empty() {
+            out.insert("evidence".into(), Value::Array(evidence));
+        }
         let mut valid_for = serde_json::Map::new();
         if !self.purposes.is_empty() {
             valid_for.insert("purposes".into(), serde_json::json!(self.purposes));
@@ -1462,28 +1487,26 @@ impl RecordProvenance {
         if let Some(note) = &self.use_note {
             valid_for.insert("note".into(), serde_json::json!(note));
         }
-        body.valid_for = (!valid_for.is_empty()).then_some(Value::Object(valid_for));
-        body.valid_until = self.valid_until.clone();
-        if let Ok(Value::Object(obj)) = serde_json::to_value(&*body) {
-            vti_rooms::provenance::check(&obj)?;
+        if !valid_for.is_empty() {
+            out.insert("validFor".into(), Value::Object(valid_for));
         }
+        if let Some(until) = &self.valid_until {
+            out.insert("validUntil".into(), serde_json::json!(until));
+        }
+        vti_rooms::provenance::check(&out)?;
+        Ok(out)
+    }
+
+    /// Put these members on `body`, inside what its author signs (`attributed`, `private`).
+    pub fn apply(&self, body: &mut SealedRecordBody) -> Result<(), String> {
+        let members = self.members()?;
+        body.basis = self.basis;
+        body.confidence = members.get("confidence").cloned();
+        body.evidence = members.get("evidence").cloned();
+        body.valid_for = members.get("validFor").cloned();
+        body.valid_until = self.valid_until.clone();
         Ok(())
     }
-}
-
-/// Why `rooms put` will not state provenance on an `open` room, and what to do instead.
-///
-/// An open room carries provenance in `rooms/records/put/0.3`'s cleartext. `rooms/keys/act/0.10`
-/// completes put 0.3, which this client now sends, but it does not yet put the provenance
-/// members into the cleartext; until it does, it refuses rather than drop them.
-fn open_tier_provenance_refused(target: &RoomTarget<'_>) -> String {
-    format!(
-        "room {} is `open`: a record's provenance there rides `rooms/records/put/0.3`'s \
-         cleartext, which pnm does not write yet. Write it without --basis, --confidence, --cite-record, --cite-credential, --purpose, \
-         --use-note and --valid-until, or in a sealed (`attributed` or `private`) room, where \
-         they travel inside the signed body.",
-        target.room_id
-    )
 }
 
 /// What a record says about the kind of claim it is, and whether it has lapsed — shown
@@ -5418,5 +5441,69 @@ mod tests {
             "did:key:zA (calls themselves \"Alice\")"
         );
         assert_eq!(author_line("did:key:zB", &names), "did:key:zB");
+    }
+
+    fn stated() -> RecordProvenance {
+        RecordProvenance {
+            basis: Some(vtc_client::rooms::body::RecordBasis::Inferred),
+            basis_named: true,
+            confidence: Some(0.6),
+            cite_records: vec!["meetings/q3@3".into()],
+            cite_credentials: vec!["urn:uuid:1".into()],
+            purposes: vec!["https://w3id.org/dpv#ServicePersonalisation".into()],
+            use_note: Some("renewal only".into()),
+            valid_until: Some("2026-12-31T23:59:59Z".into()),
+        }
+    }
+
+    /// `rooms/records/put/0.5` Producer item 9: an open room's cleartext carries the same
+    /// provenance a sealed body signs, spelled the same, so a reader reads one shape.
+    #[test]
+    fn an_open_record_carries_the_provenance_a_sealed_body_signs() {
+        let p = stated();
+        let members = p.members().unwrap();
+        assert_eq!(members["basis"], "inferred");
+        assert_eq!(members["confidence"], 0.6);
+        assert_eq!(
+            members["evidence"],
+            json!([
+                {"kind": "record", "key": "meetings/q3", "version": 3},
+                {"kind": "credential", "credentialId": "urn:uuid:1"}
+            ])
+        );
+        assert_eq!(members["validFor"]["note"], "renewal only");
+        assert_eq!(members["validUntil"], "2026-12-31T23:59:59Z");
+
+        let mut body = SealedRecordBody::new(
+            RecordLocation {
+                room_id: "did:example:room",
+                key: "k",
+                version: 1,
+            },
+            "did:key:zA",
+        );
+        p.apply(&mut body).unwrap();
+        let Value::Object(signed) = serde_json::to_value(&body).unwrap() else {
+            panic!("a body is an object");
+        };
+        for m in vti_rooms::provenance::MEMBERS {
+            assert_eq!(signed.get(m), members.get(m), "{m} differs between tiers");
+        }
+    }
+
+    #[test]
+    fn unstated_provenance_adds_nothing_to_an_open_record() {
+        assert!(RecordProvenance::default().members().unwrap().is_empty());
+    }
+
+    /// Checked before anything is signed or sent, on either tier.
+    #[test]
+    fn provenance_the_specification_refuses_is_refused_before_sending() {
+        let mut p = stated();
+        p.confidence = Some(1.5);
+        assert!(p.members().unwrap_err().contains("confidence"));
+        let mut p = stated();
+        p.cite_records = vec!["k@latest".into()];
+        assert!(p.members().unwrap_err().contains("--cite-record"));
     }
 }

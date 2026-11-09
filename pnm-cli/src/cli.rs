@@ -840,9 +840,10 @@ pub(crate) enum RoomCommands {
         #[arg(long)]
         expected_version: Option<u64>,
         /// What kind of claim the record is: `declared` (your own statement — the
-        /// default on a sealed room), `observed`, `verified` (name the evidence),
-        /// `inferred`, or `unstated`. Signed inside the body; for readers to show
-        /// and weigh, never authority.
+        /// default), `observed`, `verified` (name the evidence), `inferred`, or
+        /// `unstated`. Signed inside the body on a sealed room; on an open room it is
+        /// stored unsigned beside the text. For readers to show and weigh, never
+        /// authority.
         #[arg(long)]
         basis: Option<String>,
         /// Your own estimate, 0 to 1, that the record is right.
