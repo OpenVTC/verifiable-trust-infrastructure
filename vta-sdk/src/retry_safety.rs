@@ -466,6 +466,15 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Memory ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_LIST_0_1, ReadOnly),
+    // 0.2 is versioned (#2115): a replayed unconditional put takes a second
+    // version, so a device syncing the context sees a change that never
+    // happened — `Keyed`, like `vta/app-state/put`. (A conditional one
+    // converges on its own, but the class is per task type.) 0.1 keeps its
+    // class: its clients have no change feed to mislead.
+    (trust_tasks::TASK_VTA_MEMORY_PUT_0_2, Keyed),
+    (trust_tasks::TASK_VTA_MEMORY_DELETE_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_MEMORY_LIST_0_2, ReadOnly),
+    (trust_tasks::TASK_VTA_MEMORY_GET_0_1, ReadOnly),
     // ── Hidden-vetting PCS engine (`vta/pcs/*`) ─────────────────────────
     // A second create is a second application with a second key.
     (trust_tasks::TASK_VTA_PCS_APPLICATIONS_CREATE_0_1, Keyed),

@@ -3283,6 +3283,98 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        // Versioned memory (#2115). As for app-state below, the fixtures carry
+        // the members the design turns on: a version, a tombstone with no
+        // value, a change-feed page with its watermark and cursor.
+        (
+            uris::TASK_VTA_MEMORY_PUT_0_2,
+            checked!(
+                specs::vta::memory::put::v0_2::Payload,
+                specs::vta::memory::put::v0_2::Response,
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "value": "billing@acme.example",
+                    "expectedVersion": 47
+                }),
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "version": 53,
+                    "wasCreated": false,
+                    "updatedAt": "2026-11-09T12:05:01+00:00",
+                    "valueBytes": 20
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_DELETE_0_2,
+            checked!(
+                specs::vta::memory::delete::v0_2::Payload,
+                specs::vta::memory::delete::v0_2::Response,
+                json!({ "contextId": "ctx-a", "key": "contact/billing", "expectedVersion": 53 }),
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "existed": true,
+                    "version": 54,
+                    "deletedAt": "2026-11-09T13:00:01+00:00"
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_LIST_0_2,
+            checked!(
+                specs::vta::memory::list::v0_2::Payload,
+                specs::vta::memory::list::v0_2::Response,
+                json!({ "contextId": "ctx-a", "sinceVersion": 52, "limit": 2 }),
+                json!({
+                    "items": [
+                        {
+                            "contextId": "ctx-a",
+                            "key": "contact/billing",
+                            "version": 54,
+                            "deleted": true,
+                            "updatedAt": "2026-11-09T13:00:01+00:00",
+                            "deletedAt": "2026-11-09T13:00:01+00:00"
+                        },
+                        {
+                            "contextId": "ctx-a",
+                            "key": "preference/format",
+                            "version": 55,
+                            "value": "PDF",
+                            "valueBytes": 3,
+                            "deleted": false,
+                            "createdAt": "2026-11-09T13:30:00+00:00",
+                            "updatedAt": "2026-11-09T13:30:00+00:00"
+                        }
+                    ],
+                    "nextCursor": "opaque",
+                    "highWatermark": 57,
+                    "tombstoneRetentionSeconds": 2592000
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_GET_0_1,
+            checked!(
+                specs::vta::memory::get::v0_1::Payload,
+                specs::vta::memory::get::v0_1::Response,
+                json!({ "contextId": "ctx-a", "keys": ["preference/format", "contact/billing"] }),
+                json!({
+                    "items": [{
+                        "contextId": "ctx-a",
+                        "key": "preference/format",
+                        "version": 55,
+                        "value": "PDF",
+                        "valueBytes": 3,
+                        "deleted": false,
+                        "updatedAt": "2026-11-09T13:30:00+00:00"
+                    }],
+                    "missing": ["contact/billing"]
+                })
+            ),
+        ),
         // ─── vta/app-state ───────────────────────────────────────
         //
         // The fixtures deliberately exercise the members the design turns on

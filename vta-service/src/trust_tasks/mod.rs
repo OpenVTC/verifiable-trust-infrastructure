@@ -2882,6 +2882,16 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_DELETE_0_1 => memory::handle_delete
         [ Mutating None false ],
+    // Versioned memory (#2115), on the same store as 0.1. A conflict hands back
+    // the current value, so put and delete disclose stored memory as list does.
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_2 => memory::handle_put_v0_2
+        [ Mutating Secret false ],
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_DELETE_0_2 => memory::handle_delete_v0_2
+        [ Destructive Secret false ],
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_2 => memory::handle_list_v0_2
+        [ None Secret false ],
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_GET_0_1 => memory::handle_get_v0_1
+        [ None Secret false ],
     // ─── Room oracle (spec/rooms/keys/*) ─────────────────────────
     // An agent asks for a scoped presentation over its principal's room
     // credentials. Gated on the `roomPresent` capability plus context access

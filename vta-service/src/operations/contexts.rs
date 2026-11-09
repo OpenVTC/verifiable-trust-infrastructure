@@ -2181,7 +2181,9 @@ mod tests {
             )
             .await
             .unwrap();
-            memory::put(&ks.memory, ctx, "note", "x").await.unwrap();
+            memory::put(&ks.memory, &Default::default(), ctx, "note", "x", None)
+                .await
+                .unwrap();
         }
         // A tombstone and its version index, so every record family is present.
         app_state::put(
@@ -2213,7 +2215,12 @@ mod tests {
                     .unwrap();
                 assert!(left.is_empty(), "{family} records left for {ctx}: {left:?}");
             }
-            assert!(memory::list(&ks.memory, ctx).await.unwrap().is_empty());
+            assert!(
+                memory::list_all_live(&ks.memory, ctx)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
         }
 
         // Recreated under the same id, the context starts empty.
@@ -2229,7 +2236,13 @@ mod tests {
                 .await
                 .is_ok()
         );
-        assert_eq!(memory::list(&ks.memory, "acme2").await.unwrap().len(), 1);
+        assert_eq!(
+            memory::list_all_live(&ks.memory, "acme2")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// The `Purged` labels in `vta_keyspaces::context_delete_effect` are a

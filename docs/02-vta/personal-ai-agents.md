@@ -262,15 +262,29 @@ instead, over any transport.
 ## Step 6 — Agent memory (optional, but the reason most agents want a VTA)
 
 An agent that forgets everything between runs is a tool. The VTA carries a
-per-context key/value store for what an agent should remember about its user —
-`vta/memory/{put,list,delete}/0.1` — and because it lives on the VTA rather than
-in the agent runtime, the memory survives the runtime being replaced, is audited
-(`memory.put` / `.list` / `.delete`), and is included in the VTA's encrypted
-backups.
+per-context store for what an agent should remember about its user, and because
+it lives on the VTA rather than in the agent runtime, the memory survives the
+runtime being replaced, is audited (`memory.put` / `.list` / `.get` /
+`.delete`), and is included in the VTA's encrypted backups.
 
-Two gates apply, in this order. **Capability**: `MemoryRead` for
-`memory/list/0.1`, `MemoryWrite` for `put` and `delete` — so a `reader` can be
-given the memory without being given the ability to rewrite it. **Context
+The store is versioned (#2115). `vta/memory/put/0.2` returns each item's
+`version`; a write that sends `expectedVersion` applies only if the item is
+still at that version (`0`: only if nothing is there), and otherwise fails with
+`versionConflict` carrying the current version and value, so two agents — or one
+agent on two devices — cannot silently overwrite each other.
+`vta/memory/delete/0.2` leaves a tombstone, and `vta/memory/list/0.2` is either a
+page of a context (`prefix`, `cursor`, `limit`) or a change feed from
+`sinceVersion` that carries those tombstones, so a second device's copy
+converges. `vta/memory/get/0.1` recalls up to 256 named items at once. The 0.1
+tasks (`put`, `list`, `delete`) still work against the same store; the registry
+marks them superseded, and they are withdrawn on its schedule, so move clients to
+0.2.
+
+Two gates apply. **Capability**: `MemoryRead` for `list` and `get`,
+`MemoryWrite` for `put` and `delete` — so a `reader` can be given the memory
+without being given the ability to rewrite it. An entry with `MemoryWrite` but
+not `MemoryRead` is told that an item changed when its conditional write
+conflicts, but never what the item now says. **Context
 access**: `require_context(contextId)`, the same check the context-scoped key
 tasks use, which makes the trust context the isolation boundary — a context-A
 agent cannot read, write, or delete context-B memory. The least-privilege grant
