@@ -231,10 +231,12 @@
             read-only copy fed by <span class="mono">sinceVersion</span> pulls and refuses every
             write, naming the primary. A mirror pulls <em>as a member</em>, on a room-issued
             <span class="mono">read</span> chain</td></tr>
-        <tr><td class="hd">Witnessed renewal anchoring</td>
-            <td><span class="no">Blocked on a decision</span> — §9 says a renewal anchors the epoch
-            authenticator and version watermark in the room's witnessed log, but not <em>where in
-            the log entry</em></td></tr>
+        <tr><td class="hd">Witnessed anchoring</td>
+            <td><span class="yes">Built, on request.</span> <code>rooms/owner/anchor/0.1</code> has the
+            owner's VTA publish the epoch authenticator and the host's head as a
+            <span class="mono">RoomEpochAnchor</span> entry in the room's witnessed
+            <span class="mono">did:webvh</span> log, and reads compare a host against it. Not yet on
+            every renewal, and no <span class="mono">pnm</span> command</td></tr>
       </tbody>
     </table>
   </div>

@@ -97,7 +97,7 @@ knowing which half you are standing on saves an afternoon.
 | **Record kinds, replies and the host's record times** | **On both hosts.** An open room's cleartext may carry `kind`, `inReplyTo`, `writtenAt` and `editedAt` at `rooms/records/put/0.5`, held to their schema and stored as received; a sealed room carries them inside the body. Every put records `bodyStoredAt`, and a record's first version `createdAt` and (on `open` and `attributed`) `createdBy`, kept across edits and curation; `rooms/records/list/0.6` serves them with an open record's `kind`, `rooms/records/get/0.3` serves them uncommitted. A record stored before this carries none and serves none. On an `open` room the host refuses a new version of a `message` or `reaction` from anyone but its original author (`permissionDenied`, put/0.5 Host item 15) — on by default; `room-host --allow-rewrites-by-others` or the VTC's `[rooms] refuse_rewrites_by_others = false` turns it off |
 | **Members' names in a room** | **Writer and reader in `pnm`.** A member writes its own name as a record of kind `memberProfile` with the name in `title` (`rooms/_shared/0.3` `MemberProfileRecord`, trust-tasks-tf #1035) — sealed on `attributed` and `private`, cleartext at `rooms/records/put/0.5` on `open` — only where the room's profile lists `kind` **and** `memberProfile` in `recordMembers`. `pnm rooms name set` / `clear`; `pnm rooms list`, `get` and `read` show a name record as a name, never a note, and a name beside its author's DID. No host, seal or act change: a name is an ordinary record |
 | **Watching a room** | **On both hosts.** `rooms/watch/0.1` (`read`, as a listing) arms one content-free `rooms/changed/0.1` signal to an address the member names, sent once the room moves past the member's watermark — at once if it already has — after a 2–6 s randomised delay, then disarmed (trust-tasks-tf #1036). Over the host's own messaging, TSP before DIDComm by what the address's DID document advertises; a host with none refuses `addressUnreachable`. `pnm rooms watch` (§9) |
-| **Witnessed renewal anchoring** | **Blocked on a decision**, not on effort: §9 says a renewal anchors the epoch authenticator and version watermark in the room's witnessed log, but not *where in the log entry*. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) |
+| **Witnessed anchoring** | **Works, as an explicit owner task; not yet on every renewal.** `rooms/owner/anchor/0.1` (the owner's VTA) reads the room's head from its host as the owner's persona and publishes a `RoomEpochAnchor` service entry — the epoch, a SHA-256 of the MLS epoch authenticator, `headVersion`, and `dataCommitment` with `recordCount` — as a `did:webvh` update of the room's own DID, replacing the previous one; a room DID with no witnesses is refused. `rooms/keys/read/0.2` and `rooms/keys/browse` compare what a host serves against it (`verification.anchor`: `agrees`, `ahead`, `behind`, `conflict`, `none`, `notChecked`). Not yet: anchoring on renewal (`group-renew` and `rooms/epoch/mint` anchor nothing), a `pnm` command, and refusing writes on a mismatch. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) (§10.1) |
 
 ---
 
@@ -1919,9 +1919,27 @@ host can see, which is exactly the correlation the tiers exist to deny.
 The design also wants each renewal **anchored in the room's witnessed DID log**
 (the MLS epoch authenticator plus the version watermark), which is what makes a
 host claiming a live room lapsed, a forked group, and a rolled-back mirror all
-detectable. That is the owner's job, not the host's, and it is not implemented —
-`RoomGroup::epoch_authenticator()` gives you the value if you want to anchor it
-yourself.
+detectable. That is the owner's job, not the host's. The owner's VTA does it on
+request — `rooms/owner/anchor/0.1`, not yet on renewal itself, and with no `pnm`
+command yet, so send the task to the VTA directly:
+
+- It reads the room's head (`headVersion`, `dataCommitment`, `recordCount`) from
+  the host named in `host`, presenting the owner persona's `read` grant, and takes
+  the epoch authenticator from the group it holds — no host can compute that one.
+- It writes them as one `RoomEpochAnchor` service entry (`#epoch-anchor`) in the
+  room's `did:webvh` document, as an ordinary update of a DID this VTA manages:
+  the authenticator as its SHA-256 digest, the rest as served, and
+  `dataCommitment` only together with `recordCount`. Each anchor replaces the one
+  before it, and like every webvh update it rotates the room DID's update key.
+- It refuses a room DID with no witnesses: an entry nobody co-signed is the
+  controller's own word. The answer names the log entry (`versionId`) and says
+  whether the head it anchored `reconciled`.
+
+The anchor is public, as the room's DID document is: anyone can read the room's
+epoch and write count from it. `rooms/keys/read/0.2` and `rooms/keys/browse` resolve
+the room's DID and report how the host's head compares (`verification.anchor`):
+`behind` is a host serving an older state than the room published, `conflict` the
+same version with a different root. Nothing refuses a write on a mismatch yet.
 
 ### 10.2 Ownership: transfer and claim
 
@@ -2110,7 +2128,7 @@ or anything it said. On a VTC these are `RoomRetention` audit rows.
 
 | Refusal | What it usually means |
 |---|---|
-| `a private room must not be served without a ZK profile` | The tier is not servable yet (§2). Use `attributed` |
+| `room … is private, and this host has no zero-knowledge profile configured to verify its subject binding` | The tier is not servable yet (§2). Use `attributed` |
 | the chain "does not confer this on room …" | Wrong action for the chain (agent with `read` writing), or a chain rooted somewhere other than this room |
 | a valid-looking presentation refused on a *different* signer | Presentations are bound to the presenter. A captured one is worthless — this is working as intended |
 | `this VTA holds N AuthorityCredentials issued by room …` | Two credentials of one kind for one room; the oracle will not guess which to attenuate |
@@ -2149,13 +2167,17 @@ or anything it said. On a VTC these are `RoomRetention` audit rows.
 ## 12. Reference
 
 **Host tasks** (`https://trusttasks.org/spec/rooms/…`), served by `room-host`
-and `vtc-service`:
+and `vtc-service` — the same tasks and versions on both:
 
 | URI | Action required |
 |---|---|
 | `rooms/records/put/0.3` | `write` — an `open` room's cleartext may carry provenance and `validUntil`, stored as received and never acted on |
+| `rooms/records/put/0.4` | `write` — an `open` room's cleartext may carry a `file`, checked against the record's `blobs` |
+| `rooms/records/put/0.5` | `write` — an `open` room's cleartext may carry `kind`, `inReplyTo`, `writtenAt`, `editedAt`; a new version of a `message` or `reaction` by anyone but its author is `permissionDenied` unless the host turns that off (§2) |
 | `rooms/records/get/0.2` | `read` — and the record's `blobs` |
+| `rooms/records/get/0.3` | `read` — adds `createdAt`, `createdBy` and `bodyStoredAt` |
 | `rooms/records/list/0.5` | `read` — every page carries the room's `lastPrune` |
+| `rooms/records/list/0.6` | `read` — rows add `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`) and `kind` (`open`) |
 | `rooms/create/0.2` | no chain — the signer must be the `ownerDid` (§8.4); records the room's `recordRetention` as given |
 | `rooms/info/0.3` | `read` — adds `recordRetention` and `lastPrune` |
 | `rooms/records/prune/0.2` | `admin` — removes what the record retention makes eligible (§10.5) |
@@ -2165,8 +2187,16 @@ and `vtc-service`:
 | `rooms/epoch/mint/0.1` | `admin` |
 | `rooms/epoch/chain/0.2` | `read` — reading the room and reading what was written before you joined are the same act; the room's `epochFloor` on every response once pruned, and no rung at or below it |
 | `rooms/epoch/prune/0.2` | `admin` — raises the epoch floor and returns it (§10.4) |
+| `rooms/epoch/commits/0.1` | `read` — the commits since `sinceEpoch`, up to 100; a commit names nobody, so every tier |
 | `rooms/owner/transfer/0.1` | `admin` |
 | `rooms/owner/claim/0.1` | nomination + membership + dormancy |
+| `rooms/revocations/put/0.1` | `admin`, judged against the list already held — and the list signed by the room (`listInvalid` otherwise) |
+| `rooms/revocations/get/0.1` | `admin` — the held list, unaltered |
+| `rooms/blobs/upload/begin/0.2` | `write` — direct to storage only on a VTC configured for it; `room-host` proxies every upload, so `directParts` alone is `noTransferMode` there |
+| `rooms/blobs/upload/{chunk,commit,abort}/0.2` | no chain — signed by the upload's key (a proxied upload) or by the member who began it (a direct one); `notFound` to anybody else |
+| `rooms/blobs/get/0.2` | `read` |
+| `rooms/blobs/chunk/0.1` | no chain — the member who opened the download with `rooms/blobs/get`; `notFound` to anybody else |
+| `rooms/usage/0.1` | `admin` — who is using the room's space |
 
 **Member-VTA tasks** (`https://trusttasks.org/spec/rooms/keys/…`), served by
 `vta-service`:
@@ -2183,6 +2213,8 @@ and `vtc-service`:
 | `rooms/keys/watch/0.1` | `roomPresent` capability + acting as `member` (`memberNotPrincipal` otherwise); refused to a delegate. Up to 64 rooms at one host, one outcome each; each armed with its own `rooms/watch/0.1`, presentation and `did:peer` address; bounds 64 per member, 64 per client, 256 in all |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
+| `rooms/keys/profile/read/0.1` | `roomOpen` capability; reads at the host as the persona, presenting its `read` |
+| `rooms/keys/profile/write/0.1` | `roomOpen` capability; refused to a delegate. The persona's `write` and `curate` or `admin` (`noAuthority` before the host); clearing takes `curate` |
 | `rooms/keys/browse/0.3`, `0.4` | `roomOpen` capability; passes the host's `lastPrune` through. 0.4 lists with `rooms/records/list/0.6` (else 0.5) and passes its `RecordMetadataV3` rows through as served: `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`), `kind` (`open`) |
 | `rooms/keys/read/0.1`, `0.2` | `roomOpen` capability. 0.2 fetches with `rooms/records/get/0.3` (else 0.2) and passes `createdAt`, `createdBy` and `bodyStoredAt` through; `keys` reads up to 32 records, each answered on its own in `results` (`notAttempted` past 512 KiB of answers or 15 s), repairing once per batch |
 | `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
@@ -2193,15 +2225,22 @@ and `vtc-service`:
 **Owner tasks** (`https://trusttasks.org/spec/rooms/owner/…`), served by
 `vta-service` — the room's own key, used without it leaving the VTA. The family
 name is shared with `rooms/owner/{transfer,claim}` above and the server is not:
-those two change a row on a **host**, these four mint credentials on the VTA that
-holds the room's key:
+those two change a row on a **host**, these run on the VTA that holds the room's
+key — minting its credentials, holding the owner's MLS half, and acting at its
+hosts as the owner:
 
-| URI | What it mints | Authorized by |
+| URI | What it does | Authorized by |
 |---|---|---|
 | `rooms/owner/invite/0.1` | a VIC — single-use consent to join | `credentialWrite` + control of the room's key |
 | `rooms/owner/issue-membership/0.1` | a VMC — the room's statement that a DID is a member | same |
 | `rooms/owner/issue-authority/0.2` | a VAC chain root; `validUntil` required | same |
-| `rooms/owner/register/0.2` (and 0.1) | nothing — asks this VTA to call `rooms/create` on a host, signing **as the owner** (your persona: a DID it holds the key for, in a context you act in), not as the room or the agent; 0.2 reports the room's revocation list there (`inForce` / `pending` / `refused`) | same, plus a resolver |
+| `rooms/owner/register/0.2` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the owner** (your persona: a DID it holds the key for, in a context you act in), not as the room or the agent; 0.2 reports the room's revocation list there (`inForce` / `pending` / `refused`) | same, plus a resolver |
+| `rooms/owner/group/create/0.1` | founds the room's MLS group with the owner's persona as its only leaf; never over an existing one (`alreadyExists`) | `credentialWrite` + control of the room's key (`noSigningKey`), checked without signing |
+| `rooms/owner/group/add/0.3` | admits a member's KeyPackage, advancing the room at its host first, and returns the Welcome (§6) | `credentialWrite` + the room's group on this VTA (`noGroup`) + an `admin` grant naming a persona you act as (`noAuthority`), presented at the host |
+| `rooms/owner/group/remove/0.4` | on `attributed`, withdraws the member's credentials at the host, then drops their leaf, host first; on `private`, the leaf alone (`withdrawn: false`). 0.3 is not served | same as `add`, plus control of the room's key when `signingKeyId` names one |
+| `rooms/owner/group/renew/0.2` | renews a sealed room with a commit that changes no membership, host first (§10.1) | same as `add` |
+| `rooms/owner/revoke/0.1` | the room's next revocation list, signed as the room, kept, and delivered to every host named (§6) | `credentialWrite` + control of the room's key + an `admin` grant naming a persona you act as |
+| `rooms/owner/anchor/0.1` | publishes the room's epoch authenticator and head as a `RoomEpochAnchor` entry in its witnessed `did:webvh` log (§10.1); a room DID with no witnesses is refused | `credentialWrite` + the owner persona's `read`, presented at the host + the room's DID managed by this VTA in a context you act in |
 
 **Constants**
 
