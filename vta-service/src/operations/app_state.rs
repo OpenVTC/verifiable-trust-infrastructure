@@ -606,7 +606,18 @@ fn merge_patch(target: &mut Value, patch: &Value) {
     }
 }
 
-fn validate_address(namespace: &str, key: &str) -> Result<(), AppStateError> {
+/// The layout (`app:{context}:{namespace}:{key}` and its siblings) is unambiguous only
+/// because neither a context id nor a namespace can contain `:`. Access does not imply a
+/// well-formed id: an unrestricted admin may name any context, including one that cannot
+/// exist, such as `acme:x`, whose rows would sit under `acme`'s prefix — read by `acme`'s
+/// listings and erased by `acme`'s purge.
+fn validate_context(context_id: &str) -> Result<(), AppStateError> {
+    vti_common::context_path::validate_context_path(context_id)
+        .map_err(|e| AppStateError::Validation(format!("contextId: {e}")))
+}
+
+fn validate_address(context_id: &str, namespace: &str, key: &str) -> Result<(), AppStateError> {
+    validate_context(context_id)?;
     if !namespace_is_valid(namespace) {
         return Err(AppStateError::Validation(format!(
             "namespace `{namespace}` is not a valid partition name \
@@ -635,7 +646,7 @@ pub async fn get(
     key: &str,
     include_deleted: bool,
 ) -> Result<AppStateRecord, AppStateError> {
-    validate_address(namespace, key)?;
+    validate_address(context_id, namespace, key)?;
     match read_record(ks, context_id, namespace, key).await? {
         Some(r) if !r.deleted || include_deleted => Ok(r.to_wire(true)),
         _ => Err(AppStateError::NotFound),
@@ -673,7 +684,7 @@ pub async fn get_many(
         return Err(AppStateError::DuplicateKey(dupes));
     }
     for k in keys {
-        validate_address(namespace, k)?;
+        validate_address(context_id, namespace, k)?;
     }
 
     let mut records = Vec::new();
@@ -777,7 +788,7 @@ async fn stage_put(
     now: &str,
     measure: ValueMeasure,
 ) -> Result<PutOutcome, AppStateError> {
-    validate_address(namespace, key)?;
+    validate_address(context_id, namespace, key)?;
 
     let existing = read_record(ks, context_id, namespace, key).await?;
     let live = existing.as_ref().filter(|r| !r.deleted);
@@ -933,7 +944,7 @@ pub(crate) async fn put_measured(
     // Validate before reserving. A reservation is a durable write, so a
     // malformed namespace would otherwise leave an `appc:` counter behind for
     // an address that can never hold a record.
-    validate_address(namespace, key)?;
+    validate_address(context_id, namespace, key)?;
 
     let _guard = locks.acquire(context_id, namespace).await;
     let now = Utc::now().to_rfc3339();
@@ -996,7 +1007,7 @@ pub async fn put_many(
     }
 
     for w in writes {
-        validate_address(namespace, &w.key)?;
+        validate_address(context_id, namespace, &w.key)?;
     }
 
     let submitted: u64 = writes
@@ -1154,7 +1165,7 @@ async fn dry_run_atomic(
     writes: &[AppStateWrite],
 ) -> Result<Option<DryRunFailure>, AppStateError> {
     for (index, w) in writes.iter().enumerate() {
-        validate_address(namespace, &w.key)?;
+        validate_address(context_id, namespace, &w.key)?;
         let existing = read_record(ks, context_id, namespace, &w.key).await?;
         let live = existing.as_ref().filter(|r| !r.deleted);
 
@@ -1321,7 +1332,7 @@ pub async fn delete(
     key: &str,
     expected_version: Option<u64>,
 ) -> Result<DeleteOutcome, AppStateError> {
-    validate_address(namespace, key)?;
+    validate_address(context_id, namespace, key)?;
     if expected_version == Some(0) {
         return Err(AppStateError::VersionConflict {
             reason: ConflictReason::CreateOnlyNotApplicable,
@@ -1428,6 +1439,7 @@ pub async fn reap_tombstones_through(
     namespace: &str,
     through: u64,
 ) -> Result<usize, AppStateError> {
+    validate_context(context_id)?;
     let _guard = locks.acquire(context_id, namespace).await;
     write_u64(ks, reaped_key(context_id, namespace), through).await?;
 
@@ -1464,6 +1476,8 @@ pub async fn reap_tombstones_through(
 /// change feed from zero, not inherit the old one's records — which is what a
 /// client syncing from an empty watermark would otherwise pull straight back.
 pub async fn purge_context(ks: &KeyspaceHandle, context_id: &str) -> Result<usize, AppError> {
+    // `acme:x`'s prefix lies inside `acme`'s; never erase by an id that is not a context.
+    vti_common::context_path::validate_context_path(context_id)?;
     let mut batch = Batch::new();
     let (mut any, mut records) = (false, 0);
     for (i, prefix) in context_family_prefixes(context_id).into_iter().enumerate() {
@@ -1549,6 +1563,15 @@ pub async fn sweep_expired_tombstones(
 
     let mut total = 0usize;
     for ((context_id, namespace), mut tombstones) in by_namespace {
+        // A row written before context ids were checked is left alone, not reaped by an
+        // id the store now refuses — and never allowed to stop the sweep of the rest.
+        if validate_context(&context_id).is_err() {
+            tracing::warn!(
+                context_id = %context_id,
+                "app-state sweeper: skipping tombstones under an id that is not a context path"
+            );
+            continue;
+        }
         tombstones.sort_by_key(|(v, _)| *v);
 
         let mut through = 0u64;
@@ -1640,6 +1663,7 @@ pub async fn list(
     // infer it must sync more often than that.
     tombstone_retention_seconds: Option<u64>,
 ) -> Result<ListPage, AppStateError> {
+    validate_context(context_id)?;
     if let Some(ns) = namespace
         && !namespace_is_valid(ns)
     {
@@ -2759,6 +2783,44 @@ mod tests {
                 "namespace `{bad}` should be refused, got {err:?}"
             );
         }
+    }
+
+    /// `app:acme:x:…` is inside `acme`'s prefix: an id that is not a context path would
+    /// put rows where `acme`'s listings read them and `acme`'s purge erases them.
+    #[tokio::test]
+    async fn a_context_id_that_is_not_a_context_path_is_refused() {
+        let (_d, ks, locks) = open().await;
+        put_value(&ks, &locks, "acme", "openvtc", "k", json!(1)).await;
+        for bad in ["acme:x", "acme:openvtc", "", "/acme", "acme//eng"] {
+            let err = put(
+                &ks,
+                &locks,
+                bad,
+                "openvtc",
+                "k",
+                Some(&json!(2)),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(err, AppStateError::Validation(_)),
+                "context `{bad}` should be refused by put, got {err:?}"
+            );
+            let err = get(&ks, bad, "openvtc", "k", false).await.unwrap_err();
+            assert!(matches!(err, AppStateError::Validation(_)), "get `{bad}`");
+            let err = list(&ks, bad, None, None, None, true, None, None, None, None)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, AppStateError::Validation(_)), "list `{bad}`");
+            assert!(purge_context(&ks, bad).await.is_err(), "purge `{bad}`");
+        }
+        // `acme` itself is untouched.
+        assert_eq!(
+            get(&ks, "acme", "openvtc", "k", false).await.unwrap().value,
+            Some(json!(1))
+        );
     }
 
     // ── Batches ────────────────────────────────────────────────────────
