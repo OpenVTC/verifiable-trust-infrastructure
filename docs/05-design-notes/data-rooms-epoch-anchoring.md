@@ -1,8 +1,12 @@
 # Anchoring a room's renewals in its witnessed log
 
-Status: **decided, and now buildable.** This was an open question; it was
+Status: **decided, and built as an owner task.** This was an open question; it was
 answered on 2026-09-09 and the note is kept as the reasoning behind the answer
-rather than as a request for one.
+rather than as a request for one. `rooms/owner/anchor/0.1` publishes the §3a entry
+(`vta-service/src/operations/room_anchor.rs`) and `rooms/keys/read/0.2` and
+`rooms/keys/browse` compare a host's head against it. Still open: anchoring on
+renewal itself, §4's salted commitment (the head is published as served), and
+refusing writes on a mismatch (§5).
 
 [`data-rooms.md`](data-rooms.md) §9 says a renewal writes the room's current
 **MLS epoch authenticator** and **version watermark** to the room's witnessed
