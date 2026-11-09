@@ -884,6 +884,7 @@ impl TestVtcBuilder {
             didcomm: didcomm_cell,
             git_ns,
             large_document_budget: Arc::new(crate::trust_tasks::size::LargeDocumentBudget::new()),
+            room_limiters: Default::default(),
             did_self_check: Arc::new(crate::did_self_check::DidSelfCheck::new()),
         };
 
@@ -932,6 +933,26 @@ pub struct TestVtc {
 }
 
 impl TestVtc {
+    /// Send `body` as DIDComm delivers a Trust Task from `sender_did` (the
+    /// transport-authenticated sender), through the same entry point the
+    /// DIDComm and TSP receivers use; returns the status and the document.
+    pub async fn receive_over_didcomm(
+        &self,
+        sender_did: &str,
+        body: &[u8],
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let ctx = crate::trust_tasks::JoinAuthCtx {
+            transport: crate::join::JoinTransport::DIDComm,
+            sender_did: Some(sender_did.to_string()),
+            verified_signer: None,
+        };
+        let out = crate::trust_tasks::dispatch_trust_task_core(&self.state, &ctx, body).await;
+        (
+            out.status,
+            serde_json::from_slice(&out.body).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
     /// Start building a customised VTC.
     pub fn builder() -> TestVtcBuilder {
         TestVtcBuilder::default()

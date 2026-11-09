@@ -324,6 +324,11 @@ pub struct AppState {
     /// default 64 KiB) a claimed — not yet verified — known issuer is granted
     /// a raised size limit for. See [`crate::trust_tasks::size`].
     pub large_document_budget: Arc<crate::trust_tasks::size::LargeDocumentBudget>,
+    /// The room budgets (`[rooms.rate_limits]`), one set charged by every
+    /// transport: the HTTPS door and DIDComm / TSP alike, so a presenter has one
+    /// budget per room whichever way it sends
+    /// (`crate::routing::trust_task_admission`). Built on first use.
+    pub room_limiters: crate::routing::trust_task_admission::SharedRoomLimiters,
     /// Whether the published DID document lets a wallet sign in
     /// (`TrustTaskHTTPS` + `SignInPortal`), checked at boot and lazily with a
     /// five-minute cache. Advisory and read-only.
@@ -1171,6 +1176,7 @@ pub async fn run(
         didcomm: didcomm_cell,
         git_ns,
         large_document_budget: Arc::new(crate::trust_tasks::size::LargeDocumentBudget::new()),
+        room_limiters: Default::default(),
         did_self_check: Arc::new(crate::did_self_check::DidSelfCheck::new()),
     };
 

@@ -1140,8 +1140,19 @@ community's ACL or a session.
      and nobody drains a member's by naming them: it is charged only after that
      member's chain verifies.
 
-  Every refusal is the ecosystem's `429` (`x-rate-limit-source: vtc`,
-  `Retry-After`, a JSON body naming the limiter). `vtc-client` (and so `pnm
+  **DIDComm and TSP are charged the same budgets.** There is no address, so
+  step 1 charges the transport-authenticated sender's room ceiling instead
+  (`address_*` sets it). Steps 2 and the transfer budget are the very budgets the
+  HTTPS door charges, so a presenter has one budget per room whichever
+  transport it uses. An upload chunk is admitted at its own size on every
+  transport, so chunks need not stay under 64 KiB: the default chunk size moves
+  a file over DIDComm as fast as over HTTPS, subject to the mediator's own
+  message size.
+
+  Over HTTPS, every refusal is the ecosystem's `429` (`x-rate-limit-source: vtc`,
+  `Retry-After`, a JSON body naming the limiter). Over DIDComm and TSP, which
+  have no status line, it is a signed `trust-task-error` with code `unavailable`
+  and a `retryAfter`. `vtc-client` (and so `pnm
   rooms`) waits out a `Retry-After` of up to 30 s on a read — `records get` /
   `list`, `info`, `epoch chain` / `commits`, `blobs get` and download chunks —
   and never retries a write. The section is optional; absent, every measure
@@ -2158,6 +2169,7 @@ or anything it said. On a VTC these are `RoomRetention` audit rows.
 | `rooms/owner/group/{add,remove,renew}:hostRefused` | The host declined; `details` carries its code and reason. Nothing changed |
 | `429`, limiter `room-presenter` / `room-transfer` | One presenter is sending more to one room than its budget (§8.2). Wait out `Retry-After`; reads are retried for you |
 | `429`, limiter `room-address` | Everything from your address together, or documents the room did not authorize costing extra (§8.2) |
+| `unavailable` with `retryAfter`, over DIDComm or TSP, on a room task | One of the same room budgets, which on a messaging transport is answered as a Trust Task error rather than a `429` (§8.2). Wait until `retryAfter` |
 | `unsupportedType` | The host does not implement that task — check you are talking to a room host and not something else on the same port |
 | `this registration was signed by …, which is not the owner it names` | `rooms/create` signed by anyone but the `ownerDid` in the payload. Sign as the owner (§5.2) |
 | Every call fails on `missing field 'id'` | You are posting a bare JSON body. Room calls are Trust Task **documents** — build them with `vta_sdk::trust_task_sign::build_signed` |
