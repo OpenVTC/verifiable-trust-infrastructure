@@ -758,9 +758,13 @@ pub async fn run_edit_did(
         // keeps it. Say which happened and what the operator can do about the
         // publish from here, which offline is less than it looks: this process
         // holds no mediator session.
-        Err((operations::did_webvh::UpdateDidWebvhError::Publish(publish_error), commit)) => {
+        Err((
+            e @ (operations::did_webvh::UpdateDidWebvhError::Publish(_)
+            | operations::did_webvh::UpdateDidWebvhError::NoMatchingProtocol { .. }),
+            commit,
+        )) => {
             cs.persist().await?;
-            return Err(offline_publish_failure(&plan.did, &publish_error, commit).into());
+            return Err(offline_publish_failure(&plan.did, &e, commit).into());
         }
         Err((e, _)) => return Err(e.into()),
     };
@@ -775,15 +779,12 @@ pub async fn run_edit_did(
     Ok(())
 }
 
-/// The text `vti_common::error::NoMatchingProtocol` renders when the outbound
-/// seam finds nothing it can initiate that the host advertises. Pinned by a
-/// test below, so a reworded error cannot silently turn the hint off.
-const NO_TRANSPORT_MARKER: &str = "no transport in common";
-
 /// What to tell the operator when the offline edit wrote the new entry but the
 /// hosting server did not receive it.
 ///
-/// The transport case gets its own explanation. Offline, the seam has no
+/// The transport case — the typed
+/// [`operations::did_webvh::UpdateDidWebvhError::NoMatchingProtocol`] — gets
+/// its own explanation. Offline, the seam has no
 /// mediator session, so it can initiate REST and nothing else
 /// (`Outbound::initiable_for`); a host whose document carries only
 /// `TSPTransport` / `DIDCommMessaging` is reached by the running VTA alone.
@@ -791,10 +792,10 @@ const NO_TRANSPORT_MARKER: &str = "no transport in common";
 /// printed verbatim.
 fn offline_publish_failure(
     did: &str,
-    publish_error: &str,
+    publish_error: &operations::did_webvh::UpdateDidWebvhError,
     commit: operations::did_webvh::Commit,
 ) -> String {
-    let mut text = format!("publish error: {publish_error}\n\n");
+    let mut text = format!("{publish_error}\n\n");
     text.push_str(match commit {
         operations::did_webvh::Commit::Committed => {
             "The new log entry is written to this VTA's store, but the hosting server has not \
@@ -807,7 +808,10 @@ fn offline_publish_failure(
              running VTA publishes it before its next update of this DID."
         }
     });
-    if publish_error.contains(NO_TRANSPORT_MARKER) {
+    if matches!(
+        publish_error,
+        operations::did_webvh::UpdateDidWebvhError::NoMatchingProtocol { .. }
+    ) {
         text.push_str(
             "\n\nThis offline command holds no mediator session, so it reaches a hosting \
              server over HTTPS only: the server's DID document has to advertise \
@@ -901,28 +905,27 @@ pub async fn run_register_did(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use operations::did_webvh::UpdateDidWebvhError;
     use vta_sdk::protocol::matching::Protocol;
     use vti_common::error::NoMatchingProtocol;
 
-    /// The hint keys on the text the typed error renders. If that wording
-    /// changes, this is the test that says so.
-    #[test]
-    fn no_transport_marker_matches_the_typed_error() {
-        let refusal = NoMatchingProtocol {
-            peer: "did:webvh:QmHost:dids.example".into(),
-            ours: vec![Protocol::Rest],
-            theirs: vec![Protocol::Tsp, Protocol::Didcomm],
-            note: None,
-        };
-        assert!(refusal.to_string().contains(NO_TRANSPORT_MARKER));
+    fn no_transport(step: &'static str) -> UpdateDidWebvhError {
+        UpdateDidWebvhError::NoMatchingProtocol {
+            step,
+            refusal: Box::new(NoMatchingProtocol {
+                peer: "did:webvh:QmHost:dids.example".into(),
+                ours: vec![Protocol::Rest],
+                theirs: vec![Protocol::Tsp, Protocol::Didcomm],
+                note: None,
+            }),
+        }
     }
 
     #[test]
     fn a_no_transport_publish_failure_explains_offline_and_names_the_online_command() {
         let text = offline_publish_failure(
             "did:webvh:QmVtc:dids.example:vtc",
-            "publish_did: no transport in common with `did:webvh:QmHost:dids.example`: \
-             it advertises [tsp, didcomm] and this agent can initiate [rest]",
+            &no_transport("publish_did"),
             operations::did_webvh::Commit::Committed,
         );
         assert!(text.starts_with("publish error: publish_did: no transport in common"));
@@ -933,11 +936,13 @@ mod tests {
         ));
     }
 
+    /// The hint follows the type, not the words: a string publish error that
+    /// happens to say "no transport in common" does not get it.
     #[test]
     fn any_other_publish_failure_still_says_the_entry_is_pending() {
         let text = offline_publish_failure(
             "did:webvh:QmVtc:dids.example:vtc",
-            "publish_did: connection refused",
+            &UpdateDidWebvhError::Publish("publish_did: no transport in common (text only)".into()),
             operations::did_webvh::Commit::Committed,
         );
         assert!(!text.contains("holds no mediator session"));
@@ -951,10 +956,10 @@ mod tests {
     fn a_failed_reconcile_does_not_claim_a_new_entry() {
         let text = offline_publish_failure(
             "did:webvh:QmVtc:dids.example:vtc",
-            "reconcile publish_did: no transport in common with `did:webvh:QmHost:dids.example`: \
-             it advertises [tsp, didcomm] and this agent can initiate [rest]",
+            &no_transport("reconcile publish_did"),
             operations::did_webvh::Commit::NotCommitted,
         );
+        assert!(text.starts_with("publish error: reconcile publish_did: no transport in common"));
         assert!(!text.contains("written to this VTA's store"));
         assert!(text.contains("Nothing new is written"));
         assert!(text.contains("holds no mediator session"));
