@@ -1507,7 +1507,8 @@ enum AclCommands {
         #[arg(long)]
         approve_none: bool,
         /// Replace the entry's capabilities (comma-separated wire names), e.g.
-        /// `context-create`. Omitted leaves them unchanged.
+        /// `context-create`. Omitted leaves them unchanged; `--capabilities ''`
+        /// clears them back to whatever the role implies.
         #[arg(long, value_delimiter = ',')]
         capabilities: Option<Vec<String>>,
     },

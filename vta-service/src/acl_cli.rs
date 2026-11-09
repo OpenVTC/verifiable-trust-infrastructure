@@ -42,7 +42,7 @@ pub async fn run_acl_create(
     capabilities: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let role = Role::parse(&role)?;
-    let capabilities = parse_capabilities(&capabilities)?;
+    let capabilities = parse_capabilities(&role, &capabilities)?;
     let expires_at = expires
         .as_deref()
         .map(parse_duration_to_expiry)
@@ -96,26 +96,40 @@ pub async fn run_acl_create(
     Ok(())
 }
 
-/// Parse `--capabilities` values into the enum, by their wire (kebab-case)
-/// spelling.
+/// Parse `--capabilities` values for an entry of `role`, refusing what the
+/// role cannot carry.
 ///
-/// An unknown name is an error rather than something to skip: silently dropping
-/// one stores an entry that holds less than the operator asked for and reports
-/// success, which is how an entry ends up missing a capability nobody can see
-/// is missing.
+/// Names go through the same parser every other transport uses
+/// ([`parse_capability_names`](crate::operations::acl::parse_capability_names)),
+/// so an unknown name is refused rather than skipped. A name outside the role's
+/// ceiling is refused too (VTI-ACL-031): an entry's list only narrows its role,
+/// so storing one would report success for a capability the entry never holds.
+/// Additive capabilities pass that check because no role carries them; the
+/// break-glass CLI runs with local super-admin authority, which is what granting
+/// one needs (VTI-ACL-033).
+///
+/// Blank names are dropped, so `--capabilities ''` is the empty list: "whatever
+/// the role implies".
 fn parse_capabilities(
+    role: &Role,
     names: &[String],
 ) -> Result<Vec<vti_common::acl::Capability>, Box<dyn std::error::Error>> {
-    names
+    let names: Vec<String> = names
         .iter()
-        .map(|name| {
-            let trimmed = name.trim();
-            serde_json::from_value::<vti_common::acl::Capability>(serde_json::Value::String(
-                trimmed.to_string(),
-            ))
-            .map_err(|_| format!("unknown capability '{trimmed}'").into())
-        })
-        .collect()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .collect();
+    let capabilities = crate::operations::acl::parse_capability_names(&names)?;
+    let beyond = vti_common::acl::capabilities_beyond_role(role, &capabilities);
+    if !beyond.is_empty() {
+        return Err(format!(
+            "role {role} does not carry {beyond:?}; an entry's capabilities can only narrow \
+             what its role allows, never widen it"
+        )
+        .into());
+    }
+    Ok(capabilities)
 }
 
 /// `N[s|m|h|d|w]` (or bare seconds) from now, as an absolute epoch. Mirrors
@@ -305,9 +319,11 @@ pub async fn run_acl_update(
 
     if let Some(names) = capabilities {
         // Replaces rather than merges, so an operator can narrow as well as
-        // widen; an empty list means "whatever the role implies", which is what
-        // an entry written before capabilities existed already meant.
-        entry.capabilities = parse_capabilities(&names)?;
+        // widen; an empty list (`--capabilities ''`) means "whatever the role
+        // implies", which is what an entry written before capabilities existed
+        // already meant. Checked against the post-update role, as the
+        // `acl/update` operation does.
+        entry.capabilities = parse_capabilities(&entry.role, &names)?;
     }
 
     store_acl_entry(&acl_ks, &entry).await?;
@@ -388,5 +404,51 @@ fn format_timestamp(epoch: u64) -> String {
             .format("%Y-%m-%d %H:%M:%S %:z")
             .to_string(),
         _ => format!("{epoch}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vti_common::acl::Capability;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// VTI-ACL-031: a capability the role cannot carry is refused at the CLI,
+    /// as on the `acl/create` and `acl/update` operations, rather than stored
+    /// and silently ignored.
+    #[test]
+    fn a_capability_outside_the_roles_ceiling_is_refused() {
+        let err = parse_capabilities(&Role::Reader, &names(&["key-export"]))
+            .expect_err("a reader cannot carry key-export");
+        assert!(err.to_string().contains("does not carry"), "{err}");
+    }
+
+    /// Additive capabilities sit outside every role's ceiling by construction,
+    /// so the ceiling check lets them through (VTI-ACL-033).
+    #[test]
+    fn an_additive_capability_passes_the_ceiling() {
+        assert_eq!(
+            parse_capabilities(&Role::Initiator, &names(&["context-create"])).unwrap(),
+            vec![Capability::ContextCreate]
+        );
+    }
+
+    /// `--capabilities ''` reaches here as `[""]`; it is the empty list, which
+    /// clears an entry back to whatever its role implies.
+    #[test]
+    fn an_empty_value_clears_the_list() {
+        assert!(
+            parse_capabilities(&Role::Initiator, &names(&[""]))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_unknown_capability_is_refused() {
+        assert!(parse_capabilities(&Role::Admin, &names(&["no-such-thing"])).is_err());
     }
 }

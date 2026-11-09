@@ -708,6 +708,36 @@ pub async fn exercise_handoff(
     Ok(to_result_body(&entry))
 }
 
+/// Whether the caller carries `cap`: its ACL entry's effective set, or — with no
+/// entry — its role's.
+///
+/// The fallback is for callers no entry describes: the offline CLI synthesizes
+/// claims under a `cli:<channel>` DID that is deliberately in no ACL, and DIDs
+/// authenticated before an entry existed behave as they always did. An
+/// additive capability is never role-derived, so it is held only through an
+/// entry that names it.
+///
+/// A store error answers `false`: not being able to confirm a capability is
+/// not the same as the caller lacking one, and the safe reading of "I cannot
+/// tell" is no. The operator gets the real reason in the log.
+pub async fn caller_has_capability(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    cap: Capability,
+) -> bool {
+    match get_acl_entry(acl_ks, &auth.did).await {
+        Ok(Some(entry)) => vti_common::acl::entry_has_capability(&entry, cap),
+        Ok(None) => vti_common::acl::role_has_capability(&auth.role, cap),
+        Err(e) => {
+            tracing::error!(
+                error = %e, did = %auth.did, capability = ?cap,
+                "could not read the ACL entry for a capability check; refusing"
+            );
+            false
+        }
+    }
+}
+
 /// Parse wire capability names into the enum, refusing any it does not know.
 ///
 /// Every transport goes through this, so a name is spelled one way and refused

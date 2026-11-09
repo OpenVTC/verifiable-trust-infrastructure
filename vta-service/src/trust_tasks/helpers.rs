@@ -408,21 +408,9 @@ pub(super) async fn require_capability(
     cap: Capability,
     what: &str,
 ) -> Result<(), TrustTaskOutcome> {
-    let allowed = match vti_common::acl::get_acl_entry(&state.acl_ks, &auth.did).await {
-        Ok(Some(entry)) => vti_common::acl::entry_has_capability(&entry, cap),
-        // No entry: the role decides, exactly as before this gate existed.
-        Ok(None) => vti_common::acl::role_has_capability(&auth.role, cap),
-        // A store error must not become a grant. It also must not leak: the
-        // caller is told the capability is missing, and the operator gets the
-        // real reason in the log.
-        Err(e) => {
-            tracing::error!(
-                error = %e, did = %auth.did,
-                "could not read the ACL entry for a capability check; refusing"
-            );
-            false
-        }
-    };
+    // A store error reads as "not carried"; the operator gets the reason in
+    // the log, the caller only that the capability is missing.
+    let allowed = crate::operations::acl::caller_has_capability(&state.acl_ks, auth, cap).await;
 
     if allowed {
         return Ok(());

@@ -372,9 +372,15 @@ pub enum Capability {
     CredentialPresent,
     /// Creating a **sub-context** — `vta/contexts/create/1.0` with a `parent`.
     ///
+    /// Registered as `context-create` *(additive)* in the specification's
+    /// capability registry (Appendix C.2); creation itself is VTI-CTX-020, and
+    /// granting it requires unrestricted act authority (VTI-ACL-033). Its holder
+    /// may also set the first DID of a context **it created**, to the `did:key`
+    /// of a key that context holds — never change, clear, or set one elsewhere.
+    ///
     /// Necessary and not sufficient: the caller must also reach the parent
     /// (`require_context`), so a holder can only create beneath contexts it
-    /// already administers, and **top-level** creation stays super-admin-only.
+    /// already acts in, and **top-level** creation stays super-admin-only.
     /// The power this confers is therefore "branch under what I already have",
     /// not "create anywhere".
     ///
