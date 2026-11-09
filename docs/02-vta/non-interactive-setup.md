@@ -345,7 +345,7 @@ setting, not a per-service one:
 | Config key            | Env var                      | fjall knob                                         | Default (unset) |
 |------------------------|-------------------------------|-----------------------------------------------------|------------------|
 | `fjall.block_cache`   | `STORAGE_FJALL_BLOCK_CACHE`  | `Database::builder(..).cache_size(..)`             | 32 MiB           |
-| `fjall.write_buffer`  | `STORAGE_FJALL_WRITE_BUFFER` | `Database::builder(..).max_write_buffer_size(..)`  | unbounded        |
+| `fjall.write_buffer`  | `STORAGE_FJALL_WRITE_BUFFER` | the store's background flusher (see below)          | 8 MiB            |
 | `fjall.max_journal`   | `STORAGE_FJALL_MAX_JOURNAL`  | `Database::builder(..).max_journaling_size(..)`    | 512 MiB          |
 
 Each value is a byte size — a plain integer, or a number with a binary
@@ -368,24 +368,33 @@ write_buffer = "32MiB"
 max_journal  = "128MiB"
 ```
 
-**Sizing against the pod's memory limit.** Budget roughly
-`block_cache + write_buffer + max_journal` plus headroom for the rest of
-the process (connections, in-flight requests, the DID cache) — a common
-starting point is to keep that sum at 40–60% of the container's memory
-`limit` and leave the remainder for everything else. Startup's journal
-replay briefly holds close to `max_journal` in memory, so a limit set
-right at the steady-state sum above can still OOM on a restart.
+**Sizing against the pod's memory limit.** fjall 3.1 does not enforce a
+write-buffer limit itself, so the store runs a background flusher that seals
+every keyspace's memtable once unflushed writes pass `write_buffer` (8 MiB
+when unset), checked every 5 seconds. Writes in memory therefore stay near
+`write_buffer`; the journal (`max_journal`) is on disk, not in memory. Budget
+roughly `block_cache + write_buffer` for the store, plus headroom for a burst
+between two flusher checks and for the rest of the process (connections,
+in-flight requests, the DID cache) — a common starting point is to keep the
+store's share at 40–60% of the container's memory `limit`.
 
-**The floor none of these settings lower.** fjall (3.1.12, the current
-release) starts a new journal file only once the active one passes about
-64 MB, and on startup it replays the *whole* active journal into memory,
-including writes it had already flushed to disk. A clean shutdown does not
-shorten it. So whatever the three settings say, a restart can briefly need
-up to ~64 MiB for the replay on top of the block cache and the process's
-own baseline, and a quiet store keeps that journal for as long as it takes
-to write 64 MB. Do not give a VTA or VTC less than **256 MiB**. Below that,
-an OOM kill can repeat at every start: each kill happens before anything is
-flushed, so the journal the next start replays is never shorter (#1777).
+**What a restart costs.** On startup fjall replays the journal, but since
+3.1.13 (fjall-rs/fjall#332) only the writes no keyspace had flushed yet: the
+writes it had already flushed are skipped. A clean shutdown, or one after the
+flusher has run, replays nothing; a kill (an OOM kill included) replays the
+unflushed tail, which the flusher keeps near `write_buffer`, and the flusher
+writes it to disk as soon as the store opens. Measured on fjall 3.1.13 with
+`block_cache = "8MiB"`, `write_buffer = "16MiB"`, `max_journal = "64MiB"` and
+the flusher's rule, killing the process after 20, 60 and 100 MB of writes
+put 5.3, 15.8 and 9.4 MB back in memory on reopen (peak RSS of the reopen
+8.7–19.7 MB), the same on a second reopen without a flush in between, so
+repeated kills do not grow it; flushing before a clean close put 0 bytes back
+(#1777). Before 3.1.13 a restart replayed the whole active journal, flushed
+writes included, up to ~64 MiB whatever the settings said, which is why this
+page used to ask for 256 MiB. That floor is gone: with small settings like
+the ones above, **128 MiB** is a reasonable minimum for a VTA or VTC, with
+most of it left for the process rather than the store. Check the service's
+own resident memory under your load before going lower.
 
 ## Validation and errors
 
