@@ -909,9 +909,10 @@ azure_identity = "1.0"
 # `k8s-openapi` major, and two copies in the tree make *neither* resolve a
 # version feature — k8s-openapi's build script then panics with "None of the
 # v1_* features are enabled", naming the copy that has none rather than the
-# mismatch that produced it. kube 3.1 is on k8s-openapi 0.27; kube 4.2 is on
-# 0.28. Bumping one without the other is what makes that error appear.
-kube = { version = "4.2", default-features = false, features = [
+# mismatch that produced it. kube 3.1 is on k8s-openapi 0.27, kube 4.2 on 0.28
+# and kube 5.0 on 0.29. Bumping one without the other is what makes that error
+# appear.
+kube = { version = "5.0", default-features = false, features = [
   "client",
   "rustls-tls",
 ] }
