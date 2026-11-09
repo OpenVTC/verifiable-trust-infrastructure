@@ -61,13 +61,24 @@ pub fn unsigned(from: &Party, type_uri: &str, payload: Value) -> Value {
     serde_json::to_value(doc).expect("a document serialises")
 }
 
+/// `from`'s signing key. A did:key names its own verification method; any
+/// other DID signs with the one its secret is identified by.
+fn holder_key(from: &Party) -> vta_sdk::trust_task_sign::HolderKey {
+    if from.did.starts_with("did:key:") {
+        vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+            .expect("a did:key names its own verification method")
+    } else {
+        vta_sdk::trust_task_sign::HolderKey::new(from.secret.id.clone(), &from.secret_multibase)
+            .expect("the secret names a verification method")
+    }
+}
+
 /// The document `from` would send, signed by its key.
 pub async fn signed(from: &Party, type_uri: &str, payload: Value) -> Value {
     let mut doc =
         vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &from.did, TEST_VTC_DID)
             .expect("build the document");
-    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
-        .expect("a did:key names its own verification method");
+    let key = holder_key(from);
     vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
         .await
         .expect("sign the document");
@@ -78,8 +89,7 @@ pub async fn signed(from: &Party, type_uri: &str, payload: Value) -> Value {
 pub async fn signed_to(from: &Party, recipient: &str, type_uri: &str, payload: Value) -> Value {
     let mut doc = vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &from.did, recipient)
         .expect("build the document");
-    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
-        .expect("a did:key names its own verification method");
+    let key = holder_key(from);
     vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
         .await
         .expect("sign the document");

@@ -242,28 +242,22 @@ async fn resolve_verifying_key(
         return Err(SiopError::NotSigningKey(kid.to_string()));
     }
 
-    // Extract the key and **validate the multicodec**. The resolver
-    // normalises signing keys to `Multikey` (a `publicKeyMultibase`). Decode
-    // it ourselves and require the Ed25519 multicodec (`0xed01`): an X25519
-    // key published as a `Multikey` (codec `0xec01`, `z6LS…`) would otherwise
+    // Extract the key and **validate the multicodec**. A document publishes
+    // it as a `publicKeyMultibase` (a `Multikey`) or a `publicKeyJwk` (as
+    // `did:webs` does); both decode to a multicodec and the raw key. Require
+    // Ed25519 (`0xed`): an X25519 key published either way would otherwise
     // decode to 32 bytes and be loaded as an "Ed25519" key, caught only later
     // at signature verification. Checking the codec here rejects it up front
     // and refuses any non-Ed25519 curve for the signing key.
-    let multibase = vm
-        .property_set
-        .get("publicKeyMultibase")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            SiopError::BadPublicKey(format!(
-                "verification method {kid} has no publicKeyMultibase"
-            ))
-        })?;
-    let (_base, bytes) = multibase::decode(multibase)
-        .map_err(|e| SiopError::BadPublicKey(format!("publicKeyMultibase: {e}")))?;
-    let key = bytes
-        .strip_prefix(&[0xed, 0x01])
-        .ok_or_else(|| SiopError::NotSigningKey(kid.to_string()))?;
-    key.try_into()
+    const ED25519_PUB: u64 = 0xed;
+    let (codec, key) = vm
+        .decode_public_key()
+        .map_err(|e| SiopError::BadPublicKey(format!("verification method {kid}: {e}")))?;
+    if codec != ED25519_PUB {
+        return Err(SiopError::NotSigningKey(kid.to_string()));
+    }
+    key.as_slice()
+        .try_into()
         .map_err(|_| SiopError::BadPublicKey("public key must be 32 bytes".into()))
 }
 
@@ -352,6 +346,61 @@ mod tests {
     // vtc-service's integration tests (which build a resolver). These
     // unit tests cover the pure, resolver-independent failure paths
     // that short-circuit before resolution.
+
+    /// A did:webs document as the resolver hands it over: its key a
+    /// `JsonWebKey`, listed for authentication.
+    async fn resolver_with_jwk_issuer(
+        did: &str,
+        kid: &str,
+        jwk: serde_json::Value,
+    ) -> DIDCacheClient {
+        let mut resolver = test_resolver().await;
+        let doc = serde_json::json!({
+            "id": did,
+            "verificationMethod": [{
+                "id": kid, "type": "JsonWebKey", "controller": did, "publicKeyJwk": jwk,
+            }],
+            "authentication": [kid],
+        });
+        resolver
+            .add_did_document(did, serde_json::from_value(doc).expect("a DID document"))
+            .await;
+        resolver
+    }
+
+    /// A self-issued login from a DID that publishes its key as a JWK — a
+    /// did:webs — verifies. Only `publicKeyMultibase` was read before.
+    #[tokio::test]
+    async fn an_ed25519_jwk_issuer_verifies() {
+        let sk = SigningKey::from_bytes(&[21u8; 32]);
+        let did = "did:webs:members.example.com:ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe";
+        let kid = format!("{did}#DKey0");
+        let jwk = serde_json::json!({
+            "kty": "OKP", "crv": "Ed25519",
+            "x": URL_SAFE_NO_PAD.encode(sk.verifying_key().to_bytes()),
+        });
+        let resolver = resolver_with_jwk_issuer(did, &kid, jwk).await;
+        let token = make_did_key_id_token(&sk, did, did, "rp", "n", 1, 2, &kid);
+        let verified = verify_siop_id_token(&token, &resolver)
+            .await
+            .expect("verifies");
+        assert_eq!(verified.issuer, did);
+    }
+
+    /// An X25519 key published as a JWK is no signing key.
+    #[tokio::test]
+    async fn an_x25519_jwk_is_not_a_signing_key() {
+        let sk = SigningKey::from_bytes(&[22u8; 32]);
+        let did = "did:webs:members.example.com:ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe";
+        let kid = format!("{did}#CKey0");
+        let jwk = serde_json::json!({
+            "kty": "OKP", "crv": "X25519", "x": URL_SAFE_NO_PAD.encode([5u8; 32]),
+        });
+        let resolver = resolver_with_jwk_issuer(did, &kid, jwk).await;
+        let token = make_did_key_id_token(&sk, did, did, "rp", "n", 1, 2, &kid);
+        let err = verify_siop_id_token(&token, &resolver).await.unwrap_err();
+        assert!(matches!(err, SiopError::NotSigningKey(_)), "{err:?}");
+    }
 
     #[tokio::test]
     async fn rejects_non_compact_jws() {

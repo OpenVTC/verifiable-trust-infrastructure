@@ -231,6 +231,12 @@ pub fn ed25519_did_key(did: &str) -> Option<[u8; 32]> {
 /// Every public key `subject`'s DID document lists. A `did:key` resolves
 /// locally; anything else through the configured resolver. Failing to resolve
 /// is an error, which every caller treats as "not distinct" — fail closed.
+///
+/// Keys are read in either form a document publishes them: `publicKeyMultibase`
+/// or `publicKeyJwk` (a `did:webs` publishes only JWKs). A method carrying no
+/// key at all, such as a `ConditionalProof2022`, is skipped; one whose key
+/// cannot be read is an error, since the approver's key could be the one
+/// hidden in it.
 async fn subject_keys(state: &AppState, subject: &str) -> Result<Vec<Vec<u8>>, AppError> {
     if subject.starts_with("did:key:") {
         let mb = subject.trim_start_matches("did:key:");
@@ -248,12 +254,19 @@ async fn subject_keys(state: &AppState, subject: &str) -> Result<Vec<Vec<u8>>, A
         .resolve(subject)
         .await
         .map_err(|e| AppError::Internal(format!("{subject} did not resolve: {e}")))?;
-    Ok(resolved
-        .doc
-        .verification_method
-        .iter()
-        .filter_map(|vm| vm.get_public_key_bytes().ok())
-        .collect())
+    let mut keys = Vec::new();
+    for vm in &resolved.doc.verification_method {
+        let carries_key = vm.property_set.contains_key("publicKeyMultibase")
+            || vm.property_set.contains_key("publicKeyJwk");
+        if !carries_key {
+            continue;
+        }
+        let (_codec, raw) = vm.decode_public_key().map_err(|e| {
+            AppError::Internal(format!("{subject}'s key {} is unreadable: {e}", vm.id))
+        })?;
+        keys.push(raw);
+    }
+    Ok(keys)
 }
 
 /// Whether `approver_did` is distinct from everything `subject` can already
@@ -714,6 +727,66 @@ mod tests {
         assert!(ed25519_did_key(&format!("{}#key-1", party.did)).is_none());
         assert!(
             ed25519_did_key("did:key:z6LSbysY2xFMRpGMhb7tFTLMpeuPRaqaWM1yECx2AtzE3KCc").is_none()
+        );
+    }
+
+    /// A subject whose document publishes its keys as JWKs — a `did:webs` —
+    /// cannot enrol one of them as its own approver. Read as Multikeys only,
+    /// the keys vanished and every approver looked distinct.
+    #[tokio::test]
+    async fn a_subjects_jwk_key_is_not_a_distinct_approver() {
+        use base64::Engine as _;
+        let vtc = crate::test_support::TestVtc::builder()
+            .with_did_resolver(true)
+            .build()
+            .await;
+        let own = vti_rooms_dtg::test_support::Party::new();
+        let other = vti_rooms_dtg::test_support::Party::new();
+        let own_key = ed25519_did_key(&own.did).expect("an Ed25519 did:key");
+
+        let subject = "did:webs:members.example.com:ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe";
+        let key_id = format!("{subject}#DKey0");
+        let proof_id = format!("{subject}#EAid");
+        let doc = serde_json::json!({
+            "id": subject,
+            "verificationMethod": [
+                {
+                    "id": key_id,
+                    "type": "JsonWebKey",
+                    "controller": subject,
+                    "publicKeyJwk": {
+                        "kty": "OKP",
+                        "crv": "Ed25519",
+                        "x": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(own_key),
+                    },
+                },
+                {
+                    "id": proof_id,
+                    "type": "ConditionalProof2022",
+                    "controller": subject,
+                    "threshold": 1,
+                    "conditionThreshold": [key_id],
+                },
+            ],
+            "authentication": [key_id, proof_id],
+        });
+        let mut resolver = vtc.state.did_resolver.clone().expect("resolver attached");
+        resolver
+            .add_did_document(
+                subject,
+                serde_json::from_value(doc).expect("a DID document"),
+            )
+            .await;
+
+        assert_eq!(
+            check_distinct(&vtc.state, subject, &own.did).await.unwrap(),
+            Err("a verification method of the subject's DID document")
+        );
+        assert_eq!(
+            check_distinct(&vtc.state, subject, &other.did)
+                .await
+                .unwrap(),
+            Ok(())
         );
     }
 
