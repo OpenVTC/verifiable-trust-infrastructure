@@ -1265,7 +1265,6 @@ async fn handle_create(
         created_by: Some(entry_id),
         updated_at: now,
         retired_at: None,
-        endorsement: None,
     };
     // Item 6: the group first, remote steps before the one local write.
     let group = if kind == BadgeKind::Community {

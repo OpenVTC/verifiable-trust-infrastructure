@@ -1,13 +1,18 @@
-//! The badge credential (VTI-BDG-060 – 063): what a badge group issues each holder in
-//! place of a group membership credential.
+//! The badge credential (VTI-BDG-060 – 063): what the community issues each holder of a
+//! community badge in place of a group membership credential.
 //!
 //! An **Open Badges 3.0** `OpenBadgeCredential` — a profile of the W3C Verifiable
-//! Credentials Data Model v2.0 — whose `issuer` is the badge group's DID, whose subject is
-//! the holder's membership DID, whose `achievement` is the badge (name, description,
-//! criteria, picture) with the community as its `creator`, and with one `evidence` entry
-//! per accepted award. The community has its VTA sign it **as the group**, through
-//! `keys/sign-document`, exactly as a group membership credential (VTI-DIR-080), and
-//! offers it on the credential-exchange path every credential it issues travels.
+//! Credentials Data Model v2.0 — whose `issuer` is the community, named as it names itself
+//! (VTI-BDG-060), whose subject is the holder's membership DID, whose `achievement` is the
+//! badge (name, description, criteria, picture) with the same community as its `creator`,
+//! and with one `evidence` entry per accepted award. It names the Open Badges JSON Schema in
+//! `credentialSchema`, so the standard validators check it. The community has its VTA sign
+//! it **as the community**, through `keys/sign-document`, and offers it on the
+//! credential-exchange path every credential it issues travels.
+//!
+//! The issuer is the community, not the badge group, because a verifier outside the
+//! community knows the community and nothing of a group's DID (VTI-BDG-064). The badge
+//! group keeps the badge's owners, holders, requests and rules, and issues nothing.
 //!
 //! Two regimes, chosen per badge by `shareableOutside`:
 //!
@@ -17,13 +22,7 @@
 //!   [`OUTSIDE_DEFAULT_DAYS`]) with a `credentialStatus` slot in the **community's** own
 //!   revocation list — the one every community credential uses, allocated at random — one
 //!   slot per badge and holder, reused by every re-issue and renewal, flipped when the badge
-//!   is taken back, retired or the holder departs (VTI-BDG-063). The list's credential is the
-//!   community's while the badge credential's issuer is the group: the W3C Bitstring Status
-//!   List validate algorithm compares no issuers, and says the two "might differ".
-//!
-//! Every credential embeds the community's Open Badges `EndorsementCredential` of the
-//! Achievement, signed by the VTA as the community and kept on the badge (VTI-BDG-060), so
-//! an outside verifier sees who stands behind the issuer without a registry.
+//!   is taken back, retired or the holder departs (VTI-BDG-063).
 
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
@@ -39,6 +38,12 @@ use crate::status_list;
 
 /// The Open Badges 3.0 context the credential carries beside the VC 2.0 one.
 pub const OB_CONTEXT: &str = "https://purl.imsglobal.org/spec/ob/v3p0/context-3.0.3.json";
+
+/// The Open Badges 3.0 JSON Schema an `OpenBadgeCredential` names, and the validator type
+/// 1EdTech defines for it.
+pub const OB_SCHEMA: &str =
+    "https://purl.imsglobal.org/spec/ob/v3p0/schema/json/ob_v3p0_achievementcredential_schema.json";
+pub const OB_SCHEMA_TYPE: &str = "1EdTechJsonSchemaValidator2019";
 
 /// How long a credential its holders may show outside stands when the community sets no
 /// `credentialValidDays`: two years.
@@ -75,28 +80,57 @@ pub fn public_image_url(badge: &Badge, public_url: Option<&str>) -> Option<Strin
     }
 }
 
-/// The badge's Achievement, as the credential names it (VTI-BDG-060), with the
-/// community's endorsement of it where one is held. Its picture is named by its public
-/// location for a badge its holders may show outside, else by digest.
-pub fn achievement(
-    state_did: &str,
-    badge: &Badge,
+/// The community as an Open Badges `Profile`: its DID, the name it gives itself, and its
+/// public origin where it has one. The credential's `issuer` and the Achievement's
+/// `creator` alike (VTI-BDG-060), so a wallet shows a name rather than a DID.
+pub fn community_profile(
+    community_did: &str,
+    name: Option<&str>,
     public_url: Option<&str>,
-    endorsement: Option<&Value>,
 ) -> Value {
+    let mut p = json!({ "id": community_did, "type": ["Profile"] });
+    if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
+        p["name"] = json!(n);
+    }
+    if let Some(u) = public_url {
+        p["url"] = json!(u.trim_end_matches('/'));
+    }
+    p
+}
+
+/// The community's [`community_profile`], read now.
+pub async fn load_community_profile(state: &AppState) -> Result<Value, AppError> {
+    let (did, public_url) = {
+        let config = state.config.read().await;
+        (
+            config.vtc_did.clone().unwrap_or_default(),
+            config.public_url.clone(),
+        )
+    };
+    let name = crate::community::profile::load_profile(&state.community_ks)
+        .await?
+        .map(|p| p.name);
+    Ok(community_profile(
+        &did,
+        name.as_deref(),
+        public_url.as_deref(),
+    ))
+}
+
+/// The badge's Achievement, as the credential names it (VTI-BDG-060), `creator` the
+/// community's profile. Its picture is named by its public location for a badge its holders
+/// may show outside, else by digest.
+pub fn achievement(creator: &Value, badge: &Badge, public_url: Option<&str>) -> Value {
     let mut a = json!({
         "id": achievement_id(badge, public_url),
         "type": ["Achievement"],
         "name": badge.name,
         "description": badge.description,
-        "creator": { "id": state_did, "type": ["Profile"] },
+        "creator": creator,
         "achievementType": "Badge",
     });
     if let Some(c) = &badge.criteria {
         a["criteria"] = json!({ "narrative": c });
-    }
-    if let Some(e) = endorsement {
-        a["endorsement"] = json!([e]);
     }
     if let Some(sha) = crate::directory::images::sha_of(&badge.image) {
         let media = badge
@@ -114,62 +148,32 @@ pub fn achievement(
     a
 }
 
-/// The community's endorsement of the badge's Achievement, unsigned: an Open Badges 3.0
-/// `EndorsementCredential` whose subject is the Achievement (VTI-BDG-060).
-pub fn endorsement_document(
-    community_did: &str,
-    badge: &Badge,
-    public_url: Option<&str>,
-    now: DateTime<Utc>,
-) -> Value {
-    json!({
-        "@context": ["https://www.w3.org/ns/credentials/v2", OB_CONTEXT],
-        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": ["VerifiableCredential", "EndorsementCredential"],
-        "name": format!("Endorsement of {}", badge.name),
-        "issuer": { "id": community_did, "type": ["Profile"] },
-        "validFrom": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "credentialSubject": {
-            "id": achievement_id(badge, public_url),
-            "type": ["EndorsementSubject"],
-            "endorsementComment": format!(
-                "The community stands behind this badge: its badge group is appointed by the \
-                 community to issue “{}”.",
-                badge.name
-            ),
-        },
-    })
-}
-
-/// The unsigned credential for `member_did` holding `badge` with `awards` as its evidence.
-/// `status` is the holder's slot in the community's revocation list, for a badge its
-/// holders may show outside; `endorsement` the community's, where one is held.
+/// The unsigned credential for `member_did` holding `badge` with `awards` as its evidence,
+/// issued by `issuer`, the community's [`community_profile`]. `status` is the holder's slot
+/// in the community's revocation list, for a badge its holders may show outside.
 #[allow(clippy::too_many_arguments)]
 pub fn document(
-    community_did: &str,
+    issuer: &Value,
     public_url: Option<&str>,
-    group: &Group,
     badge: &Badge,
     member_did: &str,
     awards: &[Award],
     valid_from: DateTime<Utc>,
     valid_until: DateTime<Utc>,
     status: Option<Value>,
-    endorsement: Option<&Value>,
 ) -> Value {
     let evidence: Vec<Value> = awards
         .iter()
         .map(|a| {
-            let mut e = json!({
-                "id": format!("urn:vtc:award:{}", a.award_id),
-                "type": ["Evidence"],
-                "name": "Award",
-            });
+            let mut e = json!({ "type": ["Evidence"], "name": "Award" });
             if let Some(n) = &a.note {
                 e["narrative"] = json!(n);
             }
             if let Some(at) = a.decided_at {
-                e["description"] = json!(format!("Accepted {}", at.to_rfc3339()));
+                e["description"] = json!(format!(
+                    "Accepted {}",
+                    at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                ));
             }
             e
         })
@@ -178,13 +182,14 @@ pub fn document(
         "@context": ["https://www.w3.org/ns/credentials/v2", OB_CONTEXT],
         "type": ["VerifiableCredential", "OpenBadgeCredential"],
         "name": badge.name,
-        "issuer": { "id": group.group_did, "type": ["Profile"] },
+        "issuer": issuer,
         "validFrom": valid_from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "validUntil": valid_until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "credentialSchema": [{ "id": OB_SCHEMA, "type": OB_SCHEMA_TYPE }],
         "credentialSubject": {
             "type": ["AchievementSubject"],
             "id": member_did,
-            "achievement": achievement(community_did, badge, public_url, endorsement),
+            "achievement": achievement(issuer, badge, public_url),
         },
     });
     if let Some(s) = status {
@@ -194,56 +199,6 @@ pub fn document(
         doc["evidence"] = Value::Array(evidence);
     }
     doc
-}
-
-/// Sign a document as the community through its VTA.
-async fn sign_as_community(setup: &identity::Setup, document: Value) -> Result<Value, Failure> {
-    let answer = setup
-        .holder
-        .ask(
-            vta_sdk::trust_tasks::TASK_KEYS_SIGN_DOCUMENT_0_1,
-            json!({ "keyId": setup.community_key_id, "document": document }),
-            SIGN_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Failure::Holder(e, None))?;
-    let signed: vta_sdk::protocols::key_management::sign_document::SignDocumentResponse =
-        serde_json::from_value(answer).map_err(|e| {
-            Failure::Holder(
-                HolderError::Unavailable(format!(
-                    "keys/sign-document answered a shape not its own: {e}"
-                )),
-                None,
-            )
-        })?;
-    Ok(Value::Object(signed.document))
-}
-
-/// The community's endorsement of `badge`'s Achievement: the one the badge holds, else
-/// one signed now as the community and kept on the badge (VTI-BDG-060).
-pub async fn ensure_endorsement(
-    state: &AppState,
-    setup: &identity::Setup,
-    badge: &Badge,
-    public_url: Option<&str>,
-) -> Result<Value, Failure> {
-    if let Some(e) = &badge.endorsement {
-        return Ok(e.clone());
-    }
-    let unsigned = endorsement_document(&setup.community_did, badge, public_url, Utc::now());
-    let signed = sign_as_community(setup, unsigned).await?;
-    // Kept on the badge as it is now, so a change made meanwhile is not undone.
-    let mut fresh = super::get_badge(&state.badges_ks, &badge.badge_id)
-        .await
-        .map_err(Failure::Local)?
-        .unwrap_or_else(|| badge.clone());
-    if fresh.endorsement.is_none() {
-        fresh.endorsement = Some(signed.clone());
-        super::put_badge(&state.badges_ks, &fresh)
-            .await
-            .map_err(Failure::Local)?;
-    }
-    Ok(signed)
 }
 
 /// The holder's slot in the community's revocation list for a badge they may show
@@ -347,7 +302,16 @@ pub async fn issue(
             config.public_url.clone(),
         )
     };
-    let endorsement = ensure_endorsement(state, &setup, badge, public_url.as_deref()).await?;
+    // The group backs this badge: the credential is its holders' (VTI-BDG-060).
+    if group.badge_id.as_deref() != Some(badge.badge_id.as_str()) {
+        return Err(Failure::Local(AppError::Internal(format!(
+            "group {} does not back badge {}",
+            group.group_id, badge.badge_id
+        ))));
+    }
+    let issuer = load_community_profile(state)
+        .await
+        .map_err(Failure::Local)?;
     let (days, status, outside_entry) = if badge.shareable_outside {
         let entry = match entry_id {
             Some(e) => e.to_string(),
@@ -379,16 +343,14 @@ pub async fn issue(
     let valid_from = Utc::now();
     let valid_until = valid_from + Duration::days(i64::from(days));
     let mut document = document(
-        &setup.community_did,
+        &issuer,
         public_url.as_deref(),
-        group,
         badge,
         member_did,
         awards,
         valid_from,
         valid_until,
         status,
-        Some(&endorsement),
     );
     let credential_id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     document["id"] = json!(credential_id);
@@ -396,7 +358,7 @@ pub async fn issue(
         .holder
         .ask(
             vta_sdk::trust_tasks::TASK_KEYS_SIGN_DOCUMENT_0_1,
-            json!({ "keyId": group.signing_key_id, "document": document }),
+            json!({ "keyId": setup.community_key_id, "document": document }),
             SIGN_TIMEOUT,
         )
         .await
@@ -425,25 +387,21 @@ pub async fn issue(
     })
 }
 
-/// Offer `issued` to `member_did`, with the group's authority credential it chains to.
+/// Offer `issued` to `member_did`. The community is its issuer, so nothing rides with it.
 /// Best effort, as every delivery is: a holder offline now receives it from the outbox.
 pub async fn offer(state: &AppState, group: &Group, member_did: &str, issued: &Issued) {
-    let mut credentials = Vec::with_capacity(2);
-    match crate::credentials::dtg::into_typed(issued.credential.clone(), "badge credential") {
-        Ok(vc) => credentials.push(vc),
+    let vc = match crate::credentials::dtg::into_typed(
+        issued.credential.clone(),
+        "badge credential",
+    ) {
+        Ok(vc) => vc,
         Err(e) => {
             tracing::warn!(group = %group.group_id, error = %e, "could not offer a badge credential");
             return;
         }
-    }
-    if let Some(vac) = &group.authority_credential
-        && let Ok(vc) = crate::credentials::dtg::into_typed(vac.clone(), "group VAC")
-    {
-        credentials.push(vc);
-    }
-    let refs: Vec<&affinidi_vc::VerifiableCredential> = credentials.iter().collect();
+    };
     if let Err(e) =
-        crate::credentials::delivery::deliver_credentials(state, member_did, &refs).await
+        crate::credentials::delivery::deliver_credentials(state, member_did, &[&vc]).await
     {
         tracing::warn!(
             group = %group.group_id,
@@ -614,35 +572,11 @@ mod tests {
             created_by: None,
             updated_at: Utc::now(),
             retired_at: None,
-            endorsement: None,
-        }
-    }
-
-    fn group() -> Group {
-        Group {
-            group_id: "grp_x".into(),
-            group_did: "did:example:badge-group".into(),
-            signing_key_id: "did:example:badge-group#key-1".into(),
-            name: "Workshop host".into(),
-            description: None,
-            kind: crate::groups::GroupKind::Static,
-            rule: None,
-            join_policy: crate::groups::JoinPolicy::Request,
-            visibility: crate::groups::Audience::Members,
-            show_members: crate::groups::Audience::Members,
-            issues_credentials: true,
-            authority: None,
-            authority_credential: None,
-            did_log_path: None,
-            badge_id: Some("bdg_W5k2N8xRb3Qz7TpLAAAAAA".into()),
-            created_at: Utc::now(),
-            created_by: None,
-            updated_at: Utc::now(),
         }
     }
 
     #[test]
-    fn the_document_is_an_open_badge_issued_by_the_group_and_created_by_the_community() {
+    fn the_document_is_an_open_badge_issued_and_created_by_the_named_community() {
         let now = Utc::now();
         let award = Award {
             award_id: "awd_1".into(),
@@ -658,33 +592,43 @@ mod tests {
             revoke_reason: None,
             shared: None,
         };
-        let endorsement = endorsement_document(
+        let issuer = community_profile(
             "did:example:community",
-            &badge(),
+            Some(" First VTC "),
             Some("https://vtc.example.com/"),
-            now,
         );
         let doc = document(
-            "did:example:community",
+            &issuer,
             Some("https://vtc.example.com/"),
-            &group(),
             &badge(),
             "did:example:member",
             std::slice::from_ref(&award),
             now,
             now + Duration::days(30),
             None,
-            Some(&endorsement),
         );
         assert_eq!(
             doc["type"],
             json!(["VerifiableCredential", "OpenBadgeCredential"])
         );
         assert_eq!(doc["@context"][1], OB_CONTEXT);
-        assert_eq!(doc["issuer"]["id"], "did:example:badge-group");
+        // The community issues, named, with its origin (VTI-BDG-060).
+        assert_eq!(
+            doc["issuer"],
+            json!({
+                "id": "did:example:community",
+                "type": ["Profile"],
+                "name": "First VTC",
+                "url": "https://vtc.example.com",
+            })
+        );
+        assert_eq!(
+            doc["credentialSchema"],
+            json!([{ "id": OB_SCHEMA, "type": OB_SCHEMA_TYPE }])
+        );
         assert_eq!(doc["credentialSubject"]["id"], "did:example:member");
         let a = &doc["credentialSubject"]["achievement"];
-        assert_eq!(a["creator"]["id"], "did:example:community");
+        assert_eq!(a["creator"], doc["issuer"]);
         assert_eq!(
             a["id"],
             "https://vtc.example.com/badges/bdg_W5k2N8xRb3Qz7TpLAAAAAA"
@@ -692,23 +636,18 @@ mod tests {
         assert_eq!(a["criteria"]["narrative"], "Hosted any workshop.");
         assert_eq!(doc["evidence"].as_array().unwrap().len(), 1);
         assert_eq!(doc["evidence"][0]["narrative"], "Resin pour");
+        // Accepted to the second, in UTC; no identifier of our own invention.
+        let accepted = doc["evidence"][0]["description"].as_str().unwrap();
+        assert!(
+            accepted.starts_with("Accepted ") && accepted.ends_with('Z'),
+            "{accepted}"
+        );
+        assert!(!accepted.contains('.'), "{accepted}");
+        assert!(doc["evidence"][0].get("id").is_none());
         assert!(
             doc.get("credentialStatus").is_none(),
             "inside regime: no status"
         );
-        // The community's endorsement rides on the Achievement (VTI-BDG-060).
-        let e = &a["endorsement"][0];
-        assert_eq!(
-            e["type"],
-            json!(["VerifiableCredential", "EndorsementCredential"])
-        );
-        assert_eq!(e["issuer"]["id"], "did:example:community");
-        assert_eq!(e["credentialSubject"]["id"], a["id"]);
-        assert_eq!(
-            e["credentialSubject"]["type"],
-            json!(["EndorsementSubject"])
-        );
-
         // The outside regime carries the status it was given, verbatim.
         let status = json!({
             "id": "https://vtc.example.com/v1/status-lists/revocation#7",
@@ -718,22 +657,26 @@ mod tests {
             "statusListCredential": "https://vtc.example.com/v1/status-lists/revocation",
         });
         let outside = document(
-            "did:example:community",
+            &issuer,
             Some("https://vtc.example.com/"),
-            &group(),
             &badge(),
             "did:example:member",
             &[award],
             now,
             now + Duration::days(730),
             Some(status.clone()),
-            None,
         );
         assert_eq!(outside["credentialStatus"], status);
         assert!(
             outside["credentialSubject"]["achievement"]
                 .get("endorsement")
                 .is_none()
+        );
+
+        // A community without a name or a public origin is still a Profile.
+        assert_eq!(
+            community_profile("did:example:community", Some("  "), None),
+            json!({ "id": "did:example:community", "type": ["Profile"] })
         );
     }
 }

@@ -236,9 +236,14 @@ impl Candidate {
         let mut h = Sha256::new();
         h.update(self.mediator_did.as_bytes());
         h.update(b"\0");
-        h.update(serde_json::to_vec(&self.document["verificationMethod"]).unwrap_or_default());
+        h.update(
+            serde_json_canonicalizer::to_vec(&self.document["verificationMethod"])
+                .unwrap_or_default(),
+        );
         h.update(b"\0");
-        h.update(serde_json::to_vec(&self.document["keyAgreement"]).unwrap_or_default());
+        h.update(
+            serde_json_canonicalizer::to_vec(&self.document["keyAgreement"]).unwrap_or_default(),
+        );
         vta_sdk::hex::lower(&h.finalize())
     }
 

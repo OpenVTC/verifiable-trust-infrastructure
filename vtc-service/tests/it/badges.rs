@@ -621,19 +621,33 @@ async fn an_award_is_an_offer_until_accepted_then_the_group_issues_the_credentia
     assert!(doc["payload"]["award"]["credentialId"].is_string());
     assert_eq!(doc["payload"]["badge"]["count"], 1);
     assert_eq!(doc["payload"]["badge"]["hidden"], false);
-    // The community's endorsement is signed first, once; then the credential as the group.
+    // One signature, as the community: it is the credential's issuer (VTI-BDG-060).
     let signed = fix.vta.calls_of(SIGN_DOCUMENT);
-    assert_eq!(signed.len(), signed_before + 2);
-    assert_eq!(
-        signed[signed_before]["document"]["type"][1],
-        "EndorsementCredential"
+    assert_eq!(signed.len(), signed_before + 1);
+    let group_did = created["group"]["groupDid"].as_str().unwrap();
+    assert!(
+        !signed[signed_before]["keyId"]
+            .as_str()
+            .unwrap()
+            .starts_with(group_did),
+        "signed as the community, not the group"
     );
-    let vc = &signed[signed_before + 1]["document"];
+    let vc = &signed[signed_before]["document"];
     assert_eq!(
         vc["type"],
         json!(["VerifiableCredential", "OpenBadgeCredential"])
     );
-    assert_eq!(vc["issuer"]["id"], created["group"]["groupDid"]);
+    assert_eq!(vc["issuer"]["id"], TEST_VTC_DID);
+    assert_eq!(vc["issuer"]["type"], json!(["Profile"]));
+    assert_eq!(
+        vc["credentialSchema"][0]["type"],
+        "1EdTechJsonSchemaValidator2019"
+    );
+    assert!(
+        vc["credentialSubject"]["achievement"]
+            .get("endorsement")
+            .is_none()
+    );
     assert_eq!(vc["credentialSubject"]["id"], fix.member.did);
     assert_eq!(
         vc["credentialSubject"]["achievement"]["creator"]["id"],
@@ -1045,31 +1059,22 @@ async fn a_badge_shown_outside_carries_a_status_in_the_communitys_list_and_is_re
     let (_, doc) = fix.as_member("show", json!({ "badgeId": badge_id })).await;
     assert_eq!(doc["payload"]["credentialRegime"], "outside", "{doc}");
 
-    // Accepting signs twice: the community's endorsement of the Achievement, kept on the
-    // badge (VTI-BDG-060), then the group's credential embedding it, with a status slot in
-    // the community's revocation list (VTI-BDG-062).
+    // Accepting signs once, as the community, the credential it issues (VTI-BDG-060), with a
+    // status slot in the community's revocation list (VTI-BDG-062).
     let signed_before = fix.vta.calls_of(SIGN_DOCUMENT).len();
     let first = fix.hold(&badge_id).await;
     let signed = fix.vta.calls_of(SIGN_DOCUMENT);
-    assert_eq!(signed.len(), signed_before + 2);
-    let endorsement = &signed[signed_before];
-    assert_eq!(
-        endorsement["document"]["type"],
-        json!(["VerifiableCredential", "EndorsementCredential"])
-    );
-    assert_eq!(endorsement["document"]["issuer"]["id"], TEST_VTC_DID);
+    assert_eq!(signed.len(), signed_before + 1);
     assert_ne!(
-        endorsement["keyId"],
+        signed[signed_before]["keyId"],
         json!(format!("{group_did}#key-1")),
         "signed as the community, not the group"
     );
-    let vc = &signed[signed_before + 1]["document"];
-    assert_eq!(vc["issuer"]["id"], group_did);
-    let embedded = &vc["credentialSubject"]["achievement"]["endorsement"][0];
-    assert_eq!(embedded["type"], endorsement["document"]["type"]);
-    assert!(
-        embedded["proof"].is_object(),
-        "the endorsement rides signed: {vc}"
+    let vc = &signed[signed_before]["document"];
+    assert_eq!(vc["issuer"]["id"], TEST_VTC_DID);
+    assert_eq!(
+        vc["credentialSubject"]["achievement"]["creator"],
+        vc["issuer"]
     );
     assert_eq!(vc["credentialStatus"]["type"], "BitstringStatusListEntry");
     assert_eq!(vc["credentialStatus"]["statusPurpose"], "revocation");
@@ -1084,15 +1089,14 @@ async fn a_badge_shown_outside_carries_a_status_in_the_communitys_list_and_is_re
     );
     assert!(!revocation_list(&fix).await.is_set(slot));
 
-    // A repeat award re-issues in the same slot, with the endorsement already held: one
-    // signature, as the group.
+    // A repeat award re-issues in the same slot: one signature, as the community.
     let second = fix.offer(&badge_id, &fix.member_entry).await;
     let (status, doc) = fix
         .as_member("mine/accept", json!({ "awardId": second }))
         .await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     let signed = fix.vta.calls_of(SIGN_DOCUMENT);
-    assert_eq!(signed.len(), signed_before + 3);
+    assert_eq!(signed.len(), signed_before + 2);
     assert_eq!(slot_of(&signed.last().unwrap()["document"]), slot);
 
     // Taking one award back re-issues, the bit still clear; taking the last back flips it
@@ -1159,7 +1163,7 @@ async fn a_badge_shown_outside_carries_a_status_in_the_communitys_list_and_is_re
     let signed = fix.vta.calls_of(SIGN_DOCUMENT);
     let vc = &signed.last().unwrap()["document"];
     assert!(vc.get("credentialStatus").is_none(), "{vc}");
-    assert!(vc["credentialSubject"]["achievement"]["endorsement"][0]["proof"].is_object());
+    assert_eq!(vc["issuer"]["id"], TEST_VTC_DID);
 }
 
 #[tokio::test]
@@ -2256,13 +2260,13 @@ async fn share_and_unshare_refuse_what_their_specifications_declare() {
     assert_eq!(tt_error_code(&doc), UNSHARE_ERR_BADGES_OFF, "{doc}");
 }
 
-/// VTI-BDG-080: every active community badge's group is published to the trust registry
-/// as an issuer the community recognises — under the community's authority, for the
-/// badge's Achievement, naming the badge by identifier only — and its record goes when the
-/// badge is retired. The projection is the one retry owner and checks itself against what
+/// VTI-BDG-080: every active community badge is published to the trust registry as one
+/// the community issues — the community as entity and authority, for the badge's
+/// Achievement, naming the badge by identifier only — and its record goes when the badge
+/// is retired. The projection is the one retry owner and checks itself against what
 /// the registry holds.
 #[tokio::test]
-async fn badge_groups_are_published_to_the_registry_as_recognised_issuers_and_withdrawn_on_retirement()
+async fn community_badges_are_published_to_the_registry_as_the_community_s_and_withdrawn_on_retirement()
  {
     use vtc_service::badges::registry::{ACTION, KIND, reconcile, verify};
     use vtc_service::registry::{MockRegistryClient, RegistryError};
@@ -2278,10 +2282,6 @@ async fn badge_groups_are_published_to_the_registry_as_recognised_issuers_and_wi
         .as_str()
         .unwrap()
         .to_string();
-    let outside_did = doc["payload"]["group"]["groupDid"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let created = fix.community_badge("Inside", false).await;
     let inside = created["badge"]["badgeId"].as_str().unwrap().to_string();
     let _kudos = fix.kudos_badge(&fix.member, "Clamp whisperer").await;
@@ -2290,8 +2290,11 @@ async fn badge_groups_are_published_to_the_registry_as_recognised_issuers_and_wi
     assert_eq!((r.put, r.deleted, r.failed), (2, 0, 0));
     let records = registry.trust_records().await;
     assert_eq!(records.len(), 2, "community badges only: {records:?}");
-    let key = format!("{outside_did}|{ACTION}|https://vtc.example.com/badges/{outside}");
-    let rec = records.get(&key).expect("the outside badge's group");
+    let key = format!("{TEST_VTC_DID}|{ACTION}|https://vtc.example.com/badges/{outside}");
+    let rec = records
+        .get(&key)
+        .expect("the outside badge, as the community's");
+    assert_eq!(rec["entity_id"], TEST_VTC_DID);
     assert_eq!(rec["authority_id"], TEST_VTC_DID);
     assert_eq!(rec["authorized"], true);
     assert_eq!(rec["context"], json!({ "kind": KIND, "badgeId": outside }));

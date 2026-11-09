@@ -701,7 +701,7 @@ fn list_cursor_filters(req: &VaultListBody) -> Value {
 
 fn list_filter_digest(filters: &Value) -> String {
     use sha2::{Digest, Sha256};
-    let bytes = serde_json::to_vec(filters).unwrap_or_default();
+    let bytes = serde_json_canonicalizer::to_vec(filters).unwrap_or_default();
     hex::encode(&Sha256::digest(bytes)[..8])
 }
 
