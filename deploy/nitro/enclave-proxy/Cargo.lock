@@ -70,9 +70,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-resolver-cache-sdk"
-version = "0.8.43"
+version = "0.8.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80adc9b2296ae3f4ddc4a5ec4b44c49ac2ff8d11565967b064f2aad42139b77f"
+checksum = "b0d479145f1ef77c3bb2a348cfc4512feecb640c7c9767754f3c05086ac693b7"
 dependencies = [
  "affinidi-did-common",
  "affinidi-did-resolver-traits",
@@ -812,9 +812,9 @@ dependencies = [
 
 [[package]]
 name = "did-scid"
-version = "0.4.0"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afa21cb488ff54668bb6adf8c206ef4e144baac7213c3da157d407ced805280e"
+checksum = "acbed56c9dda941e4d6cb5aef95e9072e03fda04927e7916d047d6d110458661"
 dependencies = [
  "affinidi-did-common",
  "didwebvh-rs",
@@ -3106,9 +3106,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-vsock"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b319ef9394889dab2e1b4f0085b45ba11d0c79dc9d1a9d1afc057d009d0f1c7"
+checksum = "676ade3d183052ca2703288b48f63a2e82633a24836ca279eb6724ab2a97b05d"
 dependencies = [
  "bytes",
  "futures",
@@ -3360,9 +3360,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vsock"
-version = "0.5.4"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba782755fc073877e567c2253c0be48e4aa9a254c232d36d3985dfae0bd5205"
+checksum = "9b7d4dba01e366e2ffbdf0700b1876f747c548db72dced534de41c54945c0148"
 dependencies = [
  "libc",
  "nix",
