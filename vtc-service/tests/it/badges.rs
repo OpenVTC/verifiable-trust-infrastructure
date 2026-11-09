@@ -672,6 +672,14 @@ async fn an_award_is_an_offer_until_accepted_then_the_group_issues_the_credentia
     assert_eq!(status, StatusCode::OK, "{doc}");
     assert_eq!(doc["payload"]["total"], 1);
     assert_eq!(doc["payload"]["items"][0]["entryId"], fix.member_entry);
+    // Each holder comes with their fields as the directory projects them for the caller,
+    // so a page names them without a second read.
+    assert!(
+        doc["payload"]["items"][0]["fields"]
+            .as_object()
+            .is_some_and(|f| !f.is_empty()),
+        "the holder's projected fields: {doc}"
+    );
 
     // A repeat award appends evidence and re-issues.
     let again = fix.offer(&badge_id, &fix.member_entry).await;

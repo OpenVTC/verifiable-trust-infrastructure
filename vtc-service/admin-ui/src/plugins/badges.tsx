@@ -614,8 +614,8 @@ function CreateBadgePage() {
           <div className="span-2 badge-settings-section">
             <h4>Credential</h4>
             <p className="muted">
-              Each holder gets an Open Badge credential issued by the badge&rsquo;s own group identity and endorsed
-              by the community. Inside the community it is short-lived and renewed while they hold the badge, with
+              Each holder gets an Open Badge credential issued by the community, named in it as the community
+              names itself. Inside the community it is short-lived and renewed while they hold the badge, with
               no status list.
             </p>
             <label className="checkbox">

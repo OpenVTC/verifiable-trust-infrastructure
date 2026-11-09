@@ -520,7 +520,7 @@ function Hidden({ badges }: { badges: MyBadge[] }) {
 
 const REGIME: Record<string, string> = {
   none: "Picture only; nothing goes to a wallet",
-  inside: "An Open Badge credential issued by the badge's own group identity, for use inside the community",
+  inside: "An Open Badge credential issued by the community, for use inside the community",
   outside: "An Open Badge credential you may show outside the community",
 };
 
