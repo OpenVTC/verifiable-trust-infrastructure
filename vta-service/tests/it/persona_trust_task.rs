@@ -1361,8 +1361,33 @@ async fn audit_rows(
     pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
     pairs
         .into_iter()
-        .filter_map(|(_k, v)| serde_json::from_slice(&v).ok())
+        .filter_map(|(_k, v)| audit_row(&v))
         .collect()
+}
+
+/// One stored audit row as the flat entry: a pre-chain row as it is, a chained
+/// envelope (what a VTA writes now) by its operation, as the VTA's own reader
+/// flattens it.
+fn audit_row(raw: &[u8]) -> Option<vta_sdk::protocols::audit_management::list::AuditLogEntry> {
+    use vti_common::audit::AuditEnvelope;
+    use vti_common::audit::event::AuditEvent;
+    if let Ok(env) = serde_json::from_slice::<AuditEnvelope>(raw) {
+        let AuditEvent::VtaOperation(op) = &env.event else {
+            return None;
+        };
+        return Some(vta_sdk::protocols::audit_management::list::AuditLogEntry {
+            id: env.event_id.to_string(),
+            timestamp: u64::try_from(env.timestamp.timestamp()).unwrap_or(0),
+            action: op.action.clone(),
+            actor: env.actor_did_plain.clone().unwrap_or_default(),
+            resource: op.resource.clone().or_else(|| env.target_did_plain.clone()),
+            outcome: op.outcome.clone(),
+            channel: op.channel.clone(),
+            context_id: op.context_id.clone(),
+            detail: op.detail.clone(),
+        });
+    }
+    serde_json::from_slice(raw).ok()
 }
 
 /// A persona write leaves an audit row that says **what changed** — and that

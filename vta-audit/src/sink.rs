@@ -62,6 +62,18 @@ pub trait AuditSink: Send + Sync {
     /// either; it should assume only that returning `Err` is honest and
     /// swallowing internally is not.
     async fn record(&self, entry: &AuditLogEntry) -> Result<(), AppError>;
+
+    /// A keyed commitment to `value`, for a record that must refer to personal
+    /// data without embedding it (VTI-AUD-005): a memory item's key, which
+    /// names what the agent remembered and is often personal itself.
+    ///
+    /// `None` when this sink keeps no key to commit under. The caller then
+    /// records **no** reference, never the value: an unkeyed digest of a
+    /// low-entropy name is a dictionary lookup away from the name.
+    async fn commit(&self, value: &str) -> Option<String> {
+        let _ = value;
+        None
+    }
 }
 
 /// The shared handle every call site holds.
@@ -237,6 +249,16 @@ impl AuditSink for ChainedKeyspaceAuditSink {
             )
             .await
             .map(|_| ())
+    }
+
+    async fn commit(&self, value: &str) -> Option<String> {
+        // The key is established when the chain opens.
+        self.opened
+            .get_or_try_init(|| self.ensure_open())
+            .await
+            .ok()?;
+        let key = self.writer.active_key().await.ok()?;
+        Some(vti_common::audit::commit_reference(&key, value))
     }
 }
 
@@ -521,6 +543,42 @@ mod chained_sink_tests {
         let found = envelopes(&audit_ks).await;
         assert_eq!(found.len(), 3, "one opening entry, not two");
         verify_chain(&found).expect("the chain survives the restart");
+    }
+
+    /// A reference to personal data (VTI-AUD-005) is a keyed commitment: the
+    /// same value commits the same way, a different value differently, the
+    /// value never appears, and the key id says which audit key it is under.
+    #[tokio::test]
+    async fn a_chained_sink_commits_under_its_audit_key() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks, key_ks);
+        let a = sink
+            .commit("vta/memory\0ctx\0contact/billing")
+            .await
+            .expect("keyed");
+        assert!(a.starts_with("hmac-sha256:"), "{a}");
+        assert!(!a.contains("billing"));
+        assert_eq!(
+            a,
+            sink.commit("vta/memory\0ctx\0contact/billing")
+                .await
+                .unwrap(),
+            "deterministic, so the VTA can recompute it for a candidate"
+        );
+        assert_ne!(
+            a,
+            sink.commit("vta/memory\0other\0contact/billing")
+                .await
+                .unwrap()
+        );
+    }
+
+    /// A sink with no key offers no commitment, so its caller records no
+    /// reference — never the value, and never an unkeyed digest of it.
+    #[tokio::test]
+    async fn a_flat_sink_has_nothing_to_commit_under() {
+        let (audit_ks, _key_ks, _dir) = keyspaces();
+        assert_eq!(KeyspaceAuditSink::new(audit_ks).commit("x").await, None);
     }
 
     /// A DID-shaped resource travels in the hashed members, where an erasure

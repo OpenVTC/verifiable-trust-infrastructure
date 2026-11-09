@@ -44,7 +44,6 @@ use vta_sdk::protocols::memory::{
 use vti_common::acl::Capability;
 use vti_specs::vta::memory as spec;
 
-use crate::audit;
 use crate::auth::AuthClaims;
 use crate::operations::app_state::AppStateError;
 use crate::operations::memory;
@@ -213,7 +212,7 @@ pub(super) async fn handle_put(
     {
         return memory_reject(state, auth, &doc, e).await;
     }
-    audit_memory(state, "memory.put", auth, &req.key, &req.context_id).await;
+    audit_write(state, "memory.put", auth, &req.context_id, &req.key).await;
     success_response(&doc, MemoryPutResponse { key: req.key })
 }
 
@@ -237,7 +236,16 @@ pub(super) async fn handle_list(
         Ok(items) => items,
         Err(e) => return memory_reject(state, auth, &doc, e).await,
     };
-    audit_memory(state, "memory.list", auth, &req.context_id, &req.context_id).await;
+    let keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
+    audit_read(
+        state,
+        "memory.list",
+        auth,
+        &req.context_id,
+        &keys,
+        ReadShape::KeySet,
+    )
+    .await;
     success_response(&doc, MemoryListResponse { items })
 }
 
@@ -281,7 +289,7 @@ pub(super) async fn handle_delete(
         }
         Err(e) => return memory_reject(state, auth, &doc, e).await,
     }
-    audit_memory(state, "memory.delete", auth, &req.key, &req.context_id).await;
+    audit_write(state, "memory.delete", auth, &req.context_id, &req.key).await;
     success_response(&doc, MemoryDeleteResponse { key: req.key })
 }
 
@@ -325,7 +333,7 @@ pub(super) async fn handle_put_v0_2(
         Ok(o) => o,
         Err(e) => return memory_reject(state, auth, &doc, e).await,
     };
-    audit_memory(state, "memory.put", auth, &key, &context_id).await;
+    audit_write(state, "memory.put", auth, &context_id, &key).await;
     respond::<t::Response>(
         &doc,
         json!({
@@ -376,7 +384,7 @@ pub(super) async fn handle_delete_v0_2(
         Ok(o) => o,
         Err(e) => return memory_reject(state, auth, &doc, e).await,
     };
-    audit_memory(state, "memory.delete", auth, &key, &context_id).await;
+    audit_write(state, "memory.delete", auth, &context_id, &key).await;
     let mut body = json!({ "contextId": context_id, "key": key, "existed": out.existed });
     let o = body.as_object_mut().expect("just built an object");
     if let Some(v) = out.version {
@@ -432,7 +440,16 @@ pub(super) async fn handle_list_v0_2(
         Ok(p) => p,
         Err(e) => return memory_reject(state, auth, &doc, e).await,
     };
-    audit_memory(state, "memory.list", auth, &context_id, &context_id).await;
+    let keys: Vec<&str> = page.records.iter().map(|r| r.key.as_str()).collect();
+    audit_read(
+        state,
+        "memory.list",
+        auth,
+        &context_id,
+        &keys,
+        ReadShape::KeySet,
+    )
+    .await;
     let items: Vec<Value> = page.records.iter().map(memory_record).collect();
     let mut body = json!({
         "items": items,
@@ -489,7 +506,18 @@ pub(super) async fn handle_get_v0_1(
         Ok(r) => r,
         Err(e) => return memory_reject(state, auth, &doc, e).await,
     };
-    audit_memory(state, "memory.get", auth, &context_id, &context_id).await;
+    // The items returned — never the keys merely asked for, nor a deferred
+    // key, which was not read (`get/0.1` *Retention*).
+    let keys: Vec<&str> = found.iter().map(|r| r.key.as_str()).collect();
+    audit_read(
+        state,
+        "memory.get",
+        auth,
+        &context_id,
+        &keys,
+        ReadShape::EachItem,
+    )
+    .await;
     let items: Vec<Value> = found.iter().map(memory_record).collect();
     let mut body = json!({ "items": items, "missing": missing });
     if !deferred.is_empty() {
@@ -500,23 +528,110 @@ pub(super) async fn handle_get_v0_1(
     respond::<t::Response>(&doc, body)
 }
 
-/// Record a `memory.*` audit row (best-effort; a failed write never fails the
-/// op). `resource` is the entry key (put/delete) or the context id (list/get).
-async fn audit_memory(
+// ─── Audit ────────────────────────────────────────────────────────────────
+//
+// A memory key names what an agent remembered — `contact/billing`, or a key
+// naming a person, a condition, a dispute — so it is personal data, and an
+// audit record must refer to it without embedding it (VTI-AUD-005): the trail
+// is a hash chain, so anything written into it can never be erased. Records
+// therefore carry a keyed commitment to each item (`AuditSink::commit`, under
+// the audit key), never the key. That still answers "which agent saw what"
+// (#2116): the VTA can recompute the commitment for a candidate key.
+
+/// The value a memory item's commitment is taken over: the context and the
+/// key, so one key in two contexts is two items.
+fn item_reference_input(context_id: &str, key: &str) -> String {
+    format!("vta/memory\0{context_id}\0{key}")
+}
+
+/// How a read records what it returned.
+#[derive(Clone, Copy)]
+enum ReadShape {
+    /// `get`: a commitment to each item, so a later "was item X read?" is one
+    /// comparison per record.
+    EachItem,
+    /// `list`: one commitment to the whole returned key set, which says whether
+    /// two lists saw the same items without a line per item for a context of
+    /// thousands (#2116).
+    KeySet,
+}
+
+/// Record a `memory.put` / `memory.delete` row: the item by commitment as its
+/// resource (best-effort; a failed write never fails the op).
+async fn audit_write(
     state: &AppState,
     action: &str,
     auth: &AuthClaims,
-    resource: &str,
     context_id: &str,
+    key: &str,
 ) {
-    if let Err(e) = audit::record(
+    let reference = state
+        .audit_sink
+        .commit(&item_reference_input(context_id, key))
+        .await;
+    record(state, action, auth, context_id, reference.as_deref(), None).await;
+}
+
+/// Record a `memory.list` / `memory.get` row: how many items the caller was
+/// shown, and which, by commitment.
+async fn audit_read(
+    state: &AppState,
+    action: &str,
+    auth: &AuthClaims,
+    context_id: &str,
+    keys: &[&str],
+    shape: ReadShape,
+) {
+    let mut detail = format!("items={}", keys.len());
+    match shape {
+        ReadShape::EachItem => {
+            let mut refs = Vec::with_capacity(keys.len());
+            for k in keys {
+                if let Some(r) = state
+                    .audit_sink
+                    .commit(&item_reference_input(context_id, k))
+                    .await
+                {
+                    refs.push(r);
+                }
+            }
+            if !refs.is_empty() {
+                detail.push_str(&format!(" refs={}", refs.join(",")));
+            }
+        }
+        ReadShape::KeySet if !keys.is_empty() => {
+            let mut sorted: Vec<&str> = keys.to_vec();
+            sorted.sort_unstable();
+            let joined: Vec<String> = sorted
+                .iter()
+                .map(|k| item_reference_input(context_id, k))
+                .collect();
+            if let Some(r) = state.audit_sink.commit(&joined.join("\n")).await {
+                detail.push_str(&format!(" keySet={r}"));
+            }
+        }
+        ReadShape::KeySet => {}
+    }
+    record(state, action, auth, context_id, None, Some(&detail)).await;
+}
+
+async fn record(
+    state: &AppState,
+    action: &str,
+    auth: &AuthClaims,
+    context_id: &str,
+    resource: Option<&str>,
+    detail: Option<&str>,
+) {
+    if let Err(e) = vta_audit::record_with_detail(
         &state.audit_sink,
         action,
         &auth.did,
-        Some(resource),
+        resource,
         "success",
         Some(TRANSPORT_TRUST_TASK),
         Some(context_id),
+        detail,
     )
     .await
     {
@@ -1253,5 +1368,83 @@ mod tests {
         )
         .await;
         assert_eq!(code(&list), "vta/memory/list:contextForbidden");
+    }
+
+    /// #2116, under VTI-AUD-005: the trail says which items each read returned
+    /// and which item each write touched — by keyed commitment, never by key,
+    /// because a key is personal data and the chained trail can never erase it.
+    #[tokio::test]
+    async fn the_audit_trail_names_items_by_commitment_never_by_key() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = admin_of("acme");
+        put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "person/ada-lovelace", "value": "v"}),
+        )
+        .await;
+        handle_get_v0_1(
+            &state,
+            &auth,
+            doc(
+                TASK_VTA_MEMORY_GET_0_1,
+                json!({"contextId": "acme", "keys": ["person/ada-lovelace", "absent"]}),
+            ),
+        )
+        .await;
+        handle_list_v0_2(
+            &state,
+            &auth,
+            doc(TASK_VTA_MEMORY_LIST_0_2, json!({"contextId": "acme"})),
+        )
+        .await;
+        handle_delete_v0_2(
+            &state,
+            &auth,
+            doc(
+                TASK_VTA_MEMORY_DELETE_0_2,
+                json!({"contextId": "acme", "key": "person/ada-lovelace"}),
+            ),
+        )
+        .await;
+
+        let rows: Vec<String> = state
+            .audit_ks
+            .prefix_iter_raw("log:")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, v)| String::from_utf8_lossy(&v).into_owned())
+            .collect();
+        let memory_rows: Vec<&String> = rows.iter().filter(|r| r.contains("memory.")).collect();
+        assert_eq!(memory_rows.len(), 4, "{memory_rows:#?}");
+        for r in &rows {
+            assert!(
+                !r.contains("ada-lovelace"),
+                "a memory key reached the trail: {r}"
+            );
+        }
+        let one = |action: &str| {
+            memory_rows
+                .iter()
+                .find(|r| r.contains(&format!("\"{action}\"")))
+                .unwrap_or_else(|| panic!("no {action} row"))
+                .to_string()
+        };
+        // Put and delete name the same item, by the same commitment.
+        let reference = |row: &str| {
+            let at = row.find("hmac-sha256:").expect("a commitment");
+            row[at..at + "hmac-sha256:".len() + 36 + 1 + 32].to_string()
+        };
+        assert_eq!(
+            reference(&one("memory.put")),
+            reference(&one("memory.delete"))
+        );
+        // Get names exactly the item it returned, not the one it was asked for
+        // and did not find.
+        let get = one("memory.get");
+        assert!(get.contains("items=1 refs="), "{get}");
+        assert!(get.contains(&reference(&one("memory.put"))), "{get}");
+        assert!(one("memory.list").contains("items=1 keySet=hmac-sha256:"));
     }
 }

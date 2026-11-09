@@ -326,6 +326,25 @@ there — indistinguishable from an empty one. `wipe` needs both capabilities
 bulk-delete task — so re-running it after a partial failure is safe and
 finishes the job.
 
+**Who read or changed it.** Every memory call is in the VTA's audit trail,
+attributed to the DID that made it: `memory.put` and `memory.delete` with the
+item they touched, `memory.get` with each item it returned, `memory.list` with
+how many and a digest of which. `pnm memory history` shows it, newest first:
+
+```bash
+pnm memory history --context my-agent-memory
+pnm memory history --context my-agent-memory --actor <agent did> --from 2026-11-01T00:00:00Z
+```
+
+The trail never holds a memory key. A key names what was remembered — often a
+person — and the trail is a hash chain that cannot be edited, so anything in it
+could never be erased (VTI-AUD-005). Each item is named instead by a keyed
+commitment under the audit key (`hmac-sha256:<key id>:<hex>`): the same item
+always gets the same one, so rows about one item can be matched, and only the
+VTA can tell which key a commitment stands for. Audit rows written before this
+change named their item in the clear; they leave the trail only at the retention
+sweep. Reading the trail is an administrator's act, as for `pnm audit list`.
+
 Two boundaries worth stating before anything is stored here:
 
 - **Memory is not a secret store.** Tokens, passwords and keys belong in the

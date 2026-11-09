@@ -2174,6 +2174,30 @@ pub(crate) enum MemoryCommands {
         #[arg(long = "yes", short = 'y', alias = "force")]
         yes: bool,
     },
+
+    /// Who read or changed the context's memory, and when — newest first,
+    /// from the audit trail (needs what `pnm audit list` needs).
+    ///
+    /// Items are named by a keyed commitment, never by key: a memory key is
+    /// personal data, which the audit trail must not hold (VTI-AUD-005).
+    #[command(alias = "audit")]
+    History {
+        /// TARGET SCOPE: the context whose memory activity to show.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// Only this actor's activity (an agent's DID).
+        #[arg(long)]
+        actor: Option<String>,
+        /// From this time, RFC 3339 (e.g. 2026-11-01T00:00:00Z). Inclusive.
+        #[arg(long)]
+        from: Option<chrono::DateTime<chrono::Utc>>,
+        /// Until this time, RFC 3339. Exclusive.
+        #[arg(long)]
+        to: Option<chrono::DateTime<chrono::Utc>>,
+        /// Show at most this many rows.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
