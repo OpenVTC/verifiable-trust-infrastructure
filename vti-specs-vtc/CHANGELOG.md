@@ -2,6 +2,135 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.6.2...vti-specs-vtc-v0.6.3) — 2026-11-09
+
+
+### Added
+
+- **vtc**: A member can rotate onto a did:webs (VTI-MEM-041, VTI-KEY-003) ([#2517](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2517))
+
+Member rotation accepted did:key, did:webvh and did:scid. It now accepts
+  did:webs. A did:webs document has no `#key-0`: its keys are the KERI key
+  state's, identified by their CESR encoding, all in `authentication`. The
+  document resolves only when the key event log verifies (VTI-LNK-052), so the
+  new-DID signature is accepted from any key the document authorises for
+  authentication (at most 16 are tried), each through the same purpose and
+  controller check as the did:webvh path (VTI-MEM-041). A ConditionalProof2022
+  entry is skipped; it is not a key.
+
+  Re-pins vtc/members/rotate/0.1, which gained `did:scid` and `did:webs` in
+  its response `method` enum in place (trustoverip/dtgwg-trust-tasks-tf#1064).
+  That also fixes rotation onto a did:scid, whose successful reply
+  (`method: "did:scid"`) failed the published schema and reached the member
+  as an internal error.
+
+- **vtc**: Badge claim codes for events and the automatic badge counts (VTI-BDG-015, 025 – 027) ([#2494](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2494))
+
+Phase 4 of member badges, from the chapter (dtgwg-vti-spec #108) and the wire
+  (trust-tasks-tf #1059), pinned here.
+
+  Claim codes (`vtc/badges/claims/{create,list,withdraw,redeem}/0.1`,
+  `badges::claims`):
+  - An owner (or `vtc.badges.admin`) issues a code for a community badge with a
+    label, a time (at most 90 days ahead) and a claim limit. The code is 256 bits
+    from the CSPRNG, answered once; the community keeps only its SHA-256 digest
+    (`bcdig:`), the record (`bclaim:`, indexed by badge) and a marker per member
+    who redeemed it.
+  - A member redeeming it is admitted as on an approved request (VTI-BDG-024):
+    the claim is reserved - counted and marked under the badges lock - before the
+    credential is issued, and released if the key holder fails, so a limit is
+    never exceeded; then `credential::issue_with_new_award` issues the badge
+    credential with a new accepted award (giver = the code's issuer) as evidence,
+    offers it, and records the membership. Unknown, expired, exhausted,
+    withdrawn and retired-badge codes answer `codeInvalid` alike;
+    `alreadyClaimed` and `alreadyHeld` refuse a second claim.
+  - Withdrawing stops a code; claims made stand. Retiring a badge withdraws its
+    codes. `claims/list` never answers a code.
+
+  Rule counts (VTI-BDG-015): an automatic badge's rule may read
+  `kudosReceived`, `ideasSelected` and `electionTickets` with `atLeast` and
+  `count`. `groups::check_badge_rule` admits them; `check_rule` (any other group)
+  refuses them. `badges::rule_counts` counts from the community's own records at
+  each recompute - accepted kudos awards, selected ideas by proposer entry,
+  tickets by the member's current DID (never whether a ballot was cast).
+  Accepting kudos, selecting an idea and issuing a ticket kick the dynamic
+  sweeper (VTI-DIR-072).
+
+- **vtc**: A holder shows a badge award outside the community — share, unshare, the verification location and the baked picture (VTI-BDG-070, 071) ([#2489](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2489))
+
+* feat(vtc): a holder shows a badge award outside the community — share, unshare, the verification location and the baked picture (VTI-BDG-070, 071)
+
+  Serves `vtc/badges/awards/share/0.1` and `unshare/0.1` (pinned in #2487) and
+  answers the holder's own awards on `vtc/badges/show/0.1` (`myAwards`,
+  trust-tasks-tf #1057, refreshed here).
+
+  Sharing is the holder's own choice, award by award, for a badge marked
+  `shareableOutside`:
+
+  - `badges::share`: a 256-bit token generated for the share and derived from
+    nothing (`bshare:<token>` -> award, `Award.shared` with the locations and
+    `since`); a repeat share answers the same locations; `unshare` discards the
+    token, revokes nothing, and a later share answers new ones.
+  - What is served is the holder's credential exactly as issued: each time
+    `credential::issue` signs one in the outside regime it is kept at
+    `bcred:<badge>:<entry>`, so a repeat award or a renewal is served at the same
+    location (share item 10). A holder whose credential predates that is issued
+    it again on their first share (outside the lock, as every issue is).
+  - `GET /badges/shared/<token>`: the credential (`application/vc+ld+json`) to a
+    verifier; to a browser, a page saying what the community verifies of it
+    (issued by it, in its validity period, its slot in the community's
+    revocation list clear), with its own CSP. `GET .../image.png`: the badge's
+    picture as a PNG with the credential baked into an `iTXt` chunk
+    (`openbadgecredential`, Open Badges 3.0 baking). Unauthenticated,
+    parent-root, let through the host-surface gate; neither names another
+    holder or a count (VTI-BDG-071).
+  - A share ends with `unshare`, a take-back (`awards/revoke`), retiring the badge
+    and the holder's departure (`badges::on_departure`); `share::resolve`
+    re-checks the award, the token and the badge on every request, so a stopped
+    share answers the same `404` as a token never issued.
+  - Refusals as declared: `badgesOff`, `notFound` (unknown, another's and not
+    accepted alike), `notShareable` (`insideOnly` | `kudos` | `retired`),
+    `publicLocationUnavailable` (no `public_url`).
+  - `settle_after_revoke`'s re-issue is factored out as `reissue`, which now
+    re-reads each award under the badges lock before recording the credential on
+    it, so it never writes back a stale award (and its share) over a newer one.
+
+- **vti-specs-vtc**: Pin vtc/badges/awards/{share,unshare} 0.1 (badges shown outside, VTI-BDG-070) ([#2487](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2487))
+
+* feat(vti-specs-vtc): pin vtc/badges/awards/{share,unshare} 0.1 (badges shown outside, VTI-BDG-070)
+
+  Pins the two tasks from trust-tasks-tf #1054: a holder shows an accepted award
+  of a badge marked shareableOutside at unguessable public locations (the
+  credential as issued with a verification, and a baked image), and stops.
+
+  #1054 also added `AwardShare` and the optional `Award.shared` to
+  `vtc/badges/_shared/0.1`, changing eight pinned 0.1 drafts in place
+  (awards/{list,offer,revoke,withdraw}, kudos/{give,list}, mine/{accept,decline,list});
+  `trust-tasks update` takes their new bytes. Additive: no field VTI sends today
+  changed.
+
+  vti-mcp-common's guard census classifies `share` and `unshare` as mutating, as
+  `publish` is: the holder's own reversible choice to have the community serve
+  their credential; stopping revokes nothing.
+
+  Nothing serves the two tasks yet; the handlers follow.
+
+- **vti-specs-vtc**: Pin vtc/badges/* 0.1 (member badges, 24 tasks) ([#2473](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2473))
+
+Pins the Trust Task family the Community Badges chapter (VTI-BDG-001 – 095)
+  binds to, as trustoverip/dtgwg-trust-tasks-tf#1052 published it: settings
+  (show, update), definitions (create, update, retire, promote, list, show),
+  pictures (images/upload, images/get), awards (offer, withdraw, revoke, list),
+  the holder's own (mine/list, accept, decline, hide, show, arrange), walls
+  (wall/show, holders/list) and kudos (give, list).
+
+  Nothing serves them yet: this is the pin phase 1 builds on
+  (docs/05-design-notes/vtc-badges.md). The groups bundles are left at their
+  pinned digests; the shared Group record's new optional `badgeId` arrives with
+  their next update.
+
+
+
 ## [0.6.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.6.1...vti-specs-vtc-v0.6.2) — 2026-11-05
 
 

@@ -2,6 +2,32 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.32.0...vti-rooms-v0.32.1) — 2026-11-09
+
+
+### Fixed
+
+- Hash canonical JSON, so digests don't depend on serde_json's map order ([#2500](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2500))
+
+Idempotency hashes, list cursors' filter digests, the election ticket
+  digest, the git namespace role digest, the admin-events change digest and
+  the collection fingerprint all hashed `serde_json::to_vec` output. That is
+  sorted only while serde_json's `preserve_order` feature is off, and any
+  dependency can turn it on for the whole build (cargo unifies features).
+  With it on, the same request with its members in another order hashed
+  differently: a retry was refused as a different request, and a page cursor
+  failed against the filters it was minted for.
+
+  Each now hashes RFC 8785 canonical JSON (serde_json_canonicalizer, already a
+  workspace dependency). For these inputs — ASCII keys, compact, integer
+  numbers — the canonical bytes equal today's sorted output, so stored
+  idempotency records and open cursors stay valid across the upgrade.
+
+  The room file vectors test compares JSON values rather than text, since key
+  order is not part of the vectors.
+
+
+
 ## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.30.0...vti-rooms-v0.32.0) — 2026-11-05
 
 

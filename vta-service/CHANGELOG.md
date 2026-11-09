@@ -2,6 +2,200 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.79.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.78.0...vta-service-v0.79.0) — 2026-11-09
+
+
+### Added
+
+- **vta-service**: Memory reads are audited per item, and the trail names items by commitment, never by key ([#2116](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2116)) ([#2522](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2522))
+
+#2116 asked which agent saw which memory. Answering it showed a problem
+  with what the trail already held: the chained sink commits a DID-shaped
+  resource but keeps any other resource in the clear inside the hashed
+  event, on the rule that only a DID is personal data. A memory key is not
+  a DID and is personal (it names what was remembered, often a person), so
+  every memory.put and memory.delete wrote one where no erasure can reach
+  it without breaking verification (VTI-AUD-005).
+
+  - `AuditSink::commit` (provided, default `None`) and
+    `vti_common::audit::commit_reference`: a domain-separated HMAC under the
+    active audit key, `hmac-sha256:<key id>:<hex>`. The chained sink
+    implements it. A sink with no key returns `None`, and the caller then
+    records no reference: an unkeyed digest of a short name is a dictionary
+    lookup away from the name.
+  - Memory audit records now name each item by its commitment over
+    (contextId, key):
+    - put / delete: the commitment as the resource;
+    - get: `items=N refs=…`, one per item returned (never a deferred or
+      missing key);
+    - list: `items=N keySet=…`, one commitment to the returned key set.
+  - `pnm memory history --context … [--actor] [--from] [--to] [--limit]`:
+    who read or changed a context's memory and when, newest first, from
+    `audit/list` (one query per memory action, since the action filter is
+    exact).
+  - `MockVta` writes the chained trail production writes, not the flat
+    keyless one. Three persona tests that read raw audit rows as flat
+    entries now read both forms, as the VTA's own reader does.
+
+  Records written before this change keep their keys until the retention
+  sweep. That is recorded in the specification's divergence register
+  (trustoverip/dtgwg-vti-spec#113).
+
+- **pnm**: Memory commands use vta/memory 0.2; the 0.1 client methods are deprecated ([#2521](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2521))
+
+The registry marked vta/memory/{put,list,delete}/0.1 superseded when 0.2
+  was published ([#2115](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2115)) and will withdraw them. `pnm memory` moves to 0.2:
+
+  - `plant` is an unconditional 0.2 put and prints the version it took.
+  - `recall <key>` uses `vta/memory/get/0.1`. A bare `recall` pages through
+    `vta/memory/list/0.2` instead of loading the whole context in one
+    response. The `--json` output keeps 0.1's `{ items: [{ key, value }] }`
+    shape, so scripts keep working.
+  - `delete` / `forget` is a 0.2 delete. 0.2 answers a key holding nothing
+    with `existed: false`, but pnm still fails on it, as it did on 0.1's
+    `notFound`, so a mistyped key is never reported as forgotten.
+  - `wipe` deletes each item conditional on the version it listed, so an
+    item another writer changed after the operator confirmed stops the wipe
+    with a `versionConflict` instead of being deleted with the rest.
+
+- **vta-service**: Versioned agent memory — vta/memory/{put,delete,list}/0.2 and get/0.1 ([#2115](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2115)) ([#2520](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2520))
+
+Serves the memory versions specified in trustoverip/dtgwg-trust-tasks-tf#1067.
+  0.1 keeps working against the same store.
+
+  The store. Memory 0.2 has application state's semantics with one
+  namespace: a per-context counter that is both the `expectedVersion` token
+  and the `sinceVersion` watermark, conflicts that carry the winner's view,
+  tombstones reaped behind a watermark, and a version index that makes the
+  change feed paginatable. `operations::memory` therefore stores items as
+  application-state records, under a fixed namespace in the MEMORY
+  keyspace, instead of keeping a second copy of that machinery. The
+  keyspace stays memory's own, so backup, purge-on-context-delete and the
+  memory capabilities are unchanged.
+  - `app_state::put_measured` with `ValueMeasure`: memory measures the
+    UTF-8 text of a value (as `put/0.2` says), not its JSON encoding, so a
+    note full of quotes or newlines does not hit the 64 KiB cap early.
+  - 0.1 rows (`mem:<ctx>:<key>`) move into the versioned layout at boot
+    (`memory::migrate_legacy`). The migration is idempotent and never
+    drops data: an over-cap value (0.1 had no cap) moves uncapped, and a row
+    it cannot place stays where it is. Context-delete purges both layouts.
+  - Memory tombstones are reaped on app-state's retention window.
+  - A memory call naming a context id that is not a valid context path is
+    refused, keeping the layout's prefixes unambiguous.
+
+  The tasks.
+  - put/0.2: `expectedVersion`; `versionConflict` carries `currentVersion`
+    and `currentValue`, but the value is withheld from a caller holding
+    `memoryWrite` without `memoryRead` (a conflict is a read).
+  - delete/0.2: tombstone; optional positive `expectedVersion`; deleting
+    nothing succeeds with `existed: false`.
+  - list/0.2: a snapshot (prefix, cursor/limit, values by default) or the
+    change feed with tombstones; `highWatermark`, `watermarkTooOld`,
+    `cursorInvalid`, `filterConflict`.
+  - get/0.1: up to 256 named items, answered in `items` / `missing` /
+    `deferred`.
+  - An access refusal is the declared `contextForbidden` on 0.2 and `get`.
+    0.1 still answers `permissionDenied`.
+  - 0.1 on the new store: put is an unconditional put, delete leaves a
+    tombstone and still answers `notFound` when nothing was live, and list
+    drains every page.
+
+- **contexts**: Context-create capability so an agent gateway can provision sub-contexts ([#2302](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2302))
+
+* feat(keys): keys/sign-jws/0.1 — a VTA-built compact JWS walled off to JWT types
+
+  Add a `keys/sign-jws/0.1` Trust Task that produces a compact JWS (a JWT) over
+  a caller-supplied JOSE header and claims set, signed by a stored key. Unlike
+  `keys/sign/0.1` it is not a general signing oracle: the VTA assembles the
+  `b64url(header).b64url(payload)` signing input itself and signs it under
+  `SigningDomain::ProtocolDefined`, so the result verifies as a JWS rather than
+  as a VTA opaque-signing payload.
+
+  The task is walled off so it can never be pointed at producing a credential or
+  issuer artifact:
+
+  - the finalized protected header's `typ` must be on a small allow-list of JWT
+    profiles (`JWT`, `at+jwt`, `oauth-id-jag+jwt`, `dpop+jwt`, `logout+jwt`);
+    anything else — e.g. a Verifiable Credential media type — is refused before
+    the key is touched;
+  - the VTA, not the caller, sets `alg` from the key, so a caller cannot request
+    a signature under an algorithm the key does not implement or mislabel one;
+  - the payload must be a JSON object (a JWT claims set); raw bytes still go
+    through the opaque oracle, not here.
+
+  Authorized exactly as `keys/sign` is — per the key's context — so the same
+  context separation that walls off a signer's identities applies. Added to the
+  dispatch table with the spec's (none / none / actsAsSubject) class, and
+  acknowledged in `UNSPECCED_DISPATCHED_URIS` pending an upstream spec in
+  trustoverip/dtgwg-trust-tasks-tf (dispatched unvalidated like any
+  unknown-schema task until then).
+
+  Enables the Agent Gateway to delegate JWT signing (STS access tokens, ID-JAG)
+  to the VTA while keeping the JWT-signing path structurally separate from
+  credential signing.
+
+
+
+### Fixed
+
+- **vta-service**: A webvh update that cannot reach its host keeps the typed NoMatchingProtocol refusal ([#2279](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2279)) ([#2514](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2514))
+
+Publishing a webvh update to its hosting server wrapped every failure in
+  `UpdateDidWebvhError::Publish(String)`, which maps to `AppError::Internal`.
+  When the outbound seam shared no transport with the host, the typed
+  `AppError::NoMatchingProtocol` was rendered to text: an online edit
+  answered a retryable internal error instead of the refusal, so the SDK's
+  `VtaError::NoMatchingProtocol` never reached the CLI, and the offline
+  `vta webvh update-did` path detected the case by matching the rendered
+  "no transport in common" text.
+
+  `UpdateDidWebvhError` gains a `NoMatchingProtocol { step, refusal }`
+  variant (additive; the enum is `#[non_exhaustive]`), built by
+  `publish_failed` at every call that reaches the host: the reconcile
+  re-publish, the publish of the new entry, agent-name operations, and the
+  agent-name list and availability lookups. It maps to
+  `AppError::NoMatchingProtocol` (502) at the boundary. Every other host
+  failure is still `Publish` with the same text as before.
+
+  The offline CLI now matches on the variant. `NO_TRANSPORT_MARKER` and the
+  test pinning its wording are gone. The before/after-commit distinction
+  from #2275 is unchanged.
+
+- Hash canonical JSON, so digests don't depend on serde_json's map order ([#2500](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2500))
+
+Idempotency hashes, list cursors' filter digests, the election ticket
+  digest, the git namespace role digest, the admin-events change digest and
+  the collection fingerprint all hashed `serde_json::to_vec` output. That is
+  sorted only while serde_json's `preserve_order` feature is off, and any
+  dependency can turn it on for the whole build (cargo unifies features).
+  With it on, the same request with its members in another order hashed
+  differently: a retry was refused as a different request, and a page cursor
+  failed against the filters it was minted for.
+
+  Each now hashes RFC 8785 canonical JSON (serde_json_canonicalizer, already a
+  workspace dependency). For these inputs — ASCII keys, compact, integer
+  numbers — the canonical bytes equal today's sorted output, so stored
+  idempotency records and open cursors stay valid across the upgrade.
+
+  The room file vectors test compares JSON values rather than text, since key
+  order is not part of the vectors.
+
+- **store**: Flush fjall memtables in the background so writes don't stay in memory ([#2492](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2492))
+
+* fix(store): flush fjall memtables in the background so writes don't stay in memory
+
+  fjall 3.1 (3.1.12 and 3.1.13) only flushes a keyspace once that one
+  keyspace holds 64 MiB of unflushed writes. Its database-wide
+  max_write_buffer_size is stored but never read, and max_journaling_size
+  is only checked while a flush runs. The VTA spreads its writes over ~37
+  keyspaces, so it never flushes: every write it has ever made, including
+  every overwritten version of a record, stays in memory and is replayed
+  from the journal at startup. On staging this OOM-killed the keyring
+  runner VTA vta-78 461 times (84 MB journal, under 1 MB of live data).
+  STORAGE_FJALL_WRITE_BUFFER and STORAGE_FJALL_MAX_JOURNAL had no effect.
+
+
+
 ## [0.78.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.77.0...vta-service-v0.78.0) — 2026-11-05
 
 

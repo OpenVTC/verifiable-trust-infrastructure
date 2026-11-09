@@ -2,6 +2,155 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.62.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.61.0...vti-common-v0.62.0) — 2026-11-09
+
+
+### Added
+
+- **vta-service**: Memory reads are audited per item, and the trail names items by commitment, never by key ([#2116](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2116)) ([#2522](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2522))
+
+#2116 asked which agent saw which memory. Answering it showed a problem
+  with what the trail already held: the chained sink commits a DID-shaped
+  resource but keeps any other resource in the clear inside the hashed
+  event, on the rule that only a DID is personal data. A memory key is not
+  a DID and is personal (it names what was remembered, often a person), so
+  every memory.put and memory.delete wrote one where no erasure can reach
+  it without breaking verification (VTI-AUD-005).
+
+  - `AuditSink::commit` (provided, default `None`) and
+    `vti_common::audit::commit_reference`: a domain-separated HMAC under the
+    active audit key, `hmac-sha256:<key id>:<hex>`. The chained sink
+    implements it. A sink with no key returns `None`, and the caller then
+    records no reference: an unkeyed digest of a short name is a dictionary
+    lookup away from the name.
+  - Memory audit records now name each item by its commitment over
+    (contextId, key):
+    - put / delete: the commitment as the resource;
+    - get: `items=N refs=…`, one per item returned (never a deferred or
+      missing key);
+    - list: `items=N keySet=…`, one commitment to the returned key set.
+  - `pnm memory history --context … [--actor] [--from] [--to] [--limit]`:
+    who read or changed a context's memory and when, newest first, from
+    `audit/list` (one query per memory action, since the action filter is
+    exact).
+  - `MockVta` writes the chained trail production writes, not the flat
+    keyless one. Three persona tests that read raw audit rows as flat
+    entries now read both forms, as the VTA's own reader does.
+
+  Records written before this change keep their keys until the retention
+  sweep. That is recorded in the specification's divergence register
+  (trustoverip/dtgwg-vti-spec#113).
+
+- **contexts**: Context-create capability so an agent gateway can provision sub-contexts ([#2302](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2302))
+
+* feat(keys): keys/sign-jws/0.1 — a VTA-built compact JWS walled off to JWT types
+
+  Add a `keys/sign-jws/0.1` Trust Task that produces a compact JWS (a JWT) over
+  a caller-supplied JOSE header and claims set, signed by a stored key. Unlike
+  `keys/sign/0.1` it is not a general signing oracle: the VTA assembles the
+  `b64url(header).b64url(payload)` signing input itself and signs it under
+  `SigningDomain::ProtocolDefined`, so the result verifies as a JWS rather than
+  as a VTA opaque-signing payload.
+
+  The task is walled off so it can never be pointed at producing a credential or
+  issuer artifact:
+
+  - the finalized protected header's `typ` must be on a small allow-list of JWT
+    profiles (`JWT`, `at+jwt`, `oauth-id-jag+jwt`, `dpop+jwt`, `logout+jwt`);
+    anything else — e.g. a Verifiable Credential media type — is refused before
+    the key is touched;
+  - the VTA, not the caller, sets `alg` from the key, so a caller cannot request
+    a signature under an algorithm the key does not implement or mislabel one;
+  - the payload must be a JSON object (a JWT claims set); raw bytes still go
+    through the opaque oracle, not here.
+
+  Authorized exactly as `keys/sign` is — per the key's context — so the same
+  context separation that walls off a signer's identities applies. Added to the
+  dispatch table with the spec's (none / none / actsAsSubject) class, and
+  acknowledged in `UNSPECCED_DISPATCHED_URIS` pending an upstream spec in
+  trustoverip/dtgwg-trust-tasks-tf (dispatched unvalidated like any
+  unknown-schema task until then).
+
+  Enables the Agent Gateway to delegate JWT signing (STS access tokens, ID-JAG)
+  to the VTA while keeping the JWT-signing path structurally separate from
+  credential signing.
+
+- **vtc**: Member badges — the vtc/badges/* 0.1 family, badges backed by badge groups, awards accepted by the member, kudos (VTI-BDG-001 – 095) ([#2477](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2477))
+
+The backend of member badges (phase 1 of docs/05-design-notes/vtc-badges.md):
+  the 24 pinned `vtc/badges/*` tasks served on the dispatch spine.
+
+  - A community badge is a badge group: `create` mints the group as
+    `vtc/groups/create` does and records `badge_id` on it; its managers are the
+    badge's owners, its members the holders; requests and owners reuse the groups'
+    own tasks; retiring deletes the group. A badge group never carries authority
+    and is not listed among the community's groups (VTI-BDG-010 – 014).
+  - An award is an offer until accepted: `awards/offer` and `kudos/give` record
+    `offered` and admit, issue and show nothing; `mine/accept` has the VTA sign
+    an Open Badges 3.0 `OpenBadgeCredential` as the group's DID, with the
+    community as the Achievement's creator and one evidence entry per award,
+    before the membership is recorded (VTI-BDG-020 – 024, 060). The groups'
+    credential issuer branches to it for any badge group, so admission by
+    request, by rule and renewal issue the same profile.
+  - Hidden is portal-only (VTI-BDG-030): walls, holder lists and counts leave a
+    hidden holder out while owners see the mark and nothing is revoked.
+  - Kudos: any active member gives a kudos badge to any other within the
+    community's limits, each giving counted (VTI-BDG-040 – 044); `promote`
+    turns one into a community badge, offering every holder.
+  - Settings (`settings/show`, `settings/update`: `vtc.config.admin` + a bound
+    step-up); a community badge's `retire` takes the step-up too.
+  - Pictures reuse the directory's picture pipeline over a `badge_images`
+    keyspace. New keyspaces `badges` and `badge_images` (backed up), capability
+    `vtc.badges.admin`, audit event `BadgeChanged`, `vtc/badges` in the portal
+    signing scope, departure and sweep hooks.
+
+  Inside-only credential regime only: `shareableOutside` is refused until the
+  community-owned status set is served (VTI-BDG-062). Console and portal pages
+  follow in the next PR.
+
+
+
+### Fixed
+
+- Did:webs (and any JWK-published DID) in approver distinctness, re-rotation and SIOP login ([#2519](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2519))
+
+An audit of the places VTI decides which DID methods it accepts, or how it
+  finds a DID's key, after did:webs resolution and rotation landed.
+
+  - Step-up approver distinctness read a subject's keys with
+    `get_public_key_bytes`, which reads only Multikeys. A subject publishing
+    its keys as JWKs (did:webs, did:jwk, a JWK did:web) had them all dropped,
+    so every approver looked distinct: a subject could enrol its own key as
+    its approver. Keys are now read with `decode_public_key` (Multikey or
+    JWK); a method with no key (a ConditionalProof2022) is skipped, and one
+    whose key cannot be read fails closed.
+  - Member rotation verified the old DID's signature as a did:key only, so a
+    member who had rotated onto did:webvh, did:scid or did:webs could never
+    rotate again. Both signatures now go through one per-method verifier
+    (VTI-MEM-041).
+  - SIOP id_token login read only `publicKeyMultibase`; it now reads a JWK too,
+    keeping the Ed25519 codec check (an X25519 JWK is refused).
+
+  Left as they are, by the spec: node identities (VTI-KEY-001), client
+  bootstrap and ephemeral keys (VTI-KEY-002), key-role identities
+  (VTI-KEY-173), and foreign protocols (swiyu, BBS).
+
+- **store**: Flush fjall memtables in the background so writes don't stay in memory ([#2492](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2492))
+
+* fix(store): flush fjall memtables in the background so writes don't stay in memory
+
+  fjall 3.1 (3.1.12 and 3.1.13) only flushes a keyspace once that one
+  keyspace holds 64 MiB of unflushed writes. Its database-wide
+  max_write_buffer_size is stored but never read, and max_journaling_size
+  is only checked while a flush runs. The VTA spreads its writes over ~37
+  keyspaces, so it never flushes: every write it has ever made, including
+  every overwritten version of a record, stays in memory and is replayed
+  from the journal at startup. On staging this OOM-killed the keyring
+  runner VTA vta-78 461 times (84 MB journal, under 1 MB of live data).
+  STORAGE_FJALL_WRITE_BUFFER and STORAGE_FJALL_MAX_JOURNAL had no effect.
+
+
+
 ## [0.61.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.60.0...vti-common-v0.61.0) — 2026-11-05
 
 

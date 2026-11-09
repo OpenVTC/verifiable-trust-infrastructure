@@ -20,7 +20,7 @@ path = "src/main.rs"
 # no member lifecycle, no policy engine, no credential issuance, no admin UI.
 vti-rooms = { path = "../vti-rooms", version = "0.32" }
 # The store and AppError. Nothing else internal.
-vti-common = { path = "../vti-common", version = "0.61" }
+vti-common = { path = "../vti-common", version = "0.62" }
 # The store-backed accepted-document-id record the VTA and the VTC keep (VTI-OPS-029).
 vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.7" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
@@ -77,7 +77,7 @@ affinidi-messaging-core = { workspace = true, optional = true }
 vti-secrets = { path = "../vti-secrets", version = "0.34", optional = true }
 # The session store behind `onboarding` — which backend is an operator's choice,
 # exactly as `[secrets]` is.
-vta-sdk = { path = "../vta-sdk", version = "0.85", optional = true }
+vta-sdk = { path = "../vta-sdk", version = "0.86", optional = true }
 # Reading the `[secrets]` table out of a config file.
 toml = { workspace = true, optional = true }
 serde_ignored = { workspace = true, optional = true }

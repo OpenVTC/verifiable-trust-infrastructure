@@ -2,6 +2,256 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.86.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.85.0...vta-sdk-v0.86.0) — 2026-11-09
+
+
+### Added
+
+- **pnm**: Memory commands use vta/memory 0.2; the 0.1 client methods are deprecated ([#2521](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2521))
+
+The registry marked vta/memory/{put,list,delete}/0.1 superseded when 0.2
+  was published ([#2115](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2115)) and will withdraw them. `pnm memory` moves to 0.2:
+
+  - `plant` is an unconditional 0.2 put and prints the version it took.
+  - `recall <key>` uses `vta/memory/get/0.1`. A bare `recall` pages through
+    `vta/memory/list/0.2` instead of loading the whole context in one
+    response. The `--json` output keeps 0.1's `{ items: [{ key, value }] }`
+    shape, so scripts keep working.
+  - `delete` / `forget` is a 0.2 delete. 0.2 answers a key holding nothing
+    with `existed: false`, but pnm still fails on it, as it did on 0.1's
+    `notFound`, so a mistyped key is never reported as forgotten.
+  - `wipe` deletes each item conditional on the version it listed, so an
+    item another writer changed after the operator confirmed stops the wipe
+    with a `versionConflict` instead of being deleted with the rest.
+
+- **vta-service**: Versioned agent memory — vta/memory/{put,delete,list}/0.2 and get/0.1 ([#2115](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2115)) ([#2520](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2520))
+
+Serves the memory versions specified in trustoverip/dtgwg-trust-tasks-tf#1067.
+  0.1 keeps working against the same store.
+
+  The store. Memory 0.2 has application state's semantics with one
+  namespace: a per-context counter that is both the `expectedVersion` token
+  and the `sinceVersion` watermark, conflicts that carry the winner's view,
+  tombstones reaped behind a watermark, and a version index that makes the
+  change feed paginatable. `operations::memory` therefore stores items as
+  application-state records, under a fixed namespace in the MEMORY
+  keyspace, instead of keeping a second copy of that machinery. The
+  keyspace stays memory's own, so backup, purge-on-context-delete and the
+  memory capabilities are unchanged.
+  - `app_state::put_measured` with `ValueMeasure`: memory measures the
+    UTF-8 text of a value (as `put/0.2` says), not its JSON encoding, so a
+    note full of quotes or newlines does not hit the 64 KiB cap early.
+  - 0.1 rows (`mem:<ctx>:<key>`) move into the versioned layout at boot
+    (`memory::migrate_legacy`). The migration is idempotent and never
+    drops data: an over-cap value (0.1 had no cap) moves uncapped, and a row
+    it cannot place stays where it is. Context-delete purges both layouts.
+  - Memory tombstones are reaped on app-state's retention window.
+  - A memory call naming a context id that is not a valid context path is
+    refused, keeping the layout's prefixes unambiguous.
+
+  The tasks.
+  - put/0.2: `expectedVersion`; `versionConflict` carries `currentVersion`
+    and `currentValue`, but the value is withheld from a caller holding
+    `memoryWrite` without `memoryRead` (a conflict is a read).
+  - delete/0.2: tombstone; optional positive `expectedVersion`; deleting
+    nothing succeeds with `existed: false`.
+  - list/0.2: a snapshot (prefix, cursor/limit, values by default) or the
+    change feed with tombstones; `highWatermark`, `watermarkTooOld`,
+    `cursorInvalid`, `filterConflict`.
+  - get/0.1: up to 256 named items, answered in `items` / `missing` /
+    `deferred`.
+  - An access refusal is the declared `contextForbidden` on 0.2 and `get`.
+    0.1 still answers `permissionDenied`.
+  - 0.1 on the new store: put is an unconditional put, delete leaves a
+    tombstone and still answers `notFound` when nothing was live, and list
+    drains every page.
+
+- **contexts**: Context-create capability so an agent gateway can provision sub-contexts ([#2302](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2302))
+
+* feat(keys): keys/sign-jws/0.1 — a VTA-built compact JWS walled off to JWT types
+
+  Add a `keys/sign-jws/0.1` Trust Task that produces a compact JWS (a JWT) over
+  a caller-supplied JOSE header and claims set, signed by a stored key. Unlike
+  `keys/sign/0.1` it is not a general signing oracle: the VTA assembles the
+  `b64url(header).b64url(payload)` signing input itself and signs it under
+  `SigningDomain::ProtocolDefined`, so the result verifies as a JWS rather than
+  as a VTA opaque-signing payload.
+
+  The task is walled off so it can never be pointed at producing a credential or
+  issuer artifact:
+
+  - the finalized protected header's `typ` must be on a small allow-list of JWT
+    profiles (`JWT`, `at+jwt`, `oauth-id-jag+jwt`, `dpop+jwt`, `logout+jwt`);
+    anything else — e.g. a Verifiable Credential media type — is refused before
+    the key is touched;
+  - the VTA, not the caller, sets `alg` from the key, so a caller cannot request
+    a signature under an algorithm the key does not implement or mislabel one;
+  - the payload must be a JSON object (a JWT claims set); raw bytes still go
+    through the opaque oracle, not here.
+
+  Authorized exactly as `keys/sign` is — per the key's context — so the same
+  context separation that walls off a signer's identities applies. Added to the
+  dispatch table with the spec's (none / none / actsAsSubject) class, and
+  acknowledged in `UNSPECCED_DISPATCHED_URIS` pending an upstream spec in
+  trustoverip/dtgwg-trust-tasks-tf (dispatched unvalidated like any
+  unknown-schema task until then).
+
+  Enables the Agent Gateway to delegate JWT signing (STS access tokens, ID-JAG)
+  to the VTA while keeping the JWT-signing path structurally separate from
+  credential signing.
+
+- **resolver**: Resolve did:webs (VTI-LNK-052, VTI-KEY-003) ([#2505](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2505))
+
+Turns on the cache SDK's did-webs feature and raises its floor to
+  0.8.47. From 0.8.46, did:webs resolution obeys the host policy did:web,
+  did:webvh and did:scid already do; 0.8.47 is on did-webs 0.9 and keri
+  0.5, which no longer turn on serde_json's preserve_order for the whole
+  build (that broke idempotency hashes, page cursors and the VTI-08 stack
+  budget here; #2500 hardened the hashes regardless).
+
+  A contact's or peer's did:webs verifies when its KERI key event log
+  verifies (VTI-LNK-052). A node's own identity stays did:webvh or
+  did:scid:vh (VTI-KEY-001), and key-role identities are still never
+  created under did:webs (VTI-KEY-173); resolving another method is
+  VTI-KEY-003's MAY.
+
+  A test holds the guard through the construction path every VTA and CLI
+  resolver uses: a loopback, .local or metadata-address did:webs is
+  refused by the host policy, not as an unsupported method, and its host
+  is never contacted.
+
+- **vtc**: Badge claim codes for events and the automatic badge counts (VTI-BDG-015, 025 – 027) ([#2494](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2494))
+
+Phase 4 of member badges, from the chapter (dtgwg-vti-spec #108) and the wire
+  (trust-tasks-tf #1059), pinned here.
+
+  Claim codes (`vtc/badges/claims/{create,list,withdraw,redeem}/0.1`,
+  `badges::claims`):
+  - An owner (or `vtc.badges.admin`) issues a code for a community badge with a
+    label, a time (at most 90 days ahead) and a claim limit. The code is 256 bits
+    from the CSPRNG, answered once; the community keeps only its SHA-256 digest
+    (`bcdig:`), the record (`bclaim:`, indexed by badge) and a marker per member
+    who redeemed it.
+  - A member redeeming it is admitted as on an approved request (VTI-BDG-024):
+    the claim is reserved - counted and marked under the badges lock - before the
+    credential is issued, and released if the key holder fails, so a limit is
+    never exceeded; then `credential::issue_with_new_award` issues the badge
+    credential with a new accepted award (giver = the code's issuer) as evidence,
+    offers it, and records the membership. Unknown, expired, exhausted,
+    withdrawn and retired-badge codes answer `codeInvalid` alike;
+    `alreadyClaimed` and `alreadyHeld` refuse a second claim.
+  - Withdrawing stops a code; claims made stand. Retiring a badge withdraws its
+    codes. `claims/list` never answers a code.
+
+  Rule counts (VTI-BDG-015): an automatic badge's rule may read
+  `kudosReceived`, `ideasSelected` and `electionTickets` with `atLeast` and
+  `count`. `groups::check_badge_rule` admits them; `check_rule` (any other group)
+  refuses them. `badges::rule_counts` counts from the community's own records at
+  each recompute - accepted kudos awards, selected ideas by proposer entry,
+  tickets by the member's current DID (never whether a ballot was cast).
+  Accepting kudos, selecting an idea and issuing a ticket kick the dynamic
+  sweeper (VTI-DIR-072).
+
+- **vtc**: A holder shows a badge award outside the community — share, unshare, the verification location and the baked picture (VTI-BDG-070, 071) ([#2489](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2489))
+
+* feat(vtc): a holder shows a badge award outside the community — share, unshare, the verification location and the baked picture (VTI-BDG-070, 071)
+
+  Serves `vtc/badges/awards/share/0.1` and `unshare/0.1` (pinned in #2487) and
+  answers the holder's own awards on `vtc/badges/show/0.1` (`myAwards`,
+  trust-tasks-tf #1057, refreshed here).
+
+  Sharing is the holder's own choice, award by award, for a badge marked
+  `shareableOutside`:
+
+  - `badges::share`: a 256-bit token generated for the share and derived from
+    nothing (`bshare:<token>` -> award, `Award.shared` with the locations and
+    `since`); a repeat share answers the same locations; `unshare` discards the
+    token, revokes nothing, and a later share answers new ones.
+  - What is served is the holder's credential exactly as issued: each time
+    `credential::issue` signs one in the outside regime it is kept at
+    `bcred:<badge>:<entry>`, so a repeat award or a renewal is served at the same
+    location (share item 10). A holder whose credential predates that is issued
+    it again on their first share (outside the lock, as every issue is).
+  - `GET /badges/shared/<token>`: the credential (`application/vc+ld+json`) to a
+    verifier; to a browser, a page saying what the community verifies of it
+    (issued by it, in its validity period, its slot in the community's
+    revocation list clear), with its own CSP. `GET .../image.png`: the badge's
+    picture as a PNG with the credential baked into an `iTXt` chunk
+    (`openbadgecredential`, Open Badges 3.0 baking). Unauthenticated,
+    parent-root, let through the host-surface gate; neither names another
+    holder or a count (VTI-BDG-071).
+  - A share ends with `unshare`, a take-back (`awards/revoke`), retiring the badge
+    and the holder's departure (`badges::on_departure`); `share::resolve`
+    re-checks the award, the token and the badge on every request, so a stopped
+    share answers the same `404` as a token never issued.
+  - Refusals as declared: `badgesOff`, `notFound` (unknown, another's and not
+    accepted alike), `notShareable` (`insideOnly` | `kudos` | `retired`),
+    `publicLocationUnavailable` (no `public_url`).
+  - `settle_after_revoke`'s re-issue is factored out as `reissue`, which now
+    re-reads each award under the badges lock before recording the credential on
+    it, so it never writes back a stale award (and its share) over a newer one.
+
+- **vtc**: Member badges in the console and the member portal (VTI-BDG-001 – 095) ([#2479](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2479))
+
+The pages over the vtc/badges/* 0.1 family #2477 serves.
+
+  Console (Community → Badges, `plugins/badges.tsx` over `lib/badges.ts`):
+  every badge the administrator or owner may see; the settings — on or off,
+  who may make a kudos badge (nobody, chosen roles and groups, every member),
+  the limits — behind vtc.config.admin and a bound step-up; defining a
+  community badge (vtc.badges.admin) with its picture, credential regime,
+  rules, who sees its holders, an automatic rule where the settings allow it,
+  and its owners; and one badge's page: edit, give to chosen members or to a
+  group, decide requests for it and appoint its owners (the badge group's
+  requests and managers, through the groups' tasks), every award given and
+  taken back with a reason, a kudos badge's givings and its promotion, and
+  retiring it (step-up for a community badge). Every act is signed by the
+  console key (VTI-BDG-095).
+
+  Portal (`#/badges`, `members/Badges.tsx` over `members/badges-api.ts`):
+  offers accepted or declined one by one (a decision surface drawn out of the
+  community theme's reach); the wall — order, pins within the limit, hide and
+  show again, who sees it; every badge to browse; one badge with its holders,
+  asking its owners for it (vtc/groups/join on the badge group), giving a
+  kudos badge; making a kudos badge with a picture uploaded from the browser.
+  A member's directory card shows their wall, pinned first, with the kudos
+  total where the community shows it, and lets another member give them a
+  kudos badge from there. The home page gets a Badges tile and an attention
+  line for offers waiting. Every act is signed by the portal's delegated key.
+
+
+
+### Fixed
+
+- **vta-sdk**: Reconnect a TspSession whose websocket the mediator closed ([#2503](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2503))
+
+The mediator closes every websocket when the access token it was opened
+  with expires (close 1008, "authentication token expired"; 900 s by
+  default). `TspSession::request` reconnected only after a reply timeout, so
+  a long-lived session kept the dead socket and every later request failed
+  at once with "TSP websocket closed by the mediator". vtc-mcp, which holds
+  one session for the life of the MCP server, stopped working after a
+  quarter of an hour.
+
+  A request that finds the socket closed or broken now reconnects once (a
+  fresh authentication, so a fresh token) and keeps waiting on the same
+  waiter until its own deadline, or STRANDED_REPLY_GRACE if that is later.
+  The request went out over the TSP transport's HTTP post, so its reply is
+  in the inbox and the new socket's flush-on-connect delivers it; nothing
+  is resent.
+
+  Concurrent requests failing on the same close share one reconnect: the
+  session numbers its sockets, and a waiter reconnects only if the socket
+  it saw die is still the current one. Each opening its own would evict the
+  one before, losing any reply already flushed onto an evicted socket
+  (raw-TSP mode deletes a frame once written).
+
+  tests/e2e/tests/tsp_reconnect_on_close.rs drives both cases against a
+  TestMediator with a 5 s access token; both fail on the previous code with
+  the production error.
+
+
+
 ## [0.85.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.84.0...vta-sdk-v0.85.0) — 2026-11-05
 
 

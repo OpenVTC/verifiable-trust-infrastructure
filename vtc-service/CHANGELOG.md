@@ -2,6 +2,528 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.26.0...vtc-service-v0.27.0) — 2026-11-09
+
+
+### Added
+
+- **vtc**: A member can rotate onto a did:webs (VTI-MEM-041, VTI-KEY-003) ([#2517](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2517))
+
+Member rotation accepted did:key, did:webvh and did:scid. It now accepts
+  did:webs. A did:webs document has no `#key-0`: its keys are the KERI key
+  state's, identified by their CESR encoding, all in `authentication`. The
+  document resolves only when the key event log verifies (VTI-LNK-052), so the
+  new-DID signature is accepted from any key the document authorises for
+  authentication (at most 16 are tried), each through the same purpose and
+  controller check as the did:webvh path (VTI-MEM-041). A ConditionalProof2022
+  entry is skipped; it is not a key.
+
+  Re-pins vtc/members/rotate/0.1, which gained `did:scid` and `did:webs` in
+  its response `method` enum in place (trustoverip/dtgwg-trust-tasks-tf#1064).
+  That also fixes rotation onto a did:scid, whose successful reply
+  (`method: "did:scid"`) failed the published schema and reached the member
+  as an internal error.
+
+- **vtc**: The badge picture builder finds icons by meaning, and browses them all ([#2511](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2511))
+
+Find an icon matches lucide's tags as well as names ("insect" finds the
+  bug, "prize" the trophy), names first; Browse all icons opens every icon
+  in a dialog with the same search, uncapped. Tags come from lucide-static
+  0.469.0 (ISC, dev dependency pinned to lucide-react's release), bundled
+  only into the lazy badge-icons chunk.
+
+- **vtc**: A member's badge wall says when each badge was earned ([#2502](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2502))
+
+wall/show already answers since and latestAt; the portal used them only
+  to sort. A tile now reads "Earned <date>", or "Since <date>" for a badge
+  held more than once with the latest in its title.
+
+- **vtc**: The community issues the badge credential, named (VTI-BDG-060, 064, 080) ([#2501](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2501))
+
+A verifier outside the community knows the community, not a badge group's
+  DID, and the embedded endorsement never named the group. The community
+  now signs the OpenBadgeCredential: issuer and the Achievement's creator
+  are its named Profile (DID, name, public url); credentialSchema names the
+  OB3 JSON Schema; evidence dates are to the second in UTC, with no
+  unregistered urn:vtc id. No endorsement is embedded, the group's VAC no
+  longer rides with the offer, and the registry record names the community.
+  The console's badge details show the group's DID and the issuer's, each
+  to copy or scan.
+
+- **vtc**: The badge picture builder searches lucide's whole icon set ([#2499](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2499))
+
+Sixteen icons are still offered first; *Find an icon* searches all of
+  lucide's (about 1,500) by name, every word of the search in the name,
+  showing at most 60 at a time. The whole set is its own chunk (about
+  104 kB gzipped), loaded only when someone searches. The picture is made
+  and sent as before (VTI-BDG-050).
+
+- **vtc**: Authorize another key from the console through the wallet, for an administrator whose identity lives in their VTA ([#2498](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2498))
+
+`cnm access authorize-key` signs the `auth/signing-key/authorize/0.1` a key
+  such as vtc-mcp's needs to act with an administrator's standing, but only with
+  a key `cnm` holds. An administrator whose identity is a persona in their VTA
+  had no way to sign it, so their assistant could not act for them, and a
+  step-up the assistant hit could not be answered from their wallet (it names
+  `cnm`'s key as the subject).
+
+  Console signing keys → Authorize another key builds the same document — the
+  named did:key, the identity, `scope: console`, an optional label, the
+  delegation's expiry (1 – 30 days) — usable for an hour, and has the wallet
+  sign it as the identity. Nothing is sent from the console: the authorization
+  is copied or downloaded and given to the key's holder, which enrols itself
+  with `auth/signing-key/enroll/0.2` (`vtc_enrol_signing_key`). The VTC's checks
+  are unchanged (single-use, only the named key, terms exactly the enrolment's,
+  not signed by a delegated key). The console refuses a non-did:key, an
+  out-of-range expiry, the identity itself and this browser's own key before
+  asking the wallet, and warns against reusing a key across communities.
+
+  vtc-mcp's `vtc_enrol_signing_key` now points at the console as well as `cnm`;
+  its operator page, README, skill and the console guide say how, and the
+  "not built yet" items for it and for the wallet step-up reader (plugin #427)
+  are gone.
+
+- **vtc-mcp**: Warn when an agent key is reused at a second community; say why one key per community (VTI-KEY-005, VTI-KEY-006) ([#2495](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2495))
+
+* feat(vtc-mcp): warn when an agent key is reused at a second community; say why one key per community (VTI-KEY-246)
+
+  A community records every DID that signs in to it, enrols as an approver or
+  holds a delegation. Two communities that hold the same one can tell that one
+  person stands behind both by comparing their records, and neither can see the
+  reuse from its own. Only the key holder can.
+
+  - vtc-mcp keeps an owner-only local note of the communities each agent DID
+    was used with ($VTC_MCP_STATE_DIR, else $XDG_STATE_HOME/vtc-mcp, else
+    ~/.local/state/vtc-mcp; DIDs only). A key pointed at a second community is
+    logged and reported as `keyReuseWarning` by vtc_whoami / vtc_status. It
+    warns and never refuses; --no-key-reuse-check turns it off.
+  - docs/03-vtc/admin-access.md §3.1a and vtc-mcp.md §2.7: use a different
+    approver, administrator and agent key at each community. The VTA browser
+    plugin already mints one approver per community; keys carried by hand are
+    the risk.
+  - The console's approver panels, the /admin/enrol-approver page and
+    `vtc admin enrol-approver` say the same in one line.
+
+- **vtc**: Build a badge picture from a colour and an icon, in the console and the portal ([#2497](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2497))
+
+The mockups' builder for members without artwork: a banner (with the badge's
+  name) or a square, one of eight colours that each carry white at 4.5:1, and
+  one of sixteen icons. The preview is the picture: the same SVG is drawn onto a
+  canvas (1024 wide for a banner, 512 square) and the PNG goes through the
+  ordinary vtc/badges/images/upload, so the community re-encodes it like any
+  other picture (VTI-BDG-050) and learns nothing about how it was made. No wire
+  change.
+
+  One shared component (components/BadgeBuilder), opened from the console's
+  picture field (create and edit) and from the portal's Make a badge, which
+  offers Upload my own picture / Build one from a colour and an icon. Tests: the
+  builder (shape sizes, colour and icon drawn, banner name shortened, a failed
+  drawing), and the build-then-create flow in both the console and the portal.
+
+- **vtc**: Badge claim codes for events and the automatic badge counts (VTI-BDG-015, 025 – 027) ([#2494](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2494))
+
+Phase 4 of member badges, from the chapter (dtgwg-vti-spec #108) and the wire
+  (trust-tasks-tf #1059), pinned here.
+
+  Claim codes (`vtc/badges/claims/{create,list,withdraw,redeem}/0.1`,
+  `badges::claims`):
+  - An owner (or `vtc.badges.admin`) issues a code for a community badge with a
+    label, a time (at most 90 days ahead) and a claim limit. The code is 256 bits
+    from the CSPRNG, answered once; the community keeps only its SHA-256 digest
+    (`bcdig:`), the record (`bclaim:`, indexed by badge) and a marker per member
+    who redeemed it.
+  - A member redeeming it is admitted as on an approved request (VTI-BDG-024):
+    the claim is reserved - counted and marked under the badges lock - before the
+    credential is issued, and released if the key holder fails, so a limit is
+    never exceeded; then `credential::issue_with_new_award` issues the badge
+    credential with a new accepted award (giver = the code's issuer) as evidence,
+    offers it, and records the membership. Unknown, expired, exhausted,
+    withdrawn and retired-badge codes answer `codeInvalid` alike;
+    `alreadyClaimed` and `alreadyHeld` refuse a second claim.
+  - Withdrawing stops a code; claims made stand. Retiring a badge withdraws its
+    codes. `claims/list` never answers a code.
+
+  Rule counts (VTI-BDG-015): an automatic badge's rule may read
+  `kudosReceived`, `ideasSelected` and `electionTickets` with `atLeast` and
+  `count`. `groups::check_badge_rule` admits them; `check_rule` (any other group)
+  refuses them. `badges::rule_counts` counts from the community's own records at
+  each recompute - accepted kudos awards, selected ideas by proposer entry,
+  tickets by the member's current DID (never whether a ballot was cast).
+  Accepting kudos, selecting an idea and issuing a ticket kick the dynamic
+  sweeper (VTI-DIR-072).
+
+- **vtc**: Badge groups published to the trust registry as issuers the community recognises (VTI-BDG-080) ([#2491](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2491))
+
+Where the community publishes to a trust registry, each active community badge's
+  group is published as one TRQP authorization record under the community's
+  authority: `{entity: the group's DID, action: issue, resource: the badge's
+  Achievement id}` - the identifier every credential of the badge names - with
+  `context: {kind: "vtcBadgeIssuer", badgeId}`. An outside verifier asks the
+  registry whether the community stands behind the issuer of a badge, and the
+  community's status set whether the award still stands. The record never carries
+  the badge's name or picture, so a badge kept inside is not described to the
+  world (VTI-BDG-050). Kudos badges have no group and are not published.
+
+- **vtc**: Hand a delegated key's step-up to the person's wallet (VTI-LNK-125 – VTI-LNK-131) ([#2490](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2490))
+
+A key a person delegated, such as their assistant's over vtc-mcp, can
+  redeem an operation-bound step-up but must never make one (VTI-APV-015).
+  Until now, a step-up-gated act signed by such a key could only be finished
+  in the console.
+
+  Pins `auth/step-up/requests/show/0.1` (trustoverip/dtgwg-trust-tasks-tf#1056)
+  and implements the `step-up` trigger-link flow (trustoverip/dtgwg-vti-spec#106).
+
+- **vtc**: A holder shows a badge award outside the community — share, unshare, the verification location and the baked picture (VTI-BDG-070, 071) ([#2489](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2489))
+
+* feat(vtc): a holder shows a badge award outside the community — share, unshare, the verification location and the baked picture (VTI-BDG-070, 071)
+
+  Serves `vtc/badges/awards/share/0.1` and `unshare/0.1` (pinned in #2487) and
+  answers the holder's own awards on `vtc/badges/show/0.1` (`myAwards`,
+  trust-tasks-tf #1057, refreshed here).
+
+  Sharing is the holder's own choice, award by award, for a badge marked
+  `shareableOutside`:
+
+  - `badges::share`: a 256-bit token generated for the share and derived from
+    nothing (`bshare:<token>` -> award, `Award.shared` with the locations and
+    `since`); a repeat share answers the same locations; `unshare` discards the
+    token, revokes nothing, and a later share answers new ones.
+  - What is served is the holder's credential exactly as issued: each time
+    `credential::issue` signs one in the outside regime it is kept at
+    `bcred:<badge>:<entry>`, so a repeat award or a renewal is served at the same
+    location (share item 10). A holder whose credential predates that is issued
+    it again on their first share (outside the lock, as every issue is).
+  - `GET /badges/shared/<token>`: the credential (`application/vc+ld+json`) to a
+    verifier; to a browser, a page saying what the community verifies of it
+    (issued by it, in its validity period, its slot in the community's
+    revocation list clear), with its own CSP. `GET .../image.png`: the badge's
+    picture as a PNG with the credential baked into an `iTXt` chunk
+    (`openbadgecredential`, Open Badges 3.0 baking). Unauthenticated,
+    parent-root, let through the host-surface gate; neither names another
+    holder or a count (VTI-BDG-071).
+  - A share ends with `unshare`, a take-back (`awards/revoke`), retiring the badge
+    and the holder's departure (`badges::on_departure`); `share::resolve`
+    re-checks the award, the token and the badge on every request, so a stopped
+    share answers the same `404` as a token never issued.
+  - Refusals as declared: `badgesOff`, `notFound` (unknown, another's and not
+    accepted alike), `notShareable` (`insideOnly` | `kudos` | `retired`),
+    `publicLocationUnavailable` (no `public_url`).
+  - `settle_after_revoke`'s re-issue is factored out as `reissue`, which now
+    re-reads each award under the badges lock before recording the credential on
+    it, so it never writes back a stale award (and its share) over a newer one.
+
+- **vti-specs-vtc**: Pin vtc/badges/awards/{share,unshare} 0.1 (badges shown outside, VTI-BDG-070) ([#2487](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2487))
+
+* feat(vti-specs-vtc): pin vtc/badges/awards/{share,unshare} 0.1 (badges shown outside, VTI-BDG-070)
+
+  Pins the two tasks from trust-tasks-tf #1054: a holder shows an accepted award
+  of a badge marked shareableOutside at unguessable public locations (the
+  credential as issued with a verification, and a baked image), and stops.
+
+  #1054 also added `AwardShare` and the optional `Award.shared` to
+  `vtc/badges/_shared/0.1`, changing eight pinned 0.1 drafts in place
+  (awards/{list,offer,revoke,withdraw}, kudos/{give,list}, mine/{accept,decline,list});
+  `trust-tasks update` takes their new bytes. Additive: no field VTI sends today
+  changed.
+
+  vti-mcp-common's guard census classifies `share` and `unshare` as mutating, as
+  `publish` is: the holder's own reversible choice to have the community serve
+  their credential; stopping revokes nothing.
+
+  Nothing serves the two tasks yet; the handlers follow.
+
+- **vtc**: The public Achievement document and picture of a badge shown outside (VTI-BDG-050, 051, 071) ([#2484](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2484))
+
+A badge its holders may show outside now has its two public artefacts at
+  the stable locations its credentials name, served to any Open Badges
+  verifier without authentication:
+
+  - `GET /badges/<badgeId>`: the Achievement document
+    (`application/ld+json`), with the community as creator and the
+    community's endorsement, as the credentials embed it.
+  - `GET /badges/<badgeId>/image`: the badge's picture, the community's own
+    re-encoding.
+
+  Both are parent-root routes beside the identity logs and pass the
+  host-surface gate on every host (`badges::public::is_badge_artefact_path`).
+  They name no holder and no count (VTI-BDG-071). A badge kept inside the
+  community answers the same 404 as an unknown one: its picture stays
+  members-only through vtc/badges/images/get (VTI-BDG-050). The credential of
+  a shareable badge now names its picture by that public location; an
+  inside badge's still names it by digest.
+
+  Sharing an award (vtc/badges/awards/share|unshare, the verification page
+  and the baked image) follows once those tasks are published
+  (trust-tasks-tf #1054).
+
+- **vtc**: Badges shown outside — the long-lived credential in the community's status set, and the community's endorsement embedded (VTI-BDG-060 – 063) ([#2482](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2482))
+
+The outside credential regime for member badges, and the one piece of
+  VTI-BDG-060 the first build left out.
+
+  - `shareableOutside` is accepted on `create` and `promote` for a community
+    badge (refused on a kudos badge as before) and fixed from then on. Such a
+    badge's credential is long-lived (`settings.credentialValidDays`, default
+    730) and carries a `credentialStatus` slot in the **community's** own
+    revocation list — the set every community credential uses, allocated at
+    random — one slot per badge and holder (`bslot:<badge>:<entry>`), reused by
+    every re-issue and renewal. Never a set of the badge's or the group's own
+    (VTI-BDG-062, VTI-CRD-014). The list's credential is the community's while
+    the badge credential's issuer is the group: the W3C Bitstring Status List
+    Recommendation compares no issuers and says the two "might differ".
+  - The bit is flipped when the holder's last award is taken back, when the
+    badge is retired, and when the holder departs (VTI-BDG-063:
+    `credential::{revoke_holder, revoke_all_holders, revoke_departed}`); an
+    inside-only credential still lapses with its renewal.
+  - Every badge credential now embeds the community's Open Badges 3.0
+    `EndorsementCredential` of the Achievement, signed by the VTA as the
+    community on first need and kept on the badge (VTI-BDG-060), so an outside
+    verifier sees who stands behind the issuer from the credential alone.
+  - Console: "May be shown outside" on the new-badge form and on promotion;
+    the credential's life in the settings.
+
+  Sharing an award outside (`awards/share|unshare`, the public verification
+  page and the baked image) is the next phase and needs the Trust Task family
+  first; this build issues the credential such a badge needs.
+
+- **vtc**: Member badges in the console and the member portal (VTI-BDG-001 – 095) ([#2479](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2479))
+
+The pages over the vtc/badges/* 0.1 family #2477 serves.
+
+  Console (Community → Badges, `plugins/badges.tsx` over `lib/badges.ts`):
+  every badge the administrator or owner may see; the settings — on or off,
+  who may make a kudos badge (nobody, chosen roles and groups, every member),
+  the limits — behind vtc.config.admin and a bound step-up; defining a
+  community badge (vtc.badges.admin) with its picture, credential regime,
+  rules, who sees its holders, an automatic rule where the settings allow it,
+  and its owners; and one badge's page: edit, give to chosen members or to a
+  group, decide requests for it and appoint its owners (the badge group's
+  requests and managers, through the groups' tasks), every award given and
+  taken back with a reason, a kudos badge's givings and its promotion, and
+  retiring it (step-up for a community badge). Every act is signed by the
+  console key (VTI-BDG-095).
+
+  Portal (`#/badges`, `members/Badges.tsx` over `members/badges-api.ts`):
+  offers accepted or declined one by one (a decision surface drawn out of the
+  community theme's reach); the wall — order, pins within the limit, hide and
+  show again, who sees it; every badge to browse; one badge with its holders,
+  asking its owners for it (vtc/groups/join on the badge group), giving a
+  kudos badge; making a kudos badge with a picture uploaded from the browser.
+  A member's directory card shows their wall, pinned first, with the kudos
+  total where the community shows it, and lets another member give them a
+  kudos badge from there. The home page gets a Badges tile and an attention
+  line for offers waiting. Every act is signed by the portal's delegated key.
+
+- **vtc**: Member badges — the vtc/badges/* 0.1 family, badges backed by badge groups, awards accepted by the member, kudos (VTI-BDG-001 – 095) ([#2477](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2477))
+
+The backend of member badges (phase 1 of docs/05-design-notes/vtc-badges.md):
+  the 24 pinned `vtc/badges/*` tasks served on the dispatch spine.
+
+  - A community badge is a badge group: `create` mints the group as
+    `vtc/groups/create` does and records `badge_id` on it; its managers are the
+    badge's owners, its members the holders; requests and owners reuse the groups'
+    own tasks; retiring deletes the group. A badge group never carries authority
+    and is not listed among the community's groups (VTI-BDG-010 – 014).
+  - An award is an offer until accepted: `awards/offer` and `kudos/give` record
+    `offered` and admit, issue and show nothing; `mine/accept` has the VTA sign
+    an Open Badges 3.0 `OpenBadgeCredential` as the group's DID, with the
+    community as the Achievement's creator and one evidence entry per award,
+    before the membership is recorded (VTI-BDG-020 – 024, 060). The groups'
+    credential issuer branches to it for any badge group, so admission by
+    request, by rule and renewal issue the same profile.
+  - Hidden is portal-only (VTI-BDG-030): walls, holder lists and counts leave a
+    hidden holder out while owners see the mark and nothing is revoked.
+  - Kudos: any active member gives a kudos badge to any other within the
+    community's limits, each giving counted (VTI-BDG-040 – 044); `promote`
+    turns one into a community badge, offering every holder.
+  - Settings (`settings/show`, `settings/update`: `vtc.config.admin` + a bound
+    step-up); a community badge's `retire` takes the step-up too.
+  - Pictures reuse the directory's picture pipeline over a `badge_images`
+    keyspace. New keyspaces `badges` and `badge_images` (backed up), capability
+    `vtc.badges.admin`, audit event `BadgeChanged`, `vtc/badges` in the portal
+    signing scope, departure and sweep hooks.
+
+  Inside-only credential regime only: `shareableOutside` is refused until the
+  community-owned status set is served (VTI-BDG-062). Console and portal pages
+  follow in the next PR.
+
+
+
+### Fixed
+
+- Did:webs (and any JWK-published DID) in approver distinctness, re-rotation and SIOP login ([#2519](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2519))
+
+An audit of the places VTI decides which DID methods it accepts, or how it
+  finds a DID's key, after did:webs resolution and rotation landed.
+
+  - Step-up approver distinctness read a subject's keys with
+    `get_public_key_bytes`, which reads only Multikeys. A subject publishing
+    its keys as JWKs (did:webs, did:jwk, a JWK did:web) had them all dropped,
+    so every approver looked distinct: a subject could enrol its own key as
+    its approver. Keys are now read with `decode_public_key` (Multikey or
+    JWK); a method with no key (a ConditionalProof2022) is skipped, and one
+    whose key cannot be read fails closed.
+  - Member rotation verified the old DID's signature as a did:key only, so a
+    member who had rotated onto did:webvh, did:scid or did:webs could never
+    rotate again. Both signatures now go through one per-method verifier
+    (VTI-MEM-041).
+  - SIOP id_token login read only `publicKeyMultibase`; it now reads a JWK too,
+    keeping the Ed25519 codec check (an X25519 JWK is refused).
+
+  Left as they are, by the spec: node identities (VTI-KEY-001), client
+  bootstrap and ephemeral keys (VTI-KEY-002), key-role identities
+  (VTI-KEY-173), and foreign protocols (swiyu, BBS).
+
+- **vtc**: Name members by name and short DID in pickers, and stop the icon browser repeating Book ([#2518](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2518))
+- **vtc**: Room documents over DIDComm and TSP are charged the room budgets, so file chunks are no longer held to five a minute ([#2294](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2294)) ([#2515](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2515))
+
+Only the HTTPS door charged room traffic to the room budgets
+  (`[rooms.rate_limits]`). Off it, `admit_room` admitted everything, so room
+  operations over DIDComm and TSP were uncharged, and an upload chunk over
+  64 KiB fell to the large-document budget: five a minute per sender, about
+  1.25 MiB a minute for a file at the default chunk size. The Keyring wallet
+  integration reported it and capped its chunks at 32 KiB to work around it.
+
+  `dispatch_trust_task_core`, the one entry point of every messaging
+  transport, now gives a room document the HTTPS door's admission
+  (`MessagingRoomAdmission`):
+
+  - before anything is verified, the transport-authenticated sender's room
+    ceiling (a hash of its VID under the per-process secret, so the map
+    names nobody; one shared key for a sender the transport did not
+    authenticate), with the same failure cost for a document its room never
+    authorizes;
+  - once the room authorizes it, the (room, presenter) or transfer budget.
+    These are the same maps the HTTPS door charges, now held in
+    `AppState::room_limiters`, so switching transport buys no second budget;
+  - `room_precharged`, so an upload chunk from the holder of the open upload
+    is admitted at its own size, as over HTTPS.
+
+  A refusal on a messaging transport is a signed `trust-task-error`
+  `unavailable` with `retryAfter` (the HTTPS door's `429` is unchanged).
+
+- **vtc**: The console builds from its own directory, without type-checking tests ([#2430](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2430)) ([#2512](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2512))
+
+`npm run build` (`tsc -b && vite build`) type-checked the console's tests,
+  because the one `tsconfig.json` included all of `src` with no exclusion.
+  Since #2364 `election-manifest.test.ts` imports the vendored
+  `vtc/elections/create/0.5` bundle from `vti-specs-vtc` by a relative path
+  that leaves the package, so the console no longer built from
+  `vtc-service/admin-ui` alone (a `git archive` of that directory, as an
+  external nightly build uses).
+
+  - `tsconfig.json` is now what ships: it excludes `src/**/*.test.ts(x)`,
+    `src/**/*.test-data.ts` and `src/test/`.
+  - `tsconfig.test.json` extends it with everything included, and is where
+    the tests are type-checked: `npm run typecheck` checks both programs,
+    `npm run lint` runs it, and so does CI's Typecheck step (which ran
+    `tsc -b --noEmit` over the old single program).
+  - `src/vite-env.d.ts` carries the `vite/client` reference. It lived only in
+    `list-limits.test.ts`, so the `*.css?raw` imports in `community-theme.ts`
+    type-checked only because a test was in the program.
+  - The bundle import goes through a vitest-only alias, `@vti-specs-vtc`
+    (`vitest.config.ts`, with its `paths` entry in `tsconfig.test.json`), so
+    the test still reads the pinned bundle itself rather than a copy that
+    could drift, and nothing the build reads references outside the package.
+
+  `rule-ir.test.ts` still reads `../policies/default/*.rego` at run time;
+  that is vitest-only, so the suite needs a repository checkout while the
+  build does not. `build.rs` and `scripts/build-vtc-web-bundles.sh` run
+  `npm run build` and need no change.
+
+- **vtc**: Badge holders and awards carry the holder's projected directory fields ([#2507](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2507))
+
+projected_fields read fields from the top of what directory::read::show
+  answers, but show answers the entries/show payload, {entry: {fields}}, so
+  holders/list and awards/list never carried a holder's name or picture and
+  the portal listed every holder as "A member". Also says the community,
+  not the group, issues the credential in the console and portal wording.
+
+- Hash canonical JSON, so digests don't depend on serde_json's map order ([#2500](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2500))
+
+Idempotency hashes, list cursors' filter digests, the election ticket
+  digest, the git namespace role digest, the admin-events change digest and
+  the collection fingerprint all hashed `serde_json::to_vec` output. That is
+  sorted only while serde_json's `preserve_order` feature is off, and any
+  dependency can turn it on for the whole build (cargo unifies features).
+  With it on, the same request with its members in another order hashed
+  differently: a retry was refused as a different request, and a page cursor
+  failed against the filters it was minted for.
+
+  Each now hashes RFC 8785 canonical JSON (serde_json_canonicalizer, already a
+  workspace dependency). For these inputs — ASCII keys, compact, integer
+  numbers — the canonical bytes equal today's sorted output, so stored
+  idempotency records and open cursors stay valid across the upgrade.
+
+  The room file vectors test compares JSON values rather than text, since key
+  order is not part of the vectors.
+
+- **vtc**: A badge group's own paths give and end the badge (VTI-BDG-013, 020, 023, 024, 063) ([#2493](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2493))
+
+A badge's holding is counted by its accepted awards (VTI-BDG-022), but the
+  groups' own paths admitted and removed members of a badge group without ever
+  touching an award:
+
+  - an approved request (VTI-BDG-014 / 024) and an automatic badge's rule
+    (VTI-BDG-013) admitted the member and issued the badge credential with no
+    award: they did not hold the badge (not on their card, not counted) and the
+    credential carried no evidence;
+  - an owner's `vtc/groups/members/add` admitted a member to a badge group without
+    the offer VTI-BDG-020 requires;
+  - `vtc/groups/leave`, an opt-out, an owner's `members/remove` and the rule
+    ending a membership left the awards accepted, the credential's status slot
+    unrevoked and any share live (VTI-BDG-063).
+
+- **vtc**: Election records change under one write lock, and an end in flight is not asked twice ([#2488](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2488))
+
+Every change to a stored election was a read, a change and a write of the whole
+  record, with nothing between writers - and several held a record across a call
+  to the ballot box and wrote it back whole (`cancel`, `deliver_registration`).
+  Three writers run at once in practice: a task handler, a board's closing in the
+  background (VTI-BRD-006) and the elections sweeper's tick. Whichever wrote last
+  erased what the others had written. Observed: a board closed while the sweeper
+  was keeping a checkpoint lost the election's `pendingEnd`, so the election was
+  never ended and stayed open for voting with nothing left to retry it; and a
+  close racing a checkpoint lost the final board head, which a deleted board's
+  tombstone must keep (VTI-BRD-008).
+
+  - `elections::store::update` applies a change to the record as stored now,
+    under one write lock held only from the read to the write - never across a
+    call to the ballot box (R1.3). Every writer in `elections` uses it and sets
+    only the fields it decided; `store::put` is left for a record nobody else can
+    be writing.
+  - An end in flight holds a lease: `record_end` and `request_end` make the
+    pending end due one backoff later, so the sweeper retries only an attempt
+    that never answered, and one election is never ended twice at once.
+
+  Found as the intermittent CI failure of
+  `board_tasks::vti_brd_008_a_deletion_waits_for_the_final_head` ([#2486](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2486)) on
+  #2487. Under load (`--stress-count 40 --test-threads 16`) the board deletion
+  tests failed about one run in six before and pass 40/40 after; the test
+  helper now reports the record it gave up on.
+
+- **vtc**: A board is deleted only once its closed elections' final heads are kept (VTI-BRD-008) ([#2486](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2486))
+
+Closing a board ends its elections in the background: `elections::ops::close`
+  records the election closed, then reads the ballot box's final board head.
+  `vtc/boards/delete` counted the election ended as soon as it read `closed`, so a
+  deletion in that moment kept a tombstone without the final head - the one a
+  voter checks a receipt against once only the tombstone is left.
+
+  A closed or tallied election now counts as ended for a deletion only once its
+  pending end is settled and its final head is kept; a cancelled one as before.
+  The sweeper keeps the head on its next pass, so the window is short and a
+  deletion inside it answers `electionsRunning`.
+
+  This was the cause of the intermittent CI failure of
+  `vti_brd_009_a_tombstone_is_read_by_members_until_it_is_removed`: its one
+  sweeper pass could settle the pending end and return before keeping the head,
+  and the deletion then raced the background close. The tests now run the sweeper
+  until the head is kept, and a new test holds the refusal.
+
+
+
 ## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.25.0...vtc-service-v0.26.0) — 2026-11-05
 
 
