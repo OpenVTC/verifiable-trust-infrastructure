@@ -1,0 +1,20 @@
+{
+  // The whole program: shipping code, tests, their fixtures and the harness.
+  // `npm run typecheck` (and so `npm run lint`) and CI's Typecheck step check
+  // this beside `tsconfig.json`, which is what `npm run build` checks and
+  // which leaves the tests out so the build needs nothing outside this
+  // package (#2430). Unlike the build, a test may read the vendored
+  // specification bundles in `vti-specs-vtc`, through the alias that
+  // `vitest.config.ts` defines.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // `paths` replaces the inherited map rather than merging with it, so `@/*`
+    // is repeated here.
+    "paths": {
+      "@/*": ["src/*"],
+      "@vti-specs-vtc/*": ["../../vti-specs-vtc/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": []
+}

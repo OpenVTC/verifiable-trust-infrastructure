@@ -1,5 +1,3 @@
-/// <reference types="vite/client" />
-
 // Every page size the console asks a signed listing for is within that
 // listing's specification maximum.
 //

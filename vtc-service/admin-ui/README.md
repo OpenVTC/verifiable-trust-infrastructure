@@ -64,13 +64,23 @@ plugins ship as a JS bundle that calls
 ```sh
 npm install          # one-time
 npm run build        # produces dist/
-npm run lint         # wire types match openapi.json, then tsc
+npm run lint         # wire types match openapi.json, then npm run typecheck
+npm run typecheck    # tsc over the build's program and, with the tests, tsconfig.test.json
 npm test             # component + unit tests (Vitest, jsdom)
 ```
 
 Tests sit beside what they test as `*.test.ts(x)` and render components
 through `src/test/render.tsx`, which supplies the providers `main.tsx` does and
 a table-driven `fetch` mock. `cargo build` does not run them.
+
+`npm run build` type-checks only what ships (`tsconfig.json` excludes
+`*.test.ts(x)`, `*.test-data.ts` and `src/test/`), so the console builds from
+this directory alone. The tests are type-checked by `tsconfig.test.json`
+(`npm run typecheck`, CI's Typecheck step). A test may read the repository's
+vendored specification bundles through the `@vti-specs-vtc` alias
+(`vitest.config.ts`, with its `paths` entry in `tsconfig.test.json`), and
+`rule-ir.test.ts` reads `../policies/default/*.rego` at run time: the suite
+needs the repository checkout, the build does not.
 
 `cargo build` (from `vtc-service/`) runs `npm install && npm run
 build` automatically via `build.rs`. To skip the build (e.g. in
