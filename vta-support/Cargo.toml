@@ -20,8 +20,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.35" }
-vta-config = { path = "../vta-config", version = "0.38" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.36" }
+vta-config = { path = "../vta-config", version = "0.39" }
 # `encryption` is REQUIRED, not optional: `seal.rs` calls
 # `KeyspaceHandle::with_encryption`, which is `#[cfg(feature = "encryption")]`.
 # Omitting it still built here — another workspace member enables the feature
