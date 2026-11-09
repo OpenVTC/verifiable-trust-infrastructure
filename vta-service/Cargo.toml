@@ -383,7 +383,7 @@ yasna = "0.6"
 # WebAuthn — used by `operations::passkey_vms` to drive the
 # registration ceremony for passkey-as-verificationMethod enrolment.
 webauthn-rs = { workspace = true }
-webauthn-rs-proto = "0.5"
+webauthn-rs-proto = "0.6"
 # CBOR decoder for parsing the WebAuthn attestationObject's authData
 # so the VTA can re-derive the COSE public key and reject any
 # tampered browser-supplied multikey.

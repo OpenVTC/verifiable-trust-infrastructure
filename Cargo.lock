@@ -4309,7 +4309,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7952,7 +7952,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "aes-kw",
  "argon2 0.5.3",
- "base64 0.21.7",
+ "base64 0.22.1",
  "bitfields",
  "block-padding 0.3.3",
  "blowfish",
@@ -8547,7 +8547,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9364,7 +9364,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9422,7 +9422,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9687,7 +9687,7 @@ checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.21.7",
+ "base64 0.22.1",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "granit-parser",
@@ -10482,10 +10482,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -12279,7 +12279,7 @@ dependencies = [
  "vti-webauthn",
  "vti-witness",
  "webauthn-rs",
- "webauthn-rs-proto",
+ "webauthn-rs-proto 0.6.2",
  "wiremock",
  "x25519-dalek 3.0.0",
  "x509-parser 0.18.1",
@@ -12570,7 +12570,7 @@ dependencies = [
  "vti-voting-service",
  "vti-vtn",
  "webauthn-rs",
- "webauthn-rs-proto",
+ "webauthn-rs-proto 0.6.2",
  "wiremock",
  "x25519-dalek 3.0.0",
  "x509-parser 0.18.1",
@@ -13262,7 +13262,7 @@ dependencies = [
  "url",
  "uuid",
  "webauthn-attestation-ca",
- "webauthn-rs-proto",
+ "webauthn-rs-proto 0.5.5",
  "x509-parser 0.16.0",
 ]
 
@@ -13276,6 +13276,19 @@ dependencies = [
  "base64urlsafedata",
  "serde",
  "serde_json",
+ "url",
+]
+
+[[package]]
+name = "webauthn-rs-proto"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5555714098cd069e3c8b31e58ac14250b9ae185e949c21416bccb55ce8ac8a5c"
+dependencies = [
+ "base64 0.21.7",
+ "serde",
+ "serde_json",
+ "serde_with",
  "url",
 ]
 
@@ -13409,7 +13422,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
