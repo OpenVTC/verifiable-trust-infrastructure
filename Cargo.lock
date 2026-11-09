@@ -11904,6 +11904,7 @@ dependencies = [
  "serde",
  "serde_ignored",
  "serde_json",
+ "serde_json_canonicalizer 0.4.1",
  "sha2 0.11.1",
  "tempfile",
  "toml",
