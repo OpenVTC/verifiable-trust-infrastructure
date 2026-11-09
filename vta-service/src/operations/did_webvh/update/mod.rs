@@ -183,6 +183,47 @@ mod tests {
         );
     }
 
+    /// #2279: the host being unreachable over any shared transport is the
+    /// typed refusal at the boundary, not an opaque 500.
+    #[test]
+    fn a_no_transport_publish_keeps_its_type_at_the_boundary() {
+        let refusal = vti_common::error::NoMatchingProtocol {
+            peer: "did:webvh:QmHost:dids.example".into(),
+            ours: vec![vta_sdk::protocol::matching::Protocol::Rest],
+            theirs: vec![vta_sdk::protocol::matching::Protocol::Tsp],
+            note: None,
+        };
+        let err = UpdateDidWebvhError::publish_failed("publish_did", refusal.clone().into());
+        assert!(
+            matches!(
+                &err,
+                UpdateDidWebvhError::NoMatchingProtocol {
+                    step: "publish_did",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(status_of(err), StatusCode::BAD_GATEWAY);
+        match AppError::from(UpdateDidWebvhError::publish_failed(
+            "reconcile publish_did",
+            refusal.clone().into(),
+        )) {
+            AppError::NoMatchingProtocol(got) => assert_eq!(*got, refusal),
+            other => panic!("expected the typed refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn any_other_host_failure_is_still_a_publish_error() {
+        let err = UpdateDidWebvhError::publish_failed(
+            "publish_did",
+            AppError::Internal("connection refused".into()),
+        );
+        assert!(matches!(&err, UpdateDidWebvhError::Publish(m) if m.starts_with("publish_did: ")));
+        assert_eq!(status_of(err), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
     #[test]
     fn persistence_maps_to_500() {
         assert_eq!(

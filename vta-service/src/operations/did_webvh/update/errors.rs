@@ -106,6 +106,35 @@ pub enum UpdateDidWebvhError {
     /// publication independently.
     #[error("publish error: {0}")]
     Publish(String),
+
+    /// Publishing to the webvh hosting server failed because this VTA and the
+    /// host share no transport: nothing the outbound seam can initiate is in
+    /// what the host's DID document advertises.
+    ///
+    /// Kept typed rather than folded into [`Self::Publish`], so it reaches the
+    /// caller as [`AppError::NoMatchingProtocol`] (and the SDK's
+    /// `VtaError::NoMatchingProtocol`) instead of an opaque 500, and so the
+    /// offline CLI can say what to do without matching on rendered text
+    /// (#2279). `step` names the publish that failed — `reconcile publish_did`
+    /// (before the commit point) or `publish_did` / `agent_name` (after it) —
+    /// in the same words [`Self::Publish`] uses.
+    #[error("publish error: {step}: {refusal}")]
+    NoMatchingProtocol {
+        step: &'static str,
+        refusal: Box<vti_common::error::NoMatchingProtocol>,
+    },
+}
+
+impl UpdateDidWebvhError {
+    /// The error for a failed call to the hosting server at `step`: the typed
+    /// no-common-transport refusal stays typed, anything else becomes
+    /// [`Self::Publish`] as before.
+    pub(crate) fn publish_failed(step: &'static str, err: AppError) -> Self {
+        match err {
+            AppError::NoMatchingProtocol(refusal) => Self::NoMatchingProtocol { step, refusal },
+            other => Self::Publish(format!("{step}: {other}")),
+        }
+    }
 }
 
 impl From<UpdateDidWebvhError> for AppError {
@@ -136,6 +165,11 @@ impl From<UpdateDidWebvhError> for AppError {
             // `rejected_carries_the_reason_to_the_caller` test pins it.
             UpdateDidWebvhError::Rejected(msg) => {
                 AppError::Validation(format!("webvh rejected this update: {msg}"))
+            }
+            // The transports' own refusal, passed through so the caller learns
+            // both protocol sets and the SDK recovers its typed variant.
+            UpdateDidWebvhError::NoMatchingProtocol { refusal, .. } => {
+                AppError::NoMatchingProtocol(refusal)
             }
         }
     }
