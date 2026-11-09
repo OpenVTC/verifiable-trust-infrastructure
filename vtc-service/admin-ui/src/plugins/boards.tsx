@@ -17,7 +17,7 @@ import { Check, EyeOff, GitMerge, Pencil, Plus, RotateCcw, SquareKanban, Trash2,
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
-import { EntryName, useEntryFaces } from "@/components/EntryName";
+import { byFace, EntryName, faceLabel, useEntryFaces } from "@/components/EntryName";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
 import {
@@ -913,9 +913,10 @@ export function BoardFacilitators({ board, mayRemoveOthers }: { board: Board; ma
               <option value="">Choose a member…</option>
               {[...faces.entries()]
                 .filter(([e]) => !appointed.some((a) => a.entryId === e))
+                .sort(byFace)
                 .map(([entryId, f]) => (
-                  <option key={entryId} value={entryId}>
-                    {f.name ?? entryId}
+                  <option key={entryId} value={entryId} title={f.did ?? undefined}>
+                    {faceLabel(f)}
                   </option>
                 ))}
             </select>

@@ -37,6 +37,7 @@ import {
 
 import { BadgeBuilder } from "@/components/BadgeBuilder";
 import { Protected } from "@/components/Protected";
+import { shortenDid } from "@/lib/format";
 
 import {
   acceptOffer,
@@ -834,6 +835,14 @@ function AskForBadge({ badge, groupId, myState }: { badge: Badge; groupId: strin
   );
 }
 
+/** A member as one line: "Name · did:…short", the shortened DID alone, or "A member" when neither is visible. */
+function memberLabel(fields: Record<string, unknown>): string {
+  const name = nameOf(fields);
+  const did = typeof fields.did === "string" ? shortenDid(fields.did) : null;
+  if (name) return did ? `${name} · ${did}` : name;
+  return did ?? "A member";
+}
+
 /** A member search over the directory, as the member already sees it, naming one entry. */
 function MemberSelect({ value, onChange, exclude }: { value: string; onChange: (entryId: string) => void; exclude?: string }) {
   const [query, setQuery] = useState("");
@@ -857,7 +866,7 @@ function MemberSelect({ value, onChange, exclude }: { value: string; onChange: (
         <option value="">Choose a member…</option>
         {items.map((e) => (
           <option key={e.entryId} value={e.entryId}>
-            {nameOf((e.fields ?? {}) as Record<string, unknown>) ?? "A member"}
+            {memberLabel((e.fields ?? {}) as Record<string, unknown>)}
           </option>
         ))}
       </select>

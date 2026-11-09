@@ -46,6 +46,7 @@ const BADGE_ID = "bdg_W5k2N8xRb3Qz7TpLAAAAAA";
 const GROUP_ID = "grp_W5k2N8xRb3Qz7TpLAAAAAA";
 const ENTRY = "dir_Q7m2K9xVb4Tz8LpRAAAAAA";
 const OTHER = "dir_A1b2C3d4E5f6G7h8AAAAAA";
+const UNNAMED = "dir_Z9y8X7w6V5u4T3s2AAAAAA";
 const SHA = "ab".repeat(32);
 
 function badge(extra: object = {}) {
@@ -81,7 +82,8 @@ const ROUTES = [
   taskRoute(ENTRIES, {
     items: [
       { entryId: ENTRY, fields: { displayName: "Carol Example" } },
-      { entryId: OTHER, fields: { displayName: "Dev Patel" } },
+      { entryId: OTHER, fields: { displayName: "Dev Patel", did: "did:key:z6MkDevPatelAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } },
+      { entryId: UNNAMED, fields: { did: "did:key:z6MkNoNameBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" } },
     ],
   }),
   taskRoute(SETTINGS_SHOW, { settings: SETTINGS }),
@@ -235,7 +237,7 @@ describe("the Badges page", () => {
     });
     expect(await screen.findByRole("heading", { level: 3, name: "Workshop host" })).toBeTruthy();
     // Give it to Dev.
-    fireEvent.click(await screen.findByLabelText("Dev Patel"));
+    fireEvent.click(await screen.findByLabelText(/^Dev Patel · did:key:/));
     fireEvent.change(screen.getByLabelText(/^For/), { target: { value: "Resin pour" } });
     fireEvent.click(screen.getByRole("button", { name: "Offer to 1 member" }));
     await waitFor(() =>
@@ -248,6 +250,37 @@ describe("the Badges page", () => {
     await waitFor(() =>
       expect(sentPayloads(requests, AWARDS_REVOKE)).toEqual([{ awardId: "awd_W5k2N8xRb3Qz7TpLAAAAAA", reason: "given in error" }]),
     );
+  });
+
+  it("names members by name and short DID, the unnamed by DID alone after them, never by entry", async () => {
+    mockFetch([
+      ...ROUTES,
+      taskRoute(SHOW, { badge: badge(), myState: "none", myCount: 0, credentialRegime: "inside", owners: [] }),
+      taskRoute(HOLDERS_LIST, { total: 0, items: [] }),
+      taskRoute(GROUPS_SHOW_TASK, { group: { groupId: GROUP_ID, name: "Workshop host", kind: "static", managers: [] }, myMembership: "none" }),
+      taskRoute(GROUPS_REQUESTS_LIST_TASK, { items: [] }),
+      taskRoute(AWARDS_LIST, { items: [] }),
+    ]);
+    renderWithProviders(<Badges />, {
+      route: `/badges/${BADGE_ID}`,
+      path: "/badges/*",
+      whoami: whoamiWith(["vtc.badges.admin"]),
+    });
+    const picker = await screen.findByRole("group", { name: "Members" });
+    await waitFor(() => expect(picker.querySelectorAll("label").length).toBe(3));
+    const rows = [...picker.querySelectorAll("label")].map((l) => l.textContent ?? "");
+    expect(rows[0]).toBe("Carol Example");
+    expect(rows[1]).toMatch(/^Dev Patel · did:key:z6Mk/);
+    expect(rows[2]).toMatch(/^did:key:z6MkNoName/);
+    expect(rows.join(" ")).not.toContain("dir_");
+    expect(rows.join(" ")).not.toContain("(no name)");
+    // A DID finds its member.
+    fireEvent.change(screen.getByLabelText("Find a member for Members"), { target: { value: "z6MkNoName" } });
+    await waitFor(() => expect(picker.querySelectorAll("label").length).toBe(1));
+    // Appointing an owner names them the same way.
+    const owners = screen.getByLabelText("Member to appoint as owner");
+    const options = [...owners.querySelectorAll("option")].map((o) => o.textContent ?? "");
+    expect(options.slice(1)).toEqual([expect.stringMatching(/^Carol Example$/), expect.stringMatching(/^Dev Patel · /), expect.stringMatching(/^did:key:/)]);
   });
 
   it("issues a claim code, shows it once, and withdraws one", async () => {

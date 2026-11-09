@@ -23,7 +23,8 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { DidText } from "@/components/DidText";
 import { EmptyState } from "@/components/EmptyState";
-import { EntryName, useEntryFaces } from "@/components/EntryName";
+import { byFace, EntryName, faceLabel, faceMatches, useEntryFaces } from "@/components/EntryName";
+import { shortenDid } from "@/lib/format";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
 import {
@@ -490,15 +491,15 @@ function MemberPicker({
     () =>
       [...faces.entries()]
         .filter(([id]) => !exclude.includes(id))
-        .filter(([, f]) => !filter || (f.name ?? "").toLowerCase().includes(filter.toLowerCase()))
-        .sort(([, a], [, b]) => (a.name ?? "~").localeCompare(b.name ?? "~")),
+        .filter(([, f]) => faceMatches(f, filter))
+        .sort(byFace),
     [faces, exclude, filter],
   );
   return (
     <Field label={label} hint={chosen.length > 0 ? `${chosen.length} chosen` : undefined}>
       <input
         type="search"
-        placeholder="Find a member…"
+        placeholder="Find a member by name or DID…"
         aria-label={`Find a member for ${label}`}
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
@@ -512,7 +513,16 @@ function MemberPicker({
               checked={chosen.includes(id)}
               onChange={(e) => onChange(e.target.checked ? [...chosen, id] : chosen.filter((x) => x !== id))}
             />
-            <span className="checkbox-text">{f.name ?? <span className="muted">(no name)</span>}</span>
+            <span className="checkbox-text">
+              {f.name}
+              {f.name && f.did && <span className="muted"> · </span>}
+              {f.did && (
+                <code className={f.name ? "muted" : undefined} title={f.did}>
+                  {shortenDid(f.did)}
+                </code>
+              )}
+              {!f.name && !f.did && <span className="muted">(no name)</span>}
+            </span>
           </label>
         ))}
       </div>
@@ -1237,9 +1247,10 @@ function BadgeOwners({ groupId }: { groupId: string }) {
             <option value="">Choose a member…</option>
             {[...faces.entries()]
               .filter(([e]) => !owners.includes(e))
+              .sort(byFace)
               .map(([entryId, f]) => (
-                <option key={entryId} value={entryId}>
-                  {f.name ?? entryId}
+                <option key={entryId} value={entryId} title={f.did ?? undefined}>
+                  {faceLabel(f)}
                 </option>
               ))}
           </select>

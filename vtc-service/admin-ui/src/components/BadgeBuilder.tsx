@@ -70,7 +70,7 @@ export const BUILDER_ICONS: readonly BuilderIcon[] = [
   { name: "Celebration", Icon: PartyPopper },
   { name: "Rocket", Icon: Rocket },
   { name: "Idea", Icon: Lightbulb },
-  { name: "Book", Icon: BookOpen },
+  { name: "Open book", Icon: BookOpen },
   { name: "Code", Icon: Code },
   { name: "Tools", Icon: Wrench },
   { name: "Megaphone", Icon: Megaphone },
@@ -100,8 +100,15 @@ function catalogue(set: IconSet): BuilderIcon[] {
   for (const [key, Icon] of Object.entries(set.icons)) tagsOf.set(Icon, set.tags[key] ?? []);
   const offered = new Set<LucideIcon>(BUILDER_ICONS.map((i) => i.Icon));
   const all: BuilderIcon[] = BUILDER_ICONS.map((i) => ({ ...i, tags: tagsOf.get(i.Icon) ?? [] }));
+  // Names key the tiles, so each is said once: an icon whose name an offered
+  // one already uses keeps lucide's own spelling of it instead.
+  const named = new Set(all.map((i) => i.name));
   for (const [key, Icon] of Object.entries(set.icons)) {
-    if (!offered.has(Icon)) all.push({ name: iconLabel(key), Icon, tags: set.tags[key] ?? [] });
+    if (offered.has(Icon)) continue;
+    const label = iconLabel(key);
+    const name = named.has(label) ? `${label} (${key})` : label;
+    named.add(name);
+    all.push({ name, Icon, tags: set.tags[key] ?? [] });
   }
   catalogues.set(set, all);
   return all;
