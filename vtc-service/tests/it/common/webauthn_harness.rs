@@ -45,7 +45,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 use webauthn_rs::prelude::{
-    Base64UrlSafeData, CreationChallengeResponse, PublicKeyCredential, RegisterPublicKeyCredential,
+    CreationChallengeResponse, PublicKeyCredential, RegisterPublicKeyCredential,
     RequestChallengeResponse,
 };
 use webauthn_rs_proto::{AuthenticatorAssertionResponseRaw, AuthenticatorAttestationResponseRaw};
@@ -177,10 +177,10 @@ impl SoftEd25519Authenticator {
 
         let credential = RegisterPublicKeyCredential {
             id: B64.encode(&cred_id),
-            raw_id: Base64UrlSafeData::from(cred_id),
+            raw_id: cred_id,
             response: AuthenticatorAttestationResponseRaw {
-                attestation_object: Base64UrlSafeData::from(attestation_object),
-                client_data_json: Base64UrlSafeData::from(client_data_json),
+                attestation_object: attestation_object,
+                client_data_json: client_data_json,
                 transports: None,
             },
             type_: "public-key".to_string(),
@@ -229,7 +229,7 @@ impl SoftEd25519Authenticator {
             .allow_credentials
             .iter()
             .find_map(|allow| {
-                let id_bytes: Vec<u8> = allow.id.as_ref().to_vec();
+                let id_bytes: Vec<u8> = allow.id.to_vec();
                 if self.credentials.contains_key(&id_bytes) {
                     Some(id_bytes)
                 } else {
@@ -259,11 +259,11 @@ impl SoftEd25519Authenticator {
 
         PublicKeyCredential {
             id: B64.encode(&cred_id),
-            raw_id: Base64UrlSafeData::from(cred_id),
+            raw_id: cred_id,
             response: AuthenticatorAssertionResponseRaw {
-                authenticator_data: Base64UrlSafeData::from(auth_data),
-                client_data_json: Base64UrlSafeData::from(client_data_json),
-                signature: Base64UrlSafeData::from(signature),
+                authenticator_data: auth_data,
+                client_data_json: client_data_json,
+                signature: signature,
                 user_handle: None,
             },
             type_: "public-key".to_string(),
@@ -286,7 +286,7 @@ impl SoftEd25519Authenticator {
                 .any(|p| p.alg == COSE_ALG_ES256),
             "the challenge does not offer ES256"
         );
-        let mut seed_input = ccr.public_key.challenge.as_ref().to_vec();
+        let mut seed_input = ccr.public_key.challenge.to_vec();
         seed_input.extend_from_slice(b"soft-p256-seed/v1");
         let seed: [u8; 32] = Sha256::digest(&seed_input).into();
         let signing_key = p256::ecdsa::SigningKey::from_slice(&seed).expect("a valid scalar");
@@ -354,10 +354,10 @@ impl SoftEd25519Authenticator {
         );
         RegisterPublicKeyCredential {
             id: B64.encode(cred_id),
-            raw_id: Base64UrlSafeData::from(cred_id.to_vec()),
+            raw_id: cred_id.to_vec(),
             response: AuthenticatorAttestationResponseRaw {
-                attestation_object: Base64UrlSafeData::from(attestation_object_none(&auth_data)),
-                client_data_json: Base64UrlSafeData::from(client_data_json),
+                attestation_object: attestation_object_none(&auth_data),
+                client_data_json: client_data_json,
                 transports: None,
             },
             type_: "public-key".to_string(),
@@ -412,11 +412,11 @@ impl SoftEd25519Authenticator {
             .sign(&[&auth_data[..], &client_data_hash[..]].concat());
         PublicKeyCredential {
             id: B64.encode(cred_id),
-            raw_id: Base64UrlSafeData::from(cred_id.to_vec()),
+            raw_id: cred_id.to_vec(),
             response: AuthenticatorAssertionResponseRaw {
-                authenticator_data: Base64UrlSafeData::from(auth_data),
-                client_data_json: Base64UrlSafeData::from(client_data_json),
-                signature: Base64UrlSafeData::from(signature),
+                authenticator_data: auth_data,
+                client_data_json: client_data_json,
+                signature: signature,
                 user_handle: None,
             },
             type_: "public-key".to_string(),

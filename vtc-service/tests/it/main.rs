@@ -95,6 +95,7 @@ mod openapi_schema_names;
 mod openapi_snapshot;
 mod passkey_state;
 mod passkey_step_up;
+mod passkey_storage_compat;
 mod personhood;
 mod policies;
 mod policy_canonical;

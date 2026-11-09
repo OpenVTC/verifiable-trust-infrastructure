@@ -11,8 +11,8 @@
 //!
 //! ## Why a wrapper
 //!
-//! `webauthn-rs` 0.5 builds its safe `Webauthn` instance with
-//! `COSEAlgorithm::secure_algs()`, which today returns `[ES256, RS256]`
+//! `webauthn-rs` 0.6 builds its safe `Webauthn` instance with
+//! `COSEAlgorithm::secure_algs()`, which today returns `[ES256, ES384, RS256]`
 //! — `EDDSA` is commented out in the upstream `secure_algs`
 //! constructor, and the high-level builder exposes no `algorithms(…)`
 //! setter. So to let Ed25519-capable hardware keys (YubiKey 5+, the

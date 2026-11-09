@@ -188,7 +188,7 @@ fn decode_x_value(value: &serde_json::Value) -> Option<Vec<u8>> {
     {
         return Some(bytes);
     }
-    // base64url-no-pad string form (current `webauthn-rs-core 0.5.5`
+    // base64url-no-pad string form (the `webauthn-rs-core` 0.5 and 0.6 JSON
     // shape).
     if let Some(s) = value.as_str()
         && let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s)

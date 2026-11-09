@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-use webauthn_rs::prelude::{Base64UrlSafeData, PasskeyRegistration, RegisterPublicKeyCredential};
+use webauthn_rs::prelude::{PasskeyRegistration, RegisterPublicKeyCredential};
 use webauthn_rs_proto::{AuthenticatorAttestationResponseRaw, RegistrationExtensionsClientOutputs};
 
 use vta_sdk::protocols::did_management::passkey_vms::{
@@ -441,10 +441,10 @@ fn build_register_public_key_credential(
 
     Ok(RegisterPublicKeyCredential {
         id: body.credential_id.clone(),
-        raw_id: Base64UrlSafeData::from(raw_id),
+        raw_id,
         response: AuthenticatorAttestationResponseRaw {
-            attestation_object: Base64UrlSafeData::from(attestation),
-            client_data_json: Base64UrlSafeData::from(client_data),
+            attestation_object: attestation,
+            client_data_json: client_data,
             transports,
         },
         type_: "public-key".into(),

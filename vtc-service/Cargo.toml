@@ -429,7 +429,7 @@ gethostname = "1"
 # them through `webauthn-rs::prelude` (which re-exports them but
 # also surfaces ~300 unrelated symbols).
 webauthn-rs = { workspace = true }
-webauthn-rs-proto = "0.5"
+webauthn-rs-proto = "0.6"
 # `async_trait` is the dyn-compatibility helper for the
 # `emergency::VtaRecoveryProver` trait so production code +
 # integration tests can swap in their own provers.
