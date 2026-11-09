@@ -62,9 +62,9 @@
 //! `--allow-private-endpoints` flag that sets it process-wide. One switch
 //! rather than a second one, because it is one question: may this process
 //! reach hosts that are not on the public internet? Note the cache SDK
-//! applies the policy to `did:web` and `did:webvh` together — there is no way
-//! to loosen one without the other — and that under `AllowPrivate` a
-//! `localhost` DID is fetched over plain `http://`.
+//! applies the policy to `did:web`, `did:webvh`, `did:scid` and `did:webs`
+//! together — there is no way to loosen one without the others — and that
+//! under `AllowPrivate` a `localhost` DID is fetched over plain `http://`.
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_did_resolver_cache_sdk::config::{DIDCacheConfig, DIDCacheConfigBuilder};
@@ -375,6 +375,40 @@ mod tests {
             accepted.load(Ordering::SeqCst),
             0,
             "a refused did:webvh DID still connected to its host"
+        );
+    }
+
+    /// The same guard for `did:webs`, which names its host just as
+    /// `did:webvh` does and is resolved by the same client (VTI-LNK-052,
+    /// VTI-KEY-003). The failure must be the host policy's: a resolver
+    /// without did:webs would also fail, as an unsupported method, and that
+    /// would prove nothing about the guard.
+    #[tokio::test]
+    async fn default_config_refuses_loopback_webs_did_without_connecting() {
+        let (port, accepted) = counting_listener().await;
+        let client = DIDCacheClient::new(build_did_cache_config(None))
+            .await
+            .expect("local-mode DID cache client");
+
+        let aid = "ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe";
+        for host in ["localhost", "127.0.0.1", "printer.local", "169.254.169.254"] {
+            let did = format!("did:webs:{host}%3A{port}:{aid}");
+            let message = client
+                .resolve(&did)
+                .await
+                .expect_err("a non-public did:webs host must be refused")
+                .to_string();
+            assert!(
+                message.contains("host policy"),
+                "{did} failed for the wrong reason: {message}"
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            0,
+            "a refused did:webs DID still connected to its host"
         );
     }
 

@@ -27,7 +27,11 @@ vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
   postSignedRead: (await import("@/test/signed-read")).unsignedRead,
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+  vtcDid: async () => COMMUNITY_DID,
 }));
+
+const COMMUNITY_DID = "did:webvh:QmCommunity:vtc.example.com";
+const GROUP_DID = "did:webvh:QmGroup:vtc.example.com:note-manage";
 
 // jsdom draws nothing on a canvas: the builder's drawing answers four PNG bytes.
 vi.mock("@/components/BadgeBuilder", async (original) => {
@@ -180,6 +184,30 @@ describe("the Badges page", () => {
     await waitFor(() =>
       expect(sentPayloads(requests, CREATE)).toEqual([expect.objectContaining({ image: { sha256: SHA } })]),
     );
+  });
+
+  it("names the badge group's DID and the community's as the issuer, each to copy or scan", async () => {
+    mockFetch([
+      ...ROUTES,
+      taskRoute(SHOW, { badge: badge(), myState: "none", myCount: 0, credentialRegime: "outside", owners: [] }),
+      taskRoute(HOLDERS_LIST, { total: 0, items: [] }),
+      taskRoute(GROUPS_SHOW_TASK, {
+        group: { groupId: GROUP_ID, groupDid: GROUP_DID, name: "Workshop host", kind: "static", managers: [] },
+        myMembership: "none",
+      }),
+      taskRoute(GROUPS_REQUESTS_LIST_TASK, { items: [] }),
+      taskRoute(AWARDS_LIST, { items: [] }),
+    ]);
+    renderWithProviders(<Badges />, {
+      route: `/badges/${BADGE_ID}`,
+      path: "/badges/*",
+      whoami: whoamiWith(["vtc.badges.admin"]),
+    });
+    expect(await screen.findByTitle(GROUP_DID)).toBeTruthy();
+    expect(await screen.findByTitle(COMMUNITY_DID)).toBeTruthy();
+    expect(screen.getByText("The community, also the badge’s creator")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Copy DID" }).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByRole("button", { name: "Show DID as QR code" }).length).toBeGreaterThanOrEqual(2);
   });
 
   it("offers a badge to chosen members, and takes an award back with a reason", async () => {

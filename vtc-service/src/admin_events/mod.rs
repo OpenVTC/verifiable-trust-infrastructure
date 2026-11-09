@@ -1051,7 +1051,7 @@ async fn community_rooms_fingerprint(
 }
 
 fn digest<T: serde::Serialize>(v: &T) -> [u8; 32] {
-    Sha256::digest(serde_json::to_vec(v).unwrap_or_default()).into()
+    Sha256::digest(serde_json_canonicalizer::to_vec(v).unwrap_or_default()).into()
 }
 
 // ─── the HTTPS stream slot ───────────────────────────────────────────────

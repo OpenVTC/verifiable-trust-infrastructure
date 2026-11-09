@@ -959,14 +959,14 @@ When adding a flow, add it here and a line to the root index.
   badge group never carries authority (`bindings/add` refuses it), is left out of
   `vtc/groups/list` and of `audience_groups`. **An award is an offer until accepted**
   (`badges::Award`, VTI-BDG-020): `awards/offer` and `kudos/give` record `offered` and admit,
-  issue and show nothing; `mine/accept` issues the badge credential **as the group**
-  (`badges::credential`, an Open Badges 3.0 `OpenBadgeCredential`, the community as the
-  Achievement's `creator`, one `evidence` per award) through `keys/sign-document` **before**
-  recording the membership; `groups::credential::issue` branches to it for any group with
-  `badge_id`, so admission by request, rule and renewal issue the same profile. Every badge
-  credential embeds the community's OB3 `EndorsementCredential` of the Achievement
-  (`credential::ensure_endorsement`: signed as the community once, kept on `Badge.endorsement`,
-  VTI-BDG-060). **Two regimes** by `shareableOutside`, fixed at create/promote: inside-only
+  issue and show nothing; `mine/accept` issues the badge credential **as the community**
+  (`badges::credential`, an Open Badges 3.0 `OpenBadgeCredential`, VTI-BDG-060: `issuer` and
+  the Achievement's `creator` the community's named `Profile`, `credentialSchema` the OB3
+  schema, one `evidence` per award) through `keys/sign-document` **before** recording the
+  membership; `groups::credential::issue` branches to it for any group with `badge_id`, so
+  admission by request, rule and renewal issue the same profile. Never sign it as the badge
+  group: an outside verifier knows the community, not a group's DID (VTI-BDG-064); the group
+  holds owners, holders, requests and rules and issues nothing. **Two regimes** by `shareableOutside`, fixed at create/promote: inside-only
   (short-lived, renewed, no status) and outside (VTI-BDG-062: `settings.credentialValidDays`,
   default 730, a slot in the **community's** revocation list, `bslot:<badge>:<entry>`, one per
   badge and holder, reused by every re-issue; never a set of the badge's or the group's own —
@@ -988,7 +988,7 @@ When adding a flow, add it here and a line to the root index.
   (`unshare`, take-back, retire, `badges::on_departure`) clears the share: a stopped share
   answers the same `404` as a token never issued. `show` answers the holder's own awards
   as `myAwards`; never another member's. **The registry** (`badges::registry`,
-  VTI-BDG-080): each active community badge's group is one TRQP record `{group DID,
+  VTI-BDG-080): each active community badge is one TRQP record `{community DID,
   issue, the Achievement id}` under the community's authority, `context.kind =
   "vtcBadgeIssuer"` and the badge id only — never its name. The `Projector` (spawned with
   a registry and the community DID) is the one retry owner: `reconcile` against a `breg:`

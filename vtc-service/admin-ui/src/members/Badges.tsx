@@ -520,7 +520,7 @@ function Hidden({ badges }: { badges: MyBadge[] }) {
 
 const REGIME: Record<string, string> = {
   none: "Picture only; nothing goes to a wallet",
-  inside: "An Open Badge credential issued by the badge's own group identity, for use inside the community",
+  inside: "An Open Badge credential issued by the community, for use inside the community",
   outside: "An Open Badge credential you may show outside the community",
 };
 
@@ -1101,14 +1101,14 @@ export function WallSection({ entryId, name, own }: { entryId: string; name: str
       {pinned.length > 0 && (
         <div className="bw-wall bw-pinned-row">
           {pinned.map((e) => (
-            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} pinned width={130} />
+            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} since={e.since} latestAt={e.latestAt} pinned width={130} />
           ))}
         </div>
       )}
       {rest.length > 0 && (
         <div className="bw-wall">
           {rest.map((e) => (
-            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} width={110} />
+            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} since={e.since} latestAt={e.latestAt} width={110} />
           ))}
         </div>
       )}

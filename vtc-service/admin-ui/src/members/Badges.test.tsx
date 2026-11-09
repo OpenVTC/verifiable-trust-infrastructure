@@ -20,7 +20,8 @@ vi.mock("@/components/BadgeBuilder", async (original) => {
   return { ...m, BadgeBuilder: (p: Parameters<typeof m.BadgeBuilder>[0]) => createElement(m.BadgeBuilder, { ...p, draw }) };
 });
 
-import { BadgePage, BadgesPage, MakeBadgePage } from "./Badges";
+import { BadgePage, BadgesPage, MakeBadgePage, WallSection } from "./Badges";
+import { earnedWords } from "./badge-card";
 import {
   AWARDS_SHARE_TASK,
   AWARDS_UNSHARE_TASK,
@@ -31,6 +32,7 @@ import {
   BADGES_LIST_TASK,
   BADGES_SETTINGS_TASK,
   BADGES_SHOW_TASK,
+  BADGES_WALL_TASK,
   CLAIMS_REDEEM_TASK,
   MINE_ACCEPT_TASK,
   MINE_ARRANGE_TASK,
@@ -203,6 +205,34 @@ describe("the portal's badges page", () => {
     renderPage(<BadgesPage />);
     expect(await screen.findByText("This community has badges turned off for now.")).toBeTruthy();
     expect(screen.queryByText("Waiting for you")).toBeNull();
+  });
+});
+
+describe("a member's badges on their card", () => {
+  const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
+
+  it("says when each badge was earned, and since when for one held more than once", async () => {
+    answer({
+      ...BASE,
+      [BADGES_WALL_TASK]: {
+        entries: [
+          { badge: KUDOS, count: 3, since: "2026-03-03T09:00:00Z", latestAt: "2026-11-01T09:00:00Z", pinned: true },
+          { badge: badge(), count: 1, since: "2026-11-08T22:42:06Z", latestAt: "2026-11-08T22:42:06Z", pinned: false },
+        ],
+        visibility: "members",
+      },
+    });
+    renderPage(<WallSection entryId={ENTRY} name="Carol" own />);
+    expect(await screen.findByText(`Earned ${day("2026-11-08T22:42:06Z")}`)).toBeTruthy();
+    const repeat = screen.getByText(`Since ${day("2026-03-03T09:00:00Z")}`);
+    expect(repeat.getAttribute("title")).toBe(
+      `First earned ${day("2026-03-03T09:00:00Z")}, most recently ${day("2026-11-01T09:00:00Z")}`,
+    );
+  });
+
+  it("says nothing of a date the wall did not name", () => {
+    expect(earnedWords(1, undefined, undefined)).toBeNull();
+    expect(earnedWords(undefined, undefined, "2026-11-01T09:00:00Z")?.text.startsWith("Earned ")).toBe(true);
   });
 });
 
