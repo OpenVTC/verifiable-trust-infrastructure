@@ -367,53 +367,20 @@ pub(crate) async fn rotate_inner(
         &body.new_did,
         challenge.expires_at.timestamp(),
     )?;
-    // Old signature is always did:key (old DID is the
-    // session's authenticated principal, which is did:key by
-    // construction in the workspace's ACL surface).
+    // Both DIDs are verified by the rules of their own method: the old DID is
+    // the member's current identity, which an earlier rotation may have moved
+    // off did:key (VTI-MEM-041).
     //
     // Either signature failing is `rotate:signatureInvalid`: control of both
     // keys was not proven. Status and message are unchanged.
     let signature_invalid =
         |e: String| TaskError::declared(ROTATE_ERR_SIGNATURE_INVALID, AppError::Validation(e));
-    verify_did_key_signature(&body.old_did, &payload, &body.old_signature)
+    verify_signature_of(state, &body.old_did, &payload, &body.old_signature)
+        .await?
         .map_err(|e| signature_invalid(format!("oldSignature failed: {e}")))?;
-    // New signature method depends on the new DID. Dispatch
-    // on `method` rather than re-parsing the prefix — keeps
-    // the branch table next to the method-detection step.
-    match method {
-        "did:key" => verify_did_key_signature(&body.new_did, &payload, &body.new_signature)
-            .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?,
-        // A did:scid:vh:1 is verified like the did:webvh log it resolves
-        // through, by its own document (VTI-KEY-161).
-        "did:webvh" | "did:scid" => {
-            let resolver = state.did_resolver.as_ref().ok_or_else(|| {
-                AppError::Internal(
-                    "DID resolver not configured — did:webvh rotation requires it".into(),
-                )
-            })?;
-            verify_did_webvh_signature(&body.new_did, &payload, &body.new_signature, resolver)
-                .await
-                .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?;
-        }
-        // A did:webs is verified by its KERI key event log when it resolves
-        // (VTI-LNK-052); any key of its current key state proves control.
-        "did:webs" => {
-            let resolver = state.did_resolver.as_ref().ok_or_else(|| {
-                AppError::Internal(
-                    "DID resolver not configured — did:webs rotation requires it".into(),
-                )
-            })?;
-            verify_did_webs_signature(&body.new_did, &payload, &body.new_signature, resolver)
-                .await
-                .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?;
-        }
-        other => {
-            return Err(AppError::Validation(format!(
-                "DID method '{other}' is not supported for rotation"
-            ))
-            .into());
-        }
-    }
+    verify_signature_of(state, &body.new_did, &payload, &body.new_signature)
+        .await?
+        .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?;
     // The member is recorded under the identity it presented: a did:scid's DID,
     // without the `src` its signature was resolved through (VTI-KEY-164,
     // VTI-VTC-004).
@@ -554,6 +521,40 @@ pub(crate) async fn rotate_inner(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Verify `hex_sig` over `payload` as a signature of `did`, by the rules of
+/// its method. The outer error is the VTC's (an unsupported method, or no
+/// resolver configured); the inner one says why the signature did not verify.
+async fn verify_signature_of(
+    state: &AppState,
+    did: &str,
+    payload: &[u8],
+    hex_sig: &str,
+) -> Result<Result<(), String>, AppError> {
+    let resolver = || {
+        state.did_resolver.as_ref().ok_or_else(|| {
+            AppError::Internal(format!(
+                "DID resolver not configured — rotation with {did} requires it"
+            ))
+        })
+    };
+    Ok(match method_of(did)? {
+        "did:key" => verify_did_key_signature(did, payload, hex_sig),
+        // A did:scid:vh:1 is verified like the did:webvh log it resolves
+        // through, by its own document (VTI-KEY-161).
+        "did:webvh" | "did:scid" => {
+            verify_did_webvh_signature(did, payload, hex_sig, resolver()?).await
+        }
+        // A did:webs is verified by its KERI key event log when it resolves
+        // (VTI-LNK-052); any key of its current key state proves control.
+        "did:webs" => verify_did_webs_signature(did, payload, hex_sig, resolver()?).await,
+        other => {
+            return Err(AppError::Validation(format!(
+                "DID method '{other}' is not supported for rotation"
+            )));
+        }
+    })
+}
 
 /// Wire-form DID method prefix — `did:key`, `did:webvh`, `did:scid` (a
 /// `did:scid:vh:1`, VTI-KEY-001) or `did:webs` (VTI-KEY-003). Used by the

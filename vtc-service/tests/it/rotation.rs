@@ -542,6 +542,71 @@ async fn rotation_onto_a_did_webs_with_any_current_key() {
     );
 }
 
+/// A member who rotated off did:key can rotate again: the old DID's signature
+/// is verified by its own method, here by a key of the did:webs's key state,
+/// and the member signs the request as the did:webs it now is.
+#[tokio::test]
+async fn a_member_on_a_did_webs_can_rotate_again() {
+    let fix = build_fixture_with_resolver(true).await;
+    let webs_seed = [0xB2; 32];
+    let webs_key = SigningKey::from_bytes(&webs_seed);
+    let doc = did_webs_document(WEBS_DID, &[&webs_key]);
+    let (status, body) = rotate_onto_did_webs(&fix, WEBS_DID, doc, &webs_key).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The member now signs as the did:webs, with the key its document lists.
+    let webs_member = vti_rooms_dtg::test_support::Party {
+        secret: affinidi_secrets_resolver::secrets::Secret::generate_ed25519(
+            Some(&format!("{WEBS_DID}#DKey0")),
+            Some(&webs_seed),
+        ),
+        secret_multibase: multibase::encode(multibase::Base::Base58Btc, webs_seed),
+        did: WEBS_DID.to_string(),
+    };
+    let (status, challenge) =
+        crate::common::signed::call(&fix._vtc, &webs_member, CHALLENGE_TASK, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{challenge}");
+    let rotation_id = challenge["payload"]["rotationId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let expires_at =
+        chrono::DateTime::parse_from_rfc3339(challenge["payload"]["expiresAt"].as_str().unwrap())
+            .unwrap()
+            .timestamp();
+
+    let next_key = SigningKey::from_bytes(&[0xB3; 32]);
+    let next_did =
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(&next_key.verifying_key().to_bytes());
+    let payload = signing_bytes(&rotation_id, WEBS_DID, &next_did, expires_at);
+    let (status, reply) = crate::common::signed::call(
+        &fix._vtc,
+        &webs_member,
+        ROTATE_TASK,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": WEBS_DID,
+            "newDid": next_did,
+            "oldSignature": hex::encode(webs_key.sign(&payload).to_bytes()),
+            "newSignature": hex::encode(next_key.sign(&payload).to_bytes()),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(
+        get_member(&fix.members_ks, &next_did)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        get_member(&fix.members_ks, WEBS_DID)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 /// A signature by a key the did:webs document does not list proves nothing.
 #[tokio::test]
 async fn rotation_onto_a_did_webs_refuses_a_key_outside_its_document() {
