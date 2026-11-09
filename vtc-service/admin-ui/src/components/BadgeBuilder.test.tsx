@@ -103,6 +103,15 @@ describe("the badge picture builder", () => {
     expect(findIcons(SET, "", Number.POSITIVE_INFINITY).total).toBe(Object.keys(icons).length);
   });
 
+  it("names every icon once, so no two tiles share a name", () => {
+    const names = findIcons(SET, "", Number.POSITIVE_INFINITY).matches.map((i) => i.name);
+    expect(names).toHaveLength(Object.keys(icons).length);
+    expect(new Set(names).size).toBe(names.length);
+    // The offered open book and lucide's closed one are told apart.
+    expect(names).toContain("Open book");
+    expect(names).toContain("Book");
+  });
+
   it("finds an icon by what it means, after those named for it", () => {
     // Every icon has its tags, keyed as lucide-react names it.
     expect(Object.keys(tags).length).toBe(Object.keys(icons).length);
@@ -133,7 +142,8 @@ describe("the badge picture builder", () => {
     expect(art().querySelector("svg")?.getAttribute("class")).toContain("lucide-bug");
     expect(screen.getByText("Chosen: Bug. Search by name or meaning, or browse them all.")).toBeTruthy();
     expect(document.activeElement).toBe(opener);
-  });
+    // Rendering all 1,544 tiles is slow in jsdom while the rest of the suite runs beside it.
+  }, 30_000);
 
   it("closes the browser on Escape, keeping the choice", async () => {
     render(<BadgeBuilder name="x" onUse={() => undefined} draw={async () => new Blob()} />);

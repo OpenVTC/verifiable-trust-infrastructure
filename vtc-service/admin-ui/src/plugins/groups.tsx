@@ -18,7 +18,7 @@ import { DoorOpen, KeyRound, Plus, Trash2, UserMinus, UserPlus, Users } from "lu
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { DidText } from "@/components/DidText";
-import { EntryName, useEntryFaces } from "@/components/EntryName";
+import { byFace, EntryName, faceLabel, useEntryFaces } from "@/components/EntryName";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
 import { DidHostingCard } from "@/plugins/DidHostingCard";
@@ -515,7 +515,7 @@ function GroupMembers({ group, manages }: { group: Group; manages: boolean }) {
   });
   if (members.error) return null;
   const inGroup = new Set((members.data ?? []).map((m) => m.entryId));
-  const candidates = [...faces.entries()].filter(([e]) => !inGroup.has(e));
+  const candidates = [...faces.entries()].filter(([e]) => !inGroup.has(e)).sort(byFace);
   const rows = members.data ?? [];
   return (
     <section className="card" aria-labelledby="group-members-title">
@@ -534,8 +534,8 @@ function GroupMembers({ group, manages }: { group: Group; manages: boolean }) {
             <select aria-label="Member to add" value={adding} onChange={(e) => setAdding(e.target.value)}>
               <option value="">Choose a member…</option>
               {candidates.map(([entryId, f]) => (
-                <option key={entryId} value={entryId}>
-                  {f.name ?? entryId}
+                <option key={entryId} value={entryId} title={f.did ?? undefined}>
+                  {faceLabel(f)}
                 </option>
               ))}
             </select>
@@ -720,9 +720,10 @@ function GroupManagers({ group }: { group: Group }) {
             <option value="">Choose a member…</option>
             {[...faces.entries()]
               .filter(([e]) => !managers.includes(e))
+              .sort(byFace)
               .map(([entryId, f]) => (
-                <option key={entryId} value={entryId}>
-                  {f.name ?? entryId}
+                <option key={entryId} value={entryId} title={f.did ?? undefined}>
+                  {faceLabel(f)}
                 </option>
               ))}
           </select>
