@@ -847,6 +847,30 @@ pub const TASK_VTA_MEMORY_PUT_0_1: &str = "https://trusttasks.org/spec/vta/memor
 /// access. Payload: [`crate::protocols::memory::MemoryListBody`].
 pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memory/list/0.1";
 
+/// `spec/vta/memory/put/0.2` — store a memory item, optionally conditional on
+/// the version last read (`expectedVersion`, 0 = create only); a failed
+/// precondition is `versionConflict` carrying the current version and value
+/// (#2115). Auth: `memoryWrite` + context access.
+pub const TASK_VTA_MEMORY_PUT_0_2: &str =
+    <vti_specs::vta::memory::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/delete/0.2` — forget a memory item, leaving a tombstone the
+/// change feed carries; optionally conditional on its version. Auth:
+/// `memoryWrite` + context access.
+pub const TASK_VTA_MEMORY_DELETE_0_2: &str =
+    <vti_specs::vta::memory::delete::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/list/0.2` — a page of a context's memory: a snapshot
+/// (prefix, cursor) or the change feed from `sinceVersion`, tombstones
+/// included. Auth: `memoryRead` + context access.
+pub const TASK_VTA_MEMORY_LIST_0_2: &str =
+    <vti_specs::vta::memory::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/get/0.1` — up to 256 named memory items, each answered in
+/// `items`, `missing` or `deferred`. Auth: `memoryRead` + context access.
+pub const TASK_VTA_MEMORY_GET_0_1: &str =
+    <vti_specs::vta::memory::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/present/0.2` — an agent asks the VTA holding its
 /// principal's room credentials to mint a presentation for **one** room
 /// operation. The credentials never cross to the agent; only the presentation
@@ -2761,6 +2785,10 @@ pub const ALL_URIS: &[&str] = &[
     // Agent-memory slice (spec/vta/memory/*)
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,
+    TASK_VTA_MEMORY_PUT_0_2,
+    TASK_VTA_MEMORY_DELETE_0_2,
+    TASK_VTA_MEMORY_LIST_0_2,
+    TASK_VTA_MEMORY_GET_0_1,
     TASK_ROOMS_KEYS_PRESENT_0_2,
     TASK_ROOMS_KEYS_OPEN_0_2,
     TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,

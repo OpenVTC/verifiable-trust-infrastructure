@@ -319,6 +319,11 @@ pub struct AppState {
     /// sequences of them). See `operations::app_state` for why this is sound
     /// for a single-writer VTA and what it does not cover.
     pub app_state_locks: crate::operations::app_state::NamespaceLocks,
+    /// The same, for agent memory (`operations::memory`), which keeps its items
+    /// in the application-state layout inside the memory keyspace. A map of its
+    /// own, because the keyspaces differ: an application namespace called
+    /// `memory` and the memory store must not share a lock or a counter.
+    pub memory_locks: crate::operations::app_state::NamespaceLocks,
     /// Rego policy modules for the Policy Decision Point (`policy/*`). One
     /// [`crate::policy::PolicyModule`] per id; the active set is every enabled
     /// row, priority-ordered. A migration-safe baseline is boot-installed if
@@ -782,6 +787,7 @@ pub async fn build_app_state(
         persona_ks,
         persona_correlation_key,
         app_state_locks: crate::operations::app_state::NamespaceLocks::default(),
+        memory_locks: crate::operations::app_state::NamespaceLocks::default(),
         policy_ks,
         task_consent_ks,
         #[cfg(feature = "webvh")]
@@ -1317,6 +1323,27 @@ pub async fn run(
             .await?
         };
 
+        // Agent memory written by `vta/memory/*/0.1` before the store was
+        // versioned (#2115) moves into the versioned layout before anything is
+        // served, so both versions read one store from the first request.
+        // Idempotent, and one empty prefix scan once nothing is left to move —
+        // which also covers a restore carrying rows from an older VTA.
+        match crate::operations::memory::migrate_legacy(
+            &app_state.memory_ks,
+            &app_state.memory_locks,
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(n) => info!(
+                moved = n,
+                "agent memory: moved 0.1 rows into the versioned store"
+            ),
+            Err(e) => {
+                warn!(error = %e, "agent memory: could not finish moving 0.1 rows; retried next boot")
+            }
+        }
+
         // VTI-VTA-051: a restore is recorded in the audit trail — by the first
         // boot with a sink, since the trail is part of what the restore replaced.
         // Retried on every boot until it lands.
@@ -1386,6 +1413,8 @@ pub async fn run(
         // `#[non_exhaustive]`, unlike `AppState`), and the storage thread is
         // spawned after `build_app_state` anyway, so there is nothing to inject.
         let storage_app_state_locks = app_state.app_state_locks.clone();
+        let storage_memory_ks = app_state.memory_ks.clone();
+        let storage_memory_locks = app_state.memory_locks.clone();
         // The persona store the request path uses, so the expiry sweep writes
         // through the same keyspace (and at-rest encryption) and blinds with
         // the same correlation key.
@@ -1807,6 +1836,8 @@ pub async fn run(
                     storage_pcs_engine_ks,
                     storage_app_state_ks,
                     storage_app_state_locks,
+                    storage_memory_ks,
+                    storage_memory_locks,
                     storage_app_state_retention_days,
                     storage_persona,
                     storage_backup_bundles_ks,
@@ -2017,6 +2048,8 @@ fn run_storage_thread(
     pcs_engine_ks: KeyspaceHandle,
     app_state_ks: KeyspaceHandle,
     app_state_locks: crate::operations::app_state::NamespaceLocks,
+    memory_ks: KeyspaceHandle,
+    memory_locks: crate::operations::app_state::NamespaceLocks,
     app_state_retention_days: u32,
     persona: vta_persona::PersonaStore,
     backup_bundles_ks_storage: KeyspaceHandle,
@@ -2258,6 +2291,24 @@ fn run_storage_thread(
                                 }
                                 Ok(_) => {}
                                 Err(e) => warn!("app-state tombstone sweeper error: {e}"),
+                            }
+                            // Agent memory's tombstones, on the same window: the
+                            // memory store is the same layout in its own
+                            // keyspace, and `vta/memory/list/0.2` reports this
+                            // retention to its change-feed callers.
+                            match crate::operations::app_state::sweep_expired_tombstones(
+                                &memory_ks,
+                                &memory_locks,
+                                &audit_sink,
+                                u64::from(app_state_retention_days) * 24 * 60 * 60,
+                            )
+                            .await
+                            {
+                                Ok(n) if n > 0 => {
+                                    info!(reaped = n, "agent-memory tombstone sweeper")
+                                }
+                                Ok(_) => {}
+                                Err(e) => warn!("agent-memory tombstone sweeper error: {e}"),
                             }
                         }
                     }

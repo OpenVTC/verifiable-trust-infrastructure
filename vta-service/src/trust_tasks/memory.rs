@@ -1,47 +1,60 @@
-//! Agent-memory trust-task slice (`spec/vta/memory/{put,list,delete}/0.1`).
+//! Agent-memory trust-task slice: `vta/memory/{put,delete,list}/0.2`,
+//! `vta/memory/get/0.1`, and `vta/memory/{put,list,delete}/0.1` on the same
+//! versioned store (`crate::operations::memory`, #2115).
 //!
-//! A per-context key/value store for AI-agent memory. Each handler is:
+//! Each handler is:
 //! - **Capability-gated** — read tasks require [`Capability::MemoryRead`],
 //!   mutating tasks require [`Capability::MemoryWrite`]. Until this pair
 //!   existed the only gate was the context, which is binary: any DID that
 //!   could reach a context could also write and delete every memory in it, so
 //!   there was no way to grant an agent read-only access to your own memory.
-//!   The published specification already assumed otherwise —
-//!   `vta/memory/delete/0.1` reasons about "a VTA whose write capability is
-//!   granted more freely than its read capability". Legacy ACL rows carry no
-//!   explicit capability set and fall back to
+//!   Legacy ACL rows carry no explicit capability set and fall back to
 //!   [`derived_capabilities_for_role`], which grants both to `admin`,
 //!   `initiator` and `application` (the role a memory agent runs as), read
 //!   only to `reader`, and neither to `monitor`.
 //! - **Context-gated** — the caller must be permitted to act in
-//!   `payload.contextId`, enforced via [`AuthClaims::require_context`], the
-//!   exact ACL gate the context-scoped key tasks use
-//!   (`operations::holder_keys::resolve_holder_keys` / `operations::keys`). On
-//!   failure `require_context` returns [`AppError::Forbidden`], which
-//!   [`app_error_to_reject`] maps to the framework `permission_denied`. This is
-//!   the privilege boundary: a context-A agent cannot read, write, or delete
-//!   context-B memory. **Not** operator step-up-gated (unlike the issued-
-//!   credential slice).
-//! - **Audited** — `memory.put` / `memory.list` / `memory.delete` via
-//!   [`crate::audit::record`] (with the context id), mirroring the
-//!   credentials/vault handlers.
+//!   `payload.contextId`, enforced via [`AuthClaims::require_context`]. On
+//!   failure that is the framework `permissionDenied`. This is the privilege
+//!   boundary: a context-A agent cannot read, write, or delete context-B
+//!   memory.
+//! - **Audited** — `memory.put` / `memory.list` / `memory.delete` /
+//!   `memory.get` via [`crate::audit::record`], with the context id and never
+//!   a value.
+//!
+//! ## A conflict is a read
+//!
+//! `versionConflict` on a 0.2 `put` or `delete` carries the item's current
+//! value, so the writer that lost can merge without a re-read. That hands a
+//! stored value to a caller holding only [`Capability::MemoryWrite`] — an agent
+//! allowed to record but not to recall. The specifications (`put/0.2`
+//! *Authorization*) therefore require the value to be withheld from such a
+//! caller, and [`memory_reject`] does that; the current version, which says
+//! only that the item changed, is still sent.
+//!
+//! [`derived_capabilities_for_role`]: vti_common::acl::derived_capabilities_for_role
 
-use serde_json::Value;
-use trust_tasks_rs::TrustTask;
+use serde_json::{Value, json};
+use trust_tasks_rs::{RejectReason, TrustTask};
 
+use vta_sdk::protocols::app_state::AppStateRecord;
 use vta_sdk::protocols::memory::{
     MemoryDeleteBody, MemoryDeleteResponse, MemoryListBody, MemoryListResponse, MemoryPutBody,
     MemoryPutResponse,
 };
-
 use vti_common::acl::Capability;
+use vti_specs::vta::memory as spec;
 
 use crate::audit;
 use crate::auth::AuthClaims;
+use crate::operations::app_state::AppStateError;
 use crate::operations::memory;
 use crate::server::AppState;
 
-use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
+use super::app_state::app_state_reject;
+use super::helpers::{
+    TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with,
+    success_response,
+};
 
 /// Capability gate for the memory surface, mirroring the vault slices'
 /// [`super::vault::require_capability`].
@@ -55,16 +68,129 @@ async fn require_cap(
     doc: &TrustTask<Value>,
     cap: Capability,
     action: &str,
-) -> Result<(), super::helpers::TrustTaskOutcome> {
+) -> Result<(), TrustTaskOutcome> {
     super::helpers::require_capability(state, auth, doc, cap, &format!("memory {action}")).await
 }
 
-/// Handler for `spec/vta/memory/put/0.1`.
+/// Both gates for the 0.2 tasks and `get`: the capability and the context.
+/// Either refusal is the task's declared `contextForbidden`, as its
+/// specification requires ("lacks write/read access to memory in the named
+/// context" — a missing capability is exactly that), with one message for
+/// both, so the answer never says which gate refused or whether the context
+/// exists. 0.1 keeps answering `permissionDenied`, as it always has.
+async fn admit(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    cap: Capability,
+    action: &str,
+    context_id: &str,
+    forbidden: trust_tasks_rs::DeclaredErrorCode,
+) -> Result<(), TrustTaskOutcome> {
+    let allowed = crate::operations::acl::caller_has_capability(&state.acl_ks, auth, cap).await
+        && auth.require_context(context_id).is_ok();
+    if allowed {
+        return Ok(());
+    }
+    Err(super::helpers::reject_declared(
+        doc,
+        forbidden,
+        format!("not permitted to {action} memory in context `{context_id}`"),
+    ))
+}
+
+/// The store's refusal on the wire, with a conflict's `currentValue` withheld
+/// from a caller that may write the context but not read it (module docs).
+async fn memory_reject(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    err: AppStateError,
+) -> TrustTaskOutcome {
+    let err = match err {
+        AppStateError::VersionConflict {
+            reason,
+            current_version,
+            current_value,
+            current_deleted,
+        } => {
+            let may_read = current_value.is_some()
+                && crate::operations::acl::caller_has_capability(
+                    &state.acl_ks,
+                    auth,
+                    Capability::MemoryRead,
+                )
+                .await;
+            AppStateError::VersionConflict {
+                reason,
+                current_version,
+                current_value: current_value.filter(|_| may_read),
+                current_deleted,
+            }
+        }
+        other => other,
+    };
+    app_state_reject(doc, err)
+}
+
+/// A generated response type from the JSON a handler built, or an internal
+/// error if the two disagree — the schema is the authority on the shape.
+fn respond<R: serde::de::DeserializeOwned + serde::Serialize>(
+    doc: &TrustTask<Value>,
+    value: Value,
+) -> TrustTaskOutcome {
+    match serde_json::from_value::<R>(value) {
+        Ok(r) => success_response(doc, r),
+        Err(e) => reject_with(
+            doc,
+            RejectReason::InternalError {
+                reason: format!("{} response does not match its schema: {e}", doc.type_uri),
+            },
+        ),
+    }
+}
+
+/// A stored item as `vta/_shared/0.1/memory-record`'s `MemoryRecord`: the
+/// application-state record without its namespace, which memory does not have.
+fn memory_record(r: &AppStateRecord) -> Value {
+    let mut m = json!({
+        "contextId": r.context_id,
+        "key": r.key,
+        "version": r.version,
+        "deleted": r.deleted,
+        "updatedAt": r.updated_at,
+    });
+    let o = m.as_object_mut().expect("just built an object");
+    if let Some(v) = &r.value {
+        o.insert("value".into(), v.clone());
+    }
+    if let Some(b) = r.value_bytes {
+        o.insert("valueBytes".into(), json!(b));
+    }
+    if let Some(t) = &r.created_at {
+        o.insert("createdAt".into(), json!(t));
+    }
+    if let Some(t) = &r.deleted_at {
+        o.insert("deletedAt".into(), json!(t));
+    }
+    m
+}
+
+/// The tombstone retention this VTA reports to change-feed callers, `None`
+/// when reaping is disabled (0 days).
+async fn retention_seconds(state: &AppState) -> Option<u64> {
+    let days = state.config.read().await.app_state.tombstone_retention_days;
+    (days > 0).then(|| u64::from(days) * 24 * 60 * 60)
+}
+
+// ─── 0.1, on the versioned store ──────────────────────────────────────────
+
+/// Handler for `spec/vta/memory/put/0.1`: an unconditional put.
 pub(super) async fn handle_put(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> super::helpers::TrustTaskOutcome {
+) -> TrustTaskOutcome {
     if let Err(r) = require_cap(state, auth, &doc, Capability::MemoryWrite, "put").await {
         return r;
     }
@@ -72,24 +198,31 @@ pub(super) async fn handle_put(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    // Context-access gate (per-domain isolation). Same `require_context` ACL
-    // check the context-scoped key tasks use.
     if let Err(e) = auth.require_context(&req.context_id) {
         return app_error_to_reject(&doc, e);
     }
-    if let Err(e) = memory::put(&state.memory_ks, &req.context_id, &req.key, &req.value).await {
-        return app_error_to_reject(&doc, e);
+    if let Err(e) = memory::put(
+        &state.memory_ks,
+        &state.memory_locks,
+        &req.context_id,
+        &req.key,
+        &req.value,
+        None,
+    )
+    .await
+    {
+        return memory_reject(state, auth, &doc, e).await;
     }
     audit_memory(state, "memory.put", auth, &req.key, &req.context_id).await;
     success_response(&doc, MemoryPutResponse { key: req.key })
 }
 
-/// Handler for `spec/vta/memory/list/0.1`.
+/// Handler for `spec/vta/memory/list/0.1`: every live item, unpaged.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> super::helpers::TrustTaskOutcome {
+) -> TrustTaskOutcome {
     if let Err(r) = require_cap(state, auth, &doc, Capability::MemoryRead, "list").await {
         return r;
     }
@@ -100,20 +233,22 @@ pub(super) async fn handle_list(
     if let Err(e) = auth.require_context(&req.context_id) {
         return app_error_to_reject(&doc, e);
     }
-    let items = match memory::list(&state.memory_ks, &req.context_id).await {
+    let items = match memory::list_all_live(&state.memory_ks, &req.context_id).await {
         Ok(items) => items,
-        Err(e) => return app_error_to_reject(&doc, e),
+        Err(e) => return memory_reject(state, auth, &doc, e).await,
     };
     audit_memory(state, "memory.list", auth, &req.context_id, &req.context_id).await;
     success_response(&doc, MemoryListResponse { items })
 }
 
-/// Handler for `spec/vta/memory/delete/0.1`.
+/// Handler for `spec/vta/memory/delete/0.1`. Leaves a tombstone, as 0.2 does,
+/// so a 0.2 reader syncing the context converges; answers `notFound` when
+/// nothing was live, as 0.1 always has.
 pub(super) async fn handle_delete(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> super::helpers::TrustTaskOutcome {
+) -> TrustTaskOutcome {
     if let Err(r) = require_cap(state, auth, &doc, Capability::MemoryWrite, "delete").await {
         return r;
     }
@@ -124,15 +259,249 @@ pub(super) async fn handle_delete(
     if let Err(e) = auth.require_context(&req.context_id) {
         return app_error_to_reject(&doc, e);
     }
-    if let Err(e) = memory::delete(&state.memory_ks, &req.context_id, &req.key).await {
-        return app_error_to_reject(&doc, e);
+    match memory::delete(
+        &state.memory_ks,
+        &state.memory_locks,
+        &req.context_id,
+        &req.key,
+        None,
+    )
+    .await
+    {
+        Ok(out) if out.existed => {}
+        Ok(_) => {
+            return super::helpers::reject_declared(
+                &doc,
+                spec::delete::v0_1::error_codes::NOT_FOUND,
+                format!(
+                    "memory entry `{}` not found in context `{}`",
+                    req.key, req.context_id
+                ),
+            );
+        }
+        Err(e) => return memory_reject(state, auth, &doc, e).await,
     }
     audit_memory(state, "memory.delete", auth, &req.key, &req.context_id).await;
     success_response(&doc, MemoryDeleteResponse { key: req.key })
 }
 
+// ─── 0.2 and get 0.1 ──────────────────────────────────────────────────────
+
+/// Handler for `spec/vta/memory/put/0.2`.
+pub(super) async fn handle_put_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::put::v0_2 as t;
+    let req = match parse_payload::<t::Payload>(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let (context_id, key) = (req.context_id.to_string(), req.key.to_string());
+    if let Err(r) = admit(
+        state,
+        auth,
+        &doc,
+        Capability::MemoryWrite,
+        "put",
+        &context_id,
+        t::error_codes::CONTEXT_FORBIDDEN,
+    )
+    .await
+    {
+        return r;
+    }
+    let out = match memory::put(
+        &state.memory_ks,
+        &state.memory_locks,
+        &context_id,
+        &key,
+        &req.value.0,
+        req.expected_version.map(|v| v.0),
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => return memory_reject(state, auth, &doc, e).await,
+    };
+    audit_memory(state, "memory.put", auth, &key, &context_id).await;
+    respond::<t::Response>(
+        &doc,
+        json!({
+            "contextId": context_id,
+            "key": key,
+            "version": out.version,
+            "wasCreated": out.created,
+            "updatedAt": out.updated_at,
+            "valueBytes": out.value_bytes,
+        }),
+    )
+}
+
+/// Handler for `spec/vta/memory/delete/0.2`.
+pub(super) async fn handle_delete_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::delete::v0_2 as t;
+    let req = match parse_payload::<t::Payload>(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let (context_id, key) = (req.context_id.to_string(), req.key.to_string());
+    if let Err(r) = admit(
+        state,
+        auth,
+        &doc,
+        Capability::MemoryWrite,
+        "delete",
+        &context_id,
+        t::error_codes::CONTEXT_FORBIDDEN,
+    )
+    .await
+    {
+        return r;
+    }
+    let out = match memory::delete(
+        &state.memory_ks,
+        &state.memory_locks,
+        &context_id,
+        &key,
+        req.expected_version.map(|v| v.0.get()),
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => return memory_reject(state, auth, &doc, e).await,
+    };
+    audit_memory(state, "memory.delete", auth, &key, &context_id).await;
+    let mut body = json!({ "contextId": context_id, "key": key, "existed": out.existed });
+    let o = body.as_object_mut().expect("just built an object");
+    if let Some(v) = out.version {
+        o.insert("version".into(), json!(v));
+    }
+    if let Some(t) = out.deleted_at {
+        o.insert("deletedAt".into(), json!(t));
+    }
+    respond::<t::Response>(&doc, body)
+}
+
+/// Handler for `spec/vta/memory/list/0.2`: a snapshot or the change feed.
+pub(super) async fn handle_list_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::list::v0_2 as t;
+    let req = match parse_payload::<t::Payload>(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let context_id = req.context_id.to_string();
+    if let Err(r) = admit(
+        state,
+        auth,
+        &doc,
+        Capability::MemoryRead,
+        "list",
+        &context_id,
+        t::error_codes::CONTEXT_FORBIDDEN,
+    )
+    .await
+    {
+        return r;
+    }
+    let prefix = req.prefix.as_ref().map(|p| p.to_string());
+    let page = match memory::list(
+        &state.memory_ks,
+        &context_id,
+        prefix.as_deref(),
+        req.since_version,
+        // Values by default, as 0.1 always returned them (`list/0.2`).
+        req.include_values.unwrap_or(true),
+        req.include_deleted,
+        req.limit
+            .map(|l| usize::try_from(l.get()).unwrap_or(usize::MAX)),
+        req.cursor.as_deref(),
+        retention_seconds(state).await,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => return memory_reject(state, auth, &doc, e).await,
+    };
+    audit_memory(state, "memory.list", auth, &context_id, &context_id).await;
+    let items: Vec<Value> = page.records.iter().map(memory_record).collect();
+    let mut body = json!({
+        "items": items,
+        // Always present: the namespace is fixed, so there is always one
+        // counter to report, 0 for a context never written.
+        "highWatermark": page.high_watermark.unwrap_or(0),
+    });
+    let o = body.as_object_mut().expect("just built an object");
+    if page.truncated
+        && let Some(c) = page.cursor
+    {
+        o.insert("nextCursor".into(), json!(c));
+    }
+    if let Some(r) = page.tombstone_retention_seconds {
+        o.insert("tombstoneRetentionSeconds".into(), json!(r));
+    }
+    respond::<t::Response>(&doc, body)
+}
+
+/// Handler for `spec/vta/memory/get/0.1`: named items, each answered once.
+pub(super) async fn handle_get_v0_1(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::get::v0_1 as t;
+    let req = match parse_payload::<t::Payload>(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let context_id = req.context_id.to_string();
+    if let Err(r) = admit(
+        state,
+        auth,
+        &doc,
+        Capability::MemoryRead,
+        "get",
+        &context_id,
+        t::error_codes::CONTEXT_FORBIDDEN,
+    )
+    .await
+    {
+        return r;
+    }
+    let keys: Vec<String> = req.keys.iter().map(|k| k.to_string()).collect();
+    let (found, missing, deferred) = match memory::get_many(
+        &state.memory_ks,
+        &context_id,
+        &keys,
+        req.include_deleted.unwrap_or(false),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return memory_reject(state, auth, &doc, e).await,
+    };
+    audit_memory(state, "memory.get", auth, &context_id, &context_id).await;
+    let items: Vec<Value> = found.iter().map(memory_record).collect();
+    let mut body = json!({ "items": items, "missing": missing });
+    if !deferred.is_empty() {
+        body.as_object_mut()
+            .expect("just built an object")
+            .insert("deferred".into(), json!(deferred));
+    }
+    respond::<t::Response>(&doc, body)
+}
+
 /// Record a `memory.*` audit row (best-effort; a failed write never fails the
-/// op). `resource` is the entry key (put/delete) or the context id (list).
+/// op). `resource` is the entry key (put/delete) or the context id (list/get).
 async fn audit_memory(
     state: &AppState,
     action: &str,
@@ -508,5 +877,381 @@ mod tests {
             "denied either way — the point is it is refused on the capability, \
              so the reason text never depends on whether that context exists"
         );
+    }
+
+    // ─── 0.2 and get 0.1 (#2115) ─────────────────────────────────────────
+
+    use vta_sdk::trust_tasks::{
+        TASK_VTA_MEMORY_DELETE_0_2, TASK_VTA_MEMORY_GET_0_1, TASK_VTA_MEMORY_LIST_0_2,
+        TASK_VTA_MEMORY_PUT_0_2,
+    };
+
+    fn code(out: &TrustTaskOutcome) -> String {
+        response_payload(out)
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn details(out: &TrustTaskOutcome) -> Value {
+        response_payload(out)
+            .get("details")
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    async fn put2(state: &AppState, auth: &AuthClaims, payload: Value) -> TrustTaskOutcome {
+        handle_put_v0_2(state, auth, doc(TASK_VTA_MEMORY_PUT_0_2, payload)).await
+    }
+
+    fn version_of(out: &TrustTaskOutcome) -> u64 {
+        response_payload(out)["version"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("no version: {}", String::from_utf8_lossy(&out.body)))
+    }
+
+    #[tokio::test]
+    async fn a_put_returns_a_version_the_next_write_can_condition_on() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = admin_of("acme");
+        let first = put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "one"}),
+        )
+        .await;
+        assert!(
+            first.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&first.body)
+        );
+        assert_eq!(response_payload(&first)["wasCreated"], true);
+        let v = version_of(&first);
+        let second = put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "two", "expectedVersion": v}),
+        )
+        .await;
+        assert!(second.status.is_success());
+        assert!(version_of(&second) > v);
+    }
+
+    /// The race #2115 is about: the loser is handed the winner's view.
+    #[tokio::test]
+    async fn a_stale_put_conflicts_and_carries_the_current_value() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = admin_of("acme");
+        let first = put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "one"}),
+        )
+        .await;
+        let v = version_of(&first);
+        put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "two"}),
+        )
+        .await;
+        let lost = put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "three", "expectedVersion": v}),
+        )
+        .await;
+        assert_eq!(code(&lost), "vta/memory/put:versionConflict");
+        let d = details(&lost);
+        assert_eq!(d["reason"], "versionMismatch");
+        assert_eq!(d["currentValue"], "two");
+        assert!(d["currentVersion"].as_u64().unwrap() > v);
+    }
+
+    /// A conflict is a read. An entry that may write memory but not read it
+    /// learns that the item changed, never what it now says.
+    #[tokio::test]
+    async fn a_write_only_caller_is_not_shown_the_value_in_a_conflict() {
+        use vti_common::acl::{AclEntry, store_acl_entry};
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = admin_of("acme");
+        put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "secret"}),
+        )
+        .await;
+        let write_only = AclEntry::new(&auth.did, auth.role.clone(), "did:key:zAdmin")
+            .with_contexts(vec!["acme".to_string()])
+            .with_capabilities(vec![Capability::MemoryWrite]);
+        store_acl_entry(&state.acl_ks, &write_only).await.unwrap();
+        let out = put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "x", "expectedVersion": 0}),
+        )
+        .await;
+        assert_eq!(code(&out), "vta/memory/put:versionConflict");
+        let d = details(&out);
+        assert_eq!(d["reason"], "recordExists");
+        assert!(d.get("currentValue").is_none(), "value leaked: {d}");
+        assert!(d["currentVersion"].is_u64());
+    }
+
+    #[tokio::test]
+    async fn a_stale_delete_conflicts_and_a_tombstone_reaches_the_change_feed() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = admin_of("acme");
+        let w = put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "v"}),
+        )
+        .await;
+        let v = version_of(&w);
+        put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "v2"}),
+        )
+        .await;
+
+        let stale = handle_delete_v0_2(
+            &state,
+            &auth,
+            doc(
+                TASK_VTA_MEMORY_DELETE_0_2,
+                json!({"contextId": "acme", "key": "k", "expectedVersion": v}),
+            ),
+        )
+        .await;
+        assert_eq!(code(&stale), "vta/memory/delete:versionConflict");
+        assert_eq!(details(&stale)["currentValue"], "v2");
+
+        let del = handle_delete_v0_2(
+            &state,
+            &auth,
+            doc(
+                TASK_VTA_MEMORY_DELETE_0_2,
+                json!({"contextId": "acme", "key": "k"}),
+            ),
+        )
+        .await;
+        assert_eq!(response_payload(&del)["existed"], true);
+
+        let feed = handle_list_v0_2(
+            &state,
+            &auth,
+            doc(
+                TASK_VTA_MEMORY_LIST_0_2,
+                json!({"contextId": "acme", "sinceVersion": v}),
+            ),
+        )
+        .await;
+        let p = response_payload(&feed);
+        let items = p["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{p}");
+        assert_eq!(items[0]["deleted"], true);
+        assert!(items[0].get("value").is_none());
+        assert!(p["highWatermark"].as_u64().unwrap() > v);
+        // And 0.1 reads the same store: the item is gone.
+        let old = handle_list(&state, &auth, list_doc("acme")).await;
+        assert!(
+            response_payload(&old)["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_change_feed_that_excludes_tombstones_is_refused() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let out = handle_list_v0_2(
+            &state,
+            &admin_of("acme"),
+            doc(
+                TASK_VTA_MEMORY_LIST_0_2,
+                json!({"contextId": "acme", "sinceVersion": 0, "includeDeleted": false}),
+            ),
+        )
+        .await;
+        assert_eq!(code(&out), "vta/memory/list:filterConflict");
+        assert_eq!(details(&out)["reason"], "changeFeedCannotExcludeDeleted");
+    }
+
+    #[tokio::test]
+    async fn a_cursor_this_vta_did_not_issue_is_refused() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let out = handle_list_v0_2(
+            &state,
+            &admin_of("acme"),
+            doc(
+                TASK_VTA_MEMORY_LIST_0_2,
+                json!({"contextId": "acme", "cursor": "not-a-cursor"}),
+            ),
+        )
+        .await;
+        assert_eq!(code(&out), "vta/memory/list:cursorInvalid");
+    }
+
+    #[tokio::test]
+    async fn a_watermark_older_than_the_reaped_tombstones_is_refused() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = admin_of("acme");
+        put2(
+            &state,
+            &auth,
+            json!({"contextId": "acme", "key": "k", "value": "v"}),
+        )
+        .await;
+        let del = handle_delete_v0_2(
+            &state,
+            &auth,
+            doc(
+                TASK_VTA_MEMORY_DELETE_0_2,
+                json!({"contextId": "acme", "key": "k"}),
+            ),
+        )
+        .await;
+        let tomb = version_of(&del);
+        crate::operations::app_state::reap_tombstones_through(
+            &state.memory_ks,
+            &state.memory_locks,
+            "acme",
+            crate::operations::memory::NAMESPACE,
+            tomb,
+        )
+        .await
+        .unwrap();
+        let out = handle_list_v0_2(
+            &state,
+            &auth,
+            doc(
+                TASK_VTA_MEMORY_LIST_0_2,
+                json!({"contextId": "acme", "sinceVersion": 0}),
+            ),
+        )
+        .await;
+        assert_eq!(code(&out), "vta/memory/list:watermarkTooOld");
+    }
+
+    /// A snapshot pages by cursor and narrows by prefix, and values come back
+    /// by default, as 0.1 always returned them.
+    #[tokio::test]
+    async fn a_snapshot_pages_and_narrows_by_prefix() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = admin_of("acme");
+        for k in ["contact/a", "contact/b", "contact/c", "pref/x"] {
+            put2(
+                &state,
+                &auth,
+                json!({"contextId": "acme", "key": k, "value": k}),
+            )
+            .await;
+        }
+        let page = |cursor: Option<String>| {
+            let mut p = json!({"contextId": "acme", "prefix": "contact/", "limit": 2});
+            if let Some(c) = cursor {
+                p["cursor"] = json!(c);
+            }
+            doc(TASK_VTA_MEMORY_LIST_0_2, p)
+        };
+        let one = response_payload(&handle_list_v0_2(&state, &auth, page(None)).await);
+        assert_eq!(one["items"].as_array().unwrap().len(), 2, "{one}");
+        assert_eq!(one["items"][0]["value"], "contact/a");
+        let next = one["nextCursor"]
+            .as_str()
+            .expect("more to come")
+            .to_string();
+        let two = response_payload(&handle_list_v0_2(&state, &auth, page(Some(next))).await);
+        assert_eq!(two["items"].as_array().unwrap().len(), 1, "{two}");
+        assert_eq!(two["items"][0]["key"], "contact/c");
+        assert!(two.get("nextCursor").is_none());
+    }
+
+    /// Each key answered once, and an item 0.1 wrote reads back with its
+    /// version — one store.
+    #[tokio::test]
+    async fn get_answers_every_key_once_including_items_0_1_wrote() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = admin_of("acme");
+        handle_put(&state, &auth, put_doc("acme", "name", "Ada")).await;
+        let out = handle_get_v0_1(
+            &state,
+            &auth,
+            doc(
+                TASK_VTA_MEMORY_GET_0_1,
+                json!({"contextId": "acme", "keys": ["name", "absent"]}),
+            ),
+        )
+        .await;
+        assert!(
+            out.status.is_success(),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+        let p = response_payload(&out);
+        assert_eq!(p["items"][0]["value"], "Ada");
+        assert!(p["items"][0]["version"].is_u64());
+        assert_eq!(p["missing"], json!(["absent"]));
+    }
+
+    #[tokio::test]
+    async fn get_refuses_a_duplicate_key() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let out = handle_get_v0_1(
+            &state,
+            &admin_of("acme"),
+            doc(
+                TASK_VTA_MEMORY_GET_0_1,
+                json!({"contextId": "acme", "keys": ["a", "a"]}),
+            ),
+        )
+        .await;
+        assert_eq!(code(&out), "vta/memory/get:duplicateKey");
+    }
+
+    /// 0.2's refusal for a caller without access is the declared
+    /// `contextForbidden`, for the context gate and the capability gate alike.
+    #[tokio::test]
+    async fn a_caller_without_access_gets_context_forbidden() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let get = handle_get_v0_1(
+            &state,
+            &admin_of("other"),
+            doc(
+                TASK_VTA_MEMORY_GET_0_1,
+                json!({"contextId": "acme", "keys": ["k"]}),
+            ),
+        )
+        .await;
+        assert_eq!(code(&get), "vta/memory/get:contextForbidden");
+        let reader_put = put2(
+            &state,
+            &claims_for(Role::Reader, "acme"),
+            json!({"contextId": "acme", "key": "k", "value": "v"}),
+        )
+        .await;
+        assert_eq!(code(&reader_put), "vta/memory/put:contextForbidden");
+        let intruder = admin_of("other");
+        let del = handle_delete_v0_2(
+            &state,
+            &intruder,
+            doc(
+                TASK_VTA_MEMORY_DELETE_0_2,
+                json!({"contextId": "acme", "key": "k"}),
+            ),
+        )
+        .await;
+        assert_eq!(code(&del), "vta/memory/delete:contextForbidden");
+        let list = handle_list_v0_2(
+            &state,
+            &intruder,
+            doc(TASK_VTA_MEMORY_LIST_0_2, json!({"contextId": "acme"})),
+        )
+        .await;
+        assert_eq!(code(&list), "vta/memory/list:contextForbidden");
     }
 }

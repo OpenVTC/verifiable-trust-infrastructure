@@ -218,6 +218,11 @@ pub enum AppStateError {
     AtomicBatchRejected(Vec<WriteResult>),
     /// The batch's aggregate size exceeds what one request may carry.
     BatchTooLarge { limit_bytes: u64, actual_bytes: u64 },
+    /// The `cursor` cannot be honoured: not one this VTA issued for this query,
+    /// or no longer valid. `vta/app-state/list:cursorInvalid` (and memory's),
+    /// which the caller recovers from by restarting the enumeration — so it is
+    /// not `malformedRequest`, which says the request itself was wrong.
+    CursorInvalid,
     /// A malformed request the schema did not catch (bad namespace, bad key,
     /// both/neither of `value` and `mergePatch`, too many items).
     Validation(String),
@@ -296,6 +301,10 @@ impl std::fmt::Display for AppStateError {
                 f,
                 "batch is {actual_bytes} bytes; this VTA accepts {limit_bytes} per request"
             ),
+            Self::CursorInvalid => write!(
+                f,
+                "cursor is not valid for this query; restart the enumeration without one"
+            ),
             Self::Validation(m) => write!(f, "{m}"),
             Self::Internal(m) => write!(f, "internal error: {m}"),
         }
@@ -305,9 +314,7 @@ impl std::fmt::Display for AppStateError {
 impl From<AppError> for AppStateError {
     fn from(e: AppError) -> Self {
         match e {
-            AppError::InvalidCursor => {
-                Self::Validation("cursor is not valid for this query".into())
-            }
+            AppError::InvalidCursor => Self::CursorInvalid,
             other => Self::Internal(other.to_string()),
         }
     }
@@ -535,6 +542,40 @@ fn value_size(value: &Value) -> u64 {
         .unwrap_or(0)
 }
 
+/// How a store built on this module measures a value against
+/// [`MAX_VALUE_BYTES`] and reports its `valueBytes`.
+///
+/// Application state is JSON and is measured as its compact encoding, as its
+/// specification says. Agent memory (`crate::operations::memory`) keeps its
+/// items here too, as JSON strings, but `vta/memory/put/0.2` measures the
+/// **UTF-8 text** of the value: measured as JSON, a note full of quotes or
+/// newlines would meet the cap early (an escape is up to six bytes) and report
+/// a `valueBytes` its writer cannot predict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValueMeasure {
+    /// The compact JSON encoding (`vta/app-state/*`).
+    CompactJson,
+    /// A string's UTF-8 bytes (`vta/memory/*`); anything else as compact JSON.
+    Utf8Text,
+    /// [`Self::Utf8Text`] with no cap: only for carrying over memory written by
+    /// `vta/memory/put/0.1`, which enforced none, so an item stored before the
+    /// cap existed is moved rather than lost (`operations::memory`).
+    Utf8TextUncapped,
+}
+
+impl ValueMeasure {
+    fn size(self, value: &Value) -> u64 {
+        match (self, value) {
+            (Self::Utf8Text | Self::Utf8TextUncapped, Value::String(s)) => s.len() as u64,
+            _ => value_size(value),
+        }
+    }
+
+    fn capped(self) -> bool {
+        !matches!(self, Self::Utf8TextUncapped)
+    }
+}
+
 /// RFC 7386 JSON Merge Patch.
 ///
 /// Implemented here rather than pulled in as a dependency: the algorithm is
@@ -697,6 +738,7 @@ async fn put_locked(
     expected_version: Option<u64>,
     version: u64,
     now: &str,
+    measure: ValueMeasure,
 ) -> Result<PutOutcome, AppStateError> {
     let mut batch = Batch::new();
     let outcome = stage_put(
@@ -710,6 +752,7 @@ async fn put_locked(
         expected_version,
         version,
         now,
+        measure,
     )
     .await?;
     ks.apply_batch(batch).await?;
@@ -732,6 +775,7 @@ async fn stage_put(
     expected_version: Option<u64>,
     version: u64,
     now: &str,
+    measure: ValueMeasure,
 ) -> Result<PutOutcome, AppStateError> {
     validate_address(namespace, key)?;
 
@@ -795,8 +839,8 @@ async fn stage_put(
         }
     };
 
-    let size = value_size(&new_value);
-    if size > MAX_VALUE_BYTES {
+    let size = measure.size(&new_value);
+    if measure.capped() && size > MAX_VALUE_BYTES {
         return Err(AppStateError::ValueTooLarge {
             limit_bytes: MAX_VALUE_BYTES,
             actual_bytes: size,
@@ -859,6 +903,33 @@ pub async fn put(
     patch: Option<&Value>,
     expected_version: Option<u64>,
 ) -> Result<PutOutcome, AppStateError> {
+    put_measured(
+        ks,
+        locks,
+        context_id,
+        namespace,
+        key,
+        value,
+        patch,
+        expected_version,
+        ValueMeasure::CompactJson,
+    )
+    .await
+}
+
+/// [`put`], measuring the value with `measure` ([`ValueMeasure`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn put_measured(
+    ks: &KeyspaceHandle,
+    locks: &NamespaceLocks,
+    context_id: &str,
+    namespace: &str,
+    key: &str,
+    value: Option<&Value>,
+    patch: Option<&Value>,
+    expected_version: Option<u64>,
+    measure: ValueMeasure,
+) -> Result<PutOutcome, AppStateError> {
     // Validate before reserving. A reservation is a durable write, so a
     // malformed namespace would otherwise leave an `appc:` counter behind for
     // an address that can never hold a record.
@@ -877,6 +948,7 @@ pub async fn put(
         expected_version,
         version,
         &now,
+        measure,
     )
     .await
 }
@@ -992,6 +1064,7 @@ pub async fn put_many(
                 w.expected_version,
                 first + i as u64,
                 &now,
+                ValueMeasure::CompactJson,
             )
             .await
             {
@@ -1035,6 +1108,7 @@ pub async fn put_many(
             w.expected_version,
             first + i as u64,
             &now,
+            ValueMeasure::CompactJson,
         )
         .await;
         results.push(write_result(&w.key, outcome)?);
@@ -3086,6 +3160,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, AppStateError::Validation(_)), "{err:?}");
+        assert!(matches!(err, AppStateError::CursorInvalid), "{err:?}");
     }
 }

@@ -75,7 +75,7 @@ fn ext(slug: &str, local: &str) -> TrustTaskCode {
 }
 
 /// Render an [`AppStateError`] as a spec-taxonomy trust-task error response.
-fn app_state_reject(
+pub(super) fn app_state_reject(
     doc: &TrustTask<Value>,
     err: AppStateError,
 ) -> super::helpers::TrustTaskOutcome {
@@ -150,6 +150,7 @@ fn app_state_reject(
         // A caller fault the schema did not catch. `malformedRequest` rather
         // than an extended code: the framework already names this failure, and
         // an extended synonym would downgrade the status a client switches on.
+        AppStateError::CursorInvalid => (ext(&slug, "cursorInvalid"), None),
         AppStateError::Validation(_) => (StandardCode::MalformedRequest.into(), None),
         AppStateError::Internal(_) => (StandardCode::InternalError.into(), None),
     };
@@ -887,5 +888,26 @@ mod tests {
             .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].get("value"), Some(&json!("ctx-a")));
+    }
+
+    /// A cursor this VTA did not issue is the declared `cursorInvalid`, which
+    /// tells the caller to restart the enumeration — not `malformedRequest`,
+    /// which says the request itself was wrong.
+    #[tokio::test]
+    async fn a_cursor_this_vta_did_not_issue_is_cursor_invalid() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let out = handle_list(
+            &state,
+            &admin_of("acme"),
+            doc(
+                TASK_VTA_APP_STATE_LIST_1_1,
+                json!({ "contextId": "acme", "namespace": "openvtc", "cursor": "not-a-cursor" }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            payload_of(&out).get("code").and_then(Value::as_str),
+            Some("vta/app-state/list:cursorInvalid")
+        );
     }
 }
