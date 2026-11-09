@@ -87,7 +87,8 @@ drift.
 1. **Process spawn is the authentication boundary.** stdio means no listener
    and no authentication on the MCP channel itself: whoever can spawn the
    process, or read the host's MCP configuration, inherits the full standing of
-   the configured identity.
+   the configured identity. With `--listen` (§7.1) the boundary is the bearer
+   token instead: whoever holds it, on this machine, inherits that standing.
 2. **The identity decides whose standing that is.** Two rungs (§3), both a
    dedicated identity; there is no rung that replays an operator's login.
 3. **The community is the policy decision point.** The entry's administrative
@@ -422,6 +423,58 @@ vtc-mcp --agent-did … --vtc-did … --allow 'vtc/admin/actions/*,task-consent/
 Keep the key in `env`, not `args`. Every flag has a `VTC_MCP_*` environment
 equivalent.
 
+### 7.1 Several assistant sessions: one shared bridge (`--listen`)
+
+A host started as above spawns its own bridge. Two of them with the same agent
+key — two assistant sessions — is two mediator sockets for one DID, and the
+mediator keeps one: each eviction is followed by a reconnect that evicts the
+other, and a reply the mediator flushes onto the other process's socket is
+deleted once written, so the call waiting for it fails though the community
+did the work. Do not run the same key in two stdio bridges.
+
+Run one bridge for the machine instead, and point every host at it:
+
+```sh
+# Once, as a long-running process (a launchd agent or systemd user unit):
+VTC_MCP_AGENT_KEY=z3u2… vtc-mcp \
+  --agent-did did:key:z6Mk… \
+  --vtc-did did:webvh:…:vtc.example.com \
+  --confirm sensitive \
+  --listen 127.0.0.1:7465
+# → serving MCP over loopback HTTP  url=http://127.0.0.1:7465/mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "community": {
+      "type": "http",
+      "url": "http://127.0.0.1:7465/mcp",
+      "headers": { "Authorization": "Bearer ${VTC_MCP_LISTEN_TOKEN}" }
+    }
+  }
+}
+```
+
+- **One session, every host.** The bridge holds one community session and
+  gives each MCP session its own view of it; replies are routed to the request
+  waiting for them however many hosts are calling. A confirmation (`--confirm`)
+  or a decision is asked of the host that made the call. The guard, the audit
+  log and an open wallet sign-in are the bridge's, shared by every host.
+- **Loopback only.** Any other address is refused at startup.
+- **A bearer token on every request.** `VTC_MCP_LISTEN_TOKEN` (at least 32
+  characters), else the file `listen-token` in the state directory
+  (`$VTC_MCP_STATE_DIR`, else `$XDG_STATE_HOME/vtc-mcp`, else
+  `~/.local/state/vtc-mcp`), created owner-only on first start. A token file
+  anyone else can read is refused. Give the hosts the same token, through the
+  environment the host expands in `headers` — never written into a project's
+  checked-in `.mcp.json`. Whoever holds it acts with the bridge's standing, so
+  rotate it by deleting the file and restarting.
+- **No browsers.** A request with an `Origin` header is refused, and the
+  `Host` must be a loopback name, so a web page cannot reach the port.
+- **Stops cleanly** on SIGINT or SIGTERM, closing every MCP session and then
+  the community session.
+
 **The skill.** `vtc-mcp/skills/vtc-community/SKILL.md` is a Claude Code skill
 that teaches an assistant how to work through this bridge: start with status,
 whoami and supported tasks; read the catalog's schema before a call; use the
@@ -479,6 +532,9 @@ An administrator's assistant, enrolled as in §3.1 with `vtc.groups.manage`.
 | `permissionDenied` from the community | The entry does not hold the capability, or a member persona was asked an administrative task | `vtc_whoami`; ask the administrator who enrolled the entry |
 | A result says `parked` | Second-party consent (§2.3) | Not an error; follow the action, do not resend |
 | `this MCP host cannot ask you (it does not support elicitation)` | `--confirm`, or `vtc_actions_decide`, needs a prompt the host cannot show | `--confirm never` or `--allow` for ordinary steps; a decision has no such override — use a host that can ask |
+| Calls fail or time out only while a **second assistant session** is open | Two stdio bridges on one agent key: two sockets for one DID (§7.1) | One bridge with `--listen`, or a separate key per session |
+| `401` from the bridge's URL | No `Authorization: Bearer` header, or a different token | The host's `headers` must expand to the bridge's token (§7.1) |
+| `--listen …: only a loopback address is served` | A non-loopback `--listen` address | `127.0.0.1:<port>` or `[::1]:<port>` |
 
 ---
 

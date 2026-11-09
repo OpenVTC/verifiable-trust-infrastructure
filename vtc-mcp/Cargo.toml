@@ -28,7 +28,15 @@ vti-mcp-common = { path = "../vti-mcp-common", version = "0.1" }
 # `elicitation` is what lets the bridge put a risky operation back in front of
 # a human: an MCP host approves a *tool*, and once `vtc_call` is approved every
 # Trust Task rides that one approval.
-rmcp = { version = "3", features = ["server", "transport-io", "macros", "schemars", "elicitation"] }
+#
+# `transport-streamable-http-server` is `--listen`: one bridge, one mediator
+# socket, serving every MCP host on the machine over loopback HTTP, where a
+# stdio bridge per host would put several sockets on one DID (src/listen.rs).
+rmcp = { version = "3", features = ["server", "transport-io", "transport-streamable-http-server", "macros", "schemars", "elicitation"] }
+# `--listen`: the loopback HTTP server and its bearer-token check.
+axum = { workspace = true }
+subtle = { workspace = true }
+tokio-util = { workspace = true }
 schemars = "1"
 trust-tasks-rs = { workspace = true }
 tokio = { workspace = true }
@@ -44,6 +52,8 @@ multibase = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# Drives `--listen` end to end as an MCP host would.
+reqwest = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,7 +6,7 @@ Crate guidance. The workspace `CLAUDE.md` applies too.
 
 (The crate's full entry from the workspace `CLAUDE.md` crate map.)
 
-MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a member's or an administrator's AI assistant. A native Trust Task client: every tool call is one signed document `vtc-client` sends in-process over the transport the community's DID document advertises (TSP > DIDComm > HTTPS, `VtcClient::connect_resolved`) — never a `cnm`/`pnm` subprocess, never a CLI's stored login. Two generic tools (`vtc_list_operations`, catalogued from the pinned specification bundles; `vtc_call`) plus discovery, whoami and status. Runs every call through the guard and recorder in `vti-mcp-common`. Docs: `docs/03-vtc/vtc-mcp.md` (operator page), `docs/05-design-notes/vtc-mcp.md` (design); the Claude Code skill is `skills/vtc-community/SKILL.md`. `publish = false`
+MCP server bridging a Verifiable Trust Community to MCP tools over stdio (or, with `--listen`, loopback HTTP shared by every host on the machine), for a member's or an administrator's AI assistant. A native Trust Task client: every tool call is one signed document `vtc-client` sends in-process over the transport the community's DID document advertises (TSP > DIDComm > HTTPS, `VtcClient::connect_resolved`) — never a `cnm`/`pnm` subprocess, never a CLI's stored login. Two generic tools (`vtc_list_operations`, catalogued from the pinned specification bundles; `vtc_call`) plus discovery, whoami and status. Runs every call through the guard and recorder in `vti-mcp-common`. Docs: `docs/03-vtc/vtc-mcp.md` (operator page), `docs/05-design-notes/vtc-mcp.md` (design); the Claude Code skill is `skills/vtc-community/SKILL.md`. `publish = false`
 
 ## Rules
 
@@ -78,6 +78,15 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
   of the communities each agent DID signed in to and reports a reuse as
   `keyReuseWarning` in `vtc_whoami` / `vtc_status`. Only the key holder can see
   reuse; a community knows only its own records.
+- **`--listen` is loopback, a token, and no browsers — none of it optional**
+  (`src/listen.rs`, design note D7). The endpoint speaks with the bridge's
+  standing, so: `check_loopback` before binding, with no flag to widen it; a
+  bearer token on every request, compared in constant time, its file
+  owner-only and refused otherwise; `Origin` refused and `Host` loopback. One
+  process serves every host because the mediator holds one socket per DID —
+  never answer "two sessions" by starting two bridges on one key. State that
+  must be per host (an elicitation) goes on the calling session's peer, never
+  on the shared bridge.
 - **Deciding an action always asks the human.** `vtc_actions_decide` re-derives
   the action's summary from the payload that would run (`verify_action`),
   refuses on any mismatch, and puts the summary and match code in front of

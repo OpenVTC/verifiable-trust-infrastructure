@@ -1,4 +1,6 @@
-//! `vtc-mcp` — a Verifiable Trust Community as MCP tools, over stdio.
+//! `vtc-mcp` — a Verifiable Trust Community as MCP tools, over stdio, or with
+//! `--listen` over loopback HTTP to every MCP host on the machine at once
+//! (`listen`).
 //!
 //! The bridge is a native Trust Task client: every tool call is one signed
 //! document `vtc-client` sends in-process, over the transport the community's
@@ -21,6 +23,7 @@
 //! naming the missing field; neither serves in degraded mode so `vtc_status`
 //! can say what is wrong. There is no rung that replays an operator's login.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -35,6 +38,7 @@ use vti_mcp_common::observability::{self, LogFormat, Recorder};
 
 mod guides;
 mod key_reuse;
+mod listen;
 mod server;
 mod signin;
 mod workflows;
@@ -128,6 +132,46 @@ struct Args {
     /// community (`docs/03-vtc/vtc-mcp.md` §2.7).
     #[arg(long, env = "VTC_MCP_NO_KEY_REUSE_CHECK")]
     no_key_reuse_check: bool,
+
+    /// Serve MCP over HTTP at `http://<addr>/mcp` instead of stdio, so every
+    /// MCP host on this machine shares one bridge — one key, one mediator
+    /// socket. Loopback addresses only (`127.0.0.1:7465`). Every request needs
+    /// `Authorization: Bearer <token>`: `VTC_MCP_LISTEN_TOKEN`, else the
+    /// owner-only `listen-token` file in the state directory, created on
+    /// first use.
+    #[arg(long, env = "VTC_MCP_LISTEN")]
+    listen: Option<SocketAddr>,
+}
+
+/// How MCP is served: to the one host that started this process, or to every
+/// host on the machine.
+enum Serving {
+    Stdio,
+    Http { addr: SocketAddr, token: String },
+}
+
+impl Serving {
+    /// Settled before anything connects: a listen address or token that cannot
+    /// be used is a policy failure, and policy failures are fatal.
+    fn from_args(args: &Args) -> anyhow::Result<Self> {
+        let Some(addr) = args.listen else {
+            return Ok(Self::Stdio);
+        };
+        listen::check_loopback(addr).map_err(|e| anyhow::anyhow!(e))?;
+        let state_dir = key_reuse::state_dir();
+        let (token, source) =
+            listen::load_token(std::env::var(listen::TOKEN_ENV).ok(), state_dir.as_deref())
+                .map_err(|e| anyhow::anyhow!(e))?;
+        tracing::info!(token = %source, "listen token loaded");
+        Ok(Self::Http { addr, token })
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Stdio => "stdio".into(),
+            Self::Http { addr, .. } => format!("http://{addr}{}", listen::MCP_PATH),
+        }
+    }
 }
 
 /// A fresh Ed25519 `did:key` and its private key, multibase-encoded as the
@@ -304,6 +348,7 @@ async fn main() -> anyhow::Result<()> {
         "vtc-mcp starting"
     );
     warn_about_argv_secrets();
+    let serving = Serving::from_args(&args)?;
 
     let mut identity = BridgeIdentity {
         mode: "unconfigured".into(),
@@ -319,12 +364,22 @@ async fn main() -> anyhow::Result<()> {
                            or --agent-did + --agent-key (a dedicated did:key), and --vtc-did"
                 .to_string();
             tracing::error!(error = %message, "serving in degraded mode — tools will report this");
-            return serve(VtcMcp::degraded(message, identity, guard, recorder), None).await;
+            return serve(
+                VtcMcp::degraded(message, identity, guard, recorder),
+                None,
+                serving,
+            )
+            .await;
         }
         Err(e) => {
             let message = format!("no usable identity: {e}");
             tracing::error!(error = %message, "serving in degraded mode — tools will report this");
-            return serve(VtcMcp::degraded(message, identity, guard, recorder), None).await;
+            return serve(
+                VtcMcp::degraded(message, identity, guard, recorder),
+                None,
+                serving,
+            )
+            .await;
         }
     };
     let (session_identity, mode) = rung;
@@ -341,7 +396,12 @@ async fn main() -> anyhow::Result<()> {
                        document says how to reach it"
             .to_string();
         tracing::error!(error = %message, "serving in degraded mode — tools will report this");
-        return serve(VtcMcp::degraded(message, identity, guard, recorder), None).await;
+        return serve(
+            VtcMcp::degraded(message, identity, guard, recorder),
+            None,
+            serving,
+        )
+        .await;
     };
 
     if !args.no_key_reuse_check {
@@ -370,31 +430,47 @@ async fn main() -> anyhow::Result<()> {
                     .transport()
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "-".into()),
-                "connected to the community; serving MCP over stdio"
+                serving = %serving.label(),
+                "connected to the community; serving MCP"
             );
             let bridge = VtcMcp::new(client.clone(), identity, guard, recorder);
             bridge.learn_served().await;
             bridge.learn_delegation().await;
-            serve(bridge, Some(client)).await
+            serve(bridge, Some(client), serving).await
         }
         Err(e) => {
             let message = format!("connecting to the community ({mode}): {e}");
             tracing::error!(error = %message, "serving in degraded mode — tools will report this");
-            serve(VtcMcp::degraded(message, identity, guard, recorder), None).await
+            serve(
+                VtcMcp::degraded(message, identity, guard, recorder),
+                None,
+                serving,
+            )
+            .await
         }
     }
 }
 
-/// Serve MCP over stdio until the host disconnects, then close the session.
-/// A session client holds a live, auto-reconnecting mediator socket that
-/// `Drop` cannot close, so `shutdown` runs on every path out.
-async fn serve(bridge: VtcMcp, client: Option<Arc<VtcClient>>) -> anyhow::Result<()> {
-    let served = async {
-        let service = bridge.serve(stdio()).await?;
-        service.waiting().await?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
+/// Serve MCP until the host disconnects (stdio) or the process is told to stop
+/// (`--listen`), then close the session. A session client holds a live,
+/// auto-reconnecting mediator socket that `Drop` cannot close, so `shutdown`
+/// runs on every path out.
+async fn serve(
+    bridge: VtcMcp,
+    client: Option<Arc<VtcClient>>,
+    serving: Serving,
+) -> anyhow::Result<()> {
+    let served = match serving {
+        Serving::Stdio => {
+            async {
+                let service = bridge.serve(stdio()).await?;
+                service.waiting().await?;
+                Ok::<(), anyhow::Error>(())
+            }
+            .await
+        }
+        Serving::Http { addr, token } => listen::serve(bridge, addr, token).await,
+    };
     if let Some(client) = client {
         client.shutdown().await;
     }
