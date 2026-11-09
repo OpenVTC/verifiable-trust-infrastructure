@@ -37,6 +37,7 @@ use vti_mcp_common::guard::{ConfirmLevel, Guard};
 use vti_mcp_common::observability::{self, LogFormat, Recorder};
 
 mod guides;
+mod health;
 mod key_reuse;
 mod listen;
 mod server;
@@ -356,6 +357,7 @@ async fn main() -> anyhow::Result<()> {
         vtc_did: args.vtc_did.clone(),
         transport_choice: args.transport.label().into(),
         reuse_warning: None,
+        serving: serving.label(),
     };
     let rung = match ladder(&args) {
         Ok(Some(rung)) => rung,

@@ -31,6 +31,8 @@ ask the operator to confirm it. Nothing you do here grants access.
    link, or for an approval, is theirs to answer in the console, wallet or
    `cnm` — say so, and resend the same call only after they have.
 1. `vtc_status` — connected? as whom? over which transport? what policy?
+   `connected: false` with a `transportHealth.lastFailure` means the last
+   call could not reach the community; retry once before reporting it.
 2. `vtc_whoami` — what the community knows of this identity (it may answer
    only the configured identity, with the community's reason).
 3. `vtc_supported_tasks` — what this community serves; after it, the catalog

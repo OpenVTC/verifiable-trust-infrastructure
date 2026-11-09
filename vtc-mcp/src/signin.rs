@@ -142,9 +142,9 @@ impl VtcMcp {
     /// Open a request. The body of `vtc_sign_in`, without the MCP plumbing.
     pub(crate) async fn start_sign_in(&self, audience: SignInAudience) -> Result<Value, McpError> {
         let client = self.client()?;
-        let request = client
-            .sign_in_request(audience, &starter())
-            .await
+        let request = self
+            .health
+            .observe(client.sign_in_request(audience, &starter()).await)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let pending = PendingSignIn {
             request_id: request.request_id.clone(),
@@ -199,9 +199,9 @@ impl VtcMcp {
         let deadline = Instant::now() + wait;
         let mut last_state = "pending".to_string();
         loop {
-            let poll = client
-                .sign_in_redeem(&pending.request_id, &starter())
-                .await
+            let poll = self
+                .health
+                .observe(client.sign_in_redeem(&pending.request_id, &starter()).await)
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
             match poll {
                 SignInPoll::Pending {
@@ -302,7 +302,9 @@ impl VtcMcp {
                 }
             },
         };
-        let result = client.sign_in_cancel(&id, &starter()).await;
+        let result = self
+            .health
+            .observe(client.sign_in_cancel(&id, &starter()).await);
         let mut st = self.sign_in.write().await;
         if st.pending.as_ref().is_some_and(|p| p.request_id == id) {
             st.pending = None;
@@ -525,7 +527,10 @@ impl VtcMcp {
             return;
         };
         let Ok(client) = self.client() else { return };
-        let Ok(answer) = client.send_task(SIGNING_KEY_LIST, json!({})).await else {
+        let Ok(answer) = self
+            .health
+            .observe(client.send_task(SIGNING_KEY_LIST, json!({})).await)
+        else {
             return;
         };
         let identity = answer["signingKeys"].as_array().and_then(|keys| {
@@ -624,7 +629,8 @@ impl VtcMcp {
         let mut payload = terms;
         payload["authorization"] = authorization;
         let client = self.client()?;
-        let answer = crate::server::outcome(client.send_task(ENROLL, payload).await)?;
+        let answer =
+            crate::server::outcome(self.health.observe(client.send_task(ENROLL, payload).await))?;
         self.sign_in.write().await.delegation_of = Some(identity_did.clone());
         tracing::info!(identity = %identity_did, "enrolled as a signing-key delegation");
         Ok(json!({
@@ -756,6 +762,7 @@ mod tests {
                 vtc_did: Some(VTC_DID.into()),
                 transport_choice: "rest".into(),
                 reuse_warning: None,
+                serving: "stdio".into(),
             },
             Guard {
                 confirm: ConfirmLevel::Never,

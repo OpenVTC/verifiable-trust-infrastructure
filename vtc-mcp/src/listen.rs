@@ -336,6 +336,7 @@ mod tests {
                     vtc_did: None,
                     transport_choice: "auto".into(),
                     reuse_warning: None,
+                    serving: "stdio".into(),
                 },
                 Guard {
                     read_only: true,
