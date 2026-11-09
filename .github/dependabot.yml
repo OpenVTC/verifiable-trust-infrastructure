@@ -75,6 +75,17 @@ updates:
       # when arkworks moves off rand 0.8.
       - dependency-name: "rand_chacha"
         update-types: ["version-update:semver-major"]
+      # webauthn-rs 0.6 replaced OpenSSL with RustCrypto in webauthn-rs-core
+      # and stubbed out Ed25519: every OKP key is refused with
+      # `COSEKeyEDUnsupported`, at registration and at authentication. The
+      # VTC's install flow requires an Ed25519 passkey (it is the admin's
+      # did:key), and every Ed25519 passkey already enrolled would stop
+      # verifying, so #2532 / #2535 failed 360 vtc-service tests. The port is
+      # kept on `wip/webauthn-0.6-port`, with a test showing 0.5-stored passkeys
+      # load under 0.6. All three crates, since they move together; 0.5 patches
+      # still come through. Lift this when a 0.6 release verifies Ed25519 again.
+      - dependency-name: "webauthn-rs*"
+        versions: [">= 0.6"]
 
   # ── GitHub Actions ────────────────────────────────────────────────────
   # Every `uses:` in this repo is a full 40-hex commit SHA with the version in
