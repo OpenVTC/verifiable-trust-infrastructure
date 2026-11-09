@@ -1824,3 +1824,60 @@ async fn local_only_is_honoured_only_for_an_unregistered_server_and_says_what_re
 
     mock.shutdown().await;
 }
+
+/// The SDK's versioned-memory methods against a running VTA, over the wire
+/// (#2115): the payloads `VtaClient` builds are the ones the VTA accepts, and a
+/// stale write comes back as the typed conflict.
+#[tokio::test]
+async fn versioned_memory_round_trips_through_the_client() {
+    let mock = MockVta::start().await;
+    let client = signing_client(&mock, 41, "application", vec!["agent".into()]).await;
+
+    let put = client
+        .memory_put_versioned("agent", "contact/billing", "billing@acme.example", Some(0))
+        .await
+        .expect("create-only put");
+    let v = put["version"].as_u64().expect("a version");
+    assert_eq!(put["wasCreated"], true);
+
+    let stale = client
+        .memory_put_versioned("agent", "contact/billing", "again", Some(0))
+        .await
+        .expect_err("create-only over a live item conflicts");
+    assert!(
+        format!("{stale:?}").contains("versionConflict"),
+        "the typed code reaches the client: {stale:?}"
+    );
+
+    let mut query = serde_json::Map::new();
+    query.insert("prefix".into(), serde_json::json!("contact/"));
+    let page = client
+        .memory_list_page("agent", query)
+        .await
+        .expect("list a page");
+    assert_eq!(page["items"][0]["value"], "billing@acme.example");
+    // At or past the item's version: the refused put above took a counter
+    // value too. Versions are opaque and monotonic, not an edit count.
+    assert!(page["highWatermark"].as_u64().unwrap() >= v);
+
+    let got = client
+        .memory_get("agent", &["contact/billing", "absent"])
+        .await
+        .expect("get");
+    assert_eq!(got["items"][0]["version"], v);
+    assert_eq!(got["missing"], serde_json::json!(["absent"]));
+
+    let del = client
+        .memory_delete_versioned("agent", "contact/billing", Some(v))
+        .await
+        .expect("conditional delete");
+    assert_eq!(del["existed"], true);
+
+    let mut feed = serde_json::Map::new();
+    feed.insert("sinceVersion".into(), serde_json::json!(v));
+    let changes = client
+        .memory_list_page("agent", feed)
+        .await
+        .expect("change feed");
+    assert_eq!(changes["items"][0]["deleted"], true);
+}

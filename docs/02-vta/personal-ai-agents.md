@@ -300,12 +300,16 @@ pnm contexts create --name my-agent-memory
 pnm acl create --did <agent did:key> --role application --contexts my-agent-memory
 ```
 
-From a client, `VtaClient::{memory_put, memory_list, memory_delete}` drive the
-three tasks through the generic Trust-Task dispatcher, so they ride TSP, DIDComm
-or REST according to what both DID documents advertise — the agent writes no
-transport code.
+From a client, `VtaClient::{memory_put_versioned, memory_delete_versioned,
+memory_list_page, memory_get}` drive the 0.2 tasks through the generic
+Trust-Task dispatcher, so they ride TSP, DIDComm or REST according to what both
+DID documents advertise — the agent writes no transport code. The 0.1 methods
+(`memory_put`, `memory_list`, `memory_delete`) are deprecated.
 
-From the operator side the same three tasks are `pnm memory`:
+From the operator side the same tasks are `pnm memory`. `recall <key>` is a
+`get`, `recall` pages through the whole context, and `wipe` deletes each item
+only at the version it listed, so an item another writer changed after you
+confirmed stops the wipe instead of going with it:
 
 ```bash
 pnm memory plant favourite-colour green --context my-agent-memory

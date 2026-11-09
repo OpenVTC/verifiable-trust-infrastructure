@@ -18,6 +18,9 @@ const MEMORY_TT_TIMEOUT: u64 = 30;
 impl VtaClient {
     /// `vta/memory/put/0.1` — upsert `value` under `(context_id, key)`. Requires
     /// access to `context_id`.
+    #[deprecated(
+        note = "sends the superseded vta/memory 0.1, which the registry withdraws; use `memory_put_versioned` (0.2, #2115)"
+    )]
     pub async fn memory_put(
         &self,
         context_id: &str,
@@ -39,6 +42,9 @@ impl VtaClient {
 
     /// `vta/memory/list/0.1` — list every entry in `context_id`. Requires access
     /// to `context_id`.
+    #[deprecated(
+        note = "sends the superseded vta/memory 0.1, which the registry withdraws; use `memory_list_page` (0.2, #2115)"
+    )]
     pub async fn memory_list(&self, context_id: &str) -> Result<Value, VtaError> {
         let payload = json!({ "contextId": context_id });
         self.dispatch_trust_task(
@@ -51,6 +57,9 @@ impl VtaClient {
 
     /// `vta/memory/delete/0.1` — remove the entry at `key` in `context_id`
     /// (`not_found` if absent). Requires access to `context_id`.
+    #[deprecated(
+        note = "sends the superseded vta/memory 0.1, which the registry withdraws; use `memory_delete_versioned` (0.2, #2115)"
+    )]
     pub async fn memory_delete(&self, context_id: &str, key: &str) -> Result<Value, VtaError> {
         let payload = json!({
             "contextId": context_id,
