@@ -2,6 +2,19 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.52.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.51.0...cnm-cli-v0.52.0) — 2026-11-09
+
+
+### Added
+
+- **vtc-mcp**: Act as yourself — wallet sign-in for members, a signing-key delegation for administrators ([#2483](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2483))
+
+* feat(vtc-mcp): sign the bridge in as yourself through your wallet
+
+  The bridge becomes the starter of the trigger-link wallet sign-in the member portal and the operator console use (auth/oob/request, redeem, cancel), so a person's own assistant acts with their standing instead of an enrolled agent entry: no new ACL row, no duplicate member. vtc-client gains the starter side (signin: the portal's sign-in config, the trigger link, request, redeem polls with the match number, cancel; always over the HTTPS door, presenting the portal's origin and naming the starter; VtcError::SignIn), and a session client now keeps its own key for that door. vtc-mcp gains vtc_sign_in, vtc_sign_in_finish (answers with the match number for the person to compare in their wallet, then the session) and vtc_sign_in_cancel; vtc_status reports signedInAs. A member sign-in arms the portal's delegation for the bridge's key; an admin sign-in is a console session only, and administrative writes still need a signing-key delegation the bridge cannot obtain yet (operator page section 11). The starter's three auth/oob steps are ReadOnly in the shared table: nothing happens without the person's approval. Also fixes a phase 3 defect: the bridge now enables the SDK's acl-setup, as cnm and vta-mcp do, so a freshly minted did:key's mediator ACL is set on connect instead of the mediator silently dropping its messages.
+
+
+
 ## [0.51.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.50.0...cnm-cli-v0.51.0) — 2026-11-05
 
 

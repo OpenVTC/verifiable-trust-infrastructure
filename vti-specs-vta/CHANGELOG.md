@@ -2,6 +2,55 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vta-v0.6.0...vti-specs-vta-v0.7.0) — 2026-11-09
+
+
+### Added
+
+- **vta-service**: Versioned agent memory — vta/memory/{put,delete,list}/0.2 and get/0.1 ([#2115](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2115)) ([#2520](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2520))
+
+Serves the memory versions specified in trustoverip/dtgwg-trust-tasks-tf#1067.
+  0.1 keeps working against the same store.
+
+  The store. Memory 0.2 has application state's semantics with one
+  namespace: a per-context counter that is both the `expectedVersion` token
+  and the `sinceVersion` watermark, conflicts that carry the winner's view,
+  tombstones reaped behind a watermark, and a version index that makes the
+  change feed paginatable. `operations::memory` therefore stores items as
+  application-state records, under a fixed namespace in the MEMORY
+  keyspace, instead of keeping a second copy of that machinery. The
+  keyspace stays memory's own, so backup, purge-on-context-delete and the
+  memory capabilities are unchanged.
+  - `app_state::put_measured` with `ValueMeasure`: memory measures the
+    UTF-8 text of a value (as `put/0.2` says), not its JSON encoding, so a
+    note full of quotes or newlines does not hit the 64 KiB cap early.
+  - 0.1 rows (`mem:<ctx>:<key>`) move into the versioned layout at boot
+    (`memory::migrate_legacy`). The migration is idempotent and never
+    drops data: an over-cap value (0.1 had no cap) moves uncapped, and a row
+    it cannot place stays where it is. Context-delete purges both layouts.
+  - Memory tombstones are reaped on app-state's retention window.
+  - A memory call naming a context id that is not a valid context path is
+    refused, keeping the layout's prefixes unambiguous.
+
+  The tasks.
+  - put/0.2: `expectedVersion`; `versionConflict` carries `currentVersion`
+    and `currentValue`, but the value is withheld from a caller holding
+    `memoryWrite` without `memoryRead` (a conflict is a read).
+  - delete/0.2: tombstone; optional positive `expectedVersion`; deleting
+    nothing succeeds with `existed: false`.
+  - list/0.2: a snapshot (prefix, cursor/limit, values by default) or the
+    change feed with tombstones; `highWatermark`, `watermarkTooOld`,
+    `cursorInvalid`, `filterConflict`.
+  - get/0.1: up to 256 named items, answered in `items` / `missing` /
+    `deferred`.
+  - An access refusal is the declared `contextForbidden` on 0.2 and `get`.
+    0.1 still answers `permissionDenied`.
+  - 0.1 on the new store: put is an unconditional put, delete leaves a
+    tombstone and still answers `notFound` when nothing was live, and list
+    drains every page.
+
+
+
 ## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vta-v0.5.2...vti-specs-vta-v0.6.0) — 2026-11-05
 
 

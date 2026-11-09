@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-oob-server-v0.6.0...vti-oob-server-v0.7.0) — 2026-11-09
+
+
 ## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-oob-server-v0.1.0...vti-oob-server-v0.6.0) — 2026-11-04
 
 

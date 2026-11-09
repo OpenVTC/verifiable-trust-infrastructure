@@ -2,6 +2,26 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.39.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.38.0...vta-config-v0.39.0) — 2026-11-09
+
+
+### Fixed
+
+- **vta-config**: Make the config attestation view canonical JSON ([#2510](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2510))
+
+The view `vta/attestation/config-report` returns, and whose SHA-384 the
+  enclave's evidence binds, was `serde_json::to_vec` of the config. The
+  config holds `policy.approver_sets`, a `HashMap`, whose iteration order
+  is seeded per map, so the same configuration produced a different view
+  and digest in every process: two enclaves of one fleet, or one enclave
+  before and after a restart, attested different digests for identical
+  configurations. The task specification calls the view canonical.
+
+  The view is now RFC 8785 canonical JSON (serde_json_canonicalizer), so
+  equal configurations are equal bytes whatever their field types.
+
+
+
 ## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.37.0...vta-config-v0.38.0) — 2026-11-05
 
 

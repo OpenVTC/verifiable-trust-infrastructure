@@ -2,6 +2,23 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-core-v0.4.1...vti-specs-core-v0.4.2) — 2026-11-09
+
+
+### Added
+
+- **vtc**: Hand a delegated key's step-up to the person's wallet (VTI-LNK-125 – VTI-LNK-131) ([#2490](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2490))
+
+A key a person delegated, such as their assistant's over vtc-mcp, can
+  redeem an operation-bound step-up but must never make one (VTI-APV-015).
+  Until now, a step-up-gated act signed by such a key could only be finished
+  in the console.
+
+  Pins `auth/step-up/requests/show/0.1` (trustoverip/dtgwg-trust-tasks-tf#1056)
+  and implements the `step-up` trigger-link flow (trustoverip/dtgwg-vti-spec#106).
+
+
+
 ## [0.4.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-core-v0.4.0...vti-specs-core-v0.4.1) — 2026-11-04
 
 

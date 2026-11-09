@@ -2,6 +2,64 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.59.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.58.0...vta-cli-common-v0.59.0) — 2026-11-09
+
+
+### Added
+
+- **vta-service**: Memory reads are audited per item, and the trail names items by commitment, never by key ([#2116](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2116)) ([#2522](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2522))
+
+#2116 asked which agent saw which memory. Answering it showed a problem
+  with what the trail already held: the chained sink commits a DID-shaped
+  resource but keeps any other resource in the clear inside the hashed
+  event, on the rule that only a DID is personal data. A memory key is not
+  a DID and is personal (it names what was remembered, often a person), so
+  every memory.put and memory.delete wrote one where no erasure can reach
+  it without breaking verification (VTI-AUD-005).
+
+  - `AuditSink::commit` (provided, default `None`) and
+    `vti_common::audit::commit_reference`: a domain-separated HMAC under the
+    active audit key, `hmac-sha256:<key id>:<hex>`. The chained sink
+    implements it. A sink with no key returns `None`, and the caller then
+    records no reference: an unkeyed digest of a short name is a dictionary
+    lookup away from the name.
+  - Memory audit records now name each item by its commitment over
+    (contextId, key):
+    - put / delete: the commitment as the resource;
+    - get: `items=N refs=…`, one per item returned (never a deferred or
+      missing key);
+    - list: `items=N keySet=…`, one commitment to the returned key set.
+  - `pnm memory history --context … [--actor] [--from] [--to] [--limit]`:
+    who read or changed a context's memory and when, newest first, from
+    `audit/list` (one query per memory action, since the action filter is
+    exact).
+  - `MockVta` writes the chained trail production writes, not the flat
+    keyless one. Three persona tests that read raw audit rows as flat
+    entries now read both forms, as the VTA's own reader does.
+
+  Records written before this change keep their keys until the retention
+  sweep. That is recorded in the specification's divergence register
+  (trustoverip/dtgwg-vti-spec#113).
+
+- **pnm**: Memory commands use vta/memory 0.2; the 0.1 client methods are deprecated ([#2521](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2521))
+
+The registry marked vta/memory/{put,list,delete}/0.1 superseded when 0.2
+  was published ([#2115](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2115)) and will withdraw them. `pnm memory` moves to 0.2:
+
+  - `plant` is an unconditional 0.2 put and prints the version it took.
+  - `recall <key>` uses `vta/memory/get/0.1`. A bare `recall` pages through
+    `vta/memory/list/0.2` instead of loading the whole context in one
+    response. The `--json` output keeps 0.1's `{ items: [{ key, value }] }`
+    shape, so scripts keep working.
+  - `delete` / `forget` is a 0.2 delete. 0.2 answers a key holding nothing
+    with `existed: false`, but pnm still fails on it, as it did on 0.1's
+    `notFound`, so a mistyped key is never reported as forgotten.
+  - `wipe` deletes each item conditional on the version it listed, so an
+    item another writer changed after the operator confirmed stops the wipe
+    with a `versionConflict` instead of being deleted with the rest.
+
+
+
 ## [0.58.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.57.0...vta-cli-common-v0.58.0) — 2026-11-05
 
 
