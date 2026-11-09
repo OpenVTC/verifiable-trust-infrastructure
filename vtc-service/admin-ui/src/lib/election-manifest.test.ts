@@ -18,7 +18,7 @@ import {
   toLocalInput,
   type ManifestDraft,
 } from "./election-manifest";
-import bundleJson from "../../../../vti-specs-vtc/trust-tasks/vtc/elections/create/0.5.bundle.json";
+import bundleJson from "@vti-specs-vtc/trust-tasks/vtc/elections/create/0.5.bundle.json";
 
 const COMMUNITY = "did:example:community";
 const BOX = "did:example:box";

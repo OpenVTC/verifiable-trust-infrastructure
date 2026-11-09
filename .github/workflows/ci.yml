@@ -376,8 +376,12 @@ jobs:
       - name: Lint (wire types match openapi.json)
         run: npm run wire:check
 
+      # Both programs: `tsconfig.json`, what `npm run build` checks (shipping
+      # code only, so the console builds from its own directory, #2430), and
+      # `tsconfig.test.json`, which adds the tests — the only place they are
+      # type-checked.
       - name: Typecheck
-        run: npx tsc -b --noEmit
+        run: npm run typecheck
 
       # `src/plugins/repos/actions.test.ts` round-trips `shellQuote` through
       # every shell an operator might paste a generated command into, and
