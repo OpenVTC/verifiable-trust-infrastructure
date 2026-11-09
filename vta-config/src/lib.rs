@@ -1199,8 +1199,9 @@ pub enum TeeMode {
 impl AppConfig {
     /// Compute the SHA-384 digest of the **effective** config for attestation.
     ///
-    /// Serializes a canonical, secret-free view of this config (JSON, in struct
-    /// field order) and hashes it. Call once **after all effective-config
+    /// Serializes a canonical, secret-free view of this config (RFC 8785
+    /// canonical JSON: members sorted, so the same configuration is the same
+    /// bytes in every process) and hashes it. Call once **after all effective-config
     /// mutations** for this boot (tenant overlay applied, KMS-injected JWT signing
     /// key, DID reconciliation/generation, webvh backfill, admin bootstrap), then
     /// store the result in [`Self::effective_config_digest`]; both the boot
@@ -1266,7 +1267,11 @@ impl AppConfig {
         view.secrets = SecretsConfig::default();
         view.effective_config_digest = None;
         view.effective_config_view = None;
-        serde_json::to_vec(&view).map_err(|e| {
+        // RFC 8785 canonical JSON, not `serde_json::to_vec`: the config holds
+        // maps (`policy.approver_sets` is a `HashMap`) whose iteration order is
+        // seeded per process, so serializing them as they iterate gave one
+        // configuration a different view and digest in every process.
+        serde_json_canonicalizer::to_vec(&view).map_err(|e| {
             AppError::Internal(format!("config attestation view serialization failed: {e}"))
         })
     }
@@ -2072,6 +2077,34 @@ mod validate_tests {
         );
         assert!(view.get("effective_config_digest").is_none());
         assert!(view.get("effective_config_view").is_none());
+    }
+
+    /// The view is the same bytes for the same configuration in any process.
+    ///
+    /// `policy.approver_sets` is a `HashMap`, whose iteration order is seeded
+    /// per map, so serializing it as it iterates gave two processes with one
+    /// configuration two different views and digests. Each parse below builds
+    /// its map with a fresh seed, and the sets are written in different orders.
+    #[test]
+    fn config_attestation_view_is_the_same_bytes_for_the_same_config() {
+        let sets: Vec<String> = (0..8)
+            .map(|i| format!("set-{i} = [\"did:key:z{i}a\", \"did:key:z{i}b\"]"))
+            .collect();
+        let views: Vec<(Vec<u8>, Vec<u8>)> = (0..6)
+            .map(|rotate| {
+                let mut ordered = sets.clone();
+                ordered.rotate_left(rotate);
+                let config = cfg(&format!("[policy.approver_sets]\n{}\n", ordered.join("\n")));
+                (
+                    config.compute_config_attestation_view().expect("view"),
+                    config.compute_config_attestation_digest().expect("digest"),
+                )
+            })
+            .collect();
+        for (view, digest) in &views[1..] {
+            assert_eq!(view, &views[0].0, "the view differs between equal configs");
+            assert_eq!(digest, &views[0].1);
+        }
     }
 
     /// Write `contents` to a `config.toml` in a fresh tempdir and run it
