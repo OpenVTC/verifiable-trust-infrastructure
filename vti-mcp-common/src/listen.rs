@@ -66,7 +66,7 @@ pub struct Bridge {
     /// `vtc-mcp`, `vta-mcp`.
     pub name: &'static str,
     /// The variable a token can be supplied in: `VTC_MCP_LISTEN_TOKEN`.
-    pub token_env: &'static str,
+    pub token_env_name: &'static str,
     /// The variable that overrides the state directory: `VTC_MCP_STATE_DIR`.
     pub state_dir_env: &'static str,
 }
@@ -106,7 +106,7 @@ impl Serving {
         let state_dir = bridge.state_dir();
         let (token, source) = load_token(
             bridge,
-            std::env::var(bridge.token_env).ok(),
+            std::env::var(bridge.token_env_name).ok(),
             state_dir.as_deref(),
         )?;
         tracing::info!(token = %source, "listen token loaded");
@@ -179,14 +179,14 @@ pub fn load_token(
     state_dir: Option<&Path>,
 ) -> Result<(String, TokenSource), String> {
     if let Some(token) = env.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
-        check_token(&token, &format!("${}", bridge.token_env))?;
-        return Ok((token, TokenSource::Env(bridge.token_env)));
+        check_token(&token, &format!("${}", bridge.token_env_name))?;
+        return Ok((token, TokenSource::Env(bridge.token_env_name)));
     }
     let dir = state_dir.ok_or_else(|| {
         format!(
             "--listen needs a bearer token: set {}, or {} (or HOME) so the bridge can keep one \
              in its state directory",
-            bridge.token_env, bridge.state_dir_env
+            bridge.token_env_name, bridge.state_dir_env
         )
     })?;
     let path = dir.join(TOKEN_FILE);
@@ -395,7 +395,7 @@ mod tests {
 
     const BRIDGE: Bridge = Bridge {
         name: "test-mcp",
-        token_env: "TEST_MCP_LISTEN_TOKEN",
+        token_env_name: "TEST_MCP_LISTEN_TOKEN",
         state_dir_env: "TEST_MCP_STATE_DIR",
     };
 
@@ -446,7 +446,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let long = "x".repeat(40);
         let (token, source) = load_token(&BRIDGE, Some(long.clone()), Some(dir.path())).unwrap();
-        assert_eq!((token, source), (long, TokenSource::Env(BRIDGE.token_env)));
+        assert_eq!(
+            (token, source),
+            (long, TokenSource::Env(BRIDGE.token_env_name))
+        );
         assert!(
             !dir.path().join(TOKEN_FILE).exists(),
             "no file when the env supplies one"
@@ -455,7 +458,7 @@ mod tests {
         assert!(err.contains("at least 32"), "{err}");
         let err = load_token(&BRIDGE, None, None).unwrap_err();
         assert!(
-            err.contains(BRIDGE.token_env) && err.contains(BRIDGE.state_dir_env),
+            err.contains(BRIDGE.token_env_name) && err.contains(BRIDGE.state_dir_env),
             "{err}"
         );
     }

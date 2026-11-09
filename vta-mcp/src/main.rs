@@ -194,7 +194,7 @@ struct Args {
 /// This bridge, as the shared listener names it.
 const BRIDGE: Bridge = Bridge {
     name: "vta-mcp",
-    token_env: "VTA_MCP_LISTEN_TOKEN",
+    token_env_name: "VTA_MCP_LISTEN_TOKEN",
     state_dir_env: "VTA_MCP_STATE_DIR",
 };
 

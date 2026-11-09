@@ -11,7 +11,7 @@ use vti_mcp_common::listen::Bridge;
 /// This bridge, as the shared listener names it.
 pub const BRIDGE: Bridge = Bridge {
     name: "vtc-mcp",
-    token_env: "VTC_MCP_LISTEN_TOKEN",
+    token_env_name: "VTC_MCP_LISTEN_TOKEN",
     state_dir_env: "VTC_MCP_STATE_DIR",
 };
 
