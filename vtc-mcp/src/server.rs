@@ -220,6 +220,8 @@ pub struct BridgeIdentity {
     /// Set when the agent key was used with another community before
     /// (`key_reuse`): what the operator should be told about it.
     pub reuse_warning: Option<String>,
+    /// How MCP is served: `stdio`, or the `--listen` URL.
+    pub serving: String,
 }
 
 impl BridgeIdentity {
@@ -305,6 +307,10 @@ pub struct VtcMcp {
     served: Arc<RwLock<Option<Vec<String>>>>,
     /// The wallet sign-in this bridge has open, and who it is signed in as.
     pub(crate) sign_in: Arc<RwLock<crate::signin::SignInState>>,
+    /// Whether the community has answered since the last transport failure
+    /// (`health`): what `connected` reports, instead of a flag latched at
+    /// connect.
+    pub(crate) health: Arc<crate::health::TransportHealth>,
 }
 
 /// One in-flight guarded call. Created by [`VtcMcp::begin`], consumed by
@@ -408,6 +414,7 @@ impl VtcMcp {
             started: vti_mcp_common::observability::now_rfc3339().into(),
             served: Arc::new(RwLock::new(None)),
             sign_in: Arc::new(RwLock::new(crate::signin::SignInState::default())),
+            health: Arc::default(),
         }
     }
 
@@ -429,6 +436,7 @@ impl VtcMcp {
             started: vti_mcp_common::observability::now_rfc3339().into(),
             served: Arc::new(RwLock::new(None)),
             sign_in: Arc::new(RwLock::new(crate::signin::SignInState::default())),
+            health: Arc::default(),
         }
     }
 
@@ -438,7 +446,7 @@ impl VtcMcp {
     /// the catalog saying "unknown", never "no".
     pub async fn learn_served(&self) {
         let Some(client) = &self.client else { return };
-        match client.discover(&[]).await {
+        match self.health.observe(client.discover(&[]).await) {
             Ok(answer) => {
                 let uris: Vec<String> = vtc_client::supported_type_uris(&answer)
                     .into_iter()
@@ -553,7 +561,10 @@ impl VtcMcp {
     /// without the MCP plumbing, so it can be exercised directly.
     pub async fn call_operation(&self, operation: &str, payload: Value) -> Result<Value, McpError> {
         let client = self.client()?;
-        outcome(client.send_task(operation, payload).await)
+        outcome(
+            self.health
+                .observe(client.send_task(operation, payload).await),
+        )
     }
 
     #[tool(
@@ -708,7 +719,7 @@ impl VtcMcp {
         };
         let patterns: Vec<&str> = p.patterns.iter().map(String::as_str).collect();
         let result = match self.client() {
-            Ok(client) => match client.discover(&patterns).await {
+            Ok(client) => match self.health.observe(client.discover(&patterns).await) {
                 Ok(answer) => {
                     let uris: Vec<String> = vtc_client::supported_type_uris(&answer)
                         .into_iter()
@@ -756,17 +767,22 @@ impl VtcMcp {
             Err(refused) => return *refused,
         };
         let result = match self.client() {
-            Ok(client) => Ok(match client.send_task(wire::WHOAMI, json!({})).await {
-                Ok(answer) => json!({
-                    "identity": self.identity.to_json(),
-                    "whoami": answer,
-                }),
-                Err(e) => json!({
-                    "identity": self.identity.to_json(),
-                    "whoami": Value::Null,
-                    "reason": e.to_string(),
-                }),
-            }),
+            Ok(client) => Ok(
+                match self
+                    .health
+                    .observe(client.send_task(wire::WHOAMI, json!({})).await)
+                {
+                    Ok(answer) => json!({
+                        "identity": self.identity.to_json(),
+                        "whoami": answer,
+                    }),
+                    Err(e) => json!({
+                        "identity": self.identity.to_json(),
+                        "whoami": Value::Null,
+                        "reason": e.to_string(),
+                    }),
+                },
+            ),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -807,7 +823,11 @@ impl VtcMcp {
             .and_then(|c| c.transport())
             .map(|t| t.to_string());
         json!({
-            "connected": self.client.is_some(),
+            // A session, and no transport failure since the community last
+            // answered (R6.2: never a flag latched at connect).
+            "connected": self.client.is_some() && self.health.reachable(),
+            "transportHealth": self.health.to_json(),
+            "serving": self.identity.serving,
             "connectError": self.connect_error.as_deref(),
             "startedAt": &*self.started,
             "version": env!("CARGO_PKG_VERSION"),
@@ -1011,6 +1031,7 @@ mod tests {
             vtc_did: Some(VTC_DID.into()),
             transport_choice: "auto".into(),
             reuse_warning: None,
+            serving: "stdio".into(),
         }
     }
 

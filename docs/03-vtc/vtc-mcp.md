@@ -35,7 +35,7 @@ operator guides describe, and the action list.
 | `vtc_call` | Send any pinned operation by Type URI with a JSON payload. A result with `status: "parked"` is not a failure (§2.3) | *per operation* |
 | `vtc_supported_tasks` | What the connected community serves (`trust-task-discovery/0.4`) | read-only |
 | `vtc_whoami` | What the community knows of this identity (`auth/whoami`), beside the configured identity | read-only |
-| `vtc_status` | What this bridge is: identity, community, transport, policy, counters, recent calls | read-only |
+| `vtc_status` | What this bridge is: identity, community, transport and whether it is reaching the community, how MCP is served, policy, counters, recent calls | read-only |
 | `group_setup`, `board_create`, `election_create`, `room_open`, `member_admit`, `admin_grant`, `badge_create` | The workflows as thin orchestrators: each sends its steps in order, **every step through the bridge's policy under its own operation**, stops at the first step that is refused or parked, and reports how far it got with each step's answer | per step |
 | `vtc_actions_list`, `vtc_actions_show` | The community's action list as this identity sees it; an action's summary re-derived from the payload that would run and verified, with the match code | read-only |
 | `vtc_actions_decide` | Approve or deny a parked action as this identity. **Always** asks the operator, whatever `--confirm` says (§2.4) | sensitive |
@@ -391,6 +391,13 @@ vtc-mcp --agent-did … --vtc-did … --allow 'vtc/admin/actions/*,task-consent/
 - **`vtc_status` and `vtc://calls/recent`** answer from inside the session:
   the last hundred calls, redacted, without an audit file having been
   configured.
+- **`connected` is earned, not latched.** It is true while the bridge has a
+  session and no transport failure has happened since the community last
+  answered; one failed call (the mediator unreachable, the socket gone and
+  not reopened) turns it false, and the next answer — success, refusal or
+  parked — turns it back. `transportHealth` gives `lastReachedAt`,
+  `lastFailureAt` and `lastFailure`; `serving` says `stdio` or the `--listen`
+  URL.
 - **Redaction is an allowlist.** A string survives in a record only under a
   known identifier key (`groupId`, `subject`, `electionId`, …); anything else
   is elided, so a note or a card value never reaches a log.

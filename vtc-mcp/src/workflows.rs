@@ -777,7 +777,7 @@ impl VtcMcp {
     ) -> Result<Value, McpError> {
         let client = self.client()?;
         // `show_action` answers the action itself, unwrapped.
-        let action = outcome(client.show_action(&p.action_id).await)?;
+        let action = outcome(self.health.observe(client.show_action(&p.action_id).await))?;
         let verified = vtc_client::actions::verify_action(&action).map_err(|e| {
             McpError::internal_error(
                 format!(
@@ -856,9 +856,8 @@ impl VtcMcp {
             }
         }
         let response = outcome(
-            client
-                .decide_action(&decision)
-                .await
+            self.health
+                .observe(client.decide_action(&decision).await)
                 .and_then(|r| serde_json::to_value(r).map_err(|e| VtcErrorShim::from(e).0)),
         )?;
         Ok(json!({
@@ -1248,7 +1247,10 @@ impl VtcMcp {
             Err(refused) => return *refused,
         };
         let result = match self.client() {
-            Ok(client) => outcome(client.list_actions(&view, p.cursor.as_deref()).await),
+            Ok(client) => outcome(
+                self.health
+                    .observe(client.list_actions(&view, p.cursor.as_deref()).await),
+            ),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -1285,7 +1287,7 @@ impl VtcMcp {
             Err(refused) => return *refused,
         };
         let result = match self.client() {
-            Ok(client) => outcome(client.show_action(&p.action_id).await).map(|action| {
+            Ok(client) => outcome(self.health.observe(client.show_action(&p.action_id).await)).map(|action| {
                 let action = &action;
                 let verified = vtc_client::actions::verify_action(action);
                 json!({
@@ -1373,9 +1375,11 @@ impl VtcMcp {
         };
         let result = match self.client() {
             Ok(client) => outcome(
-                client
-                    .cancel_action(&p.action_id, p.reason.as_deref())
-                    .await,
+                self.health.observe(
+                    client
+                        .cancel_action(&p.action_id, p.reason.as_deref())
+                        .await,
+                ),
             ),
             Err(e) => Err(e),
         };
@@ -1493,6 +1497,7 @@ mod tests {
                 vtc_did: Some(VTC_DID.into()),
                 transport_choice: "rest".into(),
                 reuse_warning: None,
+                serving: "stdio".into(),
             },
             guard,
             Arc::new(Recorder::default()),
