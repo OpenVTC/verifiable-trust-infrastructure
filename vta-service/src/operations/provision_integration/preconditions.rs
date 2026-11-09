@@ -136,6 +136,7 @@ pub async fn infer_target_context(
 /// re-check it here so the boundary stays in one place.
 pub async fn ensure_target_context_or_create(
     contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     context: &str,
     create_context: bool,
@@ -155,6 +156,7 @@ pub async fn ensure_target_context_or_create(
     }
     crate::operations::contexts::create_context(
         contexts_ks,
+        acl_ks,
         auth,
         context,
         context.to_string(),
@@ -202,6 +204,7 @@ impl From<AppError> for ResolveContextError {
 pub async fn resolve_target_context(
     auth: &AuthClaims,
     contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
     requested: Option<String>,
     create_context: bool,
 ) -> Result<(String, bool), ResolveContextError> {
@@ -214,7 +217,8 @@ pub async fn resolve_target_context(
             .map_err(ResolveContextError::Ambiguous)?,
     };
     let created =
-        ensure_target_context_or_create(contexts_ks, auth, &context, create_context).await?;
+        ensure_target_context_or_create(contexts_ks, acl_ks, auth, &context, create_context)
+            .await?;
     Ok((context, created))
 }
 
@@ -590,10 +594,16 @@ mod tests {
         seed_context(&ks, "ctx-a").await;
         let a = auth(Role::Admin, vec!["ctx-a"]);
 
-        let (context, created) = resolve_target_context(&a, &ks, Some("ctx-a".into()), false)
-            .await
-            .map_err(|_| ())
-            .expect("resolves");
+        let (context, created) = resolve_target_context(
+            &a,
+            &ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            Some("ctx-a".into()),
+            false,
+        )
+        .await
+        .map_err(|_| ())
+        .expect("resolves");
         assert_eq!(context, "ctx-a");
         assert!(!created);
     }
@@ -605,9 +615,15 @@ mod tests {
         let (_dir, _store, ks) = fresh_contexts_ks().await;
         let a = auth(Role::Admin, vec![]); // super-admin (create_context gate)
 
-        let (context, created) = resolve_target_context(&a, &ks, Some("ctx-new".into()), true)
-            .await
-            .expect("resolves");
+        let (context, created) = resolve_target_context(
+            &a,
+            &ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            Some("ctx-new".into()),
+            true,
+        )
+        .await
+        .expect("resolves");
         assert_eq!(context, "ctx-new");
         assert!(created);
         assert!(
@@ -626,9 +642,15 @@ mod tests {
         let (_dir, _store, ks) = fresh_contexts_ks().await;
         let a = auth(Role::Admin, vec!["ctx-x", "ctx-y"]);
 
-        let err = resolve_target_context(&a, &ks, None, false)
-            .await
-            .expect_err("ambiguous");
+        let err = resolve_target_context(
+            &a,
+            &ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            None,
+            false,
+        )
+        .await
+        .expect_err("ambiguous");
         match err {
             ResolveContextError::Ambiguous(amb) => {
                 assert_eq!(
@@ -646,9 +668,15 @@ mod tests {
         let (_dir, _store, ks) = fresh_contexts_ks().await;
         let a = auth(Role::Admin, vec!["ctx-absent"]);
 
-        let err = resolve_target_context(&a, &ks, Some("ctx-absent".into()), false)
-            .await
-            .expect_err("not found");
+        let err = resolve_target_context(
+            &a,
+            &ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            Some("ctx-absent".into()),
+            false,
+        )
+        .await
+        .expect_err("not found");
         assert!(
             matches!(err, ResolveContextError::Op(AppError::NotFound(_))),
             "expected Op(NotFound)",

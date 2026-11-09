@@ -609,6 +609,7 @@ pub async fn run_provision_integration(
     let context_created =
         crate::operations::provision_integration::ensure_target_context_or_create(
             &state.contexts_ks,
+            &state.acl_ks,
             &auth,
             &target_context,
             create_context,
@@ -887,6 +888,7 @@ pub async fn run_context_create(
 
     let record = crate::operations::contexts::create_context(
         &contexts_ks,
+        &acl_ks,
         &auth,
         &id,
         display_name,
@@ -1037,6 +1039,8 @@ pub async fn run_context_update(
     if clear_did {
         record = crate::operations::contexts::update_context_did(
             &contexts_ks,
+            &cs.keyspace(crate::keyspaces::KEYS)?,
+            &cs.keyspace(crate::keyspaces::ACL)?,
             &auth,
             &id,
             None,
@@ -1479,9 +1483,15 @@ mod tests {
         let (_dir, _store, contexts_ks) = open_test_contexts_keyspace();
         let auth = AuthClaims::unsafe_local_cli_super_admin("test");
 
-        let err = ensure_target_context_or_create(&contexts_ks, &auth, "missing-ctx", false)
-            .await
-            .expect_err("missing context with create_context=false must error");
+        let err = ensure_target_context_or_create(
+            &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            &auth,
+            "missing-ctx",
+            false,
+        )
+        .await
+        .expect_err("missing context with create_context=false must error");
 
         let msg = err.to_string();
         assert!(
@@ -1513,9 +1523,15 @@ mod tests {
         let (_dir, _store, contexts_ks) = open_test_contexts_keyspace();
         let auth = AuthClaims::unsafe_local_cli_super_admin("test");
 
-        ensure_target_context_or_create(&contexts_ks, &auth, "fresh-ctx", true)
-            .await
-            .expect("create_context=true must succeed against a missing context");
+        ensure_target_context_or_create(
+            &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            &auth,
+            "fresh-ctx",
+            true,
+        )
+        .await
+        .expect("create_context=true must succeed against a missing context");
 
         let record = get_context(&contexts_ks, "fresh-ctx")
             .await
@@ -1535,6 +1551,7 @@ mod tests {
 
         crate::operations::contexts::create_context(
             &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
             &auth,
             "existing-ctx",
             "existing-ctx".into(),
@@ -1547,14 +1564,26 @@ mod tests {
 
         // create_context=false should still succeed because the context
         // is already there.
-        ensure_target_context_or_create(&contexts_ks, &auth, "existing-ctx", false)
-            .await
-            .expect("existing context with create_context=false must be a no-op");
+        ensure_target_context_or_create(
+            &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            &auth,
+            "existing-ctx",
+            false,
+        )
+        .await
+        .expect("existing context with create_context=false must be a no-op");
 
         // create_context=true must also succeed — it doesn't try to
         // re-create when the row is already present.
-        ensure_target_context_or_create(&contexts_ks, &auth, "existing-ctx", true)
-            .await
-            .expect("existing context with create_context=true must be a no-op");
+        ensure_target_context_or_create(
+            &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            &auth,
+            "existing-ctx",
+            true,
+        )
+        .await
+        .expect("existing context with create_context=true must be a no-op");
     }
 }

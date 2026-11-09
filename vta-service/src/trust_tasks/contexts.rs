@@ -138,11 +138,9 @@ pub(super) async fn handle_create(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // Admin role required; `create_context` enforces the finer gate (super-admin
-    // for a top-level context, admin-of-parent for a sub-context).
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
+    // The gate — admin role, or the narrow `context-create` capability, then
+    // super-admin for a top-level context and reach-the-parent for a
+    // sub-context — lives in `create_context`, so every transport meets it.
     let req: CreateContextBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -150,6 +148,7 @@ pub(super) async fn handle_create(
     let audit_id = req.id.clone();
     match operations::contexts::create_context(
         &state.contexts_ks,
+        &state.acl_ks,
         auth,
         &req.id,
         req.name,
@@ -284,20 +283,21 @@ pub(super) async fn handle_update(
     }
 }
 
-/// Handler for `spec/vta/contexts/update-did/1.1`. Admin only.
+/// Handler for `spec/vta/contexts/update-did/1.1`.
 ///
 /// `did` may be `null` (clear it) and must otherwise be a DID; the generated
 /// `PayloadDid` holds the pattern. The member is REQUIRED — serde would read a
 /// missing `Option` as `None`, i.e. as a clear, but the dispatch spine has
 /// already refused a document without it against the schema.
+///
+/// The gate lives in the operation, not here: admin **or** a provisioner
+/// naming a context that has no DID yet. Pre-gating on admin would make the
+/// provisioning path unreachable through this surface.
 pub(super) async fn handle_update_did(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: UpdateDidPayload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -305,6 +305,8 @@ pub(super) async fn handle_update_did(
     let (id, did) = (req.id.to_string(), req.did.map(String::from));
     match operations::contexts::update_context_did(
         &state.contexts_ks,
+        &state.keys_ks,
+        &state.acl_ks,
         auth,
         &id,
         did,
