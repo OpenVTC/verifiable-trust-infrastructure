@@ -506,7 +506,8 @@ async fn directory_shows(
 }
 
 /// An entry's fields as `vtc/directory/entries/show` projects them for `viewer`; `None`
-/// where it shows them none.
+/// where it shows them none. `show` answers that task's payload, `{ "entry": { …,
+/// "fields" } }`, so the fields are the entry's, one level down.
 async fn projected_fields(
     state: &AppState,
     viewer: &crate::directory::project::Viewer,
@@ -514,8 +515,9 @@ async fn projected_fields(
 ) -> Option<Value> {
     use crate::directory::read::{ShowBy, show};
     match show(state, viewer, &ShowBy::Entry(entry_id.to_string())).await {
-        Ok(entry) => entry
-            .get("fields")
+        Ok(shown) => shown
+            .get("entry")
+            .and_then(|e| e.get("fields"))
             .filter(|f| f.as_object().is_some_and(|o| !o.is_empty()))
             .cloned(),
         Err(_) => None,
@@ -1265,7 +1267,6 @@ async fn handle_create(
         created_by: Some(entry_id),
         updated_at: now,
         retired_at: None,
-        endorsement: None,
     };
     // Item 6: the group first, remote steps before the one local write.
     let group = if kind == BadgeKind::Community {

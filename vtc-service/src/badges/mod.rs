@@ -271,11 +271,6 @@ pub struct Badge {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<DateTime<Utc>>,
-    /// The community's Open Badges `EndorsementCredential` of the badge's Achievement,
-    /// signed as the community and embedded in every holder's credential (VTI-BDG-060).
-    /// Signed on first need and kept; never answered on the wire by itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endorsement: Option<Value>,
 }
 
 fn yes() -> bool {
