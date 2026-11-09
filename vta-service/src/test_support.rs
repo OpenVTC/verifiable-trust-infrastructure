@@ -1501,8 +1501,13 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
 
     let policy_ks = store.keyspace(crate::keyspaces::POLICY).unwrap();
     let state = crate::server::AppState {
-        audit_sink: vta_audit::shared_keyspace_sink(
+        // The chained sink, as `build_app_state` installs in production: a test
+        // VTA that writes a flat, keyless trail cannot show what a real one
+        // records — the chain, or the commitments that stand in for personal
+        // data (VTI-AUD-004/005).
+        audit_sink: vta_audit::shared_chained_sink(
             store.keyspace(crate::keyspaces::AUDIT).unwrap(),
+            store.keyspace(crate::keyspaces::AUDIT_KEY).unwrap(),
         ),
         internal_ks: store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap(),
         idempotency_ks: store.keyspace(crate::keyspaces::IDEMPOTENCY).unwrap(),

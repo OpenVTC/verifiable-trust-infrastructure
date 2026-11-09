@@ -28,6 +28,7 @@ mod delegated_consent_e2e;
 mod idempotency_trust_task;
 mod key_custody_census;
 mod keyring_vti_09_23_https;
+mod memory_audit;
 mod mock_vta;
 mod openapi_schema_names;
 mod operation_budget;

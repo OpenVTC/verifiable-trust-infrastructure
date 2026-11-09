@@ -433,6 +433,31 @@ fn newest_envelope_hash(pairs: &[RawKvPair]) -> Option<[u8; 32]> {
         .map(|env| env.entry_hash)
 }
 
+/// Domain tag for [`commit_reference`], so a reference can never equal the hash
+/// of a DID that happens to spell the same bytes.
+const REFERENCE_DOMAIN: &[u8] = b"vti-audit-reference/v1\0";
+
+/// A keyed commitment to `value` — personal data an audit record must refer to
+/// without embedding it (VTI-AUD-005) — under `key`:
+/// `hmac-sha256:<key id>:<first 16 bytes, hex>`.
+///
+/// Without the key it reveals nothing about `value`, and an erasure of the data
+/// it refers to leaves the record, and so the chain, intact. With the key (the
+/// VTA, answering "was this item read?") it can be recomputed for a candidate
+/// value; the key id says which key in the history to use. Sixteen bytes is
+/// ample for that test and keeps a record listing many references small.
+pub fn commit_reference(key: &crate::audit::AuditKey, value: &str) -> String {
+    let mut mac = HmacSha256::new_from_slice(&key.key).expect("32-byte HMAC key");
+    mac.update(REFERENCE_DOMAIN);
+    mac.update(value.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    format!(
+        "hmac-sha256:{}:{}",
+        key.key_id.as_uuid(),
+        hex::encode(&digest[..16])
+    )
+}
+
 fn hmac_did(key: &[u8; 32], did: &str) -> [u8; 32] {
     let mut mac = HmacSha256::new_from_slice(key).expect("32-byte HMAC key");
     mac.update(did.as_bytes());

@@ -75,4 +75,4 @@ pub use event::{
     WebsiteFileWrittenData, WebsiteGenerationRolledBackData,
 };
 pub use key_store::{AuditKey, AuditKeyStore, KeyId, RotationReason};
-pub use writer::AuditWriter;
+pub use writer::{AuditWriter, commit_reference};
