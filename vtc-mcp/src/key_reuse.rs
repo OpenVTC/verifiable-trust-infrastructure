@@ -18,18 +18,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The bridge's local state directory: `$VTC_MCP_STATE_DIR`, else
-/// `$XDG_STATE_HOME/vtc-mcp`, else `~/.local/state/vtc-mcp`. `None` when none
-/// of them is set.
+/// The bridge's local state directory (`vti_mcp_common::listen::Bridge::state_dir`):
+/// `$VTC_MCP_STATE_DIR`, else `$XDG_STATE_HOME/vtc-mcp`, else
+/// `~/.local/state/vtc-mcp`.
 pub fn state_dir() -> Option<PathBuf> {
-    let env = |k: &str| {
-        std::env::var_os(k)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    };
-    env("VTC_MCP_STATE_DIR")
-        .or_else(|| env("XDG_STATE_HOME").map(|d| d.join("vtc-mcp")))
-        .or_else(|| env("HOME").map(|h| h.join(".local/state/vtc-mcp")))
+    crate::listen::BRIDGE.state_dir()
 }
 
 /// The file the note is kept in, in [`state_dir`].
@@ -59,28 +52,9 @@ pub fn check_and_record(
     Ok(others)
 }
 
-/// Write `bytes` to `path` readable by its owner only, through a temporary
-/// file beside it so a reader never sees half a file.
-pub(crate) fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
-    tmp_name.push(".tmp");
-    let tmp = path.with_file_name(tmp_name);
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
+/// Write `bytes` to `path` readable by its owner only.
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    vti_mcp_common::listen::write_owner_only(path, bytes)
 }
 
 /// The words the operator and the model are given for a key seen elsewhere.

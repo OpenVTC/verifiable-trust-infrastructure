@@ -5,7 +5,9 @@
 //!
 //! Transport: stdio (the standard local-agent transport — Claude Desktop and
 //! most hosts spawn the server and speak JSON-RPC over stdin/stdout). All
-//! logging therefore goes to **stderr**; stdout is the protocol channel.
+//! logging therefore goes to **stderr**; stdout is the protocol channel. With
+//! `--listen`, loopback HTTP instead, so every MCP host on the machine shares
+//! one bridge and one mediator socket (`vti_mcp_common::listen`).
 //!
 //! Auth (modes):
 //! - **DIDComm** — authenticate a scoped agent directly over DIDComm via a
@@ -36,6 +38,7 @@
 mod census;
 mod server;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -49,6 +52,7 @@ use vta_sdk::session::TransportChoice;
 
 use server::{BridgeIdentity, VtaMcp};
 use vti_mcp_common::guard::{ConfirmLevel, Guard};
+use vti_mcp_common::listen::{Bridge, Serving};
 use vti_mcp_common::observability::{self, LogFormat, Recorder};
 
 #[derive(Parser)]
@@ -174,7 +178,25 @@ struct Args {
     /// outlives the process.
     #[arg(long, env = "VTA_MCP_AUDIT_LOG")]
     audit_log: Option<PathBuf>,
+
+    /// Serve MCP over HTTP at `http://<addr>/mcp` instead of stdio, so every
+    /// MCP host on this machine shares one bridge — one identity, one mediator
+    /// socket, where a stdio bridge per host would put several sockets on one
+    /// DID. Loopback addresses only (`127.0.0.1:7466`). Every request needs
+    /// `Authorization: Bearer <token>`: `VTA_MCP_LISTEN_TOKEN`, else the
+    /// owner-only `listen-token` file in the state directory
+    /// (`$VTA_MCP_STATE_DIR`, else `$XDG_STATE_HOME/vta-mcp`, else
+    /// `~/.local/state/vta-mcp`), created on first use.
+    #[arg(long, env = "VTA_MCP_LISTEN")]
+    listen: Option<SocketAddr>,
 }
+
+/// This bridge, as the shared listener names it.
+const BRIDGE: Bridge = Bridge {
+    name: "vta-mcp",
+    token_env_name: "VTA_MCP_LISTEN_TOKEN",
+    state_dir_env: "VTA_MCP_STATE_DIR",
+};
 
 /// Written by hand so the agent and holder signing keys never reach a log: a derived `Debug` would print them.
 impl std::fmt::Debug for Args {
@@ -207,6 +229,7 @@ impl std::fmt::Debug for Args {
             .field("log_level", &self.log_level)
             .field("log_format", &self.log_format)
             .field("audit_log", &self.audit_log)
+            .field("listen", &self.listen)
             .finish()
     }
 }
@@ -268,6 +291,8 @@ async fn main() -> anyhow::Result<()> {
         "vta-mcp starting"
     );
     warn_about_argv_secrets();
+    // Policy too: a listen address or token that cannot be used is fatal.
+    let serving = Serving::from_listen(&BRIDGE, args.listen).map_err(|e| anyhow::anyhow!(e))?;
     let connect = agent_connect_from(&args);
     let holder = holder_identity(&args);
 
@@ -290,6 +315,7 @@ async fn main() -> anyhow::Result<()> {
             return serve(
                 VtaMcp::degraded(message, holder, identity, guard, recorder),
                 None,
+                serving,
             )
             .await;
         }
@@ -338,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let (bridge, session) = match attached {
         Ok(agent) => {
-            tracing::info!("connected to VTA; serving MCP over stdio");
+            tracing::info!(serving = %serving.label(), "connected to VTA; serving MCP");
             (
                 VtaMcp::new(agent.clone(), holder, identity, guard, recorder),
                 Some(agent),
@@ -352,11 +378,11 @@ async fn main() -> anyhow::Result<()> {
             )
         }
     };
-    serve(bridge, session).await
+    serve(bridge, session, serving).await
 }
 
-/// Serve MCP over stdio until the host disconnects, then tear the DIDComm
-/// session down.
+/// Serve MCP until the host disconnects (stdio) or the process is told to stop
+/// (`--listen`), then tear the DIDComm session down.
 ///
 /// The teardown is why `session` is passed separately: a DIDComm `VtaClient`
 /// owns a live, auto-reconnecting mediator socket that `Drop` cannot close, so
@@ -364,13 +390,26 @@ async fn main() -> anyhow::Result<()> {
 /// and wait, then `shutdown()` unconditionally (idempotent, a no-op for
 /// REST/token clients) *before* propagating any error — a bare `?` on
 /// `waiting()` would skip the cleanup on the common EOF/disconnect path.
-async fn serve(bridge: VtaMcp, session: Option<Arc<AgentSession>>) -> anyhow::Result<()> {
-    let served = async {
-        let service = bridge.serve(stdio()).await?;
-        service.waiting().await?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
+async fn serve(
+    bridge: VtaMcp,
+    session: Option<Arc<AgentSession>>,
+    serving: Serving,
+) -> anyhow::Result<()> {
+    let served = match serving {
+        Serving::Stdio => {
+            async {
+                let service = bridge.serve(stdio()).await?;
+                service.waiting().await?;
+                Ok::<(), anyhow::Error>(())
+            }
+            .await
+        }
+        Serving::Http { addr, token } => {
+            vti_mcp_common::listen::serve(&BRIDGE, bridge, addr, token)
+                .await
+                .map_err(anyhow::Error::from)
+        }
+    };
     if let Some(agent) = session {
         agent.shutdown().await;
     }

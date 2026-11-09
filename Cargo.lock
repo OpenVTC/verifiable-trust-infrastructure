@@ -12447,7 +12447,6 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
- "subtle",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -12682,8 +12681,16 @@ dependencies = [
 name = "vti-mcp-common"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "chrono",
+ "getrandom 0.4.3",
+ "reqwest",
+ "rmcp",
  "serde_json",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "vti-specs",

@@ -860,7 +860,7 @@ impl ServerHandler for VtcMcp {
     /// host fall back to `initialize`, where elicitation works. Lift the cap
     /// only once confirmation is answered with an `InputRequiredResult`.
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
-        std::borrow::Cow::Borrowed(ProtocolVersion::known_up_to(&ProtocolVersion::V_2025_11_25))
+        vti_mcp_common::listen::supported_protocol_versions()
     }
 
     fn get_info(&self) -> ServerConfig {

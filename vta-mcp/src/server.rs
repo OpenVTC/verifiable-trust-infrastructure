@@ -1064,6 +1064,15 @@ impl VtaMcp {
 
 #[tool_handler]
 impl ServerHandler for VtaMcp {
+    /// Up to `2025-11-25`: confirmation is a server-to-client elicitation,
+    /// which `2026-07-28` forbids, so a host that negotiated it could never be
+    /// asked (`vti_mcp_common::listen::supported_protocol_versions`).
+    fn supported_protocol_versions(
+        &self,
+    ) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
+        vti_mcp_common::listen::supported_protocol_versions()
+    }
+
     fn get_info(&self) -> ServerConfig {
         // `Implementation` / `InitializeResult` are `#[non_exhaustive]`, so build
         // them via constructors + field assignment rather than struct literals.
@@ -1167,6 +1176,15 @@ mod tests {
             },
             Arc::new(Recorder::default()),
         )
+    }
+
+    /// The bridge holds its hosts to a protocol version that can ask the
+    /// human: `2026-07-28` would make every `--confirm` prompt impossible.
+    #[test]
+    fn hosts_are_held_to_a_version_that_can_be_asked() {
+        let versions = ServerHandler::supported_protocol_versions(&bridge());
+        assert!(versions.contains(&rmcp::model::ProtocolVersion::V_2025_11_25));
+        assert!(!versions.contains(&rmcp::model::ProtocolVersion::V_2026_07_28));
     }
 
     /// The generated tool router must expose exactly the bridge's tool set —

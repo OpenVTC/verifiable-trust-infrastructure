@@ -6,7 +6,7 @@ Crate guidance. The workspace `CLAUDE.md` applies too.
 
 (The crate's full entry from the workspace `CLAUDE.md` crate map.)
 
-Model Context Protocol server bridging a VTA's agent capabilities (signing oracle, vault, device, discovery) to MCP tools over stdio, so any MCP host (Claude Desktop, agent frameworks) can use a VTA with no custom code. Runs every call through the **local per-operation guard** and the call recorder from `vti-mcp-common` (shared with `vtc-mcp`), because an MCP host approves a *tool*, not a call — once `vta_call` is approved every Trust Task URI rides that approval. Its own half of the guard census (`src/census.rs`) holds every URI `vta_call` can dispatch to a classified verb. Docs: `docs/02-vta/vta-mcp.md`. `publish = false`
+Model Context Protocol server bridging a VTA's agent capabilities (signing oracle, vault, device, discovery) to MCP tools over stdio (or, with `--listen`, loopback HTTP shared by every host on the machine — `vti_mcp_common::listen`), so any MCP host (Claude Desktop, agent frameworks) can use a VTA with no custom code. Runs every call through the **local per-operation guard** and the call recorder from `vti-mcp-common` (shared with `vtc-mcp`), because an MCP host approves a *tool*, not a call — once `vta_call` is approved every Trust Task URI rides that approval. Its own half of the guard census (`src/census.rs`) holds every URI `vta_call` can dispatch to a classified verb. Docs: `docs/02-vta/vta-mcp.md`. `publish = false`
 
 ## Where the guard lives
 
