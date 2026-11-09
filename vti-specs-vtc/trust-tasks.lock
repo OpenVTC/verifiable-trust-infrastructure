@@ -1062,7 +1062,7 @@ digest = "sha256:45358c70418a4b16898f1e74649bac6da75daa4d819b04175f44dadc9ca0fc5
 slug = "vtc/members/rotate"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/members/rotate/0.1"
-digest = "sha256:8defaac2e1c706bd18d10c6d41e509322d722ac55470f82f6f09eee92d179d06"
+digest = "sha256:67b4348bf9b4369467f068ea201931abb00fbca081a2f1f3d1ccd7f4976f8e37"
 
 [[task]]
 slug = "vtc/members/rotate-challenge"

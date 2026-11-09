@@ -395,6 +395,18 @@ pub(crate) async fn rotate_inner(
                 .await
                 .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?;
         }
+        // A did:webs is verified by its KERI key event log when it resolves
+        // (VTI-LNK-052); any key of its current key state proves control.
+        "did:webs" => {
+            let resolver = state.did_resolver.as_ref().ok_or_else(|| {
+                AppError::Internal(
+                    "DID resolver not configured — did:webs rotation requires it".into(),
+                )
+            })?;
+            verify_did_webs_signature(&body.new_did, &payload, &body.new_signature, resolver)
+                .await
+                .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?;
+        }
         other => {
             return Err(AppError::Validation(format!(
                 "DID method '{other}' is not supported for rotation"
@@ -543,9 +555,9 @@ pub(crate) async fn rotate_inner(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Wire-form DID method prefix — `did:key`, `did:webvh` or `did:scid` (a
-/// `did:scid:vh:1`, VTI-KEY-001). Used by the rotation endpoint's
-/// method-detection step.
+/// Wire-form DID method prefix — `did:key`, `did:webvh`, `did:scid` (a
+/// `did:scid:vh:1`, VTI-KEY-001) or `did:webs` (VTI-KEY-003). Used by the
+/// rotation endpoint's method-detection step.
 fn method_of(did: &str) -> Result<&'static str, AppError> {
     if did.starts_with("did:key:") {
         Ok("did:key")
@@ -553,9 +565,11 @@ fn method_of(did: &str) -> Result<&'static str, AppError> {
         Ok("did:webvh")
     } else if did.starts_with(vta_sdk::did_scid::SCID_VH_PREFIX) {
         Ok("did:scid")
+    } else if did.starts_with("did:webs:") {
+        Ok("did:webs")
     } else {
         Err(AppError::Validation(format!(
-            "DID '{did}' is not did:key, did:webvh or did:scid:vh:1"
+            "DID '{did}' is not did:key, did:webvh, did:scid:vh:1 or did:webs"
         )))
     }
 }
@@ -630,6 +644,87 @@ async fn verify_did_webvh_signature(
     let key = vta_sdk::jws::JwsKey::from_resolved(&resolved)
         .map_err(|e| format!("rotation key refused: {e}"))?;
     crate::holder_signature::verify_hex_signature(&key, &[], payload, hex_sig)
+}
+
+/// The most `authentication` keys a did:webs rotation signature is tried
+/// against. A key state rarely holds more than a handful; the cap bounds the
+/// work a document can ask of the verifier.
+const MAX_DID_WEBS_KEYS: usize = 16;
+
+/// Verify a signature by any key a `did:webs` document authorises for
+/// `authentication`.
+///
+/// A did:webs document has no `#key-0`: its keys are the KERI key state's,
+/// identified by their CESR encoding, and each is in `authentication`. The
+/// document resolves only when the key event log verifies (VTI-LNK-052), so a
+/// signature by one of its current keys proves control of the identifier
+/// (VTI-MEM-041). Each candidate goes through the same purpose and controller
+/// check as the `did:webvh` path.
+async fn verify_did_webs_signature(
+    did: &str,
+    payload: &[u8],
+    hex_sig: &str,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+) -> Result<(), String> {
+    use vti_common::auth::PurposeVmResolver as _;
+
+    let doc = resolver
+        .resolve(did)
+        .await
+        .map_err(|e| format!("cannot resolve {did}: {e}"))?
+        .doc;
+    // An `authentication` entry is a reference (an absolute or relative DID
+    // URL) or an embedded method carrying its `id`.
+    let doc = serde_json::to_value(&doc).map_err(|e| format!("unreadable document: {e}"))?;
+    let candidates: Vec<String> = doc["authentication"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|rel| rel.as_str().or_else(|| rel["id"].as_str()))
+        .map(|id| match id.strip_prefix('#') {
+            Some(fragment) => format!("{did}#{fragment}"),
+            None => id.to_string(),
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Err(format!("{did} authorises no key for authentication"));
+    }
+    if candidates.len() > MAX_DID_WEBS_KEYS {
+        return Err(format!(
+            "{did} lists {} authentication keys, over the {MAX_DID_WEBS_KEYS} a rotation checks",
+            candidates.len()
+        ));
+    }
+
+    let vm_resolver = vti_common::auth::TrustTaskVmResolver::new(resolver.clone());
+    let mut last_error = String::new();
+    for vm_id in candidates {
+        let resolved = match vm_resolver
+            .resolve_vm_for_purpose(&vm_id, vti_common::auth::ProofPurpose::Authentication)
+            .await
+        {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                last_error = format!("{vm_id}: {e}");
+                continue;
+            }
+        };
+        let key = match vta_sdk::jws::JwsKey::from_resolved(&resolved) {
+            Ok(key) => key,
+            Err(e) => {
+                last_error = format!("{vm_id}: {e}");
+                continue;
+            }
+        };
+        match crate::holder_signature::verify_hex_signature(&key, &[], payload, hex_sig) {
+            Ok(()) => return Ok(()),
+            Err(e) => last_error = format!("{vm_id}: {e}"),
+        }
+    }
+    Err(format!(
+        "no authentication key of {did} made this signature (last: {last_error})"
+    ))
 }
 
 /// Re-mint VMC + role VAC against the new DID. Reuses the
@@ -731,6 +826,14 @@ mod tests {
             "did:scid"
         );
         assert!(method_of("did:scid:ke:1:QmScid?src=example.com").is_err());
+    }
+
+    #[test]
+    fn method_of_recognises_did_webs() {
+        assert_eq!(
+            method_of("did:webs:example.com:ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe").unwrap(),
+            "did:webs"
+        );
     }
 
     #[test]
