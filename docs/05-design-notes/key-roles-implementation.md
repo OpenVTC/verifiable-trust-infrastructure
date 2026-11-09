@@ -1,11 +1,15 @@
 # Key roles — implementation plan
 
-**Status:** plan, step 0 of 15. **Paused** by the maintainer (2026-10-30): no
-step starts without a go-ahead. Revised the same day for key assurance levels
-(dtgwg-vti-spec#82, dtgwg-trust-tasks-tf#993, both drafts): single-key
-DIDs stay conformant as level 1, level 2 needs no recovery key, identities are
-raised in place, and a FROST threshold custodian is added. The design itself —
-why, the model, benefits and implications — is [key-roles.md](key-roles.md).
+**Status:** plan, step 0 of 15. **Resumed** by the maintainer on 2026-11-09,
+together with a KERI (`did:webs`) implementation for our own identities —
+personas first, node identities designed in (§2 decision 2). It was paused on
+2026-10-30 and revised the same day for key assurance levels
+(dtgwg-vti-spec#82, dtgwg-trust-tasks-tf#993, ready for review since
+2026-11-09): single-key DIDs stay conformant as level 1, level 2 needs no
+recovery key, identities are raised in place, and a threshold custodian is
+added. Step 1 waits on those two merging, because it pins what they define. The
+design itself — why, the model, benefits and implications — is
+[key-roles.md](key-roles.md).
 
 **Normative sources.** The VTI specification's *Key roles* chapter
 (`spec/04-identity-keys.md`, dtgwg-vti-spec#79) and the method-neutral
@@ -59,9 +63,15 @@ to be met at level 1.
    webvh log append, publication) stays in `vta-service/src/operations/dids/`.
    Wire types are the generated `vta_sdk::specs::vta::dids::*`; nothing is
    hand-written.
-2. **The webvh profile is the only eligible profile implemented.**
-   `did:scid:vh` rides it (same log). `did:key`, `did:jwk`, `did:peer`,
-   `did:web` and `did:webs` get profiles that say *ineligible* and the criteria
+2. **Two eligible profiles: webvh, then webs.** `did:scid:vh` rides webvh
+   (same log). `did:webs` is eligible with the key-role designation extension
+   (VTI-KEY-173; `affinidi-did-webs` 0.9.1 implements it) and is implemented
+   second, after webvh, starting with personas. Its change authority is the
+   KEL key state: routine role-key changes are interaction events, and
+   rotation at level 3 needs the recovery custodian through the weighted next
+   threshold (`nt: ["1/2","1"]` over `[R′, K]`, webs profile §2). Witnesses are
+   KERI witnesses, which `vti-witness` will host. `did:key`, `did:jwk`,
+   `did:peer` and `did:web` get profiles that say *ineligible* and the criteria
    missing, so the refusal is a statement (CONVENTIONS §18), not a fall-through.
 3. **Role keys by level.** At **level 2**, `attestation` and `update` keys are
    **derived** from the seed under the context base, at role paths of their own
@@ -132,7 +142,7 @@ means the Appendix F row is updated in step 13, citing the PR.
 | # | PR | What | Requirements | Appendix F |
 |---|---|---|---|---|
 | 0 | `docs(design-notes)` | This note | — | — |
-| 1 | `feat(vta)!` | **Pins and the eligibility gate.** Pin `vta/dids/create/1.1`, `vta/dids/upgrade/1.0`, the rest of `vta/dids/*/1.0` and `vta/did-templates/{create,get,list,update}/3.2`; re-resolve `vta/webvh/dids/{update,rotate-keys}/1.0` to the registry's live bundles and delete both `#[allow(deprecated)]`. New crate `vta-key-roles` with `MethodProfile` (`webvh`, `scid:vh` eligible; `key`, `jwk`, `peer`, `web`, `webs` ineligible with `missing`; anything else: no profile), `methodNotEligible` with `details.missing`, and `methodParameters` validation against the profile's schema (`methodParameterUnsupported`). | VTI-KEY-170, 171, 172, 173 | — (none recorded) |
+| 1 | `feat(vta)!` | **Pins and the eligibility gate.** Pin `vta/dids/create/1.1`, `vta/dids/upgrade/1.0`, the rest of `vta/dids/*/1.0` and `vta/did-templates/{create,get,list,update}/3.2`; re-resolve `vta/webvh/dids/{update,rotate-keys}/1.0` to the registry's live bundles and delete both `#[allow(deprecated)]`. New crate `vta-key-roles` with `MethodProfile` (`webvh`, `scid:vh`, `webs` eligible in the specification, but held by the VTA only once its creation lands — until then it holds no `webs` profile and refuses with `methodNotEligible` (VTI-KEY-171); `key`, `jwk`, `peer`, `web` ineligible with `missing`; anything else: no profile), `methodNotEligible` with `details.missing`, and `methodParameters` validation against the profile's schema (`methodParameterUnsupported`). | VTI-KEY-170, 171, 172, 173 | — (none recorded) |
 | 2 | `feat(sdk)` | **Levels, for verifiers.** The `KeyAssuranceLevel` type, `keyAssurance` parsing, and VTI-KEY-199's level determination over a resolved document and its log, in `vta-sdk`; a per-use minimum (VTI-KEY-200) in verifier configuration, default 1; VTI-KEY-201 (judge an artefact by its key's level). Persona documents: `keyRoles.authenticator` read, every other key by relationship (VTI-KEY-191). No behaviour changes at the default. | VTI-KEY-191, 197–201 | — |
 | 3 | `feat(key-roles)` | **The role model and the document.** The registry of CONVENTIONS §2.1 (role → relationship, origin by level, custody); a renderer from role keys to `verificationMethod`, relationships, top-level `keyRoles` and `keyAssurance` (with the VTI-KEY-096 and VTI-KEY-198 terms in `@context`) and CID `revoked`; fragments derived from the key; the key-role-identity check (`notKeyRoleIdentity` for level 1, never a guess). `vta/webvh/dids/update/1.0` and `rotate-keys/1.0` answer `unsupportedVersion` for a key-role identity. | VTI-KEY-070–075, 090–096, 197, 198, 150 | KEY-150 (rendering half) |
 | 4 | `feat(vta)!` | **Preview plans and preview-bound step-up.** As before: `dids_plans` store, plan digest, `previewStale`, one outstanding plan per identity/role/caller, expiry sweeper that destroys pending keys; `stepUpRequired` with `details.stepUpRequest` bound to type + `previewId`; approve-response 0.7 marks the plan. Step-up policy by level (§6.5: SHOULD for a level-2 create). | VTI-KEY-180; VTI-APV-013; CONVENTIONS §6.1–6.3 | KEY-180 (half) |
