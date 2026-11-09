@@ -233,6 +233,10 @@ per-service one; an env var overrides the file). All three are optional
 and default to fjall's own behaviour when unset. See
 [the VTA doc](../02-vta/non-interactive-setup.md#fjall-memory-settings)
 for the full table, accepted byte-size formats, and sizing guidance
-against a pod's memory limit — it applies unchanged here, including the
-**256 MiB minimum**: a VTC writes more than a VTA and is the first to hit
-the journal-replay floor those settings cannot lower (#1777).
+against a pod's memory limit and what a restart costs — it applies
+unchanged here. Since fjall 3.1.13 a restart replays only the writes not yet
+flushed, which the store's flusher keeps near `write_buffer`, so the old
+256 MiB minimum (set for a journal-replay floor of ~64 MiB) no longer applies;
+the VTA doc gives the measurements and a 128 MiB minimum with small settings
+(#1777). A VTC writes more than a VTA, so check its resident memory under
+load before going lower than that.
