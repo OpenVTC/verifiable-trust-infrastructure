@@ -267,6 +267,7 @@ use vta_sdk::protocols::vetting::{
 };
 
 use crate::join::{JoinSubmitOutcome, JoinTransport};
+use crate::routing::trust_task_admission::MessagingRoomAdmission;
 use crate::server::AppState;
 
 pub(crate) use helpers::TrustTaskOutcome;
@@ -314,7 +315,45 @@ pub(crate) async fn dispatch_trust_task_core(
     // as the dispatched result (which the spine signs before recording it for
     // redelivery).
     let address = large_document_budget_address(ctx);
-    receive(state, ctx, body, None, &address).await
+    // A room document is charged the room budgets here, as the HTTPS door
+    // charges them (#2294): the sender's room ceiling before anything is
+    // verified, then the (room, presenter) or transfer budget once its room
+    // authorizes it — which is also what admits an upload chunk at its own size
+    // instead of the large-document budget.
+    let room = match MessagingRoomAdmission::begin(state, ctx.sender_did.as_deref(), body).await {
+        Ok(room) => room,
+        Err(limited) => return rate_limited_outcome(state, &limited).await,
+    };
+    let Some(room) = room else {
+        return receive(state, ctx, body, None, &address).await;
+    };
+    let outcome = room
+        .scope(receive(state, ctx, body, Some(&room), &address))
+        .await;
+    match room.finish() {
+        Ok(()) => outcome,
+        Err(limited) => rate_limited_outcome(state, &limited).await,
+    }
+}
+
+/// A room limiter's refusal on a messaging transport, which has no `429`: the
+/// framework's `unavailable` with the limiter's `retryAfter`, signed like every
+/// other answer. The HTTPS door answers the same refusal as its `429` body.
+async fn rate_limited_outcome(
+    state: &AppState,
+    limited: &crate::routing::rate_limit::RateLimited,
+) -> TrustTaskOutcome {
+    let retry_after = chrono::Utc::now()
+        + chrono::Duration::seconds(i64::try_from(limited.retry_after_secs()).unwrap_or(i64::MAX));
+    let payload: trust_tasks_rs::ErrorPayload = RejectReason::Unavailable {
+        retry_after: Some(retry_after),
+    }
+    .into();
+    vti_trust_task_server::sign_response(
+        response_signer(state),
+        helpers::unrouted_error_response(payload),
+    )
+    .await
 }
 
 /// The address [`size::check_for_known_issuer`] charges a raised-limit
