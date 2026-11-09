@@ -16,11 +16,23 @@ chrono = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# `listen`: one bridge serving every MCP host on the machine over loopback
+# streamable HTTP, behind a bearer token, and the protocol versions a bridge
+# that asks the human may serve.
+rmcp = { version = "3", features = ["server", "transport-streamable-http-server"] }
+axum = { workspace = true }
+subtle = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+getrandom = "0.4"
 
 [dev-dependencies]
 # The pinned Type URI index, for the census that holds every pinned request
 # URI to a classified verb.
 vti-specs = { path = "../vti-specs", version = "0.10" }
+# `listen`'s tests: a temporary state directory, and HTTP driven as a host would.
+tempfile = "3"
+reqwest = { workspace = true }
 
 [lints]
 workspace = true

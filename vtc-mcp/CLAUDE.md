@@ -79,7 +79,7 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio (or, wi
   `keyReuseWarning` in `vtc_whoami` / `vtc_status`. Only the key holder can see
   reuse; a community knows only its own records.
 - **`--listen` is loopback, a token, and no browsers — none of it optional**
-  (`src/listen.rs`, design note D7). The endpoint speaks with the bridge's
+  (`vti_mcp_common::listen`, named for this bridge in `src/listen.rs`; design note D7). The endpoint speaks with the bridge's
   standing, so: `check_loopback` before binding, with no flag to widen it; a
   bearer token on every request, compared in constant time, its file
   owner-only and refused otherwise; `Origin` refused and `Host` loopback. One

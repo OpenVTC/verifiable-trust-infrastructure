@@ -34,6 +34,7 @@ use vta_sdk::did_secrets::DidSecretsBundle;
 use vta_sdk::session::TransportChoice;
 use vtc_client::{SessionIdentity, VtcClient};
 use vti_mcp_common::guard::{ConfirmLevel, Guard};
+use vti_mcp_common::listen::Serving;
 use vti_mcp_common::observability::{self, LogFormat, Recorder};
 
 mod guides;
@@ -142,37 +143,6 @@ struct Args {
     /// first use.
     #[arg(long, env = "VTC_MCP_LISTEN")]
     listen: Option<SocketAddr>,
-}
-
-/// How MCP is served: to the one host that started this process, or to every
-/// host on the machine.
-enum Serving {
-    Stdio,
-    Http { addr: SocketAddr, token: String },
-}
-
-impl Serving {
-    /// Settled before anything connects: a listen address or token that cannot
-    /// be used is a policy failure, and policy failures are fatal.
-    fn from_args(args: &Args) -> anyhow::Result<Self> {
-        let Some(addr) = args.listen else {
-            return Ok(Self::Stdio);
-        };
-        listen::check_loopback(addr).map_err(|e| anyhow::anyhow!(e))?;
-        let state_dir = key_reuse::state_dir();
-        let (token, source) =
-            listen::load_token(std::env::var(listen::TOKEN_ENV).ok(), state_dir.as_deref())
-                .map_err(|e| anyhow::anyhow!(e))?;
-        tracing::info!(token = %source, "listen token loaded");
-        Ok(Self::Http { addr, token })
-    }
-
-    fn label(&self) -> String {
-        match self {
-            Self::Stdio => "stdio".into(),
-            Self::Http { addr, .. } => format!("http://{addr}{}", listen::MCP_PATH),
-        }
-    }
 }
 
 /// A fresh Ed25519 `did:key` and its private key, multibase-encoded as the
@@ -349,7 +319,10 @@ async fn main() -> anyhow::Result<()> {
         "vtc-mcp starting"
     );
     warn_about_argv_secrets();
-    let serving = Serving::from_args(&args)?;
+    // Settled before anything connects: a listen address or token that cannot
+    // be used is a policy failure, and policy failures are fatal.
+    let serving =
+        Serving::from_listen(&listen::BRIDGE, args.listen).map_err(|e| anyhow::anyhow!(e))?;
 
     let mut identity = BridgeIdentity {
         mode: "unconfigured".into(),
@@ -471,7 +444,11 @@ async fn serve(
             }
             .await
         }
-        Serving::Http { addr, token } => listen::serve(bridge, addr, token).await,
+        Serving::Http { addr, token } => {
+            vti_mcp_common::listen::serve(&listen::BRIDGE, bridge, addr, token)
+                .await
+                .map_err(anyhow::Error::from)
+        }
     };
     if let Some(client) = client {
         client.shutdown().await;

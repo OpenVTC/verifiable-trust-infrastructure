@@ -11,7 +11,8 @@ document is mostly about the consequences of that sentence.
 
 - Crate: `vta-mcp/` (`publish = false`; build it yourself)
 - Transport: **stdio** — the host spawns the binary and speaks JSON-RPC over
-  stdin/stdout
+  stdin/stdout; or, with `--listen`, loopback HTTP shared by every host on the
+  machine (§6.1)
 - Related: [personal AI agents](personal-ai-agents.md) (how to provision the
   identity this bridge should run as), [approvals](approvals.md) (server-side
   gating), [example: agent memory + vta-mcp](examples/agent-memory-with-vta-mcp.md)
@@ -60,7 +61,8 @@ tool actually calls, so they cannot quietly drift apart.
 1. **Process spawn is the authentication boundary.** stdio means no listener, no
    port, and no authentication *on the MCP channel itself*. Whoever can spawn
    the process — or read the host's MCP config — inherits the full authority of
-   the configured identity.
+   the configured identity. With `--listen` (§6.1) the boundary is the bearer
+   token instead: whoever holds it, on this machine, inherits that authority.
 2. **The connect ladder decides whose authority that is.** Four rungs (§4).
    The important distinction is *dedicated agent identity* versus *replayed
    operator login*.
@@ -353,6 +355,50 @@ Claude Code (`.mcp.json` in the project, or `claude mcp add`), Claude Desktop
 Keep the key in `env`, not `args` (§2.5). Everything configurable by flag has a
 `VTA_MCP_*` environment equivalent if you would rather configure it that way.
 
+### 6.1 Several assistant sessions: one shared bridge (`--listen`)
+
+Each host started as above spawns its own bridge, and each bridge opens a
+mediator session as its identity. The mediator keeps one websocket per DID, so
+two sessions on one identity evict each other on every reconnect, and a reply
+flushed onto the other process's socket is lost. Do not run one identity in two
+stdio bridges; run one bridge for the machine and point every host at it:
+
+```sh
+VTA_MCP_AGENT_KEY=z3u2… vta-mcp \
+  --agent-did did:key:z6Mk… --vta-did did:webvh:example.com:vta \
+  --mediator-did did:key:z6Mk… --confirm sensitive \
+  --listen 127.0.0.1:7466
+```
+
+```json
+{
+  "mcpServers": {
+    "vta": {
+      "type": "http",
+      "url": "http://127.0.0.1:7466/mcp",
+      "headersHelper": "/path/to/print-vta-mcp-authorization-header.sh"
+    }
+  }
+}
+```
+
+The helper prints `{"Authorization": "Bearer <token>"}`, reading the token
+file; `"headers": {"Authorization": "Bearer ${VTA_MCP_LISTEN_TOKEN}"}` works
+too where the host's environment carries the token. The listener is the one
+`vtc-mcp` uses (`vti_mcp_common::listen`; the VTC page, §7.1, has the long
+form): **loopback only**; **a bearer token on every request** —
+`VTA_MCP_LISTEN_TOKEN`, else the owner-only `listen-token` file in
+`$VTA_MCP_STATE_DIR` / `$XDG_STATE_HOME/vta-mcp` / `~/.local/state/vta-mcp`,
+created on first start and refused if others can read it; **no browsers**
+(`Origin` refused, `Host` loopback); stops on SIGINT/SIGTERM. A confirmation
+is asked of the host that made the call.
+
+**Confirmations need MCP `2025-11-25` or earlier.** `2026-07-28` forbids the
+server-to-client request a confirmation is, so the bridge serves versions up to
+`2025-11-25`; a host that asks for `2026-07-28` is refused and falls back.
+This applies over stdio too. After upgrading the bridge, reconnect the host
+once (`/mcp` in Claude Code).
+
 ---
 
 ## 7. MCP protocol surface
@@ -380,7 +426,9 @@ What is used, and what is deliberately not:
 | The host lists **no tools** | The server exited before speaking MCP — a bad `--confirm` value, an unopenable `--audit-log`, or a `--enroll` refusal | Read the host's MCP server log; those three are fatal by design |
 | Every tool returns "not connected to its VTA" | Degraded mode (§5) | The message names the missing configuration; fix and restart |
 | `'…' is not in this bridge's --allow list` | Local policy | Add the slug, or drop `--allow` |
-| `this MCP host cannot ask you (it does not support elicitation)` | `--confirm` needs a prompt the host cannot show | `--confirm never`, or `--allow` the specific slug |
+| `this MCP host cannot ask you (it does not support elicitation)` | `--confirm` needs a prompt the host cannot show — or a bridge older than the protocol cap was reached at MCP `2026-07-28` | Upgrade and reconnect the host (§6.1); else `--confirm never`, or `--allow` the specific slug |
+| Calls fail or time out only while a **second assistant session** is open | Two stdio bridges on one identity: two sockets for one DID (§6.1) | One bridge with `--listen` |
+| `401` from the bridge's URL | No `Authorization: Bearer` header, or a different token | The host must send the bridge's token (§6.1) |
 | A call fails as a transport timeout | The VTA does not serve that URI | Ask `vta_supported_tasks` first — an unserved URI times out rather than erroring cleanly |
 | `vault_release` fails with `UnsupportedTransport` | It opens a `didcomm-authcrypt` envelope with this client's own keys | Use a DIDComm mode (rung 1 or 2), not REST/token |
 | `issue_vp is unavailable` | No holder identity | Set `VTA_MCP_HOLDER_DID` + `VTA_MCP_HOLDER_KEY` |

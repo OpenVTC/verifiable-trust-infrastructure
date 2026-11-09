@@ -351,8 +351,10 @@ over `--listen`: it probes with `2026-07-28`, is refused, and initializes at
 `InputRequiredResult`.
 
 stdio stays the default: one host, no listener, no token. `vta-mcp` has the same
-one-socket-per-DID constraint and could take the same listener; if it does, the
-listener belongs in `vti-mcp-common`.
+one-socket-per-DID constraint and the same elicitation-based confirmation, so
+the listener, the `Serving` choice and the version cap live in
+`vti_mcp_common::listen` and both bridges take them; each names itself with a
+`Bridge` (its name, token variable and state-directory variable).
 
 ## 3. Rollout
 
