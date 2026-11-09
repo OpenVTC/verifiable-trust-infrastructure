@@ -25,6 +25,7 @@ import {
   Trophy,
   Users,
   Wrench,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -46,6 +47,14 @@ export const BUILDER_COLOURS = [
 export interface BuilderIcon {
   name: string;
   Icon: LucideIcon;
+  /** Words lucide files the icon under besides its name: "insect" for the bug. */
+  tags?: readonly string[];
+}
+
+/** The whole set: every lucide icon by its key, and the words each is filed under. */
+export interface IconSet {
+  icons: Record<string, LucideIcon>;
+  tags: Record<string, readonly string[]>;
 }
 
 const FIRST: BuilderIcon = { name: "Award", Icon: Award };
@@ -82,46 +91,168 @@ export function iconLabel(key: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+/** Every icon of `set` once, the offered ones first under their own names, each with its tags. */
+const catalogues = new WeakMap<IconSet, BuilderIcon[]>();
+function catalogue(set: IconSet): BuilderIcon[] {
+  const known = catalogues.get(set);
+  if (known) return known;
+  const tagsOf = new Map<LucideIcon, readonly string[]>();
+  for (const [key, Icon] of Object.entries(set.icons)) tagsOf.set(Icon, set.tags[key] ?? []);
+  const offered = new Set<LucideIcon>(BUILDER_ICONS.map((i) => i.Icon));
+  const all: BuilderIcon[] = BUILDER_ICONS.map((i) => ({ ...i, tags: tagsOf.get(i.Icon) ?? [] }));
+  for (const [key, Icon] of Object.entries(set.icons)) {
+    if (!offered.has(Icon)) all.push({ name: iconLabel(key), Icon, tags: set.tags[key] ?? [] });
+  }
+  catalogues.set(set, all);
+  return all;
+}
+
 /**
- * The icons of `all` whose name holds every word of `query`, the offered ones
- * (whose names may differ, "Tools" for the wrench) first, at most `limit`.
+ * The icons of `set` that every word of `query` finds, in the name or in the
+ * words lucide files it under ("insect" finds the bug), at most `limit`: those
+ * whose name holds every word first, the offered ones (whose names may differ,
+ * "Tools" for the wrench) leading each group. Every icon for an empty query.
  */
 export function findIcons(
-  all: Record<string, LucideIcon>,
+  set: IconSet,
   query: string,
   limit = SEARCH_LIMIT,
 ): { matches: BuilderIcon[]; total: number } {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const fits = (name: string) => {
-    const n = name.toLowerCase();
-    return words.every((w) => n.includes(w));
-  };
-  const seen = new Set<LucideIcon>();
-  const found: BuilderIcon[] = [];
-  for (const i of BUILDER_ICONS) {
-    if (fits(i.name)) {
-      seen.add(i.Icon);
-      found.push(i);
-    }
+  const words = query.toLowerCase().split(/[\s-]+/).filter(Boolean);
+  const byName: BuilderIcon[] = [];
+  const byTag: BuilderIcon[] = [];
+  for (const i of catalogue(set)) {
+    const name = i.name.toLowerCase();
+    const tags = (i.tags ?? []).map((t) => t.toLowerCase());
+    if (words.every((w) => name.includes(w))) byName.push(i);
+    else if (words.every((w) => name.includes(w) || tags.some((t) => t.includes(w)))) byTag.push(i);
   }
-  for (const [key, Icon] of Object.entries(all)) {
-    const name = iconLabel(key);
-    if (!seen.has(Icon) && fits(name)) {
-      seen.add(Icon);
-      found.push({ name, Icon });
-    }
-  }
+  const found = [...byName, ...byTag];
   return { matches: found.slice(0, limit), total: found.length };
 }
 
-/** Loads the whole set, once, the first time someone searches. */
-let allIcons: Promise<Record<string, LucideIcon>> | null = null;
-function loadAllIcons(): Promise<Record<string, LucideIcon>> {
-  allIcons ??= import("./badge-icons").then((m) => m.icons as Record<string, LucideIcon>);
+/** Loads the whole set, once, the first time someone searches or browses. */
+let allIcons: Promise<IconSet> | null = null;
+function loadAllIcons(): Promise<IconSet> {
+  allIcons ??= import("./badge-icons").then((m) => ({
+    icons: m.icons as Record<string, LucideIcon>,
+    tags: m.tags,
+  }));
   allIcons.catch(() => {
     allIcons = null;
   });
   return allIcons;
+}
+
+/** What an icon is filed under, for its title: "Bug: issue, report, insect". */
+function described(i: BuilderIcon): string {
+  return i.tags?.length ? `${i.name}: ${i.tags.join(", ")}` : i.name;
+}
+
+/** The status line for a search of `query` that `found` answered. */
+function searchStatus(query: string, loadError: boolean, found: { matches: BuilderIcon[]; total: number } | null): string {
+  if (loadError) return "The full set of icons couldn't be loaded.";
+  if (!found) return "Loading the icons…";
+  if (found.total === 0) return `No icon matches “${query.trim()}”. Try another word, such as what it means.`;
+  if (found.total > found.matches.length)
+    return `Showing ${found.matches.length} of ${found.total} icons: add a word to narrow it, or browse them all.`;
+  return `${found.total} ${found.total === 1 ? "icon matches" : "icons match"}.`;
+}
+
+/**
+ * Every icon in a dialog, to look through rather than guess a name: the same
+ * search, without a cap, over the whole set. Choosing one closes it.
+ */
+function IconBrowser({
+  set,
+  loadError,
+  initialQuery,
+  chosen,
+  returnTo,
+  onChoose,
+  onClose,
+}: {
+  set: IconSet | null;
+  loadError: boolean;
+  initialQuery: string;
+  chosen: LucideIcon;
+  /** Where focus goes back to on closing: the button that opened it, which a
+   *  click does not focus in every browser. */
+  returnTo: HTMLElement | null;
+  onChoose: (icon: BuilderIcon) => void;
+  onClose: () => void;
+}) {
+  const titleId = useId();
+  const [query, setQuery] = useState(initialQuery);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const opener = returnTo ?? (document.activeElement as HTMLElement | null);
+    searchRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [onClose, returnTo]);
+
+  const found = set ? findIcons(set, query, Number.POSITIVE_INFINITY) : null;
+  const status = query.trim()
+    ? searchStatus(query, loadError, found)
+    : loadError
+      ? "The full set of icons couldn't be loaded."
+      : found
+        ? `All ${found.total} icons. Type to narrow them, by name or by meaning.`
+        : "Loading the icons…";
+  return (
+    <div
+      className="badge-builder-scrim"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="badge-builder-browse">
+        <div className="badge-builder-browse-head">
+          <h3 id={titleId}>All icons</h3>
+          <button type="button" className="badge-builder-close" aria-label="Close" onClick={onClose}>
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <input
+          ref={searchRef}
+          type="search"
+          className="badge-builder-search"
+          aria-label="Find among all icons"
+          placeholder="A name or a meaning, such as “prize”"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <p className="muted badge-builder-status" aria-live="polite">
+          {status}
+        </p>
+        <div className="badge-builder-browse-grid" role="list">
+          {(found?.matches ?? []).map((choice) => (
+            <div role="listitem" key={choice.name}>
+              <button
+                type="button"
+                className={`badge-builder-pick${choice.Icon === chosen ? " is-chosen" : ""}`}
+                title={described(choice)}
+                aria-label={choice.name}
+                aria-pressed={choice.Icon === chosen}
+                onClick={() => onChoose(choice)}
+              >
+                <choice.Icon size={22} aria-hidden="true" />
+                <span>{choice.name}</span>
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export type BuilderShape = "square" | "banner";
@@ -264,39 +395,31 @@ export function BadgeBuilder({
   const [colour, setColour] = useState<string>(BUILDER_COLOURS[0].value);
   const [icon, setIcon] = useState<BuilderIcon>(FIRST);
   const [query, setQuery] = useState("");
-  const [all, setAll] = useState<Record<string, LucideIcon> | null>(null);
+  const [all, setAll] = useState<IconSet | null>(null);
+  const [browsing, setBrowsing] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drawing, setDrawing] = useState(false);
   const svg = useRef<SVGSVGElement>(null);
+  const browseButton = useRef<HTMLButtonElement>(null);
   const Icon = icon.Icon;
   const searching = query.trim() !== "";
 
   useEffect(() => {
-    if (!searching || all) return;
+    if (!(searching || browsing) || all) return;
     let live = true;
     loadAllIcons().then(
-      (icons) => live && setAll(icons),
+      (set) => live && setAll(set),
       () => live && setLoadError(true),
     );
     return () => {
       live = false;
     };
-  }, [searching, all]);
+  }, [searching, browsing, all]);
 
   const found = searching && all ? findIcons(all, query) : null;
   const shown = searching ? (found?.matches ?? []) : BUILDER_ICONS;
-  const status = !searching
-    ? null
-    : loadError
-      ? "The full set of icons couldn't be loaded."
-      : !found
-        ? "Loading the icons…"
-        : found.total === 0
-          ? `No icon matches “${query.trim()}”.`
-          : found.total > found.matches.length
-            ? `Showing ${found.matches.length} of ${found.total} icons: add a word to narrow it.`
-            : `${found.total} ${found.total === 1 ? "icon matches" : "icons match"}.`;
+  const status = searching ? searchStatus(query, loadError, found) : null;
 
   const use = async () => {
     if (!svg.current) return;
@@ -347,23 +470,37 @@ export function BadgeBuilder({
       </fieldset>
       <fieldset className="badge-builder-group">
         <legend>Icon</legend>
-        <input
-          type="search"
-          className="badge-builder-search"
-          aria-label="Find an icon"
-          placeholder={`Find an icon, such as “bug”`}
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setLoadError(false);
-          }}
-        />
+        <div className="badge-builder-find">
+          <input
+            type="search"
+            className="badge-builder-search"
+            aria-label="Find an icon"
+            placeholder="A name or a meaning, such as “bug” or “prize”"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setLoadError(false);
+            }}
+          />
+          <button
+            ref={browseButton}
+            type="button"
+            className={buttons.secondary}
+            aria-haspopup="dialog"
+            onClick={() => {
+              setLoadError(false);
+              setBrowsing(true);
+            }}
+          >
+            Browse all icons
+          </button>
+        </div>
         <p className="muted badge-builder-status" aria-live="polite">
-          {status ?? `Chosen: ${icon.name}. Search to choose from all of them.`}
+          {status ?? `Chosen: ${icon.name}. Search by name or meaning, or browse them all.`}
         </p>
         <div className="badge-builder-row">
           {shown.map((choice) => (
-            <label key={choice.name} className="badge-builder-icon" title={choice.name}>
+            <label key={choice.name} className="badge-builder-icon" title={described(choice)}>
               <input
                 type="radio"
                 name={`${id}-icon`}
@@ -378,6 +515,20 @@ export function BadgeBuilder({
           ))}
         </div>
       </fieldset>
+      {browsing && (
+        <IconBrowser
+          set={all}
+          loadError={loadError}
+          initialQuery={query}
+          chosen={icon.Icon}
+          returnTo={browseButton.current}
+          onChoose={(choice) => {
+            setIcon(choice);
+            setBrowsing(false);
+          }}
+          onClose={() => setBrowsing(false)}
+        />
+      )}
       {shape === "banner" && !name.trim() && <p className="muted">Give the badge a name to show it on the banner.</p>}
       {error && (
         <p className="field-error" role="alert">

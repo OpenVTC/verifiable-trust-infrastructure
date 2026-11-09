@@ -95,3 +95,101 @@
 .badge-builder .badge-builder-status {
   margin: 0 0 0.35rem;
 }
+.badge-builder-find {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+.badge-builder-find .badge-builder-search {
+  flex: 1 1 14rem;
+  margin-bottom: 0;
+}
+
+/* Browsing every icon: a dialog of its own, since the console's and the
+   portal's dialogs are each their own app's. */
+.badge-builder-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 0.45);
+}
+.badge-builder-browse {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(100%, 52rem);
+  max-height: min(90vh, 48rem);
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg, #fff);
+  color: var(--text, inherit);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.25);
+}
+.badge-builder-browse-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.badge-builder-browse-head h3 {
+  margin: 0;
+}
+.badge-builder-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.badge-builder-browse .badge-builder-search {
+  max-width: none;
+}
+.badge-builder-browse-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+  gap: 0.4rem;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 2px;
+}
+.badge-builder-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  min-height: 4.5rem;
+  padding: 0.5rem 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  text-align: center;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.badge-builder-pick:hover,
+.badge-builder-pick.is-chosen {
+  border-color: var(--text, currentColor);
+  color: var(--text, currentColor);
+}
+.badge-builder-pick:focus-visible,
+.badge-builder-close:focus-visible {
+  outline: 2px solid var(--focus-ring, currentColor);
+  outline-offset: 2px;
+}
