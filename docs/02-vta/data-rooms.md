@@ -1462,7 +1462,8 @@ what `evidence` names, and nothing `evidence` names is ever fetched. Expiry
 hides, it never deletes — the record stays until a curator retracts it or a
 prune removes it (§10.5). On an `open` room the same members ride
 `rooms/records/put/0.3`'s cleartext, unsigned, stored and served exactly as
-received; both hosts serve 0.3 and 0.4, and no earlier `put`. A client with its own
+received — `pnm rooms put` writes them there with the same flags, and `pnm rooms
+get` and `pnm rooms read` mark them unsigned; both hosts serve 0.3 and 0.4, and no earlier `put`. A client with its own
 presentation uses `VtcClient::put_cleartext_record_v3`.
 
 **A request that names no room names its member.** A download chunk
