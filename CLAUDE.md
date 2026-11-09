@@ -119,7 +119,7 @@ Layer 4 (the spine + consumers):
 | `cnm-cli` | Community Network Manager (multi-community operator) |
 | `vti-mcp-common` | What the MCP bridges share: the local per-operation guard (risk classifier, allow/deny globs, confirm levels) and the redacting call recorder, with a census holding every pinned request URI to a classified verb. `publish = false` (detail: `vti-mcp-common/CLAUDE.md`) |
 | `vta-mcp` | MCP server bridging a VTA's agent capabilities to MCP tools over stdio, through the guard in `vti-mcp-common` because a host approves a tool, not a call. `publish = false` (detail: `vta-mcp/CLAUDE.md`) |
-| `vtc-mcp` | MCP server bridging a VTC to MCP tools over stdio for a member's or an administrator's assistant: a native Trust Task client over TSP > DIDComm > HTTPS (`VtcClient::connect_resolved`), never a CLI subprocess; `vtc_call` by Type URI with a catalog read from the pinned specification bundles; the guard in `vti-mcp-common`. `publish = false` (detail: `vtc-mcp/CLAUDE.md`) |
+| `vtc-mcp` | MCP server bridging a VTC to MCP tools over stdio (or, with `--listen`, loopback HTTP shared by every host on the machine) for a member's or an administrator's assistant: a native Trust Task client over TSP > DIDComm > HTTPS (`VtcClient::connect_resolved`), never a CLI subprocess; `vtc_call` by Type URI with a catalog read from the pinned specification bundles; the guard in `vti-mcp-common`. `publish = false` (detail: `vtc-mcp/CLAUDE.md`) |
 | `vti-witness` | **Witness host service** (`publish = false`): up to 10 `did:webvh` witness identities from the `dtg-witness` template, one mediator session each (detail: `vti-witness/CLAUDE.md`) |
 | `didcomm-test` | Standalone DIDComm connectivity harness (test tool, `publish = false`) |
 

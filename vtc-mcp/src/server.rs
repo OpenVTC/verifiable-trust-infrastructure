@@ -39,8 +39,9 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
     Implementation, ListPromptsResult, ListResourcesResult, PaginatedRequestParams, Prompt,
-    PromptArgument, PromptMessage, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
+    PromptArgument, PromptMessage, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities,
+    ServerConfig,
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{
@@ -831,6 +832,17 @@ impl VtcMcp {
 
 #[tool_handler(router = (Self::tool_router() + Self::workflow_router() + Self::signin_router()))]
 impl ServerHandler for VtcMcp {
+    /// Up to `2025-11-25`, never `2026-07-28`. Confirmation (`--confirm`) and
+    /// `vtc_actions_decide` ask the human with a server-to-client elicitation
+    /// request, which `2026-07-28` forbids: a host that negotiates it is served
+    /// statelessly, with no client capabilities, so every confirmation would be
+    /// refused as "this host cannot ask you". Capping the version makes such a
+    /// host fall back to `initialize`, where elicitation works. Lift the cap
+    /// only once confirmation is answered with an `InputRequiredResult`.
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(ProtocolVersion::known_up_to(&ProtocolVersion::V_2025_11_25))
+    }
+
     fn get_info(&self) -> ServerConfig {
         let mut server_info = Implementation::from_build_env();
         server_info.name = "vtc-mcp".to_string();

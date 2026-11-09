@@ -18,19 +18,23 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The file the note is kept in: `$VTC_MCP_STATE_DIR`, else
+/// The bridge's local state directory: `$VTC_MCP_STATE_DIR`, else
 /// `$XDG_STATE_HOME/vtc-mcp`, else `~/.local/state/vtc-mcp`. `None` when none
 /// of them is set.
-pub fn default_path() -> Option<PathBuf> {
+pub fn state_dir() -> Option<PathBuf> {
     let env = |k: &str| {
         std::env::var_os(k)
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     };
-    let dir = env("VTC_MCP_STATE_DIR")
+    env("VTC_MCP_STATE_DIR")
         .or_else(|| env("XDG_STATE_HOME").map(|d| d.join("vtc-mcp")))
-        .or_else(|| env("HOME").map(|h| h.join(".local/state/vtc-mcp")))?;
-    Some(dir.join("agent-communities.json"))
+        .or_else(|| env("HOME").map(|h| h.join(".local/state/vtc-mcp")))
+}
+
+/// The file the note is kept in, in [`state_dir`].
+pub fn default_path() -> Option<PathBuf> {
+    Some(state_dir()?.join("agent-communities.json"))
 }
 
 /// The communities other than `vtc_did` that `agent_did` was used with, read
@@ -55,12 +59,16 @@ pub fn check_and_record(
     Ok(others)
 }
 
-fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Write `bytes` to `path` readable by its owner only, through a temporary
+/// file beside it so a reader never sees half a file.
+pub(crate) fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("json.tmp");
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]

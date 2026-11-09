@@ -9166,20 +9166,29 @@ version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ece64e19631fc38758181e637c15509a2c2709ee53bfde1e1d58f9dc991f919e"
 dependencies = [
+ "async-trait",
  "base64 0.23.1",
+ "bytes",
  "chrono",
  "futures",
+ "http 1.5.0",
+ "http-body",
+ "http-body-util",
  "indexmap 2.14.2",
  "libc",
  "pastey 0.2.3",
  "pin-project-lite",
+ "rand 0.10.2",
  "rmcp-macros",
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-stream",
  "tokio-util",
+ "tower-service",
  "tracing",
  "url",
  "uuid",
@@ -10289,6 +10298,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 dependencies = [
  "zeroize",
+]
+
+[[package]]
+name = "sse-stream"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c25ac7aff0abd1dbc474536e40416e1102c7dd9bfba0b9861c6d357f835dcfb4"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -12414,16 +12436,20 @@ name = "vtc-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "multibase",
+ "reqwest",
  "rmcp",
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tracing",
  "trust-tasks-rs",
  "vta-sdk",

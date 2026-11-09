@@ -312,6 +312,48 @@ scope, the community's policy and the action list decide. The local guard
 exists so that "always allow `vtc_call`" at the host does not make
 `members/admin-remove` ride the same approval as `members/list`.
 
+### D7. One identity, one process: `--listen` for several hosts
+
+The mediator holds one websocket per DID. A stdio bridge is one process per
+host, so two assistant sessions on one agent key are two sockets for one DID:
+each reconnect evicts the other, and in raw-TSP mode (flush-on-connect,
+delete-on-send) a reply flushed onto the other process's socket is gone, so
+the request it answers fails although the community acted on it. A key per
+session avoids that at the cost of an enrolment per key; a shared process
+avoids it at the cost of a listener.
+
+`--listen <loopback addr>` serves MCP's streamable HTTP transport from one
+process holding the one session (`src/listen.rs`). Each MCP session the hosts
+open is a clone of the bridge over the same client, guard, recorder and
+sign-in state; `TspSession` already demultiplexes concurrent requests on one
+socket, and elicitation goes back on the calling session's own peer. What the
+listener adds is the boundary stdio got from process spawn (layer 1 in the
+operator page's §2.1):
+
+- **Loopback only**, checked before binding, with no flag to widen it: the
+  endpoint speaks with the bridge's standing, an administrator's delegation
+  included.
+- **A bearer token**, compared in constant time, from `VTC_MCP_LISTEN_TOKEN` or
+  an owner-only file in the state directory, generated on first use and
+  refused when group- or world-readable. Loopback is reachable by every local
+  user; the file is not.
+- **No `Origin`, loopback `Host`** (rmcp's checks, both enforced), so a page in
+  a browser cannot reach the port by DNS rebinding.
+
+**The protocol version is capped at `2025-11-25`** (`VtcMcp::supported_protocol_versions`).
+`2026-07-28` forbids server-to-client requests and has no `initialize`; rmcp
+serves a host that speaks it statelessly, with no client capabilities, so
+every confirmation (`--confirm`, `vtc_actions_decide`) would be refused as
+"this host cannot ask you". Refused with the versions it does serve, a host
+falls back to `initialize` and keeps elicitation. Observed with Claude Code
+over `--listen`: it probes with `2026-07-28`, is refused, and initializes at
+`2025-11-25`. The cap lifts once confirmation is answered with an
+`InputRequiredResult`.
+
+stdio stays the default: one host, no listener, no token. `vta-mcp` has the same
+one-socket-per-DID constraint and could take the same listener; if it does, the
+listener belongs in `vti-mcp-common`.
+
 ## 3. Rollout
 
 | Phase | Deliverable | Where |
@@ -323,6 +365,7 @@ exists so that "always allow `vtc_call`" at the host does not make
 | 5 | **Done.** The six workflow tools (`group_setup`, `board_create`, `election_create`, `room_open`, `member_admit`, `admin_grant`): thin orchestrators, one guarded step at a time under each step's own URI, stopping at the first refused or parked step and reporting how far they got; `vtc_actions_list` / `show` / `decide` / `cancel`, with `decide` always confirmed by the human against the verified summary and match code | `vtc-mcp` |
 | 6 | **Done.** Operator page `docs/03-vtc/vtc-mcp.md` with a worked example; the Claude Code skill `vtc-mcp/skills/vtc-community/SKILL.md`; `vtc-mcp --mint-did-key` for the dedicated-agent rung | docs, `vtc-mcp` |
 | 7 | **Done.** Member badges: the `badges` guide resource, the `create-badge` and `my-badges` prompts, and `badge_create` (upload the picture → create naming the uploaded digest → offer → claim code → read back), each step guarded under its own URI | `vtc-mcp` |
+| 8 | **Done.** `--listen`: one bridge serving every MCP host on the machine over loopback streamable HTTP, behind a bearer token, with no `Origin` and a loopback `Host` (D7) | `vtc-mcp` |
 
 Phase 3 is usable on its own: a member or an administrator can drive every
 pinned task from an assistant with nothing but the catalog. Phases 4 and 5
