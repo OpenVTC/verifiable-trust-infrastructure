@@ -251,7 +251,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@b2baf303c463c223526d52a8a91b0777f052cf3f # v0.5.146
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
         with:
           command: release
         env:
@@ -271,7 +271,7 @@ jobs:
         id: release2
         if: inputs.package == '' && steps.release1.outcome == 'failure'
         continue-on-error: true
-        uses: release-plz/action@b2baf303c463c223526d52a8a91b0777f052cf3f # v0.5.146
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
         with:
           command: release
         env:
@@ -290,7 +290,7 @@ jobs:
       - name: Run release-plz (attempt 3)
         id: release3
         if: inputs.package == '' && steps.release2.outcome == 'failure'
-        uses: release-plz/action@b2baf303c463c223526d52a8a91b0777f052cf3f # v0.5.146
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
         with:
           command: release
         env:
@@ -462,7 +462,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@b2baf303c463c223526d52a8a91b0777f052cf3f # v0.5.146
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
         with:
           command: release-pr
         env:
