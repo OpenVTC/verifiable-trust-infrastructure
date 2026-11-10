@@ -43,8 +43,8 @@
     "lucide-static": "0.469.0",
     "openapi-typescript": "^7.13.0",
     "typescript": "^5.7.2",
-    "vite": "^8.0.0",
-    "vitest": "^4.1.11"
+    "vite": "^8.3.7",
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "js-yaml": "^4.3.2"
