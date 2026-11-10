@@ -3969,17 +3969,18 @@ dependencies = [
 
 [[package]]
 name = "dtg-credentials"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b1630b5524260c34fd1aff91ef886d5518fbb98f712efc23a909044bf5b740e"
+checksum = "4c372cd0218d087a5d3fb892371b59ce3863a2e2423e0dc14debcfad81047da8"
 dependencies = [
  "affinidi-data-integrity",
+ "affinidi-did-common",
  "affinidi-secrets-resolver",
  "chrono",
  "multibase",
  "serde",
  "serde_json",
- "serde_json_canonicalizer 0.3.2",
+ "serde_json_canonicalizer 0.4.1",
  "sha2 0.11.1",
  "thiserror 2.0.21",
  "tracing",
@@ -9187,6 +9188,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
+ "dtg-credentials",
  "ed25519-dalek 3.0.0",
  "futures-util",
  "getrandom 0.4.3",

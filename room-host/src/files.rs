@@ -26,8 +26,8 @@ use vti_specs::rooms::records::get::v0_2 as get_v2_spec;
 use super::{Answer, HostState, from_app_error, now, reject, respond};
 
 pub(crate) use vti_rooms::blob_tasks::{
-    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, GET_V3_TYPE, PUT_V3_TYPE, PUT_V4_TYPE,
-    PUT_V5_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE,
+    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, GET_V3_TYPE, GET_V4_TYPE, PUT_V3_TYPE,
+    PUT_V4_TYPE, PUT_V5_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE,
     UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
 };
 
@@ -59,7 +59,7 @@ fn coded(
 }
 
 /// Render a shared refusal as this host's reply.
-fn refused(doc: &TrustTask<Value>, refusal: Refusal) -> Answer {
+pub(crate) fn refused(doc: &TrustTask<Value>, refusal: Refusal) -> Answer {
     match refusal {
         Refusal::Declared {
             code,
@@ -447,7 +447,30 @@ pub(crate) async fn get_v3(state: &HostState, doc: &TrustTask<Value>, payload: V
     if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::get::v0_3::Payload>(&payload) {
         return refused(doc, r);
     }
-    super::get_versioned(state, doc, blob_tasks::as_v0_1(payload), true).await
+    super::get_versioned(state, doc, blob_tasks::as_v0_1(payload), true, None, false).await
+}
+
+/// `rooms/records/get/0.4`: 0.3, and the `purpose` the reader will use the record for,
+/// refused with `purposeNotGranted` where the presented chain does not grant it
+/// (VTI-ACL-110).
+pub(crate) async fn get_v4(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    mut payload: Value,
+) -> Answer {
+    let purpose = match blob_tasks::get_v4_purpose(&mut payload) {
+        Ok(p) => p,
+        Err(r) => return refused(doc, r),
+    };
+    super::get_versioned(
+        state,
+        doc,
+        blob_tasks::as_v0_1(payload),
+        true,
+        purpose,
+        true,
+    )
+    .await
 }
 
 /// `rooms/records/list/0.6`: 0.5, with each row's `kind` on an `open` room and the host's
@@ -493,7 +516,7 @@ pub(crate) async fn get_v2(state: &HostState, doc: &TrustTask<Value>, payload: V
     if let Err(r) = blob_tasks::parse::<get_v2_spec::Payload>(&payload) {
         return refused(doc, r);
     }
-    super::get_versioned(state, doc, blob_tasks::as_v0_1(payload), false).await
+    super::get_versioned(state, doc, blob_tasks::as_v0_1(payload), false, None, false).await
 }
 
 /// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's

@@ -164,6 +164,8 @@ didcomm = [
 ]
 
 [dev-dependencies]
+# Credentials stating purposes, for the read-purpose tests (VTI-ACL-110).
+dtg-credentials = { workspace = true }
 # A mediator in-process, so the carrier round trip is tested against a real one
 # rather than a simulator. Everything `tests/carrier.rs` covers is packing,
 # routing, threading and acking — a simulator would be a second opinion about

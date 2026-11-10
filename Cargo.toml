@@ -325,7 +325,7 @@ affinidi-messaging-sdk = { version = "0.45", default-features = false }
 futures-util = "0.3"
 
 # Decentralized Trust Graph Credentials
-dtg-credentials = "0.13"
+dtg-credentials = "0.14"
 
 # JSON Schema validation (issue-time credentialSchema checks).
 #

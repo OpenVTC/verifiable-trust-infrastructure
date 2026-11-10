@@ -30,6 +30,7 @@ use vti_specs::rooms::blobs::upload::{
 };
 use vti_specs::rooms::records::get::v0_2 as get_v2;
 use vti_specs::rooms::records::get::v0_3 as get_v3;
+use vti_specs::rooms::records::get::v0_4 as get_v4;
 use vti_specs::rooms::records::list::v0_6 as list_v6;
 use vti_specs::rooms::usage::v0_1 as rooms_usage;
 use vti_specs::rooms::{
@@ -490,7 +491,7 @@ pub(crate) async fn handle_put_record_v5(doc: TrustTask<Value>, ctx: RoomCtx) ->
 
 /// `rooms/records/get/0.3`: 0.2, and the host's `createdAt`, `createdBy` and
 /// `bodyStoredAt` for the record.
-#[allow(deprecated)] // get/0.3 is still served beside get/0.4, which waits on credential purposes
+#[allow(deprecated)] // get/0.3 is served beside get/0.4, to readers that ask for it
 pub(crate) async fn handle_get_record_v3(
     doc: TrustTask<get_v3::Payload>,
     ctx: RoomCtx,
@@ -499,7 +500,29 @@ pub(crate) async fn handle_get_record_v3(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::get_record(&doc, &ctx, req, true).await
+    super::handlers::get_record(&doc, &ctx, req, true, None, false).await
+}
+
+/// `rooms/records/get/0.4`: 0.3, and the `purpose` the reader will use the record for,
+/// refused with `purposeNotGranted` where the presented chain does not grant it
+/// (VTI-ACL-110).
+pub(crate) async fn handle_get_record_v4(
+    doc: TrustTask<get_v4::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let mut payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let purpose = match blob_tasks::get_v4_purpose(&mut payload) {
+        Ok(p) => p,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: GetRecordBody = match as_v0_1(&doc, payload) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::get_record(&doc, &ctx, req, true, purpose, true).await
 }
 
 /// `rooms/records/list/0.6`: 0.5, with each row's `kind` on an `open` room and the host's
@@ -525,7 +548,7 @@ pub(crate) async fn handle_get_record_v2(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::get_record(&doc, &ctx, req, false).await
+    super::handlers::get_record(&doc, &ctx, req, false, None, false).await
 }
 
 /// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's

@@ -59,6 +59,17 @@ async fn start_host_with(contend: bool) -> Host {
 /// `rooms/records/get/0.3` and `rooms/records/list/0.6` `unsupportedType`, as a host from
 /// before them does.
 async fn start_host_opts(contend: bool, predates_v3: bool) -> Host {
+    // A host predating get/0.3 predates get/0.4 as well.
+    const PREDATES_V3: &[&str] = &[
+        vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE,
+    ];
+    start_host_refusing(contend, if predates_v3 { PREDATES_V3 } else { &[] }).await
+}
+
+/// [`start_host_opts`], the host answering `unsupportedType` to every task in `refused`.
+async fn start_host_refusing(contend: bool, refused: &'static [&'static str]) -> Host {
     let party = Party::new();
     let dir = tempfile::tempdir().unwrap();
     let state = room_host::open_state(dir.path()).expect("a host");
@@ -82,10 +93,7 @@ async fn start_host_opts(contend: bool, predates_v3: bool) -> Host {
                 let received: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
                 let task = received["type"].as_str().unwrap_or_default().to_string();
                 log.lock().unwrap().push(task.clone());
-                if predates_v3
-                    && (task == vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE
-                        || task == vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE)
-                {
+                if refused.contains(&task.as_str()) {
                     let doc: TrustTask<Value> = serde_json::from_value(received).unwrap();
                     let refused = doc.reject_with(
                         format!("urn:uuid:{}", uuid::Uuid::new_v4()),
@@ -1851,7 +1859,7 @@ async fn audit_rows(state: &AppState) -> Vec<String> {
 /// `rooms/keys/read/0.3` (VTI-ACL-102 – 106): a read is held to the caller's purposes
 /// before the host is asked for anything, refused distinctly and without content, and
 /// audited with its purpose either way. A granted purpose is passed to the host as
-/// get/0.4's, and a host that does not serve get/0.4 is asked get/0.3.
+/// get/0.4's, which the host serves.
 #[tokio::test]
 async fn read_0_3_is_held_to_the_callers_purposes() {
     let s = sealed_room().await;
@@ -1908,8 +1916,8 @@ async fn read_0_3_is_held_to_the_callers_purposes() {
     assert_eq!(s.host.received(v4), 1, "the purpose is offered to the host");
     assert_eq!(
         s.host.received(GET_V3),
-        v3_before + 1,
-        "a host without get/0.4 is asked get/0.3"
+        v3_before,
+        "a host serving get/0.4 is not asked get/0.3"
     );
 
     let rows = audit_rows(&s.owner.state).await;
@@ -1922,5 +1930,44 @@ async fn read_0_3_is_held_to_the_callers_purposes() {
         rows.iter().any(|r| r.contains("rooms.keys.read")
             && r.contains("refused=purposeNotGranted purpose=analytics")),
         "{rows:#?}"
+    );
+}
+
+/// `rooms/keys/read/0.3` against a host that does not serve get/0.4: the read, its
+/// purpose already decided here, is asked as get/0.3.
+#[tokio::test]
+async fn read_0_3_falls_back_to_get_0_3_on_a_host_without_get_0_4() {
+    let s = sealed_room_on(
+        start_host_refusing(false, &[vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE]).await,
+    )
+    .await;
+    owner_writes(&s, "rec-a", "first").await;
+    narrow(&s.owner.state, &["personalisation"]).await;
+    let v3_before = s.host.received(GET_V3);
+    let served = body(
+        super::super::room_read::handle_read_v0_3(
+            &s.owner.state,
+            &admin(),
+            request(
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_3,
+                json!({ "roomId": s.room.did, "host": s.host.did, "key": "rec-a",
+                        "purpose": "personalisation" }),
+            ),
+        )
+        .await,
+    );
+    assert_eq!(
+        decoded(&served["payload"]["plaintext"]),
+        "first",
+        "{served}"
+    );
+    assert_eq!(
+        s.host.received(vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE),
+        1
+    );
+    assert_eq!(
+        s.host.received(GET_V3),
+        v3_before + 1,
+        "asked get/0.3 after"
     );
 }

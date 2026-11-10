@@ -1004,6 +1004,10 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
+            ROOMS_RECORDS_GET_V4_TYPE,
+            <rooms::records::get::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
             ROOMS_BLOBS_CHUNK_TYPE,
             <rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
