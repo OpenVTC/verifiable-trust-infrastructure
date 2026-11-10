@@ -112,6 +112,7 @@ async fn acl_lifecycle_round_trips_through_the_real_client() {
                 approve_scope: None,
                 allowed_keys: None,
                 capabilities: None,
+                purposes: None,
             },
         )
         .await
@@ -735,6 +736,7 @@ async fn acl_change_role_compare_and_swaps() {
                 approve_scope: None,
                 allowed_keys: None,
                 capabilities: None,
+                purposes: None,
             },
         )
         .await

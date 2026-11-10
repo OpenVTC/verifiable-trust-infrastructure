@@ -116,7 +116,7 @@ mod tests {
         let issued = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 0);
         let mut doc = trust_tasks_rs::TrustTask::new(
             "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
-            "https://trusttasks.org/spec/acl/list/0.3".parse().unwrap(),
+            "https://trusttasks.org/spec/acl/list/0.4".parse().unwrap(),
             serde_json::json!({}),
         );
         doc.issued_at = Some(issued);
@@ -141,7 +141,7 @@ mod tests {
         let doc = |issued| {
             let mut d = trust_tasks_rs::TrustTask::new(
                 "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
-                "https://trusttasks.org/spec/acl/list/0.3".parse().unwrap(),
+                "https://trusttasks.org/spec/acl/list/0.4".parse().unwrap(),
                 serde_json::json!({}),
             );
             d.issued_at = Some(issued);

@@ -175,27 +175,51 @@ pub fn declarative_row(
 pub const RETIRED_TASK_TYPES: &[(&str, &str)] = &[
     (
         "https://trusttasks.org/spec/acl/change-role/0.1",
+        "https://trusttasks.org/spec/acl/change-role/0.3",
+    ),
+    (
         "https://trusttasks.org/spec/acl/change-role/0.2",
+        "https://trusttasks.org/spec/acl/change-role/0.3",
     ),
     (
         "https://trusttasks.org/spec/acl/grant/0.1",
+        "https://trusttasks.org/spec/acl/grant/0.3",
+    ),
+    (
         "https://trusttasks.org/spec/acl/grant/0.2",
+        "https://trusttasks.org/spec/acl/grant/0.3",
     ),
     (
         "https://trusttasks.org/spec/acl/list/0.1",
+        "https://trusttasks.org/spec/acl/list/0.4",
+    ),
+    (
         "https://trusttasks.org/spec/acl/list/0.3",
+        "https://trusttasks.org/spec/acl/list/0.4",
     ),
     (
         "https://trusttasks.org/spec/acl/revoke/0.1",
+        "https://trusttasks.org/spec/acl/revoke/0.3",
+    ),
+    (
         "https://trusttasks.org/spec/acl/revoke/0.2",
+        "https://trusttasks.org/spec/acl/revoke/0.3",
     ),
     (
         "https://trusttasks.org/spec/acl/show/0.1",
+        "https://trusttasks.org/spec/acl/show/0.3",
+    ),
+    (
         "https://trusttasks.org/spec/acl/show/0.2",
+        "https://trusttasks.org/spec/acl/show/0.3",
     ),
     (
         "https://trusttasks.org/spec/acl/update/0.1",
+        "https://trusttasks.org/spec/acl/update/0.3",
+    ),
+    (
         "https://trusttasks.org/spec/acl/update/0.2",
+        "https://trusttasks.org/spec/acl/update/0.3",
     ),
     (
         "https://trusttasks.org/spec/audit/list/0.1",
@@ -334,7 +358,7 @@ mod tests {
     };
     use vta_sdk::approvals::Requires;
 
-    const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+    const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.3";
     const WEBVH_UPDATE: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
 
     fn model(rules: Vec<ApprovalRule>, sets: &[(&str, &[&str])]) -> DeclarativeModel {
@@ -415,7 +439,7 @@ mod tests {
         assert!(
             engine::evaluate_decision(
                 &compiled,
-                &input("https://trusttasks.org/spec/acl/list/0.3", "ctx")
+                &input("https://trusttasks.org/spec/acl/list/0.4", "ctx")
             )
             .unwrap()
             .is_none()

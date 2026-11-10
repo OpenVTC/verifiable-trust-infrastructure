@@ -3,13 +3,13 @@
 registry = "https://trusttasks.org"
 
 [tasks]
-"acl/change-role" = "0.2"
-"acl/grant" = "0.2"
-"acl/list" = "0.3"
-"acl/revoke" = "0.2"
-"acl/show" = "0.2"
+"acl/change-role" = ["0.2", "0.3"]
+"acl/grant" = ["0.2", "0.3"]
+"acl/list" = ["0.3", "0.4"]
+"acl/revoke" = ["0.2", "0.3"]
+"acl/show" = ["0.2", "0.3"]
 "acl/swap-key" = "0.1"
-"acl/update" = "0.2"
+"acl/update" = ["0.2", "0.3"]
 "audit/list" = "0.2"
 "audit/verify" = "0.1"
 "auth/authenticate" = "0.3"

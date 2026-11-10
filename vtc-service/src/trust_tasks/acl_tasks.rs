@@ -19,6 +19,13 @@
 //! authority-conferring capability also parks for its other holders' consent
 //! (**VTI-APV-018**).
 
+// The community serves `acl/*` at 0.2 (`acl/list` at 0.3), now superseded by
+// the 0.3 family's `purposes`. Purposes bind a node that serves a purpose-bound
+// operation (VTI-ACL-102: reads of a principal's agent memory, a VTA opening a
+// room record for its principal); a community serves none, so it stays on the
+// versions it speaks until it moves for another reason.
+#![allow(deprecated)]
+
 use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::extractor::AuthClaims;
@@ -347,8 +354,8 @@ pub(super) async fn handle_update(
     };
     let plan = match ops::plan_update_v0_2(state, &actor.did, &doc.payload).await {
         Ok(p) => p,
-        Err(ops::UpdateV02Error::Parse(e)) => return refuse_parse(&doc, e, UPDATE_V0_2),
-        Err(ops::UpdateV02Error::NarrowingNotPermitted) => {
+        Err(ops::UpdateV03Error::Parse(e)) => return refuse_parse(&doc, e, UPDATE_V0_2),
+        Err(ops::UpdateV03Error::NarrowingNotPermitted) => {
             return task_error_to_reject(
                 &doc,
                 &TaskError::declared(
@@ -361,7 +368,7 @@ pub(super) async fn handle_update(
                 ),
             );
         }
-        Err(ops::UpdateV02Error::Write(e)) => {
+        Err(ops::UpdateV03Error::Write(e)) => {
             let role = doc.payload["subject"]
                 .as_str()
                 .unwrap_or_default()
@@ -410,7 +417,7 @@ pub(super) async fn handle_change_role(
     .await
     {
         Ok(p) => p,
-        Err(ops::ChangeRoleV02Error::StateMismatch(current)) => {
+        Err(ops::ChangeRoleV03Error::StateMismatch(current)) => {
             return reject_with_code(
                 &doc,
                 extended_code(error_codes::STATE_MISMATCH.code),
@@ -422,7 +429,7 @@ pub(super) async fn handle_change_role(
                 Some(json!({ "currentRole": current })),
             );
         }
-        Err(ops::ChangeRoleV02Error::Write(e)) => {
+        Err(ops::ChangeRoleV03Error::Write(e)) => {
             return refuse_write(&doc, e, CHANGE_ROLE_V0_2, checked.to_role.as_str());
         }
     };

@@ -31,7 +31,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // envelope `type` and the `payload` — which is strictly more precise, because
 // the payload is what the VTA actually acts on.
 
-const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
+const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.4";
 const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
 const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.2";
 /// `get_key_secret` dispatches this: the operation moved to the seeds slice
@@ -274,8 +274,8 @@ async fn supported_trust_tasks_decodes_without_a_framework_version() {
         // supplied here is the payload, not the whole document.
         json!({
             "supportedTypes": [
-                "https://trusttasks.org/spec/acl/grant/0.2",
-                "https://trusttasks.org/spec/acl/revoke/0.2"
+                "https://trusttasks.org/spec/acl/grant/0.3",
+                "https://trusttasks.org/spec/acl/revoke/0.3"
             ]
         }),
     )
@@ -773,7 +773,7 @@ async fn list_acl_with_context_query() {
     assert!(resp.entries.is_empty());
 }
 
-/// `acl/list/0.3` names the direction whenever it names a context (and never
+/// `acl/list/0.4` names the direction whenever it names a context (and never
 /// otherwise), in its lowerCamelCase spelling.
 #[tokio::test]
 async fn list_acl_states_the_direction_with_a_context() {
@@ -970,7 +970,7 @@ async fn update_acl_patches() {
         .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
-            "type": "https://trusttasks.org/spec/acl/update/0.2",
+            "type": "https://trusttasks.org/spec/acl/update/0.3",
             "payload": {"subject": "did:key:zAdmin", "label": "ops"}
         })))
         .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
@@ -986,6 +986,7 @@ async fn update_acl_patches() {
         approve_scope: None,
         allowed_keys: None,
         capabilities: None,
+        purposes: None,
     };
     let resp = c.update_acl("did:key:zAdmin", req).await.unwrap();
     assert_eq!(resp.did, "did:key:zAdmin");
@@ -1001,7 +1002,7 @@ async fn update_acl_moves_contexts_by_widening_then_narrowing() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(body_partial_json(json!({
-            "type": "https://trusttasks.org/spec/acl/show/0.2"
+            "type": "https://trusttasks.org/spec/acl/show/0.3"
         })))
         .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
         .expect(1)
@@ -1010,7 +1011,7 @@ async fn update_acl_moves_contexts_by_widening_then_narrowing() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(body_partial_json(json!({
-            "type": "https://trusttasks.org/spec/acl/update/0.2",
+            "type": "https://trusttasks.org/spec/acl/update/0.3",
             "payload": {"act": {"scope": "contexts", "contexts": ["ctx-a", "ctx-b"]}}
         })))
         .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
@@ -1020,7 +1021,7 @@ async fn update_acl_moves_contexts_by_widening_then_narrowing() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(body_partial_json(json!({
-            "type": "https://trusttasks.org/spec/acl/revoke/0.2",
+            "type": "https://trusttasks.org/spec/acl/revoke/0.3",
             "payload": {"revocation": {"kind": "act", "act": {"scope": "contexts", "contexts": ["ctx-b"]}}}
         })))
         .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
@@ -1036,6 +1037,7 @@ async fn update_acl_moves_contexts_by_widening_then_narrowing() {
         approve_scope: None,
         allowed_keys: None,
         capabilities: None,
+        purposes: None,
     };
     c.update_acl("did:key:zAdmin", req).await.unwrap();
 }

@@ -352,7 +352,7 @@ fn app_state_tombstone() -> AppStateRecord {
 /// witness would stop testing the shape the VTA actually stores.
 fn declarative_module() -> String {
     vta_sdk::approvals::synthesize_rego(&[vta_sdk::approvals::ApprovalRule::reauth(
-        uris::TASK_ACL_GRANT_0_2,
+        uris::TASK_ACL_GRANT_0_3,
     )])
 }
 
@@ -360,7 +360,7 @@ fn declarative_module() -> String {
 fn declarative_ext() -> Value {
     json!({
         vta_sdk::approvals::EXT_KEY_RULES: [
-            { "taskType": uris::TASK_ACL_GRANT_0_2, "requires": "reauth" }
+            { "taskType": uris::TASK_ACL_GRANT_0_3, "requires": "reauth" }
         ],
         vta_sdk::approvals::EXT_KEY_APPROVER_SETS: {},
     })
@@ -874,8 +874,8 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "patterns": ["acl/*"] }),
                 to_v(vti_common::trust_task::discovery::respond_v0_4(
                     [
-                        "https://trusttasks.org/spec/acl/grant/0.2",
-                        "https://trusttasks.org/spec/acl/revoke/0.2",
+                        "https://trusttasks.org/spec/acl/grant/0.3",
+                        "https://trusttasks.org/spec/acl/revoke/0.3",
                     ],
                     &specs::trust_task_discovery::v0_4::Payload::default(),
                 ))
@@ -889,8 +889,8 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "patterns": ["acl/*"] }),
                 to_v(vti_common::trust_task::discovery::respond_v0_3(
                     [
-                        "https://trusttasks.org/spec/acl/grant/0.2",
-                        "https://trusttasks.org/spec/acl/revoke/0.2",
+                        "https://trusttasks.org/spec/acl/grant/0.3",
+                        "https://trusttasks.org/spec/acl/revoke/0.3",
                     ],
                     &specs::trust_task_discovery::v0_3::Payload::default(),
                 ))
@@ -1069,7 +1069,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── acl ─────────────────────────────────────────────────
         (
-            uris::TASK_ACL_LIST_0_3,
+            uris::TASK_ACL_LIST_0_4,
             checked!(
                 specs::acl::list::v0_3::Payload,
                 specs::acl::list::v0_3::Response,
@@ -1089,7 +1089,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_GRANT_0_2,
+            uris::TASK_ACL_GRANT_0_3,
             checked!(
                 specs::acl::grant::v0_2::Payload,
                 specs::acl::grant::v0_2::Response,
@@ -1098,7 +1098,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_SHOW_0_2,
+            uris::TASK_ACL_SHOW_0_3,
             checked!(
                 specs::acl::show::v0_2::Payload,
                 specs::acl::show::v0_2::Response,
@@ -1107,7 +1107,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_UPDATE_0_2,
+            uris::TASK_ACL_UPDATE_0_3,
             checked!(
                 specs::acl::update::v0_2::Payload,
                 specs::acl::update::v0_2::Response,
@@ -1141,7 +1141,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_CHANGE_ROLE_0_2,
+            uris::TASK_ACL_CHANGE_ROLE_0_3,
             checked!(
                 specs::acl::change_role::v0_2::Payload,
                 specs::acl::change_role::v0_2::Response,
@@ -1155,7 +1155,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_REVOKE_0_2,
+            uris::TASK_ACL_REVOKE_0_3,
             checked!(
                 specs::acl::revoke::v0_2::Payload,
                 specs::acl::revoke::v0_2::Response,
@@ -3361,6 +3361,98 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::vta::memory::get::v0_1::Payload,
                 specs::vta::memory::get::v0_1::Response,
                 json!({ "contextId": "ctx-a", "keys": ["preference/format", "contact/billing"] }),
+                json!({
+                    "items": [{
+                        "contextId": "ctx-a",
+                        "key": "preference/format",
+                        "version": 55,
+                        "value": "PDF",
+                        "valueBytes": 3,
+                        "deleted": false,
+                        "updatedAt": "2026-11-09T13:30:00+00:00"
+                    }],
+                    "missing": ["contact/billing"]
+                })
+            ),
+        ),
+        // Purpose of use (#2120): the same, with the `purpose` each request
+        // is made for.
+        (
+            uris::TASK_VTA_MEMORY_PUT_0_3,
+            checked!(
+                specs::vta::memory::put::v0_3::Payload,
+                specs::vta::memory::put::v0_3::Response,
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "value": "billing@acme.example",
+                    "expectedVersion": 47,
+                    "purpose": "personalisation"
+                }),
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "version": 53,
+                    "wasCreated": false,
+                    "updatedAt": "2026-11-09T12:05:01+00:00",
+                    "valueBytes": 20
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_DELETE_0_3,
+            checked!(
+                specs::vta::memory::delete::v0_3::Payload,
+                specs::vta::memory::delete::v0_3::Response,
+                json!({ "contextId": "ctx-a", "key": "contact/billing", "expectedVersion": 53, "purpose": "taskExecution" }),
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "existed": true,
+                    "version": 54,
+                    "deletedAt": "2026-11-09T13:00:01+00:00"
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_LIST_0_3,
+            checked!(
+                specs::vta::memory::list::v0_3::Payload,
+                specs::vta::memory::list::v0_3::Response,
+                json!({ "contextId": "ctx-a", "sinceVersion": 52, "limit": 2, "purpose": "https://w3id.org/dpv#ServicePersonalisation" }),
+                json!({
+                    "items": [
+                        {
+                            "contextId": "ctx-a",
+                            "key": "contact/billing",
+                            "version": 54,
+                            "deleted": true,
+                            "updatedAt": "2026-11-09T13:00:01+00:00",
+                            "deletedAt": "2026-11-09T13:00:01+00:00"
+                        },
+                        {
+                            "contextId": "ctx-a",
+                            "key": "preference/format",
+                            "version": 55,
+                            "value": "PDF",
+                            "valueBytes": 3,
+                            "deleted": false,
+                            "createdAt": "2026-11-09T13:30:00+00:00",
+                            "updatedAt": "2026-11-09T13:30:00+00:00"
+                        }
+                    ],
+                    "nextCursor": "opaque",
+                    "highWatermark": 57,
+                    "tombstoneRetentionSeconds": 2592000
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_GET_0_2,
+            checked!(
+                specs::vta::memory::get::v0_2::Payload,
+                specs::vta::memory::get::v0_2::Response,
+                json!({ "contextId": "ctx-a", "keys": ["preference/format", "contact/billing"], "purpose": "personalisation" }),
                 json!({
                     "items": [{
                         "contextId": "ctx-a",

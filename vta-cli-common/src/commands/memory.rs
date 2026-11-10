@@ -27,7 +27,7 @@
 use serde_json::json;
 use vta_sdk::prelude::*;
 use vta_sdk::protocols::memory::{MemoryItem, MemoryListResponse};
-use vta_sdk::specs::vta::memory::{get::v0_1 as get_spec, list::v0_2 as list_spec};
+use vta_sdk::specs::vta::memory::{get::v0_2 as get_spec, list::v0_3 as list_spec};
 
 /// The page size `recall` and `wipe` ask for while reading a whole context.
 const PAGE: u64 = 500;
@@ -67,16 +67,22 @@ pub async fn cmd_memory_plant(
     Ok(())
 }
 
-/// `recall` → `vta/memory/get/0.1` for one key, or every page of
-/// `vta/memory/list/0.2` for the whole context.
+/// `recall` → `vta/memory/get/0.2` for one key, or every page of
+/// `vta/memory/list/0.3` for the whole context, for `purpose` — what the
+/// caller will use what it reads for (VTI-ACL-103). `None` names none, which
+/// the VTA serves under an entry stating `any` and records as unstated.
 pub async fn cmd_memory_recall(
     client: &VtaClient,
     context: &str,
     key: Option<&str>,
+    purpose: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let items = match key {
-        Some(k) => get_item(client, context, k).await?.into_iter().collect(),
-        None => list_items(client, context).await?,
+        Some(k) => get_item(client, context, k, purpose)
+            .await?
+            .into_iter()
+            .collect(),
+        None => list_items(client, context, purpose).await?,
     };
 
     if is_json_output() {
@@ -152,7 +158,7 @@ pub async fn cmd_memory_wipe(
     context: &str,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let items = list_items(client, context).await?;
+    let items = list_items(client, context, None).await?;
 
     if items.is_empty() {
         if is_json_output() {
@@ -224,6 +230,7 @@ pub async fn cmd_memory_wipe(
 async fn list_items(
     client: &VtaClient,
     context: &str,
+    purpose: Option<&str>,
 ) -> Result<Vec<Item>, Box<dyn std::error::Error>> {
     let mut items = Vec::new();
     let mut cursor: Option<String> = None;
@@ -233,7 +240,8 @@ async fn list_items(
         if let Some(c) = &cursor {
             query.insert("cursor".into(), json!(c));
         }
-        let (page, next) = decode_page(client.memory_list_page(context, query).await?)?;
+        let (page, next) =
+            decode_page(client.memory_list_page_for(context, query, purpose).await?)?;
         items.extend(page);
         match next {
             Some(n) => cursor = Some(n),
@@ -248,13 +256,14 @@ async fn get_item(
     client: &VtaClient,
     context: &str,
     key: &str,
+    purpose: Option<&str>,
 ) -> Result<Option<Item>, Box<dyn std::error::Error>> {
     let resp: get_spec::Response =
-        serde_json::from_value(client.memory_get(context, &[key]).await?)?;
+        serde_json::from_value(client.memory_get_for(context, &[key], purpose).await?)?;
     Ok(resp.items.into_iter().find_map(live_item))
 }
 
-/// Typed decode of one `vta/memory/list/0.2` page: its live items and the
+/// Typed decode of one `vta/memory/list/0.3` page: its live items and the
 /// cursor for the next. Factored out so the "malformed → error" contract is
 /// unit-testable without a live VTA.
 fn decode_page(resp: serde_json::Value) -> Result<(Vec<Item>, Option<String>), serde_json::Error> {

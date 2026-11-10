@@ -1416,7 +1416,7 @@ mod tests {
         }
         // Not sign-in documents: the ordinary path applies.
         for t in [
-            spec("acl/grant/0.2"),
+            spec("acl/grant/0.3"),
             "https://registry.example/spec/auth/oob/grant/0.3".to_string(),
             "not a uri".to_string(),
         ] {

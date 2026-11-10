@@ -60,7 +60,7 @@
 // trusttasks-tf registry. VTA was the first implementer. The long-pending
 // `_1_0` → actual-version rename pass landed with #854: every constant's
 // suffix now matches its URI's version, and the constant's verb stem matches
-// the canonical slug (`TASK_ACL_GRANT_0_2` for `acl/grant/0.2`, not the old
+// the canonical slug (`TASK_ACL_GRANT_0_3` for `acl/grant/0.3`, not the old
 // `TASK_ACL_CREATE_1_0`). A `tests::constant_suffix_matches_uri_version`
 // guard keeps it that way.
 
@@ -168,47 +168,47 @@ pub const TASK_DEVICE_SET_WAKE_0_2: &str = "https://trusttasks.org/spec/device/s
 
 // ─── ACL slice (canonical spec/acl/*) ────────────────────────────────────
 
-/// `acl/list/0.3` — list ACL entries (AclEntry 0.2), filtered by role,
+/// `acl/list/0.4` — list ACL entries (AclEntry 0.3), filtered by role,
 /// context (with an explicit `direction`), capability or subject prefix, and
 /// paged by `limit` / `nextCursor`. Payload:
 /// [`crate::protocols::acl_management::v0_2::ListBody`].
-pub const TASK_ACL_LIST_0_3: &str = "https://trusttasks.org/spec/acl/list/0.3";
+pub const TASK_ACL_LIST_0_4: &str = "https://trusttasks.org/spec/acl/list/0.4";
 
-/// `acl/grant/0.2` — add an ACL entry, every authority axis stated
+/// `acl/grant/0.3` — add an ACL entry, every authority axis stated
 /// explicitly. Payload: [`crate::protocols::acl_management::v0_2::GrantBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_GRANT_0_2: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+pub const TASK_ACL_GRANT_0_3: &str = "https://trusttasks.org/spec/acl/grant/0.3";
 
-/// `acl/show/0.2` — retrieve a single entry, or `entry: null`. Payload:
+/// `acl/show/0.3` — retrieve a single entry, or `entry: null`. Payload:
 /// [`crate::protocols::acl_management::v0_2::ShowBody`].
-pub const TASK_ACL_SHOW_0_2: &str = "https://trusttasks.org/spec/acl/show/0.2";
+pub const TASK_ACL_SHOW_0_3: &str = "https://trusttasks.org/spec/acl/show/0.3";
 
-/// `acl/update/0.2` — replace axes of an existing entry. Payload:
+/// `acl/update/0.3` — replace axes of an existing entry. Payload:
 /// [`crate::protocols::acl_management::v0_2::UpdateBody`]. Auth: Admin only.
 ///
-/// **Does not change roles** ([`TASK_ACL_CHANGE_ROLE_0_2`]) and **does not
-/// narrow `act`** ([`TASK_ACL_REVOKE_0_2`]); it does narrow capabilities,
+/// **Does not change roles** ([`TASK_ACL_CHANGE_ROLE_0_3`]) and **does not
+/// narrow `act`** ([`TASK_ACL_REVOKE_0_3`]); it does narrow capabilities,
 /// keys and approve authority, each audited as a reduction.
-pub const TASK_ACL_UPDATE_0_2: &str = "https://trusttasks.org/spec/acl/update/0.2";
+pub const TASK_ACL_UPDATE_0_3: &str = "https://trusttasks.org/spec/acl/update/0.3";
 
-/// `acl/change-role/0.2` — transition a subject's role, guarded by a
+/// `acl/change-role/0.3` — transition a subject's role, guarded by a
 /// compare-and-swap on their current one. Payload:
 /// [`crate::protocols::acl_management::change_role::ChangeRoleBody`].
 /// Auth: Admin only.
 ///
-/// Separate from [`TASK_ACL_UPDATE_0_2`] because role is the one
+/// Separate from [`TASK_ACL_UPDATE_0_3`] because role is the one
 /// attribute where losing an update is a privilege change: two admins
 /// editing concurrently could otherwise silently overwrite each other,
 /// and the loser's intent — say a demotion — would vanish with no
 /// error. The producer declares `fromRole`; a mismatch against the
 /// stored role is rejected instead of applied.
-pub const TASK_ACL_CHANGE_ROLE_0_2: &str = "https://trusttasks.org/spec/acl/change-role/0.2";
+pub const TASK_ACL_CHANGE_ROLE_0_3: &str = "https://trusttasks.org/spec/acl/change-role/0.3";
 
-/// `acl/revoke/0.2` — remove an entry (`{kind: entry}`) or narrow its act
+/// `acl/revoke/0.3` — remove an entry (`{kind: entry}`) or narrow its act
 /// scope (`{kind: act}`). Payload:
 /// [`crate::protocols::acl_management::v0_2::RevokeBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_REVOKE_0_2: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
+pub const TASK_ACL_REVOKE_0_3: &str = "https://trusttasks.org/spec/acl/revoke/0.3";
 
 /// `spec/acl/swap-key/0.1` — self-service rotation of the caller's own ACL
 /// entry onto a new subject DID, proven by a `link_proof` VP-JWT. Payload:
@@ -851,25 +851,51 @@ pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memo
 /// the version last read (`expectedVersion`, 0 = create only); a failed
 /// precondition is `versionConflict` carrying the current version and value
 /// (#2115). Auth: `memoryWrite` + context access.
+#[allow(deprecated)] // superseded by 0.3, and still served and sent
 pub const TASK_VTA_MEMORY_PUT_0_2: &str =
     <vti_specs::vta::memory::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/memory/delete/0.2` — forget a memory item, leaving a tombstone the
 /// change feed carries; optionally conditional on its version. Auth:
 /// `memoryWrite` + context access.
+#[allow(deprecated)] // superseded by 0.3, and still served and sent
 pub const TASK_VTA_MEMORY_DELETE_0_2: &str =
     <vti_specs::vta::memory::delete::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/memory/list/0.2` — a page of a context's memory: a snapshot
 /// (prefix, cursor) or the change feed from `sinceVersion`, tombstones
 /// included. Auth: `memoryRead` + context access.
+#[allow(deprecated)] // superseded by 0.3, and still served and sent
 pub const TASK_VTA_MEMORY_LIST_0_2: &str =
     <vti_specs::vta::memory::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/memory/get/0.1` — up to 256 named memory items, each answered in
 /// `items`, `missing` or `deferred`. Auth: `memoryRead` + context access.
+#[allow(deprecated)] // superseded by 0.2, and still served and sent
 pub const TASK_VTA_MEMORY_GET_0_1: &str =
     <vti_specs::vta::memory::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/put/0.3` — 0.2's put, with the `purpose` the caller will
+/// use a conflict's disclosed value for (VTI-ACL-100 – 110); a purpose its
+/// entry does not grant is `purposeNotGranted`.
+pub const TASK_VTA_MEMORY_PUT_0_3: &str =
+    <vti_specs::vta::memory::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/delete/0.3` — 0.2's delete, with a `purpose` as
+/// [`TASK_VTA_MEMORY_PUT_0_3`].
+pub const TASK_VTA_MEMORY_DELETE_0_3: &str =
+    <vti_specs::vta::memory::delete::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/list/0.3` — 0.2's list, with the `purpose` the caller will
+/// use the values for; a listing with values is refused for a purpose the
+/// caller's entry does not grant.
+pub const TASK_VTA_MEMORY_LIST_0_3: &str =
+    <vti_specs::vta::memory::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/get/0.2` — 0.1's get, with the `purpose` the caller will
+/// use the items for; every recall is purpose-bound.
+pub const TASK_VTA_MEMORY_GET_0_2: &str =
+    <vti_specs::vta::memory::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/present/0.2` — an agent asks the VTA holding its
 /// principal's room credentials to mint a presentation for **one** room
@@ -2611,12 +2637,12 @@ pub const ALL_URIS: &[&str] = &[
     // Messaging slice
     TASK_MESSAGING_PING_0_2,
     // ACL slice
-    TASK_ACL_LIST_0_3,
-    TASK_ACL_GRANT_0_2,
-    TASK_ACL_SHOW_0_2,
-    TASK_ACL_UPDATE_0_2,
-    TASK_ACL_CHANGE_ROLE_0_2,
-    TASK_ACL_REVOKE_0_2,
+    TASK_ACL_LIST_0_4,
+    TASK_ACL_GRANT_0_3,
+    TASK_ACL_SHOW_0_3,
+    TASK_ACL_UPDATE_0_3,
+    TASK_ACL_CHANGE_ROLE_0_3,
+    TASK_ACL_REVOKE_0_3,
     TASK_ACL_SWAP_KEY_0_1,
     // Contexts slice
     TASK_CONTEXTS_LIST_1_0,
@@ -2789,6 +2815,10 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_MEMORY_DELETE_0_2,
     TASK_VTA_MEMORY_LIST_0_2,
     TASK_VTA_MEMORY_GET_0_1,
+    TASK_VTA_MEMORY_PUT_0_3,
+    TASK_VTA_MEMORY_DELETE_0_3,
+    TASK_VTA_MEMORY_LIST_0_3,
+    TASK_VTA_MEMORY_GET_0_2,
     TASK_ROOMS_KEYS_PRESENT_0_2,
     TASK_ROOMS_KEYS_OPEN_0_2,
     TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,

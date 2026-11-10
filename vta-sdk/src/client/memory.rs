@@ -155,4 +155,102 @@ impl VtaClient {
         )
         .await
     }
+
+    // ─── Purpose of use (VTI-ACL-100 – 110) ─────────────────────────────
+    //
+    // The same operations at the versions that carry `purpose`: what the
+    // caller will use what it reads for. Every read of memory is held to the
+    // purposes the caller's ACL entry grants, and audited with its purpose. The
+    // methods above name none, which is served under an entry stating `any`
+    // (recorded as unstated) or listing exactly one, and refused under one
+    // listing more — so an agent with a narrowed entry should use these.
+
+    /// `vta/memory/get/0.2` — [`Self::memory_get`] for `purpose`.
+    pub async fn memory_get_for(
+        &self,
+        context_id: &str,
+        keys: &[&str],
+        purpose: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "contextId": context_id, "keys": keys });
+        with_purpose(&mut payload, purpose);
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_GET_0_2,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/memory/list/0.3` — [`Self::memory_list_page`] for `purpose`. A
+    /// listing without values (`includeValues: false`) is not held to it.
+    pub async fn memory_list_page_for(
+        &self,
+        context_id: &str,
+        query: serde_json::Map<String, Value>,
+        purpose: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = Value::Object(query);
+        payload["contextId"] = json!(context_id);
+        with_purpose(&mut payload, purpose);
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_LIST_0_3,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/memory/put/0.3` — [`Self::memory_put_versioned`], disclosing a
+    /// conflict's current value only for `purpose`. A purpose the caller's
+    /// entry does not grant is refused before anything is written.
+    pub async fn memory_put_versioned_for(
+        &self,
+        context_id: &str,
+        key: &str,
+        value: &str,
+        expected_version: Option<u64>,
+        purpose: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "contextId": context_id, "key": key, "value": value });
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = json!(v);
+        }
+        with_purpose(&mut payload, purpose);
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_PUT_0_3,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/memory/delete/0.3` — [`Self::memory_delete_versioned`], as
+    /// [`Self::memory_put_versioned_for`].
+    pub async fn memory_delete_versioned_for(
+        &self,
+        context_id: &str,
+        key: &str,
+        expected_version: Option<u64>,
+        purpose: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "contextId": context_id, "key": key });
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = json!(v);
+        }
+        with_purpose(&mut payload, purpose);
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_DELETE_0_3,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+}
+
+/// Name `purpose` on a memory payload, when there is one.
+fn with_purpose(payload: &mut Value, purpose: Option<&str>) {
+    if let Some(p) = purpose {
+        payload["purpose"] = json!(p);
+    }
 }

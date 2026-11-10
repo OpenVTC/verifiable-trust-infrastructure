@@ -120,6 +120,29 @@ pub fn allowed_keys_from_flags(
 /// `--capabilities` cannot mean both "narrowed to nothing" and "not narrowed" —
 /// and of those two readings, the one an operator would get by accident is the
 /// one that hands the entry back everything.
+/// `--purposes a,b` / `--purposes-any` as the purpose scope to write
+/// (VTI-ACL-100): `None` when neither was given. Each name is checked here, so a
+/// mistyped purpose is refused before anything is sent.
+pub fn purposes_from_flags(
+    purposes: Option<Vec<String>>,
+    any: bool,
+) -> Result<Option<vta_sdk::acl::PurposeScope>, Box<dyn std::error::Error>> {
+    match (purposes, any) {
+        (_, true) => Ok(Some(vta_sdk::acl::PurposeScope::Any)),
+        (Some(names), false) => Ok(Some(vta_sdk::acl::PurposeScope::listed(names)?)),
+        (None, false) => Ok(None),
+    }
+}
+
+/// An entry's purposes for display.
+pub fn format_purposes(purposes: Option<&vta_sdk::acl::PurposeScope>) -> String {
+    match purposes {
+        Some(vta_sdk::acl::PurposeScope::Any) => "any (never modelTraining)".to_string(),
+        Some(p) => p.to_string().replace(',', ", "),
+        None => "(not stated by this VTA)".to_string(),
+    }
+}
+
 pub fn capabilities_from_flags(
     capabilities: Option<Vec<String>>,
     capabilities_all: bool,
@@ -358,6 +381,7 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
         "Capabilities:     {}",
         format_capabilities(&entry.role, &entry.capabilities())
     );
+    println!("Purposes:         {}", format_purposes(entry.purposes()));
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
     {
@@ -386,9 +410,13 @@ pub async fn cmd_acl_create(
     allowed_keys: Option<Vec<String>>,
     capabilities: Option<Vec<String>>,
     handoff: bool,
+    purposes: Option<vta_sdk::acl::PurposeScope>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
+    if let Some(p) = purposes {
+        req = req.purposes(p);
+    }
     if handoff {
         req = req.handoff();
     }
@@ -440,6 +468,7 @@ pub async fn cmd_acl_create(
         "  Capabilities: {}",
         format_capabilities(&entry.role, &entry.capabilities())
     );
+    println!("  Purposes:   {}", format_purposes(entry.purposes()));
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
     {
@@ -526,6 +555,7 @@ pub async fn cmd_acl_update(
     approve_scope: Option<ApproveScope>,
     allowed_keys: Option<Option<Vec<String>>>,
     capabilities: Option<Vec<String>>,
+    purposes: Option<vta_sdk::acl::PurposeScope>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Role transitions moved to `acl change-role`, which carries the
     // compare-and-swap that makes a concurrent edit an error instead of a
@@ -557,6 +587,7 @@ pub async fn cmd_acl_update(
         approve_scope,
         allowed_keys,
         capabilities: capabilities.clone(),
+        purposes: purposes.clone(),
     };
     let entry = client.update_acl(did, req).await?;
     println!("ACL entry updated:");
@@ -618,6 +649,9 @@ pub async fn cmd_acl_update(
             held.join(", ")
         };
         println!("  Capabilities: {rendered}");
+    }
+    if purposes.is_some() {
+        println!("  Purposes: {}", format_purposes(entry.purposes()));
     }
     Ok(())
 }

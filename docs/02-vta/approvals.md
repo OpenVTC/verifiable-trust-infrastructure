@@ -37,7 +37,7 @@ session and nothing more.
 
 ```bash
 # Re-authentication before any ACL grant.
-pnm approvals require https://trusttasks.org/spec/acl/grant/0.2 --reauth
+pnm approvals require https://trusttasks.org/spec/acl/grant/0.3 --reauth
 
 # Two people must agree before this VTA's DID document changes,
 # and the requester cannot be one of them.
@@ -61,7 +61,7 @@ contexts it names.
 
 ```bash
 pnm approvals list
-pnm approvals explain https://trusttasks.org/spec/acl/grant/0.2
+pnm approvals explain https://trusttasks.org/spec/acl/grant/0.3
 ```
 
 `explain` is the one to reach for when a command failed and you want to know
@@ -119,7 +119,7 @@ boots without any rules:
 
 ```toml
 [[policy.approvals]]
-task_type = "https://trusttasks.org/spec/acl/grant/0.2"
+task_type = "https://trusttasks.org/spec/acl/grant/0.3"
 requires  = "reauth"
 
 [[policy.approvals]]

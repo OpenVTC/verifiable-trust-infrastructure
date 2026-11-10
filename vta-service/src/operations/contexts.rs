@@ -2749,6 +2749,7 @@ mod tests {
             approve_scope: Default::default(),
             allowed_keys: None,
             handoff: None,
+            purposes: Default::default(),
         };
         vti_common::acl::store_acl_entry(acl_ks, &entry)
             .await

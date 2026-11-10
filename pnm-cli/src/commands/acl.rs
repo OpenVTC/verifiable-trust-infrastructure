@@ -27,8 +27,13 @@ pub(crate) async fn run(
             approve_contexts,
             allowed_keys,
             capabilities,
+            purposes,
         } => match resolve_expires_at(expires.as_deref()) {
             Ok(expires_at) => {
+                let purposes = match acl::purposes_from_flags(purposes, false) {
+                    Ok(p) => p,
+                    Err(e) => return Err(e),
+                };
                 acl::cmd_acl_create(
                     client,
                     did,
@@ -43,6 +48,7 @@ pub(crate) async fn run(
                     allowed_keys,
                     capabilities,
                     handoff,
+                    purposes,
                 )
                 .await
             }
@@ -62,7 +68,10 @@ pub(crate) async fn run(
             allowed_keys_unrestricted,
             capabilities,
             capabilities_all,
+            purposes,
+            purposes_any,
         } => {
+            let purposes = acl::purposes_from_flags(purposes, purposes_any)?;
             let approve_scope =
                 acl::approve_scope_from_flags(approve_all, approve_contexts, approve_none);
             let allowed_keys =
@@ -79,6 +88,7 @@ pub(crate) async fn run(
                 approve_scope,
                 allowed_keys,
                 capabilities,
+                purposes,
             )
             .await
         }

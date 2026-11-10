@@ -24,6 +24,13 @@
 //! capability waits for the consent of its other holders
 //! ([`crate::acl::admin_consent`], **VTI-APV-018**).
 
+// The community serves `acl/*` at 0.2 (`acl/list` at 0.3), now superseded by
+// the 0.3 family's `purposes`. Purposes bind a node that serves a purpose-bound
+// operation (VTI-ACL-102: reads of a principal's agent memory, a VTA opening a
+// room record for its principal); a community serves none, so it stays on the
+// versions it speaks until it moves for another reason.
+#![allow(deprecated)]
+
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -1251,35 +1258,35 @@ pub(crate) async fn plan_update_v0_2(
     state: &AppState,
     actor_did: &str,
     payload: &Value,
-) -> Result<GrantPlan, UpdateV02Error> {
+) -> Result<GrantPlan, UpdateV03Error> {
     use vti_specs::acl::update::v0_2::error_codes;
     let subject = payload["subject"].as_str().unwrap_or_default().to_string();
     // A subject's own entry is decided by `plan_write` (VTI-ACL-052).
     let existing = existing_for_update(state, &subject, error_codes::NOT_FOUND.code)
         .await
-        .map_err(|e| UpdateV02Error::Write(e.into()))?;
+        .map_err(|e| UpdateV03Error::Write(e.into()))?;
     let mut next = existing.clone();
     if let Some(v) = payload.get("act") {
-        let act = parse_scope(v, "act").map_err(UpdateV02Error::Parse)?;
+        let act = parse_scope(v, "act").map_err(UpdateV03Error::Parse)?;
         if existing.admin.act.is_all() && act == VtcActScope::None {
-            return Err(UpdateV02Error::NarrowingNotPermitted);
+            return Err(UpdateV03Error::NarrowingNotPermitted);
         }
         next.admin.act = act;
     }
     if let Some(v) = payload.get("approve") {
-        next.admin.approve = parse_scope(v, "approve").map_err(UpdateV02Error::Parse)?;
+        next.admin.approve = parse_scope(v, "approve").map_err(UpdateV03Error::Parse)?;
     }
     if let Some(v) = payload.get("capabilities") {
-        next.admin.capabilities = parse_capabilities(v).map_err(UpdateV02Error::Parse)?;
+        next.admin.capabilities = parse_capabilities(v).map_err(UpdateV03Error::Parse)?;
     }
     if let Some(v) = payload.get("approveCapabilities") {
-        next.admin.approve_capabilities = parse_capabilities(v).map_err(UpdateV02Error::Parse)?;
+        next.admin.approve_capabilities = parse_capabilities(v).map_err(UpdateV03Error::Parse)?;
     }
     if let Some(v) = payload.get("keys") {
-        parse_keys(v).map_err(UpdateV02Error::Parse)?;
+        parse_keys(v).map_err(UpdateV03Error::Parse)?;
     }
     if payload.get("stepUp").is_some() {
-        return Err(UpdateV02Error::Parse(EntryParseError::Malformed(
+        return Err(UpdateV03Error::Parse(EntryParseError::Malformed(
             "this community keeps no per-entry step-up configuration".into(),
         )));
     }
@@ -1297,14 +1304,14 @@ pub(crate) async fn plan_update_v0_2(
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|t| t.timestamp() as u64)
                     .ok_or_else(|| {
-                        UpdateV02Error::Parse(EntryParseError::Malformed(
+                        UpdateV03Error::Parse(EntryParseError::Malformed(
                             "expiresAt is an RFC 3339 date-time".into(),
                         ))
                     })?,
             )
         }
     }
-    if let Some(role) = ext_community_role(payload.get("ext")).map_err(UpdateV02Error::Parse)? {
+    if let Some(role) = ext_community_role(payload.get("ext")).map_err(UpdateV03Error::Parse)? {
         next.role = role;
     }
     let reason = payload["reason"].as_str().map(str::to_string);
@@ -1317,11 +1324,11 @@ pub(crate) async fn plan_update_v0_2(
         reason,
     )
     .await
-    .map_err(UpdateV02Error::Write)
+    .map_err(UpdateV03Error::Write)
 }
 
 /// Why `acl/update/0.2` refused.
-pub(crate) enum UpdateV02Error {
+pub(crate) enum UpdateV03Error {
     Parse(EntryParseError),
     NarrowingNotPermitted,
     Write(WriteError),
@@ -1498,17 +1505,17 @@ pub(crate) async fn plan_change_role_v0_2(
     subject: &str,
     from: &str,
     to: Option<AdminRole>,
-) -> Result<GrantPlan, ChangeRoleV02Error> {
+) -> Result<GrantPlan, ChangeRoleV03Error> {
     let existing = get_acl_entry(&state.acl_ks, subject)
         .await?
         .ok_or_else(|| {
-            ChangeRoleV02Error::Write(
+            ChangeRoleV03Error::Write(
                 AppError::NotFound(format!("ACL entry not found for DID: {subject}")).into(),
             )
         })?;
     let current = role_string(&existing);
     if current != from {
-        return Err(ChangeRoleV02Error::StateMismatch(current));
+        return Err(ChangeRoleV03Error::StateMismatch(current));
     }
     let mut next = existing.clone();
     next.admin.admin_role = to;
@@ -1521,18 +1528,18 @@ pub(crate) async fn plan_change_role_v0_2(
         None,
     )
     .await
-    .map_err(ChangeRoleV02Error::Write)
+    .map_err(ChangeRoleV03Error::Write)
 }
 
 /// Why `acl/change-role/0.2` refused.
-pub(crate) enum ChangeRoleV02Error {
+pub(crate) enum ChangeRoleV03Error {
     StateMismatch(String),
     Write(WriteError),
 }
 
-impl From<AppError> for ChangeRoleV02Error {
+impl From<AppError> for ChangeRoleV03Error {
     fn from(e: AppError) -> Self {
-        ChangeRoleV02Error::Write(e.into())
+        ChangeRoleV03Error::Write(e.into())
     }
 }
 

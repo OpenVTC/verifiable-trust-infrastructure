@@ -13,6 +13,12 @@
 //! Requires `--features transport-harness` (and `tsp` for the TSP case); CI runs
 //! it.
 
+// The community serves `acl/*` at 0.2 (`acl/list` at 0.3), now superseded by
+// the 0.3 family's `purposes`. Purposes bind a node that serves a purpose-bound
+// operation (VTI-ACL-102: reads of a principal's agent memory, a VTA opening a
+// room record for its principal); a community serves none, so it stays on the
+// versions it speaks until it moves for another reason.
+#![allow(deprecated)]
 #![cfg(feature = "transport-harness")]
 
 use vtc_client::acl::{AclGrant, AclUpdate};

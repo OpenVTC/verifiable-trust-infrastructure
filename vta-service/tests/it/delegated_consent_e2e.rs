@@ -794,11 +794,12 @@ async fn rest_and_trust_task_reach_the_same_consent_decision() {
     install_policy(&ctx, REQUIRE_CONSENT).await;
 
     // One grant, expressed identically on both transports.
-    // Canonical `acl/grant/0.2` shape — every axis explicit. The spine
+    // Canonical `acl/grant/0.3` shape — every axis explicit. The spine
     // schema-validates before the gate runs, so a wrong member here would be
     // rejected as malformed and this test would prove nothing about consent.
     let grant = json!({
         "entry": {
+            "purposes": {"scope": "any"},
             "subject": "did:key:z6MkNewlyGrantedAdmin",
             "role": "admin",
             "act": {"scope": "contexts", "contexts": ["default"]},
@@ -809,7 +810,7 @@ async fn rest_and_trust_task_reach_the_same_consent_decision() {
 
     // ── Trust-task path: refused, as it always was.
     let doc = envelope(
-        vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
+        vta_sdk::trust_tasks::TASK_ACL_GRANT_0_3,
         &requester,
         &ctx.vta_did,
         grant.clone(),

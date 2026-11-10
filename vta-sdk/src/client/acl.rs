@@ -26,7 +26,7 @@ impl VtaClient {
             .await
     }
 
-    /// List ACL entries (`acl/list/0.3`), filtering `context` in an explicit
+    /// List ACL entries (`acl/list/0.4`), filtering `context` in an explicit
     /// [`ContextDirection`], following `nextCursor` to the last page.
     ///
     /// A context id names a subtree, so a context filter is two questions:
@@ -55,7 +55,7 @@ impl VtaClient {
                 Some(500),
             );
             let page: AclListPage = self
-                .rpc_tt(crate::trust_tasks::TASK_ACL_LIST_0_3, payload, 30)
+                .rpc_tt(crate::trust_tasks::TASK_ACL_LIST_0_4, payload, 30)
                 .await?;
             entries.extend(page.entries);
             match page.next_cursor {
@@ -68,13 +68,13 @@ impl VtaClient {
         ))
     }
 
-    /// The entry for `did` (`acl/show/0.2`). An absent entry — or one this
+    /// The entry for `did` (`acl/show/0.3`). An absent entry — or one this
     /// caller may not see, which the VTA answers the same way — is
     /// [`VtaError::NotFound`].
     pub async fn get_acl(&self, did: &str) -> Result<AclEntryResponse, VtaError> {
         let shown: AclShowResponse = self
             .rpc_tt(
-                crate::trust_tasks::TASK_ACL_SHOW_0_2,
+                crate::trust_tasks::TASK_ACL_SHOW_0_3,
                 acl_management::v0_2::show_payload(did),
                 30,
             )
@@ -84,12 +84,12 @@ impl VtaClient {
             .ok_or_else(|| VtaError::NotFound(format!("ACL entry not found for DID: {did}")))
     }
 
-    /// Grant an entry (`acl/grant/0.2`). The request is sent with every axis
+    /// Grant an entry (`acl/grant/0.3`). The request is sent with every axis
     /// explicit — see [`CreateAclRequest::to_entry_v0_2`].
     pub async fn create_acl(&self, req: CreateAclRequest) -> Result<AclEntryResponse, VtaError> {
         let wrapped: AclEntryEnvelope = self
             .rpc_tt(
-                crate::trust_tasks::TASK_ACL_GRANT_0_2,
+                crate::trust_tasks::TASK_ACL_GRANT_0_3,
                 serde_json::to_value(&req)?,
                 30,
             )
@@ -99,7 +99,7 @@ impl VtaClient {
 
     /// Exercise the caller's hand-off marker (VTI-ACL-054 – VTI-ACL-057): write
     /// `successor_did` as the caller's one successor and remove the caller's
-    /// own entry, atomically. `acl/grant/0.2` with
+    /// own entry, atomically. `acl/grant/0.3` with
     /// [`HANDOFF_ROLLOVER_EXT_MEMBER`](acl_management::create::HANDOFF_ROLLOVER_EXT_MEMBER).
     ///
     /// The successor's expiry is the one the granter recorded with the marker,
@@ -113,6 +113,7 @@ impl VtaClient {
         role: &str,
         scopes: Vec<String>,
         label: Option<String>,
+        purposes: crate::acl::PurposeScope,
     ) -> Result<AclEntryResponse, VtaError> {
         let mut entry = acl_management::v0_2::AclEntry::new(
             successor_did,
@@ -122,17 +123,18 @@ impl VtaClient {
             acl_management::v0_2::CapabilityScope::Ceiling,
         );
         entry.label = label;
+        let mut payload =
+            serde_json::to_value(acl_management::v0_2::grant_payload(&entry, None, true))?;
+        // The successor holds the marked entry's purposes; the VTA refuses a
+        // rollover stating others, naming the ones to state.
+        acl_management::v0_2::state_purposes(&mut payload, &purposes)?;
         let wrapped: AclEntryEnvelope = self
-            .rpc_tt(
-                crate::trust_tasks::TASK_ACL_GRANT_0_2,
-                acl_management::v0_2::grant_payload(&entry, None, true),
-                30,
-            )
+            .rpc_tt(crate::trust_tasks::TASK_ACL_GRANT_0_3, payload, 30)
             .await?;
         Ok(wrapped.entry)
     }
 
-    /// Amend an entry (`acl/update/0.2`, and `acl/revoke/0.2` for a narrowing
+    /// Amend an entry (`acl/update/0.3`, and `acl/revoke/0.3` for a narrowing
     /// of where it may act).
     ///
     /// 0.2 puts every narrowing of `act` in `acl/revoke`, so a context change
@@ -243,12 +245,16 @@ impl VtaClient {
             );
         }
 
+        if let Some(purposes) = &req.purposes {
+            put(&mut body, "purposes", serde_json::to_value(purposes)?);
+        }
+
         let changes_beyond_narrowing = body.len() > 1;
         let mut result: Option<AclEntryResponse> = None;
         if changes_beyond_narrowing || narrow_to.is_none() {
             let wrapped: AclEntryEnvelope = self
                 .rpc_tt(
-                    crate::trust_tasks::TASK_ACL_UPDATE_0_2,
+                    crate::trust_tasks::TASK_ACL_UPDATE_0_3,
                     serde_json::Value::Object(body),
                     30,
                 )
@@ -258,7 +264,7 @@ impl VtaClient {
         if let Some(act) = narrow_to {
             let revoked: AclShowResponse = self
                 .rpc_tt(
-                    crate::trust_tasks::TASK_ACL_REVOKE_0_2,
+                    crate::trust_tasks::TASK_ACL_REVOKE_0_3,
                     revoke_payload(did, &Revocation::Act { act }, None),
                     30,
                 )
@@ -270,7 +276,7 @@ impl VtaClient {
         })
     }
 
-    /// Transition a subject's role (`acl/change-role/0.2`), compare-and-swapped
+    /// Transition a subject's role (`acl/change-role/0.3`), compare-and-swapped
     /// against the role they currently hold.
     ///
     /// Separate from [`Self::update_acl`] because role is the one ACL
@@ -288,7 +294,7 @@ impl VtaClient {
     ) -> Result<AclEntryResponse, VtaError> {
         let wrapped: AclEntryEnvelope = self
             .rpc_tt(
-                crate::trust_tasks::TASK_ACL_CHANGE_ROLE_0_2,
+                crate::trust_tasks::TASK_ACL_CHANGE_ROLE_0_3,
                 serde_json::to_value(ChangeRoleBody {
                     subject: did.to_string(),
                     from_role: req.from_role.clone(),
@@ -301,10 +307,10 @@ impl VtaClient {
         Ok(wrapped.entry)
     }
 
-    /// Remove an entry (`acl/revoke/0.2` `{kind: entry}`).
+    /// Remove an entry (`acl/revoke/0.3` `{kind: entry}`).
     pub async fn delete_acl(&self, did: &str) -> Result<(), VtaError> {
         self.rpc_tt_void(
-            crate::trust_tasks::TASK_ACL_REVOKE_0_2,
+            crate::trust_tasks::TASK_ACL_REVOKE_0_3,
             acl_management::v0_2::revoke_payload(
                 did,
                 &acl_management::v0_2::Revocation::Entry,

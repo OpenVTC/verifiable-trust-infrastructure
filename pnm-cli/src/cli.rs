@@ -2146,6 +2146,12 @@ pub(crate) enum MemoryCommands {
         /// TARGET SCOPE: the context whose memory to read.
         #[arg(long = "context", alias = "context-id", value_name = "ID")]
         context: String,
+        /// What you will use what you read for (`personalisation`,
+        /// `taskExecution`, `analytics`, `modelTraining`, or an absolute IRI).
+        /// Needed when your ACL entry lists more than one purpose; recorded in
+        /// the audit trail either way.
+        #[arg(long, value_name = "PURPOSE")]
+        purpose: Option<String>,
     },
 
     /// Delete a single memory by key — the agent forgets just that fact.
@@ -4141,6 +4147,13 @@ pub(crate) enum AclCommands {
         /// unscoped holder credential may confer it.
         #[arg(long, value_delimiter = ',')]
         capabilities: Option<Vec<String>>,
+        /// What the subject may use the content it reads for (comma-separated:
+        /// `personalisation`, `taskExecution`, `analytics`, `modelTraining`, or
+        /// absolute IRIs). Omit for `any`, which never includes
+        /// `modelTraining`. An agent's entry should list what its task needs
+        /// (VTI-VTA-044); every memory read it makes is then held to them.
+        #[arg(long, value_delimiter = ',')]
+        purposes: Option<Vec<String>>,
     },
     /// Change a subject's role, guarded by a compare-and-swap.
     ///
@@ -4242,6 +4255,15 @@ pub(crate) enum AclCommands {
         /// mean both "narrowed to nothing" and "not narrowed at all".
         #[arg(long)]
         capabilities_all: bool,
+        /// Replace the purposes the subject may use what it reads for
+        /// (comma-separated, as on `acl create`). Narrowing them is a privilege
+        /// reduction, applied at the subject's next read. Omit to leave them
+        /// unchanged.
+        #[arg(long, value_delimiter = ',', conflicts_with = "purposes_any")]
+        purposes: Option<Vec<String>>,
+        /// Set the purposes to `any` (never `modelTraining`).
+        #[arg(long)]
+        purposes_any: bool,
     },
     /// Delete an ACL entry
     Delete {
@@ -4292,7 +4314,7 @@ pub(crate) enum ApprovalsCommands {
     /// Require approval for a task type (replaces any existing rule for it).
     Require {
         /// Trust Task Type URI, e.g.
-        /// `https://trusttasks.org/spec/acl/grant/0.2`.
+        /// `https://trusttasks.org/spec/acl/grant/0.3`.
         task_type: String,
         /// Require the caller to re-authenticate (AAL2) — no third party.
         #[arg(long, conflicts_with = "consent")]
@@ -5332,7 +5354,7 @@ mod memory_flag_tests {
         let cli =
             Cli::try_parse_from(["pnm", "memory", "recall", "--context-id", "agent"]).unwrap();
         let Commands::Memory {
-            command: MemoryCommands::Recall { context, key },
+            command: MemoryCommands::Recall { context, key, .. },
         } = cli.command
         else {
             panic!("expected memory recall");

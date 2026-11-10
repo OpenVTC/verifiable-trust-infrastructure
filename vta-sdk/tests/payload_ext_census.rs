@@ -129,7 +129,7 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
     ),
     (
         "StepUpReplacement",
-        "The `stepUp` member of an `acl/update/0.2` payload, which the published \
+        "The `stepUp` member of an `acl/update/0.3` payload, which the published \
          schema closes over `approver` / `require` with no `ext` slot; the \
          payload itself carries `ext`.",
     ),
