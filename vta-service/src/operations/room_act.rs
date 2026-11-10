@@ -197,6 +197,7 @@ pub fn actable_0_10(type_uri: &str) -> Option<Option<&'static str>> {
 /// (`write`), `rooms/records/list/0.6` and `rooms/records/get/0.3` (`read`). The recipient
 /// signs what the producer built, unaltered; it does not read `kind`, `inReplyTo`,
 /// `writtenAt` or `editedAt`, nor check the write against the room's `recordMembers`.
+#[allow(deprecated)] // get/0.3 is still served beside get/0.4, which waits on credential purposes
 pub const ACT_TABLE_0_11_ADDS: &[ActRow] = &[
     (spec::records::put::v0_5::Payload::TYPE_URI, Some("write")),
     (spec::records::list::v0_6::Payload::TYPE_URI, Some("read")),
@@ -500,6 +501,7 @@ mod tests {
     /// 0.11 adds put/0.5 (`write`), list/0.6 and get/0.3 (`read`); 0.10 names none of them,
     /// and every type 0.10 completes 0.11 completes on the same terms.
     #[test]
+    #[allow(deprecated)] // get/0.3 is still served beside get/0.4, which waits on credential purposes
     fn act_0_11_adds_put_0_5_list_0_6_and_get_0_3() {
         let put = spec::records::put::v0_5::Payload::TYPE_URI;
         let list = spec::records::list::v0_6::Payload::TYPE_URI;

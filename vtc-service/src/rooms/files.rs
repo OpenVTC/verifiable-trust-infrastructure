@@ -490,6 +490,7 @@ pub(crate) async fn handle_put_record_v5(doc: TrustTask<Value>, ctx: RoomCtx) ->
 
 /// `rooms/records/get/0.3`: 0.2, and the host's `createdAt`, `createdBy` and
 /// `bodyStoredAt` for the record.
+#[allow(deprecated)] // get/0.3 is still served beside get/0.4, which waits on credential purposes
 pub(crate) async fn handle_get_record_v3(
     doc: TrustTask<get_v3::Payload>,
     ctx: RoomCtx,

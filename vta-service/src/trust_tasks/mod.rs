@@ -2923,11 +2923,17 @@ dispatch_table! {
     // 0.2: `unknownEpoch` says why — `notDelivered`, `beyondChain` or `removed`.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2 => room_group::handle_open_v0_2
         [ None Metadata false ],
+    // 0.3: the `purpose` an opening is made for (VTI-ACL-100 – 110).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_3 => room_group::handle_open_v0_3
+        [ None Metadata false ],
     // Releases one file's key — `None Secret false`: a pure derivation that
     // stores nothing, returning key material for one file and nothing else.
     // 0.2: a removed member's file is `unknownEpoch` reason `removed`, never
     // `notDelivered`.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2 => room_group::handle_file_key_v0_2
+        [ None Secret false ],
+    // 0.3: the `purposeOfUse` an opening key is released for.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_3 => room_group::handle_file_key_v0_3
         [ None Secret false ],
     // 0.2: and the room's epoch floor, applied — this VTA forgets what it holds below it.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_2 => room_group::handle_chain_v0_2
@@ -2951,6 +2957,9 @@ dispatch_table! {
     // `Mutating`, as its specification declares: a repair applies the commits and keeps
     // the links the host relays, which changes this VTA's key state.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_2 => room_read::handle_read_v0_2
+        [ Mutating Secret true ],
+    // 0.3: the `purpose` a read is made for, passed on as get/0.4's.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_3 => room_read::handle_read_v0_3
         [ Mutating Secret true ],
     // Metadata only, and still `actsAsSubject`: the presentation names a member
     // of the room to the host it is shown to. 0.3 adds the room's `lastPrune` (as
@@ -7188,14 +7197,18 @@ mod didcomm_sender_binding {
 mod vti_08_stack {
     use serde_json::json;
 
-    /// Half a default tokio worker stack. The regression needed more than 1 MiB.
-    const STACK_KIB: usize = 512;
+    /// Well inside a default 2 MiB tokio worker, and below the more than 1 MiB the
+    /// regression needed, so a return of it still fails here. 512 KiB fitted only a caller
+    /// with no ACL entry, which no running VTA has: with the super admin's entry stored,
+    /// the spine's gates read it, and a debug build of the whole workspace needs about
+    /// 600 KiB.
+    const STACK_KIB: usize = 768;
 
     /// A stack overflow aborts the process rather than failing a test, so the
     /// work runs in a child copy of this test binary and the parent reads its
     /// exit status.
     #[test]
-    fn vti_08_context_create_fits_half_a_default_worker_stack() {
+    fn vti_08_context_create_fits_well_inside_a_default_worker_stack() {
         let exe = std::env::current_exe().expect("test binary");
         let out = std::process::Command::new(exe)
             .args([

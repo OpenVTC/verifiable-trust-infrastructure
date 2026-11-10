@@ -2633,6 +2633,7 @@ fn chunk_path(dir: &std::path::Path, index: usize) -> std::path::PathBuf {
     dir.join(CHUNKS_DIR).join(format!("{index:06}.bin"))
 }
 
+#[allow(deprecated)] // file-key 0.2 is still served, and this names no purpose of use
 fn file_key_bytes(
     resp: &vti_specs::rooms::keys::file_key::v0_2::Response,
 ) -> Result<vti_rooms::files::FileKey, Box<dyn std::error::Error>> {
@@ -2644,6 +2645,7 @@ fn file_key_bytes(
 }
 
 /// `rooms file seal` — seal a local file for a room, ready to upload.
+#[allow(deprecated)] // file-key 0.2 is still served, and sealing names no purpose of use
 pub async fn cmd_rooms_file_seal(
     client: &VtaClient,
     room_id: &str,
@@ -3194,6 +3196,7 @@ fn direct_plan(ciphertext: &[u8]) -> (usize, Value) {
 /// bytes go straight to the room's storage over targets the host issued (direct) or to the
 /// host as chunk documents signed by a single-use upload key minted here for this upload
 /// alone (proxied). This client's own key signs nothing the host receives.
+#[allow(deprecated)] // file-key 0.2 is still served, and this names no purpose of use
 pub async fn cmd_rooms_file_put(
     client: &VtaClient,
     target: RoomTarget<'_>,

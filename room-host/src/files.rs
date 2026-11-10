@@ -442,6 +442,7 @@ pub(crate) async fn put_v5(
 
 /// `rooms/records/get/0.3`: 0.2, and the host's `createdAt`, `createdBy` and
 /// `bodyStoredAt` for the record.
+#[allow(deprecated)] // get/0.3 is still served beside get/0.4, which waits on credential purposes
 pub(crate) async fn get_v3(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::get::v0_3::Payload>(&payload) {
         return refused(doc, r);

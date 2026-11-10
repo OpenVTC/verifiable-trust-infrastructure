@@ -360,6 +360,7 @@ pub async fn cmd_rooms_owner_issue_membership(
 
 /// `rooms owner issue-authority` — mint a VAC root conferring `actions`.
 #[allow(clippy::too_many_arguments)]
+#[allow(deprecated)] // issue-authority 0.2 is what a VTA serves; 0.3 waits on credential purposes
 pub async fn cmd_rooms_owner_issue_authority(
     client: &VtaClient,
     room_id: &str,

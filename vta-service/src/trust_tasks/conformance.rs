@@ -4025,6 +4025,59 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_READ_0_3,
+            checked!(
+                specs::rooms::keys::read::v0_3::Payload,
+                specs::rooms::keys::read::v0_3::Response,
+                json!({
+                    "purpose": "personalisation",
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "keys": ["giXFLTGBdnnQJRoIsktuIg", "Hc7pY2wQe9tLmB4sVn1KxA", "q1Zr8mVbT0yWl3nK5xHc2A"]
+                }),
+                // The batch form: a record, a key the host does not hold, and one not come to.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "results": [
+                        {
+                            "key": "giXFLTGBdnnQJRoIsktuIg",
+                            "version": 412,
+                            "status": "active",
+                            "updatedAt": "2026-01-01T00:00:00Z",
+                            "createdAt": "2025-12-31T09:14:02Z",
+                            "createdBy": "did:webvh:example.com:people:alice",
+                            "bodyStoredAt": "2025-12-31T09:14:02Z",
+                            "author": "did:webvh:example.com:people:alice",
+                            "plaintext": "eyJ0aXRsZSI6IlByaWNpbmcgaG9sZHMifQ",
+                            "verification": {
+                                "trace": "verified",
+                                "priorRoots": "agree",
+                                "anchor": "notChecked",
+                                "head": {
+                                    "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                                    "recordCount": 118,
+                                    "headVersion": 412
+                                }
+                            }
+                        },
+                        {
+                            "key": "Hc7pY2wQe9tLmB4sVn1KxA",
+                            "error": {
+                                "code": "rooms/keys/read:hostRefused",
+                                "message": "room host refused: notFound",
+                                "retryable": false,
+                                "details": { "code": "notFound", "reason": "no such record" }
+                            }
+                        },
+                        {
+                            "key": "q1Zr8mVbT0yWl3nK5xHc2A",
+                            "error": { "code": "rooms/keys/read:notAttempted", "retryable": true }
+                        }
+                    ]
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_SEAL_0_2,
             checked!(
                 specs::rooms::keys::seal::v0_2::Payload,
@@ -4490,11 +4543,48 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_OPEN_0_3,
+            checked!(
+                specs::rooms::keys::open::v0_3::Payload,
+                specs::rooms::keys::open::v0_3::Response,
+                json!({
+                    "purpose": "taskExecution",
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "key": "giXFLTGBdnnQJRoIsktuIg",
+                    "version": 1,
+                    "sealed": {
+                        "ciphertext": "1ep1PJuf8-yNmTndwcuMxA",
+                        "nonce": "AAAAAAAAAAAAAAAA",
+                        "epoch": 1
+                    }
+                }),
+                json!({ "plaintext": "YSBkZWNpc2lvbg" })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_FILE_KEY_0_2,
             checked!(
                 specs::rooms::keys::file_key::v0_2::Payload,
                 specs::rooms::keys::file_key::v0_2::Response,
                 json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "fileId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+                    "purpose": "open",
+                    "epoch": 5
+                }),
+                json!({
+                    "key": "qPm3rH0xU1d5wR6x0yTq8ZbV7k2nC4aE9fG1hJ3kL5M",
+                    "epoch": 5
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_FILE_KEY_0_3,
+            checked!(
+                specs::rooms::keys::file_key::v0_3::Payload,
+                specs::rooms::keys::file_key::v0_3::Response,
+                json!({
+                    "purposeOfUse": "https://w3id.org/dpv#ServicePersonalisation",
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "fileId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
                     "purpose": "open",

@@ -41,8 +41,8 @@ use crate::server::AppState;
 use super::helpers::{TrustTaskOutcome, app_error_to_reject, parse_payload, success_response};
 use super::room_group::{
     MemberSendError, PresentingMember, compare_anchor, compare_head, declared, head_of,
-    is_profile_location, named_member, outbound_resolver, presenting_member, record,
-    send_as_member_typed, verify_trace,
+    is_profile_location, named_member, outbound_resolver, presenting_member, send_as_member_typed,
+    verify_trace,
 };
 
 /// The most keys one `rooms/keys/read/0.2` request may name (*Why 32*).
@@ -80,6 +80,7 @@ impl Budget {
 enum Version {
     V0_1,
     V0_2,
+    V0_3,
 }
 
 impl Version {
@@ -104,6 +105,25 @@ impl Version {
                     not_a_member: c::NOT_A_MEMBER,
                 }
             }
+            Self::V0_3 => {
+                use vti_specs::rooms::keys::read::v0_3::error_codes as c;
+                Codes {
+                    unreachable: c::HOST_UNREACHABLE,
+                    refused: c::HOST_REFUSED,
+                    cannot_open: c::CANNOT_OPEN,
+                    not_a_member: c::NOT_A_MEMBER,
+                }
+            }
+        }
+    }
+
+    /// The code refusing a purpose, where this version declares one.
+    fn purpose_code(self) -> Option<DeclaredErrorCode> {
+        match self {
+            Self::V0_3 => {
+                Some(vti_specs::rooms::keys::read::v0_3::error_codes::PURPOSE_NOT_GRANTED)
+            }
+            _ => None,
         }
     }
 }
@@ -140,12 +160,13 @@ pub(super) async fn handle_read_v0_1(
         &host,
         Keys::One(key),
         Budget::DEFAULT,
+        None,
     )
     .await
 }
 
 /// `rooms/keys/read/0.2`: one record (`key`) or up to 32 (`keys`), fetched with
-/// `rooms/records/get/0.3` where the host serves it.
+/// `rooms/records/get/0.3` where the host serves it. Purpose-bound, naming none.
 pub(super) async fn handle_read_v0_2(
     state: &AppState,
     auth: &AuthClaims,
@@ -154,12 +175,44 @@ pub(super) async fn handle_read_v0_2(
     read_v0_2_within(state, auth, doc, Budget::DEFAULT).await
 }
 
+/// `rooms/keys/read/0.3`: 0.2's read, for the `purpose` the caller names (VTI-ACL-103),
+/// which is passed on to the host as `rooms/records/get/0.4`'s where the host serves it.
+pub(super) async fn handle_read_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(resp) = parse_payload::<vti_specs::rooms::keys::read::v0_3::Payload>(&doc) {
+        return resp;
+    }
+    let mut doc = doc;
+    let requested = doc
+        .payload
+        .as_object_mut()
+        .and_then(|m| m.remove("purpose"))
+        .and_then(|v| v.as_str().map(str::to_string));
+    read_within(state, auth, doc, Budget::DEFAULT, Version::V0_3, requested).await
+}
+
 /// [`handle_read_v0_2`] under `budget` — the tests' way to reach `notAttempted`.
 pub(super) async fn read_v0_2_within(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
     budget: Budget,
+) -> TrustTaskOutcome {
+    read_within(state, auth, doc, budget, Version::V0_2, None).await
+}
+
+/// 0.2 and 0.3, the latter's payload read as the former's (`extends`).
+#[allow(deprecated)] // the 0.2 payload type reads 0.3's too
+async fn read_within(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    budget: Budget,
+    version: Version,
+    requested: Option<String>,
 ) -> TrustTaskOutcome {
     let req: vti_specs::rooms::keys::read::v0_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
@@ -203,14 +256,7 @@ pub(super) async fn read_v0_2_within(
     let room_id = req.room_id.to_string();
     let host = req.host.to_string();
     read(
-        state,
-        auth,
-        &doc,
-        Version::V0_2,
-        &room_id,
-        &host,
-        keys,
-        budget,
+        state, auth, &doc, version, &room_id, &host, keys, budget, requested,
     )
     .await
 }
@@ -234,6 +280,7 @@ async fn read(
     host: &str,
     keys: Keys,
     budget: Budget,
+    requested: Option<String>,
 ) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -265,10 +312,26 @@ async fn read(
         Ok(v) => v,
         // 0.2 answers a principal holding nothing this room issued with its own declared
         // code; 0.1 keeps the refusal it has always given.
-        Err(vti_common::error::AppError::NotFound(why)) if version == Version::V0_2 => {
+        Err(vti_common::error::AppError::NotFound(why)) if version != Version::V0_1 => {
             return super::helpers::reject_declared(doc, codes.not_a_member, why);
         }
         Err(e) => return app_error_to_reject(doc, e),
+    };
+    // Reading a record discloses it to the caller (VTI-ACL-102): held to the caller's
+    // purposes before the host is asked for anything.
+    let decision = match super::room_group::admit_room_purpose(
+        state,
+        auth,
+        doc,
+        "rooms.keys.read",
+        room_id,
+        requested.as_deref(),
+        version.purpose_code(),
+    )
+    .await
+    {
+        Ok(d) => d,
+        Err(r) => return r,
     };
 
     let reader = Reader {
@@ -280,7 +343,11 @@ async fn read(
         host,
         room_id,
         codes,
-        ask_v3: AtomicBool::new(version == Version::V0_2),
+        ask_v3: AtomicBool::new(version != Version::V0_1),
+        // The host holds the read to the purposes its authority chain states, where it
+        // serves get/0.4 (`rooms/keys/read/0.3`); only a purpose that was named is passed.
+        purpose: requested.clone(),
+        ask_v4: AtomicBool::new(version == Version::V0_3 && requested.is_some()),
     };
 
     match keys {
@@ -288,7 +355,15 @@ async fn read(
             let mut results = reader.read_all(&[key], None).await;
             match results.pop() {
                 Some(Answer::Read { mut fields, ext }) => {
-                    record(state, "rooms.keys.read", auth, room_id).await;
+                    super::room_group::record_purpose(
+                        state,
+                        "rooms.keys.read",
+                        auth,
+                        room_id,
+                        &decision,
+                        "success",
+                    )
+                    .await;
                     let mut payload = Map::new();
                     payload.insert("roomId".into(), json!(room_id));
                     payload.append(&mut fields);
@@ -345,7 +420,15 @@ async fn read(
                 }
                 results.push(Value::Object(entry));
             }
-            record(state, "rooms.keys.read", auth, room_id).await;
+            super::room_group::record_purpose(
+                state,
+                "rooms.keys.read",
+                auth,
+                room_id,
+                &decision,
+                "success",
+            )
+            .await;
             let mut payload = json!({ "roomId": room_id, "results": results });
             // `ReadResult` is closed and carries no `ext`, so what a single read says in its
             // own `ext` is said here once, by key.
@@ -464,6 +547,10 @@ struct Reader<'a> {
     /// Whether to ask `rooms/records/get/0.3` first. Cleared, for the rest of the request,
     /// by a host that answers it `unsupportedType`.
     ask_v3: AtomicBool,
+    /// The purpose the caller named, passed to a host serving `rooms/records/get/0.4`.
+    purpose: Option<String>,
+    /// Ask get/0.4 first: a purpose was named and the host has not refused the version.
+    ask_v4: AtomicBool,
 }
 
 impl Reader<'_> {
@@ -725,7 +812,27 @@ impl Reader<'_> {
     ) -> Result<(vti_rooms::wire::GetRecordResponse, Map<String, Value>), TrustTaskOutcome> {
         let payload = json!({ "roomId": self.room_id, "key": key });
         let mut reply = None;
-        if self.ask_v3.load(Ordering::Relaxed) {
+        if self.ask_v4.load(Ordering::Relaxed)
+            && let Some(purpose) = &self.purpose
+        {
+            let mut with_purpose = payload.clone();
+            with_purpose["purpose"] = json!(purpose);
+            match self
+                .send(vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE, with_purpose)
+                .await
+            {
+                Ok(v) => reply = Some(v),
+                // A host that predates get/0.4 reads its chain as granting `any`, and no
+                // credential states purposes yet, so 0.3 loses nothing.
+                Err(MemberSendError::Host(RoomTaskError::Refused { code, .. }))
+                    if code == "unsupportedType" =>
+                {
+                    self.ask_v4.store(false, Ordering::Relaxed);
+                }
+                Err(e) => return Err(self.host_failure(e)),
+            }
+        }
+        if reply.is_none() && self.ask_v3.load(Ordering::Relaxed) {
             match self
                 .send(vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE, payload.clone())
                 .await

@@ -698,6 +698,17 @@ pub async fn build_signing_test_app_state_with_sink(
     )
     .await
     .expect("build signing app state");
+    // The super admin [`super_admin_claims`] stands for has an entry, as every caller of a
+    // running VTA does (a token is minted only for a DID with one): purpose-bound reads are
+    // held to the stored entry's purposes, and refuse a caller with none (VTI-ACL-101).
+    let admin = super_admin_claims();
+    if crate::acl::get_acl_entry(&state.acl_ks, &admin.did)
+        .await
+        .expect("read acl")
+        .is_none()
+    {
+        seed_acl_entry(&state.acl_ks, &admin.did, admin.role, Vec::new()).await;
+    }
     (state, dir)
 }
 

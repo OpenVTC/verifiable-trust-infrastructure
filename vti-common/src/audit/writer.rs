@@ -340,7 +340,7 @@ impl AuditWriter {
         // buffers and cursor) into every `load_chain_head` call — which is to
         // say every first `write()` after a restart, on the hot context/task
         // dispatch spine — blew the pinned 512 KiB worker-stack budget
-        // (`vti_08_context_create_fits_half_a_default_worker_stack`). Boxing
+        // (`vti_08_context_create_fits_well_inside_a_default_worker_stack`). Boxing
         // puts the large, rarely-used half on the heap and leaves a
         // pointer-sized slot in the common-path state machine instead.
         Box::pin(self.deep_scan_for_chain_head(pairs)).await

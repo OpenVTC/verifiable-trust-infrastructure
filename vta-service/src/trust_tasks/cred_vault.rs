@@ -1542,10 +1542,14 @@ mod present_tests {
     async fn an_application_may_not_present() {
         let (state, _dir) = build_signing_test_app_state().await;
         let id = held_sd_jwt(&state).await;
+        // Its own DID and entry: the capability gate reads the stored entry, not the token.
         let app = AuthClaims {
+            did: "did:key:z6MkApplication".into(),
             role: crate::acl::Role::Application,
             ..super_admin_claims()
         };
+        crate::test_support::seed_acl_entry(&state.acl_ks, &app.did, app.role.clone(), Vec::new())
+            .await;
 
         let out = handle_present(&state, &app, present_doc(&id, &["employer"])).await;
         assert_eq!(code(&out), "permissionDenied");

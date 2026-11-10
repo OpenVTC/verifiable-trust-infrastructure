@@ -661,9 +661,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Reads group state and returns plaintext. Nothing is written, and a second
     // execution is indistinguishable from one.
     (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, ReadOnly),
+    (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_3, ReadOnly),
     // A pure derivation: the same request yields the same key, and nothing is
     // stored but the audit line.
     (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2, ReadOnly),
+    (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_3, ReadOnly),
     // Converges: a repeat for the same room, member and invitation returns the
     // KeyPackage the first one minted (recipient item 3), and leaves nothing behind.
     (trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2, RetrySafe),
@@ -704,6 +706,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // 0.1 for each of up to 32 keys. The repair it may make applies the commits and keeps
     // the links the host relays — a retry finds them applied and fetches nothing.
     (trust_tasks::TASK_ROOMS_KEYS_READ_0_2, RetrySafe),
+    (trust_tasks::TASK_ROOMS_KEYS_READ_0_3, RetrySafe),
     // Same, over a listing. The room may have moved between attempts, so two
     // tries can differ — that is the room changing, not the task misbehaving,
     // and `headVersion` is what tells them apart.
