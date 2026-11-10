@@ -650,8 +650,12 @@ pub(super) fn method_not_found(doc: TrustTask<Value>, type_uri: &str) -> TrustTa
         &doc,
         TrustTaskCode::Standard(StandardCode::UnsupportedVersion),
         format!(
-            "unsupported version: {type_uri} — this VTA serves {}",
-            served.join(", ")
+            "unsupported version: {type_uri} — this VTA serves {}{}",
+            served.join(", "),
+            vta_sdk::error::version_age_hint(
+                type_uri,
+                &served.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+            ),
         ),
         Some(serde_json::json!({
             details::REQUESTED_TYPE: type_uri,
