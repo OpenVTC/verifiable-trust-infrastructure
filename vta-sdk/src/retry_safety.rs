@@ -780,6 +780,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, RetrySafe),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1, Keyed),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2, Keyed),
+    (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3, Keyed),
     // Founding converges: a second execution is refused `alreadyExists` and
     // changes nothing, so a retry after a lost reply reports a refusal over a
     // group that in fact exists — a worse message, not a worse world.

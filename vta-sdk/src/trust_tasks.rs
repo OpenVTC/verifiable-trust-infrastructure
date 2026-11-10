@@ -1159,6 +1159,13 @@ pub const TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1: &str =
 pub const TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2: &str =
     "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
 
+/// `spec/rooms/owner/issue-authority/0.3` — 0.2, and the `purposes` the credential grants
+/// its subject (VTI-ACL-110), stated in it unchanged; absent, it states none, which grants
+/// `any`. Purposes wider than the caller's own entry are refused (VTI-ACL-107).
+/// Auth: as 0.2.
+pub const TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3: &str =
+    "https://trusttasks.org/spec/rooms/owner/issue-authority/0.3";
+
 /// `spec/rooms/owner/group/create/0.1` — found a sealed room's MLS group with the owner
 /// as its only member, at room epoch 1. Every other member joins by a Welcome; nobody can
 /// welcome the owner.
@@ -2873,6 +2880,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_ANCHOR_0_1,
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
+    TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3,
     TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
     TASK_ROOMS_OWNER_GROUP_ADD_0_3,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,

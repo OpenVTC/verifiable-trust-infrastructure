@@ -1971,3 +1971,76 @@ async fn read_0_3_falls_back_to_get_0_3_on_a_host_without_get_0_4() {
         "asked get/0.3 after"
     );
 }
+
+/// `rooms/owner/issue-authority/0.3` (VTI-ACL-110): the credential states the request's
+/// `purposes` unchanged, and a grant wider than the caller's own entry — a purpose it does
+/// not hold, or none at all, which grants `any` — is refused, never issued narrower
+/// (VTI-ACL-107).
+#[tokio::test]
+async fn issue_authority_0_3_states_the_purposes_asked_within_the_callers() {
+    let s = sealed_room().await;
+    let room_signing =
+        crate::test_support::seed_holder_key(&s.owner.state, ROOM_KEY_PATH, None).await;
+    let room_key = format!(
+        "{room_signing}#{}",
+        room_signing.strip_prefix("did:key:").unwrap()
+    );
+    let grant = |uri: &'static str, purposes: Option<Value>| {
+        let mut payload = json!({
+            "roomId": s.room.did, "signingKeyId": room_key,
+            "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "actions": ["read"],
+            "validUntil": (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+        });
+        if let Some(p) = purposes {
+            payload["purposes"] = p;
+        }
+        let state = &s.owner.state;
+        async move {
+            let doc = request(uri, payload);
+            body(
+                if uri == vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3 {
+                    super::super::room_owner::handle_issue_authority_v0_3(state, &admin(), doc)
+                        .await
+                } else {
+                    super::super::room_owner::handle_issue_authority(state, &admin(), doc).await
+                },
+            )
+        }
+    };
+    const V3: &str = vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3;
+    const V2: &str = vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2;
+    let one = json!({ "scope": "listed", "purposes": ["taskExecution"] });
+
+    // A caller under `any` may grant a list, and the credential states it unchanged.
+    let issued = grant(V3, Some(one.clone())).await;
+    let vac: dtg_credentials::DTGCredential =
+        serde_json::from_str(issued["payload"]["credential"].as_str().expect("{issued}"))
+            .expect("the credential reads");
+    let vac = serde_json::to_value(&vac).unwrap();
+    assert_eq!(vac["credentialSubject"]["purposes"], one, "{vac}");
+    assert_eq!(vac["@context"][1], dtg_credentials::DTG_CONTEXT_V2, "{vac}");
+    // And under `any`, a request stating none issues a credential stating none.
+    let none = grant(V2, None).await;
+    let vac: Value =
+        serde_json::from_str(none["payload"]["credential"].as_str().expect("{none}")).unwrap();
+    assert!(vac["credentialSubject"].get("purposes").is_none(), "{vac}");
+
+    narrow(&s.owner.state, &["taskExecution", "personalisation"]).await;
+    assert!(grant(V3, Some(one)).await["payload"]["credential"].is_string());
+    for (uri, purposes, why) in [
+        (
+            V3,
+            Some(json!({ "scope": "listed", "purposes": ["analytics"] })),
+            "a purpose the caller does not hold",
+        ),
+        (V3, None, "none stated grants `any`"),
+        (V2, None, "0.2 states none"),
+    ] {
+        let refused = grant(uri, purposes).await;
+        assert!(
+            refused["payload"].get("credential").is_none(),
+            "{why}: {refused}"
+        );
+    }
+}

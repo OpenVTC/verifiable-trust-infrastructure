@@ -327,6 +327,12 @@ type_uri = "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2"
 digest = "sha256:a66280eb5a4e553949fba5e9052ffb6c05be5892938fe90a0a51a4d9c9850ff4"
 
 [[task]]
+slug = "rooms/owner/issue-authority"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/rooms/owner/issue-authority/0.3"
+digest = "sha256:2b3860309c1b7fc3fd0eda137f1297bc00b15ff39042afeb637f65c581693bdd"
+
+[[task]]
 slug = "rooms/owner/issue-membership"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/rooms/owner/issue-membership/0.1"
@@ -378,7 +384,7 @@ digest = "sha256:bb4c8afa498a5bfd04088e25f1b8ffdd59a54614b32510d481a543c908302a7
 slug = "rooms/records/get"
 version = "0.4"
 type_uri = "https://trusttasks.org/spec/rooms/records/get/0.4"
-digest = "sha256:f39fc9c55c481ec22e9b9b323dac4f7c15630a55d99a884d162fcbf52166bfa9"
+digest = "sha256:9b3427a1276ae136c0ac58f128a982a9d043adc39f01900b32cd8b55e199d2e8"
 
 [[task]]
 slug = "rooms/records/list"
