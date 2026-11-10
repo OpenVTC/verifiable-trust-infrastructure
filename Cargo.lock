@@ -417,9 +417,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-delivery"
-version = "0.1.20"
+version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "175b6ced33c52369349d5d48aa2daa1f463292bc2f2490a1cee4d2c2e1a76e99"
+checksum = "7cd809eb4bb5bc751ec8413860194e54622285b3616d57410570f742d1c66b25"
 dependencies = [
  "affinidi-messaging-core",
  "async-trait",

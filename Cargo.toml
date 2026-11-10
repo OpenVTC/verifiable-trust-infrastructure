@@ -242,7 +242,7 @@ affinidi-secrets-resolver = { version = "0.5.15", features = ["ml-dsa"] }
 # parked for the retry pass when it runs long, where before one slow delete
 # stopped all inbound dispatch behind it — the node stopped collecting while
 # its socket stayed up. No API change.
-affinidi-messaging-delivery = "0.1.20"
+affinidi-messaging-delivery = "0.1.21"
 # Transport-agnostic messaging contract (`MessageTransport`, `Inbound`,
 # `ReceivedMessage`, `MessagingError`) the delivery layer builds on. Referenced
 # directly by services that demux `MessagingService::subscribe()` inbound.
