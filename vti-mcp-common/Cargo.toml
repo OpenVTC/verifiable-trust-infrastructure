@@ -29,7 +29,7 @@ getrandom = "0.4"
 [dev-dependencies]
 # The pinned Type URI index, for the census that holds every pinned request
 # URI to a classified verb.
-vti-specs = { path = "../vti-specs", version = "0.11" }
+vti-specs = { path = "../vti-specs", version = "0.12" }
 # `listen`'s tests: a temporary state directory, and HTTP driven as a host would.
 tempfile = "3"
 reqwest = { workspace = true }
