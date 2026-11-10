@@ -275,6 +275,7 @@ impl VtaClient {
     /// **The key is secret, and opens that file for as long as its ciphertext
     /// exists.** Hold it for one encryption or decryption, never store or log
     /// it, and never hand it to web page script.
+    #[allow(deprecated)] // file-key 0.2 is still served; 0.3 adds only `purposeOfUse`, which this call names none of
     pub async fn room_file_key(
         &self,
         room_id: &str,
@@ -653,6 +654,7 @@ impl VtaClient {
     /// the grant nothing else withdraws, so expiry is how it ends. An empty
     /// `actions` is refused rather than read as "everything". Call it inside
     /// [`VtaClient::idempotent`] (the task is `Keyed`).
+    #[allow(deprecated)] // issue-authority 0.2 is the version VTAs serve; 0.3 waits on credential purposes
     pub async fn room_owner_issue_authority(
         &self,
         room_id: &str,
@@ -1119,6 +1121,7 @@ fn room_register_payload(
         .map_err(|e| VtaError::Validation(format!("rooms/owner/register request: {e}")))
 }
 
+#[allow(deprecated)] // issue-authority 0.2 is the version VTAs serve; 0.3 waits on credential purposes
 fn room_issue_authority_payload(
     room_id: &str,
     signing_key_id: &str,

@@ -100,8 +100,13 @@ pub const ROOMS_RECORDS_GET_V2_TYPE: &str =
     <vti_specs_rooms::rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/get/0.3`: get/0.2, and the host's `createdAt`, `createdBy` and
 /// `bodyStoredAt`, none of them committed (trust-tasks-tf #1027).
+#[allow(deprecated)] // superseded by get/0.4, and still served
 pub const ROOMS_RECORDS_GET_V3_TYPE: &str =
     <vti_specs_rooms::rooms::records::get::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/get/0.4`: get/0.3, and the `purpose` the reader will use the record for
+/// (VTI-ACL-110). Sent by a key holder reading for a named purpose; not yet served here.
+pub const ROOMS_RECORDS_GET_V4_TYPE: &str =
+    <vti_specs_rooms::rooms::records::get::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/blobs/chunk/0.1`.
 pub const ROOMS_BLOBS_CHUNK_TYPE: &str =
     <vti_specs_rooms::rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;

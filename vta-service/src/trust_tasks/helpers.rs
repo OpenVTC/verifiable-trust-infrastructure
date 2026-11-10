@@ -755,6 +755,65 @@ pub(crate) fn malformed_request_response(reason: String) -> TrustTaskOutcome {
     error_response(err)
 }
 
+// ─── Purpose of use (VTI-ACL-100 – 110) ──────────────────────────────────
+//
+// Shared by every purpose-bound operation (VTI-ACL-102): agent memory reads and
+// the room key holder's opening of records and release of file keys.
+
+/// Judge `requested` against the caller's **stored** entry (VTI-ACL-103,
+/// -104), never a token: a narrowing binds at the next read. A caller with no
+/// readable entry is refused, never read as holding `any` (VTI-ACL-101).
+pub(super) async fn decide_purpose(
+    state: &AppState,
+    auth: &AuthClaims,
+    requested: Option<&str>,
+) -> vti_common::acl::PurposeDecision {
+    match crate::acl::get_acl_entry(&state.acl_ks, &auth.did).await {
+        Ok(Some(entry)) => entry.purposes.admit(requested),
+        _ => match requested {
+            Some(p) => vti_common::acl::PurposeDecision::NotGranted(p.to_string()),
+            None => vti_common::acl::PurposeDecision::Unnamed,
+        },
+    }
+}
+
+/// Refuse a read whose purpose is not granted (VTI-ACL-104): the version's
+/// `purposeNotGranted` where it declares one, else a `taskFailed` saying so —
+/// either way distinct from the access refusal, and carrying no content.
+pub(super) fn purpose_refusal(
+    doc: &TrustTask<Value>,
+    decision: &vti_common::acl::PurposeDecision,
+    code: Option<trust_tasks_rs::DeclaredErrorCode>,
+) -> TrustTaskOutcome {
+    let message = match decision {
+        vti_common::acl::PurposeDecision::NotGranted(p) => {
+            format!("this entry does not grant the purpose `{p}` (VTI-ACL-104)")
+        }
+        _ => "name the purpose you will use this content for: this entry lists more than one \
+              (VTI-ACL-103)"
+            .to_string(),
+    };
+    let details = decision.refusal_details();
+    match code {
+        Some(c) => reject_with_code(
+            doc,
+            trust_tasks_rs::TrustTaskCode::Extended {
+                slug: c.namespace().to_string(),
+                local: c.local().to_string(),
+            },
+            message,
+            details,
+        ),
+        None => reject_with(
+            doc,
+            trust_tasks_rs::RejectReason::TaskFailed {
+                reason: format!("purposeNotGranted: {message}"),
+                details,
+            },
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

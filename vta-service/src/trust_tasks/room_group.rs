@@ -1304,10 +1304,113 @@ async fn browse_at(
 /// `rooms/keys/open/0.2`: decrypt one sealed record; the key never crosses.
 /// `unknownEpoch`'s `details` say why a record did not open — `notDelivered`, `removed`
 /// or `beyondChain` for an older epoch the retained chain does not reach.
+///
+/// Purpose-bound like every opening (VTI-ACL-102), and naming no purpose: served under an
+/// entry stating `any` or listing one, refused as `taskFailed` under one listing more.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub(super) async fn handle_open_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    open_record(state, auth, doc, None, None).await
+}
+
+/// `rooms/keys/open/0.3`: 0.2's open, for the `purpose` the caller names
+/// (VTI-ACL-103); a purpose not granted is `purposeNotGranted`, and nothing is opened.
+pub(super) async fn handle_open_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vti_specs::rooms::keys::open::v0_3 as spec;
+    if let Err(resp) = parse_payload::<spec::Payload>(&doc) {
+        return resp;
+    }
+    let (doc, requested) = take_member(doc, "purpose");
+    open_record(
+        state,
+        auth,
+        doc,
+        requested,
+        Some(spec::error_codes::PURPOSE_NOT_GRANTED),
+    )
+    .await
+}
+
+/// `doc` without its `member`, and the member's string value: a 0.3 request is its 0.2
+/// predecessor's payload plus that one member (`extends`).
+fn take_member(mut doc: TrustTask<Value>, member: &str) -> (TrustTask<Value>, Option<String>) {
+    let value = doc
+        .payload
+        .as_object_mut()
+        .and_then(|m| m.remove(member))
+        .and_then(|v| v.as_str().map(str::to_string));
+    (doc, value)
+}
+
+/// Hold an opening to the caller's purposes (VTI-ACL-103 – 106): the decision to record
+/// with it, or the refusal, which is recorded too. The principal's room authority states no
+/// purposes yet — credentials cannot carry them until the VAC defines the member — so it
+/// grants `any`, and the caller's ACL entry is what narrows.
+pub(super) async fn admit_room_purpose(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    action: &str,
+    room_id: &str,
+    requested: Option<&str>,
+    code: Option<trust_tasks_rs::DeclaredErrorCode>,
+) -> Result<vti_common::acl::PurposeDecision, TrustTaskOutcome> {
+    let decision = super::helpers::decide_purpose(state, auth, requested).await;
+    if decision.is_granted() {
+        return Ok(decision);
+    }
+    record_purpose(state, action, auth, room_id, &decision, "denied").await;
+    Err(super::helpers::purpose_refusal(doc, &decision, code))
+}
+
+/// A room-holder audit row carrying the purpose an opening was made for (VTI-ACL-106).
+pub(super) async fn record_purpose(
+    state: &AppState,
+    action: &str,
+    auth: &AuthClaims,
+    room_id: &str,
+    decision: &vti_common::acl::PurposeDecision,
+    outcome: &str,
+) {
+    let detail = if decision.is_granted() {
+        format!("purpose={}", decision.audit_label())
+    } else {
+        format!(
+            "refused=purposeNotGranted purpose={}",
+            decision.audit_label()
+        )
+    };
+    if let Err(e) = vta_audit::record_with_detail(
+        &state.audit_sink,
+        action,
+        &auth.did,
+        Some(room_id),
+        outcome,
+        Some(TRANSPORT_TRUST_TASK),
+        None,
+        Some(&detail),
+    )
+    .await
+    {
+        tracing::error!(error = %e, action, "failed to record a room-group audit entry");
+    }
+}
+
+/// [`handle_open_v0_2`] and [`handle_open_v0_3`].
+#[allow(deprecated)] // the 0.2 payload type reads 0.3's too (`extends`)
+async fn open_record(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    requested: Option<String>,
+    purpose_code: Option<trust_tasks_rs::DeclaredErrorCode>,
 ) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1337,6 +1440,20 @@ pub(super) async fn handle_open_v0_2(
         Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let decision = match admit_room_purpose(
+        state,
+        auth,
+        &doc,
+        "rooms.keys.open",
+        &room_id,
+        requested.as_deref(),
+        purpose_code,
+    )
+    .await
+    {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
     // `version` is where the caller believes the body was sealed: `sealed.version` from the
     // host where it served one, else the record's own. A record curated by a host that
     // predates `sealed.version` opens at neither, so earlier versions are searched — and the
@@ -1358,7 +1475,15 @@ pub(super) async fn handle_open_v0_2(
         Err(e) => return open_refused(&doc, e),
     };
 
-    record(state, "rooms.keys.open", auth, &room_id).await;
+    record_purpose(
+        state,
+        "rooms.keys.open",
+        auth,
+        &room_id,
+        &decision,
+        "success",
+    )
+    .await;
     let mut payload = serde_json::json!({
         "plaintext": base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -1384,10 +1509,46 @@ pub(super) async fn handle_open_v0_2(
 /// Gated on `RoomOpen` for both purposes, as `seal` and `open` are: a sealing key opens the
 /// file it seals. A file sealed at or after the member's removal is `unknownEpoch` reason
 /// `removed`.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub(super) async fn handle_file_key_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    file_key(state, auth, doc, None, None).await
+}
+
+/// `rooms/keys/file-key/0.3`: 0.2's, for the `purposeOfUse` the caller names. Only a key
+/// to **open** a file discloses content, so only that is held to it (VTI-ACL-102); a
+/// sealing key is for content the caller is adding.
+pub(super) async fn handle_file_key_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vti_specs::rooms::keys::file_key::v0_3 as spec;
+    if let Err(resp) = parse_payload::<spec::Payload>(&doc) {
+        return resp;
+    }
+    let (doc, requested) = take_member(doc, "purposeOfUse");
+    file_key(
+        state,
+        auth,
+        doc,
+        requested,
+        Some(spec::error_codes::PURPOSE_NOT_GRANTED),
+    )
+    .await
+}
+
+/// [`handle_file_key_v0_2`] and [`handle_file_key_v0_3`].
+#[allow(deprecated)] // the 0.2 payload type reads 0.3's too (`extends`)
+async fn file_key(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    requested: Option<String>,
+    purpose_code: Option<trust_tasks_rs::DeclaredErrorCode>,
 ) -> TrustTaskOutcome {
     use vti_specs::rooms::keys::file_key::v0_2 as spec;
 
@@ -1469,6 +1630,24 @@ pub(super) async fn handle_file_key_v0_2(
         }
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let decision = if purpose == "open" {
+        match admit_room_purpose(
+            state,
+            auth,
+            &doc,
+            "rooms.keys.file-key",
+            &req.room_id,
+            requested.as_deref(),
+            purpose_code,
+        )
+        .await
+        {
+            Ok(d) => Some(d),
+            Err(r) => return r,
+        }
+    } else {
+        None
+    };
     let (key, epoch) =
         match room_groups::file_key(&state.room_groups_ks, &member, &file_id, open_epoch).await {
             Ok(k) => k,
@@ -1542,8 +1721,12 @@ pub(super) async fn handle_file_key_v0_2(
         Some(TRANSPORT_TRUST_TASK),
         None,
         Some(&format!(
-            "fileId={} purpose={purpose} epoch={epoch}",
-            req.file_id.as_str()
+            "fileId={} purpose={purpose} epoch={epoch}{}",
+            req.file_id.as_str(),
+            decision
+                .as_ref()
+                .map(|d| format!(" purposeOfUse={}", d.audit_label()))
+                .unwrap_or_default(),
         )),
     )
     .await
@@ -1852,6 +2035,126 @@ mod file_key_refusal_tests {
         body(handle_open_v0_2(state, &auth, doc).await)
     }
 
+    /// The super admin's stored entry, narrowed to `purposes`.
+    async fn narrow(state: &AppState, purposes: &[&str]) {
+        let did = crate::test_support::super_admin_claims().did;
+        let mut entry = crate::acl::get_acl_entry(&state.acl_ks, &did)
+            .await
+            .unwrap()
+            .expect("the super admin's entry");
+        entry.purposes = vti_common::acl::PurposeScope::listed(purposes.iter().copied()).unwrap();
+        crate::acl::store_acl_entry(&state.acl_ks, &entry)
+            .await
+            .unwrap();
+    }
+
+    /// `rooms/keys/open/0.3` (VTI-ACL-102 – 104): an opening is held to the caller's
+    /// purposes before anything is decrypted; 0.2 names none.
+    #[tokio::test]
+    async fn open_0_3_is_held_to_the_callers_purposes() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        hold_room_at_epoch_2(&state).await;
+        narrow(&state, &["personalisation", "taskExecution"]).await;
+        let auth = crate::test_support::super_admin_claims();
+        let open3 = |purpose: &str| {
+            let payload = serde_json::json!({
+                "roomId": ROOM,
+                "key": "k",
+                "version": 1,
+                "sealed": { "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA", "nonce": "AAAAAAAAAAAAAAAA", "epoch": 2 },
+                "purpose": purpose,
+            });
+            request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_3, payload)
+        };
+
+        let out = body(handle_open_v0_3(&state, &auth, open3("analytics")).await);
+        assert_eq!(
+            out["payload"]["code"], "rooms/keys/open:purposeNotGranted",
+            "{out}"
+        );
+        assert_eq!(
+            out["payload"]["details"],
+            serde_json::json!({ "purposeNamed": true, "purpose": "analytics" })
+        );
+
+        // Granted, so it goes on to the decryption, which this ciphertext fails.
+        let out = body(handle_open_v0_3(&state, &auth, open3("taskExecution")).await);
+        assert_ne!(
+            out["payload"]["code"], "rooms/keys/open:purposeNotGranted",
+            "{out}"
+        );
+
+        let out = open_at_epoch(&state, 2).await;
+        assert_eq!(
+            out["payload"]["code"], "taskFailed",
+            "0.2 names none: {out}"
+        );
+        assert_eq!(
+            out["payload"]["details"],
+            serde_json::json!({ "purposeNamed": false })
+        );
+    }
+
+    /// `rooms/keys/file-key/0.3`: a key to open a file is held to the caller's purposes;
+    /// a sealing key is not, since sealing discloses nothing.
+    #[tokio::test]
+    async fn file_key_0_3_holds_an_opening_key_to_its_purpose_and_not_a_sealing_one() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        hold_room_at_epoch_2(&state).await;
+        narrow(&state, &["personalisation"]).await;
+        let auth = crate::test_support::super_admin_claims();
+        let ask3 = |payload: Value| {
+            request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_3, payload)
+        };
+
+        let out = body(
+            handle_file_key_v0_3(
+                &state,
+                &auth,
+                ask3(serde_json::json!({
+                    "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 2,
+                    "purposeOfUse": "analytics",
+                })),
+            )
+            .await,
+        );
+        assert_eq!(
+            out["payload"]["code"], "rooms/keys/file-key:purposeNotGranted",
+            "{out}"
+        );
+
+        let out = body(
+            handle_file_key_v0_3(
+                &state,
+                &auth,
+                ask3(serde_json::json!({
+                    "roomId": ROOM, "fileId": FILE_ID, "purpose": "seal",
+                    "purposeOfUse": "analytics",
+                })),
+            )
+            .await,
+        );
+        assert!(
+            out["payload"]["key"].is_string(),
+            "a sealing key is not purpose-bound: {out}"
+        );
+
+        let out = body(
+            handle_file_key_v0_3(
+                &state,
+                &auth,
+                ask3(serde_json::json!({
+                    "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 2,
+                })),
+            )
+            .await,
+        );
+        assert!(
+            out["payload"]["key"].is_string(),
+            "the one listed purpose applies: {out}"
+        );
+    }
+
     /// `rooms/keys/file-key/0.2` oracle item 4: a file sealed at or after the member's
     /// removal is `removed`, with `removedAtEpoch` — never `notDelivered`, whose remedy
     /// (catch up) cannot work.
@@ -2006,6 +2309,7 @@ mod file_key_refusal_tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)] // file-key 0.2 is still served, and this names no purpose of use
     async fn a_held_room_releases_a_sealing_key_under_its_current_epoch() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
         hold_room_at_epoch_2(&state).await;

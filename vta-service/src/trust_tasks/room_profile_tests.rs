@@ -1820,3 +1820,107 @@ async fn messages_replies_and_reactions_round_trip_through_a_batch_read() {
 #[cfg(feature = "didcomm")]
 #[path = "room_key_watch_tests.rs"]
 mod watch;
+
+// ─── Purpose of use (VTI-ACL-100 – 110) ─────────────────────────────────────
+
+/// The super admin's stored entry, narrowed to `purposes`.
+async fn narrow(state: &AppState, purposes: &[&str]) {
+    let did = admin().did;
+    let mut entry = crate::acl::get_acl_entry(&state.acl_ks, &did)
+        .await
+        .unwrap()
+        .expect("the super admin's entry");
+    entry.purposes = vti_common::acl::PurposeScope::listed(purposes.iter().copied()).unwrap();
+    crate::acl::store_acl_entry(&state.acl_ks, &entry)
+        .await
+        .unwrap();
+}
+
+/// The audit rows the VTA wrote, as text.
+async fn audit_rows(state: &AppState) -> Vec<String> {
+    state
+        .audit_ks
+        .prefix_iter_raw("log:")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, v)| String::from_utf8_lossy(&v).into_owned())
+        .collect()
+}
+
+/// `rooms/keys/read/0.3` (VTI-ACL-102 – 106): a read is held to the caller's purposes
+/// before the host is asked for anything, refused distinctly and without content, and
+/// audited with its purpose either way. A granted purpose is passed to the host as
+/// get/0.4's, and a host that does not serve get/0.4 is asked get/0.3.
+#[tokio::test]
+async fn read_0_3_is_held_to_the_callers_purposes() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-a", "first").await;
+    narrow(&s.owner.state, &["personalisation", "taskExecution"]).await;
+    let caller = admin();
+    let read3 = |purpose: Option<&str>| {
+        let mut payload = json!({ "roomId": s.room.did, "host": s.host.did, "key": "rec-a" });
+        if let Some(p) = purpose {
+            payload["purpose"] = json!(p);
+        }
+        super::super::room_read::handle_read_v0_3(
+            &s.owner.state,
+            &caller,
+            request(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_3, payload),
+        )
+    };
+    let (v3_before, v4) = (
+        s.host.received(GET_V3),
+        vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE,
+    );
+
+    let refused = body(read3(Some("analytics")).await);
+    assert_eq!(
+        refused["payload"]["code"], "rooms/keys/read:purposeNotGranted",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["payload"]["details"],
+        json!({ "purposeNamed": true, "purpose": "analytics" })
+    );
+    assert!(
+        !refused.to_string().contains("first"),
+        "no content: {refused}"
+    );
+    let unnamed = body(read3(None).await);
+    assert_eq!(
+        unnamed["payload"]["details"],
+        json!({ "purposeNamed": false }),
+        "two purposes listed and none named: {unnamed}"
+    );
+    assert_eq!(
+        s.host.received(GET_V3),
+        v3_before,
+        "a refused read asks the host for nothing"
+    );
+
+    let served = body(read3(Some("personalisation")).await);
+    assert_eq!(
+        decoded(&served["payload"]["plaintext"]),
+        "first",
+        "{served}"
+    );
+    assert_eq!(s.host.received(v4), 1, "the purpose is offered to the host");
+    assert_eq!(
+        s.host.received(GET_V3),
+        v3_before + 1,
+        "a host without get/0.4 is asked get/0.3"
+    );
+
+    let rows = audit_rows(&s.owner.state).await;
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("rooms.keys.read") && r.contains("purpose=personalisation")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("rooms.keys.read")
+            && r.contains("refused=purposeNotGranted purpose=analytics")),
+        "{rows:#?}"
+    );
+}

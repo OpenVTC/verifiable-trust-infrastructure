@@ -910,8 +910,15 @@ pub const TASK_ROOMS_KEYS_PRESENT_0_2: &str = "https://trusttasks.org/spec/rooms
 /// `reason` is `notDelivered` (catch up and retry), `beyondChain` (the retained
 /// chain does not reach the epoch) or `removed` (never retry).
 /// Auth: `roomOpen` capability.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub const TASK_ROOMS_KEYS_OPEN_0_2: &str =
     <vti_specs::rooms::keys::open::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/open/0.3` — 0.2's, with the `purpose` the caller will use what
+/// it opens for (VTI-ACL-100 – 110); a purpose its entry does not grant is
+/// `purposeNotGranted`.
+pub const TASK_ROOMS_KEYS_OPEN_0_3: &str =
+    <vti_specs::rooms::keys::open::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/key-package/0.2` — mint an MLS KeyPackage so a room's owner has
 /// something to add; the KeyPackage already held for the same room, member and
@@ -966,8 +973,15 @@ pub const TASK_ROOMS_KEYS_READ_0_1: &str = "https://trusttasks.org/spec/rooms/ke
 /// `results` — a record or that key's own error, `notAttempted` for a key not come to
 /// within the response's size or time budget. Repairs are made once per request. Auth:
 /// `roomOpen` capability. The version this SDK sends.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub const TASK_ROOMS_KEYS_READ_0_2: &str =
     <vti_specs::rooms::keys::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/read/0.3` — 0.2's, with the `purpose` the caller will use what
+/// it opens for (VTI-ACL-100 – 110); a purpose its entry does not grant is
+/// `purposeNotGranted`.
+pub const TASK_ROOMS_KEYS_READ_0_3: &str =
+    <vti_specs::rooms::keys::read::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/browse/0.3` — list a room's records at its host, and check the
 /// listing against what the host committed to, with the room's `lastPrune` passed through
@@ -1075,8 +1089,15 @@ pub const TASK_ROOMS_CHANGED_0_1: &str =
 /// `unknownEpoch` reason, `removed` (with `removedAtEpoch`), marks a file sealed at or
 /// after the member's removal, which no commit will make derivable. Auth: `roomOpen`
 /// capability.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub const TASK_ROOMS_KEYS_FILE_KEY_0_2: &str =
     <vti_specs::rooms::keys::file_key::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/file-key/0.3` — 0.2's, with the `purposeOfUse` the caller will use what
+/// it opens for (VTI-ACL-100 – 110); a purpose its entry does not grant is
+/// `purposeNotGranted`.
+pub const TASK_ROOMS_KEYS_FILE_KEY_0_3: &str =
+    <vti_specs::rooms::keys::file_key::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/list/0.2` — which rooms this VTA can open, and how far back each
 /// reads: one entry per room **and member** (each names its `member`), for the members
@@ -2821,6 +2842,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_MEMORY_GET_0_2,
     TASK_ROOMS_KEYS_PRESENT_0_2,
     TASK_ROOMS_KEYS_OPEN_0_2,
+    TASK_ROOMS_KEYS_OPEN_0_3,
     TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
     TASK_ROOMS_KEYS_WELCOME_0_1,
     TASK_ROOMS_KEYS_COMMIT_0_1,
@@ -2828,6 +2850,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_BACKFILL_0_2,
     TASK_ROOMS_KEYS_READ_0_1,
     TASK_ROOMS_KEYS_READ_0_2,
+    TASK_ROOMS_KEYS_READ_0_3,
     TASK_ROOMS_KEYS_BROWSE_0_3,
     TASK_ROOMS_KEYS_BROWSE_0_4,
     TASK_ROOMS_KEYS_SEAL_0_2,
@@ -2840,6 +2863,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_WATCH_0_1,
     TASK_ROOMS_CHANGED_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
+    TASK_ROOMS_KEYS_FILE_KEY_0_3,
     TASK_ROOMS_KEYS_LIST_0_2,
     TASK_ROOMS_KEYS_LABEL_0_1,
     TASK_ROOMS_KEYS_PROFILE_READ_0_1,

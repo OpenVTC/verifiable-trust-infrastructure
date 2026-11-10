@@ -181,6 +181,7 @@ pub(super) async fn handle_issue_membership(
 }
 
 /// `rooms/owner/issue-authority/0.1` — mint a VAC chain root.
+#[allow(deprecated)] // issue-authority 0.2 is what a VTA serves; 0.3 waits on credential purposes
 pub(super) async fn handle_issue_authority(
     state: &AppState,
     auth: &AuthClaims,

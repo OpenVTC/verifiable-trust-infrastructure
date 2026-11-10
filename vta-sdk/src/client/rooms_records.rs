@@ -227,6 +227,7 @@ impl VtaClient {
     /// `hostRefused`, `hostUnreachable`, `notAMember`.
     ///
     /// A VTA that does not serve 0.2 is asked read/0.1.
+    #[allow(deprecated)] // read 0.2 is still served; 0.3 adds only `purpose`, which this call names none of
     pub async fn room_read(
         &self,
         room_id: &str,
@@ -265,6 +266,7 @@ impl VtaClient {
     /// A VTA that does not serve 0.2 is asked read/0.1 key by key, and its answers are put
     /// in the same shape — a refusal becoming that key's `error`. A failure to reach the VTA
     /// at all is the call's error.
+    #[allow(deprecated)] // read 0.2 is still served; 0.3 adds only `purpose`, which this call names none of
     pub async fn room_read_batch(
         &self,
         room_id: &str,

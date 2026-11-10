@@ -101,6 +101,7 @@ const RETRY_CAP: Duration = Duration::from_secs(6 * 60 * 60);
 const OWNER_ACTIONS: [&str; 4] = ["read", "write", "curate", "admin"];
 
 const OWNER_MEMBERSHIP: &str = <owner_membership::Payload as Payload>::TYPE_URI;
+#[allow(deprecated)] // issue-authority 0.2 is what a VTA serves; 0.3 waits on credential purposes
 const OWNER_AUTHORITY: &str = <owner_authority::Payload as Payload>::TYPE_URI;
 const VAULT_RECEIVE: &str = <vault_receive::Payload as Payload>::TYPE_URI;
 const VAULT_QUERY: &str = <vault_query::Payload as Payload>::TYPE_URI;
@@ -509,6 +510,7 @@ async fn ask(holder: &KeyHolder, task: &str, name: &str, payload: Value) -> Resu
 
 /// Issue and store a fresh membership and authority for the community in `room`, each
 /// replacing the one it renews. Records each handle in `rec` as soon as it is known.
+#[allow(deprecated)] // issue-authority 0.2 is what a VTA serves; 0.3 waits on credential purposes
 async fn renew(
     holder: &KeyHolder,
     community: &CommunityRoomsConfig,

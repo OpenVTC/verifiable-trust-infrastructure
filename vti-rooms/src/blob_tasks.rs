@@ -801,6 +801,7 @@ pub async fn get_v2_response(
 ///
 /// None is committed: the response's leaf is the record with these removed, as `blobs` is,
 /// so the leaf and the trace are get/0.2's unchanged.
+#[allow(deprecated)] // get/0.3 is still served beside get/0.4, which waits on credential purposes
 pub async fn get_v3_response(
     snapshot: &ReadSnapshot<'_>,
     room: &Room,

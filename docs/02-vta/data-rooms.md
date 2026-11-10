@@ -941,6 +941,24 @@ oracle over handing credentials across: there is a place to say no.
 
 ---
 
+### Purposes: what an agent may use what it opens for
+
+An agent's ACL entry states its purposes (`pnm acl create --purposes …`,
+VTI-ACL-100 – 110), and the VTA holds every opening to them: `rooms/keys/open`,
+`rooms/keys/read` and, for a key that opens a file, `rooms/keys/file-key`
+(VTI-ACL-102). At 0.3 a request names its purpose (`purpose`; `purposeOfUse` on
+`file-key`, where `purpose` already means seal or open); one the entry does not
+grant is refused with `purposeNotGranted` before anything is decrypted or the host
+is asked, and every opening's audit row carries its purpose. The earlier versions
+name none: served under `any` or a single listed purpose, refused under an entry
+listing more. `any` never grants `modelTraining`.
+
+`rooms/keys/read/0.3` passes a named purpose to the host as
+`rooms/records/get/0.4`'s, and asks get/0.3 of a host that does not serve it.
+Room authority credentials do not state purposes yet (VTI-ACL-110): a VAC has
+no such member until the credential specification defines one, so a chain grants
+`any`, and the agent's ACL entry is what narrows.
+
 ## 8. Run the host
 
 ### 8.1 T1 — your own room host

@@ -34,7 +34,7 @@
 //! [`derived_capabilities_for_role`]: vti_common::acl::derived_capabilities_for_role
 
 use serde_json::{Value, json};
-use trust_tasks_rs::{RejectReason, TrustTask, TrustTaskCode};
+use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::app_state::AppStateRecord;
 use vta_sdk::protocols::memory::{
@@ -51,8 +51,8 @@ use crate::server::AppState;
 
 use super::app_state::app_state_reject;
 use super::helpers::{
-    TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with,
-    reject_with_code, success_response,
+    TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, decide_purpose, parse_payload,
+    purpose_refusal, reject_with, success_response,
 };
 
 /// Capability gate for the memory surface, mirroring the vault slices'
@@ -126,60 +126,6 @@ fn without_purpose(doc: &TrustTask<Value>) -> TrustTask<Value> {
         m.remove("purpose");
     }
     doc
-}
-
-/// Judge `requested` against the caller's **stored** entry (VTI-ACL-103,
-/// -104), never a token: a narrowing binds at the next read. A caller with no
-/// readable entry is refused, never read as holding `any` (VTI-ACL-101).
-async fn decide_purpose(
-    state: &AppState,
-    auth: &AuthClaims,
-    requested: Option<&str>,
-) -> PurposeDecision {
-    match crate::acl::get_acl_entry(&state.acl_ks, &auth.did).await {
-        Ok(Some(entry)) => entry.purposes.admit(requested),
-        _ => match requested {
-            Some(p) => PurposeDecision::NotGranted(p.to_string()),
-            None => PurposeDecision::Unnamed,
-        },
-    }
-}
-
-/// Refuse a read whose purpose is not granted (VTI-ACL-104): the version's
-/// `purposeNotGranted` where it declares one, else a `taskFailed` saying so —
-/// either way distinct from the access refusal, and carrying no content.
-fn purpose_refusal(
-    doc: &TrustTask<Value>,
-    decision: &PurposeDecision,
-    code: Option<trust_tasks_rs::DeclaredErrorCode>,
-) -> TrustTaskOutcome {
-    let message = match decision {
-        PurposeDecision::NotGranted(p) => {
-            format!("this entry does not grant the purpose `{p}` (VTI-ACL-104)")
-        }
-        _ => "name the purpose you will use this memory for: this entry lists more than one \
-              (VTI-ACL-103)"
-            .to_string(),
-    };
-    let details = decision.refusal_details();
-    match code {
-        Some(c) => reject_with_code(
-            doc,
-            TrustTaskCode::Extended {
-                slug: c.namespace().to_string(),
-                local: c.local().to_string(),
-            },
-            message,
-            details,
-        ),
-        None => reject_with(
-            doc,
-            RejectReason::TaskFailed {
-                reason: format!("purposeNotGranted: {message}"),
-                details,
-            },
-        ),
-    }
 }
 
 /// What a version of a memory task declares for the two refusals a read can
