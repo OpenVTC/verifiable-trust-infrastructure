@@ -1022,6 +1022,13 @@ async fn register_admin(
     if rolling_over_itself {
         refuse_unmarked_expiring_rollover(state, client_did, context).await?;
     }
+    // The admin is granted the writer's own purposes: within them by construction
+    // (VTI-ACL-107), where `any` — the default — would be refused to a writer whose
+    // entry lists purposes, leaving it unable to provision at all.
+    let purposes = get_acl_entry(&state.acl_ks, &auth.did)
+        .await?
+        .map(|me| me.purposes)
+        .unwrap_or_default();
     match super::acl::create_acl(
         &state.acl_ks,
         &state.audit,
@@ -1032,6 +1039,7 @@ async fn register_admin(
             role: Role::Admin,
             label,
             allowed_contexts,
+            purposes,
             ..Default::default()
         },
         "provision-integration",
@@ -2835,6 +2843,47 @@ mod tests {
     // ── BootstrapAsk::AdminRotation flow ────────────────────────────
 
     use crate::test_support::signed_admin_rotation_request;
+
+    /// VTI-ACL-107: the admin a provisioner writes holds the provisioner's own purposes.
+    /// A provisioner whose entry lists purposes can provision, and the admin it writes is
+    /// within them rather than `any`.
+    #[tokio::test]
+    async fn vti_acl_107_the_provisioned_admin_holds_the_provisioners_purposes() {
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "ctx-1", "Test ctx")
+            .await
+            .expect("create context");
+        let auth = super_admin_claims();
+        let mut me = crate::acl::get_acl_entry(&deps.acl_ks, &auth.did)
+            .await
+            .unwrap()
+            .expect("the operator's entry");
+        let listed = vti_common::acl::PurposeScope::listed(["taskExecution"]).unwrap();
+        me.purposes = listed.clone();
+        crate::acl::store_acl_entry(&deps.acl_ks, &me)
+            .await
+            .unwrap();
+
+        let output = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request: signed_admin_rotation_request("vta-admin", "ctx-1").await,
+                context: "ctx-1".into(),
+                admin_scope: AdminScope::Context,
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .expect("a provisioner listing purposes provisions");
+        let admin = crate::acl::get_acl_entry(&deps.acl_ks, &output.summary.admin_did)
+            .await
+            .unwrap()
+            .expect("the admin's row");
+        assert_eq!(admin.purposes, listed);
+    }
 
     #[tokio::test]
     async fn provision_integration_admin_rotation_mints_fresh_admin_no_integration() {

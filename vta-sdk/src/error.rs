@@ -255,9 +255,10 @@ pub enum VtaError {
     #[error("{}", match .served_versions.is_empty() {
         true => format!("peer does not serve {}", .type_uri),
         false => format!(
-            "peer does not serve {} — it serves {}",
+            "peer does not serve {} — it serves {}{}",
             .type_uri,
             .served_versions.join(", "),
+            version_age_hint(.type_uri, .served_versions),
         ),
     })]
     UnsupportedTaskType {
@@ -1222,5 +1223,72 @@ mod tests {
             .is_none()
         );
         assert!(VtaError::Other("x".into()).to_typed_payload().is_none());
+    }
+}
+
+/// Which side of an `unsupportedVersion` is behind, where the versions say so: a requested version older
+/// than every one served means this client is older than the peer, newer than
+/// every one served means the peer is older than this client. Empty where the
+/// versions do not order (one is unreadable, or the request falls between).
+pub fn version_age_hint(type_uri: &str, served: &[String]) -> &'static str {
+    fn version(uri: &str) -> Option<(u32, u32)> {
+        let (major, minor) = uri.rsplit('/').next()?.split_once('.')?;
+        Some((major.parse().ok()?, minor.parse().ok()?))
+    }
+    let Some(asked) = version(type_uri) else {
+        return "";
+    };
+    let Some(served) = served
+        .iter()
+        .map(|s| version(s))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return "";
+    };
+    if served.iter().all(|v| asked < *v) {
+        " (this client is older than the peer: upgrade the client)"
+    } else if served.iter().all(|v| asked > *v) {
+        " (the peer is older than this client: upgrade the peer)"
+    } else {
+        ""
+    }
+}
+
+#[cfg(test)]
+mod version_age_hint_tests {
+    use super::version_age_hint;
+
+    fn served(v: &[&str]) -> Vec<String> {
+        v.iter()
+            .map(|v| format!("https://trusttasks.org/spec/acl/list/{v}"))
+            .collect()
+    }
+
+    #[test]
+    fn an_older_client_is_told_to_upgrade_itself() {
+        let hint = version_age_hint(
+            "https://trusttasks.org/spec/acl/list/0.3",
+            &served(&["0.4"]),
+        );
+        assert!(hint.contains("upgrade the client"), "{hint}");
+    }
+
+    #[test]
+    fn an_older_peer_is_named_as_the_one_behind() {
+        let hint = version_age_hint(
+            "https://trusttasks.org/spec/acl/list/0.4",
+            &served(&["0.2", "0.3"]),
+        );
+        assert!(hint.contains("upgrade the peer"), "{hint}");
+    }
+
+    #[test]
+    fn versions_that_do_not_order_say_nothing() {
+        let between = version_age_hint(
+            "https://trusttasks.org/spec/acl/list/0.3",
+            &served(&["0.2", "0.4"]),
+        );
+        assert_eq!(between, "");
+        assert_eq!(version_age_hint("not-a-uri", &served(&["0.2"])), "");
     }
 }
