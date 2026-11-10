@@ -4525,6 +4525,23 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3,
+            checked!(
+                specs::rooms::owner::issue_authority::v0_3::Payload,
+                specs::rooms::owner::issue_authority::v0_3::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "signingKeyId": "room-northwind-signing",
+                    "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "actions": ["read"],
+                    "validUntil": "2026-02-01T00:00:00Z",
+                    "purposes": { "scope": "listed", "purposes": ["taskExecution"] }
+                }),
+                json!({ "credential": "eyJhbGciOiJFZERTQSJ9.room-credential",
+                    "credentialId": "urn:uuid:11111111-1111-4111-8111-111111111111" })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_OPEN_0_2,
             checked!(
                 specs::rooms::keys::open::v0_2::Payload,

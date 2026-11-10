@@ -654,7 +654,7 @@ impl VtaClient {
     /// the grant nothing else withdraws, so expiry is how it ends. An empty
     /// `actions` is refused rather than read as "everything". Call it inside
     /// [`VtaClient::idempotent`] (the task is `Keyed`).
-    #[allow(deprecated)] // issue-authority 0.2 is the version VTAs serve; 0.3 waits on credential purposes
+    #[allow(deprecated)] // 0.2 is served beside 0.3; a grant stating no purposes needs nothing more
     pub async fn room_owner_issue_authority(
         &self,
         room_id: &str,
@@ -669,6 +669,38 @@ impl VtaClient {
             .dispatch_trust_task(
                 trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
                 serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/owner/issue-authority")
+    }
+
+    /// `rooms/owner/issue-authority/0.3` — [`Self::room_owner_issue_authority`], the
+    /// credential stating `purposes`: what its subject may use the content it reads under
+    /// it for (VTI-ACL-110). The VTA refuses purposes wider than the caller's own entry
+    /// grants (VTI-ACL-107). Call it inside [`VtaClient::idempotent`] (the task is `Keyed`).
+    #[allow(deprecated)] // the 0.2 payload builder, whose members 0.3 extends
+    pub async fn room_owner_issue_authority_for(
+        &self,
+        room_id: &str,
+        signing_key_id: &str,
+        subject: &str,
+        actions: Vec<RoomAction>,
+        valid_until: chrono::DateTime<chrono::Utc>,
+        purposes: &crate::acl::PurposeScope,
+    ) -> Result<vti_specs::rooms::owner::issue_authority::v0_3::Response, VtaError> {
+        let mut payload = serde_json::to_value(room_issue_authority_payload(
+            room_id,
+            signing_key_id,
+            subject,
+            actions,
+            valid_until,
+        )?)?;
+        payload["purposes"] = serde_json::to_value(purposes)?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3,
+                payload,
                 ROOM_TT_TIMEOUT,
             )
             .await?;
@@ -1121,7 +1153,7 @@ fn room_register_payload(
         .map_err(|e| VtaError::Validation(format!("rooms/owner/register request: {e}")))
 }
 
-#[allow(deprecated)] // issue-authority 0.2 is the version VTAs serve; 0.3 waits on credential purposes
+#[allow(deprecated)] // the 0.2 payload, which 0.3 extends with `purposes`
 fn room_issue_authority_payload(
     room_id: &str,
     signing_key_id: &str,

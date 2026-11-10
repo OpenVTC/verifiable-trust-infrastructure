@@ -3020,6 +3020,8 @@ dispatch_table! {
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2 => room_owner::handle_issue_authority
         [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3 => room_owner::handle_issue_authority_v0_3
+        [ Mutating Metadata false ],
     // Founding a room's group keeps everything inside this agent.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_CREATE_0_1 => room_owner_group::handle_create
         [ Mutating Metadata false ],
