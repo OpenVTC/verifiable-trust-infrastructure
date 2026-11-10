@@ -116,8 +116,12 @@ stop depending on one implementation's resource file.
 
 *Adopts #216 Q4.* A v2 registry is `rip` plus `bup` events. Designations are
 public, so each `bup` is published with its expanded blinded state attached
-(`BlindedStateQuadruples`, empty UUID, the ACDC specification's public mode), and
-read the way keripy's `vetBinds` reads it:
+(`BlindedStateQuadruples`), and read the way keripy's `vetBinds` reads it.
+**Each update uses a fresh UUID, even though the state is disclosed anyway.**
+With the empty UUID of the ACDC specification's public mode, a re-issue's BLID
+collides with the first issuance's, and keripy refuses it
+(`UnverifiedBlindError`, fixture `v2-reissued-empty-uuid`). We read that case by
+which update each disclosure is attached to, but VTI never writes it.
 
 - Disclosures are matched to updates by BLID. Every update from the latest back
   to the latest non-vacuous one must be disclosed.
@@ -125,10 +129,11 @@ read the way keripy's `vetBinds` reads it:
   credential. The state vocabulary is fixed to `issued` and `revoked`, and
   anything else fails.
 - **Every registry event the AID's KEL anchors must be in `keri.cesr`.**
-  Otherwise a stream that leaves out the revoking update resolves as issued. Our
-  v1 designation reader has the same gap today (`designation.rs` treats an
-  absent revocation as no revocation), so the v2 reader closes it from the
-  start.
+  Otherwise a stream that leaves out the revoking update resolves as issued.
+  keripy does exactly that (fixture `v2-revocation-withheld`): it checks that
+  what is presented is anchored, not that everything anchored is presented.
+  `affinidi-keri-core`'s `registry` module fails resolution instead, for v1 and
+  v2, and replaces the v1 reader in `designation.rs`, which had the same gap.
 - Under `versionId`, "latest" means latest among the updates anchored at or
   before the limiting KEL event, judged by anchor position.
 - **Don't depend on `upd`.** keripy main refuses it
