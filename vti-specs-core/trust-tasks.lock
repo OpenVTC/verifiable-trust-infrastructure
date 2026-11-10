@@ -6,31 +6,61 @@ registry = "https://trusttasks.org"
 slug = "acl/change-role"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/acl/change-role/0.2"
-digest = "sha256:51afd47c891195d46100737ef888bd8e3dbb60879494e66c663ef491aedf238e"
+digest = "sha256:f38e146f0e16729c70e530d675906a49eb739a071359267957b71935c74271a9"
+
+[[task]]
+slug = "acl/change-role"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/acl/change-role/0.3"
+digest = "sha256:b8fb530b8dd862626a36d03aa893ce4f1848b8159f0795e24b5cd14e2c84bea9"
 
 [[task]]
 slug = "acl/grant"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/acl/grant/0.2"
-digest = "sha256:c0a13be9c8038a5507f41517f7b92ef36a83d91506c525e8f8d7b7d0123c71a6"
+digest = "sha256:d8a2efebb6d8c88023437718ad1064254e1ff375e42331874e9263d4b452beda"
+
+[[task]]
+slug = "acl/grant"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/acl/grant/0.3"
+digest = "sha256:0b99efcbe3c646a6895c10271f3de13ff0e3c4b56be9eaf7de9104cac9a7b141"
 
 [[task]]
 slug = "acl/list"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/acl/list/0.3"
-digest = "sha256:a356c0fe141aaee16a8a1a666b9a5e617660ecd202ab9303b2c86c51078d54d3"
+digest = "sha256:2e010d9eb8753b5d60292ffcd640767e84248305eca37a089c4aa6915e3c781a"
+
+[[task]]
+slug = "acl/list"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/acl/list/0.4"
+digest = "sha256:c1bf1b3fd5b4f6e78ee3a61010344da99f65341eea51d497f62e18d05f95747a"
 
 [[task]]
 slug = "acl/revoke"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/acl/revoke/0.2"
-digest = "sha256:e9ffa6eae34d2ce2e50c65e42598c82f0ca470ea82cdc66360d8be13dbfa9c3c"
+digest = "sha256:12c061e4f3ad5dd51dd71720eb2832750b1def16fc00ba8d851689694e2778ee"
+
+[[task]]
+slug = "acl/revoke"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/acl/revoke/0.3"
+digest = "sha256:5264e24b5c9e96f24b2a2b2346a4fab01f7e63824161d391777dc163a2b22b13"
 
 [[task]]
 slug = "acl/show"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/acl/show/0.2"
-digest = "sha256:a196fe6c58e2af8687f4ac29d7366fab2ff3aabf83cbaabd9049bc722b9542c6"
+digest = "sha256:dee68169aa17eb8a5ebdd463513cd3676f3fa58017dd98ec74411b36d4613bbd"
+
+[[task]]
+slug = "acl/show"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/acl/show/0.3"
+digest = "sha256:c6aebfe3d5824d2d512040a2f0481ff14238986ea54cd165fc1400e2ac1dd7c9"
 
 [[task]]
 slug = "acl/swap-key"
@@ -42,7 +72,13 @@ digest = "sha256:6b3ccd9b9c57a47d4a31e9b85a63088cd52280a61ab44d5a9d06718ffa1f5df
 slug = "acl/update"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/acl/update/0.2"
-digest = "sha256:3b84c3e94620059b604ce7ee00e40f283f4433c118b9afda227c3be2779a29a2"
+digest = "sha256:f47558b294224ee35cd2472f23e9ea78377a035195e72f08f537c464c1323055"
+
+[[task]]
+slug = "acl/update"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/acl/update/0.3"
+digest = "sha256:46a7d410b1c3e5061c988795510564dee062ccfee209e8811a7945ef43994d84"
 
 [[task]]
 slug = "audit/list"
@@ -1548,7 +1584,7 @@ digest = "sha256:c95b241bfc7649af055d79d92e7f7d79a83bdf8c8b297c595beba3a73ae0e9f
 slug = "vault/sign-trust-task"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vault/sign-trust-task/0.2"
-digest = "sha256:be306da9ccd74ac7d0789fddff78c9a264b3d5d8248b643bb321ad3f55c7690b"
+digest = "sha256:c8b8c45faee1afd9cdbe61ee1f26cc734c81e741caaacb57df0f6f0f50bc8acd"
 
 [[task]]
 slug = "vault/upsert"

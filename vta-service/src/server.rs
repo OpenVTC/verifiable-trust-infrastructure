@@ -695,6 +695,19 @@ pub async fn build_app_state(
     )
     .await;
 
+    // Every entry states its purposes before anything is served (VTI-ACL-101):
+    // an entry written before they existed is rewritten with `any`, the
+    // authority it already held. A row that cannot be rewritten still reads as
+    // `any`, so a failure here is logged rather than fatal.
+    match vti_common::acl::state_purposes_on_every_entry(&acl_ks).await {
+        Ok(0) => {}
+        Ok(n) => info!(
+            rewritten = n,
+            "ACL entries now state purposes: any (VTI-ACL-101)"
+        ),
+        Err(e) => warn!(error = %e, "ACL entries not rewritten with their purposes"),
+    }
+
     // The did:scid identities this VTA authorises resolve by their bare DID,
     // and refuse a log older than one verified before, from the first request
     // after a restart (VTI-KEY-162).
@@ -4559,7 +4572,7 @@ mod unenforced_policy_tests {
         vta_policy::seed_declarative_approvals(
             &ks,
             &[vta_sdk::approvals::ApprovalRule::reauth(
-                "https://trusttasks.org/spec/acl/grant/0.2",
+                "https://trusttasks.org/spec/acl/grant/0.3",
             )],
             &Default::default(),
             now,

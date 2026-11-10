@@ -2234,7 +2234,7 @@ impl DispatchAudit {
         // rather than convenience.
         //
         // The handlers' action vocabulary is hand-chosen and does not follow
-        // the URI: `acl/grant/0.2` audits as `acl.create`, `keys/create/0.1` as
+        // the URI: `acl/grant/0.3` audits as `acl.create`, `keys/create/0.1` as
         // `key.create`, `auth/revoke-session/0.2` as `session.revoke`. There is
         // no derivation, so matching it would need a table keyed by URI — 84
         // entries that go stale invisibly the first time someone adds a task.
@@ -2397,17 +2397,17 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2 => task_consent::handle_decision
         [ Mutating None false ],
     // ─── ACL slice ────────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_ACL_LIST_0_3 => acl::handle_list
+    vta_sdk::trust_tasks::TASK_ACL_LIST_0_4 => acl::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2 => acl::handle_create
+    vta_sdk::trust_tasks::TASK_ACL_GRANT_0_3 => acl::handle_create
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_SHOW_0_2 => acl::handle_get
+    vta_sdk::trust_tasks::TASK_ACL_SHOW_0_3 => acl::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_2 => acl::handle_update
+    vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_3 => acl::handle_update
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_2 => acl::handle_change_role
+    vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_3 => acl::handle_change_role
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_2 => acl::handle_delete
+    vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_3 => acl::handle_delete
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_0_1 => acl::handle_swap_key
         [ Destructive None false ],
@@ -2891,6 +2891,17 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_2 => memory::handle_list_v0_2
         [ None Secret false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_GET_0_1 => memory::handle_get_v0_1
+        [ None Secret false ],
+    // Purpose of use (#2120, VTI-ACL-100 – 110): 0.2's (get 0.1's) payloads
+    // plus the `purpose` a read is made for. Every version is purpose-bound;
+    // the older ones read as naming none.
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_3 => memory::handle_put_v0_3
+        [ Mutating Secret false ],
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_DELETE_0_3 => memory::handle_delete_v0_3
+        [ Destructive Secret false ],
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_3 => memory::handle_list_v0_3
+        [ None Secret false ],
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_GET_0_2 => memory::handle_get_v0_2
         [ None Secret false ],
     // ─── Room oracle (spec/rooms/keys/*) ─────────────────────────
     // An agent asks for a scoped presentation over its principal's room
@@ -3888,7 +3899,7 @@ mod tests {
     #[test]
     fn the_spec_index_is_populated() {
         for uri in [
-            "https://trusttasks.org/spec/acl/grant/0.2",
+            "https://trusttasks.org/spec/acl/grant/0.3",
             "https://trusttasks.org/spec/auth/authenticate/0.3",
             "https://trusttasks.org/spec/vault/list/0.4",
         ] {
@@ -5957,9 +5968,10 @@ mod response_coverage {
 
         ok(
             &state,
-            t::TASK_ACL_GRANT_0_2,
+            t::TASK_ACL_GRANT_0_3,
             json!({
                 "entry": {
+                    "purposes": {"scope": "any"},
                     "subject": successor, "role": "admin",
                     "act": {"scope": "all"}, "keys": {"scope": "all"},
                     "capabilities": {"scope": "ceiling"},
@@ -6712,6 +6724,11 @@ mod response_coverage {
     async fn memory_lifecycle() {
         let (state, _dir) = build_signing_test_app_state().await;
         a_context(&state, "cov-memory").await;
+        // A memory read is held to the caller's stored entry's purposes, so the
+        // caller has one (VTI-ACL-101).
+        let admin = crate::test_support::super_admin_claims();
+        crate::test_support::seed_acl_entry(&state.acl_ks, &admin.did, admin.role, Vec::new())
+            .await;
         ok(
             &state,
             t::TASK_VTA_MEMORY_PUT_0_1,

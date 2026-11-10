@@ -1661,6 +1661,8 @@ async fn main() {
                         // entry holding everything its role implies.
                         None,
                         false,
+                        // Nor purpose flags: `None` grants `any`.
+                        None,
                     )
                     .await
                 }
@@ -1690,6 +1692,8 @@ async fn main() {
                     allowed_keys,
                     // cnm exposes no capability flags either; `None` leaves
                     // any narrowing exactly as it is.
+                    None,
+                    // Purposes are left unchanged.
                     None,
                 )
                 .await

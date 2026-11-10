@@ -58,7 +58,7 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
     (
         "vta-sdk/src/protocols/acl_management/change_role.rs",
         "ChangeRoleBody",
-    ), // acl/change-role/0.2
+    ), // acl/change-role/0.3
     (
         "vta-sdk/src/protocols/acl_management/swap.rs",
         "SwapKeyBody",

@@ -721,7 +721,9 @@ impl DeviceBinding {
 /// server crates. Only the *shape* is shared — every authorization rule over
 /// it ([`validate_approve_scope_grant`] below) stays here. Same arrangement as
 /// [`crate::context_path`].
-pub use vta_sdk::acl::{ActScope, ApproveScope, ContextDirection};
+pub use vta_sdk::acl::{
+    ActScope, ApproveScope, ContextDirection, PurposeDecision, PurposeScope, PurposeScopeError,
+};
 
 /// Decode the stored `(role, allowed_contexts)` pair into an explicit
 /// [`ActScope`].
@@ -988,6 +990,16 @@ pub struct AclEntry {
     /// carries it. Rows written before this field existed have no marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<HandOff>,
+    /// What this entry's subject may use the content it reads **for**
+    /// (VTI-ACL-100 – 110): `any`, or a non-empty list. Checked on every
+    /// purpose-bound operation (VTI-ACL-102), through [`PurposeScope::admit`].
+    ///
+    /// Every entry states it. A row written before this member existed reads
+    /// as `any` — the authority it already held — and
+    /// [`state_purposes_on_every_entry`] writes that down at boot, before the
+    /// node serves anything (VTI-ACL-101), so the row then says so itself.
+    #[serde(default)]
+    pub purposes: PurposeScope,
 }
 
 /// A granter's one-time hand-off decision, recorded on the entry it marks
@@ -1051,7 +1063,14 @@ impl AclEntry {
             approve_scope: ApproveScope::None,
             allowed_keys: None,
             handoff: None,
+            purposes: PurposeScope::Any,
         }
+    }
+
+    /// Set the purposes (VTI-ACL-100). Defaults to `any`.
+    pub fn with_purposes(mut self, purposes: PurposeScope) -> Self {
+        self.purposes = purposes;
+        self
     }
 
     /// Override `created_at` (defaults to now). Use when replaying a known
@@ -1309,6 +1328,41 @@ pub async fn update_acl_entry_versioned(
     }
     crate::integrity::reseal_if_active().await?; // P0.2a
     Ok(new_version)
+}
+
+/// Write `purposes: any` on every stored entry that does not state it
+/// (VTI-ACL-101), returning how many were rewritten.
+///
+/// An entry written before purposes existed had no purpose narrowing, so `any`
+/// is the authority it already held; this makes the stored row say so, rather
+/// than leaving it to every reader's default. Run at boot, before the node
+/// serves a purpose-bound operation. Idempotent: a row that states its
+/// purposes, whatever they are, is left alone.
+pub async fn state_purposes_on_every_entry(acl: &KeyspaceHandle) -> Result<usize, AppError> {
+    let mut rewritten = 0;
+    for (key, raw) in acl.prefix_iter_raw("acl:").await? {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&raw) else {
+            continue; // `list_acl_entries` warns about an unreadable row
+        };
+        if value.get("purposes").is_some() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_value::<AclEntry>(value) else {
+            continue;
+        };
+        // Conditional on the row being exactly what was read, so an entry
+        // changed meanwhile is not overwritten with the older one.
+        let mut batch = Batch::new();
+        batch.require_unchanged(key.clone(), raw);
+        batch.insert(key, &entry)?;
+        if acl.apply_batch(batch).await?.is_applied() {
+            rewritten += 1;
+        }
+    }
+    if rewritten > 0 {
+        crate::integrity::reseal_if_active().await?;
+    }
+    Ok(rewritten)
 }
 
 /// Delete an ACL entry by DID.
@@ -2407,6 +2461,38 @@ mod tests {
         assert!(dids.contains(&"did:key:zAlice"));
         assert!(dids.contains(&"did:key:zBob"));
         assert_eq!(entries.len(), 2, "the corrupt row is skipped, not surfaced");
+    }
+
+    /// VTI-ACL-101: an entry written before purposes existed is rewritten to
+    /// state `any` — the authority it held — and an entry that states its
+    /// purposes, narrowed or not, is left alone. Running again changes nothing.
+    #[tokio::test]
+    async fn vti_acl_101_every_entry_comes_to_state_its_purposes() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("acl").unwrap();
+        let mut old = serde_json::to_value(sample_entry("did:key:zOld", Role::Reader)).unwrap();
+        old.as_object_mut().unwrap().remove("purposes");
+        ks.insert_raw("acl:did:key:zOld", serde_json::to_vec(&old).unwrap())
+            .await
+            .unwrap();
+        let narrowed = sample_entry("did:key:zNarrow", Role::Application)
+            .with_purposes(PurposeScope::listed(["taskExecution"]).unwrap());
+        store_acl_entry(&ks, &narrowed).await.unwrap();
+
+        assert_eq!(state_purposes_on_every_entry(&ks).await.unwrap(), 1);
+        let raw: serde_json::Value =
+            serde_json::from_slice(&ks.get_raw("acl:did:key:zOld").await.unwrap().unwrap())
+                .unwrap();
+        assert_eq!(raw["purposes"], serde_json::json!({"scope": "any"}));
+        assert_eq!(
+            get_acl_entry(&ks, "did:key:zNarrow")
+                .await
+                .unwrap()
+                .unwrap()
+                .purposes,
+            narrowed.purposes
+        );
+        assert_eq!(state_purposes_on_every_entry(&ks).await.unwrap(), 0);
     }
 
     fn scoped_entry(did: &str, role: Role, contexts: &[&str]) -> AclEntry {

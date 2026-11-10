@@ -852,6 +852,8 @@ async fn hand_over_claim(
                 "admin",
                 Vec::new(),
                 Some("TEE first-boot admin".to_string()),
+                // A first-boot admin entry predates any narrowing: `any`.
+                vta_sdk::acl::PurposeScope::Any,
             )
             .await?;
         Ok::<(), Box<dyn std::error::Error>>(())

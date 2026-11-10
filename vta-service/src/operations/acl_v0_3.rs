@@ -1,5 +1,18 @@
-//! The VTA as an AclEntry **0.2** maintainer — `acl/{grant,show,update,
-//! change-role,revoke}/0.2` and `acl/list/0.3`.
+//! The VTA as an AclEntry **0.3** maintainer — `acl/{grant,show,update,
+//! change-role,revoke}/0.3` and `acl/list/0.4`.
+//!
+//! # 0.3 is 0.2 plus purposes
+//!
+//! AclEntry 0.3 adds one required member to 0.2 and changes no other
+//! (`acl/_shared/0.3` CONVENTIONS §8a): `purposes`, what the subject may use
+//! the content it reads for (VTI-ACL-100 – 110). So every member but that one
+//! is read and written through 0.2's wire entry
+//! (`vta_sdk::protocols::acl_management::v0_2`), with the mapping below, and
+//! `purposes` travels beside it: taken off the request entry by the handler,
+//! and written onto every entry rendered here ([`render_json`]) from the
+//! stored row. 0.2 is no longer served — a rule naming it moves to 0.3 at
+//! boot (`vta_policy::approvals::RETIRED_TASK_TYPES`) — so nothing here
+//! renders an entry without its purposes.
 //!
 //! # The explicit model, over the stored one
 //!
@@ -27,17 +40,14 @@
 //! A resource qualifier is refused: the VTA's capabilities name no resource.
 //!
 //! Because role and act scope are independent in 0.2 (§4 rule 3), nothing
-//! here computes one from the other: `acl/change-role/0.2` carries the act
+//! here computes one from the other: `acl/change-role/0.3` carries the act
 //! scope across unchanged, and refuses a move whose resulting `(role, act)`
 //! the store cannot hold — promoting an entry that acts nowhere to `admin`
 //! would otherwise make it a super-administrator, exactly the inference 0.2
 //! exists to remove.
 
-use std::collections::BTreeSet;
-
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::Value;
-use vta_sdk::protocols::acl_management::create::CreateAclResultBody;
 use vta_sdk::protocols::acl_management::entry::StepUp;
 use vta_sdk::protocols::acl_management::v0_2::{
     AclEntry as WireEntry, ApproveCapabilityScope, AuthorityScope, CapabilityGrant,
@@ -46,7 +56,7 @@ use vta_sdk::protocols::acl_management::v0_2::{
 
 use super::acl::{self as v1, CreateAclParams, UpdateAclParams};
 use crate::acl::{
-    AclEntry, ApproveScope, Capability, ContextDirection, Role, act_scope_for,
+    AclEntry, ApproveScope, Capability, ContextDirection, PurposeScope, Role, act_scope_for,
     capabilities_beyond_role, derived_capabilities_for_role, effective_capabilities, get_acl_entry,
     is_acl_entry_auditable, is_additive, list_acl_entries,
 };
@@ -58,7 +68,7 @@ use crate::store::KeyspaceHandle;
 /// its own task declares (CONVENTIONS §3).
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum V02Error {
+pub enum V03Error {
     /// A role outside `admin | initiator | application | reader | monitor`.
     RoleNotRecognized(String),
     /// An act or approve scope this VTA cannot hold. `member` is `act` or
@@ -76,21 +86,24 @@ pub enum V02Error {
     AdditiveWithinCeiling(Vec<String>),
     /// A value the store has no form for that no declared code names.
     Unsupported(String),
-    /// `acl/update/0.2` was asked to narrow `act`.
+    /// `acl/update/0.3` was asked to narrow `act`.
     NarrowingNotPermitted,
-    /// `acl/revoke/0.2` was given an act scope not strictly narrower.
+    /// `acl/revoke/0.3` was given an act scope not strictly narrower.
     NotNarrowing,
-    /// `acl/update/0.2` / `acl/revoke/0.2` named an unknown subject.
+    /// `acl/update/0.3` / `acl/revoke/0.3` named an unknown subject.
     NotFound(String),
-    /// `acl/change-role/0.2`'s compare-and-swap failed.
+    /// `acl/change-role/0.3`'s compare-and-swap failed.
     StateMismatch(String),
-    /// `acl/list/0.3` cursor minted under other filters, or not here.
+    /// `acl/list/0.4` cursor minted under other filters, or not here.
     CursorMismatch,
+    /// Purposes wider than the caller's own (VTI-ACL-107): the requested
+    /// purposes it does not hold, or `["any"]`.
+    PurposeOutsideDelegator(Vec<String>),
     /// Everything the shared operations refuse.
     App(AppError),
 }
 
-impl From<AppError> for V02Error {
+impl From<AppError> for V03Error {
     fn from(e: AppError) -> Self {
         match e {
             AppError::InvalidCursor => Self::CursorMismatch,
@@ -155,7 +168,40 @@ fn capability_scope(role: &Role, caps: &[Capability]) -> CapabilityScope {
     }
 }
 
-/// A stored entry, every axis explicit (show item 2).
+/// A stored entry as AclEntry 0.3: [`render`]'s 0.2 members and the stored
+/// `purposes` (CONVENTIONS §8a).
+pub(crate) fn render_json(e: &AclEntry) -> Value {
+    let mut v = serde_json::to_value(render(e)).unwrap_or(Value::Null);
+    if let Value::Object(m) = &mut v {
+        m.insert(
+            "purposes".into(),
+            serde_json::to_value(&e.purposes).unwrap_or(Value::Null),
+        );
+    }
+    v
+}
+
+/// The `purposes` a request may state given the caller's own stored entry
+/// (VTI-ACL-107); the caller's entry is read here, never taken from a token.
+async fn purposes_within_caller(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    purposes: &PurposeScope,
+) -> Result<(), V03Error> {
+    purposes
+        .validate()
+        .map_err(|e| V03Error::App(AppError::Validation(e.to_string())))?;
+    // A caller with no live entry is refused by the operation itself.
+    if let Some(me) = get_acl_entry(acl_ks, &auth.did).await? {
+        let beyond = purposes.beyond(&me.purposes);
+        if !beyond.is_empty() {
+            return Err(V03Error::PurposeOutsideDelegator(beyond));
+        }
+    }
+    Ok(())
+}
+
+/// A stored entry's 0.2 members, every axis explicit (show item 2).
 pub(crate) fn render(e: &AclEntry) -> WireEntry {
     let act = AuthorityScope::from_act_scope(&e.act_scope());
     let keys = KeyScope::from_allowed_keys(
@@ -203,61 +249,38 @@ pub(crate) fn render(e: &AclEntry) -> WireEntry {
 /// Re-read the row an operation wrote and render it. The shared operations
 /// answer in the flat result body, which has lost nothing but is not the
 /// stored type; reading the row back renders what is actually held.
-async fn render_stored(acl_ks: &KeyspaceHandle, did: &str) -> Result<WireEntry, V02Error> {
+async fn render_stored(acl_ks: &KeyspaceHandle, did: &str) -> Result<Value, V03Error> {
     get_acl_entry(acl_ks, did)
         .await?
-        .map(|e| render(&e))
+        .map(|e| render_json(&e))
         .ok_or_else(|| {
-            V02Error::App(AppError::Internal(format!(
+            V03Error::App(AppError::Internal(format!(
                 "the ACL entry for {did} vanished after it was written"
             )))
         })
 }
 
-fn render_result(r: &CreateAclResultBody) -> Result<WireEntry, V02Error> {
-    let role = parse_role(&r.role)?;
-    let mut e = AclEntry::new(&r.did, role, &r.created_by);
-    e.label = r.label.clone();
-    e.allowed_contexts = r.allowed_contexts.clone();
-    e.created_at = r.created_at;
-    e.expires_at = r.expires_at;
-    e.step_up_approver = r.step_up_approver.clone();
-    e.approve_scope = if r.approve_all_contexts {
-        ApproveScope::All
-    } else if r.approve_contexts.is_empty() {
-        ApproveScope::None
-    } else {
-        ApproveScope::Contexts(r.approve_contexts.clone())
-    };
-    e.allowed_keys = r
-        .allowed_keys
-        .as_ref()
-        .map(|k| k.iter().cloned().collect::<BTreeSet<_>>());
-    e.capabilities = v1::parse_capability_names(&r.capabilities)?;
-    Ok(render(&e))
-}
-
 // ─── reading a 0.2 value into the stored form ────────────────────────────
 
-fn parse_role(raw: &str) -> Result<Role, V02Error> {
-    Role::parse(raw).map_err(|_| V02Error::RoleNotRecognized(raw.to_string()))
+fn parse_role(raw: &str) -> Result<Role, V03Error> {
+    Role::parse(raw).map_err(|_| V03Error::RoleNotRecognized(raw.to_string()))
 }
 
 /// The VTA's role vocabulary, for `roleNotRecognized`'s `knownRoles`.
 pub const KNOWN_ROLES: &[&str] = &["admin", "initiator", "application", "reader", "monitor"];
 
 /// `act` as the stored `allowed_contexts` for `role`, or why it cannot be held.
-fn act_contexts(role: &Role, act: &AuthorityScope) -> Result<Vec<String>, V02Error> {
+fn act_contexts(role: &Role, act: &AuthorityScope) -> Result<Vec<String>, V03Error> {
     match (act, role) {
         (AuthorityScope::All, Role::Admin) => Ok(Vec::new()),
-        (AuthorityScope::All, _) => Err(V02Error::InvalidActScope {
+        (AuthorityScope::All, _) => Err(V03Error::InvalidActScope {
             member: "act",
             reason: format!(
                 "this VTA holds an unrestricted act scope only on the admin role; a {role} entry \
                  acts in named contexts or nowhere"
             ),
         }),
-        (AuthorityScope::None, Role::Admin) => Err(V02Error::InvalidActScope {
+        (AuthorityScope::None, Role::Admin) => Err(V03Error::InvalidActScope {
             member: "act",
             reason: "this VTA cannot hold an admin entry that acts nowhere; a least-privilege \
                      approver is a non-admin role with act none and an approve scope"
@@ -268,12 +291,12 @@ fn act_contexts(role: &Role, act: &AuthorityScope) -> Result<Vec<String>, V02Err
             if contexts.is_empty() {
                 // The schema refuses it; a path that skipped validation must
                 // not read it as either all or none (CONVENTIONS §4 rule 1).
-                return Err(V02Error::App(AppError::Validation(
+                return Err(V03Error::App(AppError::Validation(
                     "act.contexts is empty; state {\"scope\":\"none\"} or name a context".into(),
                 )));
             }
             for c in contexts {
-                vti_common::context_path::validate_context_path(c).map_err(V02Error::App)?;
+                vti_common::context_path::validate_context_path(c).map_err(V03Error::App)?;
             }
             Ok(contexts.clone())
         }
@@ -284,9 +307,9 @@ fn act_contexts(role: &Role, act: &AuthorityScope) -> Result<Vec<String>, V02Err
 fn approve_scope(
     approve: Option<&AuthorityScope>,
     approve_caps: Option<&ApproveCapabilityScope>,
-) -> Result<ApproveScope, V02Error> {
+) -> Result<ApproveScope, V03Error> {
     if let Some(ApproveCapabilityScope::Listed { .. }) = approve_caps {
-        return Err(V02Error::Unsupported(
+        return Err(V03Error::Unsupported(
             "this VTA's approve authority has no capability axis: approveCapabilities is \
              `ceiling` (approve whatever the approve scope reaches) or `none`"
                 .into(),
@@ -297,13 +320,13 @@ fn approve_scope(
         Some(a) => {
             if let AuthorityScope::Contexts { contexts } = a {
                 if contexts.is_empty() {
-                    return Err(V02Error::App(AppError::Validation(
+                    return Err(V03Error::App(AppError::Validation(
                         "approve.contexts is empty; state {\"scope\":\"none\"} or name a context"
                             .into(),
                     )));
                 }
                 for c in contexts {
-                    vti_common::context_path::validate_context_path(c).map_err(V02Error::App)?;
+                    vti_common::context_path::validate_context_path(c).map_err(V03Error::App)?;
                 }
             }
             a.to_approve_scope()
@@ -318,11 +341,11 @@ fn approve_scope(
 }
 
 /// `capabilities` as the stored list for `role` (grant item 3).
-fn capabilities(role: &Role, scope: &CapabilityScope) -> Result<Vec<Capability>, V02Error> {
+fn capabilities(role: &Role, scope: &CapabilityScope) -> Result<Vec<Capability>, V03Error> {
     let grants = match scope {
         CapabilityScope::Ceiling => return Ok(Vec::new()),
         CapabilityScope::None => {
-            return Err(V02Error::Unsupported(
+            return Err(V03Error::Unsupported(
                 "this VTA cannot hold an entry with no capabilities at all; list the ones it \
                  should hold, or choose a narrower role"
                     .into(),
@@ -331,12 +354,12 @@ fn capabilities(role: &Role, scope: &CapabilityScope) -> Result<Vec<Capability>,
         CapabilityScope::Listed { grants } => grants,
     };
     if grants.is_empty() {
-        return Err(V02Error::App(AppError::Validation(
+        return Err(V03Error::App(AppError::Validation(
             "capabilities.grants is empty; state {\"scope\":\"none\"} or list a grant".into(),
         )));
     }
     if let Some(g) = grants.iter().find(|g| g.resource.is_some()) {
-        return Err(V02Error::Unsupported(format!(
+        return Err(V03Error::Unsupported(format!(
             "this VTA's capabilities name no resource; `{}` cannot be qualified by `{}`",
             g.capability,
             g.resource.as_deref().unwrap_or_default()
@@ -351,7 +374,7 @@ fn capabilities(role: &Role, scope: &CapabilityScope) -> Result<Vec<Capability>,
         }
     }
     if !unknown.is_empty() {
-        return Err(V02Error::UnknownCapability(unknown));
+        return Err(V03Error::UnknownCapability(unknown));
     }
     let ceiling = derived_capabilities_for_role(role);
     let within: Vec<String> = parsed
@@ -360,7 +383,7 @@ fn capabilities(role: &Role, scope: &CapabilityScope) -> Result<Vec<Capability>,
         .map(|(_, g)| g.capability.clone())
         .collect();
     if !within.is_empty() {
-        return Err(V02Error::AdditiveWithinCeiling(within));
+        return Err(V03Error::AdditiveWithinCeiling(within));
     }
     // Outside the ceiling: a non-additive capability the role does not carry,
     // and equally one flagged additive that this VTA does not class additive
@@ -378,7 +401,7 @@ fn capabilities(role: &Role, scope: &CapabilityScope) -> Result<Vec<Capability>,
         .map(|(_, g)| g.capability.clone())
         .collect();
     if !outside.is_empty() {
-        return Err(V02Error::CapabilityOutsideCeiling {
+        return Err(V03Error::CapabilityOutsideCeiling {
             role: role.to_string(),
             caps: outside,
         });
@@ -387,7 +410,7 @@ fn capabilities(role: &Role, scope: &CapabilityScope) -> Result<Vec<Capability>,
     // A role with an empty ceiling holds exactly its additive grants either
     // way; any other role cannot hold "none of the role, only these".
     if caps.iter().all(|c| is_additive(*c)) && !ceiling.is_empty() {
-        return Err(V02Error::Unsupported(
+        return Err(V03Error::Unsupported(
             "a listed scope naming only additive capabilities holds none of the role's; this \
              VTA cannot hold that. List the role capabilities the entry keeps beside them, or \
              state `ceiling` for the whole role"
@@ -397,56 +420,60 @@ fn capabilities(role: &Role, scope: &CapabilityScope) -> Result<Vec<Capability>,
     Ok(caps)
 }
 
-fn step_up_require(s: Option<&str>) -> Result<Option<String>, V02Error> {
+fn step_up_require(s: Option<&str>) -> Result<Option<String>, V03Error> {
     // The per-entry override is retired (see `parse_step_up_require`); a value
     // is refused rather than stored and consulted by nothing.
     v1::parse_step_up_require(s)?;
     Ok(None)
 }
 
-// ─── acl/grant/0.2 ───────────────────────────────────────────────────────
+// ─── acl/grant/0.3 ───────────────────────────────────────────────────────
 
-/// `acl/grant/0.2`.
+/// `acl/grant/0.3`.
 pub async fn grant(
     acl_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     entry: WireEntry,
+    purposes: PurposeScope,
     channel: &str,
-) -> Result<Value, V02Error> {
+) -> Result<Value, V03Error> {
     let role = parse_role(&entry.role)?;
+    purposes_within_caller(acl_ks, auth, &purposes).await?;
     let allowed_contexts = act_contexts(&role, &entry.act)?;
     let capabilities = capabilities(&role, &entry.capabilities)?;
     let approve_scope = approve_scope(entry.approve.as_ref(), entry.approve_capabilities.as_ref())?;
     let handoff = vta_sdk::protocols::acl_management::entry::handoff_from_ext(entry.ext.as_ref())
-        .map_err(|r| V02Error::App(AppError::Validation(r)))?;
+        .map_err(|r| V03Error::App(AppError::Validation(r)))?;
     let step_up = entry.step_up.clone().unwrap_or_default();
     step_up_require(step_up.require.as_deref())?;
 
     // Grant item 6: an existing subject with a different role is a role
     // change, which only `acl/change-role` makes; with the same role the grant
-    // is a re-assertion, or a widening handled as `acl/update/0.2` handles it,
+    // is a re-assertion, or a widening handled as `acl/update/0.3` handles it,
     // and never a narrowing.
     if let Some(existing) = get_acl_entry(acl_ks, &entry.subject).await? {
         if existing.role != role {
-            return Err(V02Error::App(AppError::Forbidden(format!(
-                "{} already holds role {}; role changes use acl/change-role/0.2",
+            return Err(V03Error::App(AppError::Forbidden(format!(
+                "{} already holds role {}; role changes use acl/change-role/0.3",
                 entry.subject, existing.role
             ))));
         }
         if handoff {
-            return Err(V02Error::App(AppError::Conflict(format!(
+            return Err(V03Error::App(AppError::Conflict(format!(
                 "{} already has an entry; a hand-off marker is set only when an entry is created \
                  (VTI-ACL-054)",
                 entry.subject
             ))));
         }
         let held = render(&existing);
-        if let Some(axis) = narrowed_axis(&held, &entry) {
-            return Err(V02Error::App(AppError::Forbidden(format!(
-                "this grant would narrow {}'s {axis}; a grant never narrows — use acl/update/0.2 \
-                 or acl/revoke/0.2",
+        let axis = narrowed_axis(&held, &entry)
+            .or_else(|| (!existing.purposes.is_within(&purposes)).then_some("purposes"));
+        if let Some(axis) = axis {
+            return Err(V03Error::App(AppError::Forbidden(format!(
+                "this grant would narrow {}'s {axis}; a grant never narrows — use acl/update/0.3 \
+                 or acl/revoke/0.3",
                 entry.subject
             ))));
         }
@@ -463,6 +490,7 @@ pub async fn grant(
                 approver: s.approver.clone().map(Some),
                 require: None,
             }),
+            purposes: (purposes != existing.purposes).then_some(purposes),
             reason: None,
         };
         return update(acl_ks, audit, contexts_ks, auth, body, channel).await;
@@ -488,14 +516,15 @@ pub async fn grant(
                 .map(|k| k.into_iter().collect()),
             capabilities,
             handoff,
+            purposes,
         },
         channel,
     )
     .await?;
-    Ok(serde_json::json!({ "entry": render_result(&stored)? }))
+    Ok(serde_json::json!({ "entry": render_stored(acl_ks, &stored.did).await? }))
 }
 
-/// `acl/grant/0.2` carrying the hand-off rollover flag →
+/// `acl/grant/0.3` carrying the hand-off rollover flag →
 /// [`v1::exercise_handoff`]. The successor carries only subject, role, label,
 /// act and capabilities; everything else is refused rather than dropped, and
 /// `keys` must be `all` because the successor inherits the marked entry's key
@@ -506,17 +535,29 @@ pub async fn rollover(
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     entry: WireEntry,
+    purposes: PurposeScope,
     channel: &str,
-) -> Result<Value, V02Error> {
+) -> Result<Value, V03Error> {
     let role = parse_role(&entry.role)?;
+    // The successor holds the marked entry's purposes, as it holds its key
+    // filter; a request stating others is refused rather than reinterpreted.
+    let marked = get_acl_entry(acl_ks, &auth.did).await?;
+    if let Some(marked) = &marked
+        && marked.purposes != purposes
+    {
+        return Err(V03Error::App(AppError::Validation(format!(
+            "a hand-off successor holds the marked entry's purposes ({}); state those",
+            marked.purposes
+        ))));
+    }
     if !entry.subject.starts_with("did:") {
-        return Err(V02Error::App(AppError::Validation(format!(
+        return Err(V03Error::App(AppError::Validation(format!(
             "a hand-off successor must be a DID, found {}",
             entry.subject
         ))));
     }
     if entry.expires_at.is_some() {
-        return Err(V02Error::App(AppError::Validation(
+        return Err(V03Error::App(AppError::Validation(
             "a hand-off successor takes the expiry the granter recorded with the marker \
              (VTI-ACL-055); omit `expiresAt`"
                 .into(),
@@ -528,7 +569,7 @@ pub async fn rollover(
             None | Some(ApproveCapabilityScope::None)
         );
     if entry.step_up.is_some() || approves || entry.keys != KeyScope::All {
-        return Err(V02Error::App(AppError::Validation(
+        return Err(V03Error::App(AppError::Validation(
             "a hand-off successor carries the marked entry's key filter and no step-up or \
              approve authority of its own; omit `stepUp` and `approve`, and state \
              keys {\"scope\":\"all\"}"
@@ -536,9 +577,9 @@ pub async fn rollover(
         )));
     }
     if vta_sdk::protocols::acl_management::entry::handoff_from_ext(entry.ext.as_ref())
-        .map_err(|r| V02Error::App(AppError::Validation(r)))?
+        .map_err(|r| V03Error::App(AppError::Validation(r)))?
     {
-        return Err(V02Error::App(AppError::Forbidden(
+        return Err(V03Error::App(AppError::Forbidden(
             "a hand-off successor cannot itself be marked as a hand-off (VTI-ACL-054)".into(),
         )));
     }
@@ -560,7 +601,7 @@ pub async fn rollover(
         None,
     )
     .await?;
-    Ok(serde_json::json!({ "entry": render_result(&stored)? }))
+    Ok(serde_json::json!({ "entry": render_stored(acl_ks, &stored.did).await? }))
 }
 
 /// The first axis on which `requested` holds less than `held`, if any — the
@@ -622,9 +663,9 @@ fn narrowed_axis(held: &WireEntry, requested: &WireEntry) -> Option<&'static str
     }
 }
 
-// ─── acl/show/0.2 ────────────────────────────────────────────────────────
+// ─── acl/show/0.3 ────────────────────────────────────────────────────────
 
-/// `acl/show/0.2`. An entry the caller may not audit is `entry: null`, the
+/// `acl/show/0.3`. An entry the caller may not audit is `entry: null`, the
 /// same answer as an absent one (show item 4), so the read does not disclose
 /// existence.
 pub async fn show(
@@ -632,23 +673,23 @@ pub async fn show(
     auth: &AuthClaims,
     subject: &str,
     channel: &str,
-) -> Result<Value, V02Error> {
+) -> Result<Value, V03Error> {
     auth.require_manage()?;
     let entry = get_acl_entry(acl_ks, subject)
         .await?
         .filter(|e| is_acl_entry_auditable(auth, e));
     tracing::info!(channel, did = %subject, found = entry.is_some(), "ACL entry shown");
-    Ok(serde_json::json!({ "entry": entry.as_ref().map(render) }))
+    Ok(serde_json::json!({ "entry": entry.as_ref().map(render_json) }))
 }
 
-// ─── acl/list/0.3 ────────────────────────────────────────────────────────
+// ─── acl/list/0.4 ────────────────────────────────────────────────────────
 
 /// Default and ceiling page sizes (list item 5: the responder chooses the
 /// default, and MAY impose a ceiling below the schema's 1000).
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 500;
 
-/// An `acl/list/0.3` query, read from its payload.
+/// An `acl/list/0.4` query, read from its payload.
 #[derive(Debug, Default)]
 pub struct ListQuery {
     pub role: Option<String>,
@@ -664,12 +705,12 @@ pub struct ListQuery {
 impl ListQuery {
     /// Read the query out of a payload the dispatcher has already held to the
     /// published schema.
-    pub fn from_payload(p: &Value) -> Result<Self, V02Error> {
+    pub fn from_payload(p: &Value) -> Result<Self, V03Error> {
         let s = |k: &str| p.get(k).and_then(Value::as_str).map(str::to_string);
         let direction = match p.get("direction") {
             None => None,
             Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| {
-                V02Error::App(AppError::Validation(
+                V03Error::App(AppError::Validation(
                     "`direction` is actingIn, subtree or any".into(),
                 ))
             })?),
@@ -702,25 +743,25 @@ fn list_binding(auth: &AuthClaims, q: &ListQuery) -> Vec<u8> {
     .into_bytes()
 }
 
-/// `acl/list/0.3`.
+/// `acl/list/0.4`.
 pub async fn list(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     q: &ListQuery,
     channel: &str,
-) -> Result<Value, V02Error> {
+) -> Result<Value, V03Error> {
     auth.require_manage()?;
     // List item 2: a hierarchical filter needs a direction, and a direction
     // needs a hierarchical filter. No default is substituted.
     let hierarchical = q.context.is_some() || q.resource.is_some();
     match (hierarchical, q.direction) {
         (true, None) => {
-            return Err(V02Error::App(AppError::Validation(
+            return Err(V03Error::App(AppError::Validation(
                 "`context` and `resource` need a `direction`: actingIn, subtree or any".into(),
             )));
         }
         (false, Some(d)) => {
-            return Err(V02Error::App(AppError::Validation(format!(
+            return Err(V03Error::App(AppError::Validation(format!(
                 "`direction: {}` reads a `context` or `resource` filter, and there is neither",
                 d.as_str()
             ))));
@@ -812,7 +853,7 @@ pub async fn list(
         "ACL listed"
     );
     let mut body = serde_json::json!({
-        "entries": matching.iter().map(render).collect::<Vec<_>>(),
+        "entries": matching.iter().map(render_json).collect::<Vec<_>>(),
     });
     if let Some(c) = next_cursor {
         body["nextCursor"] = Value::String(c);
@@ -820,9 +861,9 @@ pub async fn list(
     Ok(body)
 }
 
-// ─── acl/update/0.2 ──────────────────────────────────────────────────────
+// ─── acl/update/0.3 ──────────────────────────────────────────────────────
 
-/// An `acl/update/0.2` amendment, read from its payload. Each `Some` replaces
+/// An `acl/update/0.3` amendment, read from its payload. Each `Some` replaces
 /// the stored member; `label` and `expires_at` are `Some(None)` for an explicit
 /// `null`, which the generated payload type cannot tell from absence.
 #[derive(Debug)]
@@ -836,29 +877,31 @@ pub struct UpdateBody {
     pub label: Option<Option<String>>,
     pub expires_at: Option<Option<DateTime<Utc>>>,
     pub step_up: Option<StepUpReplacement>,
+    /// Replace the purposes wholesale (`acl/update/0.3`).
+    pub purposes: Option<PurposeScope>,
     pub reason: Option<String>,
 }
 
 impl UpdateBody {
     /// Read the amendment out of a payload the dispatcher has already held to
     /// the published schema.
-    pub fn from_payload(p: &Value) -> Result<Self, V02Error> {
+    pub fn from_payload(p: &Value) -> Result<Self, V03Error> {
         fn member<T: serde::de::DeserializeOwned>(
             p: &Value,
             k: &str,
-        ) -> Result<Option<T>, V02Error> {
+        ) -> Result<Option<T>, V03Error> {
             match p.get(k) {
                 None => Ok(None),
                 Some(v) => serde_json::from_value(v.clone())
                     .map(Some)
-                    .map_err(|e| V02Error::App(AppError::Validation(format!("`{k}`: {e}")))),
+                    .map_err(|e| V03Error::App(AppError::Validation(format!("`{k}`: {e}")))),
             }
         }
         Ok(Self {
             subject: p
                 .get("subject")
                 .and_then(Value::as_str)
-                .ok_or_else(|| V02Error::App(AppError::Validation("`subject` is required".into())))?
+                .ok_or_else(|| V03Error::App(AppError::Validation("`subject` is required".into())))?
                 .to_string(),
             act: member(p, "act")?,
             approve: member(p, "approve")?,
@@ -868,12 +911,13 @@ impl UpdateBody {
             label: member::<Option<String>>(p, "label")?,
             expires_at: member::<Option<DateTime<Utc>>>(p, "expiresAt")?,
             step_up: member(p, "stepUp")?,
+            purposes: member(p, "purposes")?,
             reason: member(p, "reason")?,
         })
     }
 }
 
-/// `acl/update/0.2`. Each present member replaces the stored value; `act`
+/// `acl/update/0.3`. Each present member replaces the stored value; `act`
 /// may only widen (update item 3).
 pub async fn update(
     acl_ks: &KeyspaceHandle,
@@ -882,18 +926,21 @@ pub async fn update(
     auth: &AuthClaims,
     body: UpdateBody,
     channel: &str,
-) -> Result<Value, V02Error> {
+) -> Result<Value, V03Error> {
     let stored = get_acl_entry(acl_ks, &body.subject)
         .await?
         .filter(|e| is_acl_entry_auditable(auth, e))
-        .ok_or_else(|| V02Error::NotFound(body.subject.clone()))?;
+        .ok_or_else(|| V03Error::NotFound(body.subject.clone()))?;
+    if let Some(purposes) = &body.purposes {
+        purposes_within_caller(acl_ks, auth, purposes).await?;
+    }
 
     let allowed_contexts = match &body.act {
         None => None,
         Some(act) => {
             let held = AuthorityScope::from_act_scope(&stored.act_scope());
             if !act.includes(&held) {
-                return Err(V02Error::NarrowingNotPermitted);
+                return Err(V03Error::NarrowingNotPermitted);
             }
             Some(act_contexts(&stored.role, act)?)
         }
@@ -941,15 +988,16 @@ pub async fn update(
             .keys
             .as_ref()
             .map(|k| k.to_allowed_keys().map(|k| k.into_iter().collect())),
+        purposes: body.purposes.clone(),
     };
     let did = body.subject.clone();
     v1::update_from_params(acl_ks, audit, contexts_ks, auth, &did, params, channel).await?;
     Ok(serde_json::json!({ "entry": render_stored(acl_ks, &did).await? }))
 }
 
-// ─── acl/change-role/0.2 ─────────────────────────────────────────────────
+// ─── acl/change-role/0.3 ─────────────────────────────────────────────────
 
-/// `acl/change-role/0.2`. The act scope is carried over **as stated** — a
+/// `acl/change-role/0.3`. The act scope is carried over **as stated** — a
 /// move whose resulting `(role, act)` this VTA cannot hold is refused rather
 /// than reinterpreted through the new role.
 #[allow(clippy::too_many_arguments)]
@@ -962,12 +1010,12 @@ pub async fn change_role(
     to_role: &str,
     reason: Option<&str>,
     channel: &str,
-) -> Result<Value, V02Error> {
+) -> Result<Value, V03Error> {
     let from = parse_role(from_role)?;
     let to = parse_role(to_role)?;
     if let Some(stored) = get_acl_entry(acl_ks, subject).await? {
         if stored.role != from {
-            return Err(V02Error::StateMismatch(format!(
+            return Err(V03Error::StateMismatch(format!(
                 "role of {subject} is {}, not {from} — the change was based on stale state",
                 stored.role
             )));
@@ -975,16 +1023,16 @@ pub async fn change_role(
         let held = AuthorityScope::from_act_scope(&stored.act_scope());
         let resulting = act_scope_for(&to, &stored.allowed_contexts);
         if AuthorityScope::from_act_scope(&resulting) != held {
-            return Err(V02Error::App(AppError::Forbidden(format!(
+            return Err(V03Error::App(AppError::Forbidden(format!(
                 "{subject}'s act scope is {}, which this VTA cannot hold on the {to} role — a \
                  role change carries the act scope across unchanged. Narrow it with \
-                 acl/revoke/0.2 or widen it with acl/update/0.2 first",
+                 acl/revoke/0.3 or widen it with acl/update/0.3 first",
                 describe(&held)
             ))));
         }
         let beyond = capabilities_beyond_role(&to, &stored.capabilities);
         if !beyond.is_empty() {
-            return Err(V02Error::CapabilityOutsideCeiling {
+            return Err(V03Error::CapabilityOutsideCeiling {
                 role: to.to_string(),
                 caps: beyond.into_iter().map(cap_name).collect(),
             });
@@ -1005,9 +1053,9 @@ fn describe(a: &AuthorityScope) -> String {
     }
 }
 
-// ─── acl/revoke/0.2 ──────────────────────────────────────────────────────
+// ─── acl/revoke/0.3 ──────────────────────────────────────────────────────
 
-/// `acl/revoke/0.2`.
+/// `acl/revoke/0.3`.
 pub async fn revoke(
     acl_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
@@ -1017,11 +1065,11 @@ pub async fn revoke(
     revocation: Revocation,
     reason: Option<String>,
     channel: &str,
-) -> Result<Value, V02Error> {
+) -> Result<Value, V03Error> {
     let stored = get_acl_entry(acl_ks, subject)
         .await?
         .filter(|e| is_acl_entry_auditable(auth, e))
-        .ok_or_else(|| V02Error::NotFound(subject.to_string()))?;
+        .ok_or_else(|| V03Error::NotFound(subject.to_string()))?;
     match revocation {
         Revocation::Entry => {
             v1::delete_acl(acl_ks, audit, auth, subject, channel).await?;
@@ -1031,7 +1079,7 @@ pub async fn revoke(
             let held = AuthorityScope::from_act_scope(&stored.act_scope());
             // Revoke item 3: strictly narrower.
             if act == held || !held.includes(&act) {
-                return Err(V02Error::NotNarrowing);
+                return Err(V03Error::NotNarrowing);
             }
             let contexts = act_contexts(&stored.role, &act)?;
             // `update_acl` validates each removed context against the caller's
@@ -1074,11 +1122,11 @@ mod tests {
     fn act_scopes_the_store_cannot_hold_are_refused() {
         assert!(matches!(
             act_contexts(&Role::Reader, &AuthorityScope::All),
-            Err(V02Error::InvalidActScope { member: "act", .. })
+            Err(V03Error::InvalidActScope { member: "act", .. })
         ));
         assert!(matches!(
             act_contexts(&Role::Admin, &AuthorityScope::None),
-            Err(V02Error::InvalidActScope { member: "act", .. })
+            Err(V03Error::InvalidActScope { member: "act", .. })
         ));
         assert_eq!(
             act_contexts(&Role::Admin, &AuthorityScope::All).unwrap(),
@@ -1106,7 +1154,7 @@ mod tests {
         assert_eq!(r.delegated_by.as_deref(), Some("did:key:zRoot"));
 
         let mut reader = AclEntry::new("did:key:zB", Role::Reader, "setup");
-        reader.allowed_keys = Some(BTreeSet::new());
+        reader.allowed_keys = Some(std::collections::BTreeSet::new());
         reader.approve_scope = ApproveScope::Contexts(vec!["a".into()]);
         let r = render(&reader);
         assert_eq!(
@@ -1171,31 +1219,31 @@ mod tests {
                 &Role::Reader,
                 &listed(vec![CapabilityGrant::new("no-such-cap", false)])
             ),
-            Err(V02Error::UnknownCapability(_))
+            Err(V03Error::UnknownCapability(_))
         ));
         assert!(matches!(
             capabilities(
                 &Role::Admin,
                 &listed(vec![CapabilityGrant::new("sign", true)])
             ),
-            Err(V02Error::AdditiveWithinCeiling(_))
+            Err(V03Error::AdditiveWithinCeiling(_))
         ));
         assert!(matches!(
             capabilities(
                 &Role::Admin,
                 &listed(vec![CapabilityGrant::new("persona-holder", false)])
             ),
-            Err(V02Error::CapabilityOutsideCeiling { .. })
+            Err(V03Error::CapabilityOutsideCeiling { .. })
         ));
         assert!(matches!(
             capabilities(&Role::Admin, &CapabilityScope::None),
-            Err(V02Error::Unsupported(_))
+            Err(V03Error::Unsupported(_))
         ));
         let mut qualified = CapabilityGrant::new("sign", false);
         qualified.resource = Some("ctx:a".into());
         assert!(matches!(
             capabilities(&Role::Admin, &listed(vec![qualified])),
-            Err(V02Error::Unsupported(_))
+            Err(V03Error::Unsupported(_))
         ));
     }
 
@@ -1218,7 +1266,7 @@ mod tests {
                 Some(&AuthorityScope::All),
                 Some(&ApproveCapabilityScope::Listed { grants: vec![] })
             ),
-            Err(V02Error::Unsupported(_))
+            Err(V03Error::Unsupported(_))
         ));
     }
 

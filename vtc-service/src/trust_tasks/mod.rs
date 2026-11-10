@@ -3200,27 +3200,33 @@ pub(crate) const BACKUP_EXPORT_TYPE: &str =
 
 /// `acl/grant/0.2` — AclEntry 0.2: an administrative role, explicit act scope,
 /// capabilities and approve scope. 0.1 is no longer served.
+#[allow(deprecated)] // the community serves acl/* 0.2 (list 0.3): see `acl_tasks`
 pub(crate) const ACL_GRANT_TYPE: &str =
     <vti_specs::acl::grant::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/change-role/0.2` — move the administrative role, compare-and-swap.
+#[allow(deprecated)] // the community serves acl/* 0.2 (list 0.3): see `acl_tasks`
 pub(crate) const ACL_CHANGE_ROLE_TYPE: &str =
     <vti_specs::acl::change_role::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/show/0.2` — one entry, every axis stated.
+#[allow(deprecated)] // the community serves acl/* 0.2 (list 0.3): see `acl_tasks`
 pub(crate) const ACL_SHOW_TYPE: &str =
     <vti_specs::acl::show::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/list/0.3` — the entries, filterable by capability and resource, paged
 /// by `limit` / `nextCursor`.
+#[allow(deprecated)] // the community serves acl/* 0.2 (list 0.3): see `acl_tasks`
 pub(crate) const ACL_LIST_TYPE: &str =
     <vti_specs::acl::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/update/0.2` — amend act, capabilities, approve, label, expiry.
+#[allow(deprecated)] // the community serves acl/* 0.2 (list 0.3): see `acl_tasks`
 pub(crate) const ACL_UPDATE_TYPE: &str =
     <vti_specs::acl::update::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/revoke/0.2` — remove an entry, or narrow its act scope.
+#[allow(deprecated)] // the community serves acl/* 0.2 (list 0.3): see `acl_tasks`
 pub(crate) const ACL_REVOKE_TYPE: &str =
     <vti_specs::acl::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 

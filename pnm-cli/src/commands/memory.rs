@@ -19,9 +19,11 @@ pub(crate) async fn run(
             value,
             context,
         } => memory::cmd_memory_plant(client, &context, &key, &value).await,
-        MemoryCommands::Recall { key, context } => {
-            memory::cmd_memory_recall(client, &context, key.as_deref()).await
-        }
+        MemoryCommands::Recall {
+            key,
+            context,
+            purpose,
+        } => memory::cmd_memory_recall(client, &context, key.as_deref(), purpose.as_deref()).await,
         MemoryCommands::Delete { key, context } => {
             memory::cmd_memory_forget(client, &context, &key).await
         }

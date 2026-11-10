@@ -300,43 +300,67 @@ digest = "sha256:da7ada1f2c78afba7e6dff312c621657843ea64a99de7b74d1395e5ffa77325
 slug = "vta/memory/delete"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/memory/delete/0.1"
-digest = "sha256:21cfbae5202260239a98beb8562f4a0cd6e575d93e9178a2c48c2f984e9aca4f"
+digest = "sha256:648a92ec6304c80c26740340ca521f061a5cc884d3dfcd428c56d8572f62def3"
 
 [[task]]
 slug = "vta/memory/delete"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vta/memory/delete/0.2"
-digest = "sha256:24ea99922533125f2807e4932468b050b73a9e2fca5248c98dbc3d867aefef7d"
+digest = "sha256:51091e84af528e69e5be8a7074107e9a631291dfd0d4d402eba93a9d65efbd10"
+
+[[task]]
+slug = "vta/memory/delete"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vta/memory/delete/0.3"
+digest = "sha256:34efa8790caff345fbc15f511d13918a365c7fa915052d13498adab26efa075e"
 
 [[task]]
 slug = "vta/memory/get"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/memory/get/0.1"
-digest = "sha256:ad81ba5ff9c2983ca19259b1f1d5c9b737a580b3200a968519c6cc212a915fae"
+digest = "sha256:5c86c65d082e6ae6565472c3b028fcb1206c63decc88907df54fe9250c030d88"
+
+[[task]]
+slug = "vta/memory/get"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vta/memory/get/0.2"
+digest = "sha256:5f37543c25d1e6b78dda0d0df7cf5356688c5ccf9627d34da6ffdb61e1f4227b"
 
 [[task]]
 slug = "vta/memory/list"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/memory/list/0.1"
-digest = "sha256:7e9e25d4dcb24384aea225bc1eb454a2dda78ed2c12c11c001dd8da18c005892"
+digest = "sha256:92dc9476081427e13b690ef25bb7beab9b9dcb4e7112802b86334e84bae6cbc2"
 
 [[task]]
 slug = "vta/memory/list"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vta/memory/list/0.2"
-digest = "sha256:ecac48d8b28b449e7b16e682f13e3d5fdd489161311024af5730f2241bcab114"
+digest = "sha256:f59bd5a69de6b13ddc2faf9a911462d6416e7a0a027098480ee7735fc9d03938"
+
+[[task]]
+slug = "vta/memory/list"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vta/memory/list/0.3"
+digest = "sha256:d37e13af81b14bbfa0d45afe65208a44aec8efad7ba76ca23448effc719f6c33"
 
 [[task]]
 slug = "vta/memory/put"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/memory/put/0.1"
-digest = "sha256:5d63da5e70e2a2b73b55f21463bca3a1a31134e93be49c77b46bc397aadcaf7e"
+digest = "sha256:049aa680f1a63565fd7bec3e36643985762fe4da07efb335456c33d8024c747b"
 
 [[task]]
 slug = "vta/memory/put"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vta/memory/put/0.2"
-digest = "sha256:3151f6f205041711760df46241859d3792d7ffced67dbeb5d9fa36dc5ae18056"
+digest = "sha256:8a833f6958a062fb4c4cd8009bacba681fc727a6048ab8b56efd021b2bd7b53b"
+
+[[task]]
+slug = "vta/memory/put"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vta/memory/put/0.3"
+digest = "sha256:5909ca3d8773101685670e70ae94047f5651b6ed1eeacae8b57dc5c5baf66e12"
 
 [[task]]
 slug = "vta/metrics/show"

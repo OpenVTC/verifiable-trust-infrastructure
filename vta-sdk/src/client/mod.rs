@@ -3847,10 +3847,11 @@ mod tests {
             allowed_keys: None,
             capabilities: Vec::new(),
             handoff: false,
+            purposes: Default::default(),
         };
         let json = serde_json::to_value(&req).unwrap();
         // The builder API is unchanged; only what it serialises moved. The wire
-        // is canonical `acl/grant/0.2`: the entry is nested, uses `subject`, and
+        // is canonical `acl/grant/0.3`: the entry is nested, uses `subject`, and
         // states every authority axis explicitly.
         assert_eq!(json["entry"]["subject"], "did:key:z6Mk123");
         assert_eq!(json["entry"]["role"], "admin");
@@ -3915,6 +3916,7 @@ mod tests {
             approve_scope: None,
             allowed_keys: None,
             capabilities: None,
+            purposes: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();
@@ -3934,6 +3936,7 @@ mod tests {
             approve_scope: None,
             allowed_keys: None,
             capabilities: None,
+            purposes: None,
         };
 
         let set = UpdateAclRequest {
@@ -4415,7 +4418,7 @@ mod client_identity_tests {
         // wrong.
         const URIS: [&str; 3] = [
             trust_tasks::TASK_CONTEXTS_CREATE_1_0,
-            trust_tasks::TASK_ACL_GRANT_0_2,
+            trust_tasks::TASK_ACL_GRANT_0_3,
             trust_tasks::TASK_CONTEXTS_LIST_1_0,
         ];
 

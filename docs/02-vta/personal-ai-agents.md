@@ -244,7 +244,7 @@ human passkey approval.
 ```bash
 pnm services webauthn enable --url https://vta.example.com
 pnm approvals list
-pnm approvals require https://trusttasks.org/spec/acl/grant/0.2 --reauth
+pnm approvals require https://trusttasks.org/spec/acl/grant/0.3 --reauth
 ```
 
 When a gated op is initiated, the agent's request returns a step-up challenge;
@@ -267,20 +267,20 @@ it lives on the VTA rather than in the agent runtime, the memory survives the
 runtime being replaced, is audited (`memory.put` / `.list` / `.get` /
 `.delete`), and is included in the VTA's encrypted backups.
 
-The store is versioned (#2115). `vta/memory/put/0.2` returns each item's
+The store is versioned (#2115). `vta/memory/put/0.3` (and 0.2) returns each item's
 `version`; a write that sends `expectedVersion` applies only if the item is
 still at that version (`0`: only if nothing is there), and otherwise fails with
 `versionConflict` carrying the current version and value, so two agents — or one
 agent on two devices — cannot silently overwrite each other.
-`vta/memory/delete/0.2` leaves a tombstone, and `vta/memory/list/0.2` is either a
+`vta/memory/delete/0.3` leaves a tombstone, and `vta/memory/list/0.3` is either a
 page of a context (`prefix`, `cursor`, `limit`) or a change feed from
 `sinceVersion` that carries those tombstones, so a second device's copy
-converges. `vta/memory/get/0.1` recalls up to 256 named items at once. The 0.1
+converges. `vta/memory/get/0.2` recalls up to 256 named items at once. The 0.1
 tasks (`put`, `list`, `delete`) still work against the same store; the registry
 marks them superseded, and they are withdrawn on its schedule, so move clients to
-0.2.
+0.3 (`get` 0.2). 0.2 (`get` 0.1) is served too; it carries no `purpose`.
 
-Two gates apply. **Capability**: `MemoryRead` for `list` and `get`,
+Three gates apply. **Capability**: `MemoryRead` for `list` and `get`,
 `MemoryWrite` for `put` and `delete` — so a `reader` can be given the memory
 without being given the ability to rewrite it. An entry with `MemoryWrite` but
 not `MemoryRead` is told that an item changed when its conditional write
@@ -290,6 +290,28 @@ tasks use, which makes the trust context the isolation boundary — a context-A
 agent cannot read, write, or delete context-B memory. The least-privilege grant
 for a memory-only agent is an ACL entry with role `application` naming exactly
 one context; `application` carries both memory capabilities.
+
+**Purpose** (VTI-ACL-100 – 110, #2120): the entry also states what its subject
+may use what it reads for — `any`, or a list of `personalisation`,
+`taskExecution`, `analytics`, `modelTraining` or absolute IRIs. Every read of
+memory is held to it: a `get`, a `list` that returns values, and a conflict
+that would hand back the current value. A request names its purpose
+(`purpose` on `get/0.2` and the 0.3 tasks; `pnm memory recall --purpose`); one
+the entry does not grant is refused with `purposeNotGranted`, which discloses
+nothing, and every read's audit row carries its purpose — `unstated` where a
+request under `any` named none. `any` never grants `modelTraining`: that needs
+an entry that names it. An entry listing exactly one purpose applies it to a
+request that names none, so clients that predate purposes keep working; under
+an entry listing more, they are refused until they name one. Entries written
+before purposes existed are rewritten to `any` at boot.
+
+Give an agent the purposes its task needs, not `any` (VTI-VTA-044):
+
+```bash
+pnm acl create --did <agent did:key> --role application --contexts my-agent-memory \
+  --purposes personalisation,taskExecution
+pnm acl update <agent did:key> --purposes taskExecution   # narrowing: applies at its next read
+```
 
 ```bash
 # One context per agent (or per domain) — this is the isolation boundary.

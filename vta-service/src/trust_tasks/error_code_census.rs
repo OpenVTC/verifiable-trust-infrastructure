@@ -57,26 +57,30 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
     use vti_specs as s;
     vec![
         // BASELINE-BEGIN — generated from this test's own failure output.
-        // AclEntry 0.2 codes for bounds the shared operations still answer as
+        // AclEntry 0.3 codes for bounds the shared operations still answer as
         // `permissionDenied` (the granter-bound checks, VTI-ACL-053), and the
         // last-authority guard, which self-modification refusal makes
         // unreachable at a VTA (an unrestricted admin cannot remove itself).
-        s::acl::change_role::v0_2::error_codes::ADDITIVE_WITHIN_CEILING,
-        s::acl::change_role::v0_2::error_codes::DELEGATION_EXCEEDS_GRANTER,
-        s::acl::grant::v0_2::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
-        s::acl::grant::v0_2::error_codes::APPROVE_WIDER_THAN_GRANTER,
-        s::acl::grant::v0_2::error_codes::DELEGATION_EXCEEDS_GRANTER,
-        s::acl::revoke::v0_2::error_codes::LAST_AUTHORITY_PROTECTED,
+        s::acl::change_role::v0_3::error_codes::ADDITIVE_WITHIN_CEILING,
+        s::acl::change_role::v0_3::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        s::acl::grant::v0_3::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
+        s::acl::grant::v0_3::error_codes::APPROVE_WIDER_THAN_GRANTER,
+        s::acl::grant::v0_3::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        // This VTA states no purpose policy (VTI-ACL-108 is a MAY), so it never
+        // refuses a purpose by policy.
+        s::acl::grant::v0_3::error_codes::PURPOSE_REFUSED,
+        s::acl::revoke::v0_3::error_codes::LAST_AUTHORITY_PROTECTED,
         s::acl::swap_key::v0_1::error_codes::LINK_PROOF_INVALID,
         s::acl::swap_key::v0_1::error_codes::LINK_PROOF_REQUIRED,
         s::acl::swap_key::v0_1::error_codes::NOT_HOLDER,
         s::acl::swap_key::v0_1::error_codes::SUBJECT_ALREADY_IN_USE,
         s::acl::swap_key::v0_1::error_codes::SUBJECT_NOT_FOUND,
-        s::acl::update::v0_2::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
-        s::acl::update::v0_2::error_codes::APPROVE_WIDER_THAN_GRANTER,
-        s::acl::update::v0_2::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        s::acl::update::v0_3::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
+        s::acl::update::v0_3::error_codes::APPROVE_WIDER_THAN_GRANTER,
+        s::acl::update::v0_3::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        s::acl::update::v0_3::error_codes::PURPOSE_REFUSED,
         // The spine's schema check refuses a `role` member first (update item 2).
-        s::acl::update::v0_2::error_codes::ROLE_CHANGE_NOT_PERMITTED,
+        s::acl::update::v0_3::error_codes::ROLE_CHANGE_NOT_PERMITTED,
         s::audit::list::v0_2::error_codes::INVALID_CURSOR,
         s::auth::revoke_session::v0_2::error_codes::SESSION_NOT_FOUND,
         s::auth::step_up::approve_response::v0_7::error_codes::ACR_UNSATISFIED,

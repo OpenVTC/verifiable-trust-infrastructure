@@ -8,9 +8,9 @@ use vta_sdk::protocols::acl_management::{
 };
 
 use crate::acl::{
-    AclEntry, ApproveScope, Capability, Role, capabilities_beyond_role, delete_acl_entry,
-    effective_capabilities, get_acl_entry, is_acl_entry_auditable, is_acl_entry_visible,
-    store_acl_entry, update_acl_entry_versioned, validate_acl_modification,
+    AclEntry, ApproveScope, Capability, PurposeScope, Role, capabilities_beyond_role,
+    delete_acl_entry, effective_capabilities, get_acl_entry, is_acl_entry_auditable,
+    is_acl_entry_visible, store_acl_entry, update_acl_entry_versioned, validate_acl_modification,
     validate_additive_capability_grant, validate_approve_scope_grant, validate_role_assignment,
 };
 use crate::auth::AuthClaims;
@@ -43,7 +43,7 @@ pub struct UpdateAclParams {
     /// `Some` sets the expiry (Unix epoch seconds — the wire carries RFC 3339,
     /// converted at the transport boundary); `None` leaves it unchanged.
     pub expires_at: Option<u64>,
-    /// Make the entry permanent (`acl/update/0.2` `expiresAt: null`) — a
+    /// Make the entry permanent (`acl/update/0.3` `expiresAt: null`) — a
     /// privilege increase, judged like a grant by the whole-entry bound below
     /// (VTI-ACL-053), so it is refused where the caller's own entry expires.
     /// Ignored when `expires_at` is `Some`.
@@ -75,6 +75,12 @@ pub struct UpdateAclParams {
     /// stored entry on every request, so the narrowed set applies to the
     /// subject's next sign call even while its access token stays valid.
     pub allowed_keys: Option<Option<std::collections::BTreeSet<String>>>,
+    /// Replace the entry's purposes wholesale (`acl/update/0.3` `purposes`).
+    /// `None` leaves them unchanged. A replacement is bounded by the caller's
+    /// own purposes (VTI-ACL-107); one that narrows is a privilege reduction,
+    /// and binds at the subject's next purpose-bound read, which reads the
+    /// stored entry.
+    pub purposes: Option<PurposeScope>,
 }
 
 impl UpdateAclParams {
@@ -92,6 +98,7 @@ impl UpdateAclParams {
             reason: None,
             capabilities: None,
             allowed_keys: None,
+            purposes: None,
         }
     }
 }
@@ -365,6 +372,27 @@ fn not_covered(did: &str, verb: &str) -> AppError {
 /// Without this a narrowed administrator widens itself in one step: it cannot
 /// edit its own entry, but it can create one for another DID it controls,
 /// scoped to the same context, with none of the narrowing.
+/// The refusal message of a purpose scope wider than the caller's own
+/// (VTI-ACL-107). The 0.3 tasks answer it as `purposeOutsideDelegator`.
+pub(crate) const PURPOSE_OUTSIDE_CALLER: &str = "purposes outside your own";
+
+/// Refuse a purpose scope wider than the caller's own (VTI-ACL-107): `any`
+/// from a caller holding a list, a purpose the caller's list does not name,
+/// or `modelTraining` from a caller whose list does not name it.
+pub(crate) fn validate_purposes_within_caller(
+    caller: &AclEntry,
+    purposes: &PurposeScope,
+) -> Result<(), AppError> {
+    let beyond = purposes.beyond(&caller.purposes);
+    if beyond.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "{PURPOSE_OUTSIDE_CALLER}: {beyond:?} — an entry you write may state only purposes your \
+         own entry grants, and `any` never grants modelTraining (VTI-ACL-107)"
+    )))
+}
+
 fn validate_within_caller(
     auth: &AuthClaims,
     caller: &AclEntry,
@@ -597,6 +625,9 @@ pub async fn exercise_handoff(
         .with_contexts(successor.allowed_contexts.clone())
         .with_capabilities(successor.capabilities.clone())
         .with_allowed_keys(me.allowed_keys.clone())
+        // The successor holds the marked entry's purposes, as it holds its key
+        // filter: never wider than the entry it replaces (VTI-ACL-107).
+        .with_purposes(me.purposes.clone())
         .with_expires_at(marker.bound.expires_at);
 
     // Never wider than the marked entry: role and act scope against the token,
@@ -857,6 +888,9 @@ pub struct CreateAclParams {
     /// expiry, a subject other than the caller, and a caller whose own entry
     /// carries no marker.
     pub handoff: bool,
+    /// What the subject may use what it reads for (VTI-ACL-100), within the
+    /// caller's own purposes (VTI-ACL-107).
+    pub purposes: PurposeScope,
 }
 
 pub async fn create_acl(
@@ -879,6 +913,7 @@ pub async fn create_acl(
         allowed_keys,
         capabilities,
         handoff,
+        purposes,
     } = params;
     let did = did.as_str();
 
@@ -925,13 +960,16 @@ pub async fn create_acl(
         .with_step_up_require(step_up_require)
         .with_approve_scope(approve_scope)
         .with_allowed_keys(allowed_keys)
-        .with_capabilities(capabilities);
+        .with_capabilities(capabilities)
+        .with_purposes(purposes);
 
     // No entry the caller writes may hold more than the caller does, on any
     // axis. The checks above bound role and contexts from the token; this
-    // bounds the rest from the caller's own row (VTI-ACL-053).
+    // bounds the rest from the caller's own row (VTI-ACL-053), and its
+    // purposes from the caller's (VTI-ACL-107).
     let me = caller_entry(acl_ks, auth).await?;
     validate_within_caller(auth, &me, &entry)?;
+    validate_purposes_within_caller(&me, &entry.purposes)?;
     let entry = if handoff {
         entry.with_handoff(Some(mint_handoff(auth, &me, did, expires_at)?))
     } else {
@@ -961,7 +999,7 @@ pub async fn create_acl(
 }
 
 // The stored-shape reads the 0.1 adapters used, kept for the tests below that
-// exercise authorization through them. `acl_v0_2::{show, list}` serve the wire.
+// exercise authorization through them. `acl_v0_3::{show, list}` serve the wire.
 /// Read one entry in the maintainer's **stored** shape.
 ///
 /// Deliberately not `pub`: [`CreateAclResultBody`] is the internal view, and a
@@ -1051,7 +1089,7 @@ async fn list_acl(
 }
 
 /// Stored shape, so not `pub`. Transports go through [`update_from_params`]
-/// (and `acl_v0_2::update` / `acl_v0_2::revoke` above it).
+/// (and `acl_v0_3::update` / `acl_v0_3::revoke` above it).
 async fn update_acl(
     acl_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
@@ -1085,7 +1123,7 @@ async fn update_acl(
         entry.role = role.clone();
     }
     if let Some(label) = params.label {
-        // Empty clears (`acl/update/0.2` `label: null`).
+        // Empty clears (`acl/update/0.3` `label: null`).
         entry.label = (!label.is_empty()).then_some(label);
     }
     if let Some(capabilities) = params.capabilities {
@@ -1110,7 +1148,7 @@ async fn update_acl(
         entry.capabilities = capabilities;
     }
     if let Some(approver) = params.step_up_approver {
-        // Empty clears (`acl/update/0.2` `stepUp.approver: null`).
+        // Empty clears (`acl/update/0.3` `stepUp.approver: null`).
         entry.step_up_approver = (!approver.is_empty()).then_some(approver);
     }
     if let Some(require) = params.step_up_require {
@@ -1202,6 +1240,24 @@ async fn update_acl(
         entry.expires_at = None;
     }
 
+    // A purposes replacement is bounded by the caller's own (VTI-ACL-107); an
+    // amendment that leaves them alone is not judged on them. A narrowing is
+    // a privilege reduction, recorded as one below.
+    let mut purposes_narrowed = None;
+    if let Some(purposes) = params.purposes {
+        purposes
+            .validate()
+            .map_err(|e| AppError::Validation(e.to_string()))?;
+        validate_purposes_within_caller(&me, &purposes)?;
+        if purposes.is_within(&entry.purposes) && purposes != entry.purposes {
+            purposes_narrowed = Some(format!(
+                "purposes narrowed from {} to {purposes}",
+                entry.purposes
+            ));
+        }
+        entry.purposes = purposes;
+    }
+
     // The patched entry, judged whole: one the caller could have created
     // directly, holding nothing the caller does not (VTI-ACL-053). Clearing a
     // capability narrowing or a key filter, or extending an expiry, is a grant
@@ -1221,6 +1277,13 @@ async fn update_acl(
         resource = did,
         outcome = "success"
     );
+    // A narrowing of purposes is a privilege reduction, distinguishable in the
+    // trail from a cosmetic amendment (`acl/update/0.3` item 8).
+    let detail = match (&purposes_narrowed, params.reason.as_deref()) {
+        (Some(n), Some(r)) => Some(format!("{r}; {n}")),
+        (Some(n), None) => Some(n.clone()),
+        (None, r) => r.map(str::to_string),
+    };
     audit::record_with_detail_best_effort(
         audit,
         "acl.update",
@@ -1229,7 +1292,7 @@ async fn update_acl(
         "success",
         Some(channel),
         None,
-        params.reason.as_deref(),
+        detail.as_deref(),
     )
     .await;
     Ok(to_result_body(&entry))
@@ -2129,12 +2192,13 @@ mod tests {
             },
         );
 
-        let body = crate::operations::acl_v0_2::grant(
+        let body = crate::operations::acl_v0_3::grant(
             &acl_ks,
             &audit,
             &contexts_ks,
             &seeded(&acl_ks, super_admin("did:key:zRoot")).await,
             wire,
+            Default::default(),
             "test",
         )
         .await
@@ -2164,7 +2228,7 @@ mod tests {
     /// dropped, and no row is left behind holding more than asked for.
     #[tokio::test]
     async fn a_grant_refuses_a_capability_the_role_lacks() {
-        use crate::operations::acl_v0_2::V02Error;
+        use crate::operations::acl_v0_3::V03Error;
         use vta_sdk::protocols::acl_management::v0_2 as w;
         let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
@@ -2181,18 +2245,19 @@ mod tests {
             },
         );
 
-        let err = crate::operations::acl_v0_2::grant(
+        let err = crate::operations::acl_v0_3::grant(
             &acl_ks,
             &audit,
             &contexts_ks,
             &seeded(&acl_ks, super_admin("did:key:zRoot")).await,
             wire,
+            Default::default(),
             "test",
         )
         .await
         .expect_err("a reader cannot be created holding room-present");
         assert!(
-            matches!(err, V02Error::CapabilityOutsideCeiling { ref caps, .. } if caps == &["room-present"]),
+            matches!(err, V03Error::CapabilityOutsideCeiling { ref caps, .. } if caps == &["room-present"]),
             "the refusal must name what it refused: {err:?}"
         );
         assert!(
@@ -2208,7 +2273,7 @@ mod tests {
     /// asked for a narrowing this build cannot enforce.
     #[tokio::test]
     async fn a_grant_refuses_an_unknown_capability_name() {
-        use crate::operations::acl_v0_2::V02Error;
+        use crate::operations::acl_v0_3::V03Error;
         use vta_sdk::protocols::acl_management::v0_2 as w;
         let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
@@ -2228,18 +2293,19 @@ mod tests {
             },
         );
 
-        let err = crate::operations::acl_v0_2::grant(
+        let err = crate::operations::acl_v0_3::grant(
             &acl_ks,
             &audit,
             &contexts_ks,
             &seeded(&acl_ks, super_admin("did:key:zRoot")).await,
             wire,
+            Default::default(),
             "test",
         )
         .await
         .expect_err("an unknown capability name must be refused");
         assert!(
-            matches!(err, V02Error::UnknownCapability(ref c) if c == &["teleport"]),
+            matches!(err, V03Error::UnknownCapability(ref c) if c == &["teleport"]),
             "the refusal must name the word it did not recognise: {err:?}"
         );
     }
@@ -2267,6 +2333,7 @@ mod tests {
             clear_expiry: false,
             reason: None,
             capabilities: caps,
+            purposes: None,
         };
 
         let narrowed = update_acl(
@@ -2353,6 +2420,7 @@ mod tests {
                 clear_expiry: false,
                 reason: None,
                 capabilities: Some(vec![Capability::RoomPresent]),
+                purposes: None,
             },
             "test",
         )
@@ -2391,6 +2459,7 @@ mod tests {
             clear_expiry: false,
             reason: None,
             capabilities: None,
+            purposes: None,
         };
 
         // Narrow: All -> a single context, without touching the entry.
@@ -2483,6 +2552,7 @@ mod tests {
             reason: None,
             allowed_keys: replacement,
             capabilities: None,
+            purposes: None,
         };
         let stored_filter = |acl_ks: &KeyspaceHandle| {
             let acl_ks = acl_ks.clone();
@@ -2605,6 +2675,7 @@ mod tests {
                 clear_expiry: false,
                 reason: None,
                 capabilities: None,
+                purposes: None,
             },
             "test",
         )
@@ -2630,6 +2701,7 @@ mod tests {
                 clear_expiry: false,
                 reason: None,
                 capabilities: None,
+                purposes: None,
             },
             "test",
         )
@@ -2674,6 +2746,7 @@ mod tests {
                 clear_expiry: false,
                 reason: None,
                 capabilities: None,
+                purposes: None,
             },
             "test",
         )
@@ -2702,6 +2775,7 @@ mod tests {
                 clear_expiry: false,
                 reason: None,
                 capabilities: None,
+                purposes: None,
             },
             "test",
         )
@@ -2740,6 +2814,7 @@ mod tests {
                 clear_expiry: false,
                 reason: None,
                 capabilities: None,
+                purposes: None,
             },
             "test",
         )
@@ -2782,6 +2857,7 @@ mod tests {
                 clear_expiry: false,
                 reason: None,
                 capabilities: None,
+                purposes: None,
             },
             "test",
         )
@@ -2821,6 +2897,7 @@ mod tests {
                 clear_expiry: false,
                 reason: None,
                 capabilities: None,
+                purposes: None,
             },
             "test",
         )
@@ -2973,6 +3050,7 @@ mod tests {
                 expires_at: None,
                 clear_expiry: false,
                 reason: None,
+                purposes: None,
             },
             "test",
         )
@@ -3213,6 +3291,7 @@ mod tests {
                 clear_expiry: false,
                 reason: None,
                 capabilities: None,
+                purposes: None,
             },
             "test",
         )
@@ -3257,6 +3336,7 @@ mod tests {
             reason: None,
             capabilities: None,
             allowed_keys: None,
+            purposes: None,
         }
     }
 
