@@ -70,7 +70,9 @@ to be met at level 1.
    KEL key state: routine role-key changes are interaction events, and
    rotation at level 3 needs the recovery custodian through the weighted next
    threshold (`nt: ["1/2","1"]` over `[R′, K]`, webs profile §2). Witnesses are
-   KERI witnesses, which `vti-witness` will host. `did:key`, `did:jwk`,
+   KERI witnesses, which `vti-witness` will host. It is built on **KERI v2**
+   and is **alpha** (decided 2026-11-10): positions and the keripy conformance
+   rule are in [did-webs-keri-v2.md](did-webs-keri-v2.md). `did:key`, `did:jwk`,
    `did:peer` and `did:web` get profiles that say *ineligible* and the criteria
    missing, so the refusal is a statement (CONVENTIONS §18), not a fall-through.
 3. **Role keys by level.** At **level 2**, `attestation` and `update` keys are
