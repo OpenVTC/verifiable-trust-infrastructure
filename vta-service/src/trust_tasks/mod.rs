@@ -7197,14 +7197,18 @@ mod didcomm_sender_binding {
 mod vti_08_stack {
     use serde_json::json;
 
-    /// Half a default tokio worker stack. The regression needed more than 1 MiB.
-    const STACK_KIB: usize = 512;
+    /// Well inside a default 2 MiB tokio worker, and below the more than 1 MiB the
+    /// regression needed, so a return of it still fails here. 512 KiB fitted only a caller
+    /// with no ACL entry, which no running VTA has: with the super admin's entry stored,
+    /// the spine's gates read it, and a debug build of the whole workspace needs about
+    /// 600 KiB.
+    const STACK_KIB: usize = 768;
 
     /// A stack overflow aborts the process rather than failing a test, so the
     /// work runs in a child copy of this test binary and the parent reads its
     /// exit status.
     #[test]
-    fn vti_08_context_create_fits_half_a_default_worker_stack() {
+    fn vti_08_context_create_fits_well_inside_a_default_worker_stack() {
         let exe = std::env::current_exe().expect("test binary");
         let out = std::process::Command::new(exe)
             .args([
