@@ -80,9 +80,13 @@ pub fn is_durable(did: &str) -> bool {
 }
 
 /// Whether `did` names a DID resolved over the network from the host it names:
-/// `did:web`, `did:webvh`, or a `did:scid:vh:1` whose log is a `did:webvh` log.
+/// `did:web`, `did:webvh`, a `did:scid:vh:1` whose log is a `did:webvh` log, or
+/// a `did:webs`, whose key event log is fetched from its host.
+///
+/// Not [`is_durable`]: `did:webs` is resolved from a host but is not named for
+/// a node's durable identity (VTI-KEY-001).
 pub fn is_network_resolved(did: &str) -> bool {
-    did.starts_with("did:web:") || is_durable(did)
+    did.starts_with("did:web:") || did.starts_with("did:webs:") || is_durable(did)
 }
 
 fn split_src(did_url: &str) -> Option<(&str, &str, &str)> {
@@ -244,6 +248,12 @@ mod tests {
         assert!(!is_durable("did:key:z6Mk"));
         assert!(is_network_resolved("did:web:example.com"));
         assert!(!is_network_resolved("did:peer:2.Ez"));
+        assert!(is_network_resolved(
+            "did:webs:example.com:EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4"
+        ));
+        assert!(!is_durable(
+            "did:webs:example.com:EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4"
+        ));
     }
 
     #[test]
