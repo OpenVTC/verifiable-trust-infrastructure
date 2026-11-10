@@ -44,10 +44,17 @@ otherwise.
 
 *Adopts #216 Q2, all four rules.*
 
-- A KEL may begin in v1 and continue in v2. Each message must be consistent in
-  itself: its body version and its attachments' genus agree.
+- A KEL may begin in v1 and continue in v2. **Attachments follow the stream's
+  genus; each body carries its own version.** #216 proposed instead that a
+  message's body version and attachment genus agree. keripy doesn't do that: it
+  republishes a migrated log under a single v2 genus counter, so its v1 events
+  carry v2 attachment groups (fixture `migrated-v1-to-v2`). That is what any
+  keripy-based host publishes, so a reader must accept it, and the rule should
+  be written that way.
 - **Monotonic per KEL:** within one AID's KEL the protocol version never
-  decreases.
+  decreases. This is stricter than keripy, which accepts a v1 `ixn` after a v2
+  `icp` (fixture `downgrade-v2-to-v1`). VTI refuses it, and records the
+  divergence.
 - **Genus switches are explicit:** a genus-version counter precedes the first
   message of each run in a different genus.
 - **A credential and its registry share a version.** A v1 ACDC names a v1
@@ -157,8 +164,9 @@ next one), and v2 work is the time to add it.
 ### P8 — VTI writes JSON bodies; native CESR bodies are read, not written
 
 v2 allows JSON, CBOR, MessagePack and native CESR bodies. VTI writes JSON
-bodies: it's what keripy and every resolver read first, and it keeps
-`keri.cesr` debuggable. Reading native CESR bodies is required before the
+bodies because they keep `keri.cesr` debuggable. Note that keripy's own default
+is now native CESR (`Kind = 'CESR'`), so a stream from a keripy host with
+default settings has native bodies. Reading native CESR bodies is required before the
 integration leaves alpha, because a conforming stream may carry them.
 
 ---
@@ -193,6 +201,11 @@ commit, starting with `b70986f` (2026-11-05, `2.1.0-dev1`).
 - **Disagreements are findings, not fixes.** Where keripy and the KERI or ACDC
   specification disagree (`upd` is one), we follow keripy for interop, record
   the disagreement here, and raise it upstream.
+- **The fixtures** are in `affinidi-keri-rs`,
+  `crates/affinidi-keri-core/tests/fixtures/keripy-v2/`, with the generator
+  (`gen.py`) and the list of keripy behaviours a reader must know. keripy's
+  parser defaults to v2, so the generator reads a counter-less v1 stream as v1
+  only by saying so: P1 written into code.
 - **Re-pin deliberately.** Moving to a newer keripy commit regenerates the
   fixtures; any diff is reviewed as a behaviour change.
 
