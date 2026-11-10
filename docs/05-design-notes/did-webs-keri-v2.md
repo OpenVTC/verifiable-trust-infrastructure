@@ -162,9 +162,17 @@ the restriction.
 under KERI's superseding rules is reconciled, not treated as a fork that fails
 resolution. Anything whose only anchor is in the superseded branch is dropped:
 aliases, designations, registry updates. This is what the recovery custodian
-(`nt [["1/2","1"]]` over `[R′, K]`) is for. `affinidi-keri` doesn't yet accept
-superseding events (`kever.rs` refuses any event whose sequence number isn't the
-next one), and v2 work is the time to add it.
+(`nt [["1/2","1"]]` over `[R′, K]`) is for.
+
+*Done in keri-core 0.7.0 and did-webs 0.12.0.* `Kever` accepts a rotation that
+supersedes interaction events since the last establishment event (keripy's rule
+A), and refuses one that would supersede a rotation (rule B) as unsupported.
+`IssuerLog` and `Kels` set the superseded events aside, so a registry event
+anchored only in one reads as not yet anchored, and a designation revoked only
+by a superseded event stands. keripy reaches the same state on the same streams
+(fixtures `v2-superseding-recovery`, `v2-rotation-cannot-supersede-rotation`,
+`v2-stale-recovery`). A superseding delegated rotation (`drt`) isn't accepted
+yet.
 
 ### P8 — VTI writes JSON bodies; native CESR bodies are read, not written
 
@@ -229,6 +237,12 @@ commit, starting with `b70986f` (2026-11-05, `2.1.0-dev1`).
   keri-core 0.6.2): the writer names the establishment event's own number, and
   both readers refuse a group whose number and SAID disagree. In 2.x the number
   is a `Number` in its smallest code (`MAAB`), not the 1.x `Seqner`.
+- **A rotation's signers are checked by what they expose, not by position.**
+  keripy (`Kever.exposeds`) accepts a rotation when the keys that sign it
+  include enough of the prior next-key digests to satisfy the prior `nt`,
+  wherever they sit in the new key list. We checked the commitments position
+  by position, so we refused keripy's reordered and partial rotations.
+  keri-core 0.7.0 checks keripy's rule (fixture `v2-reordered-rotation`).
 
 ---
 
@@ -237,7 +251,8 @@ commit, starting with `b70986f` (2026-11-05, `2.1.0-dev1`).
 1. **`affinidi-keri-core`:** v2 version strings (19 characters), the genus
    counter, the v2 counter table (the mapping exists in `counter_table.rs`), v2
    field sets, SAID sizing, mixed-version KELs (P1–P3), superseding recovery
-   (P7). Verified against keripy fixtures from the first commit.
+   (P7). Verified against keripy fixtures from the first commit. *Done in
+   0.6.0–0.7.0, except reading native CESR bodies (P8).*
 2. **`affinidi-keri` controller:** emits v2 events. The public API stays as 0.5.1
    built it.
 3. **Registries and ACDC v2** in `affinidi-keri-core`: `rip`/`bup` and
@@ -248,10 +263,12 @@ commit, starting with `b70986f` (2026-11-05, `2.1.0-dev1`).
 4. **`affinidi-cesr`:** v2 counters and genus codes. Also fix the indexed
    signature codes, which are swapped against keripy and the CESR specification
    (`A`/`2A` are current-only here, `B`/`2B` both lists; it's the reverse).
+   *Done in 0.1.4, with keripy's big (`2A`…) codes and Ed448 sizes.*
 5. **`affinidi-did-webs`:** v2 designation schemas (P4), critical designations
    (P6), stream-version detection, mixed streams, `rpy` `i`, every anchored
-   registry event required (P5). *Done in 0.11.0, except superseding recovery
-   (P7) and native CESR bodies (P8), which wait on `affinidi-keri-core`.*
+   registry event required (P5). *Done in 0.11.0; superseding recovery (P7)
+   in 0.12.0. Native CESR bodies (P8) remain, and wait on
+   `affinidi-keri-core`.*
 6. **VTA:** key-roles step 1 onward (`key-roles-implementation.md`) builds on
    v2 from the start.
 7. **Upstream:** comment on #216 with P1–P5 (the reproduced SAID, the exact `t`
