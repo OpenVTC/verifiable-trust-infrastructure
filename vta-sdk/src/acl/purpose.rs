@@ -38,13 +38,64 @@ pub const MAX_PURPOSE_LEN: usize = 2048;
 /// Exactly one of two shapes (VTI-ACL-100). There is no empty list: a
 /// `Listed` set is never empty, and [`PurposeScope::listed`] refuses one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "scope", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(try_from = "WireScope", into = "WireScope")]
 pub enum PurposeScope {
     /// Every purpose except [`MODEL_TRAINING`] (VTI-ACL-105).
     Any,
     /// Exactly these purposes, compared by exact string equality
     /// (VTI-ACL-109). Never empty.
     Listed { purposes: BTreeSet<String> },
+}
+
+/// The wire form, read strictly. An internally tagged enum would accept
+/// `{"scope": "any", "purposes": [...]}` — serde lets a unit variant ignore extra members —
+/// and would fold a duplicate purpose into the set silently. A stored entry and an SDK
+/// response are read with no schema in front of them, so the shape is checked here.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireScope {
+    scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    purposes: Option<Vec<String>>,
+}
+
+impl TryFrom<WireScope> for PurposeScope {
+    type Error = String;
+
+    fn try_from(w: WireScope) -> Result<Self, String> {
+        match (w.scope.as_str(), w.purposes) {
+            ("any", None) => Ok(Self::Any),
+            ("any", Some(_)) => Err("`any` carries no `purposes`".into()),
+            ("listed", Some(list)) => {
+                let mut purposes = BTreeSet::new();
+                for p in list {
+                    if !purposes.insert(p.clone()) {
+                        return Err(format!("purpose '{p}' is listed twice"));
+                    }
+                }
+                Ok(Self::Listed { purposes })
+            }
+            ("listed", None) => Err("`listed` names its `purposes`".into()),
+            (other, _) => Err(format!(
+                "`{other}` is not a purpose scope: `any` or `listed`"
+            )),
+        }
+    }
+}
+
+impl From<PurposeScope> for WireScope {
+    fn from(p: PurposeScope) -> Self {
+        match p {
+            PurposeScope::Any => Self {
+                scope: "any".into(),
+                purposes: None,
+            },
+            PurposeScope::Listed { purposes } => Self {
+                scope: "listed".into(),
+                purposes: Some(purposes.into_iter().collect()),
+            },
+        }
+    }
 }
 
 /// Why a purpose scope cannot be written (VTI-ACL-100, VTI-ACL-109).
@@ -294,6 +345,18 @@ mod tests {
             serde_json::from_value(json!({ "scope": "listed", "purposes": [] })).unwrap();
         assert_eq!(empty.validate(), Err(PurposeScopeError::Empty));
         assert!(serde_json::from_value::<PurposeScope>(json!({ "scope": "none" })).is_err());
+        assert!(
+            serde_json::from_value::<PurposeScope>(json!({ "scope": "any", "purposes": [] }))
+                .is_err(),
+            "`any` carries no purposes"
+        );
+        assert!(
+            serde_json::from_value::<PurposeScope>(
+                json!({ "scope": "listed", "purposes": ["analytics", "analytics"] })
+            )
+            .is_err(),
+            "a duplicate is refused, not folded"
+        );
     }
 
     /// VTI-ACL-109: a purpose is a lowerCamelCase name or an absolute IRI.
