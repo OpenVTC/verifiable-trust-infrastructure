@@ -283,9 +283,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-webs"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d0f83efd1ed6ab569a4fdfdf8f37438e074e0d7e1414c9459b1689400c89d05"
+checksum = "513c17daa826e3df9cb52bd032d140060bce275855ab8e350969fa28dcc1ab12"
 dependencies = [
  "affinidi-cesr",
  "affinidi-crypto",
