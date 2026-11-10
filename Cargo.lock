@@ -223,9 +223,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-resolver-cache-sdk"
-version = "0.8.47"
+version = "0.8.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c970818b038d29d55daab6ab6beee97ca1460d309ab473287624e17073d010c"
+checksum = "309263b0a2e3b3cb3b39ffbed6fac57407f9e1da3c41b61b1f6e9e74d4eddb0c"
 dependencies = [
  "affinidi-did-common",
  "affinidi-did-resolver-traits",
@@ -283,9 +283,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-webs"
-version = "0.9.3"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "513c17daa826e3df9cb52bd032d140060bce275855ab8e350969fa28dcc1ab12"
+checksum = "3cffcf5a4d5a41858a27cd313a3dec236d25711dd9a60e3e145ff02cb4588998"
 dependencies = [
  "affinidi-cesr",
  "affinidi-crypto",
@@ -317,9 +317,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-keri-core"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f44114f2dd34555182b83331291ac10d8a727f515b0622037a8e4e1c87429be2"
+checksum = "3298cfe4926dfa1a19e48567c4340f0ac13dfdfbbce0e737ca16fad9ba2074c5"
 dependencies = [
  "affinidi-cesr",
  "affinidi-keri-crypto",
@@ -335,9 +335,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-keri-crypto"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "122a93049f2c5c4da2402fc2cad211686049258b936c1c87969f3ca7c0ef9cd4"
+checksum = "235d33bcfb4e6f059894c759769ae41a0b00da866562f1f7a63b4d3db6b045c2"
 dependencies = [
  "affinidi-cesr",
  "argon2 0.5.3",
@@ -866,9 +866,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-tdk"
-version = "0.37.0"
+version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebe7ec4233cb6e6c2854e81888dd9b12330505b1d5ee5c7de7e308d8214f27cb"
+checksum = "5ae76620c002f9680f7efac006f1d6e8dd74736dd91f215691f241306f549a32"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -3828,9 +3828,9 @@ dependencies = [
 
 [[package]]
 name = "did-scid"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acbed56c9dda941e4d6cb5aef95e9072e03fda04927e7916d047d6d110458661"
+checksum = "d615a81471d84a92c5969676d50f33432e6f4e5546f8cfd9f1030682e953f4a6"
 dependencies = [
  "affinidi-did-common",
  "didwebvh-rs",
