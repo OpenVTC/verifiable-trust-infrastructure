@@ -296,6 +296,16 @@ async fn build_messaging(
         outbox.clone(),
         std::time::Duration::from_secs(30),
     ));
+    // Settled entries are removed a week after their delivery window closed
+    // (`VtiOutboxStore::terminal_before`), so the outbox holds what is in
+    // flight and a recent history, not every send ever made (#2550). Hourly:
+    // nothing waits on it. The first pass clears a backlog from before reaping
+    // existed.
+    tokio::spawn(affinidi_messaging_delivery::reap::reap_loop(
+        outbox.clone(),
+        std::time::Duration::from_secs(60 * 60),
+        affinidi_messaging_delivery::reap::TERMINAL_RETENTION,
+    ));
     Ok((service, atm, profile))
 }
 
