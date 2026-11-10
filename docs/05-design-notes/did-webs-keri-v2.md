@@ -213,6 +213,22 @@ commit, starting with `b70986f` (2026-11-05, `2.1.0-dev1`).
   only by saying so: P1 written into code.
 - **Re-pin deliberately.** Moving to a newer keripy commit regenerates the
   fixtures; any diff is reviewed as a behaviour change.
+- **keripy reads a whole `keri.cesr` of ours.** `affinidi-did-webs`'s
+  `tests/fixtures/ours-v2` is one identifier's lifecycle on 2.0 (created with
+  aliases, key agreement, a service and an endpoint; key agreement replaced;
+  rotated; a new endpoint under the rotation). keripy parses the whole stream,
+  reaches the same KEL state, accepts the endpoint replies, and its `vetBinds`
+  agrees on every designation's status (`verify_ours.py`).
+- **An endorsement names its establishment event twice, and keripy checks
+  both.** A transferable signature group (`-F` in 1.x, `-X` in 2.x) names the
+  establishment event by sequence number and SAID. keripy looks the event up by
+  the number and then compares the SAID; we looked it up by SAID alone. Our
+  writer put the log's latest sequence number beside the establishment event's
+  SAID, so keripy refused the replies of any identifier with an interaction
+  event, and our resolver never noticed. Both are fixed (did-webs 0.11,
+  keri-core 0.6.2): the writer names the establishment event's own number, and
+  both readers refuse a group whose number and SAID disagree. In 2.x the number
+  is a `Number` in its smallest code (`MAAB`), not the 1.x `Seqner`.
 
 ---
 
@@ -226,13 +242,16 @@ commit, starting with `b70986f` (2026-11-05, `2.1.0-dev1`).
    built it.
 3. **Registries and ACDC v2** in `affinidi-keri-core`: `rip`/`bup` and
    `BlindedStateQuadruples` (P5). The v1 `vcp`/`iss`/`rev` handling moves there
-   from `did-webs` (`designation.rs` says it belongs there).
+   from `did-webs` (`designation.rs` says it belongs there). *Done in 0.6.1–0.6.2:
+   reader and writer for both versions, `RegistryState::resume` from the
+   published stream, rules sections, endorsements in either genus.*
 4. **`affinidi-cesr`:** v2 counters and genus codes. Also fix the indexed
    signature codes, which are swapped against keripy and the CESR specification
    (`A`/`2A` are current-only here, `B`/`2B` both lists; it's the reverse).
 5. **`affinidi-did-webs`:** v2 designation schemas (P4), critical designations
    (P6), stream-version detection, mixed streams, `rpy` `i`, every anchored
-   registry event required (P5).
+   registry event required (P5). *Done in 0.11.0, except superseding recovery
+   (P7) and native CESR bodies (P8), which wait on `affinidi-keri-core`.*
 6. **VTA:** key-roles step 1 onward (`key-roles-implementation.md`) builds on
    v2 from the start.
 7. **Upstream:** comment on #216 with P1–P5 (the reproduced SAID, the exact `t`
