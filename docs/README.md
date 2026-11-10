@@ -250,6 +250,7 @@ are implementer-facing rather than operator-facing.
   for the shared registry.
 - **[Key roles — design](05-design-notes/key-roles.md)** — why durable identities split keys by role (attestation, operational, messaging, update, authenticator), protection boundaries, the external recovery key (and why not the VTA's BIP-32 seed), rotation vs revocation, approvals, method profiles, benefits and implications.
 - **[did:webs on KERI v2 — positions](05-design-notes/did-webs-keri-v2.md)** — why VTI's `did:webs` integration is KERI v2 and alpha, our position on each open v1/v2 question (stream versions, mixed logs, v2 designation schemas and their SAIDs, blindable registries, critical designations, superseding recovery), and the rule that every piece is checked both ways against keripy v2.
+- **[did:webs in the VTA](05-design-notes/did-webs-in-the-vta.md)** — creating, hosting, updating and acting as a `did:webs` persona, relationship or integration DID (level 1); why a service DID stays `did:webvh` / `did:scid:vh:1` (VTI-KEY-001); the `vta/webs/dids/*` family, keys, hosting and order of work.
 - **[Key roles — implementation plan](05-design-notes/key-roles-implementation.md)** —
   the ordered PRs that implement method-neutral key roles (`vta/dids/*`): method
   profiles, `keyRoles`, generated role keys outside the seed and every backup,
