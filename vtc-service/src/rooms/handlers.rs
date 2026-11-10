@@ -204,6 +204,7 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(super::files::handle_epoch_prune_v2)
         .on_async(super::files::handle_get_record_v2)
         .on_async(super::files::handle_get_record_v3)
+        .on_async(super::files::handle_get_record_v4)
         .on_async(super::files::handle_download_chunk)
         .on_async(super::files::handle_usage)
         .on_async(super::files::handle_upload_begin_v2)
@@ -265,6 +266,19 @@ pub(super) async fn audit_room(
     operation: RoomOperation,
     record_key: Option<&str>,
 ) {
+    audit_room_for(state, room, authorized, operation, record_key, None).await
+}
+
+/// [`audit_room`] for a read, with the purpose it was served for, or `unstated`
+/// (`rooms/records/get/0.4`, *Purpose of use* item 2; VTI-ACL-106).
+pub(super) async fn audit_room_for(
+    state: &AppState,
+    room: &Room,
+    authorized: &authz::AuthorizedAction,
+    operation: RoomOperation,
+    record_key: Option<&str>,
+    purpose: Option<&str>,
+) {
     let Some(writer) = state.audit_writer.as_ref() else {
         return;
     };
@@ -280,6 +294,7 @@ pub(super) async fn audit_room(
                 action: action.to_string(),
                 record_key: entry.record_key,
                 visibility: format!("{:?}", room.visibility).to_lowercase(),
+                purpose: purpose.map(str::to_string),
             }),
         )
         .await
@@ -675,11 +690,17 @@ pub(super) async fn put_record<P>(
 /// A read presents exactly as a write does. Authorizing reads by session would record a
 /// member identifier on every access, and a period of those records reconstructs the
 /// membership a sealed room exists to withhold — without breaking any cryptography.
+///
+/// Every read is purpose-bound (VTI-ACL-110): `purpose` is what a get/0.4 request named,
+/// and `declares_purpose` whether the version served declares `purposeNotGranted`. An
+/// earlier version is decided as a request naming none.
 pub(super) async fn get_record<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: GetRecordBody,
     v3: bool,
+    purpose: Option<String>,
+    declares_purpose: bool,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
 
@@ -705,6 +726,23 @@ pub(super) async fn get_record<P>(
     if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
         return o;
     }
+    // After the chain verified and before any record is read, so the refusal says nothing
+    // about whether the record exists.
+    let decision = authorized.admit_purpose(purpose.as_deref());
+    if !decision.is_granted() {
+        tracing::info!(
+            room = %room.room_id,
+            purpose = decision.audit_label(),
+            "a room read refused: the chain does not grant its purpose"
+        );
+        return super::files::render(
+            doc,
+            Err(vti_rooms::blob_tasks::read_purpose_refused(
+                &decision,
+                declares_purpose,
+            )),
+        );
+    }
 
     // Read under the lock every record write holds — and every prune: a 0.2 read names the
     // blobs of the version it returns, and every read's head must be one snapshot with its
@@ -712,12 +750,13 @@ pub(super) async fn get_record<P>(
     let snapshot = state.room_files.read_snapshot().await;
     match storage::get_record(&state.room_records_ks, &req.room_id, &req.key).await {
         Ok(record) => {
-            audit_room(
+            audit_room_for(
                 state,
                 &room,
                 &authorized,
                 RoomOperation::GetRecord,
                 Some(&req.key),
+                Some(decision.audit_label()),
             )
             .await;
             // The response is a type, not the stored record with a member bolted
@@ -2375,6 +2414,7 @@ mod tests {
                 member: Some(presenter.to_string()),
                 presented: Default::default(),
                 valid_until: None,
+                purposes: Default::default(),
             })
         }
     }
@@ -3360,6 +3400,63 @@ mod tests {
         .await;
         assert!(!out.status.is_success());
         assert_eq!(payload_of(&out)["code"], "malformedRequest");
+    }
+
+    /// VTI-ACL-110 on the community's host: get/0.4 holds a read to the purposes the
+    /// presented chain grants, refuses another with `purposeNotGranted`, and records the
+    /// purpose served in the room's audit entry (VTI-ACL-106).
+    #[tokio::test]
+    async fn vti_acl_110_get_0_4_is_held_to_the_chain_purposes() {
+        use dtg_credentials::purposes::PurposeScope;
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner(),
+                    "cleartext": { "body": "for one purpose" } }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+
+        let presentation = f
+            .as_agent_for(PurposeScope::listed(["taskExecution"]))
+            .await;
+        let (f, presentation) = (&f, &presentation);
+        let as_agent = |purpose: &str| {
+            let payload = json!({ "roomId": f.room.room_id, "key": "k",
+                                  "presentation": &presentation, "purpose": purpose });
+            async move {
+                let d = doc(
+                    state,
+                    vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE,
+                    payload,
+                    &f.agent.did,
+                    &f.agent.secret_multibase,
+                )
+                .await;
+                let presenter = spine_presenter(state, &d).await;
+                super::dispatch(state, d, &presenter).await
+            }
+        };
+
+        let out = as_agent("taskExecution").await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        assert_eq!(payload_of(&out)["cleartext"]["body"], "for one purpose");
+
+        let out = as_agent("analytics").await;
+        let refused = payload_of(&out);
+        assert_eq!(
+            refused["code"], "rooms/records/get:purposeNotGranted",
+            "{refused}"
+        );
+        assert_eq!(
+            refused["details"],
+            json!({ "purposeNamed": true, "purpose": "analytics" })
+        );
     }
 
     /// Records every `rooms/changed` signal; reaches every address.

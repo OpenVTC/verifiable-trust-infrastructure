@@ -174,6 +174,8 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_PUT_V5_TYPE,
     ROOMS_RECORDS_LIST_V6_TYPE,
     ROOMS_RECORDS_GET_V3_TYPE,
+    // A read's purpose of use (trust-tasks-tf #1076, VTI-ACL-110).
+    ROOMS_RECORDS_GET_V4_TYPE,
     // A watch, and its one signal (trust-tasks-tf #1036).
     ROOMS_WATCH_TYPE,
 ];

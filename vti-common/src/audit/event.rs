@@ -1905,6 +1905,10 @@ pub struct RoomOperationData {
     pub record_key: Option<String>,
     /// The room's visibility, so a reader can tell an actorless entry from a missing one.
     pub visibility: String,
+    /// On a read, the purpose it was served or refused for, or `unstated` where it named
+    /// none (VTI-ACL-106). A purpose is a registered name or an IRI, never content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

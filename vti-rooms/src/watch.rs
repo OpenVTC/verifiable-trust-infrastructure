@@ -490,6 +490,7 @@ mod tests {
                 member: Some(presenter.into()),
                 presented: Default::default(),
                 valid_until: self.0,
+                purposes: Default::default(),
             })
         }
     }

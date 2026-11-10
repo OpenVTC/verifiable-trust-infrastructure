@@ -328,6 +328,18 @@ fn audit_room(
     operation: RoomOperation,
     record_key: Option<&str>,
 ) {
+    audit_room_for(room, authorized, operation, record_key, None)
+}
+
+/// [`audit_room`] for a read, with the purpose it was served for, or `unstated`
+/// (`rooms/records/get/0.4`, *Purpose of use* item 2; VTI-ACL-106).
+fn audit_room_for(
+    room: &Room,
+    authorized: &authz::AuthorizedAction,
+    operation: RoomOperation,
+    record_key: Option<&str>,
+    purpose: Option<&str>,
+) {
     let entry = rooms_audit::for_operation(room.visibility, authorized, record_key);
     #[cfg(test)]
     AUDITED.with(|audited| audited.borrow_mut().push(operation.action_name()));
@@ -337,6 +349,7 @@ fn audit_room(
         actor = %entry.actor.as_str(),
         record = entry.record_key.as_deref().unwrap_or("-"),
         visibility = ?room.visibility,
+        purpose = purpose.unwrap_or("-"),
         "room operation"
     );
 }
@@ -710,6 +723,7 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         files::PUT_V5_TYPE => files::put_v5(state, &doc, payload).await,
         files::GET_V2_TYPE => files::get_v2(state, &doc, payload).await,
         files::GET_V3_TYPE => files::get_v3(state, &doc, payload).await,
+        files::GET_V4_TYPE => files::get_v4(state, &doc, payload).await,
         files::DOWNLOAD_CHUNK_TYPE => files::download_chunk(state, &doc, payload).await,
         files::USAGE_TYPE => files::usage(state, &doc, payload).await,
         files::UPLOAD_BEGIN_V2_TYPE => files::begin_v2(state, &doc, payload).await,
@@ -747,6 +761,7 @@ fn is_consequential(type_uri: &str) -> bool {
             | files::USAGE_TYPE
             | files::GET_V2_TYPE
             | files::GET_V3_TYPE
+            | files::GET_V4_TYPE
             | vti_rooms::record_tasks::LIST_V5_TYPE
             | vti_rooms::record_tasks::LIST_V6_TYPE
             | vti_rooms::record_tasks::INFO_V3_TYPE
@@ -1017,11 +1032,17 @@ async fn put_with_blobs(
 
 /// `rooms/records/get/0.2`, read as its 0.1 members: the answer also names the record's
 /// blobs — and at 0.3 (`v3`) the host's `createdAt`, `createdBy` and `bodyStoredAt`.
+///
+/// Every read is purpose-bound (VTI-ACL-110): `purpose` is what a get/0.4 request named,
+/// and `declares_purpose` whether the version served declares `purposeNotGranted`. An
+/// earlier version is decided as a request naming none.
 async fn get_versioned(
     state: &HostState,
     doc: &TrustTask<Value>,
     payload: Value,
     v3: bool,
+    purpose: Option<String>,
+    declares_purpose: bool,
 ) -> Answer {
     let req: GetRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
@@ -1056,13 +1077,33 @@ async fn get_versioned(
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
+    // After the chain verified and before any record is read, so the refusal says nothing
+    // about whether the record exists.
+    let decision = authorized.admit_purpose(purpose.as_deref());
+    if !decision.is_granted() {
+        tracing::info!(
+            room = %room.room_id,
+            purpose = decision.audit_label(),
+            "a room read refused: the chain does not grant its purpose"
+        );
+        return files::refused(
+            doc,
+            vti_rooms::blob_tasks::read_purpose_refused(&decision, declares_purpose),
+        );
+    }
     // Read under the lock every record write holds — and every prune: a 0.2 read names the
     // blobs of the version it returns, and every read's head must be one snapshot with its
     // root, which a prune moves both of (`HeadVersion`).
     let snapshot = state.files.read_snapshot().await;
     match storage::get_record(&state.records, &req.room_id, &req.key).await {
         Ok(record) => {
-            audit_room(&room, &authorized, RoomOperation::GetRecord, Some(&req.key));
+            audit_room_for(
+                &room,
+                &authorized,
+                RoomOperation::GetRecord,
+                Some(&req.key),
+                Some(decision.audit_label()),
+            );
             // Answered through the response type for the same reason the VTC is:
             // `respond(doc, record)` put the *storage* record on the wire.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
@@ -2952,6 +2993,97 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    /// VTI-ACL-110: a chain stating purposes is held to them on every read. get/0.4 names
+    /// the purpose; a purpose the chain does not grant is `purposeNotGranted`, and an earlier
+    /// version — which cannot name one — is refused where the chain lists more than one.
+    #[tokio::test]
+    async fn vti_acl_110_a_read_is_held_to_the_purposes_its_chain_grants() {
+        use dtg_credentials::purposes::PurposeScope;
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+        call(
+            &app,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": f.as_owner(),
+                "cleartext": { "body": "for one purpose only" },
+            }),
+            &f.owner,
+        )
+        .await;
+        let get = |uri: &'static str,
+                   presentation: vti_rooms::wire::AuthorityPresentation,
+                   purpose: Option<&str>| {
+            let mut payload = serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": presentation,
+            });
+            if let Some(p) = purpose {
+                payload["purpose"] = serde_json::json!(p);
+            }
+            let app = app.clone();
+            let agent = &f.agent;
+            async move { call(&app, uri, payload, agent).await }
+        };
+        const V4: &str = vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE;
+        const V3: &str = vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE;
+
+        let one = f
+            .as_agent_for(PurposeScope::listed(["taskExecution"]))
+            .await;
+        let (status, body) = get(V4, one.clone(), Some("taskExecution")).await;
+        assert_eq!(status, StatusCode::OK, "the granted purpose: {body}");
+        let (status, body) = get(V4, one.clone(), None).await;
+        assert_eq!(status, StatusCode::OK, "the only purpose applies: {body}");
+        let (status, body) = get(V3, one.clone(), None).await;
+        assert_eq!(status, StatusCode::OK, "so it does to get/0.3: {body}");
+        let (_, body) = get(V4, one, Some("analytics")).await;
+        assert_eq!(
+            body["code"], "rooms/records/get:purposeNotGranted",
+            "{body}"
+        );
+        assert_eq!(
+            body["details"],
+            serde_json::json!({ "purposeNamed": true, "purpose": "analytics" }),
+            "{body}"
+        );
+        assert!(body.get("cleartext").is_none(), "no content: {body}");
+
+        let two = f
+            .as_agent_for(PurposeScope::listed(["taskExecution", "personalisation"]))
+            .await;
+        let (_, body) = get(V4, two.clone(), None).await;
+        assert_eq!(
+            body["code"], "rooms/records/get:purposeNotGranted",
+            "{body}"
+        );
+        assert_eq!(
+            body["details"],
+            serde_json::json!({ "purposeNamed": false })
+        );
+        let (_, body) = get(V3, two.clone(), None).await;
+        assert_eq!(
+            body["code"], "permissionDenied",
+            "get/0.3 cannot name one: {body}"
+        );
+        let (status, body) = get(V4, two, Some("personalisation")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        // A chain stating none grants `any`, which never grants model training.
+        let (status, body) = get(V4, f.as_agent(), Some("analytics")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, body) = get(V4, f.as_agent(), Some("modelTraining")).await;
+        assert_eq!(
+            body["code"], "rooms/records/get:purposeNotGranted",
+            "{body}"
+        );
     }
 
     /// A presentation is not a bearer token: the agent's chain, presented by its human.

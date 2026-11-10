@@ -512,6 +512,9 @@ impl ChainVerifier for DtgChainVerifier {
             member,
             presented,
             valid_until,
+            // `verify_chain` has already refused a link widening its parent's purposes
+            // (VTI-ACL-107); what is left is what the leaf grants.
+            purposes: chain_purposes(verified.purposes),
         })
     }
 
@@ -521,6 +524,21 @@ impl ChainVerifier for DtgChainVerifier {
         document: &serde_json::Value,
     ) -> Result<(), AppError> {
         verify_room_signed(document, &room.room_id, self.keys.as_ref()).await
+    }
+}
+
+/// The purposes a verified DTG chain grants, as the room's own type.
+fn chain_purposes(
+    scope: dtg_credentials::purposes::PurposeScope,
+) -> vti_rooms::purpose::ChainPurposes {
+    use dtg_credentials::purposes::PurposeScope;
+    match scope {
+        PurposeScope::Any => vti_rooms::purpose::ChainPurposes::Any,
+        PurposeScope::Listed { purposes } => {
+            vti_rooms::purpose::ChainPurposes::Listed(purposes.into_iter().collect())
+        }
+        // A scope this build does not know grants nothing it could misread as granted.
+        _ => vti_rooms::purpose::ChainPurposes::Listed(Default::default()),
     }
 }
 
@@ -1600,6 +1618,41 @@ pub mod test_support {
             AuthorityPresentation {
                 membership: self.membership.clone(),
                 authority: self.agent_chain.clone(),
+                subject_binding: None,
+            }
+        }
+
+        /// The agent's presentation, its read-only leaf stating `purposes` (VTI-ACL-102):
+        /// the owner's membership, the owner's chain, and a fresh leaf the owner signed.
+        pub async fn as_agent_for(
+            &self,
+            purposes: dtg_credentials::purposes::PurposeScope,
+        ) -> AuthorityPresentation {
+            let owner_vac: DTGCredential =
+                serde_json::from_str(&self.owner_chain[0]).expect("the owner VAC reads");
+            let now = Utc::now();
+            let mut leaf = owner_vac
+                .attenuate(
+                    IssuerScope::Directed,
+                    self.agent.did.clone(),
+                    vec!["read".into()],
+                    now - Duration::minutes(1),
+                    now + Duration::hours(4),
+                    None,
+                )
+                .expect("attenuate to the agent")
+                .with_id("urn:uuid:vac-agent-purposes")
+                .with_purposes_under(&owner_vac, purposes)
+                .expect("state the purposes");
+            leaf.sign(&self.owner.secret, None)
+                .await
+                .expect("sign the agent VAC");
+            AuthorityPresentation {
+                membership: self.membership.clone(),
+                authority: vec![
+                    serde_json::to_string(&leaf).expect("serialise"),
+                    self.owner_chain[0].clone(),
+                ],
                 subject_binding: None,
             }
         }
