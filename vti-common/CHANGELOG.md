@@ -2,6 +2,65 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.63.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.62.0...vti-common-v0.63.0) — 2026-11-10
+
+
+### Added
+
+- **rooms**: Room hosts hold every read to the purposes its chain grants (VTI-ACL-110) ([#2545](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2545))
+
+A room's authority credential may now state purposes (dtg-credentials 0.14,
+  DTG context v2), and a host serving a read holds the request to them
+  (`rooms/records/get/0.4`, *Purpose of use*).
+
+  - vti-rooms: `purpose::ChainPurposes` and `PurposeDecision`; `VerifiedChain.purposes`
+    (a new public field), `AuthorizedAction::purposes` and `admit_purpose`; get/0.4 is
+    dispatched, with `blob_tasks::get_v4_purpose` and `read_purpose_refused`.
+  - vti-rooms-dtg: `DtgChainVerifier` fills `purposes` from the verified chain, whose
+    chain rule (a link may not widen its parent's purposes, VTI-ACL-107) dtg-credentials
+    applies. A scope this build does not know grants nothing.
+  - room-host and vtc-service serve `rooms/records/get/0.4`. A purpose the chain does not
+    grant, or none where it lists several, is refused with `purposeNotGranted` after the
+    chain verifies and before any record is read. get/0.2 and 0.3 cannot name a purpose and
+    are decided as naming none (`permissionDenied` where the chain lists several).
+  - The served read's purpose, or `unstated`, is recorded: `RoomOperationData.purpose`
+    (vti-common, a new public field) at the VTC, the room operation log line at room-host
+    (VTI-ACL-106).
+
+- **rooms**: The key holder holds every opening to the caller's purposes (VTI-ACL-102) ([#2541](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2541))
+
+* feat(rooms): the key holder holds every opening to the caller's purposes (VTI-ACL-102)
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#1076 at the VTA, as #2539 did for
+  agent memory.
+
+  Opening a room record discloses it, so it is purpose-bound (VTI-ACL-102). New
+  versions rooms/keys/open/0.3, read/0.3 and file-key/0.3 carry the purpose the
+  caller will use what it opens for (`purposeOfUse` on file-key, where `purpose`
+  already means seal or open). The purpose is judged against the caller's stored
+  ACL entry before anything is decrypted or the host is asked; one not granted is
+  `purposeNotGranted`, disclosing nothing (VTI-ACL-103, -104). The earlier
+  versions, still served, name none: served under `any` or a single listed
+  purpose, refused as `taskFailed` under an entry listing more. Only a key to
+  open a file is held to a purpose; a sealing key discloses nothing. Every
+  opening's audit row records its purpose, served or refused (VTI-ACL-106).
+
+  read/0.3 passes a named purpose to the host as rooms/records/get/0.4's, and
+  asks get/0.3 of a host that answers unsupportedType.
+
+  Not yet: room authority credentials stating purposes (VTI-ACL-110). A VAC has
+  no such member until trustoverip/dtgwg-cred-spec#84 defines one, and
+  dtg-credentials 0.13 refuses a VAC that carries it, so a chain grants `any`
+  and the caller's entry is what narrows. issue-authority/0.3 is not pinned, and
+  no host serves get/0.4 yet.
+
+  The purpose helpers move from the memory handlers to trust_tasks::helpers.
+  The signing test state now seeds the super admin's ACL entry, as a running VTA
+  always has one.
+
+- **acl**: Purpose of use on ACL entries and memory reads (VTI-ACL-100 – 110) ([#2539](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2539))
+
+
 ## [0.62.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.61.0...vti-common-v0.62.0) — 2026-11-09
 
 

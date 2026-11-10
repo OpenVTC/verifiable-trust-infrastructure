@@ -2,6 +2,87 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.60.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.59.0...vta-cli-common-v0.60.0) — 2026-11-10
+
+
+### Added
+
+- **rooms**: The VTA writes a grant's purposes into the credential it issues (issue-authority 0.3, VTI-ACL-110) ([#2546](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2546))
+
+The VTA serves rooms/owner/issue-authority/0.3 beside 0.2. The request's
+  `purposes` are stated in the VAC's subject unchanged (DTG context v2), and a
+  request stating none issues a credential stating none, which grants `any`
+  (*Purpose of use* item 1).
+
+  A credential is a grant the caller writes, so it may not grant purposes the
+  caller's own entry does not (VTI-ACL-107): a purpose the caller does not hold,
+  or none at all from a caller whose entry lists purposes, is refused rather
+  than issued narrower or wider (item 2). This applies to 0.2 as well, which
+  cannot state purposes: a caller whose entry lists purposes asks 0.3.
+
+  - vta-sdk: TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3 (Keyed) and
+    VtaClient::room_owner_issue_authority_for.
+  - vti-specs-rooms pins issue-authority 0.3; get/0.4's bundle takes the
+    upstream description change (trust-tasks-tf #1077).
+
+- **rooms**: The key holder holds every opening to the caller's purposes (VTI-ACL-102) ([#2541](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2541))
+
+* feat(rooms): the key holder holds every opening to the caller's purposes (VTI-ACL-102)
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#1076 at the VTA, as #2539 did for
+  agent memory.
+
+  Opening a room record discloses it, so it is purpose-bound (VTI-ACL-102). New
+  versions rooms/keys/open/0.3, read/0.3 and file-key/0.3 carry the purpose the
+  caller will use what it opens for (`purposeOfUse` on file-key, where `purpose`
+  already means seal or open). The purpose is judged against the caller's stored
+  ACL entry before anything is decrypted or the host is asked; one not granted is
+  `purposeNotGranted`, disclosing nothing (VTI-ACL-103, -104). The earlier
+  versions, still served, name none: served under `any` or a single listed
+  purpose, refused as `taskFailed` under an entry listing more. Only a key to
+  open a file is held to a purpose; a sealing key discloses nothing. Every
+  opening's audit row records its purpose, served or refused (VTI-ACL-106).
+
+  read/0.3 passes a named purpose to the host as rooms/records/get/0.4's, and
+  asks get/0.3 of a host that answers unsupportedType.
+
+  Not yet: room authority credentials stating purposes (VTI-ACL-110). A VAC has
+  no such member until trustoverip/dtgwg-cred-spec#84 defines one, and
+  dtg-credentials 0.13 refuses a VAC that carries it, so a chain grants `any`
+  and the caller's entry is what narrows. issue-authority/0.3 is not pinned, and
+  no host serves get/0.4 yet.
+
+  The purpose helpers move from the memory handlers to trust_tasks::helpers.
+  The signing test state now seeds the super admin's ACL entry, as a running VTA
+  always has one.
+
+- **acl**: Purpose of use on ACL entries and memory reads (VTI-ACL-100 – 110) ([#2539](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2539))
+
+
+### Fixed
+
+- **pnm**: Rooms put writes provenance on open rooms, and rooms read shows it ([#2525](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2525))
+
+`pnm rooms put` refused --basis, --confidence, --cite-*, --purpose,
+  --use-note and --valid-until on an `open` room, on the belief that the key
+  holder's `rooms/keys/act` would not carry them. It signs the cleartext the
+  producer built, unaltered (act Recipient item 6), and `rooms/records/put`
+  0.3 and later accept these members in an open room's cleartext. So an
+  open-room write now carries them, and gets `basis: declared` by default
+  as a sealed write already does (`rooms/records/put/0.5` Producer item 9:
+  a writer SHOULD set `basis`). No room profile governs them.
+
+  The members are built once (`RecordProvenance::members`) and checked
+  against the specification before anything is sent; sealed bodies take the
+  same values, so both tiers spell them alike.
+
+  `pnm rooms read` now shows the basis and expiry line `pnm rooms get`
+  shows, marked unsigned on an open room. Both name their keys, which is the
+  explicit request on which a reader shows an expired record, marked
+  (`RecordValidUntil`).
+
+
+
 ## [0.59.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.58.0...vta-cli-common-v0.59.0) — 2026-11-09
 
 

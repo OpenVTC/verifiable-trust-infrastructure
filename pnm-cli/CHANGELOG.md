@@ -2,6 +2,38 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.59.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.58.0...pnm-cli-v0.59.0) — 2026-11-10
+
+
+### Added
+
+- **acl**: Purpose of use on ACL entries and memory reads (VTI-ACL-100 – 110) ([#2539](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2539))
+
+
+### Fixed
+
+- **pnm**: Rooms put writes provenance on open rooms, and rooms read shows it ([#2525](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2525))
+
+`pnm rooms put` refused --basis, --confidence, --cite-*, --purpose,
+  --use-note and --valid-until on an `open` room, on the belief that the key
+  holder's `rooms/keys/act` would not carry them. It signs the cleartext the
+  producer built, unaltered (act Recipient item 6), and `rooms/records/put`
+  0.3 and later accept these members in an open room's cleartext. So an
+  open-room write now carries them, and gets `basis: declared` by default
+  as a sealed write already does (`rooms/records/put/0.5` Producer item 9:
+  a writer SHOULD set `basis`). No room profile governs them.
+
+  The members are built once (`RecordProvenance::members`) and checked
+  against the specification before anything is sent; sealed bodies take the
+  same values, so both tiers spell them alike.
+
+  `pnm rooms read` now shows the basis and expiry line `pnm rooms get`
+  shows, marked unsigned on an open room. Both name their keys, which is the
+  explicit request on which a reader shows an expired record, marked
+  (`RecordValidUntil`).
+
+
+
 ## [0.58.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.57.0...pnm-cli-v0.58.0) — 2026-11-09
 
 
