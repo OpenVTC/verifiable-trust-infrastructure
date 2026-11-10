@@ -21,7 +21,7 @@ agent-names = ["vta-sdk/agent-names"]
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.11" }
+vti-specs = { path = "../vti-specs", version = "0.12" }
 # `time` for the consent loop's bounded wait between polls.
 tokio = { workspace = true, features = ["time"] }
 vta-sdk = { path = "../vta-sdk", version = "0.87", features = [
