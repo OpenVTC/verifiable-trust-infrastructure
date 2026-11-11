@@ -441,7 +441,7 @@ pub use rooms::{
 };
 pub use rooms_records::{
     MEMBER_PROFILE_KIND, RECORD_BODY_MEMBERS, RECORD_FILE_MEMBERS, RECORD_KIND_VALUES,
-    ROOM_READ_MAX_KEYS, RoomBrowse, check_record_members, record_members_permitted,
+    ROOM_READ_MAX_KEYS, RoomBrowse, RoomListOrder, check_record_members, record_members_permitted,
     record_members_used, unsigned_room_request_v0_11,
 };
 pub use rooms_watch::{

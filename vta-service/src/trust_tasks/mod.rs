@@ -2991,6 +2991,9 @@ dispatch_table! {
     // 0.4: list/0.6's `RecordMetadataV3` rows, passed through exactly as served.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4 => room_group::handle_browse_v0_4
         [ None Metadata true ],
+    // 0.5: `order` passed through to list/0.7, `maxPages`, and `cursor` / `nextCursor`.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5 => room_group::handle_browse_v0_5
+        [ None Metadata true ],
     // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
     // 0.3 accepts the members a room's `recordMembers` governs, which 0.2 refuses.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2

@@ -997,9 +997,18 @@ pub const TASK_ROOMS_KEYS_BROWSE_0_3: &str =
 /// `spec/rooms/keys/browse/0.4` — [`TASK_ROOMS_KEYS_BROWSE_0_3`], its rows the
 /// `RecordMetadataV3` the host's `rooms/records/list/0.6` serves, passed through exactly as
 /// served: `createdAt` and `bodyStoredAt`, `createdBy` (`open` and `attributed`), `kind`
-/// (`open`) and `blobs`. Auth: `roomOpen` capability. The version this SDK sends.
+/// (`open`) and `blobs`. Auth: `roomOpen` capability.
+#[allow(deprecated)] // superseded by 0.5, and still served
 pub const TASK_ROOMS_KEYS_BROWSE_0_4: &str =
     <vti_specs::rooms::keys::browse::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/browse/0.5` — [`TASK_ROOMS_KEYS_BROWSE_0_4`], and `order` passed
+/// through to the host's `rooms/records/list/0.7` (`newestFirst` opens a conversation at
+/// its head), `maxPages` to stop after so many host pages, and `cursor` / `nextCursor` to
+/// come back for the next (trust-tasks-tf #1088). Auth: `roomOpen` capability. The version
+/// this SDK sends.
+pub const TASK_ROOMS_KEYS_BROWSE_0_5: &str =
+    <vti_specs::rooms::keys::browse::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/seal/0.2` — seal one record body with the room's current epoch key;
 /// it does not write. With `signAsPrincipal` the VTA signs the
@@ -2917,6 +2926,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_READ_0_3,
     TASK_ROOMS_KEYS_BROWSE_0_3,
     TASK_ROOMS_KEYS_BROWSE_0_4,
+    TASK_ROOMS_KEYS_BROWSE_0_5,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_SEAL_0_3,
     TASK_ROOMS_KEYS_ACT_0_8,

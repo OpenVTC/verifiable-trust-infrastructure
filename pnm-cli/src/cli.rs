@@ -788,18 +788,45 @@ pub(crate) enum RoomCommands {
         /// watermark.
         #[arg(long)]
         since_version: Option<u64>,
-        /// Show at most this many.
+        /// Show at most this many. With `--newest`, the page size to read from the head
+        /// (default 50).
         #[arg(long)]
         limit: Option<usize>,
+        /// Open the conversation at its head: your VTA lists the room newest first
+        /// (`rooms/keys/browse/0.5`, the host's `rooms/records/list/0.7`) and stops after
+        /// `--pages` pages. Needs `--host-did`.
+        #[arg(long)]
+        newest: bool,
+        /// With `--newest`: how many host pages to read (default 1).
+        #[arg(long, requires = "newest")]
+        pages: Option<u64>,
+        /// With `--newest`: continue from the cursor an earlier `--newest` printed, to read
+        /// the page before it.
+        #[arg(long, requires = "newest")]
+        cursor: Option<String>,
     },
 
     /// Read several records at once through your VTA (`rooms/keys/read/0.2`): it
     /// fetches each from the host as you, checks it, and opens it, and answers each key on
-    /// its own — the record, or why that key was not read.
+    /// its own — the record, or why that key was not read. With `--newest`, the newest
+    /// records of the conversation instead of named keys.
     Read {
         /// Record keys, in the order to show them.
-        #[arg(required = true)]
+        #[arg(required_unless_present = "newest", conflicts_with = "newest")]
         keys: Vec<String>,
+        /// Read the conversation's newest records, in the order they were written: your
+        /// VTA lists the room newest first (`rooms/keys/browse/0.5`) and reads that page.
+        #[arg(long)]
+        newest: bool,
+        /// With `--newest`: how many records to read from the head (default 50).
+        #[arg(long, requires = "newest")]
+        limit: Option<usize>,
+        /// With `--newest`: how many host pages to read (default 1).
+        #[arg(long, requires = "newest")]
+        pages: Option<u64>,
+        /// With `--newest`: continue from the cursor an earlier `--newest` printed.
+        #[arg(long, requires = "newest")]
+        cursor: Option<String>,
         #[arg(long = "room")]
         room_id: String,
         /// Base URL of the host storing the room. Unused by this command, which reaches the

@@ -1744,6 +1744,260 @@ async fn browse_0_4_passes_list_0_6_rows_through_and_falls_back_to_0_5() {
     }
 }
 
+// ─── `rooms/keys/browse/0.5` (trust-tasks-tf #1088) ─────────────────────────────────────
+//
+// `order` passed through to the host's list/0.7, `maxPages` stopping the read, the host's
+// cursor answered as `nextCursor` and taken back as `cursor`, and `hostRefused` — never an
+// oldest-first listing — for `newestFirst` at a host that predates list/0.7.
+
+const BROWSE_0_5: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5;
+const LIST_V7: &str = vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE;
+
+async fn browse_v0_5(v: &Vta, room: &str, host: &str, extra: Value) -> Value {
+    let mut payload = json!({ "roomId": room, "host": host });
+    for (k, val) in extra.as_object().unwrap() {
+        payload[k] = val.clone();
+    }
+    body(
+        super::super::room_group::handle_browse_v0_5(
+            &v.state,
+            &admin(),
+            request(BROWSE_0_5, payload),
+        )
+        .await,
+    )
+}
+
+fn row_versions(got: &Value) -> Vec<u64> {
+    got["payload"]["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["version"].as_u64().unwrap())
+        .collect()
+}
+
+/// An open room on `host` holding the messages `m0`…`m{n-1}`, written in that order.
+async fn open_room_with(host: &Host, n: usize) -> (Party, Vta) {
+    let (room, owner) = open_room_on(host).await;
+    for i in 0..n {
+        put_open_v0_5(
+            &owner,
+            &room.did,
+            host,
+            &format!("m{i}"),
+            json!({ "body": format!("message {i}") }),
+        )
+        .await;
+    }
+    (room, owner)
+}
+
+/// *Order and paging* items 1–6: a newest-first browse with `maxPages: 1` returns the head
+/// page in descending `version`, `complete: false` with the host's cursor as `nextCursor`
+/// and a count that is not comparable; passing that cursor back continues downward, and a
+/// browse resumed from a cursor is never compared against `recordCount`, even at the end.
+#[tokio::test]
+async fn browse_0_5_opens_a_conversation_at_its_head_and_pages_back() {
+    let host = start_host().await;
+    let (room, owner) = open_room_with(&host, 5).await;
+
+    let head = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "limit": 2, "maxPages": 1 }),
+    )
+    .await;
+    let p = &head["payload"];
+    assert!(
+        head["type"].as_str().unwrap().ends_with("#response"),
+        "{head}"
+    );
+    let first = row_versions(&head);
+    assert_eq!(first.len(), 2, "{head}");
+    assert!(first[0] > first[1], "descending: {head}");
+    assert_eq!(p["complete"], false, "{head}");
+    assert_eq!(p["verification"]["count"], "notComparable", "{head}");
+    let cursor = p["nextCursor"]
+        .as_str()
+        .expect("the host's cursor")
+        .to_string();
+    assert_eq!(host.received(LIST_V7), 1, "one host page");
+
+    // Back, a page at a time, to the end.
+    let mut seen = first.clone();
+    let mut cursor = Some(cursor);
+    let mut last = Value::Null;
+    while let Some(c) = cursor {
+        last = browse_v0_5(
+            &owner,
+            &room.did,
+            &host.did,
+            json!({ "order": "newestFirst", "limit": 2, "maxPages": 1, "cursor": c }),
+        )
+        .await;
+        seen.extend(row_versions(&last));
+        cursor = last["payload"]["nextCursor"].as_str().map(str::to_string);
+        assert_eq!(
+            last["payload"]["complete"],
+            cursor.is_none(),
+            "`complete` and `nextCursor` agree: {last}"
+        );
+    }
+    assert!(seen.windows(2).all(|w| w[0] > w[1]), "downward: {seen:?}");
+    assert_eq!(
+        last["payload"]["verification"]["count"], "notComparable",
+        "a resumed listing is never compared: {last}"
+    );
+
+    // The whole room newest first, in one browse, is comparable — the order is no filter.
+    let whole = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst" }),
+    )
+    .await;
+    assert_eq!(whole["payload"]["complete"], true, "{whole}");
+    assert!(whole["payload"].get("nextCursor").is_none(), "{whole}");
+    assert_eq!(
+        whole["payload"]["verification"]["count"], "agrees",
+        "{whole}"
+    );
+    assert_eq!(
+        row_versions(&whole),
+        seen,
+        "the same records, the same order"
+    );
+}
+
+/// Item 3: the agent stops at `maxPages` however many pages remain; without it, a browse
+/// reads to the end as before (and oldest first, as 0.4 does).
+#[tokio::test]
+async fn browse_0_5_stops_at_max_pages() {
+    let host = start_host().await;
+    let (room, owner) = open_room_with(&host, 5).await;
+    let got = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "limit": 1, "maxPages": 2 }),
+    )
+    .await;
+    assert_eq!(row_versions(&got).len(), 2, "{got}");
+    assert_eq!(host.received(LIST_V7), 2);
+    assert_eq!(got["payload"]["complete"], false, "{got}");
+
+    let all = browse_v0_5(&owner, &room.did, &host.did, json!({ "limit": 1 })).await;
+    let up = row_versions(&all);
+    assert!(
+        up.windows(2).all(|w| w[0] < w[1]),
+        "oldest first by default: {up:?}"
+    );
+    assert_eq!(all["payload"]["complete"], true, "{all}");
+    assert!(all["payload"].get("nextCursor").is_none(), "{all}");
+}
+
+/// Item 1: at a host that predates list/0.7, a `newestFirst` browse is `hostRefused` with
+/// the host's refusal in `details` — never listed oldest first — while a browse that asks
+/// no order, or `oldestFirst`, is listed with list/0.6. And item 5: a cursor the host did
+/// not issue for this order is the host's to refuse, answered `hostRefused`.
+#[tokio::test]
+async fn browse_0_5_refuses_newest_first_at_a_host_without_list_0_7() {
+    const PREDATES_V7: &[&str] = &[vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE];
+    let host = start_host_refusing(false, PREDATES_V7).await;
+    let (room, owner) = open_room_with(&host, 2).await;
+
+    let got = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst" }),
+    )
+    .await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_5::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["details"]["code"], "unsupportedType",
+        "{got}"
+    );
+    assert_eq!(host.received(LIST_V6), 0, "never listed oldest first");
+
+    for order in [json!({}), json!({ "order": "oldestFirst" })] {
+        let got = browse_v0_5(&owner, &room.did, &host.did, order).await;
+        assert_eq!(got["payload"]["complete"], true, "{got}");
+        let up = row_versions(&got);
+        assert!(up.windows(2).all(|w| w[0] < w[1]), "{up:?}");
+    }
+    assert_eq!(host.received(LIST_V6), 2);
+
+    // At a host serving list/0.7, an oldest-first cursor offered under `newestFirst`.
+    let host = start_host().await;
+    let (room, owner) = open_room_with(&host, 3).await;
+    let up = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "limit": 1, "maxPages": 1 }),
+    )
+    .await;
+    let cursor = up["payload"]["nextCursor"].as_str().expect("more remain");
+    let got = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "cursor": cursor }),
+    )
+    .await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_5::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["details"]["code"],
+        vti_specs::rooms::records::list::v0_7::error_codes::INVALID_CURSOR.to_string(),
+        "{got}"
+    );
+}
+
+/// browse/0.5 names its refusals as 0.4 does, at its own version: no membership is
+/// `notAMember`; a host nobody answers at is `hostUnreachable`.
+#[tokio::test]
+async fn browse_0_5_names_its_refusals() {
+    let mut s = sealed_room().await;
+    let stranger = Party::new().did;
+    let got = browse_v0_5(&s.owner, &stranger, &s.host.did, json!({})).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_5::error_codes::NOT_A_MEMBER.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/browse:notAMember",
+        "{got}"
+    );
+
+    let (dead, doc) = unreachable_host();
+    knows(&mut s.owner, &dead, doc).await;
+    let got = browse_v0_5(
+        &s.owner,
+        &s.room.did,
+        &dead,
+        json!({ "order": "newestFirst" }),
+    )
+    .await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_5::error_codes::HOST_UNREACHABLE.to_string(),
+        "{got}"
+    );
+}
+
 /// **End to end, on an open room whose profile lists the members.** The writer reads the
 /// profile and is permitted `kind`, `inReplyTo` and `writtenAt` (and not `editedAt`); writes
 /// a message, a reply to it and a reaction with `rooms/records/put/0.5` through
