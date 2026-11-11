@@ -32,6 +32,10 @@
 use std::collections::BTreeMap;
 
 use reqwest::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
+use vta_sdk::http::{
+    ALLOW_PRIVATE_ENDPOINTS_ENV, EndpointPolicy, foreign_fetch_client_for, guard_foreign_url,
+    is_https_or_loopback,
+};
 
 use vti_common::vault::{
     CookieJarEntry, PasswordLoginConfig, PasswordLoginFormat, SameSite, TotpSeed,
@@ -113,38 +117,63 @@ impl From<PasswordPostError> for AppError {
     }
 }
 
-/// Validate the loginConfig's URL is one we're willing to POST to.
-/// Per the canonical spec, `http://` is permitted only for the
-/// localhost loopback — anywhere else, the credentials would leak in
-/// transit. The check accepts `127.0.0.0/8`, `::1`, and the literal
-/// hostname `localhost`.
+/// Validate the loginConfig's URL is one we're willing to POST to, under
+/// this process's endpoint policy ([`EndpointPolicy::process_default`]).
+///
+/// See [`validate_login_url_for`] for the rules.
 pub fn validate_login_url(login_url: &str) -> Result<url::Url, PasswordPostError> {
+    validate_login_url_for(login_url, EndpointPolicy::process_default())
+}
+
+/// Validate the loginConfig's URL under `policy`.
+///
+/// - `https://` to a public host is always accepted. The host's DNS answers
+///   are vetted again at connect time by the guarded client the driver sends
+///   through.
+/// - `https://` to a private-network, carrier-grade NAT or loopback host, or
+///   to a local-only name (`localhost`, `*.internal`, …), only when `policy`
+///   admits private endpoints (`VTA_ALLOW_PRIVATE_ENDPOINTS`). Link-local and
+///   cloud-metadata targets are never accepted.
+/// - `http://` only to an exact loopback host (`localhost`, an address in
+///   `127.0.0.0/8`, `::1`), and only when `policy` admits private endpoints.
+///   The spec allows clear text for loopback alone, so the password never
+///   leaves the machine unencrypted; a DNS name that merely begins with
+///   `127.` or `localhost` is an ordinary remote name and is refused.
+/// - Any other scheme, embedded userinfo, or an unparseable URL is refused.
+pub fn validate_login_url_for(
+    login_url: &str,
+    policy: EndpointPolicy,
+) -> Result<url::Url, PasswordPostError> {
     let url = url::Url::parse(login_url)
         .map_err(|e| PasswordPostError::InvalidLoginUrl(format!("not a URL: {e}")))?;
+    // Checked first, so a credential in the URL never lands in an error.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(PasswordPostError::InvalidLoginUrl(
+            "login URL must not embed credentials (userinfo)".into(),
+        ));
+    }
     match url.scheme() {
-        "https" => Ok(url),
+        "https" => {
+            guard_foreign_url(url.as_str(), policy)
+                .map_err(|e| PasswordPostError::InvalidLoginUrl(e.to_string()))?;
+            Ok(url)
+        }
         "http" => {
-            // `url::Url::host_str` strips the IPv6 brackets, but
-            // host_str() returns the inner address — e.g. "::1" for
-            // `http://[::1]:8080/`. Defense in depth: handle both
-            // bracketed and bare in case future url-crate behaviour
-            // changes.
-            let host = url
-                .host_str()
-                .unwrap_or("")
-                .trim_start_matches('[')
-                .trim_end_matches(']');
-            let is_loopback = host == "localhost"
-                || host == "::1"
-                || host.starts_with("127.")
-                || host == "0.0.0.0";
-            if is_loopback {
-                Ok(url)
-            } else {
-                Err(PasswordPostError::InvalidLoginUrl(format!(
+            // Parsed host, not a string prefix: `127.example.net` is a DNS
+            // name, not the loopback address its first label resembles.
+            if !is_https_or_loopback(url.as_str()) {
+                let host = url.host_str().unwrap_or("");
+                return Err(PasswordPostError::InvalidLoginUrl(format!(
                     "http:// is permitted only for loopback hosts; got {host}"
-                )))
+                )));
             }
+            if !policy.allow_private {
+                return Err(PasswordPostError::InvalidLoginUrl(format!(
+                    "http:// to a loopback host is refused unless private endpoints are \
+                     enabled for this VTA ({ALLOW_PRIVATE_ENDPOINTS_ENV}=1)"
+                )));
+            }
+            Ok(url)
         }
         other => Err(PasswordPostError::InvalidLoginUrl(format!(
             "unsupported scheme {other}"
@@ -320,8 +349,27 @@ pub async fn run_password_post(
     password: &str,
     totp: Option<&TotpSeed>,
 ) -> Result<Vec<CookieJarEntry>, PasswordPostError> {
+    run_password_post_with_policy(
+        config,
+        username,
+        password,
+        totp,
+        EndpointPolicy::process_default(),
+    )
+    .await
+}
+
+/// [`run_password_post`] under an explicit endpoint policy. The URL check
+/// and the client's connect-time address check use the same `policy`.
+pub async fn run_password_post_with_policy(
+    config: &PasswordLoginConfig,
+    username: Option<&str>,
+    password: &str,
+    totp: Option<&TotpSeed>,
+    policy: EndpointPolicy,
+) -> Result<Vec<CookieJarEntry>, PasswordPostError> {
     // 1. Validate URL.
-    let url = validate_login_url(&config.login_url)?;
+    let url = validate_login_url_for(&config.login_url, policy)?;
     let host = url
         .host_str()
         .ok_or_else(|| PasswordPostError::InvalidLoginUrl("URL has no host".into()))?
@@ -348,28 +396,23 @@ pub async fn run_password_post(
     let (content_type, body) = build_request_body(config, username, password, totp_code)?;
 
     // 4. POST.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(POST_TIMEOUT_SECS))
-        // No cookie store — we capture cookies from the immediate
-        // response. The maintainer issues exactly one POST; persistent
-        // cookies don't apply to this driver.
-        //
-        // No redirect following — when the loginConfig declares 3xx
-        // statuses (e.g. 302) as success, we want to surface that
-        // response with its Set-Cookie headers, not chase the
-        // Location URL into a logged-in dashboard the maintainer
-        // shouldn't actually fetch (and which would echo bytes back
-        // to the operator). Sites that legitimately need redirect-
-        // following on the login response are an edge case worth a
-        // future driver flag.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| PasswordPostError::Transport {
-            url: url.to_string(),
-            source: e,
-        })?;
+    //
+    // The shared foreign-fetch client: finite timeouts, no proxy, and a DNS
+    // resolver that refuses any answer `policy` does not admit, so a public
+    // name that resolves to an internal address is not dialled.
+    //
+    // No cookie store — we capture cookies from the immediate response. The
+    // maintainer issues exactly one POST; persistent cookies don't apply.
+    //
+    // No redirect following (the client never follows one) — when the
+    // loginConfig declares 3xx statuses (e.g. 302) as success, we want to
+    // surface that response with its Set-Cookie headers, not chase the
+    // Location URL into a logged-in dashboard the maintainer shouldn't
+    // actually fetch.
+    let client = foreign_fetch_client_for(policy);
     let resp = client
         .post(url.clone())
+        .timeout(std::time::Duration::from_secs(POST_TIMEOUT_SECS))
         .header(CONTENT_TYPE, content_type)
         .body(body)
         .send()
@@ -447,18 +490,99 @@ mod tests {
         assert!(validate_login_url("https://example.com/login").is_ok());
     }
 
+    const PRIVATE: EndpointPolicy = EndpointPolicy::private_allowed();
+    const PUBLIC: EndpointPolicy = EndpointPolicy::public_only();
+
     #[test]
-    fn validate_login_url_accepts_http_to_loopback() {
+    fn validate_login_url_accepts_http_to_loopback_when_private_endpoints_enabled() {
+        for url in [
+            "http://localhost:3000/login",
+            "http://127.0.0.1/api/login",
+            "http://127.1.2.3/api/login",
+            "http://[::1]:8080/login",
+        ] {
+            assert!(
+                validate_login_url_for(url, PRIVATE).is_ok(),
+                "loopback http should be accepted: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_login_url_refuses_loopback_without_private_endpoints() {
         for url in [
             "http://localhost:3000/login",
             "http://127.0.0.1/api/login",
             "http://[::1]:8080/login",
+            "https://127.0.0.1/api/login",
+            "https://localhost/login",
         ] {
+            let err = validate_login_url_for(url, PUBLIC).unwrap_err();
             assert!(
-                validate_login_url(url).is_ok(),
-                "loopback http should be accepted: {url}"
+                err.to_string()
+                    .contains(vta_sdk::http::ALLOW_PRIVATE_ENDPOINTS_ENV),
+                "{url}: refusal should name the opt-in: {err}"
             );
         }
+    }
+
+    /// A DNS name whose first label looks like a loopback address or name is
+    /// an ordinary remote host; clear text to it would carry the password off
+    /// the machine.
+    #[test]
+    fn validate_login_url_rejects_http_to_loopback_lookalike_names() {
+        for url in [
+            "http://127.example.net/login",
+            "http://127.0.0.1.example.net/login",
+            "http://localhost.example.net/login",
+            "http://0.0.0.0/login",
+        ] {
+            for policy in [PUBLIC, PRIVATE] {
+                assert!(
+                    matches!(
+                        validate_login_url_for(url, policy),
+                        Err(PasswordPostError::InvalidLoginUrl(_))
+                    ),
+                    "{url} must be refused under {policy:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validate_login_url_private_https_needs_opt_in() {
+        for url in [
+            "https://10.0.0.5/login",
+            "https://192.168.1.10/login",
+            "https://intranet.internal/login",
+        ] {
+            assert!(validate_login_url_for(url, PUBLIC).is_err(), "{url}");
+            assert!(validate_login_url_for(url, PRIVATE).is_ok(), "{url}");
+        }
+    }
+
+    #[test]
+    fn validate_login_url_never_accepts_metadata_or_link_local() {
+        for url in [
+            "https://169.254.169.254/latest",
+            "https://[fe80::1]/login",
+            "https://metadata.google.internal/login",
+            "http://169.254.169.254/latest",
+        ] {
+            for policy in [PUBLIC, PRIVATE] {
+                assert!(
+                    validate_login_url_for(url, policy).is_err(),
+                    "{url} under {policy:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validate_login_url_rejects_userinfo_without_echoing_it() {
+        let err =
+            validate_login_url_for("https://user:s3cret@example.com/login", PRIVATE).unwrap_err();
+        assert!(!err.to_string().contains("s3cret"), "{err}");
     }
 
     #[test]
@@ -620,9 +744,10 @@ mod tests {
                 .await;
 
             let cfg = make_cfg(format!("{}/api/login", server.uri()));
-            let cookies = run_password_post(&cfg, Some("alice"), "hunter2", None)
-                .await
-                .expect("password POST should succeed");
+            let cookies =
+                run_password_post_with_policy(&cfg, Some("alice"), "hunter2", None, PRIVATE)
+                    .await
+                    .expect("password POST should succeed");
             assert_eq!(cookies.len(), 2);
             // Host-only cookies get the loginUrl's host filled in.
             let host = url::Url::parse(&cfg.login_url)
@@ -646,7 +771,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let cfg = make_cfg(format!("{}/login", server.uri()));
-            let err = run_password_post(&cfg, Some("a"), "b", None)
+            let err = run_password_post_with_policy(&cfg, Some("a"), "b", None, PRIVATE)
                 .await
                 .unwrap_err();
             assert!(
@@ -664,7 +789,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let cfg = make_cfg(format!("{}/login", server.uri()));
-            let err = run_password_post(&cfg, Some("a"), "b", None)
+            let err = run_password_post_with_policy(&cfg, Some("a"), "b", None, PRIVATE)
                 .await
                 .unwrap_err();
             assert!(matches!(
@@ -686,9 +811,10 @@ mod tests {
                 .await;
             let mut cfg = make_cfg(format!("{}/api/login", server.uri()));
             cfg.format = PasswordLoginFormat::FormUrlencoded;
-            let cookies = run_password_post(&cfg, Some("alice"), "hunter2", None)
-                .await
-                .expect("form-urlencoded POST should succeed");
+            let cookies =
+                run_password_post_with_policy(&cfg, Some("alice"), "hunter2", None, PRIVATE)
+                    .await
+                    .expect("form-urlencoded POST should succeed");
             assert_eq!(cookies.len(), 0, "no Set-Cookie on this response");
         }
 
@@ -710,11 +836,32 @@ mod tests {
                 .await;
             let mut cfg = make_cfg(format!("{}/login", server.uri()));
             cfg.success_status = Some(vec![302]);
-            let cookies = run_password_post(&cfg, Some("a"), "b", None)
+            let cookies = run_password_post_with_policy(&cfg, Some("a"), "b", None, PRIVATE)
                 .await
                 .expect("302 should be treated as success per config");
             assert_eq!(cookies.len(), 1);
             assert_eq!(cookies[0].name, "session");
+        }
+
+        /// Under the default policy a loopback login target is refused before
+        /// any request leaves, so the password is never sent.
+        #[tokio::test]
+        async fn loopback_target_is_not_contacted_without_private_endpoints() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let cfg = make_cfg(format!("{}/login", server.uri()));
+            let err = run_password_post_with_policy(&cfg, Some("a"), "b", None, PUBLIC)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, PasswordPostError::InvalidLoginUrl(_)),
+                "got {err:?}"
+            );
+            server.verify().await;
         }
 
         #[tokio::test]
@@ -734,7 +881,9 @@ mod tests {
                 .mount(&server)
                 .await;
             let cfg = make_cfg(format!("{}/login", server.uri()));
-            let cookies = run_password_post(&cfg, Some("a"), "b", None).await.unwrap();
+            let cookies = run_password_post_with_policy(&cfg, Some("a"), "b", None, PRIVATE)
+                .await
+                .unwrap();
             assert_eq!(cookies.len(), 1, "evil-domain cookie must be discarded");
             assert_eq!(cookies[0].name, "kept");
         }

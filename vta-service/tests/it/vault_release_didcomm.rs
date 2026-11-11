@@ -159,6 +159,10 @@ async fn release_paths_seal_an_answer_to_the_caller() {
         .mount(&third_party)
         .await;
 
+    // The stand-in listens on loopback over plain http, which the password
+    // driver reaches only with private endpoints enabled for the process.
+    vta_sdk::http::set_allow_private_endpoints(true);
+
     let mock = MockVta::start_with_transports().await;
     let client = mock.signing_client(0x50, "admin", vec![]).await;
     seed_entry(
