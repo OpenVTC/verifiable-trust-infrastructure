@@ -28,6 +28,16 @@
 //! - Cookies the maintainer's HTTP client receives during pre-fetch
 //!   (the driver issues exactly one POST and reads `Set-Cookie` from
 //!   that response).
+//!
+//! # Where the password may be sent
+//!
+//! [`validate_login_url_for`] decides, at `vault/upsert` (for a newly sealed
+//! secret) and again at every proxy login. An entry stored before that rule
+//! existed is checked only at use: one whose `loginUrl` is `http://0.0.0.0`,
+//! loopback while `VTA_ALLOW_PRIVATE_ENDPOINTS` is unset, or `https://` to a
+//! private-network host fails its next proxy login with `invalid_login_url`,
+//! and is fixed by re-sealing it with a public `https://` URL (or by setting
+//! the opt-in where a local target is intended).
 
 use std::collections::BTreeMap;
 
