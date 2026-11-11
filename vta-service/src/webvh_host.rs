@@ -108,6 +108,46 @@ fn payload<P: DeserializeOwned>(task: &str, value: Value) -> Result<P, AppError>
         .map_err(|e| AppError::Validation(format!("cannot build a {task} request: {e}")))
 }
 
+/// A DID method the hosting service publishes, as `did/register/0.1` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostedMethod {
+    /// A `did.jsonl` log.
+    Webvh,
+    /// A `keri.cesr` key event stream; the host derives `did.json` from it.
+    #[cfg_attr(not(feature = "webs"), allow(dead_code))]
+    Webs,
+}
+
+impl HostedMethod {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Webvh => "webvh",
+            Self::Webs => "webs",
+        }
+    }
+}
+
+/// The `did/register/0.1` payload. `method` is always explicit: a key event
+/// stream has no `id` the host could derive it from.
+fn register_payload(
+    path: &str,
+    method: HostedMethod,
+    did_data: &str,
+    force: bool,
+    domain: Option<&str>,
+) -> Result<dm::did::register::v0_1::Payload, AppError> {
+    let mut body = serde_json::json!({
+        "path": path,
+        "method": method.as_str(),
+        "didData": did_data,
+        "force": force,
+    });
+    if let Some(d) = domain {
+        body["domain"] = d.into();
+    }
+    payload("did/register", body)
+}
+
 /// The unsigned request document.
 fn build_request_document(type_uri: &str, issuer: &str, recipient: &str, payload: Value) -> Value {
     serde_json::json!({
@@ -295,16 +335,38 @@ impl<'a> WebvhHostClient<'a> {
         force: bool,
         domain: Option<&str>,
     ) -> Result<RequestUriResponse, AppError> {
-        let mut body = serde_json::json!({
-            "path": path,
-            "method": "webvh",
-            "didData": did_log,
-            "force": force,
-        });
-        if let Some(d) = domain {
-            body["domain"] = d.into();
-        }
-        let request: dm::did::register::v0_1::Payload = payload("did/register", body)?;
+        self.register(path, HostedMethod::Webvh, did_log, force, domain)
+            .await
+    }
+
+    /// Claim `mnemonic` and publish a `did:webs` key event stream there
+    /// (`did/register/0.1`, `method: "webs"`), or publish its continuation to a
+    /// slot this VTA owns.
+    ///
+    /// `mnemonic` is the slot path ending in the identifier's AID
+    /// (`dids/<AID>`): the host builds `did:webs:{domain}:{path}:{AID}` from
+    /// it and requires the stream to establish that AID. The host derives
+    /// `did.json` from the stream on every read; nothing else is sent.
+    #[cfg(feature = "webs")]
+    pub async fn publish_webs(
+        &self,
+        mnemonic: &str,
+        keri_cesr: &str,
+        domain: Option<&str>,
+    ) -> Result<RequestUriResponse, AppError> {
+        self.register(mnemonic, HostedMethod::Webs, keri_cesr, false, domain)
+            .await
+    }
+
+    async fn register(
+        &self,
+        path: &str,
+        method: HostedMethod,
+        did_data: &str,
+        force: bool,
+        domain: Option<&str>,
+    ) -> Result<RequestUriResponse, AppError> {
+        let request = register_payload(path, method, did_data, force, domain)?;
         let record = self.call(&request).await?.record;
         let did_url = record.did_url.ok_or_else(|| {
             bad_gateway_error("the host registered the slot but named no didUrl for it")
@@ -600,6 +662,29 @@ mod tests {
         )
         .expect_err("didLog is not a member of agent-name/update");
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    }
+
+    #[test]
+    fn a_webs_register_body_names_its_method_and_carries_the_stream() {
+        let stream = "-_AAACAA-FA50OKERICAACAAXicp";
+        let request = register_payload(
+            "dids/EAID",
+            HostedMethod::Webs,
+            stream,
+            false,
+            Some("host.example"),
+        )
+        .unwrap();
+        let body = serde_json::to_value(&request).unwrap();
+        assert_eq!(body["method"], "webs");
+        assert_eq!(body["path"], "dids/EAID");
+        assert_eq!(body["didData"], stream);
+        assert_eq!(body["force"], false);
+        assert_eq!(body["domain"], "host.example");
+        let webvh = register_payload("bob", HostedMethod::Webvh, "{}", true, None).unwrap();
+        let body = serde_json::to_value(&webvh).unwrap();
+        assert_eq!(body["method"], "webvh");
+        assert!(body.get("domain").is_none());
     }
 
     #[test]

@@ -1,0 +1,513 @@
+//! `did:webs` persona, relationship and integration DIDs: create, get, list.
+//!
+//! Level 1 (one Ed25519 signing key, `kt 1`, and one pre-rotated successor,
+//! `nt 1`), KERI v2 with JSON bodies, through `affinidi-did-webs`' controller
+//! API. Design: `docs/05-design-notes/did-webs-in-the-vta.md`. **Alpha**, and
+//! off at runtime unless `[dids] webs_enabled`.
+//!
+//! A `did:webs` is never this VTA's (or a community's) durable identity:
+//! VTI-KEY-001 names only `did:webvh` and `did:scid:vh:1` for that, so nothing
+//! here can set one as a context's or the VTA's DID.
+//!
+//! # Keys
+//!
+//! The signing key, the key agreement key and the successor are derived from
+//! the seed at paths allocated under the context's base, exactly as
+//! `did:webvh` creation derives its keys. The signing key's private half is
+//! held only for the inception and the designations signed with it, inside a
+//! `affinidi_keri_crypto::Signer` that zeroizes it on drop. Later events sign
+//! through `key_custody::derive_record_key`, from the key record.
+//!
+//! # Publication
+//!
+//! The DID is `did:webs:{domain}[:{path}]:{AID}`, which is what the hosting
+//! service builds from the slot `{path}/{AID}`. The stream is published
+//! before any key record or row is written (R2.1): a failed publish leaves
+//! only allocated derivation paths behind, never a record of a DID that does
+//! not resolve.
+
+use std::future::Future;
+
+use affinidi_did_webs::{CreateConfig, DesignatedService, KeyAgreementKey, create_controlled};
+use affinidi_keri::controller::{Inception, KeySigner, NextKey};
+use affinidi_keri_core::threshold::Threshold;
+use affinidi_keri_crypto::{Signer, Verfer};
+use serde_json::json;
+use zeroize::Zeroizing;
+
+use crate::auth::AuthClaims;
+use crate::config::AppConfig;
+use crate::error::AppError;
+use crate::keys::seed_store::SeedStore;
+use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
+use crate::keys::{self, KeyType};
+use crate::operations::protocol::document::{TSP_SERVICE_FRAGMENT, TSP_SERVICE_TYPE};
+use crate::store::KeyspaceHandle;
+use crate::webs_store::{self, WebsDidRecord};
+use crate::webvh_host::RequestUriResponse;
+use vta_sdk::protocol::matching::DIDCOMM_SERVICE_TYPE;
+
+/// The id of a designated DIDComm service: the emitted convention
+/// (`#didcomm`), matched by peers on its `type`, never on this fragment.
+pub const DIDCOMM_FRAGMENT: &str = "#didcomm";
+
+/// What a create needs from the store and the node.
+pub struct WebsDeps<'a> {
+    pub keys_ks: &'a KeyspaceHandle,
+    pub contexts_ks: &'a KeyspaceHandle,
+    pub webvh_ks: &'a KeyspaceHandle,
+    pub webs_ks: &'a KeyspaceHandle,
+    /// For the `KeyMint` gate; `None` only for offline callers (as for
+    /// `did:webvh` creation).
+    pub acl_ks: Option<&'a KeyspaceHandle>,
+    pub audit: &'a vta_audit::SharedAuditSink,
+    pub seed_store: &'a dyn SeedStore,
+    pub config: &'a AppConfig,
+    pub did_resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+}
+
+/// A did-hosting service, as a create needs it.
+///
+/// The real one is [`crate::webvh_host::WebvhHostClient`]; tests publish to a
+/// recording fake.
+pub trait WebsHost {
+    /// The domain the host serves new DIDs on when none is named.
+    fn default_domain(&self) -> impl Future<Output = Result<String, AppError>> + Send;
+
+    /// Publish `keri_cesr` to `mnemonic` (`{path}/{AID}`), claiming the slot
+    /// if it is free.
+    fn publish(
+        &self,
+        mnemonic: &str,
+        keri_cesr: &str,
+        domain: Option<&str>,
+    ) -> impl Future<Output = Result<RequestUriResponse, AppError>> + Send;
+}
+
+impl WebsHost for crate::webvh_host::WebvhHostClient<'_> {
+    async fn default_domain(&self) -> Result<String, AppError> {
+        let domains = self.my_domains().await?.domains;
+        let mut active = domains
+            .iter()
+            .filter(|d| d.status.to_string() == "active")
+            .collect::<Vec<_>>();
+        if let Some(d) = active.iter().find(|d| d.default_domain == Some(true)) {
+            return Ok(d.name.clone());
+        }
+        match active.len() {
+            1 => Ok(active.remove(0).name.clone()),
+            0 => Err(AppError::Validation(
+                "the hosting server serves no active domain to publish a did:webs on".into(),
+            )),
+            _ => Err(AppError::Validation(
+                "the hosting server serves several domains and marks none default: name one \
+                 with `domain`"
+                    .into(),
+            )),
+        }
+    }
+
+    async fn publish(
+        &self,
+        mnemonic: &str,
+        keri_cesr: &str,
+        domain: Option<&str>,
+    ) -> Result<RequestUriResponse, AppError> {
+        self.publish_webs(mnemonic, keri_cesr, domain).await
+    }
+}
+
+/// A create request, as the `vta/webs/dids/create` handler will pass it.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct CreateDidWebsParams {
+    /// The trust context the DID and its keys belong to.
+    pub context_id: String,
+    /// The did-hosting server to publish on (a registered webvh server).
+    pub server_id: String,
+    /// Slot path before the AID, `/`-separated (`people/alice`); `None`
+    /// publishes at the domain's top level.
+    pub path: Option<String>,
+    /// The host domain; `None` takes the server's default.
+    pub domain: Option<String>,
+    pub label: Option<String>,
+    /// Designate `#didcomm` through this VTA's mediator.
+    pub add_mediator_service: bool,
+    /// Designate `#tsp`; `None` asks whether this VTA and its mediator carry
+    /// TSP, as `did:webvh` creation does.
+    pub add_tsp_service: Option<bool>,
+    /// Further `alsoKnownAs` identifiers to designate.
+    pub also_known_as: Vec<String>,
+}
+
+impl CreateDidWebsParams {
+    pub fn new(context_id: impl Into<String>, server_id: impl Into<String>) -> Self {
+        Self {
+            context_id: context_id.into(),
+            server_id: server_id.into(),
+            ..Self::default()
+        }
+    }
+}
+
+/// What a create made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CreateDidWebsResult {
+    pub did: String,
+    pub aid: String,
+    pub mnemonic: String,
+    pub domain: String,
+    pub signing_key_id: String,
+    pub next_key_id: String,
+    pub key_agreement_key_id: String,
+    /// The sequence number of the latest event: the inception, then one
+    /// interaction event per designation registry event.
+    pub sn: u64,
+}
+
+/// `did:webs:` + this, + `:{AID}`, is the DID: the domain's port separator
+/// percent-encoded, then each path segment.
+fn did_host_label(domain: &str, path: Option<&str>) -> String {
+    let mut label = domain.replace(':', "%3A");
+    if let Some(path) = path {
+        for segment in path.split('/') {
+            label.push(':');
+            label.push_str(segment);
+        }
+    }
+    label
+}
+
+/// A slot path is the host's to validate in full; refuse here only what would
+/// make the DID and the slot disagree.
+fn check_path(path: &str) -> Result<(), AppError> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.ends_with('/')
+        || path.contains("//")
+        || path.contains(':')
+        || path.contains('%')
+    {
+        return Err(AppError::Validation(format!(
+            "path {path:?} is not a slot path: `/`-separated segments, no `:` or `%`"
+        )));
+    }
+    Ok(())
+}
+
+/// An Ed25519 public key in multibase (`z` + multicodec `0xed01`), as key
+/// records hold it, in CESR (`D…`), as a key event holds it.
+fn ed25519_qb64(public_multibase: &str) -> Result<String, AppError> {
+    let (_, bytes) = multibase::decode(public_multibase)
+        .map_err(|e| AppError::Internal(format!("public key {public_multibase}: {e}")))?;
+    let raw = bytes
+        .strip_prefix(&[0xed, 0x01][..])
+        .filter(|raw| raw.len() == 32)
+        .ok_or_else(|| AppError::Internal(format!("{public_multibase} is not an Ed25519 key")))?;
+    Verfer::new("D", raw.to_vec())
+        .and_then(|v| v.qb64())
+        .map_err(|e| AppError::Internal(format!("encode an Ed25519 key in CESR: {e}")))
+}
+
+/// A KERI signer over an Ed25519 private key the VTA derived. The bytes are
+/// copied into the signer, which zeroizes them on drop.
+pub(crate) fn ed25519_signer(private: &[u8]) -> Result<Signer, AppError> {
+    if private.len() != 32 {
+        return Err(AppError::Internal(
+            "an Ed25519 private key is 32 bytes".into(),
+        ));
+    }
+    Signer::new("A", private.to_vec())
+        .map_err(|e| AppError::Internal(format!("build a KERI signer: {e}")))
+}
+
+/// Create a `did:webs` in `params.context_id`, publish it and record it.
+///
+/// # Errors
+/// `Forbidden` without `KeyMint` or context access, or when `[dids]
+/// webs_enabled` is off; `NotFound` for an unknown context or server;
+/// `Validation` for a bad path; the host's refusal as it reported it.
+pub async fn create_did_webs<H: WebsHost>(
+    deps: &WebsDeps<'_>,
+    auth: &AuthClaims,
+    params: CreateDidWebsParams,
+    host: &H,
+    channel: &str,
+) -> Result<CreateDidWebsResult, AppError> {
+    crate::operations::did_webvh::ensure_may_mint(deps.acl_ks, auth).await?;
+    auth.require_context(&params.context_id)?;
+    if !deps.config.dids.webs_enabled {
+        return Err(AppError::Forbidden(
+            "did:webs creation is off on this VTA (alpha): set `webs_enabled = true` under \
+             `[dids]` (or VTA_DIDS_WEBS_ENABLED=true) to turn it on"
+                .into(),
+        ));
+    }
+    if let Some(path) = params.path.as_deref() {
+        check_path(path)?;
+    }
+    crate::webvh_store::get_server(deps.webvh_ks, &params.server_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("hosting server not found: {}", params.server_id))
+        })?;
+    let ctx = crate::contexts::get_context(deps.contexts_ks, &params.context_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("context not found: {}", params.context_id)))?;
+    let domain = match params.domain.clone() {
+        Some(d) => d,
+        None => host.default_domain().await?,
+    };
+    let label = params
+        .label
+        .clone()
+        .unwrap_or_else(|| format!("did:webs in {}", params.context_id));
+
+    // ── Keys, at paths allocated under the context's base ──────────────
+    let active_seed_id = get_active_seed_id(deps.keys_ks)
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    let seed = Zeroizing::new(
+        load_seed_bytes(deps.keys_ks, deps.seed_store, Some(active_seed_id))
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?,
+    );
+    let derived = keys::derive_entity_keys(
+        &seed,
+        &ctx.base_path,
+        &format!("{label} signing key"),
+        &format!("{label} key-agreement key"),
+        deps.keys_ks,
+    )
+    .await
+    .map_err(|e| AppError::Internal(format!("{e}")))?;
+    let (_, successors) =
+        keys::derivation::derive_pre_rotation_keys(&seed, &ctx.base_path, &label, deps.keys_ks, 1)
+            .await?;
+    drop(seed);
+    let successor = successors
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("no successor key was derived".into()))?;
+
+    let signer = ed25519_signer(derived.signing_secret.get_private_bytes())?;
+    let signing_qb64 = signer
+        .verfer()
+        .qb64()
+        .map_err(|e| AppError::Internal(format!("encode the signing key: {e}")))?;
+    let next_qb64 = ed25519_qb64(&successor.public_key)?;
+    let ka_raw: [u8; 32] = derived
+        .ka_secret
+        .get_public_bytes()
+        .try_into()
+        .map_err(|_| AppError::Internal("an X25519 public key is 32 bytes".into()))?;
+    let key_agreement = KeyAgreementKey::X25519(ka_raw);
+    let ka_cesr = key_agreement
+        .to_cesr()
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+    // ── Designations ───────────────────────────────────────────────────
+    let mediator = deps
+        .config
+        .messaging
+        .as_ref()
+        .map(|m| m.mediator_did.trim().to_string())
+        .filter(|did| !did.is_empty());
+    let add_tsp = crate::operations::did_webvh::document::resolve_add_tsp_service(
+        params.add_tsp_service,
+        deps.config,
+        deps.did_resolver,
+    )
+    .await;
+    let mut builder = CreateConfig::builder(did_host_label(&domain, params.path.as_deref()))
+        .controlled(Inception::new(
+            vec![signing_qb64.clone()],
+            Threshold::Simple(1),
+            vec![NextKey::PublicKey(next_qb64)],
+            Threshold::Simple(1),
+        ))
+        .key_agreement(key_agreement);
+    if let Some(mediator) = mediator.as_deref() {
+        if add_tsp {
+            builder = builder.designated_service(DesignatedService::new(
+                TSP_SERVICE_FRAGMENT,
+                TSP_SERVICE_TYPE,
+                json!(mediator),
+            ));
+        }
+        if params.add_mediator_service {
+            builder = builder.designated_service(DesignatedService::new(
+                DIDCOMM_FRAGMENT,
+                DIDCOMM_SERVICE_TYPE,
+                json!([{ "accept": ["didcomm/v2"], "uri": mediator }]),
+            ));
+        }
+    } else if params.add_mediator_service || params.add_tsp_service == Some(true) {
+        return Err(AppError::Validation(
+            "a #didcomm or #tsp service routes through this VTA's mediator, and none is \
+             configured (`[messaging] mediator_did`)"
+                .into(),
+        ));
+    }
+    for aka in &params.also_known_as {
+        builder = builder.also_known_as(aka.clone());
+    }
+
+    let created = create_controlled(builder.build(), &[&signer as &dyn KeySigner])
+        .map_err(|e| AppError::Internal(format!("create the did:webs: {e}")))?;
+    drop(signer);
+    let did = created.did().to_string();
+    let (artifacts, state) = created.into_parts();
+    let aid = state.prefix.clone();
+    let mnemonic = match params.path.as_deref() {
+        Some(path) => format!("{path}/{aid}"),
+        None => aid.clone(),
+    };
+    let expected = format!(
+        "did:webs:{}:{aid}",
+        did_host_label(&domain, params.path.as_deref())
+    );
+    if did != expected {
+        return Err(AppError::Internal(format!(
+            "created {did}, but the host would serve {expected} from slot {mnemonic}"
+        )));
+    }
+    let keri_cesr = String::from_utf8(artifacts.keri_cesr.clone()).map_err(|_| {
+        AppError::Internal("the key event stream is not text; it cannot be published".into())
+    })?;
+
+    // ── Publish, then commit (R2.1) ────────────────────────────────────
+    let published = host.publish(&mnemonic, &keri_cesr, Some(&domain)).await?;
+    if published.did_url != did {
+        return Err(AppError::Internal(format!(
+            "the hosting server published {} for slot {mnemonic}, not {did}; nothing was \
+             recorded here, and the slot must be reconciled on the server",
+            published.did_url
+        )));
+    }
+
+    let signing_key_id = format!("{did}#{signing_qb64}");
+    let key_agreement_key_id = format!("{did}#{ka_cesr}");
+    let next_key_id = format!("{did}#pre-rotation-0");
+    let save = |key_id: String, path: String, key_type: KeyType, public: String, what: String| {
+        let keys_ks = deps.keys_ks;
+        let context_id = params.context_id.clone();
+        async move {
+            keys::save_key_record(
+                keys_ks,
+                &key_id,
+                &path,
+                key_type,
+                &public,
+                &what,
+                Some(&context_id),
+                Some(active_seed_id),
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))
+        }
+    };
+    save(
+        signing_key_id.clone(),
+        derived.signing_path.clone(),
+        KeyType::Ed25519,
+        derived.signing_pub.clone(),
+        derived.signing_label.clone(),
+    )
+    .await?;
+    save(
+        key_agreement_key_id.clone(),
+        derived.ka_path.clone(),
+        KeyType::X25519,
+        derived.ka_pub.clone(),
+        derived.ka_label.clone(),
+    )
+    .await?;
+    save(
+        next_key_id.clone(),
+        successor.path.clone(),
+        KeyType::Ed25519,
+        successor.public_key.clone(),
+        successor.label.clone(),
+    )
+    .await?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let sn = state.sn;
+    webs_store::put(
+        deps.webs_ks,
+        &WebsDidRecord {
+            did: did.clone(),
+            aid: aid.clone(),
+            context_id: params.context_id.clone(),
+            server_id: params.server_id.clone(),
+            mnemonic: mnemonic.clone(),
+            domain: Some(domain.clone()),
+            label: params.label.clone(),
+            keri_cesr: artifacts.keri_cesr,
+            state,
+            signing_key_id: signing_key_id.clone(),
+            next_key_id: next_key_id.clone(),
+            key_agreement_key_id: key_agreement_key_id.clone(),
+            created_at: now.clone(),
+            updated_at: now,
+        },
+    )
+    .await?;
+
+    vta_audit::record_best_effort(
+        deps.audit,
+        "did.create.webs",
+        &auth.did,
+        Some(&did),
+        "success",
+        Some(channel),
+        Some(&params.context_id),
+    )
+    .await;
+
+    Ok(CreateDidWebsResult {
+        did,
+        aid,
+        mnemonic,
+        domain,
+        signing_key_id,
+        next_key_id,
+        key_agreement_key_id,
+        sn,
+    })
+}
+
+/// The record of `did`, for a caller who may act in its context.
+///
+/// An unknown DID and one in a context the caller cannot reach answer alike.
+///
+/// # Errors
+/// `NotFound` for both.
+pub async fn get_did_webs(
+    webs_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    did: &str,
+) -> Result<WebsDidRecord, AppError> {
+    webs_store::get(webs_ks, did)
+        .await?
+        .filter(|r| auth.has_context_access(&r.context_id))
+        .ok_or_else(|| AppError::NotFound(format!("did:webs not found: {did}")))
+}
+
+/// The `did:webs` records of `context_id`.
+///
+/// # Errors
+/// `Forbidden` when the caller cannot act in the context.
+pub async fn list_did_webs(
+    webs_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    context_id: &str,
+) -> Result<Vec<WebsDidRecord>, AppError> {
+    auth.require_context(context_id)?;
+    webs_store::list_by_context(webs_ks, context_id).await
+}
+
+#[cfg(test)]
+mod tests;

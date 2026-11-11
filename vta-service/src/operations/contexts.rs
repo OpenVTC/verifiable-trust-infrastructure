@@ -1081,6 +1081,7 @@ pub async fn delete_context(
         external_accounts_removed = rows.external_accounts,
         quota_counters_removed = rows.quota_counters,
         collection_records_removed = rows.collection,
+        webs_dids_removed = rows.webs_dids,
         "context (and subtree) deleted"
     );
     Ok(DeleteContextResultBody {
@@ -1204,6 +1205,7 @@ const PURGED_ON_CONTEXT_DELETE: &[&str] = &[
     crate::keyspaces::IMPORTED_SECRETS,
     crate::keyspaces::INTERNAL_KEYS,
     crate::keyspaces::WEBVH,
+    crate::keyspaces::WEBS,
     crate::keyspaces::ACL,
     crate::keyspaces::DID_TEMPLATES,
     crate::keyspaces::APP_STATE,
@@ -1234,6 +1236,7 @@ struct PurgedRows {
     external_accounts: usize,
     quota_counters: usize,
     collection: usize,
+    webs_dids: usize,
 }
 
 impl std::ops::AddAssign for PurgedRows {
@@ -1250,6 +1253,7 @@ impl std::ops::AddAssign for PurgedRows {
         self.external_accounts += o.external_accounts;
         self.collection += o.collection;
         self.quota_counters += o.quota_counters;
+        self.webs_dids += o.webs_dids;
     }
 }
 
@@ -1296,6 +1300,10 @@ async fn purge_context_rows(
         // Every collection claim for the context's identifiers ends with it
         // (VTI-NTF-090); the collector stops on its next pass.
         collection: super::collection::purge_context(ks.collection, context_id).await?,
+        // The context's did:webs records. Their key records go with the
+        // context's keys; the hosted slot is left, as it is for a did:webvh
+        // whose server cannot be reached.
+        webs_dids: crate::webs_store::purge_context(ks.webs, context_id).await?,
     })
 }
 
@@ -1798,6 +1806,7 @@ mod tests {
         collection: KeyspaceHandle,
         #[cfg(feature = "webvh")]
         webvh: KeyspaceHandle,
+        webs: KeyspaceHandle,
     }
 
     impl OwnedKs {
@@ -1823,6 +1832,7 @@ mod tests {
                 collection: &self.collection,
                 #[cfg(feature = "webvh")]
                 webvh: &self.webvh,
+                webs: &self.webs,
             }
         }
     }
@@ -1856,6 +1866,7 @@ mod tests {
             collection: k(ks::COLLECTION),
             #[cfg(feature = "webvh")]
             webvh: k(ks::WEBVH),
+            webs: k(ks::WEBS),
             _dir: dir,
             _store: store,
         }

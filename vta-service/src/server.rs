@@ -236,6 +236,9 @@ pub struct AppState {
     pub backup_blob_dir: std::path::PathBuf,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
+    /// `did:webs` DID records (`crate::webs_store`). Opened in every build, so
+    /// a build without the `webs` feature still purges and backs them up.
+    pub webs_ks: KeyspaceHandle,
     /// IACA roots this VTA accepts as ISO 18013-5 mdoc issuers, parsed once at
     /// boot from `[vault] mdoc_iaca_trust_anchors`.
     ///
@@ -625,6 +628,7 @@ pub async fn build_app_state(
     let backup_blob_dir = config.store.data_dir.join("backups");
     #[cfg(feature = "webvh")]
     let webvh_ks = apply_encryption(store.keyspace(crate::keyspaces::WEBVH)?);
+    let webs_ks = apply_encryption(store.keyspace(crate::keyspaces::WEBS)?);
     #[cfg(feature = "webvh")]
     let passkey_vms_ks = apply_encryption(store.keyspace(crate::keyspaces::PASSKEY_VMS)?);
     let consent_ks = apply_encryption(store.keyspace(crate::keyspaces::CONSENT)?);
@@ -772,6 +776,7 @@ pub async fn build_app_state(
         backup_blob_dir,
         #[cfg(feature = "webvh")]
         webvh_ks,
+        webs_ks,
         #[cfg(feature = "webvh")]
         passkey_vms_ks,
         consent_ks,

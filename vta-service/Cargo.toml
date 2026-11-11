@@ -42,7 +42,7 @@ repository.workspace = true
 autotests = false
 
 [features]
-default = ["setup", "keyring", "rest", "didcomm", "tsp", "cli-synthesis"]
+default = ["setup", "keyring", "rest", "didcomm", "tsp", "cli-synthesis", "webs"]
 rest = []
 didcomm = []
 # Trust Spanning Protocol transport — the preferred transport, ON by default
@@ -65,6 +65,11 @@ tsp = [
 ]
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest", "dep:vta-webvh", "vta-vault/webvh", "vta-keyspaces/webvh", "vta-backup/webvh"]
 setup = ["webvh", "dep:tempfile"]
+# Creating, hosting and acting as did:webs persona, relationship and
+# integration DIDs (docs/05-design-notes/did-webs-in-the-vta.md). Alpha, and
+# off at runtime unless `[dids] webs_enabled`. Hosting goes through the
+# did-hosting client, so it needs `webvh`. Not in the enclave's feature list.
+webs = ["webvh", "dep:affinidi-did-webs", "dep:affinidi-keri", "dep:affinidi-keri-core", "dep:affinidi-keri-crypto"]
 # BBS+ (`bbs-2023`) credential support in the vault — pulls in the BLS12-381
 # curve (`affinidi-bbs`) + the `bbs-2023` Data-Integrity cryptosuite. Off by
 # default; the holder/verifier paths (receive, present, verify) build behind
@@ -353,6 +358,10 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 didwebvh-rs = { workspace = true, optional = true }
+affinidi-did-webs = { workspace = true, optional = true }
+affinidi-keri = { workspace = true, optional = true }
+affinidi-keri-core = { workspace = true, optional = true }
+affinidi-keri-crypto = { workspace = true, optional = true }
 rand = { workspace = true }
 dialoguer = { workspace = true }
 # Locate `~/.config/vta/` for the `vta bootstrap request` / `vta bootstrap

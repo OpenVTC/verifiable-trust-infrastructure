@@ -118,6 +118,8 @@ pub use vta_vault as vault;
 /// re-exported so every `crate::webvh_store::…` path is unchanged.
 #[cfg(feature = "webvh")]
 pub use vta_webvh::webvh_store;
+/// `did:webs` DID records. The context purge is built in every build.
+pub mod webs_store;
 /// The Trust-Task client to a DID hosting service.
 #[cfg(feature = "webvh")]
 pub mod webvh_host;

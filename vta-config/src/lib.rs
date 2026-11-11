@@ -614,6 +614,13 @@ pub struct DidsConfig {
     /// always lists it, whatever this says.
     #[serde(default = "default_true")]
     pub scid_also_known_as: bool,
+    /// Whether this VTA creates `did:webs` persona, relationship and
+    /// integration DIDs. Default `false`: the integration is alpha
+    /// (`docs/05-design-notes/did-webs-in-the-vta.md`). Off stops creation
+    /// only; a `did:webs` this VTA already holds keeps working, so turning it
+    /// off never strands one.
+    #[serde(default)]
+    pub webs_enabled: bool,
 }
 
 impl Default for DidsConfig {
@@ -621,6 +628,7 @@ impl Default for DidsConfig {
         Self {
             default_did_method: vta_sdk::did_scid::DidMethod::default(),
             scid_also_known_as: true,
+            webs_enabled: false,
         }
     }
 }
@@ -1413,6 +1421,7 @@ impl AppConfig {
                 "VTA_STORE_DATA_DIR",
                 "VTA_DIDS_DEFAULT_DID_METHOD",
                 "VTA_DIDS_SCID_ALSO_KNOWN_AS",
+                "VTA_DIDS_WEBS_ENABLED",
                 "VTA_MESSAGING_MEDIATOR_URL",
                 "VTA_MESSAGING_MEDIATOR_DID",
                 "VTA_SECRETS_SEED",
@@ -1501,6 +1510,17 @@ impl AppConfig {
                 other => {
                     return Err(AppError::Config(format!(
                         "invalid VTA_DIDS_SCID_ALSO_KNOWN_AS '{other}', expected 'true' or 'false'"
+                    )));
+                }
+            };
+        }
+        if let Ok(enabled) = std::env::var("VTA_DIDS_WEBS_ENABLED") {
+            config.dids.webs_enabled = match enabled.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                other => {
+                    return Err(AppError::Config(format!(
+                        "invalid VTA_DIDS_WEBS_ENABLED '{other}', expected 'true' or 'false'"
                     )));
                 }
             };

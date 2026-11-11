@@ -70,6 +70,10 @@ pub struct Keyspaces<'a> {
     pub collection: &'a KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh: &'a KeyspaceHandle,
+    /// `did:webs` DID records ([`WEBS`]), each naming its context. Not
+    /// feature-gated: a gated field changes this struct for every crate that
+    /// builds one as soon as any crate in the build turns the feature on.
+    pub webs: &'a KeyspaceHandle,
 }
 
 /// Master seed + key records (`key:`, `seed:`, `path_counter:`,
@@ -118,6 +122,9 @@ pub const SEALED_NONCES: &str = "sealed_nonces";
 pub const BACKUP_BUNDLES: &str = "backup_bundles";
 /// WebVH DID records + `did.jsonl` state.
 pub const WEBVH: &str = "webvh";
+/// `did:webs` DID records: the published `keri.cesr`, the controller state and
+/// the key ids that continue the key event log.
+pub const WEBS: &str = "webs";
 /// In-flight passkey-as-verificationMethod enrolment state.
 pub const PASSKEY_VMS: &str = "passkey_vms";
 /// Persisted protocol-management drain set.
@@ -443,6 +450,7 @@ pub const ALL: &[&str] = &[
     SEALED_NONCES,
     BACKUP_BUNDLES,
     WEBVH,
+    WEBS,
     PASSKEY_VMS,
     DRAINS,
     SNAPSHOT,
@@ -500,6 +508,9 @@ pub const BACKED_UP: &[&str] = &[
     // The holder's secrets and credentials. The reason a person keeps a VTA.
     VAULT,
     WEBVH,
+    // A did:webs's key event log and controller state: without them a
+    // restored agent can neither rotate nor update the identifier.
+    WEBS,
     // Which transports this VTA serves. The DID log restored beside it
     // advertises them, and a document naming a transport the node does not
     // serve fails at the peer as a parse error, not as "not served".
@@ -785,6 +796,10 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // Material of the DID's imported / internal keys. The cascade removes
         // the key *records* only. (A context deletion takes both.)
         b"internal_keys" | b"imported_secrets" => Orphaned,
+        // A did:webs's own record. Its deletion (`vta/webs/dids/delete`, not
+        // yet served) will take it; until then nothing deletes a did:webs, and
+        // the did:webvh deletion never names one.
+        b"webs" => Orphaned,
         // Delivery and protocol state keyed by DID: stale the moment it goes.
         // TSP relationships name this VTA's DID as one half of each
         // `(our_vid, their_vid)` pair; with that VID gone the relationship can
@@ -964,7 +979,7 @@ pub const fn context_delete_effect(keyspace: &str) -> Option<ContextDeleteEffect
         // the material of its imported / internal keys; its DIDs (through the
         // full DID deletion); its ACL scope; its DID templates.
         b"contexts" | b"keys" | b"imported_secrets" | b"internal_keys" => Purged,
-        b"webvh" | b"acl" | b"did_templates" => Purged,
+        b"webvh" | b"webs" | b"acl" | b"did_templates" => Purged,
         // Data held for the principal in the context.
         b"app_state" | b"memory" | b"persona" | b"vault" => Purged,
         b"consent" | b"consent_approvers" | b"notifications" => Purged,

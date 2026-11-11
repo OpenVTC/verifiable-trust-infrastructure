@@ -78,6 +78,11 @@ const ALLOWED: &[(&str, usize, &str)] = &[
         "imported-key KEK in load_key_as_secret, and fresh DID keys allocated under the target context's base (entity keys, sealed-transfer, pre-rotation)",
     ),
     (
+        "vta-service/src/operations/did_webs/mod.rs",
+        1,
+        "did:webs create: fresh signing, key-agreement and successor keys at paths allocated under the target context's base (the caller names the context, never a path or key id); later events sign through derive_record_key",
+    ),
+    (
         "vta-service/src/operations/did_webvh/update/keys.rs",
         4,
         "webvh update keys at allocate/peek paths under the DID's base, and re-derivation from a VTA-written WebvhKeyHandle",

@@ -7,7 +7,7 @@
 //! - `servers` — webvh hosting-server CRUD + DID validation
 
 mod concurrency;
-mod document;
+pub(crate) mod document;
 pub(crate) mod host;
 mod lifecycle;
 pub(crate) mod presentation;
@@ -884,7 +884,7 @@ async fn create_path_host_client<'a>(
 /// removes `KeyMint` stops the next call — the rule every capability gate
 /// follows. `None` is for offline callers only; see
 /// [`CreateDidWebvhDeps::acl_ks`].
-async fn ensure_may_mint(
+pub(crate) async fn ensure_may_mint(
     acl_ks: Option<&KeyspaceHandle>,
     auth: &AuthClaims,
 ) -> Result<(), AppError> {
