@@ -684,25 +684,27 @@ pub(crate) async fn run(
             since,
             lease,
             cancel,
+            live,
         } => {
             let lease_secs = lease
                 .as_deref()
                 .map(vta_cli_common::duration::parse_duration_secs)
                 .transpose()?;
             if !via_host {
-                return rooms::cmd_rooms_watch(
-                    client,
-                    rooms::WatchThroughVta {
-                        host_did: &host_did,
-                        room_ids: &room_ids,
-                        member: member.as_deref(),
-                        host_url: host.as_deref(),
-                        since,
-                        lease_secs,
-                        cancel,
-                    },
-                )
-                .await;
+                let req = rooms::WatchThroughVta {
+                    host_did: &host_did,
+                    room_ids: &room_ids,
+                    member: member.as_deref(),
+                    host_url: host.as_deref(),
+                    since,
+                    lease_secs,
+                    cancel,
+                };
+                if live {
+                    return rooms::cmd_rooms_watch_live(client, req, session.vta_did.as_deref())
+                        .await;
+                }
+                return rooms::cmd_rooms_watch(client, req).await;
             }
             let [room_id] = room_ids.as_slice() else {
                 return Err("--via-host watches one room: name one --room".into());

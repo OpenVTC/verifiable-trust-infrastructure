@@ -126,6 +126,7 @@ async fn task_subject(
     // `rooms/keys/watch/0.1`'s `subjectPath` is `/member` too: the member watched as.
     if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_2
     {
         return payload
             .get("member")

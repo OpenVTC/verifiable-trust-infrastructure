@@ -504,3 +504,238 @@ async fn act_0_12_completes_a_watch_passing_its_address_through_unaltered() {
         answer.document
     );
 }
+
+// ---- rooms/keys/watch/0.2: live watches (trust-tasks-tf #1087) ----
+
+const WATCH_V2: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_2;
+
+async fn watch_v2(v: &Vta, payload: Value) -> Value {
+    body(handle_watch(&v.state, &admin(), request(WATCH_V2, payload)).await)
+}
+
+fn arm_live(v: &Vta, host: &Host, room: &str, since: Option<u64>) -> Value {
+    let mut r = json!({ "roomId": room });
+    if let Some(s) = since {
+        r["sinceVersion"] = json!(s);
+    }
+    json!({ "member": v.persona, "host": host.did, "rooms": [r], "live": true })
+}
+
+/// An open room whose signal delay is `none`, with a short live spacing.
+async fn live_room() -> (Host, Party, Vta) {
+    let (host, room, member) = watched_open_room().await;
+    host.state
+        .set_room_signal_delay(&room.did, vti_rooms::signal_delay::SignalDelay::None)
+        .await
+        .unwrap();
+    host.state.set_live_watch_spacing(Duration::from_millis(50));
+    (host, room, member)
+}
+
+/// The host's documents of the two `rooms/watch` versions, in the order received.
+fn host_watches(host: &Host) -> Vec<String> {
+    host.seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|t| {
+            t.as_str() == vti_rooms::watch::WATCH_TYPE
+                || t.as_str() == vti_rooms::watch::WATCH_V2_TYPE
+        })
+        .cloned()
+        .collect()
+}
+
+/// Recipient items 3, 7 and 8: a live request arms `rooms/watch/0.2` live at the host, the
+/// outcome says `live: true`, and **every** signal is passed on — the watch is kept after
+/// each, and the record still holds no version.
+#[tokio::test]
+async fn vti_keys_watch_v2_a_live_watch_passes_every_signal_on() {
+    let (host, room, member) = live_room().await;
+    let answer = watch_v2(&member, arm_live(&member, &host, &room.did, Some(0))).await;
+    let outcome = &answer["payload"]["watches"][0];
+    assert_eq!(outcome["armed"], true, "{answer}");
+    assert_eq!(outcome["live"], true, "{answer}");
+    let until: chrono::DateTime<Utc> = outcome["expiresAt"].as_str().unwrap().parse().unwrap();
+    assert!(
+        until <= Utc::now() + chrono::Duration::seconds(121),
+        "the host's 120 s lease"
+    );
+    assert_eq!(host.received(vti_rooms::watch::WATCH_V2_TYPE), 1);
+    let records = held(&member).await;
+    assert_eq!(records.len(), 1);
+    assert!(records[0].live);
+
+    put_open_v0_5(&member, &room.did, &host, "n1", json!({ "body": "one" })).await;
+    let first = wait_for_pass_on(&member).await;
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(
+        held(&member).await.len(),
+        1,
+        "a live watch is kept after a signal"
+    );
+
+    put_open_v0_5(&member, &room.did, &host, "n2", json!({ "body": "two" })).await;
+    let second = wait_for_pass_on(&member).await;
+    assert_eq!(
+        second.len(),
+        1,
+        "the next signal is passed on too: {second:?}"
+    );
+    assert!(
+        second[0]["payload"]["latestVersion"].as_u64()
+            > first[0]["payload"]["latestVersion"].as_u64()
+    );
+    let stored = format!("{:?}", held(&member).await[0]);
+    for kept in ["since", "latest", "version", "watermark"] {
+        assert!(!stored.contains(kept), "item 6: no {kept} kept: {stored}");
+    }
+}
+
+/// Recipient item 5: a live watch keeps its single-use address across renewals.
+#[tokio::test]
+async fn vti_keys_watch_v2_a_renewal_keeps_the_address() {
+    let (host, room, member) = live_room().await;
+    watch_v2(&member, arm_live(&member, &host, &room.did, Some(0))).await;
+    let address = held(&member).await[0].address.clone();
+    for _ in 0..3 {
+        let renewed = watch_v2(&member, arm_live(&member, &host, &room.did, None)).await;
+        assert_eq!(renewed["payload"]["watches"][0]["live"], true, "{renewed}");
+        let records = held(&member).await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].address, address, "renewed, not replaced");
+    }
+    assert_eq!(host.received(vti_rooms::watch::WATCH_V2_TYPE), 4);
+}
+
+/// Recipient item 5: switching a room one-shot → live arms the new watch at a **new**
+/// address first, and cancels the old one at the host only after the host armed the new;
+/// live → one-shot likewise.
+#[tokio::test]
+async fn vti_keys_watch_v2_a_switch_arms_a_new_address_first() {
+    let (host, room, member) = live_room().await;
+    watch(&member, arm(&member, &host, &[&room.did])).await;
+    let one_shot = held(&member).await[0].address.clone();
+
+    let live = watch_v2(&member, arm_live(&member, &host, &room.did, Some(0))).await;
+    assert_eq!(live["payload"]["watches"][0]["live"], true, "{live}");
+    let records = held(&member).await;
+    assert_eq!(records.len(), 1, "the old watch is forgotten: {records:?}");
+    assert_ne!(records[0].address, one_shot, "a new address");
+    assert!(records[0].live);
+    assert_eq!(
+        host_watches(&host),
+        vec![
+            vti_rooms::watch::WATCH_TYPE.to_string(), // the one-shot arming
+            vti_rooms::watch::WATCH_V2_TYPE.to_string(), // the live one, first
+            vti_rooms::watch::WATCH_TYPE.to_string(), // then the old one cancelled
+        ]
+    );
+    let live_address = records[0].address.clone();
+
+    let back = watch(&member, arm(&member, &host, &[&room.did])).await;
+    assert_eq!(back["payload"]["watches"][0]["armed"], true, "{back}");
+    assert!(
+        back["payload"]["watches"][0].get("live").is_none(),
+        "{back}"
+    );
+    let records = held(&member).await;
+    assert_eq!(records.len(), 1);
+    assert_ne!(records[0].address, live_address);
+    assert_ne!(records[0].address, one_shot, "never an address used before");
+    assert!(!records[0].live);
+    let seen = host_watches(&host);
+    assert_eq!(
+        &seen[3..],
+        [
+            vti_rooms::watch::WATCH_TYPE.to_string(), // the one-shot arming, first
+            vti_rooms::watch::WATCH_V2_TYPE.to_string(), // then the live one cancelled
+        ]
+    );
+}
+
+/// Recipient items 3 and 4: on a room whose signal delay is `randomised` the host's
+/// `liveNotPermitted` is `hostRefused` with the code; the VTA arms nothing one-shot instead,
+/// and a one-shot watch the room had stays in place at its address.
+#[tokio::test]
+async fn vti_keys_watch_v2_a_refused_live_watch_is_host_refused_with_no_fallback() {
+    let (host, room, member) = watched_open_room().await; // randomised
+    watch(&member, arm(&member, &host, &[&room.did])).await;
+    let one_shot = held(&member).await[0].address.clone();
+
+    let out = watch_v2(&member, arm_live(&member, &host, &room.did, Some(0))).await;
+    let w = &out["payload"]["watches"][0];
+    assert_eq!(w["armed"], false, "{out}");
+    assert_eq!(w["refused"], "hostRefused", "{out}");
+    assert_eq!(w["hostCode"], "rooms/watch:liveNotPermitted", "{out}");
+    assert_eq!(
+        host_watches(&host),
+        vec![
+            vti_rooms::watch::WATCH_TYPE.to_string(),
+            vti_rooms::watch::WATCH_V2_TYPE.to_string(),
+        ],
+        "no one-shot arming in its place, and nothing cancelled"
+    );
+    let records = held(&member).await;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(
+        records[0].address, one_shot,
+        "the one-shot watch is left in place"
+    );
+    assert!(!records[0].live);
+
+    // With no watch before, a refusal leaves none.
+    let (host, room, member) = watched_open_room().await;
+    let out = watch_v2(&member, arm_live(&member, &host, &room.did, None)).await;
+    assert_eq!(
+        out["payload"]["watches"][0]["hostCode"],
+        "rooms/watch:liveNotPermitted"
+    );
+    assert!(held(&member).await.is_empty());
+    assert_eq!(
+        host.received(vti_rooms::watch::WATCH_TYPE),
+        0,
+        "never a fallback"
+    );
+}
+
+/// Recipient item 7: the room set back to `randomised` ends the live watch at the host;
+/// the renewal is refused `liveNotPermitted`, and the VTA forgets the watch.
+#[tokio::test]
+async fn vti_keys_watch_v2_a_refused_renewal_forgets_the_watch() {
+    let (host, room, member) = live_room().await;
+    watch_v2(&member, arm_live(&member, &host, &room.did, Some(0))).await;
+    assert_eq!(held(&member).await.len(), 1);
+    host.state
+        .set_room_signal_delay(&room.did, vti_rooms::signal_delay::SignalDelay::Randomised)
+        .await
+        .unwrap();
+    put_open_v0_5(&member, &room.did, &host, "n1", json!({ "body": "quiet" })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(passed_on(&member).is_empty(), "ended at the host, silently");
+
+    let renewed = watch_v2(&member, arm_live(&member, &host, &room.did, None)).await;
+    let w = &renewed["payload"]["watches"][0];
+    assert_eq!(w["hostCode"], "rooms/watch:liveNotPermitted", "{renewed}");
+    assert!(held(&member).await.is_empty(), "forgotten with its address");
+}
+
+/// A cancel ends a live watch at the host and here; a `live` on a cancel is ignored.
+#[tokio::test]
+async fn vti_keys_watch_v2_a_cancel_ends_a_live_watch() {
+    let (host, room, member) = live_room().await;
+    watch_v2(&member, arm_live(&member, &host, &room.did, Some(0))).await;
+    let out = watch_v2(
+        &member,
+        json!({ "member": member.persona, "host": host.did,
+                "rooms": [{ "roomId": room.did }], "cancel": true, "live": true }),
+    )
+    .await;
+    let w = &out["payload"]["watches"][0];
+    assert_eq!(w["armed"], false, "{out}");
+    assert!(w.get("live").is_none(), "{out}");
+    assert!(held(&member).await.is_empty());
+    put_open_v0_5(&member, &room.did, &host, "n1", json!({ "body": "after" })).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(passed_on(&member).is_empty());
+}

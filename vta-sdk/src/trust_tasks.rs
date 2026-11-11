@@ -1067,8 +1067,17 @@ pub const TASK_ROOMS_KEYS_ACT_0_12: &str =
 /// at one host for it: the VTA arms `rooms/watch/0.1` at the host for each room as the
 /// member, at an address of its own used for that one watch, and passes each signal on to
 /// the client with [`TASK_ROOMS_KEYS_CHANGED_0_1`]. One outcome per room.
+#[allow(deprecated)] // superseded by 0.2, and still served and sent for one-shot watches
 pub const TASK_ROOMS_KEYS_WATCH_0_1: &str =
     <vti_specs::rooms::keys::watch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/watch/0.2` — [`TASK_ROOMS_KEYS_WATCH_0_1`], and `live: true`: the VTA
+/// arms `rooms/watch/0.2` live at the host and passes on **every** signal, not just the
+/// first, while the client renews it (about once a minute; the host leases at most 120 s).
+/// Only on a room whose signal delay is `none`; the host's refusal is reported as
+/// `hostRefused` with `hostCode` `rooms/watch:liveNotPermitted` (trust-tasks-tf #1087).
+pub const TASK_ROOMS_KEYS_WATCH_0_2: &str =
+    <vti_specs::rooms::keys::watch::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/changed/0.1` — the VTA passes a room host's signal on to the client that
 /// armed the watch with [`TASK_ROOMS_KEYS_WATCH_0_1`]: the room, the member, the host and the
@@ -2912,6 +2921,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_ACT_0_11,
     TASK_ROOMS_KEYS_ACT_0_12,
     TASK_ROOMS_KEYS_WATCH_0_1,
+    TASK_ROOMS_KEYS_WATCH_0_2,
     TASK_ROOMS_CHANGED_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_FILE_KEY_0_3,

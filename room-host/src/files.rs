@@ -346,7 +346,22 @@ pub(crate) async fn usage(state: &HostState, doc: &TrustTask<Value>, payload: Va
 /// member names, authorized exactly as a listing (`read`). The watch is this host's state
 /// and nothing else ([`vti_rooms::watch`]).
 pub(crate) async fn watch(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = vti_rooms::watch::check_payload(&payload) {
+    watch_at(state, doc, payload, false).await
+}
+
+/// `rooms/watch/0.2`: 0.1, and a live watch — a signal per change, coalesced — on a room
+/// whose signal delay is `none` (`liveNotPermitted` otherwise), leased for at most 120 s.
+pub(crate) async fn watch_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    watch_at(state, doc, payload, true).await
+}
+
+async fn watch_at(state: &HostState, doc: &TrustTask<Value>, payload: Value, v2: bool) -> Answer {
+    let checked = if v2 {
+        vti_rooms::watch::check_payload_v2(&payload)
+    } else {
+        vti_rooms::watch::check_payload(&payload)
+    };
+    if let Err(r) = checked {
         return refused(doc, r);
     }
     let room_id = payload["roomId"].as_str().unwrap_or_default();
@@ -361,13 +376,16 @@ pub(crate) async fn watch(state: &HostState, doc: &TrustTask<Value>, payload: Va
         Ok(r) => r,
         Err(a) => return a,
     };
-    render(
-        doc,
+    let now = chrono::Utc::now();
+    let result = if v2 {
         state
             .watches
-            .watch(&room, authorized, &payload, chrono::Utc::now())
-            .await,
-    )
+            .watch_v2(&room, authorized, &payload, now)
+            .await
+    } else {
+        state.watches.watch(&room, authorized, &payload, now).await
+    };
+    render(doc, result)
 }
 
 /// `rooms/records/put/0.3`: 0.2, and an `open` room's `cleartext` may carry the record's
@@ -617,6 +635,11 @@ pub(crate) async fn signal_delay_set(
                 vti_rooms::audit::RoomOperation::SetSignalDelay,
                 audit.detail(),
             );
+            // `rooms/watch/0.2` Host item 6: a room set back to `randomised` holds no live
+            // watch, from now — ended without a signal.
+            if audit.recorded.is_randomised() {
+                state.watches.end_live_watches(&room.room_id).await;
+            }
             respond(doc, body)
         }
         Err(r) => refused(doc, r),

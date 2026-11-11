@@ -2854,6 +2854,10 @@ dispatch_table! {
     // cancelled or lapses. Discloses nothing: whether each watch is armed and until when.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1 => room_key_watch::handle_watch
         [ Mutating None true ],
+    // 0.2: and `live: true`, every signal passed on while the client renews it
+    // (trust-tasks-tf #1087). Same handler; the type picks the version.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_2 => room_key_watch::handle_watch
+        [ Mutating None true ],
     vta_sdk::trust_tasks::TASK_NOTIFICATIONS_NOTIFY_0_1 => notifications::handle_notify
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_NOTIFICATIONS_RELAY_0_1 => notifications::handle_relay

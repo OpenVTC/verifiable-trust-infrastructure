@@ -214,6 +214,30 @@ impl HostState {
         self.watches.set_signal_delay_ms(from, to);
     }
 
+    /// Space a live watch's signals `spacing` apart rather than the default second
+    /// (`rooms/watch/0.2` Host item 5). For a test; a host serving members keeps at least a
+    /// second.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_live_watch_spacing(&self, spacing: std::time::Duration) {
+        self.watches.set_live_spacing(spacing);
+    }
+
+    /// Set `room_id`'s signal delay directly, as `rooms/signal-delay/set` records it — and,
+    /// back to `randomised`, end its live watches as that task does. For a test that needs a
+    /// room's setting without an `admin` chain.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn set_room_signal_delay(
+        &self,
+        room_id: &str,
+        delay: vti_rooms::signal_delay::SignalDelay,
+    ) -> Result<(), AppError> {
+        storage::set_signal_delay(&self.rooms, room_id, delay, 0).await?;
+        if delay.is_randomised() {
+            self.watches.end_live_watches(room_id).await;
+        }
+        Ok(())
+    }
+
     /// Forget the watches whose lease ran out, returning how many. Run on a timer beside
     /// [`Self::sweep_accepted_ids`]; a room's own watches are also swept when it moves.
     pub async fn sweep_watches(&self) -> Result<usize, AppError> {
@@ -735,6 +759,7 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         files::UPLOAD_ABORT_V2_TYPE => files::abort_v2(state, &doc, payload).await,
         files::BLOB_GET_V2_TYPE => files::get_blob_v2(state, &doc, payload).await,
         vti_rooms::watch::WATCH_TYPE => files::watch(state, &doc, payload).await,
+        vti_rooms::watch::WATCH_V2_TYPE => files::watch_v2(state, &doc, payload).await,
         other => reject(
             &doc,
             // The framework's own code for this: a host that does not implement a task

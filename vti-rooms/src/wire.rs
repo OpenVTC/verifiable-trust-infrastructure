@@ -191,6 +191,8 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_GET_V4_TYPE,
     // A watch, and its one signal (trust-tasks-tf #1036).
     ROOMS_WATCH_TYPE,
+    // A live watch while a conversation is open (trust-tasks-tf #1087).
+    ROOMS_WATCH_V2_TYPE,
     // The room's signal delay (trust-tasks-tf #1084).
     ROOMS_CREATE_V3_TYPE,
     ROOMS_INFO_V4_TYPE,
@@ -198,8 +200,13 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
 ];
 
 /// `rooms/watch/0.1`: arm, re-arm or cancel one `rooms/changed/0.1` signal.
+#[allow(deprecated)] // still served beside 0.2 (trust-tasks-tf #1087)
 pub const ROOMS_WATCH_TYPE: &str =
     <vti_specs_rooms::rooms::watch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/watch/0.2`: 0.1, and a **live** watch (`live: true`) — a signal per change,
+/// coalesced, under a lease of at most 120 seconds — on a room whose signal delay is `none`.
+pub const ROOMS_WATCH_V2_TYPE: &str =
+    <vti_specs_rooms::rooms::watch::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// What a party presents to act on a room.
 ///

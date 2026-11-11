@@ -1,37 +1,59 @@
-//! `rooms/watch/0.1` and `rooms/changed/0.1`, host side and host-neutral: a member asks a
-//! room's host for **one** content-free signal, sent to an address it names, the first time
-//! the room moves past the version it has read to (trust-tasks-tf #1036).
+//! `rooms/watch/0.1` and `0.2`, and `rooms/changed/0.1`, host side and host-neutral: a
+//! member asks a room's host for a content-free signal, sent to an address it names, when the
+//! room moves past the version it has read to — **one** per arming (trust-tasks-tf #1036),
+//! or, for a **live** watch (0.2, trust-tasks-tf #1087), one per change while a
+//! conversation is open.
 //!
 //! Both hosts serve it — `room-host` and the VTC — and each keeps its own transport and
 //! chain verification. A host authorizes the request exactly as a listing (`read`, the
-//! chain rules of `rooms/records/put`), then calls [`RoomWatches::watch`]; after any task
-//! that may have moved a room it calls [`RoomWatches::room_moved`]; and it lends a
-//! [`Signals`] that resolves an address and sends one one-way Trust Task to it over the
-//! host's own outbound transport (TSP before DIDComm, by what the address's DID document
-//! advertises).
+//! chain rules of `rooms/records/put`), then calls [`RoomWatches::watch`] (0.1) or
+//! [`RoomWatches::watch_v2`] (0.2); after any task that may have moved a room it calls
+//! [`RoomWatches::room_moved`]; when a room's signal delay is set back to `randomised` it
+//! calls [`RoomWatches::end_live_watches`]; and it lends a [`Signals`] that resolves an
+//! address and sends one one-way Trust Task to it over the host's own outbound transport
+//! (TSP before DIDComm, by what the address's DID document advertises).
 //!
 //! # What a watch is, and is not
 //!
-//! Host state, never room state (Host item 7): a watch grants nothing, is consulted to
+//! Host state, never room state (Host item 10): a watch grants nothing, is consulted to
 //! authorize nothing, is shown to nobody, and does not move with the room. One per room and
-//! address (item 3). It is forgotten when it fires, is cancelled, or lapses at `expiresAt` —
-//! never later than the first credential of the presentation that armed it stops being
-//! valid (item 5) — and never fires for a presentation the room's held revocation list
-//! withdraws.
+//! address (item 3). It is forgotten when a one-shot watch fires, when it is cancelled, or
+//! when it lapses at `expiresAt` — never later than the first credential of the
+//! presentation that armed it stops being valid (item 8) — and never fires for a
+//! presentation the room's held revocation list withdraws.
 //!
 //! # One signal per arming
 //!
-//! A watch fires once: the first time the room's latest version is above its watermark —
-//! at once if it already is (item 4) — and is removed **before** its signal is sent, under
-//! one lock, so two writes landing together send one signal, not two. The signal carries
-//! the room and its latest version when sent, and nothing about what moved it (item 6), and
-//! goes after a short randomised delay so its time does not mark one write
+//! A one-shot watch fires once: the first time the room's latest version is above its
+//! watermark — at once if it already is (item 4) — and is removed **before** its signal is
+//! sent, under one lock, so two writes landing together send one signal, not two. The
+//! signal carries the room and its latest version when sent, and nothing about what moved
+//! it (item 9), and goes after a short randomised delay so its time does not mark one write
 //! (`rooms/changed/0.1` Producer item 4) — unless the room's own signal delay is `none`
 //! ([`crate::signal_delay`]), when it goes as soon as the change is stored. The room's
 //! setting decides, never the watch request. Delivery is the delivery layer's: a signal is
 //! never queued per change, re-sent or retried here (Producer item 5) — a lost one costs the
 //! member nothing its next listing does not recover.
+//!
+//! # A live watch
+//!
+//! A live watch (`rooms/watch/0.2` `live: true`) is held only on a room whose signal delay
+//! is `none` (item 6: refused `liveNotPermitted` otherwise, leaving any watch the request
+//! named as it was), for a lease of at most [`MAX_LIVE_LEASE`] from each renewal (item 7).
+//! It does not disarm when it signals: each time the room is above its watermark it sends
+//! one signal carrying the latest version and **moves the watermark to it** (item 5). Its
+//! signals are paced per watch at least [`LIVE_SIGNAL_SPACING`] apart: a change landing
+//! within the spacing of the last signal arms one timer, and whatever landed by the time it
+//! runs goes in the one signal it sends — never a queue per change, never a resend. A room
+//! set back to `randomised` ends its live watches at once, sending nothing
+//! ([`RoomWatches::end_live_watches`]); a live watch found on such a room is dropped
+//! whenever the room is checked, so none is ever held there. The host keeps the watermark
+//! and, in memory only, when it last signalled — the spacing needs it — and forgets both
+//! with the watch.
 
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,15 +64,19 @@ use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_specs_rooms::rooms::changed::v0_1 as changed_spec;
 use vti_specs_rooms::rooms::watch::v0_1 as watch_spec;
+use vti_specs_rooms::rooms::watch::v0_2 as watch_v2;
 
 use crate::authz::{Action, AuthorizedAction, MAX_CHAIN_DEPTH};
 use crate::blob_tasks::{Refusal, TaskResult, checked, declared, parse};
 use crate::revocation::Presented;
+use crate::signal_delay::SignalDelay;
 use crate::wire::AuthorityPresentation;
 use crate::{Room, Visibility, storage};
 
 /// `rooms/watch/0.1`.
 pub const WATCH_TYPE: &str = crate::wire::ROOMS_WATCH_TYPE;
+/// `rooms/watch/0.2`: 0.1, and a live watch.
+pub const WATCH_V2_TYPE: &str = crate::wire::ROOMS_WATCH_V2_TYPE;
 /// `rooms/changed/0.1`, the signal a watch sends. One-way: it has no `#response`.
 pub const CHANGED_TYPE: &str = <changed_spec::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -63,6 +89,12 @@ pub const ROOM_WATCHES_KEYSPACE: &str = "room_watches";
 pub const DEFAULT_LEASE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// The longest lease a watch may hold (the schema's `leaseSeconds` maximum, 30 days).
 pub const MAX_LEASE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// The longest lease a live watch is granted from a request, whatever it asks
+/// (`rooms/watch/0.2` Host item 7).
+pub const MAX_LIVE_LEASE: Duration = Duration::from_secs(120);
+/// The least time between two signals of one live watch (`rooms/watch/0.2` Host item 5: at
+/// least one second).
+pub const LIVE_SIGNAL_SPACING: Duration = Duration::from_secs(1);
 /// The most watches a host holds for one room (`rooms/watch:limitReached`).
 pub const MAX_WATCHES_PER_ROOM: usize = 1024;
 /// The most watches a host holds for one presenter in one room, where the tier discloses
@@ -93,7 +125,8 @@ pub trait Signals: Send + Sync {
 struct Watch {
     room_id: String,
     address: String,
-    /// The watermark: the watch fires once the room's latest version is above it.
+    /// The watermark: the watch fires once the room's latest version is above it. For a
+    /// live watch, the version it last signalled once it has signalled.
     since_version: u64,
     /// The `leaseSeconds` asked for, if any — so that a repeat of the same request answers
     /// as the first did.
@@ -106,8 +139,12 @@ struct Watch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     member: Option<String>,
     /// The credentials the presentation carried, so that a watch whose presentation the
-    /// room's list withdraws after it was armed never fires (Host item 5).
+    /// room's list withdraws after it was armed never fires (Host item 8).
     presented: Presented,
+    /// A live watch (`rooms/watch/0.2`): a signal per change, not one per arming. Absent —
+    /// every watch armed before 0.2 — is one-shot.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    live: bool,
 }
 
 fn watch_key(room_id: &str, address: &str) -> Vec<u8> {
@@ -128,16 +165,26 @@ fn rfc3339(t: DateTime<Utc>) -> String {
 
 /// Check a `rooms/watch/0.1` payload against its schema (`malformedRequest` otherwise),
 /// before the room is looked up.
+#[allow(deprecated)] // still served beside 0.2 (trust-tasks-tf #1087)
 pub fn check_payload(payload: &Value) -> Result<(), Refusal> {
     <watch_spec::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(payload)
         .map_err(|e| Refusal::Malformed(e.messages().join("; ")))?;
     parse::<watch_spec::Payload>(payload).map(|_| ())
 }
 
-/// Read a checked ([`check_payload`]) `rooms/watch/0.1` request's presentation, after the
-/// checks its own error codes declare: a chain of at most [`MAX_CHAIN_DEPTH`] links
-/// (`rooms/watch:chainTooDeep`) and, on a `private` room, a subject binding
-/// (`rooms/watch:subjectBindingMissing`). The host then authorizes it for [`Action::Read`].
+/// Check a `rooms/watch/0.2` payload against its schema (`malformedRequest` otherwise),
+/// before the room is looked up.
+pub fn check_payload_v2(payload: &Value) -> Result<(), Refusal> {
+    <watch_v2::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(payload)
+        .map_err(|e| Refusal::Malformed(e.messages().join("; ")))?;
+    parse::<watch_v2::Payload>(payload).map(|_| ())
+}
+
+/// Read a checked ([`check_payload`], [`check_payload_v2`]) `rooms/watch` request's
+/// presentation, after the checks its own error codes declare: a chain of at most
+/// [`MAX_CHAIN_DEPTH`] links (`rooms/watch:chainTooDeep`) and, on a `private` room, a
+/// subject binding (`rooms/watch:subjectBindingMissing`) — the same codes at 0.1 and 0.2.
+/// The host then authorizes it for [`Action::Read`].
 pub fn presentation(payload: &Value, room: &Room) -> Result<AuthorityPresentation, Refusal> {
     use watch_spec::error_codes as codes;
     let presentation: AuthorityPresentation =
@@ -163,9 +210,39 @@ pub fn presentation(payload: &Value, room: &Room) -> Result<AuthorityPresentatio
     Ok(presentation)
 }
 
-/// The watches a host holds, and the one lock arming, cancelling and firing take, so a watch
-/// fires once and a cancel is never overtaken by a signal it should have stopped.
+/// Which `rooms/watch` a request came in as, and so how it is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Version {
+    V0_1,
+    V0_2,
+}
+
+/// When a live watch last signalled, and whether a timer is set to send the next: the
+/// pacing of Host item 5. In memory only, and forgotten with the watch.
+#[derive(Debug, Default)]
+struct Pace {
+    last_sent: Option<tokio::time::Instant>,
+    timer: bool,
+}
+
+/// What [`Inner::pace`] decided for a live watch whose room is above its watermark.
+enum Paced {
+    /// Signal now.
+    Now,
+    /// Within the spacing of the last signal: a timer set for this long sends the next.
+    Later(Duration),
+    /// A timer is already set; it will carry this change too.
+    Pending,
+}
+
+/// The watches a host holds, and the one lock arming, cancelling and firing take, so a
+/// one-shot watch fires once and a cancel is never overtaken by a signal it should have
+/// stopped.
 pub struct RoomWatches {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
     watches: KeyspaceHandle,
     rooms: KeyspaceHandle,
     revocations: KeyspaceHandle,
@@ -174,6 +251,10 @@ pub struct RoomWatches {
     /// The randomised delay before a signal, in milliseconds: [`SIGNAL_DELAY_MS`], or a
     /// test's own.
     delay_ms: std::sync::RwLock<(u64, u64)>,
+    /// The spacing of a live watch's signals: [`LIVE_SIGNAL_SPACING`], or a test's own.
+    spacing: std::sync::RwLock<Duration>,
+    /// Each live watch's pace, by watch key.
+    paces: std::sync::Mutex<HashMap<Vec<u8>, Pace>>,
 }
 
 impl std::fmt::Debug for RoomWatches {
@@ -192,31 +273,169 @@ impl RoomWatches {
         revocations: KeyspaceHandle,
     ) -> Self {
         Self {
-            watches,
-            rooms,
-            revocations,
-            signals: std::sync::RwLock::new(None),
-            lock: tokio::sync::Mutex::new(()),
-            delay_ms: std::sync::RwLock::new((*SIGNAL_DELAY_MS.start(), *SIGNAL_DELAY_MS.end())),
+            inner: Arc::new(Inner {
+                watches,
+                rooms,
+                revocations,
+                signals: std::sync::RwLock::new(None),
+                lock: tokio::sync::Mutex::new(()),
+                delay_ms: std::sync::RwLock::new((
+                    *SIGNAL_DELAY_MS.start(),
+                    *SIGNAL_DELAY_MS.end(),
+                )),
+                spacing: std::sync::RwLock::new(LIVE_SIGNAL_SPACING),
+                paces: std::sync::Mutex::new(HashMap::new()),
+            }),
         }
     }
 
     /// Shorten the randomised delay before a signal, for a host's own tests.
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_signal_delay_ms(&self, from: u64, to: u64) {
-        *self.delay_ms.write().unwrap_or_else(|p| p.into_inner()) = (from, to.max(from));
+        *self
+            .inner
+            .delay_ms
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = (from, to.max(from));
+    }
+
+    /// Change the spacing of a live watch's signals, for a host's own tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_live_spacing(&self, spacing: Duration) {
+        *self
+            .inner
+            .spacing
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = spacing;
     }
 
     /// Lend the host's outbound transport, once it has one.
     pub fn set_signals(&self, signals: Arc<dyn Signals>) {
-        *self.signals.write().unwrap_or_else(|p| p.into_inner()) = Some(signals);
+        *self
+            .inner
+            .signals
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(signals);
     }
 
+    /// `rooms/watch/0.1`, once [`presentation`] passed and the host authorized it for
+    /// [`Action::Read`] against `room`. Arms, re-arms or cancels the one-shot watch on
+    /// `room` and the payload's `address` — a live watch it names becomes one-shot (Host
+    /// item 3) — and, once the authorization is released, fires it at once if the room is
+    /// already past its watermark.
+    pub async fn watch(
+        &self,
+        room: &Room,
+        authorized: AuthorizedAction,
+        payload: &Value,
+        now: DateTime<Utc>,
+    ) -> TaskResult {
+        self.inner
+            .arm(room, authorized, payload, now, Version::V0_1)
+            .await
+    }
+
+    /// `rooms/watch/0.2`: 0.1, and with `live: true` arms or renews a live watch — only on a
+    /// room whose signal delay is `none`, refused `liveNotPermitted` otherwise (Host item
+    /// 6), and for at most [`MAX_LIVE_LEASE`] (item 7). Answers `live: true` for one.
+    pub async fn watch_v2(
+        &self,
+        room: &Room,
+        authorized: AuthorizedAction,
+        payload: &Value,
+        now: DateTime<Utc>,
+    ) -> TaskResult {
+        self.inner
+            .arm(room, authorized, payload, now, Version::V0_2)
+            .await
+    }
+
+    /// The room may have moved: fire every watch on `room_id` whose watermark the room's
+    /// latest version is above — removing each one-shot watch before its signal is sent,
+    /// moving each live watch's watermark on — and forget those that lapsed. Never fails
+    /// the caller: a host calls this after a task has committed, and nothing here may undo
+    /// or fail that task.
+    pub async fn room_moved(&self, room_id: &str) {
+        self.inner.room_moved(room_id).await
+    }
+
+    /// The room's signal delay was set to `randomised`: end every live watch on it at once,
+    /// sending nothing to their addresses (`rooms/watch/0.2` Host item 6). One-shot watches
+    /// stay. Never fails the caller, who has already recorded the setting; a live watch it
+    /// misses is dropped the next time the room is checked. Returns how many it ended.
+    pub async fn end_live_watches(&self, room_id: &str) -> usize {
+        match self.inner.end_live(room_id).await {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(room = %room_id, error = %e, "could not end the room's live watches");
+                0
+            }
+        }
+    }
+
+    /// Forget every watch that lapsed. A host runs this now and then; a room's own watches
+    /// are also swept whenever the room moves.
+    pub async fn sweep(&self, now: DateTime<Utc>) -> Result<usize, AppError> {
+        let inner = &self.inner;
+        let _held = inner.lock.lock().await;
+        let mut removed = 0;
+        for (k, v) in inner.watches.prefix_iter_raw(Vec::new()).await? {
+            let lapsed = serde_json::from_slice::<Watch>(&v).map_or(true, |w| w.expires_at <= now);
+            if lapsed {
+                inner.watches.remove(k.clone()).await?;
+                inner.forget_pace(&k);
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+}
+
+impl Inner {
     fn signals(&self) -> Option<Arc<dyn Signals>> {
         self.signals
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    fn forget_pace(&self, key: &[u8]) {
+        self.paces
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
+    }
+
+    /// Host item 5's pacing for a live watch whose room is above its watermark.
+    fn pace(&self, key: &[u8]) -> Paced {
+        let spacing = *self.spacing.read().unwrap_or_else(|p| p.into_inner());
+        let mut paces = self.paces.lock().unwrap_or_else(|p| p.into_inner());
+        let pace = paces.entry(key.to_vec()).or_default();
+        if pace.timer {
+            return Paced::Pending;
+        }
+        let now = tokio::time::Instant::now();
+        match pace.last_sent {
+            Some(t) if now.duration_since(t) < spacing => {
+                pace.timer = true;
+                Paced::Later(spacing - now.duration_since(t))
+            }
+            _ => {
+                pace.last_sent = Some(now);
+                Paced::Now
+            }
+        }
+    }
+
+    fn timer_ran(&self, key: &[u8]) {
+        if let Some(p) = self
+            .paces
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(key)
+        {
+            p.timer = false;
+        }
     }
 
     async fn room_watches(&self, room_id: &str) -> Result<Vec<(Vec<u8>, Watch)>, AppError> {
@@ -229,18 +448,15 @@ impl RoomWatches {
             .collect())
     }
 
-    /// `rooms/watch/0.1`, once [`presentation`] passed and the host authorized it for
-    /// [`Action::Read`] against `room`. Arms, re-arms or cancels the watch on `room` and the
-    /// payload's `address`, and — once the authorization is released — fires it at once if
-    /// the room is already past its watermark.
-    pub async fn watch(
-        &self,
+    async fn arm(
+        self: &Arc<Self>,
         room: &Room,
         authorized: AuthorizedAction,
         payload: &Value,
         now: DateTime<Utc>,
+        version: Version,
     ) -> TaskResult {
-        use watch_spec::error_codes as codes;
+        use watch_v2::error_codes as codes;
         if authorized.action() != Action::Read || authorized.room_id() != room.room_id {
             return Err(Refusal::Internal(
                 "a watch is authorized for `read` on its own room".into(),
@@ -251,15 +467,44 @@ impl RoomWatches {
             .ok_or_else(|| Refusal::Malformed("address".into()))?
             .to_string();
         let key = watch_key(&room.room_id, &address);
+        #[allow(deprecated)] // 0.1 is still answered beside 0.2
+        let answer = |body: Value| match version {
+            Version::V0_1 => checked::<watch_spec::Response>(body),
+            Version::V0_2 => checked::<watch_v2::Response>(body),
+        };
 
+        // A host ignores `live`, `sinceVersion` and `leaseSeconds` on a cancel.
         if payload.get("cancel").and_then(Value::as_bool) == Some(true) {
             let _held = self.lock.lock().await;
-            self.watches.remove(key).await.map_err(Refusal::App)?;
-            return checked::<watch_spec::Response>(json!({
+            self.watches
+                .remove(key.clone())
+                .await
+                .map_err(Refusal::App)?;
+            self.forget_pace(&key);
+            return answer(json!({
                 "roomId": room.room_id,
                 "address": address,
                 "armed": false,
             }));
+        }
+
+        // `live` exists only at 0.2; a 0.1 request is one-shot, and its schema refuses the
+        // member anyway.
+        let live =
+            version == Version::V0_2 && payload.get("live").and_then(Value::as_bool) == Some(true);
+        // Host item 6: only on a room whose signal delay is `none`, and refused before
+        // anything is touched, so a watch the request named stays as it was.
+        if live && room.signal_delay != SignalDelay::None {
+            return Err(declared(
+                codes::LIVE_NOT_PERMITTED,
+                format!(
+                    "this room's signal delay is `{}`; a live watch is permitted only on a room \
+                     whose signal delay is `none`. Nothing is armed, and any watch at this \
+                     address is as it was; arm a one-shot watch instead",
+                    room.signal_delay
+                ),
+                None,
+            ));
         }
 
         let reachable = match self.signals() {
@@ -275,15 +520,16 @@ impl RoomWatches {
             ));
         }
 
-        let since = payload
-            .get("sinceVersion")
-            .and_then(Value::as_u64)
-            .unwrap_or_else(|| room.watermark());
+        let asked_since = payload.get("sinceVersion").and_then(Value::as_u64);
         let lease_asked = payload.get("leaseSeconds").and_then(Value::as_u64);
-        let lease = lease_asked
+        let mut lease = lease_asked
             .map(Duration::from_secs)
             .unwrap_or(DEFAULT_LEASE)
             .min(MAX_LEASE);
+        if live {
+            // Host item 7: at most 120 seconds from this request, whatever was asked.
+            lease = lease.min(MAX_LIVE_LEASE);
+        }
         let mut expires_at = now + chrono::Duration::from_std(lease).unwrap_or_default();
         if let Some(until) = authorized.valid_until() {
             expires_at = expires_at.min(until);
@@ -300,9 +546,24 @@ impl RoomWatches {
                 .find(|(k, _)| *k == key)
                 .map(|(_, w)| w)
                 .filter(|w| w.expires_at > now);
+            // Host item 3: a live request that omits `sinceVersion` keeps the watermark of
+            // the watch it names — for a live watch, the version it last signalled. Any other
+            // request without one starts at the room's latest version.
+            let since = asked_since.unwrap_or_else(|| match current {
+                Some(w) if live => w.since_version,
+                _ => room.watermark(),
+            });
             match current {
-                // A repeat of the request that armed it: the same answer (*A repeated request*).
-                Some(w) if w.since_version == since && w.lease_asked == lease_asked => w.clone(),
+                // A repeat of the one-shot request that armed it: the same answer (*A
+                // repeated request*). A live renewal always takes a new lease (item 7).
+                Some(w)
+                    if !live
+                        && !w.live
+                        && w.since_version == since
+                        && w.lease_asked == lease_asked =>
+                {
+                    w.clone()
+                }
                 _ => {
                     let others: Vec<&Watch> = held
                         .iter()
@@ -333,37 +594,75 @@ impl RoomWatches {
                         expires_at,
                         member,
                         presented: authorized.presented().clone(),
+                        live,
                     };
-                    self.watches.insert(key, &w).await.map_err(Refusal::App)?;
+                    self.watches
+                        .insert(key.clone(), &w)
+                        .await
+                        .map_err(Refusal::App)?;
+                    if !live {
+                        // A watch made one-shot has no pace to keep.
+                        self.forget_pace(&key);
+                    }
                     w
                 }
             }
         };
-        let response = checked::<watch_spec::Response>(json!({
+        let mut body = json!({
             "roomId": room.room_id,
             "address": address,
             "armed": true,
             "expiresAt": rfc3339(armed.expires_at),
-        }))?;
+        });
+        if armed.live {
+            body["live"] = json!(true);
+        }
+        let response = answer(body)?;
         // The room's gate is released before the room is read again and anything sent.
         drop(authorized);
         self.room_moved(&room.room_id).await;
         Ok(response)
     }
 
-    /// The room may have moved: fire every watch on `room_id` whose watermark the room's
-    /// latest version is above — removing each before its signal is sent — and forget
-    /// those that lapsed. Never fails the caller: a host calls this after a task has
-    /// committed, and nothing here may undo or fail that task.
-    pub async fn room_moved(&self, room_id: &str) {
+    async fn room_moved(self: &Arc<Self>, room_id: &str) {
         if let Err(e) = self.fire(room_id).await {
             tracing::warn!(room = %room_id, error = %e, "could not check the room's watches");
         }
     }
 
-    async fn fire(&self, room_id: &str) -> Result<(), AppError> {
+    /// [`Self::room_moved`] after `wait`, for a live watch's pacing timer — boxed, because it
+    /// runs from inside [`Self::fire`].
+    fn room_moved_later(
+        self: Arc<Self>,
+        room_id: String,
+        key: Vec<u8>,
+        wait: Duration,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            tokio::time::sleep(wait).await;
+            self.timer_ran(&key);
+            self.room_moved(&room_id).await;
+        })
+    }
+
+    async fn end_live(&self, room_id: &str) -> Result<usize, AppError> {
+        let _held = self.lock.lock().await;
+        let mut ended = 0;
+        for (k, w) in self.room_watches(room_id).await? {
+            if w.live {
+                self.watches.remove(k.clone()).await?;
+                self.forget_pace(&k);
+                ended += 1;
+            }
+        }
+        Ok(ended)
+    }
+
+    async fn fire(self: &Arc<Self>, room_id: &str) -> Result<(), AppError> {
         let now = Utc::now();
-        let (due, delay): (Vec<Watch>, crate::signal_delay::SignalDelay) = {
+        // Each due watch, with the version a live one signals (the watermark it moved to);
+        // a one-shot one reads the latest version when it sends.
+        let (due, delay): (Vec<(Watch, Option<u64>)>, SignalDelay) = {
             let _held = self.lock.lock().await;
             let held = self.room_watches(room_id).await?;
             if held.is_empty() {
@@ -375,7 +674,8 @@ impl RoomWatches {
                 // move with the room*).
                 Err(AppError::NotFound(_)) => {
                     for (k, _) in held {
-                        self.watches.remove(k).await?;
+                        self.watches.remove(k.clone()).await?;
+                        self.forget_pace(&k);
                     }
                     return Ok(());
                 }
@@ -384,17 +684,40 @@ impl RoomWatches {
             let latest = room.watermark();
             let list = crate::authz::held_list(&self.revocations, room_id).await?;
             let mut due = Vec::new();
-            for (k, w) in held {
+            for (k, mut w) in held {
                 let lapsed = w.expires_at <= now;
                 let withdrawn = list
                     .as_ref()
                     .is_some_and(|l| l.withdraws(room.visibility, &w.presented, now));
-                if lapsed || withdrawn {
-                    self.watches.remove(k).await?;
+                // Never a live watch on a room whose signal delay is not `none` (Host item
+                // 6), however it came to be there.
+                let live_not_permitted = w.live && room.signal_delay != SignalDelay::None;
+                if lapsed || withdrawn || live_not_permitted {
+                    self.watches.remove(k.clone()).await?;
+                    self.forget_pace(&k);
                 } else if latest > w.since_version {
-                    // Disarmed before it is sent: one signal per arming.
-                    self.watches.remove(k).await?;
-                    due.push(w);
+                    if w.live {
+                        match self.pace(&k) {
+                            Paced::Now => {
+                                // Item 5: the watermark becomes the version signalled.
+                                w.since_version = latest;
+                                self.watches.insert(k, &w).await?;
+                                due.push((w, Some(latest)));
+                            }
+                            Paced::Later(wait) => {
+                                tokio::spawn(self.clone().room_moved_later(
+                                    room_id.to_string(),
+                                    k,
+                                    wait,
+                                ));
+                            }
+                            Paced::Pending => {}
+                        }
+                    } else {
+                        // Disarmed before it is sent: one signal per arming.
+                        self.watches.remove(k).await?;
+                        due.push((w, None));
+                    }
                 }
             }
             // The room's own setting, read with the watches it fires — never anything the
@@ -409,12 +732,12 @@ impl RoomWatches {
         };
         let rooms = self.rooms.clone();
         // `randomised`: the wait of Producer item 4. `none`: no wait of this host's own
-        // (`rooms/signal-delay/set/0.1` item 3).
+        // (`rooms/signal-delay/set/0.1` item 3) — and a live watch is held only there.
         let wait = match delay {
-            crate::signal_delay::SignalDelay::None => None,
+            SignalDelay::None => None,
             _ => Some(*self.delay_ms.read().unwrap_or_else(|p| p.into_inner())),
         };
-        for w in due {
+        for (w, version) in due {
             let signals = signals.clone();
             let rooms = rooms.clone();
             tokio::spawn(async move {
@@ -422,10 +745,14 @@ impl RoomWatches {
                     tokio::time::sleep(signal_delay(from, to)).await;
                 }
                 // The room's latest version when the signal is sent (`rooms/changed/0.1`
-                // Producer item 2), never anything about what moved it.
-                let latest = match storage::get_room(&rooms, &w.room_id).await {
-                    Ok(r) => r.watermark(),
-                    Err(_) => return,
+                // Producer item 2) — for a live watch, the one it moved its watermark to —
+                // never anything about what moved it.
+                let latest = match version {
+                    Some(v) => v,
+                    None => match storage::get_room(&rooms, &w.room_id).await {
+                        Ok(r) => r.watermark(),
+                        Err(_) => return,
+                    },
                 };
                 let payload = match changed_payload(&w.room_id, latest) {
                     Ok(p) => p,
@@ -435,28 +762,13 @@ impl RoomWatches {
                     }
                 };
                 // Accepted locally is all a send says (R1.1); a lost signal is recovered by
-                // the member's next listing, so it is never re-sent.
+                // the next one or the member's next listing, so it is never re-sent.
                 if let Err(e) = signals.send_changed(&w.address, payload).await {
                     tracing::debug!(error = %e, "a rooms/changed signal was not accepted for delivery");
                 }
             });
         }
         Ok(())
-    }
-
-    /// Forget every watch that lapsed. A host runs this now and then; a room's own watches
-    /// are also swept whenever the room moves.
-    pub async fn sweep(&self, now: DateTime<Utc>) -> Result<usize, AppError> {
-        let _held = self.lock.lock().await;
-        let mut removed = 0;
-        for (k, v) in self.watches.prefix_iter_raw(Vec::new()).await? {
-            let lapsed = serde_json::from_slice::<Watch>(&v).map_or(true, |w| w.expires_at <= now);
-            if lapsed {
-                self.watches.remove(k).await?;
-                removed += 1;
-            }
-        }
-        Ok(removed)
     }
 }
 
@@ -509,7 +821,7 @@ mod tests {
 
     /// Records every signal; reaches every address but `did:key:zNowhere`.
     #[derive(Default)]
-    struct Recorder(Mutex<Vec<(String, Value)>>);
+    struct Recorder(Mutex<Vec<(String, Value)>>, Mutex<Vec<std::time::Instant>>);
 
     #[async_trait::async_trait]
     impl Signals for Recorder {
@@ -518,6 +830,7 @@ mod tests {
         }
         async fn send_changed(&self, address: &str, payload: Value) -> Result<(), String> {
             self.0.lock().unwrap().push((address.into(), payload));
+            self.1.lock().unwrap().push(std::time::Instant::now());
             Ok(())
         }
     }
@@ -861,6 +1174,262 @@ mod tests {
         assert!(
             changed_payload(ROOM, 0).is_err(),
             "latestVersion is at least 1"
+        );
+    }
+
+    // ---- rooms/watch/0.2: live watches (trust-tasks-tf #1087) ----
+
+    async fn arm_v2(f: &Fixture, payload: Value) -> TaskResult {
+        check_payload_v2(&payload)?;
+        let room = storage::get_room(&f.rooms, ROOM).await.unwrap();
+        let presentation = presentation(&payload, &room)?;
+        let authorized = authorize(
+            &room,
+            &presentation,
+            Action::Read,
+            PRESENTER,
+            1_800_000_000,
+            &Reads(None),
+            crate::revocation::test_keyspace(),
+        )
+        .await
+        .map_err(Refusal::App)?;
+        f.watches
+            .watch_v2(&room, authorized, &payload, Utc::now())
+            .await
+    }
+
+    /// A room whose signal delay is `none`, with a short live spacing for the test.
+    async fn live_fixture(next_version: u64, spacing_ms: u64) -> Fixture {
+        let f = fixture(next_version).await;
+        set_delay(&f, crate::signal_delay::SignalDelay::None).await;
+        f.watches
+            .set_live_spacing(Duration::from_millis(spacing_ms));
+        f
+    }
+
+    fn sent(f: &Fixture) -> Vec<(String, Value)> {
+        f.signals.0.lock().unwrap().clone()
+    }
+
+    /// Host item 6: a live watch on a `randomised` room is refused `liveNotPermitted`, and
+    /// the watch the request named is left as it was.
+    #[tokio::test]
+    async fn vti_watch_v2_live_is_refused_on_a_randomised_room() {
+        let f = fixture(2).await;
+        arm_v2(&f, request(json!({ "sinceVersion": 1 })))
+            .await
+            .unwrap();
+        let err = arm_v2(&f, request(json!({ "sinceVersion": 1, "live": true })))
+            .await
+            .unwrap_err();
+        assert!(code_of(&err).ends_with("liveNotPermitted"), "{err:?}");
+        f.watches.set_signal_delay_ms(10, 20);
+        put(&f).await;
+        put(&f).await;
+        let sent = signals_after_delay(&f).await;
+        assert_eq!(
+            sent.len(),
+            1,
+            "the one-shot watch stood, and fired once: {sent:?}"
+        );
+    }
+
+    /// Host item 5: a live watch signals each change, carrying the latest version, and does
+    /// not disarm; a burst within the spacing is one signal with the latest version — never
+    /// a queue per change — and signals are at least the spacing apart.
+    #[tokio::test]
+    async fn vti_watch_v2_live_signals_each_change_coalesced() {
+        let f = live_fixture(5, 300).await; // latest 4
+        let armed = arm_v2(&f, request(json!({ "sinceVersion": 4, "live": true })))
+            .await
+            .unwrap();
+        assert_eq!(armed["live"], true);
+
+        put(&f).await; // 5: signalled at once
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(sent(&f).len(), 1);
+        assert_eq!(sent(&f)[0].1["latestVersion"], 5);
+
+        // A burst inside the spacing: one more signal, with the last version.
+        put(&f).await;
+        put(&f).await;
+        put(&f).await; // 8
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(sent(&f).len(), 1, "held for the spacing");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let all = sent(&f);
+        assert_eq!(all.len(), 2, "coalesced into one: {all:?}");
+        assert_eq!(all[1].1, json!({ "roomId": ROOM, "latestVersion": 8 }));
+        let times = f.signals.1.lock().unwrap().clone();
+        assert!(
+            times[1].duration_since(times[0]) >= Duration::from_millis(290),
+            "at least the spacing apart"
+        );
+
+        // Still armed, and nothing more without a change.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(sent(&f).len(), 2);
+        put(&f).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(sent(&f).len(), 3, "a live watch does not disarm");
+    }
+
+    /// The spacing a host uses is never under a second (Host item 5).
+    #[test]
+    fn vti_watch_v2_live_spacing_is_at_least_a_second() {
+        assert!(LIVE_SIGNAL_SPACING >= Duration::from_secs(1));
+    }
+
+    /// Host item 7: a live watch's lease is at most 120 seconds, whatever was asked, and the
+    /// response says `live: true`.
+    #[tokio::test]
+    async fn vti_watch_v2_live_lease_is_capped_at_120_seconds() {
+        let f = live_fixture(2, 1000).await;
+        let before = Utc::now();
+        let armed = arm_v2(
+            &f,
+            request(json!({ "sinceVersion": 1, "leaseSeconds": 2592000, "live": true })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(armed["live"], true);
+        let expires: DateTime<Utc> = armed["expiresAt"].as_str().unwrap().parse().unwrap();
+        assert!(
+            expires <= before + chrono::Duration::seconds(121),
+            "{expires}"
+        );
+
+        // A one-shot 0.2 watch keeps the long lease, and answers without `live`.
+        let one_shot = arm_v2(
+            &f,
+            request(json!({ "address": "did:peer:2.other", "leaseSeconds": 2592000 })),
+        )
+        .await
+        .unwrap();
+        assert!(one_shot.get("live").is_none());
+        let expires: DateTime<Utc> = one_shot["expiresAt"].as_str().unwrap().parse().unwrap();
+        assert!(expires > before + chrono::Duration::days(29));
+    }
+
+    /// Host item 3: a renewal without `sinceVersion` keeps the watermark (the version last
+    /// signalled) and extends the lease; one with it replaces the watermark and signals at
+    /// once if the room is above it.
+    #[tokio::test]
+    async fn vti_watch_v2_renewal_keeps_or_replaces_the_watermark() {
+        let f = live_fixture(5, 100).await; // latest 4
+        arm_v2(&f, request(json!({ "sinceVersion": 4, "live": true })))
+            .await
+            .unwrap();
+        put(&f).await; // 5, signalled
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(sent(&f).len(), 1);
+
+        let renewed = arm_v2(&f, request(json!({ "live": true }))).await.unwrap();
+        assert_eq!(renewed["live"], true);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            sent(&f).len(),
+            1,
+            "the watermark is the version last signalled"
+        );
+
+        arm_v2(&f, request(json!({ "sinceVersion": 2, "live": true })))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let all = sent(&f);
+        assert_eq!(
+            all.len(),
+            2,
+            "a replaced watermark below the room signals at once"
+        );
+        assert_eq!(all[1].1["latestVersion"], 5);
+    }
+
+    /// Host item 6: when the room's signal delay changes to `randomised`, every live watch
+    /// ends at once and nothing is sent to it; a one-shot watch on the room stays.
+    #[tokio::test]
+    async fn vti_watch_v2_randomised_ends_live_watches_silently() {
+        let f = live_fixture(5, 50).await;
+        arm_v2(&f, request(json!({ "sinceVersion": 4, "live": true })))
+            .await
+            .unwrap();
+        arm_v2(
+            &f,
+            request(json!({ "address": "did:peer:2.oneshot", "sinceVersion": 4 })),
+        )
+        .await
+        .unwrap();
+        set_delay(&f, crate::signal_delay::SignalDelay::Randomised).await;
+        assert_eq!(f.watches.end_live_watches(ROOM).await, 1);
+        f.watches.set_signal_delay_ms(10, 20);
+        put(&f).await;
+        let all = signals_after_delay(&f).await;
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!(
+            all[0].0, "did:peer:2.oneshot",
+            "only the one-shot watch fired"
+        );
+        let again = arm_v2(&f, request(json!({ "live": true })))
+            .await
+            .unwrap_err();
+        assert!(code_of(&again).ends_with("liveNotPermitted"));
+
+        // A live watch found on a randomised room however it got there is dropped, unsent.
+        let f = live_fixture(5, 50).await;
+        arm_v2(&f, request(json!({ "sinceVersion": 4, "live": true })))
+            .await
+            .unwrap();
+        set_delay(&f, crate::signal_delay::SignalDelay::Randomised).await;
+        f.watches.set_signal_delay_ms(10, 20);
+        put(&f).await;
+        assert!(signals_after_delay(&f).await.is_empty());
+        assert_eq!(f.watches.end_live_watches(ROOM).await, 0, "already gone");
+    }
+
+    /// Host item 3: a request without `live` on a live watch makes it one-shot again.
+    #[tokio::test]
+    async fn vti_watch_v2_a_request_without_live_makes_the_watch_one_shot() {
+        let f = live_fixture(5, 50).await;
+        arm_v2(&f, request(json!({ "sinceVersion": 4, "live": true })))
+            .await
+            .unwrap();
+        let one_shot = arm(&f, request(json!({ "sinceVersion": 4 })), None)
+            .await
+            .unwrap();
+        assert!(one_shot.get("live").is_none());
+        put(&f).await;
+        put(&f).await;
+        let all = signals_after_delay(&f).await;
+        assert_eq!(all.len(), 1, "one signal, then disarmed: {all:?}");
+    }
+
+    /// A cancel ends a live watch: a timer set before it sends nothing.
+    #[tokio::test]
+    async fn vti_watch_v2_a_cancelled_live_watch_sends_nothing_more() {
+        let f = live_fixture(5, 300).await;
+        arm_v2(&f, request(json!({ "sinceVersion": 4, "live": true })))
+            .await
+            .unwrap();
+        put(&f).await;
+        put(&f).await; // within the spacing: a timer
+        let cancelled = arm_v2(&f, request(json!({ "cancel": true, "live": true })))
+            .await
+            .unwrap();
+        assert_eq!(cancelled["armed"], false);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(sent(&f).len(), 1);
+    }
+
+    /// The 0.2 schema accepts only `live: true`.
+    #[test]
+    fn vti_watch_v2_only_true_is_live() {
+        assert!(check_payload_v2(&request(json!({ "live": false }))).is_err());
+        assert!(check_payload_v2(&request(json!({ "live": true }))).is_ok());
+        assert!(
+            check_payload(&request(json!({ "live": true }))).is_err(),
+            "0.1 has no live"
         );
     }
 }
