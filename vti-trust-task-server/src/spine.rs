@@ -101,7 +101,8 @@ pub trait Dispatcher: Send + Sync {
 
     /// Whether a successful response to `type_uri` is recorded for a
     /// redelivery. `false` for a response carrying a bearer secret (an invite's
-    /// claim code) or one that is meaningless to replay (a stream grant): the
+    /// claim code, a session's access or refresh token, a setup session token)
+    /// or one that is meaningless to replay (a stream grant): the
     /// claim is then completed with no body, and a redelivery is answered
     /// `204`.
     fn records_response(&self, _type_uri: &str) -> bool {

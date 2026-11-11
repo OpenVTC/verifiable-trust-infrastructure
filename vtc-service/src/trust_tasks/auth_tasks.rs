@@ -81,6 +81,14 @@ pub(crate) const REFRESH_V0_2_TYPE: &str = <refresh::Payload as Payload>::TYPE_U
 /// Exactly what [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[CHALLENGE_TYPE, AUTHENTICATE_V0_3_TYPE, REFRESH_V0_2_TYPE];
 
+/// Tasks whose response carries a session's access and refresh tokens. The
+/// duplicate-execution record keeps no copy of these: a redelivery is answered
+/// `204`, never with the tokens. An `authenticate` challenge is single-use, and
+/// a `refresh` must run `handle_refresh` (reuse detection, rotation, the audit
+/// row) every time it issues a successor, so neither result may be handed out
+/// again from the record.
+pub(crate) const SECRET_RESPONSES: &[&str] = &[AUTHENTICATE_V0_3_TYPE, REFRESH_V0_2_TYPE];
+
 pub(crate) const AUTHENTICATE_ERR_SESSION_KEY_UNSUPPORTED: &str =
     authenticate_v0_3::error_codes::SESSION_KEY_UNSUPPORTED.code;
 pub(crate) const AUTHENTICATE_V0_3_ERR_DELEGATION_NOT_RECOGNIZED: &str =

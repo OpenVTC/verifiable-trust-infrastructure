@@ -106,6 +106,11 @@ pub(crate) const URIS: &[&str] = &[
     ABORT_TYPE,
 ];
 
+/// Tasks whose response carries a transfer's transport token, which authorises
+/// its chunk reads or writes. The duplicate-execution record keeps no copy of
+/// these; a redelivery is answered `204`.
+pub(crate) const SECRET_RESPONSES: &[&str] = &[INITIATE_EXPORT_TYPE, INITIATE_IMPORT_TYPE];
+
 /// Route one `backup/*` document. `None` when `type_uri` is not one of
 /// [`URIS`].
 pub(super) async fn dispatch(

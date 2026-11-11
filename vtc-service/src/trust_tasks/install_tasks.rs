@@ -67,6 +67,11 @@ pub(crate) const URIS: &[&str] = &[
     BOOTSTRAP_TYPE,
 ];
 
+/// Tasks whose response carries the setup session token. The
+/// duplicate-execution record keeps no copy of these; a redelivery is answered
+/// `204`.
+pub(crate) const SECRET_RESPONSES: &[&str] = &[CLAIM_FINISH_TYPE, CLAIM_FINISH_V0_3_TYPE];
+
 pub(super) async fn dispatch(
     state: &AppState,
     ctx: &JoinAuthCtx,

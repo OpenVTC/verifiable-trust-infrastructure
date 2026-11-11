@@ -223,6 +223,11 @@ mod error_code_census;
 #[cfg(test)]
 mod spec_pin_census;
 
+// No served response carrying a token or secret member is kept in the
+// duplicate-execution record.
+#[cfg(test)]
+mod response_record_census;
+
 use serde_json::Value;
 use vti_specs::vtc::members::personhood::{assert::v0_2 as pa, challenge::v0_1 as pc};
 // The admin-facing member verbs (#1641 phase 2). Their wire types are
@@ -575,16 +580,32 @@ impl vti_trust_task_server::Dispatcher for VtcSpine<'_> {
         ))
     }
 
-    /// A response that carries a bearer secret (an invite's claim code) is
-    /// recorded as completed **without** its body, so the secret is not kept
-    /// for the acceptance window; a redelivery is then answered `204`.
+    /// See [`records_response`].
     fn records_response(&self, type_uri: &str) -> bool {
-        !(step_up_passkey_tasks::SECRET_RESPONSES.contains(&type_uri)
-            || step_up_approver_tasks::SECRET_RESPONSES.contains(&type_uri)
-            || admin_tasks::SECRET_RESPONSES.contains(&type_uri)
-            || community_tasks::SECRET_RESPONSES.contains(&type_uri)
-            || event_tasks::UNRECORDED_RESPONSES.contains(&type_uri))
+        records_response(type_uri)
     }
+}
+
+/// Whether a successful response to `type_uri` is kept in the
+/// duplicate-execution record for a redelivery.
+///
+/// A response that carries a bearer secret (an invite's claim code, a
+/// session's access and refresh tokens, a setup session token, a backup
+/// transfer's transport token) is recorded as
+/// completed **without** its body, so the secret is not kept for the
+/// acceptance window and is never handed to a redelivery; a redelivery is then
+/// answered `204`. The census in `trust_tasks::response_record_census` holds every served
+/// response schema with a token or secret member to this list.
+pub(crate) fn records_response(type_uri: &str) -> bool {
+    !(step_up_passkey_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || step_up_approver_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || admin_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || community_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || auth_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || install_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || recognise_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || backup_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || event_tasks::UNRECORDED_RESPONSES.contains(&type_uri))
 }
 
 /// This community's response signer, while it has one.

@@ -24,6 +24,11 @@ pub(crate) const RECOGNISE_TYPE: &str = <recognise::Payload as Payload>::TYPE_UR
 /// Exactly what [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[CHALLENGE_TYPE, RECOGNISE_TYPE];
 
+/// Tasks whose response carries a cross-community access token. The
+/// duplicate-execution record keeps no copy of these; a redelivery is answered
+/// `204`.
+pub(crate) const SECRET_RESPONSES: &[&str] = &[RECOGNISE_TYPE];
+
 pub(super) async fn dispatch(
     state: &AppState,
     _ctx: &JoinAuthCtx,
