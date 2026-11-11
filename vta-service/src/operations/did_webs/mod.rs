@@ -942,9 +942,9 @@ pub use error::{WebsError, WebsRefusal};
 
 mod lifecycle;
 pub use lifecycle::{
-    DeleteDidWebsResult, RotateDidWebsResult, UpdateDidWebsParams, UpdateDidWebsResult,
-    WebsServices, delete_did_webs, rotate_did_webs_keys, staged_webs_rotations, update_did_webs,
-    version_id,
+    DeleteDidWebsResult, RotateDidWebsResult, RotateRoleKeysResult, UpdateDidWebsParams,
+    UpdateDidWebsResult, WebsServices, delete_did_webs, rotate_did_webs_keys,
+    rotate_did_webs_role_keys, staged_webs_rotations, update_did_webs, version_id,
 };
 
 #[cfg(test)]

@@ -522,6 +522,134 @@ async fn a_deferred_create_names_its_domain() {
     );
 }
 
+/// A key-role did:webs, as a node's identity is made.
+async fn key_role(f: &Fixture, host: &RecordingHost) -> CreateDidWebsResult {
+    let mut params = f.params();
+    params.key_roles = true;
+    create_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        params,
+        host,
+        "test",
+    )
+    .await
+    .expect("created")
+}
+
+/// S6: planned rotation of a role key replaces that key and no other; the
+/// retired key signs nothing more, while a replaced messaging key stays held
+/// to decrypt what was sent to it (VTI-KEY-072).
+#[tokio::test]
+async fn rotating_a_role_key_replaces_it_alone() {
+    use affinidi_did_webs::key_roles::KeyRole;
+    let f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let created = key_role(&f, &host).await;
+    let before = record(&f, &created.did).await;
+
+    let rotated = rotate_did_webs_role_keys(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        &created.did,
+        &[KeyRole::Operational, KeyRole::Messaging],
+        None,
+        &host,
+        "test",
+    )
+    .await
+    .expect("rotated");
+    assert_eq!(rotated.rotated, ["operational", "messaging"]);
+    assert!(!rotated.own_identity);
+    assert_eq!(
+        Some(rotated.attestation_key_id.clone()),
+        before.attestation_key_id
+    );
+    assert_ne!(
+        Some(rotated.operational_key_id.clone()),
+        before.operational_key_id
+    );
+    assert_ne!(rotated.key_agreement_key_id, before.key_agreement_key_id);
+
+    // What the host now serves gives the new keys by role.
+    let published = host.published.lock().unwrap().clone();
+    let doc = document(&created.did, &published.last().unwrap().1);
+    let ids = vta_sdk::node_keys::NodeKeyIds::from_document(&created.did, &doc).unwrap();
+    assert_eq!(ids.signing, rotated.attestation_key_id);
+    assert_eq!(ids.authentication, rotated.operational_key_id);
+    assert_eq!(
+        ids.key_agreement.as_deref(),
+        Some(rotated.key_agreement_key_id.as_str())
+    );
+
+    // The retired operational key is revoked; the old messaging key is held.
+    let old_operational = key(&f, before.operational_key_id.as_deref().unwrap()).await;
+    assert_eq!(old_operational.status, vta_sdk::keys::KeyStatus::Revoked);
+    let old_messaging = key(&f, &before.key_agreement_key_id).await;
+    assert_eq!(old_messaging.status, vta_sdk::keys::KeyStatus::Active);
+    let new_operational = key(&f, &rotated.operational_key_id).await;
+    assert_eq!(new_operational.context_id.as_deref(), Some("acme"));
+    assert_ne!(
+        new_operational.derivation_path,
+        old_operational.derivation_path
+    );
+
+    // The record agrees, and the VTA would read the same keys off it.
+    let after = record(&f, &created.did).await;
+    assert_eq!(
+        after.operational_key_id.as_deref(),
+        Some(rotated.operational_key_id.as_str())
+    );
+    assert_eq!(after.state.sn, rotated.sequence_number);
+}
+
+/// Rotating this VTA's own role keys tells the caller to restart it, so every
+/// component loads the keys under their new ids.
+#[tokio::test]
+async fn rotating_this_vtas_own_role_keys_asks_for_a_restart() {
+    use affinidi_did_webs::key_roles::KeyRole;
+    let mut f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let created = key_role(&f, &host).await;
+    f.config.vta_did = Some(created.did.clone());
+    let rotated = rotate_did_webs_role_keys(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        &created.did,
+        &[KeyRole::Attestation],
+        None,
+        &host,
+        "test",
+    )
+    .await
+    .expect("rotated");
+    assert!(rotated.own_identity);
+}
+
+/// A did:webs without key roles has no role keys to rotate.
+#[tokio::test]
+async fn a_did_webs_without_key_roles_has_no_role_keys_to_rotate() {
+    use affinidi_did_webs::key_roles::KeyRole;
+    let f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let created = created(&f, &host).await;
+    let err = rotate_did_webs_role_keys(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        &created.did,
+        &[KeyRole::Operational],
+        None,
+        &host,
+        "test",
+    )
+    .await
+    .expect_err("refused");
+    assert!(
+        matches!(err, WebsError::App(AppError::Validation(_))),
+        "{err:?}"
+    );
+}
+
 /// The VTA's own DID cannot be deleted through the DID operations.
 #[tokio::test]
 async fn this_vtas_own_did_is_not_deleted() {
