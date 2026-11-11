@@ -118,6 +118,9 @@ pub struct ProvisionIntegrationDeps {
     pub did_templates_ks: KeyspaceHandle,
     pub imported_ks: KeyspaceHandle,
     pub webvh_ks: KeyspaceHandle,
+    /// A did:webs VTA's own key event log: where its keys by role and its
+    /// trust bundle are read from.
+    pub webs_ks: KeyspaceHandle,
     /// Sealed-bundle nonce store, for replay protection.
     pub sealed_nonces_ks: KeyspaceHandle,
     pub seed_store: Arc<dyn SeedStore>,
@@ -136,6 +139,7 @@ impl From<&AppState> for ProvisionIntegrationDeps {
             did_templates_ks: state.did_templates_ks.clone(),
             imported_ks: state.imported_ks.clone(),
             webvh_ks: state.webvh_ks.clone(),
+            webs_ks: state.webs_ks.clone(),
             sealed_nonces_ks: state.sealed_nonces_ks.clone(),
             seed_store: state.seed_store.clone(),
             config: state.config.clone(),
