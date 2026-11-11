@@ -28,7 +28,10 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use vta_sdk::keys::{KeyRecord, KeyStatus};
 
-use super::{DIDCOMM_FRAGMENT, WebsDeps, WebsHost, ed25519_qb64, ed25519_signer, fresh_key};
+use super::{
+    DIDCOMM_FRAGMENT, WebsDeps, WebsError, WebsHost, WebsRefusal, ed25519_qb64, ed25519_signer,
+    fresh_key,
+};
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::keys::{self, KeyType, store_key};
@@ -131,10 +134,11 @@ pub struct DeleteDidWebsResult {
     pub host_cleanup_error: Option<String>,
 }
 
-fn deactivated_error(did: &str) -> AppError {
-    AppError::Conflict(format!(
-        "deactivated: {did} is deactivated, and nothing more is signed as it"
-    ))
+fn deactivated_error(did: &str) -> WebsError {
+    WebsError::refused(
+        WebsRefusal::Deactivated,
+        format!("deactivated: {did} is deactivated, and nothing more is signed as it"),
+    )
 }
 
 /// The record of `did`, for a caller who may act in its context.
@@ -142,20 +146,25 @@ async fn held(
     deps: &WebsDeps<'_>,
     auth: &AuthClaims,
     did: &str,
-) -> Result<WebsDidRecord, AppError> {
+) -> Result<WebsDidRecord, WebsError> {
     webs_store::get(deps.webs_ks, did)
         .await?
         .filter(|r| auth.has_context_access(&r.context_id))
-        .ok_or_else(|| AppError::NotFound(format!("did:webs not found: {did}")))
+        .ok_or_else(|| {
+            WebsError::refused(WebsRefusal::NotFound, format!("did:webs not found: {did}"))
+        })
 }
 
-fn check_expected(record: &WebsDidRecord, expected: Option<&str>) -> Result<(), AppError> {
+fn check_expected(record: &WebsDidRecord, expected: Option<&str>) -> Result<(), WebsError> {
     let current = version_id(&record.state);
     match expected {
-        Some(expected) if expected != current => Err(AppError::Conflict(format!(
-            "versionConflict: {} is at {current}, not {expected}",
-            record.did
-        ))),
+        Some(expected) if expected != current => Err(WebsError::refused(
+            WebsRefusal::VersionConflict,
+            format!(
+                "versionConflict: {} is at {current}, not {expected}",
+                record.did
+            ),
+        )),
         _ => Ok(()),
     }
 }
@@ -210,18 +219,20 @@ async fn publish<H: WebsHost>(
     host: &H,
     record: &WebsDidRecord,
     keri_cesr: &[u8],
-) -> Result<(), AppError> {
+) -> Result<(), WebsError> {
     let text = std::str::from_utf8(keri_cesr).map_err(|_| {
         AppError::Internal("the key event stream is not text; it cannot be published".into())
     })?;
     let published = host
         .publish(&record.mnemonic, text, record.domain.as_deref())
-        .await?;
+        .await
+        .map_err(WebsError::from_host)?;
     if published.did_url != record.did {
         return Err(AppError::Internal(format!(
             "the hosting server published {} for slot {}, not {}",
             published.did_url, record.mnemonic, record.did
-        )));
+        ))
+        .into());
     }
     Ok(())
 }
@@ -234,7 +245,7 @@ async fn commit_staged(
     keys_ks: &KeyspaceHandle,
     webs_ks: &KeyspaceHandle,
     mut record: WebsDidRecord,
-) -> Result<(WebsDidRecord, Option<String>), AppError> {
+) -> Result<(WebsDidRecord, Option<String>), WebsError> {
     let Some(staged) = record.staged.take() else {
         return Ok((record, None));
     };
@@ -285,7 +296,7 @@ async fn complete_staged<H: WebsHost>(
     deps: &WebsDeps<'_>,
     host: &H,
     record: WebsDidRecord,
-) -> Result<(WebsDidRecord, Option<String>), AppError> {
+) -> Result<(WebsDidRecord, Option<String>), WebsError> {
     let Some(staged) = record.staged.as_ref() else {
         return Ok((record, None));
     };
@@ -314,7 +325,7 @@ async fn rotate_to<H: WebsHost>(
     mut record: WebsDidRecord,
     channel: &str,
     deactivate: bool,
-) -> Result<(WebsDidRecord, Option<String>), AppError> {
+) -> Result<(WebsDidRecord, Option<String>), WebsError> {
     let ctx = crate::contexts::get_context(deps.contexts_ks, &record.context_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("context not found: {}", record.context_id)))?;
@@ -405,7 +416,9 @@ pub async fn rotate_did_webs_keys<H: WebsHost>(
     expected_version_id: Option<&str>,
     host: &H,
     channel: &str,
-) -> Result<RotateDidWebsResult, AppError> {
+) -> Result<RotateDidWebsResult, WebsError> {
+    // As `webvh/dids/rotate-keys`: an admin of the DID's context.
+    auth.require_admin()?;
     let record = held(deps, auth, did).await?;
     if record.deactivated {
         return Err(deactivated_error(did));
@@ -478,7 +491,7 @@ fn service_key(id: &str, type_: &Value, endpoint: &Value) -> (String, Vec<String
 fn desired_services(
     deps: &WebsDeps<'_>,
     services: &WebsServices,
-) -> Result<Vec<DesignatedService>, AppError> {
+) -> Result<Vec<DesignatedService>, WebsError> {
     let mediator = deps
         .config
         .messaging
@@ -513,10 +526,10 @@ fn desired_services(
     let mut ids = std::collections::BTreeSet::new();
     for s in &out {
         if !ids.insert(s.id.clone()) {
-            return Err(AppError::Conflict(format!(
-                "serviceIdConflict: two services have the id {}",
-                s.id
-            )));
+            return Err(WebsError::refused(
+                WebsRefusal::ServiceIdConflict,
+                format!("serviceIdConflict: two services have the id {}", s.id),
+            ));
         }
     }
     Ok(out)
@@ -539,7 +552,9 @@ pub async fn update_did_webs<H: WebsHost>(
     params: UpdateDidWebsParams,
     host: &H,
     channel: &str,
-) -> Result<UpdateDidWebsResult, AppError> {
+) -> Result<UpdateDidWebsResult, WebsError> {
+    // As `webvh/dids/update`: an admin of the DID's context.
+    auth.require_admin()?;
     let record = held(deps, auth, &params.did).await?;
     if record.deactivated {
         return Err(deactivated_error(&params.did));
@@ -597,7 +612,8 @@ pub async fn update_did_webs<H: WebsHost>(
         if current.keys.contains(&cesr) {
             return Err(AppError::Internal(
                 "a freshly derived key agreement key is already designated".into(),
-            ));
+            )
+            .into());
         }
         changes.push(Change::KeyAgreement(vec![ka]));
         replaced.push("keyAgreement".to_string());
@@ -632,10 +648,13 @@ pub async fn update_did_webs<H: WebsHost>(
     }
 
     if changes.is_empty() {
-        return Err(AppError::Validation(format!(
-            "noChange: the update sets what {} already designates",
-            record.did
-        )));
+        return Err(WebsError::refused(
+            WebsRefusal::NoChange,
+            format!(
+                "noChange: the update sets what {} already designates",
+                record.did
+            ),
+        ));
     }
 
     let signer = signer_for(deps, auth, &record, &record.signing_key_id, channel).await?;
@@ -716,7 +735,9 @@ pub async fn delete_did_webs<H: WebsHost>(
     expected_version_id: Option<&str>,
     host: &H,
     channel: &str,
-) -> Result<DeleteDidWebsResult, AppError> {
+) -> Result<DeleteDidWebsResult, WebsError> {
+    // As `webvh/dids/delete`: an admin of the DID's context.
+    auth.require_admin()?;
     let record = held(deps, auth, did).await?;
     let newly_deactivated = !record.deactivated;
     let mut record = if record.deactivated {

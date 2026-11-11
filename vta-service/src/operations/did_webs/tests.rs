@@ -26,8 +26,8 @@ struct RecordingHost {
 }
 
 impl WebsHost for RecordingHost {
-    async fn default_domain(&self) -> Result<String, AppError> {
-        Ok("hosting.example".into())
+    async fn resolve_domain(&self, requested: Option<&str>) -> Result<String, AppError> {
+        Ok(requested.unwrap_or("hosting.example").to_string())
     }
 
     async fn publish(
@@ -288,7 +288,8 @@ async fn creation_is_refused_while_did_webs_is_off() {
     .await
     .expect_err("off");
     assert!(
-        matches!(&err, AppError::Forbidden(m) if m.contains("webs_enabled")),
+        err.refusal() == Some(WebsRefusal::MethodDisabled)
+            && err.to_string().contains("webs_enabled"),
         "{err:?}"
     );
     assert!(host.published.lock().unwrap().is_empty());
@@ -308,7 +309,10 @@ async fn creation_needs_key_mint() {
     let err = create_did_webs(&f.deps(), &auth, f.params(), &host, "test")
         .await
         .expect_err("no KeyMint");
-    assert!(matches!(err, AppError::Forbidden(_)), "{err:?} ({did})");
+    assert!(
+        matches!(err, WebsError::App(AppError::Forbidden(_))),
+        "{err:?} ({did})"
+    );
     assert!(host.published.lock().unwrap().is_empty());
 }
 
@@ -328,7 +332,10 @@ async fn a_host_that_serves_another_did_leaves_nothing_recorded() {
     )
     .await
     .expect_err("mismatch");
-    assert!(matches!(err, AppError::Internal(_)), "{err:?}");
+    assert!(
+        matches!(err, WebsError::App(AppError::Internal(_))),
+        "{err:?}"
+    );
     assert!(webs_store::list(&f.ts.webs_ks).await.unwrap().is_empty());
 }
 
@@ -462,10 +469,7 @@ async fn an_update_replaces_designations_and_keeps_the_keys() {
     )
     .await
     .expect_err("noChange");
-    assert!(
-        matches!(&err, AppError::Validation(m) if m.contains("noChange")),
-        "{err:?}"
-    );
+    assert!(err.refusal() == Some(WebsRefusal::NoChange), "{err:?}");
     assert_eq!(host.publications(), published);
 }
 
@@ -487,7 +491,7 @@ async fn a_write_based_on_another_version_is_refused() {
     .await
     .expect_err("conflict");
     assert!(
-        matches!(&err, AppError::Conflict(m) if m.contains("versionConflict")),
+        err.refusal() == Some(WebsRefusal::VersionConflict),
         "{err:?}"
     );
     let err = rotate_did_webs_keys(
@@ -501,7 +505,7 @@ async fn a_write_based_on_another_version_is_refused() {
     .await
     .expect_err("conflict");
     assert!(
-        matches!(&err, AppError::Conflict(m) if m.contains("versionConflict")),
+        err.refusal() == Some(WebsRefusal::VersionConflict),
         "{err:?}"
     );
     assert_eq!(host.publications(), 1, "only the creation");
@@ -517,7 +521,7 @@ async fn a_write_based_on_another_version_is_refused() {
     )
     .await
     .expect_err("not found");
-    assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    assert_eq!(err.refusal(), Some(WebsRefusal::NotFound), "{err:?}");
 }
 
 #[tokio::test]
@@ -715,10 +719,7 @@ async fn a_deletion_deactivates_removes_the_slot_and_keeps_the_record() {
     )
     .await
     .expect_err("deactivated");
-    assert!(
-        matches!(&err, AppError::Conflict(m) if m.contains("deactivated")),
-        "{err:?}"
-    );
+    assert!(err.refusal() == Some(WebsRefusal::Deactivated), "{err:?}");
 }
 
 // ── Personas ──────────────────────────────────────────────────────────────
