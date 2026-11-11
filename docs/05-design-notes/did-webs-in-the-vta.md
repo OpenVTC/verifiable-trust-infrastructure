@@ -110,13 +110,12 @@ hosting.
 
 ## 4. Service DIDs: a node's own identity as did:webs
 
-**Status:** decided 2026-11-11 by the maintainer, implementation not started.
-The specification change is dtgwg-vti-spec#121 (refs #120): `did:webs` becomes
+**Status:** decided 2026-11-11 by the maintainer; S1–S5 done, S6–S8 to come.
+The specification change is dtgwg-vti-spec#121 (refs #120), merged: `did:webs` becomes
 an *optional*, alpha method for a node's durable identity (VTI-KEY-001);
 `did:webvh` stays the default; a node uses a `did:webs` identity only toward a
 peer that has declared it resolves `did:webs` (VTI-KEY-008), and otherwise
-fails with `methodNotDeclared` and sends nothing (VTI-KEY-009). Until #121 is
-merged, §1's boundary stands and the code below stays behind it.
+fails with `methodNotDeclared` and sends nothing (VTI-KEY-009).
 
 ### Decisions
 
@@ -151,11 +150,46 @@ merged, §1's boundary stands and the code below stays behind it.
 
 | # | Where | What |
 |---|---|---|
-| S1 | dtgwg-vti-spec | #121: VTI-KEY-001, 003, 008, 009 |
-| S2 | dtgwg-trust-tasks-tf | `vta/webs/dids/create/0.2`: templates, and service identities |
-| S3 | affinidi-webvh-service | Self-certifying `did/register/0.1` for `did:webs` |
-| S4 | VTI | Node keys by role, for every method (decision 1) |
-| S5 | VTI | `resolvedMethods` in node documents and templates; the declaration check and both refusals |
+| S1 | dtgwg-vti-spec | #121: VTI-KEY-001, 003, 008, 009. *Done.* |
+| S2 | dtgwg-trust-tasks-tf | `vta/webs/dids/create/0.2`: templates, and service identities. *Done (trust-tasks-tf#1159).* |
+| S3 | affinidi-webvh-service | Self-certifying `did/register/0.1` for `did:webs`. *Done (webvh-service#411).* |
+| S4 | VTI | Node keys by role, for every method (decision 1). *Done (#2670).* |
+| S5 | VTI | `resolvedMethods` in node documents and templates; the declaration check and both refusals. *Done (below).* |
 | S6 | VTI | A did:webs VTA identity: setup (interactive and TOML), first boot through S3, the key-role designation, readiness, the self-DID preload, `didcomm_light`, runtime services through `update_did_webs`, rotation of its own DID with the live secret swap |
 | S7 | VTI | A did:webs VTC identity, and host services minted through provision-integration templates |
 | S8 | VTI | TEE first boot (the enclave publishes to a host) |
+
+### S5: where the declaration is made and checked
+
+The rule and the declaration are `vta_sdk::resolved_methods`: the required
+methods, what this build resolves (`RESOLVED_HERE`) and declares
+(`OPTIONAL_METHODS_DECLARED`, `["webs"]`), the lenient reader of a peer's
+`resolvedMethods`, `require_declared`, and `declare` (with the JSON-LD term).
+
+- **Declared** in every document the VTA mints
+  (`build_did_document_inner`), and in the built-in templates for the nodes
+  this workspace runs: `vtc-host`, `room-host`, `dtg-witness`, `ballot-box`.
+  Templates for software outside the workspace (mediator, trust registry, push
+  gateway) declare nothing; what they resolve is not ours to say.
+- **Checked** where a node initiates as its own DID and has already resolved
+  the peer's document to choose a transport: the VTA's `Outbound::send`
+  (when the VTA's DID is the issuer or the TSP/DIDComm sender — a persona
+  issuing over HTTPS is not the VTA's durable identity); the VTC's
+  `PeerTasks::select` (its VTA, git bridge, ballot boxes, watch addresses) and
+  its trust-registry selection; room-host's watch signals.
+- **Not checked, by the rule's own exception**: the Trust-Task push engine
+  (`vti_common::trust_task_push`). Every push goes to a party in a
+  relationship that addressed the node under its identity — an enrolled
+  approver device, a holder that asked for a credential, a joined member — and
+  a member's `did:key` carries no document to declare in.
+- **To check when a node can be did:webs (S6, S7)**: the sends that do not go
+  through a resolving seam — the VTA's push-gateway allowlist and wake
+  (`trust_tasks/device.rs`, `step_up.rs`, straight to the DIDComm bridge),
+  the VTC's hook writer (`send_trust_task_didcomm`) and VTN requests
+  (`vti-vtn` `send_request_to`, HTTPS to a configured URL), and mediator
+  login.
+- **Refused on receipt**: a proof whose signer is of a method this build does
+  not resolve is `DiProofError::UnsupportedDidMethod`, before any resolver is
+  asked, answered `proofInvalid` with `details.reason` `unsupportedDidMethod`
+  and the `method` (VTA, the Trust-Task spine, VTC). Both refusals read back
+  into typed `VtaError` variants.

@@ -12,19 +12,38 @@ an integration in one of its trust contexts. The design is
 [did:webs in the VTA](../05-design-notes/did-webs-in-the-vta.md); the wire is
 the `vta/webs/dids/*/0.1` Trust Task family (dtgwg-trust-tasks-tf).
 
-## Not a node's identity
+## A node's identity: not yet
 
-The durable identity of a VTA, a VTC or a host service is `did:webvh` or
-`did:scid:vh:1` (VTI-KEY-001), because every peer must be able to resolve it
-(VTI-KEY-003). A `did:webs` is never one: `create` with `--set-primary` on the
-context that holds this VTA's own DID is refused as `serviceDidNotPermitted`.
-Naming `did:webs` for a service DID is a specification change, tracked in
-dtgwg-vti-spec#120.
+The VTI specification now admits `did:webs` as an **optional**, alpha method
+for the durable identity of a VTA, a VTC or a host service (VTI-KEY-001,
+VTI-KEY-003). `did:webvh` stays the default. A node whose identity is a
+`did:webs` acts as it only toward a peer whose DID document declares that it
+resolves `did:webs`, and otherwise sends nothing (VTI-KEY-008, VTI-KEY-009).
 
-The refusal covers the one service identity the VTA can recognise from its
-own records, its own DID. A context provisioned for a community, a VTN or a
-host service carries no marker saying so, so making a `did:webs` the primary
-DID of one is not refused. Don't.
+This VTA cannot take a `did:webs` as its own DID yet: setup, first boot and
+rotation for it are the next steps of the design note's plan (S6–S8). Until
+then `create` with `--set-primary` on the context that holds this VTA's own
+DID is still refused as `serviceDidNotPermitted`. A context provisioned for a
+community, a VTN or a host service carries no marker saying so, so making a
+`did:webs` the primary DID of one is not refused. Don't, yet.
+
+### What is in place
+
+- **Declaration.** Every DID document this VTA mints carries
+  `"resolvedMethods": ["webs"]`, with the JSON-LD term in `@context`, and so
+  do the built-in `vtc-host`, `room-host`, `dtg-witness` and `ballot-box`
+  templates. A peer whose identity is a `did:webs` may act toward any of them.
+  An existing DID gains the member when its document is next rebuilt.
+- **The sending check.** A node acting as its own DID — the VTA through its
+  outbound sender, the VTC toward its VTA, git bridge, ballot boxes and trust
+  registry, room-host toward a watch address — refuses to send when that DID
+  is of an optional method and the peer has not declared it:
+  `methodNotDeclared`, naming the method and the peer. Today no node's DID is
+  one, so the check passes every send.
+- **The receiving refusal.** A Trust Task signed by a DID of a method this VTA
+  does not resolve is refused `proofInvalid`, with `details.reason`
+  `unsupportedDidMethod` and the `method`, not as an unexplained proof
+  failure.
 
 ## Turning it on
 
