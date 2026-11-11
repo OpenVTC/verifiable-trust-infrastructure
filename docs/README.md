@@ -146,6 +146,9 @@ How to operate, deploy, and integrate against a VTA.
   member's phone.
 - **[DID:WebVH update](02-vta/did-webvh-update.md)** — log-entry
   format, rotation, hosting.
+- **[did:webs DIDs](02-vta/did-webs.md)** — alpha: create, host, update, rotate,
+  deactivate and act as did:webs persona, relationship and integration DIDs
+  (`pnm webs …`, `vta/webs/dids/*/0.1`); never a node's own identity (VTI-KEY-001).
 - **[Personal AI agents](02-vta/personal-ai-agents.md)** — provisioning
   an agent its own identity, context, capabilities and kill switch.
 - **[Data rooms](02-vta/data-rooms.md)** — creating a room and

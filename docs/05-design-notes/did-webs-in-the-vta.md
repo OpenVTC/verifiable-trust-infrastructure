@@ -1,6 +1,6 @@
 # did:webs in the VTA — creating, hosting and acting as one
 
-**Status:** decided 2026-11-11, implementation not started. **Alpha**, like the
+**Status:** decided 2026-11-11; steps 1–7 implemented (2026-11-11). Operator guide: [did:webs DIDs](../02-vta/did-webs.md). **Alpha**, like the
 rest of the `did:webs` integration ([did-webs-keri-v2.md](did-webs-keri-v2.md)):
 expect breaking changes as the KERI and `did:webs` specifications settle.
 
@@ -99,11 +99,11 @@ hosting.
 
 | # | Where | What |
 |---|---|---|
-| 1 | VTI `docs` | This note |
-| 2 | VTI `vta-sdk` | Resolution everywhere (decision 9) |
-| 3 | dtgwg-trust-tasks-tf | `vta/webs/dids/{create,get,list,update,rotate-keys,delete}/0.1` |
-| 4 | VTI | Pin the family; `webs` keyspace; `KeySigner` over key custody; `create`, `get`, `list`; hosting with `method: "webs"`; the opt-in |
-| 5 | VTI | `update` (services, key agreement, aliases), `rotate-keys` (staged), `delete` (rotation to no next keys, then the slot removed) |
-| 6 | VTI | Personas: `persona_key_for`, `own_document`; a room member on a `did:webs` persona, end to end |
-| 7 | VTI | `pnm` / `cnm` commands; `docs/02-vta/did-webs.md` |
-| 8 | dtgwg-vti-spec | Issue: name `did:webs` for a service DID once the key-role designation is adopted (VTI-KEY-001, the open issue under VTI-KEY-173) |
+| 1 | VTI `docs` | This note. *Done (#2558).* |
+| 2 | VTI `vta-sdk` | Resolution everywhere (decision 9). *Done (#2560).* |
+| 3 | dtgwg-trust-tasks-tf | `vta/webs/dids/{create,get,list,update,rotate-keys,delete}/0.1`. *Done (trust-tasks-tf#1082).* |
+| 4 | VTI | Pin the family; `webs` keyspace; `KeySigner` over key custody; `create`, `get`, `list`; hosting with `method: "webs"`; the opt-in. *Done (#2561, #2562, and the wire).* |
+| 5 | VTI | `update` (services, key agreement, aliases), `rotate-keys` (staged), `delete` (rotation to no next keys, then the slot removed). *Done (#2563, and the wire).* |
+| 6 | VTI | Personas: `persona_key_for`, `own_document`; a room member on a `did:webs` persona, end to end. *Done (#2563), except the rooms end-to-end test.* |
+| 7 | VTI | `pnm` / `cnm` commands; `docs/02-vta/did-webs.md`. *Done: `pnm webs …` (cnm has no DID commands to mirror) and the operator guide.* |
+| 8 | dtgwg-vti-spec | Issue: name `did:webs` for a service DID once the key-role designation is adopted (VTI-KEY-001, the open issue under VTI-KEY-173). *Filed: dtgwg-vti-spec#120.* |

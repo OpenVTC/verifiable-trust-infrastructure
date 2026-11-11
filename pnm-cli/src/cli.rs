@@ -278,6 +278,14 @@ pub(crate) enum Commands {
         command: DidMgmtCommands,
     },
 
+    /// did:webs DIDs (alpha): persona, relationship and integration DIDs on
+    /// KERI, created and hosted by the VTA. Never a node's own identity
+    /// (VTI-KEY-001: that stays did:webvh or did:scid:vh:1).
+    Webs {
+        #[command(subcommand)]
+        command: WebsCommands,
+    },
+
     /// Audit log management
     Audit {
         #[command(subcommand)]
@@ -6512,4 +6520,90 @@ mod rooms_prune_flag_tests {
             );
         }
     }
+}
+
+/// `pnm webs …` — the `vta/webs/dids/*/0.1` Trust Tasks.
+#[derive(Subcommand)]
+pub(crate) enum WebsCommands {
+    /// Create a did:webs in a context and publish it to a hosting server
+    Create {
+        /// The context the DID belongs to.
+        #[arg(long)]
+        context: String,
+        /// Registered hosting server id (`pnm did-mgmt servers list`). The
+        /// server must run with did:webs support (`method-webs`).
+        #[arg(long)]
+        server: String,
+        /// Slot path before the AID, e.g. `people` (lowercase segments).
+        #[arg(long)]
+        path: Option<String>,
+        /// Hosting domain; the server's default when left out.
+        #[arg(long)]
+        domain: Option<String>,
+        /// Operator-facing label, never published.
+        #[arg(long)]
+        label: Option<String>,
+        /// Designate `#didcomm` through this VTA's mediator.
+        #[arg(long)]
+        didcomm: bool,
+        /// Designate `#tsp` through this VTA's mediator (`--tsp=false` to
+        /// refuse it; left out, the VTA decides from what its stack serves).
+        #[arg(long)]
+        tsp: Option<bool>,
+        /// A further alias to designate (repeatable).
+        #[arg(long = "also-known-as")]
+        also_known_as: Vec<String>,
+        /// Make it the context's primary DID.
+        #[arg(long)]
+        set_primary: bool,
+    },
+    /// Show a did:webs this VTA holds
+    Get {
+        did: String,
+        /// Also print its published `keri.cesr`.
+        #[arg(long)]
+        keri_cesr: bool,
+    },
+    /// List did:webs DIDs
+    List {
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        server: Option<String>,
+        /// Include deactivated DIDs.
+        #[arg(long)]
+        include_deactivated: bool,
+    },
+    /// Replace designated services, the key agreement key or aliases (no key change)
+    Update {
+        did: String,
+        /// The whole service set, replacing what stands: `didcomm`, `tsp`,
+        /// `didcomm,tsp`, or `none`.
+        #[arg(long)]
+        services: Option<String>,
+        /// Designate a freshly derived key agreement key.
+        #[arg(long)]
+        rotate_key_agreement: bool,
+        /// The further aliases, replacing those in force (repeatable).
+        #[arg(long = "also-known-as", conflicts_with = "clear_aliases")]
+        also_known_as: Vec<String>,
+        /// Withdraw every further alias.
+        #[arg(long)]
+        clear_aliases: bool,
+        /// Refuse unless the DID is still at this version (`<sn>:<said>`).
+        #[arg(long)]
+        expect_version: Option<String>,
+    },
+    /// Rotate to the committed successor key
+    Rotate {
+        did: String,
+        #[arg(long)]
+        expect_version: Option<String>,
+    },
+    /// Deactivate the DID for good and remove its slot from the host
+    Delete {
+        did: String,
+        #[arg(long)]
+        expect_version: Option<String>,
+    },
 }

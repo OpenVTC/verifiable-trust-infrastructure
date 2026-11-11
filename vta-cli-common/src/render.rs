@@ -367,6 +367,9 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
             }
             VtaError::Rejected { code, message, .. } => {
                 eprintln!("{RED}\u{2717}{RESET} Refused [{code}]: {message}");
+                if let Some(fix) = vta_sdk::client::webs_refusal_fix(vta_err) {
+                    eprintln!("  {DIM}{fix}{RESET}");
+                }
             }
             // ── Runtime service-management variants (T0.2) ────────
             VtaError::LastServiceRefused => {
