@@ -239,8 +239,13 @@ witness checks, cheaply and in this order:
    operator's VTA, or an excluded DID;
 3. the identity witnesses somebody (`communities` is not empty), and
    `allowed_parties`, if set, names the opener;
-4. the caps: fewer than `max_open` sessions open at this identity, and fewer
-   than `max_open_per_party` opened by this party.
+4. the caps: fewer than `max_open_per_party` sessions opened by this party.
+   At `max_open`, an identity with no `allowed_parties` makes room by closing,
+   in order: a surplus session (one of a party holding several, not its
+   newest) over a minute old; any other session over a minute old; and only
+   then a recent surplus session. A party's newest session, opened under a
+   minute ago, is never closed for room, and if every slot is one of those the
+   open is refused. One with `allowed_parties` refuses at `max_open`.
 
 Any failure is `witness/session:refused`, always with the same message: a
 refusal naming the rule would let anyone probe which DIDs the operator excludes.
@@ -267,13 +272,22 @@ before the presentation is looked at, so a replay from another session reads as
 one, not as a broken presentation.
 
 **Then the presentation.** Any failure here is
-`witness/session/submit:presentationInvalid`, and the session stays open:
+`witness/session/submit:presentationInvalid`, and the session stays open — for
+up to three such failures, after which it is closed and the party opens a new
+one. A failure because a signer's key could not be retrieved (no resolver for
+its method, or its DID did not resolve: possibly the network, not the party)
+counts separately, and closes the session at ten. A wrong verification method
+— not listed under the proof's purpose, a `did:key` fragment that is not its
+own key — is a failure like any other:
 
 - the VP is a `VerifiablePresentation` whose `holder` is the submitter, and
   every proof on it verifies for `authentication` under the submitter's key;
-- every credential in it has an issuer proof that verifies for
-  `assertionMethod` under a key of its `issuer`, and is within its validity
-  window;
+- it carries at most 8 credentials;
+- every credential in it that could count — a relationship credential issued by
+  the submitter, or a membership credential from one of `communities` naming
+  the submitter — has an issuer proof that verifies for `assertionMethod` under
+  a key of its `issuer`, and is within its validity window. Any other credential
+  is ignored, and its issuer is not resolved;
 - exactly one `RelationshipCredential` is issued by the submitter, and its
   subject is the session's other party — this is the credential the VWC names;
 - unless `communities = ["*"]`, a community-issued `MembershipCredential` from

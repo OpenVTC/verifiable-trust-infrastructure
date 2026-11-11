@@ -10,10 +10,16 @@
 //! 1. **The presentation.** A `VerifiablePresentation` whose `holder` is the
 //!    submitter, and whose Data Integrity proof (every proof, if a set)
 //!    verifies for `authentication` under the submitter's own key.
-//! 2. **Every credential in it** carries an issuer proof that verifies for
+//! 2. **Every credential in it that could count** — a relationship credential
+//!    issued by the holder, or a membership credential from an accepted
+//!    community naming the holder — carries an issuer proof that verifies for
 //!    `assertionMethod` under a key of its `issuer`, and is in its validity
-//!    window. A presented credential that does not verify is refused, not
-//!    skipped: a presentation is checked whole.
+//!    window. Such a credential that does not verify is refused, not skipped.
+//!    A credential that could not count is not resolved and not relied on, so
+//!    a presentation cannot make the witness resolve issuers that decide
+//!    nothing. At most [`MAX_CREDENTIALS`] credentials are read at all; a
+//!    presentation carrying more is refused before any is resolved. No
+//!    credential may be issued by an excluded DID, whether it counts or not.
 //! 3. **The relationship credential.** Exactly one `RelationshipCredential`
 //!    issued by the submitter, whose subject is the session's other party —
 //!    the edge the session names, in the direction the submitter issued it.
@@ -63,9 +69,16 @@
 use chrono::{DateTime, Utc};
 use dtg_credentials::{DTGCredential, DTGCredentialType};
 use serde_json::Value;
-use vta_sdk::trust_task_proof::{ProofPurpose, TrustTaskVmResolver, verify_proof_set};
+use vta_sdk::trust_task_proof::{ProofPurpose, PurposeVmResolver, verify_proof_set};
 
 use crate::witness::WitnessPolicy;
+
+/// The most credentials one presentation may carry. Each that could count
+/// costs a DID resolution and a proof check, so the count is bounded before
+/// any is looked at; a party needs two (its relationship credential and a
+/// membership credential), and this leaves room for a wallet that attaches a
+/// few more.
+pub const MAX_CREDENTIALS: usize = 8;
 
 /// What a verified presentation yields: the relationship credential the
 /// witness observed, in the wire form it arrived in (its digest is taken over
@@ -96,7 +109,7 @@ pub async fn verify(
     member_presentation: Option<&Value>,
     expected: &Expected<'_>,
     policy: &WitnessPolicy,
-    resolver: &TrustTaskVmResolver,
+    resolver: &(dyn PurposeVmResolver + '_),
     now: DateTime<Utc>,
 ) -> Result<VerifiedPresentation, String> {
     let submitter = expected.submitter;
@@ -123,7 +136,11 @@ pub async fn verify(
     // 2. Every credential.
     let mut relationship: Option<&Value> = None;
     let mut member_of_a_community = false;
-    for (vc, dtg) in verified_credentials(vp, policy, resolver, now).await? {
+    let counts = |dtg: &DTGCredential| {
+        (matches!(dtg.type_(), DTGCredentialType::Relationship) && dtg.issuer() == submitter)
+            || grants_membership(dtg, submitter, policy)
+    };
+    for (vc, dtg) in verified_credentials(vp, counts, policy, resolver, now).await? {
         match dtg.type_() {
             DTGCredentialType::Relationship if dtg.issuer() == submitter => {
                 if relationship.is_some() {
@@ -176,14 +193,17 @@ pub async fn verify(
     })
 }
 
-/// Every credential in `presentation`, each issuer proof verified for
-/// `assertionMethod` under its `issuer`, none issued by an excluded DID, every
-/// DTG credential in its validity window. The DTG ones are returned; anything
-/// else is verified and otherwise ignored.
+/// The credentials in `presentation` that `counts` (each a DTG credential),
+/// each issuer proof verified for `assertionMethod` under its `issuer` and in
+/// its validity window. None may be issued by an excluded DID. A credential
+/// `counts` rejects, or that is not a DTG credential, is neither resolved nor
+/// returned. More than [`MAX_CREDENTIALS`] is refused before anything is
+/// resolved.
 async fn verified_credentials<'v>(
     presentation: &'v Value,
+    counts: impl Fn(&DTGCredential) -> bool,
     policy: &WitnessPolicy,
-    resolver: &TrustTaskVmResolver,
+    resolver: &(dyn PurposeVmResolver + '_),
     now: DateTime<Utc>,
 ) -> Result<Vec<(&'v Value, DTGCredential)>, String> {
     let credentials: Vec<&Value> = match presentation.get("verifiableCredential") {
@@ -194,24 +214,39 @@ async fn verified_credentials<'v>(
     if credentials.is_empty() {
         return Err("the presentation carries no credential".into());
     }
-    let mut out = Vec::new();
-    for (index, vc) in credentials.into_iter().enumerate() {
+    if credentials.len() > MAX_CREDENTIALS {
+        return Err(format!(
+            "the presentation carries {} credentials; at most {MAX_CREDENTIALS} are read",
+            credentials.len()
+        ));
+    }
+    // Independence first, over every credential: it reads only the `issuer`
+    // member, so it costs nothing to apply to all of them.
+    for (index, vc) in credentials.iter().enumerate() {
         let issuer = issuer_of(vc).ok_or_else(|| format!("credential {index} has no `issuer`"))?;
         if policy.is_excluded(issuer) {
             return Err(format!(
                 "credential {index} is issued by a party this witness does not witness"
             ));
         }
+    }
+    let mut out = Vec::new();
+    for (index, vc) in credentials.into_iter().enumerate() {
+        // Only DTG credentials mean anything here, and only those that could
+        // count are worth resolving an issuer for.
+        let Ok(dtg) = DTGCredential::try_from(vc.clone()) else {
+            continue;
+        };
+        if !counts(&dtg) {
+            continue;
+        }
+        let issuer = issuer_of(vc).ok_or_else(|| format!("credential {index} has no `issuer`"))?;
         let signed = verify_proof_set(vc, ProofPurpose::AssertionMethod, resolver)
             .await
             .map_err(|e| format!("credential {index}'s issuer proof did not verify: {e}"))?;
         if signed.signer() != issuer {
             return Err(format!("credential {index} is not signed by its `issuer`"));
         }
-        // Only DTG credentials mean anything here.
-        let Ok(dtg) = DTGCredential::try_from(vc.clone()) else {
-            continue;
-        };
         if !in_window(&dtg, now) {
             return Err(format!("credential {index} is not valid now"));
         }
@@ -236,7 +271,7 @@ async fn verify_member_link(
     member_vp: &Value,
     expected: &Expected<'_>,
     policy: &WitnessPolicy,
-    resolver: &TrustTaskVmResolver,
+    resolver: &(dyn PurposeVmResolver + '_),
     now: DateTime<Utc>,
 ) -> Result<(), String> {
     if !has_type(member_vp, "VerifiablePresentation") {
@@ -287,7 +322,8 @@ async fn verify_member_link(
         return Err("the member presentation is not signed by its `holder`".into());
     }
 
-    let credentials = verified_credentials(member_vp, policy, resolver, now)
+    let counts = |dtg: &DTGCredential| grants_membership(dtg, member, policy);
+    let credentials = verified_credentials(member_vp, counts, policy, resolver, now)
         .await
         .map_err(|e| format!("member presentation: {e}"))?;
     if credentials
