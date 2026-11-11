@@ -1104,6 +1104,7 @@ mod tests {
             },
         )
         .unwrap();
+        state.set_room_creation(crate::creation::RoomCreation::any_creator());
         let app = router(state.clone());
         Host {
             _dir: dir,
@@ -1672,6 +1673,7 @@ mod tests {
             },
         )
         .unwrap();
+        state.set_room_creation(crate::creation::RoomCreation::any_creator());
         let app = router(state.clone());
         Host {
             _dir: dir,
@@ -1874,6 +1876,7 @@ mod tests {
             },
         )
         .unwrap();
+        state.set_room_creation(crate::creation::RoomCreation::any_creator());
         let app = router(state.clone());
         Host {
             _dir: dir,

@@ -746,6 +746,8 @@ async fn start_host() -> anyhow::Result<(
     // The state is handed back as well as served, because Act IV needs a room older than
     // this process. Every other act goes over the wire like any client.
     let state = room_host::open_state(dir.path())?;
+    // The example registers its room as a freshly minted owner.
+    state.set_room_creation(room_host::creation::RoomCreation::any_creator());
     let app = room_host::router(state.clone());
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;

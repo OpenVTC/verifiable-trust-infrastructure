@@ -135,7 +135,8 @@ struct Args {
     #[arg(long)]
     allow_rewrites_by_others: bool,
 
-    /// A party this host registers rooms for (`rooms/create`), by DID. Repeatable.
+    /// A party this host registers rooms for (`rooms/create`), by DID. Repeatable. A
+    /// `#fragment` is ignored: the signer is compared by DID.
     ///
     /// With none named and no `--any-room-creator`, this host registers no rooms: it still
     /// serves the rooms it holds and the ones it mirrors. Every room a stranger registers
@@ -150,7 +151,9 @@ struct Args {
     #[arg(long, conflicts_with = "room_creators")]
     any_room_creator: bool,
 
-    /// Rooms one owner may hold on this host.
+    /// Rooms one owner may hold on this host. A courtesy limit: it counts by current
+    /// owner, so more DIDs or a transfer step around it. `--room-creator` and
+    /// `--max-rooms` are the bounds.
     #[arg(long, default_value_t = room_host::creation::DEFAULT_MAX_ROOMS_PER_OWNER)]
     max_rooms_per_owner: u64,
 
@@ -171,7 +174,7 @@ impl Args {
         } else if self.room_creators.is_empty() {
             Creators::None
         } else {
-            Creators::Only(self.room_creators.iter().cloned().collect())
+            RoomCreation::only(&self.room_creators).creators
         };
         RoomCreation {
             creators,
@@ -214,8 +217,8 @@ struct FileArgs {
     /// Total each member may store in a room.
     #[arg(long, value_parser = parse_size)]
     member_max_bytes: Option<u64>,
-    /// Total this host stores across every room, files awaiting collection included.
-    /// `unlimited` sets no ceiling.
+    /// Total size of the room files this host stores, across every room, deleted files
+    /// awaiting collection included. `unlimited` sets no ceiling.
     #[arg(long, value_parser = parse_capacity, default_value = DEFAULT_STORAGE_CAPACITY)]
     storage_capacity_bytes: Capacity,
     /// How long a file nothing names any more is kept before it is deleted.
