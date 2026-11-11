@@ -1025,8 +1025,21 @@ room-host \
   --data-dir /var/lib/room-host \
   --listen 127.0.0.1:8300 \
   --resolve-dids \         # required for did:webvh rooms; see below
+  --room-creator <owner DID> \   # who may register rooms here; repeatable
   --vta-did <your VTA DID> --vta-context <context>   # serve as that context's DID
 ```
+
+- **Who may register rooms is the operator's choice, and nobody by default.**
+  `rooms/create` is the one task no room credential can authorize, so the host
+  bounds it: `--room-creator <DID>` (repeatable) names the owners it registers
+  rooms for, compared with the signer of the request. Without one the host
+  registers no new rooms (it still serves the rooms it holds and mirrors);
+  `--any-room-creator` opens registration to any signer, for a host meant to be
+  public. Either way `--max-rooms-per-owner` (default 100) and `--max-rooms`
+  (default 10000) bound how many rooms are held, and a refusal names the limit.
+- **Storage has a ceiling by default.** `--storage-capacity-bytes` defaults to
+  `50GiB` across every room, deleted files awaiting collection included; raise
+  it for a larger disk, or pass `unlimited`.
 
 - **`--listen` is opt-in.** Without it the host opens no socket and is reached
   only through its mediator (`--mediator-did`), which is enough for a VTA: it
