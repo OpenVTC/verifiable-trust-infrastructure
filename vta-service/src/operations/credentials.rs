@@ -208,6 +208,11 @@ pub async fn revoke_credential(
 /// VTA's is `#key-0`, and a did:key VTA's is its one method,
 /// `did:key:<id>#<id>` — a did:key has no `#key-0`, and a verifier refuses a
 /// proof naming one (VTI-KEY-022).
+///
+/// The did:webvh *convention*: a running VTA reads its methods from its own
+/// document ([`crate::self_keys`]). Kept for fixtures, whose VTAs are minted
+/// with that convention.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn vta_signing_vm(vta_did: &str) -> String {
     match vta_did.strip_prefix("did:key:") {
         Some(id) => format!("{vta_did}#{id}"),
@@ -220,20 +225,21 @@ pub(crate) fn vta_signing_vm(vta_did: &str) -> String {
 /// Mirrors `provision_integration::vta_keys::load_vta_vc_issuance_secret`: an
 /// [`InternalAuthority`]-gated `get_key_secret_internal`, then reconstruct the
 /// `Secret` from the multibase private key with `id` =
-/// [`vta_signing_vm`], so the Data-Integrity proof's `verificationMethod` is a
-/// method the VTA's DID document lists.
+/// the signing method this VTA's own document lists ([`crate::self_keys`]), so
+/// the Data-Integrity proof's `verificationMethod` is a method it publishes.
 pub(crate) async fn load_vta_issuer_secret(
     state: &AppState,
     vta_did: &str,
     purpose: &'static str,
 ) -> Result<Secret, AppError> {
+    let self_keys = crate::self_keys::self_keys_from_state(state, vta_did).await;
     load_vta_issuer_secret_from_store(
         &state.keys_ks,
         &state.imported_ks,
         &state.contexts_ks,
         &*state.seed_store,
         &state.audit_sink,
-        vta_did,
+        &self_keys,
         purpose,
     )
     .await
@@ -247,10 +253,12 @@ pub async fn load_vta_issuer_secret_from_store(
     contexts_ks: &KeyspaceHandle,
     seed_store: &dyn crate::keys::seed_store::SeedStore,
     audit: &vta_audit::SharedAuditSink,
-    vta_did: &str,
+    self_keys: &crate::self_keys::SelfKeys,
     purpose: &'static str,
 ) -> Result<Secret, AppError> {
-    let key_id = format!("{vta_did}#key-0");
+    // The record of the key this VTA's document lists for signing, and the
+    // method a proof names (VTI-KEY-150, VTI-KEY-022).
+    let key_id = self_keys.signing.record_id.clone();
     let authority = InternalAuthority::new(purpose);
     let resp = crate::operations::keys::get_key_secret_internal(
         keys_ks,
@@ -270,7 +278,7 @@ pub async fn load_vta_issuer_secret_from_store(
         .map_err(|e| AppError::Internal(format!("decode VTA issuer key {key_id}: {e}")))?;
     let mut secret = Secret::from_multibase(&resp.private_key_multibase, None)
         .map_err(|e| AppError::Internal(format!("construct issuer Secret for {key_id}: {e}")))?;
-    secret.id = vta_signing_vm(vta_did);
+    secret.id = self_keys.signing.vm_id.clone();
     Ok(secret)
 }
 

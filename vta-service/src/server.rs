@@ -710,6 +710,7 @@ pub async fn build_app_state(
         Some(&webvh_ks),
         #[cfg(not(feature = "webvh"))]
         None,
+        Some(&webs_ks),
     )
     .await;
 
@@ -2948,6 +2949,9 @@ async fn init_auth(
     // Always present in the signature; the caller passes `None` when the
     // `webvh` feature is off. Keeps the signature identical across feature sets.
     webvh_ks: Option<&KeyspaceHandle>,
+    // The `did:webs` records this VTA holds, for an identity that is one:
+    // `None` when the `webs` feature is off.
+    webs_ks: Option<&KeyspaceHandle>,
 ) -> AuthInit {
     let vta_did = match &config.vta_did {
         Some(did) => did.clone(),
@@ -2957,16 +2961,15 @@ async fn init_auth(
         }
     };
 
-    // The DID the VTA's key records are named under: its own, or — for a VTA
-    // presented as its did:scid — the did:webvh log that verifies it. Records
-    // keep the log's method ids; the secrets below are registered under the
-    // identity's own (VTI-KEY-161).
-    let key_record_did = key_record_did_for(&vta_did, webvh_ks).await;
+    // Which keys are which, read from this VTA's own document: by role, not by
+    // an assumed `#key-0` / `#key-1` (VTI-KEY-150). Records are named under the
+    // DID they were minted for — its own, or for a VTA presented as its did:scid
+    // the did:webvh log that verifies it — and the secrets below are registered
+    // under the identity's own (VTI-KEY-161).
+    let self_keys = crate::self_keys::self_keys(&vta_did, webvh_ks, webs_ks).await;
 
     // Look up VTA key paths from stored key records
-    let (signing_path, ka_path, vta_seed_id) = match find_vta_key_paths(&key_record_did, keys_ks)
-        .await
-    {
+    let (signing_path, ka_path, vta_seed_id) = match find_vta_key_paths(&self_keys, keys_ks).await {
         Ok(paths) => paths,
         Err(e) => {
             warn!(
@@ -3080,8 +3083,8 @@ async fn init_auth(
             Err(e) => warn!("failed to derive VTA signing key: {e}"),
         }
     } else {
-        // did:webvh / other methods: use #key-0 / #key-1 fragment convention
-        // with independently derived Ed25519 + X25519 keys.
+        // did:webvh, did:webs and other methods: independently derived Ed25519
+        // + X25519 keys, under the ids this VTA's own document gives them.
         let ka_path = match ka_path {
             Some(p) => p,
             None => {
@@ -3095,17 +3098,28 @@ async fn init_auth(
             }
         };
 
-        signing_vm_id = Some(format!("{vta_did}#key-0"));
-        ka_vm_id = Some(format!("{vta_did}#key-1"));
+        let Some(ka_key) = self_keys.key_agreement.clone() else {
+            warn!(
+                "this VTA's DID document lists no key-agreement key — auth endpoints will not \
+                 work"
+            );
+            return AuthInit {
+                did_resolver: Some(did_resolver),
+                ..AuthInit::empty()
+            };
+        };
+        let signing_key = self_keys.signing.clone();
+        signing_vm_id = Some(signing_key.vm_id.clone());
+        ka_vm_id = Some(ka_key.vm_id.clone());
 
         // Load stored key records for validation
         let stored_signing: Option<KeyRecord> = keys_ks
-            .get(crate::keys::store_key(&format!("{key_record_did}#key-0")))
+            .get(crate::keys::store_key(&signing_key.record_id))
             .await
             .ok()
             .flatten();
         let stored_ka: Option<KeyRecord> = keys_ks
-            .get(crate::keys::store_key(&format!("{key_record_did}#key-1")))
+            .get(crate::keys::store_key(&ka_key.record_id))
             .await
             .ok()
             .flatten();
@@ -3117,7 +3131,7 @@ async fn init_auth(
                     match signing_secret.get_public_keymultibase() {
                         Ok(runtime_pub) if runtime_pub != record.public_key => {
                             error!(
-                                key_id = %format!("{vta_did}#key-0"),
+                                key_id = %signing_key.vm_id,
                                 stored = %record.public_key,
                                 runtime = %runtime_pub,
                                 "SIGNING KEY MISMATCH: runtime-derived Ed25519 public key does not match \
@@ -3127,12 +3141,12 @@ async fn init_auth(
                             );
                         }
                         Ok(runtime_pub) => {
-                            info!(key_id = %format!("{vta_did}#key-0"), pub_key = %runtime_pub, "signing key validated");
+                            info!(key_id = %signing_key.vm_id, pub_key = %runtime_pub, "signing key validated");
                         }
                         Err(e) => warn!("could not extract signing public key for validation: {e}"),
                     }
                 }
-                for id in self_secret_ids(&vta_did, "key-0") {
+                for id in self_secret_ids(&vta_did, signing_key.fragment()) {
                     let mut secret = signing_secret.clone();
                     secret.id = id;
                     secrets_resolver.insert(secret).await;
@@ -3148,7 +3162,7 @@ async fn init_auth(
                     match ka_secret.get_public_keymultibase() {
                         Ok(runtime_pub) if runtime_pub != record.public_key => {
                             error!(
-                                key_id = %format!("{vta_did}#key-1"),
+                                key_id = %ka_key.vm_id,
                                 stored = %record.public_key,
                                 runtime = %runtime_pub,
                                 "KEY-AGREEMENT KEY MISMATCH: runtime-derived X25519 public key does not match \
@@ -3159,12 +3173,12 @@ async fn init_auth(
                             );
                         }
                         Ok(runtime_pub) => {
-                            info!(key_id = %format!("{vta_did}#key-1"), pub_key = %runtime_pub, "key-agreement key validated");
+                            info!(key_id = %ka_key.vm_id, pub_key = %runtime_pub, "key-agreement key validated");
                         }
                         Err(e) => warn!("could not extract KA public key for validation: {e}"),
                     }
                 }
-                for id in self_secret_ids(&vta_did, "key-1") {
+                for id in self_secret_ids(&vta_did, ka_key.fragment()) {
                     let mut secret = ka_secret.clone();
                     secret.id = id;
                     secrets_resolver.insert(secret).await;
@@ -3373,21 +3387,6 @@ pub(crate) async fn preload_self_did_document(
     }
 }
 
-/// The DID the VTA's own key records are named under: the VTA DID itself, or
-/// for a did:scid VTA DID, the did:webvh log recorded for it. Falls back to the
-/// VTA DID, whose lookup then fails with the usual "run setup first".
-async fn key_record_did_for(vta_did: &str, webvh_ks: Option<&KeyspaceHandle>) -> String {
-    #[cfg(feature = "webvh")]
-    if vta_sdk::did_scid::is_scid(vta_did)
-        && let Some(ks) = webvh_ks
-        && let Ok(Some(log_did)) = crate::webvh_store::log_did_for(ks, vta_did).await
-    {
-        return log_did;
-    }
-    let _ = webvh_ks;
-    vta_did.to_string()
-}
-
 /// The ids the VTA registers one of its own secrets under: the method id in its
 /// document — under the bare DID, for a did:scid (VTI-KEY-161) — and, where the
 /// configured DID carries a `src`, the same id with it, which is how this VTA
@@ -3412,21 +3411,23 @@ fn self_secret_ids(vta_did: &str, fragment: &str) -> Vec<String> {
 /// Returns `(signing_path, ka_path, seed_id)` where `ka_path` is `None` for
 /// `did:key` and `seed_id` comes from the signing key record.
 async fn find_vta_key_paths(
-    vta_did: &str,
+    self_keys: &crate::self_keys::SelfKeys,
     keys_ks: &KeyspaceHandle,
 ) -> Result<(String, Option<String>, Option<u32>), AppError> {
-    let signing_key_id = format!("{vta_did}#key-0");
-
     let signing: KeyRecord = keys_ks
-        .get(crate::keys::store_key(&signing_key_id))
+        .get(crate::keys::store_key(&self_keys.signing.record_id))
         .await?
         .ok_or_else(|| AppError::NotFound("VTA signing key not found".into()))?;
     require_active(&signing)?;
 
-    let ka_path = if vta_did.starts_with("did:key:") {
+    let ka_path = if self_keys.signing.vm_id.starts_with("did:key:") {
         None
     } else {
-        let ka_key_id = format!("{vta_did}#key-1");
+        let ka_key_id = self_keys
+            .key_agreement
+            .as_ref()
+            .map(|k| k.record_id.clone())
+            .ok_or_else(|| AppError::NotFound("VTA key-agreement key not listed".into()))?;
         let ka: KeyRecord = keys_ks
             .get(crate::keys::store_key(&ka_key_id))
             .await?
@@ -4351,8 +4352,9 @@ mod tests {
         .await
         .unwrap();
 
-        let (signing_path, ka_path, seed_id) =
-            find_vta_key_paths(did, &keys_ks).await.expect("paths");
+        let (signing_path, ka_path, seed_id) = find_vta_key_paths(&test_self_keys(did), &keys_ks)
+            .await
+            .expect("paths");
 
         assert_eq!(signing_path, "m/44'/0'/0'");
         assert!(ka_path.is_none(), "did:key must not require #key-1 lookup");
@@ -4392,8 +4394,9 @@ mod tests {
         .await
         .unwrap();
 
-        let (signing_path, ka_path, _seed_id) =
-            find_vta_key_paths(did, &keys_ks).await.expect("paths");
+        let (signing_path, ka_path, _seed_id) = find_vta_key_paths(&test_self_keys(did), &keys_ks)
+            .await
+            .expect("paths");
 
         assert_eq!(signing_path, "m/44'/0'/0'");
         assert_eq!(ka_path.as_deref(), Some("m/44'/0'/1'"));
@@ -4422,11 +4425,24 @@ mod tests {
         .await
         .unwrap();
 
-        let result = find_vta_key_paths(did, &keys_ks).await;
+        let result = find_vta_key_paths(&test_self_keys(did), &keys_ks).await;
         assert!(
             matches!(result, Err(AppError::NotFound(_))),
             "expected NotFound for did:webvh missing #key-1, got {result:?}"
         );
+    }
+
+    /// The keys a VTA whose own document is the `did:webvh` convention has.
+    fn test_self_keys(did: &str) -> crate::self_keys::SelfKeys {
+        if did.starts_with("did:key:") {
+            crate::self_keys::SelfKeys::did_key(did)
+        } else {
+            crate::self_keys::SelfKeys::from_ids(
+                did,
+                did,
+                &vta_sdk::node_keys::NodeKeyIds::conventional(did),
+            )
+        }
     }
 
     /// Build an `AppConfig` from a TOML snippet for the message tests.

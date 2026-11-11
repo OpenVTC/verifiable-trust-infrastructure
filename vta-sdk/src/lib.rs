@@ -135,6 +135,7 @@ pub mod did_templates;
 /// Compact-JWS verification over a resolved key — EdDSA, ES256, ES256K.
 #[cfg(feature = "proof-verify")]
 pub mod jws;
+pub mod node_keys;
 /// Notifications (`notifications/*`, VTI-NTF-001 – 063): verifying a delivered notification
 /// and every relay around it.
 #[cfg(feature = "proof-verify")]
