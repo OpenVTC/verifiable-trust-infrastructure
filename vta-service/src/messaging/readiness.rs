@@ -50,7 +50,8 @@ use vta_config::{MediatorReadinessConfig, ReadinessTimeoutPolicy};
 /// recognise) is not gated — `did:key` and friends resolve straight from the
 /// identifier, and an unrecognised method must not have DIDComm withheld from
 /// it on the strength of a probe we can't reason about.
-const NETWORK_RESOLVED_METHODS: &[&str] = &["did:webvh:", "did:web:", "did:scid:vh:1:"];
+const NETWORK_RESOLVED_METHODS: &[&str] =
+    &["did:webvh:", "did:web:", "did:scid:vh:1:", "did:webs:"];
 
 /// What the caller should do after the gate runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +121,19 @@ pub fn self_did_endpoint_hint(vta_did: &str) -> Option<String> {
             },
             Err(e) => {
                 debug!(vta_did, error = %e, "self-readiness: cannot parse did:webvh DID");
+                None
+            }
+        };
+    }
+
+    // A did:webs is served at its host as `{path}/keri.cesr` beside `did.json`
+    // (the did:webs specification's artifact URLs).
+    #[cfg(feature = "webs")]
+    if vta_did.starts_with("did:webs:") {
+        return match affinidi_did_webs::DidWebs::parse(vta_did) {
+            Ok(webs) => Some(webs.artifact_url("keri.cesr")),
+            Err(e) => {
+                debug!(vta_did, error = %e, "self-readiness: cannot parse did:webs DID");
                 None
             }
         };

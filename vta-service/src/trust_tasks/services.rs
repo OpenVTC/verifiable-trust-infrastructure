@@ -142,7 +142,13 @@ async fn run_first_enable_handshake(
     }
 
     let mut resolver = resolver.clone();
-    crate::server::preload_self_did_document(&mut resolver, &vta_did, Some(&state.webvh_ks)).await;
+    crate::server::preload_self_did_document(
+        &mut resolver,
+        &vta_did,
+        Some(&state.webvh_ks),
+        Some(&state.webs_ks),
+    )
+    .await;
 
     let tdk_config = TDKConfig::builder()
         .with_did_resolver(resolver.clone())

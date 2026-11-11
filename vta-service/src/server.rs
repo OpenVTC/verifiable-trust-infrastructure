@@ -3037,7 +3037,7 @@ async fn init_auth(
 
     // 1.2. Preload the VTA's DID document into the resolver so that DIDComm consumers
     // can resolve it without a network round-trip.
-    preload_self_did_document(&mut did_resolver, &vta_did, webvh_ks).await;
+    preload_self_did_document(&mut did_resolver, &vta_did, webvh_ks, webs_ks).await;
 
     // 2. Secrets resolver with VTA's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
@@ -3108,7 +3108,8 @@ async fn init_auth(
                 ..AuthInit::empty()
             };
         };
-        let signing_key = self_keys.signing.clone();
+        // The authentication key: see `find_vta_key_paths`.
+        let signing_key = self_keys.authentication.clone();
         signing_vm_id = Some(signing_key.vm_id.clone());
         ka_vm_id = Some(ka_key.vm_id.clone());
 
@@ -3304,7 +3305,28 @@ pub(crate) async fn preload_self_did_document(
     did_resolver: &mut DIDCacheClient,
     vta_did: &str,
     webvh_ks: Option<&KeyspaceHandle>,
+    webs_ks: Option<&KeyspaceHandle>,
 ) {
+    // A did:webs VTA: its document is derived from the key event log it
+    // stores, exactly as its host serves it (design note did-webs-in-the-vta
+    // §4, S6), so the VTA resolves itself before — and without — the host.
+    if vta_did.starts_with("did:webs:") {
+        match crate::self_keys::own_document(vta_did, webvh_ks, webs_ks).await {
+            Some(value) => match serde_json::from_value(value) {
+                Ok(doc) => {
+                    did_resolver.add_did_document(vta_did, doc).await;
+                    info!(did = %vta_did, "preloaded VTA DID into resolver cache from its key event log");
+                }
+                Err(e) => {
+                    warn!(did = %vta_did, error = %e, "failed to decode DID document for resolver preload");
+                }
+            },
+            None => warn!(did = %vta_did, "no local key event log found for resolver preload"),
+        }
+        return;
+    }
+    let _ = webs_ks;
+
     #[cfg(not(feature = "webvh"))]
     {
         // Without the `webvh` feature there is no local webvh log to seed from;
@@ -3414,13 +3436,17 @@ async fn find_vta_key_paths(
     self_keys: &crate::self_keys::SelfKeys,
     keys_ks: &KeyspaceHandle,
 ) -> Result<(String, Option<String>, Option<u32>), AppError> {
+    // The resident key is the one this VTA authenticates with — its requests,
+    // responses and DIDComm sender all carry `proofPurpose: authentication` —
+    // which is a key-role identity's `operational` key and a webvh VTA's
+    // `#key-0` (VTI-KEY-072). Attestation artefacts load their key per use.
     let signing: KeyRecord = keys_ks
-        .get(crate::keys::store_key(&self_keys.signing.record_id))
+        .get(crate::keys::store_key(&self_keys.authentication.record_id))
         .await?
         .ok_or_else(|| AppError::NotFound("VTA signing key not found".into()))?;
     require_active(&signing)?;
 
-    let ka_path = if self_keys.signing.vm_id.starts_with("did:key:") {
+    let ka_path = if self_keys.authentication.vm_id.starts_with("did:key:") {
         None
     } else {
         let ka_key_id = self_keys
@@ -4432,6 +4458,32 @@ mod tests {
         );
     }
 
+    /// S6: a did:webs VTA resolves its own DID from the key event log it
+    /// stores, before and without its host.
+    #[cfg(feature = "webs")]
+    #[tokio::test]
+    async fn a_did_webs_vta_preloads_its_own_document_from_its_key_event_log() {
+        let ts = crate::test_support::open_test_store().await;
+        let (did, record) = crate::self_keys::tests::key_role_webs_record();
+        crate::webs_store::put(&ts.webs_ks, &record).await.unwrap();
+        let mut resolver = DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .unwrap();
+        preload_self_did_document(&mut resolver, &did, None, Some(&ts.webs_ks)).await;
+        let resolved = resolver
+            .resolve(&did)
+            .await
+            .expect("resolves from the cache");
+        assert!(
+            resolved.cache_hit,
+            "served from the preload, not the network"
+        );
+        let doc = serde_json::to_value(&resolved.doc).unwrap();
+        assert!(doc.get("keyRoles").is_some(), "{doc}");
+    }
+
     /// The keys a VTA whose own document is the `did:webvh` convention has.
     fn test_self_keys(did: &str) -> crate::self_keys::SelfKeys {
         if did.starts_with("did:key:") {
@@ -4509,7 +4561,7 @@ mod tests {
             .await
             .expect("resolver init");
 
-        preload_self_did_document(&mut resolver, did, Some(&webvh_ks)).await;
+        preload_self_did_document(&mut resolver, did, Some(&webvh_ks), None).await;
 
         let resolved = resolver.resolve(did).await.expect("resolve preloaded did");
         assert!(
@@ -4544,7 +4596,7 @@ mod tests {
             .await
             .expect("resolver init");
 
-        preload_self_did_document(&mut resolver, did, Some(&webvh_ks)).await;
+        preload_self_did_document(&mut resolver, did, Some(&webvh_ks), None).await;
 
         let result = resolver.resolve(did).await;
         assert!(

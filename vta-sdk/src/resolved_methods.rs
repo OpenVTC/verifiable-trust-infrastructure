@@ -57,6 +57,18 @@ pub const OPTIONAL_METHODS_DECLARED: &[&str] = &["webs"];
 /// as is not a node's durable identity and is not this rule's to refuse.
 pub const OPTIONAL_DURABLE_METHODS: &[&str] = &["webs"];
 
+/// Whether `did` names a node's durable identity (VTI-KEY-001): a `did:webvh`,
+/// a `did:scid:vh:1`, or a did of an optional method admitted to the durable
+/// position ([`OPTIONAL_DURABLE_METHODS`], `did:webs`).
+///
+/// Wider than [`crate::did_scid::is_durable`], which means "has a `did:webvh`
+/// log" and stays that.
+#[must_use]
+pub fn is_durable_identity(did: &str) -> bool {
+    crate::did_scid::is_durable(did)
+        || method_name(did).is_some_and(|m| OPTIONAL_DURABLE_METHODS.contains(&m))
+}
+
 /// Every method this build resolves, required or not: the receive side's
 /// answer to "can I rely on material that needs this method resolved?"
 /// (VTI-KEY-009). A method absent here is refused as `unsupportedDidMethod`
@@ -284,6 +296,16 @@ mod tests {
         for m in OPTIONAL_DURABLE_METHODS {
             assert!(OPTIONAL_METHODS_DECLARED.contains(m), "{m} is declared too");
         }
+    }
+
+    #[test]
+    fn durable_identities_are_webvh_scid_and_the_optional_durable_methods() {
+        assert!(is_durable_identity("did:webvh:Qm1:a.example"));
+        assert!(is_durable_identity("did:scid:vh:1:Qm1?src=a.example"));
+        assert!(is_durable_identity(WEBS));
+        assert!(!is_durable_identity("did:key:z6Mk"));
+        assert!(!is_durable_identity("did:web:a.example"));
+        assert!(!is_durable_identity("did:peer:2.Vz6Mk"));
     }
 
     #[test]

@@ -46,8 +46,15 @@ impl SelfKey {
 /// The VTA's keys by role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelfKeys {
-    /// Signs credentials, Data-Integrity proofs and approval tokens.
+    /// Signs attestation artefacts: credentials and other assertions
+    /// (`assertionMethod`; the `attestation` key of a key-role identity).
     pub signing: SelfKey,
+    /// Authenticates this VTA: its Trust Task requests and responses
+    /// (`proofPurpose: authentication`) and its DIDComm sender (the
+    /// `operational` key of a key-role identity, VTI-KEY-072). The same key as
+    /// [`Self::signing`] for an identity without key roles, such as a webvh
+    /// VTA's `#key-0`.
+    pub authentication: SelfKey,
     /// Key agreement; `None` for a `did:key` VTA, whose X25519 key is converted
     /// from its signing key rather than stored.
     pub key_agreement: Option<SelfKey>,
@@ -69,6 +76,7 @@ impl SelfKeys {
         let _ = key_record_did;
         Self {
             signing: key(&ids.signing),
+            authentication: key(&ids.authentication),
             key_agreement: ids.key_agreement.as_deref().map(key),
             sealed_transfer: ids.sealed_transfer.as_deref().map(key),
         }
@@ -77,11 +85,13 @@ impl SelfKeys {
     /// A `did:key` VTA's keys.
     pub fn did_key(vta_did: &str) -> Self {
         let id = vta_did.strip_prefix("did:key:").unwrap_or(vta_did);
+        let signing = SelfKey {
+            record_id: format!("{vta_did}#key-0"),
+            vm_id: format!("{vta_did}#{id}"),
+        };
         Self {
-            signing: SelfKey {
-                record_id: format!("{vta_did}#key-0"),
-                vm_id: format!("{vta_did}#{id}"),
-            },
+            authentication: signing.clone(),
+            signing,
             key_agreement: None,
             sealed_transfer: Some(SelfKey {
                 record_id: format!("{vta_did}#{}", node_keys::SEALED_TRANSFER_FRAGMENT),
@@ -107,7 +117,7 @@ pub async fn key_record_did_for(vta_did: &str, webvh_ks: Option<&KeyspaceHandle>
 }
 
 /// The VTA's own current DID document, from its own store, if it holds it.
-async fn own_document(
+pub(crate) async fn own_document(
     did: &str,
     webvh_ks: Option<&KeyspaceHandle>,
     webs_ks: Option<&KeyspaceHandle>,
@@ -169,7 +179,7 @@ pub async fn self_keys_from_state(state: &crate::server::AppState, vta_did: &str
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A VTA's own did:webvh document as the creation path renders it
@@ -273,6 +283,97 @@ mod tests {
         // The KEL's own key is in no relationship of a key-role document.
         let kel_key = format!("{did}#{}", controller.public_key().unwrap());
         assert!(![&ids.signing, &ids.authentication, &ka].contains(&&kel_key));
+    }
+
+    /// A key-role did:webs identity, as the S6 creation path will mint one:
+    /// distinct attestation, operational and messaging keys, and the KEL's own
+    /// key in no relationship. Returns its DID and the record a VTA keeps.
+    #[cfg(feature = "webs")]
+    pub(crate) fn key_role_webs_record() -> (String, crate::webs_store::WebsDidRecord) {
+        use affinidi_did_webs::key_roles::{KeyRoles, VerificationKey};
+        use affinidi_did_webs::{CreateConfig, KeyAgreementKey, create_controlled};
+        use affinidi_keri::controller::{Inception, KeySigner, NextKey};
+        use affinidi_keri_core::threshold::Threshold;
+
+        let controller = crate::operations::did_webs::ed25519_signer(&[1u8; 32]).unwrap();
+        let next = crate::operations::did_webs::ed25519_signer(&[2u8; 32]).unwrap();
+        let roles = KeyRoles::new()
+            .with_attestation(VerificationKey::Ed25519([3u8; 32]))
+            .with_operational(VerificationKey::Ed25519([4u8; 32]))
+            .with_messaging(KeyAgreementKey::X25519([5u8; 32]));
+        let config = CreateConfig::builder("node.example")
+            .controlled(Inception::new(
+                vec![controller.public_key().unwrap()],
+                Threshold::Simple(1),
+                vec![NextKey::PublicKey(next.public_key().unwrap())],
+                Threshold::Simple(1),
+            ))
+            .key_roles(roles)
+            .build();
+        let created = create_controlled(config, &[&controller as &dyn KeySigner]).unwrap();
+        let did = created.did().to_string();
+        let (artifacts, state) = created.into_parts();
+        let now = chrono::Utc::now().to_rfc3339();
+        let record = crate::webs_store::WebsDidRecord {
+            did: did.clone(),
+            aid: did.rsplit(':').next().unwrap().to_string(),
+            context_id: "vta".into(),
+            server_id: "host".into(),
+            mnemonic: did.rsplit(':').next().unwrap().to_string(),
+            domain: None,
+            label: None,
+            keri_cesr: artifacts.keri_cesr,
+            state,
+            signing_key_id: format!("{did}#kel-0"),
+            next_key_id: format!("{did}#kel-1"),
+            key_agreement_key_id: format!("{did}#ka-0"),
+            staged: None,
+            deactivated: false,
+            slot_removed: false,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        (did, record)
+    }
+
+    /// S6: a key-role did:webs VTA authenticates with its `operational` key
+    /// and attests with its `attestation` key — two different keys — and the
+    /// ids come from its own key event log, held in the `webs` keyspace.
+    #[cfg(feature = "webs")]
+    #[tokio::test]
+    async fn a_key_role_did_webs_vta_authenticates_with_its_operational_key() {
+        use affinidi_did_webs::key_roles::VerificationKey;
+        let ts = crate::test_support::open_test_store().await;
+        let (did, record) = key_role_webs_record();
+        crate::webs_store::put(&ts.webs_ks, &record).await.unwrap();
+
+        let keys = self_keys(&did, None, Some(&ts.webs_ks)).await;
+        let attest = format!(
+            "{did}#{}",
+            VerificationKey::Ed25519([3u8; 32]).to_cesr().unwrap()
+        );
+        let oper = format!(
+            "{did}#{}",
+            VerificationKey::Ed25519([4u8; 32]).to_cesr().unwrap()
+        );
+        assert_eq!(keys.signing.vm_id, attest);
+        assert_eq!(keys.authentication.vm_id, oper);
+        assert_ne!(keys.signing, keys.authentication);
+        assert_eq!(
+            keys.sealed_transfer.as_ref().map(|k| k.vm_id.as_str()),
+            Some(attest.as_str()),
+            "a key-role identity's sealed transfer is its attestation key (VTI-KEY-072)"
+        );
+    }
+
+    /// A webvh VTA authenticates and attests with the same `#key-0`, as it
+    /// always has.
+    #[test]
+    fn a_webvh_vta_authenticates_with_the_key_it_signs_with() {
+        let did = "did:webvh:QmScid:vta.example";
+        let keys = SelfKeys::from_ids(did, did, &NodeKeyIds::conventional(did));
+        assert_eq!(keys.authentication, keys.signing);
+        assert_eq!(keys.authentication.vm_id, format!("{did}#key-0"));
     }
 
     #[test]

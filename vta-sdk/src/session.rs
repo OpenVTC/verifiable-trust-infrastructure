@@ -2441,11 +2441,15 @@ pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error
     )
 }
 
-/// Extract the base URL from a `did:web:` or `did:webvh:` DID string, or from
-/// the `src` of a `did:scid:vh:1` DID URL (a bare did:scid names no host).
+/// Extract the base URL from a `did:web:`, `did:webs:` or `did:webvh:` DID
+/// string, or from the `src` of a `did:scid:vh:1` DID URL (a bare did:scid
+/// names no host).
 fn url_from_did(did: &str) -> Option<String> {
     let domain = if let Some(rest) = did.strip_prefix("did:web:") {
         // did:web:domain.com or did:web:domain.com%3A8100
+        rest.split(':').next()
+    } else if let Some(rest) = did.strip_prefix("did:webs:") {
+        // did:webs:domain.com[:path…]:AID, the domain first as for did:web
         rest.split(':').next()
     } else if let Some(rest) = did.strip_prefix("did:webvh:") {
         // did:webvh:SCID:domain.com or did:webvh:SCID:domain.com%3A8100
@@ -4244,6 +4248,18 @@ mod tests {
     fn test_url_from_did_web_with_port() {
         assert_eq!(
             url_from_did("did:web:localhost%3A8100"),
+            Some("https://localhost:8100".to_string())
+        );
+    }
+
+    #[test]
+    fn test_url_from_did_webs() {
+        assert_eq!(
+            url_from_did("did:webs:vta.example.com:nodes:EAbc"),
+            Some("https://vta.example.com".to_string())
+        );
+        assert_eq!(
+            url_from_did("did:webs:localhost%3A8100:EAbc"),
             Some("https://localhost:8100".to_string())
         );
     }
