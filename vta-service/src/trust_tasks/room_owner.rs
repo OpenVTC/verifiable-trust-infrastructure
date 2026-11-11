@@ -778,7 +778,7 @@ async fn register_at(
     // **before answering** — a room moving hosts would otherwise arrive without its
     // withdrawals, and its new host honour what the old one refused (trust-tasks-tf #804).
     let delivered =
-        deliver_after_registration(state, auth, &resolver, &req.room_id, &req.host, &owner_did)
+        deliver_after_registration(state, auth, &resolver, &req.room_id, &req.host, owner_did)
             .await;
     match delivered {
         Ok(Some(revocation)) => body["revocation"] = revocation,

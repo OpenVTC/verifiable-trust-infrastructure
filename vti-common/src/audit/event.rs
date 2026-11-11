@@ -994,7 +994,8 @@ pub enum AuditEvent {
     RoomSignalDelay(RoomSignalDelayData),
 }
 
-/// Payload for [`AuditEvent::RoomSignalDelay`] (`rooms/signal-delay/set/0.1` item 5).
+/// Data of [`AuditEvent::RoomSignalDelay`]: what the audit trail keeps of a change to a
+/// room's signal delay — an audit row, not a wire type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomSignalDelayData {
