@@ -77,6 +77,11 @@ pub struct SessionRecord {
     /// written before it was counted, which reads as none.
     #[serde(default)]
     pub failed_submits: u32,
+    /// Submissions that failed while a DID could not be resolved, counted
+    /// apart because the cause may be the network. Closed at
+    /// `witness::MAX_INCONCLUSIVE_SUBMITS`.
+    #[serde(default)]
+    pub inconclusive_submits: u32,
 }
 
 /// Hand-written: the challenge is live binding material while the session is
@@ -96,14 +101,6 @@ impl SessionRecord {
     /// Whether the session can no longer be submitted at `now`.
     pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
         self.expires_at <= now
-    }
-
-    /// The party the session names other than its opener.
-    pub fn counterparty(&self) -> Option<&str> {
-        self.parties
-            .iter()
-            .map(String::as_str)
-            .find(|p| *p != self.opener_did)
     }
 }
 
@@ -342,6 +339,7 @@ mod tests {
             opened_at: Utc::now(),
             expires_at: Utc::now(),
             failed_submits: 0,
+            inconclusive_submits: 0,
         };
         let shown = format!("{s:?}");
         assert!(!shown.contains("CHALLENGE-VALUE"), "{shown}");

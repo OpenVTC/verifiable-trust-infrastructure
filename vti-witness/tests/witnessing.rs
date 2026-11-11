@@ -510,63 +510,86 @@ async fn the_caps_bound_open_sessions_in_total_and_per_party() {
         "another party has its own allowance"
     );
 
-    // Bob is already named as the other side of Alice's session.
-    let carol = Key::new();
-    let third = session_doc(&carol.did, w.witness_did(), [&carol.did, &w.bob.did]);
-    let named = w.h.send(&carol.did, &third).await;
-    assert_eq!(
-        error_code(&named),
-        "witness/session:refused",
-        "one per counterparty"
+    // Full, and both sessions are their opener's only one, opened just now:
+    // neither is closed to make room.
+    let (carol, dave) = (Key::new(), Key::new());
+    let third = session_doc(&carol.did, w.witness_did(), [&carol.did, &dave.did]);
+    let full = w.h.send(&carol.did, &third).await;
+    assert_eq!(error_code(&full), "witness/session:refused", "two in total");
+}
+
+/// Anyone can name anyone as the other party, so sessions naming one party
+/// are not capped: a third party opening sessions that name Bob does not stop
+/// Alice opening hers.
+#[tokio::test]
+async fn a_third_party_cannot_lock_a_counterparty_out() {
+    let w = World::new();
+    let mallory = Key::new();
+    for _ in 0..SessionLimits::default().max_open_per_party {
+        let doc = session_doc(&mallory.did, w.witness_did(), [&mallory.did, &w.bob.did]);
+        let reply = w.h.send(&mallory.did, &doc).await;
+        assert!(reply["payload"]["challenge"].is_string(), "{reply:#}");
+    }
+    let (_, reply) = w.open().await;
+    assert!(
+        reply["payload"]["challenge"].is_string(),
+        "Alice still opens a session naming Bob: {reply:#}"
     );
 }
 
-/// An identity that admits any opener makes room at its cap by closing its
-/// oldest open session, so openers that came first cannot hold every slot.
+/// At its cap, an identity that admits any opener makes room from a party
+/// holding more than one session first. A party's only session, still in
+/// progress, survives openers churning the capacity; it becomes closable only
+/// once it is older than a minute.
 #[tokio::test]
-async fn at_capacity_an_open_identity_closes_its_oldest_session() {
+async fn at_capacity_an_open_identity_spares_a_partys_only_recent_session() {
     let w = World::with_policy(|_, p| {
         p.limits = SessionLimits {
             ttl_secs: 600,
-            max_open: 2,
-            max_open_per_party: 1,
+            max_open: 3,
+            max_open_per_party: 2,
         }
     });
-    let (first, _) = w.open().await;
-    let bob = session_doc(&w.bob.did, w.witness_did(), [&w.alice.did, &w.bob.did]);
-    let reply = w.h.send(&w.bob.did, &bob).await;
-    assert!(reply["payload"]["challenge"].is_string(), "{reply:#}");
+    let witness = w.witness_did().to_string();
+    let open_as = |k: &Key| session_doc(&k.did, &witness, [&k.did, &Key::new().did]);
+    let still_open = async |doc: &Value| {
+        w.h.store()
+            .session(&witness, id(doc))
+            .await
+            .unwrap()
+            .is_some()
+    };
+    let (carol, mallory) = (Key::new(), Key::new());
 
-    let (carol, dave) = (Key::new(), Key::new());
-    let third = session_doc(&carol.did, w.witness_did(), [&carol.did, &dave.did]);
-    let reply = w.h.send(&carol.did, &third).await;
+    let carols = open_as(&carol);
+    let reply = w.h.send(&carol.did, &carols).await;
+    assert!(reply["payload"]["challenge"].is_string(), "{reply:#}");
+    let m1 = open_as(&mallory);
+    w.h.send(&mallory.did, &m1).await;
+    let m2 = open_as(&mallory);
+    w.h.send(&mallory.did, &m2).await;
+
+    // Full. A newcomer is let in by closing Mallory's older session.
+    let erin = Key::new();
+    let reply = w.h.send(&erin.did, &open_as(&erin)).await;
+    assert!(reply["payload"]["challenge"].is_string(), "{reply:#}");
+    assert!(!still_open(&m1).await, "the surplus session made way");
+    assert!(still_open(&m2).await);
+    assert!(still_open(&carols).await, "Carol's only session survives");
+
+    // Now every slot is someone's only, recent session: refused.
+    let frank = Key::new();
+    let refused = w.h.send(&frank.did, &open_as(&frank)).await;
+    assert_eq!(error_code(&refused), "witness/session:refused");
+    assert!(still_open(&carols).await, "Carol's only session survives");
+
+    // A minute on, the oldest of them makes way.
+    let later = Utc::now() + TimeDelta::seconds(vti_witness::witness::EVICTION_MIN_AGE_SECS + 5);
+    let reply = w.h.send_at(&frank.did, &open_as(&frank), later).await;
+    assert!(reply["payload"]["challenge"].is_string(), "{reply:#}");
     assert!(
-        reply["payload"]["challenge"].is_string(),
-        "the cap makes room: {reply:#}"
-    );
-    assert!(
-        w.h.store()
-            .session(w.witness_did(), id(&first))
-            .await
-            .unwrap()
-            .is_none(),
-        "the oldest session was closed"
-    );
-    assert!(
-        w.h.store()
-            .session(w.witness_did(), id(&bob))
-            .await
-            .unwrap()
-            .is_some(),
-        "only as many as needed"
-    );
-    assert_eq!(
-        w.h.store()
-            .open_sessions(w.witness_did(), Utc::now())
-            .await
-            .unwrap()
-            .len(),
-        2
+        !still_open(&carols).await,
+        "the oldest aged session made way"
     );
 }
 
@@ -918,6 +941,75 @@ async fn a_credential_that_cannot_count_is_not_checked() {
         out["type"],
         format!("{WITNESS_SESSION_SUBMIT_V0_2}#response"),
         "{out:#}"
+    );
+}
+
+/// Records every verification method it is asked for, so a test can see which
+/// issuers verification resolved.
+struct CountingResolver {
+    inner: TrustTaskVmResolver,
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl vta_sdk::trust_task_proof::PurposeVmResolver for CountingResolver {
+    async fn resolve_vm_for_purpose(
+        &self,
+        vm: &str,
+        purpose: ProofPurpose,
+    ) -> Result<affinidi_data_integrity::ResolvedKey, affinidi_data_integrity::DataIntegrityError>
+    {
+        self.asked.lock().unwrap().push(vm.to_string());
+        self.inner.resolve_vm_for_purpose(vm, purpose).await
+    }
+}
+
+/// The same, observed at the resolver: the credential that could not count is
+/// never resolved, and the ones that could are.
+#[tokio::test]
+async fn verification_resolves_only_the_issuers_that_can_count() {
+    let w = World::new();
+    let mallory = Key::new();
+    let (_, reply) = w.open().await;
+    let creds = vec![
+        vrc(&w.alice, &w.bob.did).await,
+        vmc(&w.community, &w.alice.did, None).await,
+        vrc(&mallory, &w.bob.did).await,
+        vmc(&mallory, &w.alice.did, None).await,
+    ];
+    let p = vp(&w.alice, creds, challenge(&reply), domain(&reply)).await;
+    let resolver = CountingResolver {
+        inner: TrustTaskVmResolver::did_key_only(),
+        asked: Default::default(),
+    };
+    vti_witness::presentation::verify(
+        &p,
+        None,
+        &vti_witness::presentation::Expected {
+            submitter: &w.alice.did,
+            counterparty: &w.bob.did,
+            witness: w.witness_did(),
+            challenge: challenge(&reply),
+            domain: domain(&reply),
+        },
+        w.h.identity.witnessing().policy(),
+        &resolver,
+        Utc::now(),
+    )
+    .await
+    .expect("the presentation verifies");
+    let asked = resolver.asked.lock().unwrap().clone();
+    assert!(
+        !asked.iter().any(|vm| vm.starts_with(&mallory.did)),
+        "a credential that could not count was resolved: {asked:?}"
+    );
+    assert!(
+        asked.iter().any(|vm| vm.starts_with(&w.community.did)),
+        "{asked:?}"
+    );
+    assert!(
+        asked.iter().any(|vm| vm.starts_with(&w.alice.did)),
+        "{asked:?}"
     );
 }
 

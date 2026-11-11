@@ -20,9 +20,11 @@
 //!    witness DIDs, the operator's VTA, or an excluded DID;
 //! 4. the identity witnesses somebody (`communities` is not empty), and the
 //!    optional allow-list admits the opener;
-//! 5. the caps: open sessions per opener and per counterparty, and at this
-//!    identity. An identity with no allow-list makes room at its cap by
-//!    closing its oldest open sessions; one with an allow-list refuses.
+//! 5. the caps: open sessions per opener, and at this identity. An identity
+//!    with no allow-list makes room at its cap by closing a surplus session of
+//!    an opener holding several, or else one older than a minute
+//!    ([`EVICTION_MIN_AGE_SECS`]); a party's only, recent session is never
+//!    closed for room. One with an allow-list refuses.
 //!
 //! Any of 2–5 is `witness/session:refused`, always with the same message: a
 //! refusal that said *which* rule failed would answer "is this DID one the
@@ -47,7 +49,9 @@
 //! into the VWC, the attestation record or a log line.
 //!
 //! A submission whose presentation does not verify leaves the session open,
-//! up to [`MAX_FAILED_SUBMITS`] of them; then it is closed.
+//! up to [`MAX_FAILED_SUBMITS`] of them; then it is closed. A failure while a
+//! DID could not be resolved counts separately, up to
+//! [`MAX_INCONCLUSIVE_SUBMITS`].
 //!
 //! **Then the session is taken** — an atomic get-and-delete, so of two
 //! submissions racing on one session exactly one goes on to mint; the other
@@ -64,13 +68,14 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use affinidi_data_integrity::{DataIntegrityError, ResolvedKey};
 use chrono::{DateTime, TimeDelta, Utc};
 use dtg_credentials::{DTGCredential, IssuerScope};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{ErrorPayload, RejectReason, StandardCode, TrustTask};
-use vta_sdk::trust_task_proof::TrustTaskVmResolver;
+use vta_sdk::trust_task_proof::{ProofPurpose, PurposeVmResolver, TrustTaskVmResolver};
 use vta_sdk::trust_task_sign::{HolderKey, sign_object_for_assertion};
 use vti_specs::witness::session;
 
@@ -305,6 +310,7 @@ pub(crate) async fn open_session(
         opened_at: now,
         expires_at: now + TimeDelta::seconds(limits.ttl_secs as i64),
         failed_submits: 0,
+        inconclusive_submits: 0,
     };
 
     {
@@ -320,27 +326,24 @@ pub(crate) async fn open_session(
         if open.iter().filter(|s| s.opener_did == sender).count() >= limits.max_open_per_party {
             return Err(refused("capacity-per-party", witness));
         }
-        // The same bound on the other side: sessions naming one party as the
-        // counterparty. A pairwise relationship DID is named by one other
-        // party, so many openers naming it is not a relationship being witnessed.
-        let counterparty = record.counterparty();
-        if open
-            .iter()
-            .filter(|s| s.counterparty() == counterparty)
-            .count()
-            >= limits.max_open_per_party
-        {
-            return Err(refused("capacity-per-counterparty", witness));
-        }
+        // No separate bound on sessions naming one party as the counterparty:
+        // anyone can name anyone, so such a cap would let one opener lock a
+        // party out of being named by everyone else. Per (opener,
+        // counterparty) pair the per-opener cap above already holds.
         if open.len() >= limits.max_open {
             // An identity that admits any opener cannot let whoever opened
-            // first hold every slot for a session lifetime: the oldest
-            // un-submitted sessions make way. One with an allow-list holds
-            // only sessions its named parties opened, and refuses instead.
+            // first hold every slot for a session lifetime: a session makes
+            // way ([`evictable`]). One with an allow-list holds only sessions
+            // its named parties opened, and refuses instead.
             if !policy.admits_any_opener() {
                 return Err(refused("capacity", witness));
             }
-            evict_oldest(witness, open, limits.max_open).await?;
+            let excess = (open.len() + 1).saturating_sub(limits.max_open);
+            let victims = evictable(&open, excess, now);
+            if victims.len() < excess {
+                return Err(refused("capacity", witness));
+            }
+            close_sessions(witness, &victims).await?;
         }
         let inserted = witness
             .state
@@ -364,41 +367,117 @@ pub(crate) async fn open_session(
     serde_json::to_value(response).map_err(|e| internal("could not encode the response", e))
 }
 
-/// Make room for one more session at an identity holding `open`, at most
-/// `max_open`: take the oldest until there is a free slot. The caller holds
-/// the `opening` lock.
-async fn evict_oldest(
-    witness: &Witness<'_>,
-    mut open: Vec<SessionRecord>,
-    max_open: usize,
-) -> Result<(), Refusal> {
-    open.sort_by_key(|s| s.opened_at);
-    let excess = (open.len() + 1).saturating_sub(max_open);
-    for s in open.iter().take(excess) {
+/// How long a session is protected from being closed to make room, unless
+/// its opener holds more than one. A party that opens a session submits within
+/// seconds; this keeps a session in progress from being closed under it by
+/// openers churning the identity's capacity.
+pub const EVICTION_MIN_AGE_SECS: i64 = 60;
+
+/// Up to `needed` sessions of `open` to close for room, in order:
+///
+/// 1. sessions of openers holding more than one, each such opener's oldest
+///    first, until it holds one;
+/// 2. then any session older than [`EVICTION_MIN_AGE_SECS`], oldest first.
+///
+/// A party's only session, opened less than a minute ago, is never chosen.
+/// Fewer than `needed` means the identity is full of those, and the caller
+/// refuses.
+fn evictable(open: &[SessionRecord], needed: usize, now: DateTime<Utc>) -> Vec<String> {
+    use std::collections::BTreeMap;
+    let mut by_opener: BTreeMap<&str, Vec<&SessionRecord>> = BTreeMap::new();
+    for s in open {
+        by_opener.entry(s.opener_did.as_str()).or_default().push(s);
+    }
+    let mut surplus: Vec<&SessionRecord> = Vec::new();
+    for sessions in by_opener.values_mut() {
+        sessions.sort_by_key(|s| s.opened_at);
+        // Every session but the newest is surplus.
+        let keep = sessions.len().saturating_sub(1);
+        surplus.extend(sessions.iter().take(keep).copied());
+    }
+    surplus.sort_by_key(|s| s.opened_at);
+    let mut chosen: Vec<String> = surplus
+        .iter()
+        .take(needed)
+        .map(|s| s.session_id.clone())
+        .collect();
+    if chosen.len() < needed {
+        let cutoff = now - TimeDelta::seconds(EVICTION_MIN_AGE_SECS);
+        let mut aged: Vec<&SessionRecord> = open
+            .iter()
+            .filter(|s| s.opened_at <= cutoff && !chosen.contains(&s.session_id))
+            .collect();
+        aged.sort_by_key(|s| s.opened_at);
+        let more = needed - chosen.len();
+        chosen.extend(aged.iter().take(more).map(|s| s.session_id.clone()));
+    }
+    chosen
+}
+
+/// Close `sessions` to make room. The caller holds the `opening` lock.
+async fn close_sessions(witness: &Witness<'_>, sessions: &[String]) -> Result<(), Refusal> {
+    for id in sessions {
         witness
             .state
             .store()
-            .take_session(witness.did, &s.session_id)
+            .take_session(witness.did, id)
             .await
             .map_err(|e| internal("could not close an old session", e))?;
     }
     tracing::info!(
         identity = %witness.name,
-        closed = excess,
-        "session capacity reached: the oldest open sessions were closed"
+        closed = sessions.len(),
+        "session capacity reached: sessions were closed to make room"
     );
     Ok(())
 }
 
-/// After this many submissions whose presentation did not verify, a session
-/// is closed. Each verification resolves DIDs over the network; a party with
-/// a valid presentation needs one attempt, and a few more absorb a mistake.
+/// After this many submissions whose presentation definitely did not verify,
+/// a session is closed. Each verification resolves DIDs; a party with a valid
+/// presentation needs one attempt, and a few more absorb a mistake.
 pub const MAX_FAILED_SUBMITS: u32 = 3;
 
-/// Count a failed submission against the session on `thread` with `challenge`,
-/// closing it at [`MAX_FAILED_SUBMITS`]. Logged, never an error to the party:
-/// its answer is the presentation's refusal either way.
-async fn note_failed_submit(witness: &Witness<'_>, thread: &str, challenge: &str) {
+/// After this many submissions that failed while a DID could not be resolved
+/// — which may be the network rather than the party — a session is closed.
+/// Higher than [`MAX_FAILED_SUBMITS`], so an outage does not cost a party its
+/// session at once, but finite, so a submission that never resolves cannot be
+/// repeated for the session's whole lifetime.
+pub const MAX_INCONCLUSIVE_SUBMITS: u32 = 10;
+
+/// A resolver that remembers whether any resolution failed, so a submission
+/// that failed for that reason is not counted as a definite failure.
+struct ObservedResolver<'r> {
+    inner: &'r (dyn PurposeVmResolver + 'r),
+    failed: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl PurposeVmResolver for ObservedResolver<'_> {
+    async fn resolve_vm_for_purpose(
+        &self,
+        vm: &str,
+        purpose: ProofPurpose,
+    ) -> Result<ResolvedKey, DataIntegrityError> {
+        let r = self.inner.resolve_vm_for_purpose(vm, purpose).await;
+        if matches!(r, Err(DataIntegrityError::Resolver(_))) {
+            self.failed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        r
+    }
+}
+
+/// Count a failed submission against the session on `thread` with `challenge`
+/// — as definite, or as `inconclusive` when a DID could not be resolved —
+/// closing it at [`MAX_FAILED_SUBMITS`] / [`MAX_INCONCLUSIVE_SUBMITS`]. Logged,
+/// never an error to the party: its answer is the presentation's refusal
+/// either way.
+async fn note_failed_submit(
+    witness: &Witness<'_>,
+    thread: &str,
+    challenge: &str,
+    inconclusive: bool,
+) {
     let store = witness.state.store();
     // The `opening` lock serialises this read-modify-write against another
     // failure on the same session; it guards only local store calls (R1.3).
@@ -412,11 +491,19 @@ async fn note_failed_submit(witness: &Witness<'_>, thread: &str, challenge: &str
             return;
         }
     };
-    session.failed_submits = session.failed_submits.saturating_add(1);
-    let result = if session.failed_submits >= MAX_FAILED_SUBMITS {
+    if inconclusive {
+        session.inconclusive_submits = session.inconclusive_submits.saturating_add(1);
+    } else {
+        session.failed_submits = session.failed_submits.saturating_add(1);
+    }
+    let result = if session.failed_submits >= MAX_FAILED_SUBMITS
+        || session.inconclusive_submits >= MAX_INCONCLUSIVE_SUBMITS
+    {
         tracing::info!(
             identity = %witness.name,
-            "session closed after {MAX_FAILED_SUBMITS} submissions that did not verify"
+            failed = session.failed_submits,
+            inconclusive = session.inconclusive_submits,
+            "session closed after repeated submissions that did not verify"
         );
         store.take_session(witness.did, thread).await.map(|_| ())
     } else {
@@ -478,6 +565,10 @@ pub(crate) async fn submit(
         .find(|p| *p != sender)
         .cloned()
         .unwrap_or_default();
+    let observed = ObservedResolver {
+        inner: resolver,
+        failed: std::sync::atomic::AtomicBool::new(false),
+    };
     let verified = presentation::verify(
         &vp,
         member_presentation.as_ref(),
@@ -489,14 +580,15 @@ pub(crate) async fn submit(
             domain: &session.domain,
         },
         witness.state.policy(),
-        resolver,
+        &observed,
         now,
     )
     .await;
     let verified = match verified {
         Ok(v) => v,
         Err(why) => {
-            note_failed_submit(witness, thread, &session.challenge).await;
+            let inconclusive = observed.failed.load(std::sync::atomic::Ordering::Relaxed);
+            note_failed_submit(witness, thread, &session.challenge, inconclusive).await;
             return Err(presentation_invalid(&why));
         }
     };
@@ -730,5 +822,87 @@ mediator_did = "did:webvh:QmM:m.example"
         let b = fresh_challenge().unwrap();
         assert_eq!(a.len(), 64);
         assert_ne!(a, b);
+    }
+
+    fn session(id: &str, opener: &str, opened_at: DateTime<Utc>) -> SessionRecord {
+        SessionRecord {
+            identity_did: "did:example:w".into(),
+            session_id: id.into(),
+            opener_did: opener.into(),
+            parties: vec![opener.into(), "did:example:other".into()],
+            challenge: String::new(),
+            domain: String::new(),
+            document: String::new(),
+            opened_at,
+            expires_at: opened_at + TimeDelta::seconds(600),
+            failed_submits: 0,
+            inconclusive_submits: 0,
+        }
+    }
+
+    #[test]
+    fn room_is_made_from_surplus_sessions_then_aged_ones_never_a_recent_only_one() {
+        let now = Utc::now();
+        let ago = |s: i64| now - TimeDelta::seconds(s);
+        let open = vec![
+            session("only-recent", "did:example:a", ago(5)),
+            session("m-old", "did:example:m", ago(4)),
+            session("m-new", "did:example:m", ago(3)),
+            session(
+                "only-aged",
+                "did:example:b",
+                ago(EVICTION_MIN_AGE_SECS + 10),
+            ),
+        ];
+        // The surplus first, even though another session is older.
+        assert_eq!(evictable(&open, 1, now), vec!["m-old".to_string()]);
+        // Then aged ones.
+        assert_eq!(
+            evictable(&open, 2, now),
+            vec!["m-old".to_string(), "only-aged".to_string()]
+        );
+        // Never a party's only, recent session.
+        assert_eq!(evictable(&open, 3, now).len(), 2);
+    }
+
+    /// Fails every resolution: as unresolvable (`true`) or with another error.
+    struct Failing(bool);
+
+    #[async_trait::async_trait]
+    impl PurposeVmResolver for Failing {
+        async fn resolve_vm_for_purpose(
+            &self,
+            _vm: &str,
+            _purpose: ProofPurpose,
+        ) -> Result<ResolvedKey, DataIntegrityError> {
+            Err(if self.0 {
+                DataIntegrityError::Resolver("unreachable".into())
+            } else {
+                DataIntegrityError::UnsupportedCryptoSuite { name: "x".into() }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_resolution_failure_marks_a_submission_inconclusive() {
+        let unreachable = Failing(true);
+        let observed = ObservedResolver {
+            inner: &unreachable,
+            failed: std::sync::atomic::AtomicBool::new(false),
+        };
+        let _ = observed
+            .resolve_vm_for_purpose("did:web:x#k", ProofPurpose::AssertionMethod)
+            .await;
+        assert!(observed.failed.load(std::sync::atomic::Ordering::Relaxed));
+
+        let bad = Failing(false);
+        let observed = ObservedResolver {
+            inner: &bad,
+            failed: std::sync::atomic::AtomicBool::new(false),
+        };
+        let _ = observed
+            .resolve_vm_for_purpose("did:key:z#k", ProofPurpose::AssertionMethod)
+            .await;
+        assert!(!observed.failed.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

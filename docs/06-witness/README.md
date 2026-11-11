@@ -153,7 +153,7 @@ editing `config.toml`.
 | `communities` | The VTC DIDs whose members this identity witnesses (§3.3). **Empty — the default — witnesses nobody**; `["*"]` witnesses anyone who passes the cheap checks, with no membership evidence asked for. `"*"` cannot be combined with DIDs. |
 | `allowed_parties` | Optional exact-DID allow-list of session openers, for a closed deployment. Unset admits anyone; an empty list is refused at load (it would admit nobody). |
 | `[witness.independence] exclude` | DIDs this identity alone excludes, on top of the service-wide list. |
-| `[witness.sessions]` | `ttl_secs` (1–86400, default 600), `max_open` (default 1000) and `max_open_per_party` (default 4, at most `max_open`; bounds the sessions one party opens and, separately, the sessions naming one party as the other side). |
+| `[witness.sessions]` | `ttl_secs` (1–86400, default 600), `max_open` (default 1000) and `max_open_per_party` (default 4, at most `max_open`). |
 
 Every key is checked: an unknown one anywhere, including inside `[secrets]`, is a
 load error rather than a silently ignored setting. Names and DIDs must be unique,
@@ -239,11 +239,12 @@ witness checks, cheaply and in this order:
    operator's VTA, or an excluded DID;
 3. the identity witnesses somebody (`communities` is not empty), and
    `allowed_parties`, if set, names the opener;
-4. the caps: fewer than `max_open_per_party` sessions opened by this party, and
-   fewer than `max_open_per_party` naming the other party as the counterparty.
-   At `max_open`, an identity with no `allowed_parties` closes its oldest open
-   sessions to make room, so openers that came first cannot hold every slot for
-   a session lifetime; one with `allowed_parties` refuses instead.
+4. the caps: fewer than `max_open_per_party` sessions opened by this party.
+   At `max_open`, an identity with no `allowed_parties` makes room by closing a
+   surplus session of a party holding more than one (its oldest first), or
+   else any session older than a minute; a party's only session, opened under
+   a minute ago, is never closed for room, and if every slot is one of those
+   the open is refused. One with `allowed_parties` refuses at `max_open`.
 
 Any failure is `witness/session:refused`, always with the same message: a
 refusal naming the rule would let anyone probe which DIDs the operator excludes.
@@ -272,7 +273,8 @@ one, not as a broken presentation.
 **Then the presentation.** Any failure here is
 `witness/session/submit:presentationInvalid`, and the session stays open — for
 up to three such failures, after which it is closed and the party opens a new
-one:
+one. A failure while a DID could not be resolved (possibly the network, not the
+party) counts separately, and closes the session at ten:
 
 - the VP is a `VerifiablePresentation` whose `holder` is the submitter, and
   every proof on it verifies for `authentication` under the submitter's key;

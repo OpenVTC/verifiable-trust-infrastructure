@@ -69,7 +69,7 @@
 use chrono::{DateTime, Utc};
 use dtg_credentials::{DTGCredential, DTGCredentialType};
 use serde_json::Value;
-use vta_sdk::trust_task_proof::{ProofPurpose, TrustTaskVmResolver, verify_proof_set};
+use vta_sdk::trust_task_proof::{ProofPurpose, PurposeVmResolver, verify_proof_set};
 
 use crate::witness::WitnessPolicy;
 
@@ -109,7 +109,7 @@ pub async fn verify(
     member_presentation: Option<&Value>,
     expected: &Expected<'_>,
     policy: &WitnessPolicy,
-    resolver: &TrustTaskVmResolver,
+    resolver: &(dyn PurposeVmResolver + '_),
     now: DateTime<Utc>,
 ) -> Result<VerifiedPresentation, String> {
     let submitter = expected.submitter;
@@ -203,7 +203,7 @@ async fn verified_credentials<'v>(
     presentation: &'v Value,
     counts: impl Fn(&DTGCredential) -> bool,
     policy: &WitnessPolicy,
-    resolver: &TrustTaskVmResolver,
+    resolver: &(dyn PurposeVmResolver + '_),
     now: DateTime<Utc>,
 ) -> Result<Vec<(&'v Value, DTGCredential)>, String> {
     let credentials: Vec<&Value> = match presentation.get("verifiableCredential") {
@@ -271,7 +271,7 @@ async fn verify_member_link(
     member_vp: &Value,
     expected: &Expected<'_>,
     policy: &WitnessPolicy,
-    resolver: &TrustTaskVmResolver,
+    resolver: &(dyn PurposeVmResolver + '_),
     now: DateTime<Utc>,
 ) -> Result<(), String> {
     if !has_type(member_vp, "VerifiablePresentation") {
