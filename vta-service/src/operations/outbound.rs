@@ -652,6 +652,8 @@ pub struct Outbound<'a> {
     /// Where this VTA's own durable DID is read from at send time, for the
     /// VTI-KEY-008 declaration check ([`Self::own_did`]).
     node: NodeDid<'a>,
+    /// Which peer endpoints a REST send may dial ([`send_rest_to`]).
+    endpoint_policy: vta_sdk::http::EndpointPolicy,
 }
 
 /// Where an [`Outbound`] learns the VTA's own durable DID: the live config
@@ -712,6 +714,7 @@ impl<'a> Outbound<'a> {
             bridge,
             https_base: None,
             node: NodeDid::Known(node_did),
+            endpoint_policy: vta_sdk::http::EndpointPolicy::process_default(),
         }
     }
 
@@ -737,6 +740,7 @@ impl<'a> Outbound<'a> {
             bridge: state.didcomm_bridge.as_ref(),
             https_base: None,
             node: NodeDid::Config(&state.config),
+            endpoint_policy: state.endpoint_policy,
         }
     }
 
@@ -802,6 +806,81 @@ fn may_act_toward(
              (VTI-KEY-008)"
         );
         AppError::from(refusal)
+    })
+}
+
+/// The largest reply [`send_rest_to`] reads from a peer. A reply carries at
+/// most a batch of room records (512 KiB of entries plus one record, itself
+/// at most about 1.4 MiB of base64url) and its envelope; 4 MiB holds that with
+/// room to spare and stops a peer from streaming an unbounded body into
+/// memory.
+pub(crate) const MAX_REST_REPLY_BYTES: usize = 4 * 1024 * 1024;
+
+/// The total time a REST round trip may take. The peer runs the task before
+/// it answers, so this is the general REST budget rather than the shorter
+/// foreign-fetch one; the connect timeout stays the foreign-fetch one.
+const REST_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How much of a peer's unparseable reply goes to the debug log.
+const REPLY_LOG_EXCERPT_CHARS: usize = 256;
+
+/// POST `document` to `{endpoint}/trust-tasks` and parse the reply.
+///
+/// `endpoint` comes from the recipient's DID document, which whoever controls
+/// that DID writes, so it is vetted as a foreign target
+/// ([`vta_sdk::http::guard_peer_endpoint`]) and dialled through the guarded
+/// foreign-fetch client under the same `policy`: no proxy, no redirects, and a
+/// resolver that refuses a name answering with an address the policy does not
+/// admit. Loopback and private-network peers need the process opt-in
+/// ([`vta_sdk::http::ALLOW_PRIVATE_ENDPOINTS_ENV`]). The reply is read under
+/// [`MAX_REST_REPLY_BYTES`], and a reply that is not JSON is reported by
+/// class only — its text goes to the debug log, never into the error.
+pub(crate) async fn send_rest_to(
+    recipient: &str,
+    endpoint: &str,
+    document: &Value,
+    policy: vta_sdk::http::EndpointPolicy,
+) -> Result<Value, AppError> {
+    let url = format!("{}/trust-tasks", endpoint.trim_end_matches('/'));
+    vta_sdk::http::guard_peer_endpoint(&url, policy).map_err(|e| {
+        bad_gateway_error(format!(
+            "`{recipient}` advertises a REST endpoint this VTA will not dial: {e}"
+        ))
+    })?;
+    let response = vta_sdk::http::foreign_fetch_client_for(policy)
+        .post(&url)
+        .timeout(REST_SEND_TIMEOUT)
+        .header("content-type", "application/json")
+        .json(document)
+        .send()
+        .await
+        .map_err(|e| bad_gateway_error(format!("`{recipient}` at {url} did not answer: {e}")))?;
+
+    // The body is read once, and before the status is judged: a refusal
+    // arrives as a `trust-task-error` document with a code an operator can
+    // act on, and throwing on the status first would discard it (guide rule
+    // R3.7).
+    let status = response.status();
+    let body = vta_sdk::http::read_body_capped(response, MAX_REST_REPLY_BYTES)
+        .await
+        .map_err(|e| bad_gateway_error(format!("`{recipient}` sent an unreadable body: {e}")))?;
+    serde_json::from_slice(&body).map_err(|e| {
+        let text = String::from_utf8_lossy(&body);
+        tracing::debug!(
+            recipient,
+            %status,
+            excerpt = %text.chars().take(REPLY_LOG_EXCERPT_CHARS).collect::<String>(),
+            error = %e,
+            "peer REST reply is not JSON"
+        );
+        bad_gateway_error(format!(
+            "`{recipient}` sent a body that is not a Trust-Task document (HTTP {status}, \
+             {} bytes, {:?} error at line {} column {})",
+            body.len(),
+            e.classify(),
+            e.line(),
+            e.column()
+        ))
     })
 }
 
@@ -1094,29 +1173,7 @@ impl Outbound<'_> {
         endpoint: &str,
         document: &Value,
     ) -> Result<Value, AppError> {
-        let url = format!("{}/trust-tasks", endpoint.trim_end_matches('/'));
-        let response = vta_sdk::http::rest_client()
-            .post(&url)
-            .header("content-type", "application/json")
-            .json(document)
-            .send()
-            .await
-            .map_err(|e| {
-                bad_gateway_error(format!("`{recipient}` at {url} did not answer: {e}"))
-            })?;
-
-        // The body is read once, and before the status is judged: a refusal
-        // arrives as a `trust-task-error` document with a code an operator can
-        // act on, and throwing on the status first would discard it (guide rule
-        // R3.7).
-        let body = response.text().await.map_err(|e| {
-            bad_gateway_error(format!("`{recipient}` sent an unreadable body: {e}"))
-        })?;
-        serde_json::from_str(&body).map_err(|e| {
-            bad_gateway_error(format!(
-                "`{recipient}` sent a body that is not a Trust-Task document: {e}: {body}"
-            ))
-        })
+        send_rest_to(recipient, endpoint, document, self.endpoint_policy).await
     }
 
     /// Seal a Trust Task to `recipient` over TSP and wait for the reply to come
@@ -1304,6 +1361,126 @@ async fn verify_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod send_rest_guard {
+        use super::*;
+        use vta_sdk::http::{ALLOW_PRIVATE_ENDPOINTS_ENV, EndpointPolicy};
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn doc() -> Value {
+            serde_json::json!({ "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1" })
+        }
+
+        /// A peer advertising a loopback endpoint is not dialled under the
+        /// default policy, and the refusal names the opt-in.
+        #[tokio::test]
+        async fn loopback_peer_is_not_dialled_without_private_endpoints() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(doc()))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let err = send_rest_to(
+                "did:example:peer",
+                &server.uri(),
+                &doc(),
+                EndpointPolicy::public_only(),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains(ALLOW_PRIVATE_ENDPOINTS_ENV),
+                "{err}"
+            );
+            server.verify().await;
+        }
+
+        #[tokio::test]
+        async fn non_public_peers_are_refused_under_the_default_policy() {
+            for endpoint in [
+                "https://10.0.0.5",
+                "https://169.254.169.254",
+                "http://127.0.0.1.example.net",
+                "https://user:pw@example.com",
+            ] {
+                let err = send_rest_to(
+                    "did:example:peer",
+                    endpoint,
+                    &doc(),
+                    EndpointPolicy::public_only(),
+                )
+                .await
+                .unwrap_err();
+                assert!(!err.to_string().contains("pw@"), "{endpoint}: {err}");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_json_reply_is_returned() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(doc()))
+                .mount(&server)
+                .await;
+            let reply = send_rest_to(
+                "did:example:peer",
+                &server.uri(),
+                &doc(),
+                EndpointPolicy::private_allowed(),
+            )
+            .await
+            .expect("a JSON reply");
+            assert_eq!(reply, doc());
+        }
+
+        /// A reply that is not JSON is reported by class, size and position;
+        /// none of its text reaches the error the caller sees.
+        #[tokio::test]
+        async fn a_non_json_reply_is_not_echoed() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string("<html>internal-only-text"),
+                )
+                .mount(&server)
+                .await;
+            let err = send_rest_to(
+                "did:example:peer",
+                &server.uri(),
+                &doc(),
+                EndpointPolicy::private_allowed(),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("not a Trust-Task document"), "{err}");
+            assert!(!err.contains("internal-only-text"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn an_oversized_reply_is_refused() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("x".repeat(MAX_REST_REPLY_BYTES + 1)),
+                )
+                .mount(&server)
+                .await;
+            let err = send_rest_to(
+                "did:example:peer",
+                &server.uri(),
+                &doc(),
+                EndpointPolicy::private_allowed(),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("cap"), "{err}");
+        }
+    }
 
     fn caps_from(services: Value) -> ServiceCapabilities {
         ServiceCapabilities::from_did_document(&serde_json::json!({ "service": services }))

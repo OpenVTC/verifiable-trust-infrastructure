@@ -446,6 +446,11 @@ pub struct AppState {
     pub tee: Option<TeeContext>,
     /// Coordinates a reply-safe soft restart for this generation.
     pub restart_gate: Arc<RestartGate>,
+    /// Which peer endpoints an outbound Trust-Task REST send may dial
+    /// ([`vta_sdk::http::guard_peer_endpoint`]). The process policy at startup
+    /// (`VTA_ALLOW_PRIVATE_ENDPOINTS`); a test harness whose stand-in peers
+    /// listen on loopback states its own.
+    pub endpoint_policy: vta_sdk::http::EndpointPolicy,
     /// Prometheus metrics handle for rendering `/metrics` endpoint.
     #[cfg(feature = "rest")]
     pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
@@ -556,6 +561,9 @@ pub struct AppStateParts {
     /// Outbound mediator bridge. `None` → placeholder (no live service).
     #[cfg(any(feature = "didcomm", feature = "tsp"))]
     pub didcomm_bridge: Option<Arc<DIDCommBridge>>,
+    /// Peer endpoint policy for outbound sends. `None` →
+    /// [`vta_sdk::http::EndpointPolicy::process_default`].
+    pub endpoint_policy: Option<vta_sdk::http::EndpointPolicy>,
     /// Prometheus handle for `/metrics`. `None` → no metrics rendering.
     #[cfg(feature = "rest")]
     pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
@@ -871,6 +879,9 @@ pub async fn build_app_state(
         atm: auth.atm,
         tee: tee_context,
         restart_gate,
+        endpoint_policy: parts
+            .endpoint_policy
+            .unwrap_or_else(vta_sdk::http::EndpointPolicy::process_default),
         #[cfg(feature = "rest")]
         metrics_handle: parts.metrics_handle,
     };
@@ -1341,6 +1352,7 @@ pub async fn run(
                 drain_sweeper: Some(Arc::clone(&drain_sweeper)),
                 #[cfg(any(feature = "didcomm", feature = "tsp"))]
                 didcomm_bridge: Some(didcomm_bridge.clone()),
+                endpoint_policy: None,
                 #[cfg(feature = "rest")]
                 metrics_handle: metrics_handle.clone(), // installed once, before the loop
             };
