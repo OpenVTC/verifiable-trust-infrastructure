@@ -1839,6 +1839,35 @@ pub const TASK_WEBVH_DIDS_UPDATE_1_1: &str =
 pub const TASK_WEBVH_DIDS_ROTATE_KEYS_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0";
 
+// ─── did:webs DIDs (`vta/webs/dids/*/0.1`, trust-tasks-tf #1082) ──────────
+// A did:webs persona, relationship or integration DID the VTA creates, hosts,
+// updates, rotates, deactivates and acts as (level 1). Never a node's service
+// identity (VTI-KEY-001). Docs: docs/02-vta/did-webs.md.
+
+/// `vta/webs/dids/create/0.1` — derive the keys, incept a did:webs (KERI v2), designate its aliases, key agreement key and services, and publish it to a did-hosting server.
+pub const TASK_VTA_WEBS_DIDS_CREATE_0_1: &str =
+    <vti_specs::vta::webs::dids::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/get/0.1` — the VTA's record of one did:webs it holds, optionally with its `keri.cesr`.
+pub const TASK_VTA_WEBS_DIDS_GET_0_1: &str =
+    <vti_specs::vta::webs::dids::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/list/0.1` — the did:webs records the caller may see, paged.
+pub const TASK_VTA_WEBS_DIDS_LIST_0_1: &str =
+    <vti_specs::vta::webs::dids::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/update/0.1` — replace a did:webs DID's designated services, key agreement key or aliases, without changing its keys.
+pub const TASK_VTA_WEBS_DIDS_UPDATE_0_1: &str =
+    <vti_specs::vta::webs::dids::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/rotate-keys/0.1` — rotate a did:webs DID to its committed successor key and commit a fresh one.
+pub const TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1: &str =
+    <vti_specs::vta::webs::dids::rotate_keys::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/delete/0.1` — deactivate a did:webs DID (a rotation to no next keys) and remove its slot from the host.
+pub const TASK_VTA_WEBS_DIDS_DELETE_0_1: &str =
+    <vti_specs::vta::webs::dids::delete::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/webvh/dids/realign-keys/1.0` — rename a DID's key
 /// records onto the verification-method ids its published document
 /// declares. The repair for records named without reading that
@@ -2783,6 +2812,12 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_UPDATE_1_0,
     TASK_WEBVH_DIDS_UPDATE_1_1,
     TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+    TASK_VTA_WEBS_DIDS_CREATE_0_1,
+    TASK_VTA_WEBS_DIDS_GET_0_1,
+    TASK_VTA_WEBS_DIDS_LIST_0_1,
+    TASK_VTA_WEBS_DIDS_UPDATE_0_1,
+    TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1,
+    TASK_VTA_WEBS_DIDS_DELETE_0_1,
     TASK_WEBVH_DIDS_REALIGN_KEYS_1_0,
     TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
     TASK_WEBVH_AGENT_NAME_LIST_1_1,
