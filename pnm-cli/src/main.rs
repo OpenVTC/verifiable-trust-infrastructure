@@ -1099,6 +1099,71 @@ mod tests {
     }
 
     #[test]
+    fn rooms_keys_mark_read_needs_a_member_and_a_version_unless_unread() {
+        use crate::cli::{RoomCommands, RoomKeysCommands};
+        let base = ["pnm", "rooms", "keys", "mark-read", "did:webvh:r"];
+        let parse = |extra: &[&str]| {
+            Cli::try_parse_from(base.iter().chain(extra.iter())).map(|c| match c.command {
+                Commands::Rooms {
+                    command:
+                        RoomCommands::Keys {
+                            command:
+                                RoomKeysCommands::MarkRead {
+                                    member,
+                                    version,
+                                    created_at,
+                                    unread,
+                                    ..
+                                },
+                        },
+                    ..
+                } => (member, version, created_at, unread),
+                _ => panic!("expected keys mark-read"),
+            })
+        };
+        assert!(
+            parse(&["--version", "4"]).is_err(),
+            "the member is never inferred"
+        );
+        assert!(
+            parse(&["--member", "did:key:z"]).is_err(),
+            "marking read names how far"
+        );
+        assert!(
+            parse(&[
+                "--member",
+                "did:key:z",
+                "--created-at",
+                "2027-02-01T10:14:02Z"
+            ])
+            .is_err(),
+            "a createdAt without its version"
+        );
+        assert_eq!(
+            parse(&["--member", "did:key:z", "--unread"]).unwrap(),
+            ("did:key:z".to_string(), None, None, true),
+            "the whole room unread"
+        );
+        assert_eq!(
+            parse(&[
+                "--member",
+                "did:key:z",
+                "--version",
+                "415",
+                "--created-at",
+                "2027-02-01T10:14:02Z"
+            ])
+            .unwrap(),
+            (
+                "did:key:z".to_string(),
+                Some(415),
+                Some("2027-02-01T10:14:02Z".to_string()),
+                false
+            )
+        );
+    }
+
+    #[test]
     fn rooms_keys_commit_takes_a_file_with_its_epoch_or_a_host() {
         use crate::cli::{RoomCommands, RoomKeysCommands};
         let base = ["pnm", "rooms", "keys", "commit", "--room", "did:webvh:r"];

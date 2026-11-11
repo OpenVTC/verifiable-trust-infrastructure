@@ -1106,6 +1106,28 @@ pub const TASK_ROOMS_KEYS_FILE_KEY_0_3: &str =
 pub const TASK_ROOMS_KEYS_LIST_0_2: &str =
     <vti_specs::rooms::keys::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `spec/rooms/keys/list/0.3` — [`TASK_ROOMS_KEYS_LIST_0_2`], with `includePersonal` also
+/// adding each entry's read marker ([`TASK_ROOMS_KEYS_READ_MARKER_SET_0_1`]) where one is
+/// held. Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_LIST_0_3: &str =
+    <vti_specs::rooms::keys::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/read-marker/set/0.1` — tell the VTA where the member has now seen one
+/// room's conversation up to, so every one of their devices agrees on what is unread. Only
+/// forward (the greater `version`, then the later `createdAt`) unless `rewind`; answers the
+/// marker in force and whether it `moved`. Kept beside the group state, sent to nobody but
+/// the member's own clients. Auth: `roomOpen` capability, and acting as the named `member`;
+/// a delegate is refused.
+pub const TASK_ROOMS_KEYS_READ_MARKER_SET_0_1: &str =
+    <vti_specs::rooms::keys::read_marker::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/read-marker/moved/0.1` — the VTA tells the member's other clients
+/// watching a room ([`TASK_ROOMS_KEYS_WATCH_0_1`]) that the member's read marker moved: the
+/// room, the member and the marker in force, no response. Not in [`ALL_URIS`]: a VTA sends
+/// it and serves nothing under it.
+pub const TASK_ROOMS_KEYS_READ_MARKER_MOVED_0_1: &str =
+    <vti_specs::rooms::keys::read_marker::moved::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/label/0.1` — set, change or remove the member's own private
 /// name, description, notes and tags for one room they hold, kept by this VTA
 /// beside the group state and sent nowhere else. Auth: `roomOpen` capability, and
@@ -2907,7 +2929,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_FILE_KEY_0_3,
     TASK_ROOMS_KEYS_LIST_0_2,
+    TASK_ROOMS_KEYS_LIST_0_3,
     TASK_ROOMS_KEYS_LABEL_0_1,
+    TASK_ROOMS_KEYS_READ_MARKER_SET_0_1,
     TASK_ROOMS_KEYS_PROFILE_READ_0_1,
     TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,

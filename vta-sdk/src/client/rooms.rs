@@ -927,6 +927,100 @@ impl VtaClient {
             .await?;
         parse_response(value, "rooms/keys/label")
     }
+
+    /// `rooms/keys/list/0.3` — [`VtaClient::room_list`], with `include_personal` also
+    /// returning each entry's read marker ([`VtaClient::room_read_marker_set`]) in
+    /// `readMarker`, where the VTA holds one. Count unread messages against it; where it is
+    /// absent, against the client's own.
+    ///
+    /// A read marker is the member's alone, as the label is: never pass it, or a read state
+    /// derived from it, to a room's host, its owner, another member, a community or a
+    /// website.
+    pub async fn room_list_v0_3(
+        &self,
+        include_personal: bool,
+    ) -> Result<vti_specs::rooms::keys::list::v0_3::Response, VtaError> {
+        use vti_specs::rooms::keys::list::v0_3::Payload;
+        let mut payload = json!({});
+        if include_personal {
+            payload["includePersonal"] = Value::Bool(true);
+        }
+        let payload: Payload = serde_json::from_value(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/list request: {e}")))?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_LIST_0_3,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/list")
+    }
+
+    /// `rooms/keys/read-marker/set/0.1` — tell the VTA where `member` has now seen
+    /// `room_id`'s conversation up to: `version`, the highest room version shown to them,
+    /// and `created_at`, the host's `createdAt` of the newest message shown, exactly as the
+    /// host returned it.
+    ///
+    /// The VTA keeps the further of the marker it holds and this one, so two devices
+    /// setting at once agree; `rewind: true` ("mark as unread") takes this one even when it
+    /// is behind — `version` `0` and no `created_at` for the whole room. Adopt the
+    /// `readMarker` the response returns, whether or not it `moved`. Idempotent: a lost
+    /// reply can simply be asked again — but do not retry a forward set issued before a
+    /// rewind sent since.
+    ///
+    /// Set a marker only for what was actually shown to the person, when the view settles,
+    /// not per message.
+    pub async fn room_read_marker_set(
+        &self,
+        room_id: &str,
+        member: &str,
+        version: u64,
+        created_at: Option<&str>,
+        rewind: bool,
+    ) -> Result<vti_specs::rooms::keys::read_marker::set::v0_1::Response, VtaError> {
+        let payload = room_read_marker_payload(room_id, member, version, created_at, rewind)?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/read-marker/set")
+    }
+}
+
+/// The `rooms/keys/read-marker/set/0.1` payload, checked against its schema. `created_at`
+/// is carried exactly as given — the string, never a reparsed timestamp.
+pub fn room_read_marker_payload(
+    room_id: &str,
+    member: &str,
+    version: u64,
+    created_at: Option<&str>,
+    rewind: bool,
+) -> Result<Value, VtaError> {
+    let mut marker = json!({ "version": version });
+    if let Some(t) = created_at {
+        marker["createdAt"] = json!(t);
+    }
+    let mut payload = json!({ "roomId": room_id, "member": member, "readMarker": marker });
+    if rewind {
+        payload["rewind"] = Value::Bool(true);
+    }
+    // Checked as the generated type reads it, then sent as built.
+    serde_json::from_value::<vti_specs::rooms::keys::read_marker::set::v0_1::Payload>(
+        payload.clone(),
+    )
+    .map_err(|e| VtaError::Validation(format!("rooms/keys/read-marker/set request: {e}")))?;
+    if let Some(schema) =
+        vti_specs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1)
+    {
+        trust_tasks_rs::validate::against_schema(schema, &payload).map_err(|e| {
+            VtaError::Validation(format!("rooms/keys/read-marker/set request: {e}"))
+        })?;
+    }
+    Ok(payload)
 }
 
 impl VtaClient {

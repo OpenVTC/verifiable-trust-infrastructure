@@ -201,6 +201,12 @@ type_uri = "https://trusttasks.org/spec/rooms/keys/list/0.2"
 digest = "sha256:ab1ce53bcf1cf83cd737cf34c796334c3f7fe46e5178ff28221568958a1f3e70"
 
 [[task]]
+slug = "rooms/keys/list"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/rooms/keys/list/0.3"
+digest = "sha256:b76008408ad9e64b5683e230ff21b9c7d19b1bacc57f46a25d1260dafb7b3d8d"
+
+[[task]]
 slug = "rooms/keys/open"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/rooms/keys/open/0.2"
@@ -247,6 +253,18 @@ slug = "rooms/keys/read"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/rooms/keys/read/0.3"
 digest = "sha256:ef81d9cc26ddcb0fc1daadff6a745a13ce9d59af42a6274bfe53efb5b35c60bc"
+
+[[task]]
+slug = "rooms/keys/read-marker/moved"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/rooms/keys/read-marker/moved/0.1"
+digest = "sha256:c29f719234528b0dbbaaa1538724d9c12ea63e9cef7e1eabd1cb85424e9d0813"
+
+[[task]]
+slug = "rooms/keys/read-marker/set"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/rooms/keys/read-marker/set/0.1"
+digest = "sha256:fa398ab0a470560b13e3d71f35e288383dcc6f4dddd853f0f1dac900659ddbdf"
 
 [[task]]
 slug = "rooms/keys/seal"

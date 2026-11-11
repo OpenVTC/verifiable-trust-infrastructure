@@ -124,8 +124,11 @@ async fn task_subject(
     // `rooms/keys/label/0.1`'s `subjectPath` is `/member`: the member whose label it is,
     // never the room, and never a detail of the label.
     // `rooms/keys/watch/0.1`'s `subjectPath` is `/member` too: the member watched as.
+    // So is `rooms/keys/read-marker/set/0.1`'s: the member whose marker it is, never the
+    // room, and never the marker.
     if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1
     {
         return payload
             .get("member")

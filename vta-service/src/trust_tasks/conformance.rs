@@ -4296,6 +4296,51 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_LIST_0_3,
+            checked!(
+                specs::rooms::keys::list::v0_3::Payload,
+                specs::rooms::keys::list::v0_3::Response,
+                json!({ "includePersonal": true }),
+                json!({
+                    "rooms": [
+                        {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                            "epoch": 4,
+                            "earliestReadableEpoch": 1,
+                            "personal": {
+                                "label": "Northwind tender",
+                                "updatedAt": "2026-01-01T00:00:00Z"
+                            },
+                            "readMarker": {
+                                "version": 415,
+                                "createdAt": "2026-01-01T10:14:02Z"
+                            }
+                        }
+                    ]
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1,
+            checked!(
+                specs::rooms::keys::read_marker::set::v0_1::Payload,
+                specs::rooms::keys::read_marker::set::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "readMarker": { "version": 408, "createdAt": "2026-01-01T09:58:41Z" },
+                    "rewind": true
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "readMarker": { "version": 408, "createdAt": "2026-01-01T09:58:41Z" },
+                    "moved": true
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_LABEL_0_1,
             checked!(
                 specs::rooms::keys::label::v0_1::Payload,
