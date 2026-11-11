@@ -39,8 +39,9 @@ use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::messaging::registry::RegistryError;
-use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
+use crate::operations::did_webvh::UpdateDidWebvhError;
 use crate::operations::protocol::document::{DocumentPatchError, without_didcomm_service};
+use crate::operations::protocol::preconditions::VtaDocBacking;
 use crate::operations::protocol::{OpContext, PROTOCOL_LOCK, ServiceOpDeps};
 use crate::store::KeyspaceHandle;
 
@@ -138,7 +139,7 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
         match value {
             E::VtaDidNotConfigured => Self::VtaDidNotConfigured,
             E::VtaDidRecordMissing(s) => Self::VtaDidRecordMissing(s),
-            E::VtaDidLogMissing(s) => Self::VtaDidLogMissing(s),
+            E::VtaDidLogMissing(s) | E::VtaDidNotPublished(s) => Self::VtaDidLogMissing(s),
             E::EmptyLog => Self::EmptyLog,
             E::Storage(s) | E::DocumentParse(s) => Self::Storage(s),
         }
@@ -158,8 +159,8 @@ pub async fn disable_didcomm(
     let _guard = PROTOCOL_LOCK.lock().await;
 
     // Pre-flight checks (atomic; nothing mutated until past here).
-    let (vta_did, scid, current_doc, prior_mediator) =
-        read_preconditions(deps.config, deps.webvh_ks, &params).await?;
+    let (vta_did, backing, current_doc, prior_mediator) =
+        read_preconditions(deps.config, deps.webvh_ks, deps.webs_ks, &params).await?;
 
     // Persist snapshot BEFORE the runtime mutation per spec §3.5a.
     // Pre-state is DidcommSnapshot::Enabled with the prior mediator
@@ -181,17 +182,9 @@ pub async fn disable_didcomm(
     let patched = without_didcomm_service(current_doc);
 
     // Publish via update_did_webvh.
-    let update_result = update_did_webvh(
-        &deps.webvh(),
-        auth,
-        &scid,
-        UpdateDidWebvhOptions {
-            document: Some(patched),
-            ..Default::default()
-        },
-        Some(vta_did.as_str()),
-        channel,
-    )
+    let update_result = crate::operations::protocol::service_lifecycle::publish_patch::<
+        DisableDidcommError,
+    >(deps, auth, &backing, &vta_did, patched, channel)
     .await?;
 
     // Persist: `services.didcomm = false` to fjall (authoritative runtime
@@ -281,8 +274,9 @@ pub async fn disable_didcomm(
 async fn read_preconditions(
     config: &Arc<RwLock<AppConfig>>,
     webvh_ks: &KeyspaceHandle,
+    webs_ks: &KeyspaceHandle,
     params: &DisableDidcommParams,
-) -> Result<(String, String, JsonValue, String), DisableDidcommError> {
+) -> Result<(String, VtaDocBacking, JsonValue, String), DisableDidcommError> {
     use crate::operations::protocol::invariant::{
         CurrentServices, ProposedOp, would_violate_last_service,
     };
@@ -320,14 +314,19 @@ async fn read_preconditions(
     }
 
     // Common load: `vta_did`, `scid`, `did_log`, `current_doc`.
-    let state = super::preconditions::load_vta_doc_state(config, webvh_ks).await?;
+    let state = super::preconditions::load_vta_doc_state(config, webvh_ks, webs_ks).await?;
 
     let prior_mediator =
         crate::operations::protocol::document::current_didcomm_service(&state.current_doc)
             .map(|s| s.mediator_did)
             .ok_or(DisableDidcommError::NoActiveMediator)?;
 
-    Ok((state.vta_did, state.scid, state.current_doc, prior_mediator))
+    Ok((
+        state.vta_did,
+        state.backing,
+        state.current_doc,
+        prior_mediator,
+    ))
 }
 
 async fn best_effort_endpoint(resolver: &DIDCacheClient, mediator_did: &str) -> String {
@@ -434,6 +433,7 @@ mod tests {
         imported_ks: KeyspaceHandle,
         contexts_ks: KeyspaceHandle,
         webvh_ks: KeyspaceHandle,
+        webs_ks: KeyspaceHandle,
         audit: vta_audit::SharedAuditSink,
         snapshot_ks: KeyspaceHandle,
         service_state_ks: KeyspaceHandle,
@@ -454,6 +454,7 @@ mod tests {
             let (d2, imported_ks) = empty_keyspace("imported_secrets").await;
             let (d3, contexts_ks) = empty_keyspace("contexts").await;
             let (d4, webvh_ks) = empty_keyspace("webvh").await;
+            let (d_webs, webs_ks) = empty_keyspace("webs").await;
             let (d5, audit_ks) = empty_keyspace("audit").await;
             let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks);
             let (d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
@@ -461,11 +462,12 @@ mod tests {
             let (d8, drains_ks) = empty_keyspace("drains").await;
             let sweeper = sweeper_for(Arc::clone(&registry), drains_ks.clone());
             Self {
-                _dirs: vec![d1, d2, d3, d4, d5, d6, d7, d8],
+                _dirs: vec![d1, d2, d3, d4, d_webs, d5, d6, d7, d8],
                 keys_ks,
                 imported_ks,
                 contexts_ks,
                 webvh_ks,
+                webs_ks,
                 audit,
                 snapshot_ks,
                 service_state_ks,
@@ -487,6 +489,8 @@ mod tests {
                 imported_ks: &self.imported_ks,
                 contexts_ks: &self.contexts_ks,
                 webvh_ks: &self.webvh_ks,
+                webs_ks: &self.webs_ks,
+                webs_host: None,
                 audit: &self.audit,
                 snapshot_ks: &self.snapshot_ks,
                 service_state_ks: &self.service_state_ks,

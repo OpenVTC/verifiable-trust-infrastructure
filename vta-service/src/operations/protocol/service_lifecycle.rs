@@ -9,7 +9,8 @@
 //!
 //! ```text
 //! super-admin → PROTOCOL_LOCK → validate URL → preconditions →
-//! snapshot (pre-state) → patch document → publish (update_did_webvh) →
+//! snapshot (pre-state) → patch document → publish (`publish_patch`: a
+//! did:webvh log entry, or a did:webs designation) →
 //! [persist enabled, enable only] → telemetry → result
 //! ```
 //!
@@ -42,7 +43,7 @@ use crate::operations::protocol::document::DocumentPatchError;
 use crate::operations::protocol::invariant::{
     CurrentServices, ProposedOp, would_violate_last_service,
 };
-use crate::operations::protocol::preconditions::ProtocolPreconditionError;
+use crate::operations::protocol::preconditions::{ProtocolPreconditionError, VtaDocBacking};
 use crate::operations::protocol::snapshot::{self, ServiceConfigSnapshot, ServiceKind};
 use crate::operations::protocol::{OpContext, PROTOCOL_LOCK};
 use crate::store::KeyspaceHandle;
@@ -142,35 +143,61 @@ pub(crate) struct ServiceMutationOk {
 /// except `service_state_ks`, which is the REST persist step's concern).
 pub(crate) use super::ServiceOpDeps;
 
-/// Publish a patched document via `update_did_webvh` — the common publish step
-/// shared by enable / update / disable. Bound only on `From<UpdateDidWebvhError>`
-/// (the single error it propagates) so disable errors — which carry no
-/// `validation` constructor — can use it too.
+/// What a publish produced, for either method: the new version's id (a
+/// `did:webvh` log entry's `versionId`; a `did:webs` key event log's
+/// `<sn>:<said>`, as `vta/webs/dids/*` report it) and whether the host must be
+/// redeployed by hand (`serverless`, `did:webvh` only).
+#[derive(Debug, Clone)]
+pub(crate) struct PublishedPatch {
+    pub new_version_id: String,
+    pub serverless: bool,
+}
+
+/// Publish a patched document — the common publish step shared by enable /
+/// update / disable, for every family (REST, TSP, WebAuthn, DIDComm). Bound
+/// only on `From<UpdateDidWebvhError>` (the single error it propagates) so
+/// disable errors — which carry no `validation` constructor — can use it too.
+///
+/// Switched on `backing`: a `did:webvh` VTA appends a log entry
+/// (`update_did_webvh`); a `did:webs` VTA designates the patched document's
+/// service set ([`super::webs_backing::publish`], whose refusals arrive as the
+/// same `UpdateDidWebvhError` variants).
 pub(crate) async fn publish_patch<E: From<UpdateDidWebvhError>>(
     deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
-    scid: &str,
+    backing: &VtaDocBacking,
     vta_did: &str,
     patched: JsonValue,
     channel: &str,
-) -> Result<crate::operations::did_webvh::UpdateDidWebvhResult, E> {
-    // `update_did_webvh` owns the post-mutation self-DID resolver refresh (it
-    // reseeds the cache from the freshly-built log right after persisting it —
-    // see `did_webvh::update::orchestrator`). Every service-management op funnels
-    // through here, so there's no separate protocol-layer refresh to do.
-    update_did_webvh(
-        &deps.webvh(),
-        auth,
-        scid,
-        UpdateDidWebvhOptions {
-            document: Some(patched),
-            ..Default::default()
-        },
-        Some(vta_did),
-        channel,
-    )
-    .await
-    .map_err(E::from)
+) -> Result<PublishedPatch, E> {
+    match backing {
+        // `update_did_webvh` owns the post-mutation self-DID resolver refresh
+        // (it reseeds the cache from the freshly-built log right after
+        // persisting it — see `did_webvh::update::orchestrator`).
+        VtaDocBacking::Webvh { scid, .. } => update_did_webvh(
+            &deps.webvh(),
+            auth,
+            scid,
+            UpdateDidWebvhOptions {
+                document: Some(patched),
+                ..Default::default()
+            },
+            Some(vta_did),
+            channel,
+        )
+        .await
+        .map(|r| PublishedPatch {
+            new_version_id: r.new_version_id,
+            serverless: r.serverless,
+        })
+        .map_err(E::from),
+        #[cfg(feature = "webs")]
+        VtaDocBacking::Webs { record } => {
+            super::webs_backing::publish(deps, auth, record, vta_did, &patched, channel)
+                .await
+                .map_err(E::from)
+        }
+    }
 }
 
 /// Enable preconditions: the service must be OFF in both the live config and
@@ -183,6 +210,7 @@ pub(crate) async fn publish_patch<E: From<UpdateDidWebvhError>>(
 pub(crate) async fn check_enable_preconditions<S, E>(
     config: &Arc<RwLock<AppConfig>>,
     webvh_ks: &KeyspaceHandle,
+    webs_ks: &KeyspaceHandle,
 ) -> Result<crate::operations::protocol::preconditions::VtaDocState, E>
 where
     S: ServiceLifecycle,
@@ -205,7 +233,8 @@ where
         S::config_enabled(&cfg)
     };
     let state =
-        crate::operations::protocol::preconditions::load_vta_doc_state(config, webvh_ks).await?;
+        crate::operations::protocol::preconditions::load_vta_doc_state(config, webvh_ks, webs_ks)
+            .await?;
     if cfg_on && S::current_service_url(&state.current_doc).is_some() {
         return Err(E::already_enabled());
     }
@@ -218,6 +247,7 @@ where
 pub(crate) async fn check_update_preconditions<S, E>(
     config: &Arc<RwLock<AppConfig>>,
     webvh_ks: &KeyspaceHandle,
+    webs_ks: &KeyspaceHandle,
 ) -> Result<
     (
         crate::operations::protocol::preconditions::VtaDocState,
@@ -236,7 +266,8 @@ where
         }
     }
     let state =
-        crate::operations::protocol::preconditions::load_vta_doc_state(config, webvh_ks).await?;
+        crate::operations::protocol::preconditions::load_vta_doc_state(config, webvh_ks, webs_ks)
+            .await?;
     let prior_url = S::current_service_url(&state.current_doc).ok_or_else(E::not_present)?;
     Ok((state, prior_url))
 }
@@ -252,6 +283,7 @@ where
 pub(crate) async fn check_disable_preconditions<S, E>(
     config: &Arc<RwLock<AppConfig>>,
     webvh_ks: &KeyspaceHandle,
+    webs_ks: &KeyspaceHandle,
 ) -> Result<
     (
         crate::operations::protocol::preconditions::VtaDocState,
@@ -282,7 +314,8 @@ where
     )?;
 
     let state =
-        crate::operations::protocol::preconditions::load_vta_doc_state(config, webvh_ks).await?;
+        crate::operations::protocol::preconditions::load_vta_doc_state(config, webvh_ks, webs_ks)
+            .await?;
     let prior_url = S::current_service_url(&state.current_doc).ok_or_else(E::not_present)?;
     Ok((state, prior_url))
 }
@@ -312,7 +345,8 @@ where
 
     let canonical_url = S::validate(url).map_err(E::validation)?;
 
-    let state = check_enable_preconditions::<S, E>(deps.config, deps.webvh_ks).await?;
+    let state =
+        check_enable_preconditions::<S, E>(deps.config, deps.webvh_ks, deps.webs_ks).await?;
 
     // Snapshot BEFORE the runtime mutation (spec §3.5a): pre-state is "off".
     snapshot::write(deps.snapshot_ks, S::snapshot_disabled())
@@ -321,7 +355,7 @@ where
 
     let patched = S::with_service(state.current_doc, &canonical_url)?;
     let update_result =
-        publish_patch::<E>(deps, auth, &state.scid, &state.vta_did, patched, channel).await?;
+        publish_patch::<E>(deps, auth, &state.backing, &state.vta_did, patched, channel).await?;
 
     persist_enabled().await.map_err(E::config_persistence)?;
 
@@ -374,7 +408,8 @@ where
 
     let canonical_url = S::validate(url).map_err(E::validation)?;
 
-    let (state, prior_url) = check_update_preconditions::<S, E>(deps.config, deps.webvh_ks).await?;
+    let (state, prior_url) =
+        check_update_preconditions::<S, E>(deps.config, deps.webvh_ks, deps.webs_ks).await?;
 
     // Snapshot BEFORE the mutation (spec §3.5a): pre-state is the prior URL.
     snapshot::write(deps.snapshot_ks, S::snapshot_enabled(prior_url.clone()))
@@ -383,7 +418,7 @@ where
 
     let patched = S::with_service(state.current_doc, &canonical_url)?;
     let update_result =
-        publish_patch::<E>(deps, auth, &state.scid, &state.vta_did, patched, channel).await?;
+        publish_patch::<E>(deps, auth, &state.backing, &state.vta_did, patched, channel).await?;
 
     emit_telemetry(
         deps.telemetry,

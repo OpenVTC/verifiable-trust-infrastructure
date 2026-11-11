@@ -518,16 +518,17 @@ pub async fn create_did_webs<H: WebsHost>(
         ),
         None => builder.key_agreement(key_agreement),
     };
+    let mut services = Vec::new();
     if let Some(mediator) = mediator.as_deref() {
         if add_tsp {
-            builder = builder.designated_service(DesignatedService::new(
+            services.push(DesignatedService::new(
                 TSP_SERVICE_FRAGMENT,
                 TSP_SERVICE_TYPE,
                 json!(mediator),
             ));
         }
         if params.add_mediator_service {
-            builder = builder.designated_service(DesignatedService::new(
+            services.push(DesignatedService::new(
                 DIDCOMM_FRAGMENT,
                 DIDCOMM_SERVICE_TYPE,
                 json!([{ "accept": ["didcomm/v2"], "uri": mediator }]),
@@ -554,7 +555,15 @@ pub async fn create_did_webs<H: WebsHost>(
                 format!("serviceIdConflict: two services have the id {}", service.id),
             ));
         }
-        builder = builder.designated_service(service.clone());
+        services.push(service.clone());
+    }
+    // A resolver renders designated services in the designation's order, and
+    // peers walking `service[]` take the first transport they share, so the
+    // designation is in transport-preference order (TSP > DIDComm > REST),
+    // whatever order the services were asked for in.
+    sort_designated_services(&mut services);
+    for service in services {
+        builder = builder.designated_service(service);
     }
     for aka in &params.also_known_as {
         builder = builder.also_known_as(aka.clone());
@@ -730,6 +739,13 @@ pub async fn create_did_webs<H: WebsHost>(
         operational_key_id,
         sn,
     })
+}
+
+/// Put `services` in transport-preference order by `type` — TSP, DIDComm,
+/// REST, WebAuthn, then the rest as they came
+/// ([`crate::operations::protocol::document::service_type_rank`]). Stable.
+pub fn sort_designated_services(services: &mut [DesignatedService]) {
+    services.sort_by_key(|s| crate::operations::protocol::document::service_type_rank(&s.type_));
 }
 
 /// A service entry as JSON (`id`, `type`, `serviceEndpoint`, and any further

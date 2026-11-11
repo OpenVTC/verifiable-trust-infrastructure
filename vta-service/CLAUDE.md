@@ -443,6 +443,22 @@ When adding a flow, add it here and a line to the root index.
   highest-preference transport first. Enforced in
   `protocol::document::sort_services_canonical` at the end of
   every `with_*_service` patcher.
+- **A did:webs VTA** (alpha): `preconditions::load_vta_doc_state` switches
+  on the DID's method; `VtaDocBacking::Webs` carries the `WebsDidRecord`,
+  whose document is derived from the stored key event stream. The patchers
+  run unchanged, and `service_lifecycle::publish_patch` (which every family,
+  DIDComm included, publishes through) designates the patched `service[]`
+  as the whole designated service set (`protocol::webs_backing` →
+  `update_did_webs`, host from the record's `server_id`, or
+  `ServiceOpDeps::webs_host`), then reseeds the self-DID resolver entry.
+  The version is the KEL's `<sn>:<said>`; `serverless` is always false.
+  The resolver renders designations in designation order, so canonical
+  order holds (creates and updates sort designations by type too); KERI's
+  own endpoint services, which this VTA never writes, would render first.
+  `#didcomm` (the did:webs convention) is shown to the patchers as
+  `#vta-didcomm` and designated back as `#didcomm`. WebAuthn works as a
+  plain service: passkey VMs live only on webvh DIDs the VTA manages. An
+  identity not yet published at first boot is refused (`VtaDidNotPublished`).
 - **Handshake**: `update`/`rollback`-into-update uses a *live*
   `DIDCommServiceProver` against the running service; first-enable
   spins up a transient `DIDCommService` just for the round-trip

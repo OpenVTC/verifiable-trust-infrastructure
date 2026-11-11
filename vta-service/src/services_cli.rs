@@ -95,6 +95,7 @@ struct OfflineDeps {
     imported_ks: KeyspaceHandle,
     contexts_ks: KeyspaceHandle,
     webvh_ks: KeyspaceHandle,
+    webs_ks: KeyspaceHandle,
     audit_sink: vta_audit::SharedAuditSink,
     drains_ks: KeyspaceHandle,
     snapshot_ks: KeyspaceHandle,
@@ -122,6 +123,8 @@ impl OfflineDeps {
             imported_ks: &self.imported_ks,
             contexts_ks: &self.contexts_ks,
             webvh_ks: &self.webvh_ks,
+            webs_ks: &self.webs_ks,
+            webs_host: None,
             audit: &self.audit_sink,
             snapshot_ks: &self.snapshot_ks,
             service_state_ks: &self.service_state_ks,
@@ -165,6 +168,7 @@ async fn build_offline_deps(
     let audit_sink: vta_audit::SharedAuditSink =
         vta_audit::shared_keyspace_sink(cs.keyspace(crate::keyspaces::AUDIT)?);
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
+    let webs_ks = cs.keyspace(crate::keyspaces::WEBS)?;
     let drains_ks = cs.keyspace(crate::keyspaces::DRAINS)?;
     let snapshot_ks = cs.keyspace(snapshot::KEYSPACE_NAME)?;
     let service_state_ks = cs.keyspace(crate::keyspaces::SERVICE_STATE)?;
@@ -215,6 +219,7 @@ async fn build_offline_deps(
         imported_ks,
         contexts_ks,
         webvh_ks,
+        webs_ks,
         audit_sink,
         drains_ks,
         snapshot_ks,
@@ -266,7 +271,7 @@ impl std::error::Error for SilentExit {}
 
 pub async fn run_services_list(config_path: Option<PathBuf>) -> CliResult {
     let d = build_offline_deps(config_path).await?;
-    let response = list_services(&d.config, &d.webvh_ks, &d.auth)
+    let response = list_services(&d.config, &d.webvh_ks, &d.webs_ks, &d.auth)
         .await
         .map_err(report_op_error)?;
     println!("Services advertised on this VTA's DID document:");

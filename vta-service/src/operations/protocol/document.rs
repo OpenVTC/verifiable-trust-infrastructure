@@ -379,6 +379,30 @@ fn matches_canonical_fragment(id: &str, fragment: &str) -> bool {
     !prefix.contains('#')
 }
 
+/// The transport-preference rank of a service `type` (a string, or an array
+/// naming one of these): TSP 0, DIDComm 1, REST 2, WebAuthn 3, anything else
+/// 4. The order [`sort_services_canonical`] gives the VTA's own fragments, by
+/// the type peers match on, for a document whose ids are not those fragments
+/// — a `did:webs` designates DIDComm as `#didcomm`.
+pub fn service_type_rank(type_: &Value) -> u8 {
+    let is = |t: &str| match type_ {
+        Value::String(s) => s == t,
+        Value::Array(a) => a.iter().any(|v| v.as_str() == Some(t)),
+        _ => false,
+    };
+    if is(TSP_SERVICE_TYPE) {
+        0
+    } else if is(vta_sdk::protocol::matching::DIDCOMM_SERVICE_TYPE) {
+        1
+    } else if is(REST_SERVICE_TYPE) {
+        2
+    } else if is(WEBAUTHN_SERVICE_TYPE) {
+        3
+    } else {
+        4
+    }
+}
+
 /// Sort the `service` array into the canonical transport-preference
 /// order — TSP, then DIDComm, then REST, then WebAuthn — with all
 /// other entries (e.g. `#tee-attestation`) preserving their original

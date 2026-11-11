@@ -77,6 +77,9 @@ pub struct VtaState {
     pub service_state_ks: KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
+    /// `did:webs` records, mirrored from `AppState` — the runtime service ops
+    /// read and write the VTA's own when it is a `did:webs`.
+    pub webs_ks: KeyspaceHandle,
     /// Credentials the VTA issued — needed so a DID deletion over this
     /// transport can revoke them rather than orphan them.
     pub issued_credentials_ks: KeyspaceHandle,
@@ -198,6 +201,7 @@ impl From<&AppState> for VtaState {
             service_state_ks: state.service_state_ks.clone(),
             #[cfg(feature = "webvh")]
             webvh_ks: state.webvh_ks.clone(),
+            webs_ks: state.webs_ks.clone(),
             issued_credentials_ks: state.issued_credentials_ks.clone(),
             sealed_nonces_ks: state.sealed_nonces_ks.clone(),
             #[cfg(feature = "webvh")]

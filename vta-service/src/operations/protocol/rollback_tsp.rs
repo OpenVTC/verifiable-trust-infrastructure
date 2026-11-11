@@ -140,7 +140,7 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
         match value {
             E::VtaDidNotConfigured => Self::VtaDidNotConfigured,
             E::VtaDidRecordMissing(s) => Self::VtaDidRecordMissing(s),
-            E::VtaDidLogMissing(s) => Self::VtaDidLogMissing(s),
+            E::VtaDidLogMissing(s) | E::VtaDidNotPublished(s) => Self::VtaDidLogMissing(s),
             E::EmptyLog => Self::EmptyLog,
             E::Storage(s) | E::DocumentParse(s) => Self::Storage(s),
         }
@@ -179,7 +179,8 @@ pub async fn rollback_tsp(
     //    authoritative for the rollback decision (it's what the snapshot is
     //    compared against); config is asserted to match by the forward ops'
     //    precondition checks.
-    let current_mediator = read_current_tsp_mediator(deps.config, deps.webvh_ks).await?;
+    let current_mediator =
+        read_current_tsp_mediator(deps.config, deps.webvh_ks, deps.webs_ks).await?;
 
     // 3. Dispatch table (see module doc).
     info!(
@@ -263,8 +264,9 @@ pub async fn rollback_tsp(
 async fn read_current_tsp_mediator(
     config: &Arc<RwLock<AppConfig>>,
     webvh_ks: &KeyspaceHandle,
+    webs_ks: &KeyspaceHandle,
 ) -> Result<Option<String>, RollbackTspError> {
-    let state = super::preconditions::load_vta_doc_state(config, webvh_ks).await?;
+    let state = super::preconditions::load_vta_doc_state(config, webvh_ks, webs_ks).await?;
     Ok(current_tsp_service(&state.current_doc).map(|svc| svc.mediator_did))
 }
 
