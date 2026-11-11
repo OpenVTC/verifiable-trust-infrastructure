@@ -240,11 +240,12 @@ witness checks, cheaply and in this order:
 3. the identity witnesses somebody (`communities` is not empty), and
    `allowed_parties`, if set, names the opener;
 4. the caps: fewer than `max_open_per_party` sessions opened by this party.
-   At `max_open`, an identity with no `allowed_parties` makes room by closing a
-   surplus session of a party holding more than one (its oldest first), or
-   else any session older than a minute; a party's only session, opened under
-   a minute ago, is never closed for room, and if every slot is one of those
-   the open is refused. One with `allowed_parties` refuses at `max_open`.
+   At `max_open`, an identity with no `allowed_parties` makes room by closing,
+   in order: a surplus session (one of a party holding several, not its
+   newest) over a minute old; any other session over a minute old; and only
+   then a recent surplus session. A party's newest session, opened under a
+   minute ago, is never closed for room, and if every slot is one of those the
+   open is refused. One with `allowed_parties` refuses at `max_open`.
 
 Any failure is `witness/session:refused`, always with the same message: a
 refusal naming the rule would let anyone probe which DIDs the operator excludes.
@@ -273,8 +274,11 @@ one, not as a broken presentation.
 **Then the presentation.** Any failure here is
 `witness/session/submit:presentationInvalid`, and the session stays open — for
 up to three such failures, after which it is closed and the party opens a new
-one. A failure while a DID could not be resolved (possibly the network, not the
-party) counts separately, and closes the session at ten:
+one. A failure because a signer's key could not be retrieved (no resolver for
+its method, or its DID did not resolve: possibly the network, not the party)
+counts separately, and closes the session at ten. A wrong verification method
+— not listed under the proof's purpose, a `did:key` fragment that is not its
+own key — is a failure like any other:
 
 - the VP is a `VerifiablePresentation` whose `holder` is the submitter, and
   every proof on it verifies for `authentication` under the submitter's key;

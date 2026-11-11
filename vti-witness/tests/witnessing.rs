@@ -897,6 +897,32 @@ async fn a_session_closes_after_repeated_presentations_that_do_not_verify() {
     );
 }
 
+/// A proof whose verification method is wrong — here a `did:key` with a
+/// fragment that is not its own key — is a verdict on the proof, not a key
+/// that could not be retrieved: it counts toward the definite limit.
+#[tokio::test]
+async fn a_wrong_verification_method_counts_as_a_definite_failure() {
+    let w = World::new();
+    let (doc, reply) = w.open().await;
+    let mut p = w.alice_vp(&reply).await;
+    p["proof"]["verificationMethod"] = json!(format!("{}#zNotThisKey", w.alice.did));
+    let sub = submit_doc(&w.alice, w.witness_did(), id(&doc), p).await;
+    let out = w.h.send(&w.alice.did, &sub).await;
+    assert_eq!(
+        error_code(&out),
+        "witness/session/submit:presentationInvalid",
+        "{out:#}"
+    );
+    let session =
+        w.h.store()
+            .session(w.witness_did(), id(&doc))
+            .await
+            .unwrap()
+            .expect("still open after one failure");
+    assert_eq!(session.failed_submits, 1);
+    assert_eq!(session.inconclusive_submits, 0);
+}
+
 /// The credential count is bounded before any issuer is resolved.
 #[tokio::test]
 async fn a_presentation_with_too_many_credentials_is_presentation_invalid() {

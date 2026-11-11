@@ -75,7 +75,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{ErrorPayload, RejectReason, StandardCode, TrustTask};
-use vta_sdk::trust_task_proof::{ProofPurpose, PurposeVmResolver, TrustTaskVmResolver};
+use vta_sdk::trust_task_proof::{
+    ProofPurpose, PurposeVmResolver, TrustTaskVmResolver, is_unretrievable,
+};
 use vta_sdk::trust_task_sign::{HolderKey, sign_object_for_assertion};
 use vti_specs::witness::session;
 
@@ -339,11 +341,11 @@ pub(crate) async fn open_session(
                 return Err(refused("capacity", witness));
             }
             let excess = (open.len() + 1).saturating_sub(limits.max_open);
-            let victims = evictable(&open, excess, now);
-            if victims.len() < excess {
+            let to_close = evictable(&open, excess, now);
+            if to_close.len() < excess {
                 return Err(refused("capacity", witness));
             }
-            close_sessions(witness, &victims).await?;
+            close_sessions(witness, &to_close).await?;
         }
         let inserted = witness
             .state
@@ -367,49 +369,57 @@ pub(crate) async fn open_session(
     serde_json::to_value(response).map_err(|e| internal("could not encode the response", e))
 }
 
-/// How long a session is protected from being closed to make room, unless
-/// its opener holds more than one. A party that opens a session submits within
-/// seconds; this keeps a session in progress from being closed under it by
-/// openers churning the identity's capacity.
+/// How long a session is protected from being closed to make room while an
+/// older one can be closed instead. A party that opens a session submits
+/// within seconds; this keeps a session in progress from being closed under it
+/// by openers churning the identity's capacity.
 pub const EVICTION_MIN_AGE_SECS: i64 = 60;
 
 /// Up to `needed` sessions of `open` to close for room, in order:
 ///
-/// 1. sessions of openers holding more than one, each such opener's oldest
-///    first, until it holds one;
-/// 2. then any session older than [`EVICTION_MIN_AGE_SECS`], oldest first.
+/// 1. surplus sessions older than [`EVICTION_MIN_AGE_SECS`] — of openers
+///    holding more than one, every one but each opener's newest — oldest first;
+/// 2. then any other session older than that, oldest first;
+/// 3. only then recent surplus sessions, oldest first.
 ///
-/// A party's only session, opened less than a minute ago, is never chosen.
-/// Fewer than `needed` means the identity is full of those, and the caller
-/// refuses.
+/// An opener's newest session, opened less than a minute ago, is never
+/// chosen, so a party's only session in progress survives. A recent surplus
+/// session goes only when nothing older can. Fewer than `needed` means the
+/// identity is full of recent sessions each its opener's newest, and the
+/// caller refuses.
 fn evictable(open: &[SessionRecord], needed: usize, now: DateTime<Utc>) -> Vec<String> {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
     let mut by_opener: BTreeMap<&str, Vec<&SessionRecord>> = BTreeMap::new();
     for s in open {
         by_opener.entry(s.opener_did.as_str()).or_default().push(s);
     }
-    let mut surplus: Vec<&SessionRecord> = Vec::new();
+    let mut surplus: HashSet<&str> = HashSet::new();
     for sessions in by_opener.values_mut() {
         sessions.sort_by_key(|s| s.opened_at);
         // Every session but the newest is surplus.
         let keep = sessions.len().saturating_sub(1);
-        surplus.extend(sessions.iter().take(keep).copied());
+        surplus.extend(sessions.iter().take(keep).map(|s| s.session_id.as_str()));
     }
-    surplus.sort_by_key(|s| s.opened_at);
-    let mut chosen: Vec<String> = surplus
-        .iter()
-        .take(needed)
-        .map(|s| s.session_id.clone())
-        .collect();
-    if chosen.len() < needed {
-        let cutoff = now - TimeDelta::seconds(EVICTION_MIN_AGE_SECS);
-        let mut aged: Vec<&SessionRecord> = open
-            .iter()
-            .filter(|s| s.opened_at <= cutoff && !chosen.contains(&s.session_id))
-            .collect();
-        aged.sort_by_key(|s| s.opened_at);
-        let more = needed - chosen.len();
-        chosen.extend(aged.iter().take(more).map(|s| s.session_id.clone()));
+    let cutoff = now - TimeDelta::seconds(EVICTION_MIN_AGE_SECS);
+    let aged = |s: &SessionRecord| s.opened_at <= cutoff;
+    let is_surplus = |s: &SessionRecord| surplus.contains(s.session_id.as_str());
+
+    let mut by_age: Vec<&SessionRecord> = open.iter().collect();
+    by_age.sort_by_key(|s| s.opened_at);
+    let phases: [&dyn Fn(&SessionRecord) -> bool; 3] =
+        [&|s| aged(s) && is_surplus(s), &|s| aged(s), &|s| {
+            is_surplus(s)
+        }];
+    let mut chosen: Vec<String> = Vec::new();
+    for phase in phases {
+        for s in &by_age {
+            if chosen.len() >= needed {
+                return chosen;
+            }
+            if phase(s) && !chosen.contains(&s.session_id) {
+                chosen.push(s.session_id.clone());
+            }
+        }
     }
     chosen
 }
@@ -459,7 +469,10 @@ impl PurposeVmResolver for ObservedResolver<'_> {
         purpose: ProofPurpose,
     ) -> Result<ResolvedKey, DataIntegrityError> {
         let r = self.inner.resolve_vm_for_purpose(vm, purpose).await;
-        if matches!(r, Err(DataIntegrityError::Resolver(_))) {
+        // Only a key that could not be *retrieved*. Every other resolver
+        // refusal — a key not under the purpose, a `did:key` fragment that
+        // does not match, a malformed method — is a verdict on the proof.
+        if r.as_ref().is_err_and(is_unretrievable) {
             self.failed
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -841,31 +854,63 @@ mediator_did = "did:webvh:QmM:m.example"
     }
 
     #[test]
-    fn room_is_made_from_surplus_sessions_then_aged_ones_never_a_recent_only_one() {
+    fn room_is_made_from_aged_sessions_before_recent_surplus_never_a_recent_newest() {
         let now = Utc::now();
         let ago = |s: i64| now - TimeDelta::seconds(s);
+        let old = EVICTION_MIN_AGE_SECS + 10;
         let open = vec![
             session("only-recent", "did:example:a", ago(5)),
-            session("m-old", "did:example:m", ago(4)),
-            session("m-new", "did:example:m", ago(3)),
-            session(
-                "only-aged",
-                "did:example:b",
-                ago(EVICTION_MIN_AGE_SECS + 10),
-            ),
+            // A party holding three recent sessions: two are surplus.
+            session("p-1", "did:example:p", ago(7)),
+            session("p-2", "did:example:p", ago(6)),
+            session("p-3", "did:example:p", ago(5)),
+            session("only-aged", "did:example:b", ago(old)),
+            session("q-aged-surplus", "did:example:q", ago(old + 5)),
+            session("q-recent", "did:example:q", ago(4)),
         ];
-        // The surplus first, even though another session is older.
-        assert_eq!(evictable(&open, 1, now), vec!["m-old".to_string()]);
-        // Then aged ones.
+        // Aged surplus first, then other aged sessions.
+        assert_eq!(evictable(&open, 1, now), vec!["q-aged-surplus".to_string()]);
         assert_eq!(
             evictable(&open, 2, now),
-            vec!["m-old".to_string(), "only-aged".to_string()]
+            vec!["q-aged-surplus".to_string(), "only-aged".to_string()]
         );
-        // Never a party's only, recent session.
-        assert_eq!(evictable(&open, 3, now).len(), 2);
+        // Recent surplus only after everything aged, oldest first.
+        assert_eq!(
+            evictable(&open, 4, now),
+            vec![
+                "q-aged-surplus".to_string(),
+                "only-aged".to_string(),
+                "p-1".to_string(),
+                "p-2".to_string(),
+            ]
+        );
+        // Never an opener's newest recent session.
+        let all = evictable(&open, open.len(), now);
+        assert_eq!(all.len(), 4, "{all:?}");
+        for kept in ["only-recent", "p-3", "q-recent"] {
+            assert!(!all.contains(&kept.to_string()), "{kept}: {all:?}");
+        }
     }
 
-    /// Fails every resolution: as unresolvable (`true`) or with another error.
+    /// A party's surplus sessions, even only seconds old, outlast an aged
+    /// session of anyone else.
+    #[test]
+    fn a_recent_surplus_session_outlasts_an_aged_one() {
+        let now = Utc::now();
+        let open = vec![
+            session("p-1", "did:example:p", now - TimeDelta::seconds(5)),
+            session("p-2", "did:example:p", now - TimeDelta::seconds(4)),
+            session(
+                "aged",
+                "did:example:b",
+                now - TimeDelta::seconds(EVICTION_MIN_AGE_SECS + 1),
+            ),
+        ];
+        assert_eq!(evictable(&open, 1, now), vec!["aged".to_string()]);
+    }
+
+    /// Fails every resolution: as a key that could not be retrieved (`true`),
+    /// or with a verdict on the proof carried in the same variant (`false`).
     struct Failing(bool);
 
     #[async_trait::async_trait]
@@ -876,15 +921,17 @@ mediator_did = "did:webvh:QmM:m.example"
             _purpose: ProofPurpose,
         ) -> Result<ResolvedKey, DataIntegrityError> {
             Err(if self.0 {
-                DataIntegrityError::Resolver("unreachable".into())
+                vta_sdk::trust_task_proof::unretrievable("the DID did not resolve")
             } else {
-                DataIntegrityError::UnsupportedCryptoSuite { name: "x".into() }
+                DataIntegrityError::Resolver(
+                    "verification method is not listed under assertionMethod".into(),
+                )
             })
         }
     }
 
     #[tokio::test]
-    async fn only_a_resolution_failure_marks_a_submission_inconclusive() {
+    async fn only_an_unretrievable_key_marks_a_submission_inconclusive() {
         let unreachable = Failing(true);
         let observed = ObservedResolver {
             inner: &unreachable,
