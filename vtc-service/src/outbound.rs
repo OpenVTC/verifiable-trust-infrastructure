@@ -145,12 +145,17 @@ pub enum PeerError {
     /// No transport in common with the peer. Not retried: it changes only when
     /// one side advertises another.
     NoMatchingProtocol(String),
+    /// This VTC's DID is of an optional method (`did:webs`) and the peer's DID
+    /// document does not declare it resolves it (VTI-KEY-008), so nothing was
+    /// sent (VTI-KEY-009). Not retried: it changes only when the peer declares.
+    MethodNotDeclared(vta_sdk::resolved_methods::MethodNotDeclared),
 }
 
 impl std::fmt::Display for PeerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Transient(m) | Self::NoMatchingProtocol(m) => f.write_str(m),
+            Self::MethodNotDeclared(refusal) => refusal.fmt(f),
         }
     }
 }
@@ -176,6 +181,14 @@ impl PeerTasks {
             .map_err(|e| PeerError::Transient(format!("could not resolve {peer_did}: {e}")))?;
         let doc = serde_json::to_value(&resolved.doc)
             .map_err(|e| PeerError::Transient(format!("unreadable DID document: {e}")))?;
+        // VTI-KEY-008 / VTI-KEY-009: every send this selects is made as this
+        // VTC's own DID (TSP and DIDComm authenticate it as that), so a
+        // did:webs VTC reaches only a peer that has declared did:webs, and
+        // otherwise sends nothing.
+        if let Some(messaging) = self.didcomm.get() {
+            vta_sdk::resolved_methods::require_declared(&messaging.vtc_did, peer_did, &doc)
+                .map_err(PeerError::MethodNotDeclared)?;
+        }
         let theirs = ServiceCapabilities::from_did_document(&doc);
         let up = self.didcomm.get().is_some();
         let ours = ServiceCapabilities {

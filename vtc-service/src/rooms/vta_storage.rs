@@ -145,6 +145,9 @@ impl VtaStorage {
                 PeerError::NoMatchingProtocol(m) => unavailable(format!(
                     "the community's VTA shares no transport with this community: {m}"
                 )),
+                PeerError::MethodNotDeclared(refusal) => unavailable(format!(
+                    "the community's VTA cannot be reached as this community: {refusal}"
+                )),
             })?;
         if reply.type_uri.slug() == "trust-task-error" {
             return Ok(Err(Refusal {
