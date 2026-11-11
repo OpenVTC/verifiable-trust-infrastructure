@@ -1170,8 +1170,17 @@ pub const TASK_ROOMS_OWNER_INVITE_0_1: &str = "https://trusttasks.org/spec/rooms
 /// with success whatever became of the room's revocation list, reported in `revocation`
 /// (`inForce`, `pending` or `refused`). Anything but `inForce` is a room its host serves
 /// without its withdrawals; the agent goes on delivering a `pending` list on its own.
+#[allow(deprecated)] // superseded by 0.3, and still served and sent when 0.3 adds nothing
 pub const TASK_ROOMS_OWNER_REGISTER_0_2: &str =
     <vti_specs::rooms::owner::register::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/owner/register/0.3` — [`TASK_ROOMS_OWNER_REGISTER_0_2`], with the room's
+/// `recordRetention` and `signalDelay` passed through to the host's `rooms/create` 0.3, so
+/// a room meant as a conversation states `signalDelay: none` from its first message. An
+/// agent whose host does not accept `rooms/create` 0.3 refuses `hostRefused` rather than
+/// register the room without them (trust-tasks-tf #1084).
+pub const TASK_ROOMS_OWNER_REGISTER_0_3: &str =
+    <vti_specs::rooms::owner::register::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/owner/issue-membership/0.1` — mint the membership credential a member
 /// presents on every subsequent room operation. The room has no roster; this
@@ -2946,6 +2955,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_2,
+    TASK_ROOMS_OWNER_REGISTER_0_3,
     TASK_ROOMS_OWNER_ANCHOR_0_1,
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,

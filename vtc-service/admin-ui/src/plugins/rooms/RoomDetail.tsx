@@ -185,6 +185,10 @@ function Identity({ data, name }: { data: RoomGetResponse; name: RoomName }) {
         <dd>
           {r.retentionDays} days, {r.retentionPolicy === "chained" ? "history kept" : "from join"}
         </dd>
+        <dt>Watch signals</dt>
+        <dd>
+          <SignalDelayFact data={data} />
+        </dd>
         <dt>Created</dt>
         <dd>{formatIso(r.createdAt)}</dd>
         {r.mirrorOf && (
@@ -197,6 +201,39 @@ function Identity({ data, name }: { data: RoomGetResponse; name: RoomName }) {
         )}
       </dl>
     </section>
+  );
+}
+
+/** The room's signal delay, as this community applies it to the room's watch signals
+ *  (`rooms/signal-delay/set/0.1`, shown under `ext["org.openvtc"].signalDelay` because
+ *  `vtc/rooms/get/0.3` has no member for it). Absent — a community that predates it — is
+ *  `randomised`, the only behaviour such a host had. */
+export function signalDelayOf(data: Pick<RoomGetResponse, "ext">): "randomised" | "none" {
+  const ext = (data.ext ?? {}) as Record<string, unknown>;
+  const ours = (ext["org.openvtc"] ?? {}) as Record<string, unknown>;
+  return ours.signalDelay === "none" ? "none" : "randomised";
+}
+
+/** What `none` gives up, in the specification's words (`rooms/signal-delay/set/0.1`). */
+export const SIGNAL_DELAY_NONE_TRADE_OFF =
+  "The wait keeps a signal's time from marking one write. In a busy room that costs little — " +
+  "the room's rhythm shows in its writes anyway. In a quiet room, one write followed by one " +
+  "signal at once tells anyone who sees both reach and leave this host when the writer wrote, " +
+  "and that writer and watcher share the room.";
+
+function SignalDelayFact({ data }: { data: RoomGetResponse }) {
+  const delay = signalDelayOf(data);
+  return (
+    <>
+      {delay === "none" ? "Sent at once" : "Sent after a short random wait"}
+      <div className="muted rooms-sub">
+        {delay === "none"
+          ? `The room's administrators turned the delay off, as for a conversation. ${SIGNAL_DELAY_NONE_TRADE_OFF}`
+          : "This host waits a few seconds, at random, before telling a member's device the room changed, so a signal's time does not mark one write."}{" "}
+        The setting is the room's: a holder of its <code>admin</code> grant changes it
+        (<code>pnm rooms signal-delay set</code>), not this community.
+      </div>
+    </>
   );
 }
 

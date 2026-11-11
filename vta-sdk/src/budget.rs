@@ -168,6 +168,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // epoch state from it.
     trust_tasks::TASK_ROOMS_OWNER_ANCHOR_0_1,
     trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2,
+    trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_3,
     // Admission advances the room's epoch at its host (and may first ask it which
     // epoch it is at).
     trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3,

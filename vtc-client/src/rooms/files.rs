@@ -18,11 +18,14 @@ use vti_specs::rooms::blobs::upload::{
     abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
     commit::v0_2 as upload_commit_v2,
 };
-use vti_specs::rooms::info::v0_3 as room_info;
+#[allow(deprecated)] // asked of a host that predates info/0.4
+use vti_specs::rooms::info::v0_3 as room_info_v3;
+use vti_specs::rooms::info::v0_4 as room_info;
 use vti_specs::rooms::records::get::v0_2 as get_v2;
 use vti_specs::rooms::records::prune::v0_2 as records_prune;
 use vti_specs::rooms::records::put::v0_3 as put_v3;
 use vti_specs::rooms::records::retention::set::v0_1 as retention_set;
+use vti_specs::rooms::signal_delay::set::v0_1 as signal_delay_set;
 
 use super::{RoomSession, SealedContent};
 use crate::{VtcClient, VtcError};
@@ -38,6 +41,7 @@ pub use put_v3::Response as PutRecordV3Response;
 pub use records_prune::Response as PruneRecordsResponse;
 pub use retention_set::Response as RetentionSetResponse;
 pub use room_info::Response as RoomInfoResponse;
+pub use signal_delay_set::Response as SignalDelaySetResponse;
 pub use upload_begin_v2::{Response as BeginUploadV2Response, TransferTarget as WriteTarget};
 pub use upload_chunk_v2::Response as UploadChunkResponse;
 pub use upload_commit_v2::Response as CommitUploadResponse;
@@ -328,20 +332,70 @@ impl VtcClient {
         response(uri, v)
     }
 
-    /// `rooms/info/0.3`: the room's visibility, epoch, limits and usage, its record
-    /// retention in force (absent when it states none) and its latest record prune
-    /// (`prunedAt`).
+    /// `rooms/info/0.4`: the room's visibility, epoch, limits and usage, its record
+    /// retention in force (absent when it states none), its latest record prune
+    /// (`prunedAt`) and its signal delay.
+    ///
+    /// A host that answers `unsupportedType` predates 0.4 and is asked again as `0.3`; its
+    /// answer is read with `signalDelay: randomised`, which is true of every such host — the
+    /// randomised wait was all it ever had.
+    #[allow(deprecated)] // info/0.3 is still asked of hosts that predate 0.4
     pub async fn room_info(
         &self,
         session: &RoomSession,
         signer_did: &str,
         private_key_multibase: &str,
     ) -> Result<RoomInfoResponse, VtcError> {
-        let p = payload::<room_info::Payload>(serde_json::json!({
+        let request = serde_json::json!({
             "roomId": session.room_id,
             "presentation": session.presentation,
-        }))?;
+        });
+        let p = payload::<room_info::Payload>(request.clone())?;
         let uri = room_info::Payload::TYPE_URI;
+        match self
+            .room_task(uri, p, signer_did, private_key_multibase)
+            .await
+        {
+            Err(e) if super::is_unsupported_type(&e) => {
+                let p = payload::<room_info_v3::Payload>(request)?;
+                let uri = room_info_v3::Payload::TYPE_URI;
+                let mut v = self
+                    .room_task(uri, p, signer_did, private_key_multibase)
+                    .await?;
+                // Read as 0.3 first, so what the host sent is checked against its own schema.
+                response::<room_info_v3::Response>(uri, v.clone())?;
+                v["signalDelay"] = serde_json::json!("randomised");
+                response(uri, v)
+            }
+            other => response(uri, other?),
+        }
+    }
+
+    /// `rooms/signal-delay/set/0.1`: change whether the room's host waits a randomised
+    /// interval before it sends the room's watch signals — `randomised`, the default, or
+    /// `none`, for a room used as a conversation. Needs `admin`, and a `reason` the host
+    /// keeps in the room's audit trail. Naming the setting already in force changes nothing,
+    /// so a repeat is harmless. Refused `signalDelayNotPermitted` by a host whose governance
+    /// keeps the delay.
+    ///
+    /// **What `none` gives up**: in a quiet room, a write followed by a signal at once lines
+    /// the two up for anyone who sees both reach and leave the host. Show whoever decides that
+    /// before sending `none`.
+    pub async fn set_signal_delay(
+        &self,
+        session: &RoomSession,
+        signal_delay: &str,
+        reason: &str,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<SignalDelaySetResponse, VtcError> {
+        let p = payload::<signal_delay_set::Payload>(serde_json::json!({
+            "roomId": session.room_id,
+            "presentation": session.presentation,
+            "signalDelay": signal_delay,
+            "reason": reason,
+        }))?;
+        let uri = signal_delay_set::Payload::TYPE_URI;
         let v = self
             .room_task(uri, p, signer_did, private_key_multibase)
             .await?;

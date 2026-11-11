@@ -556,6 +556,23 @@ pub(super) async fn handle_register_v0_2(
     register_at(state, auth, doc).await
 }
 
+/// `rooms/owner/register/0.3` — 0.2, with the room's `recordRetention` and `signalDelay`
+/// passed through to the host's `rooms/create` 0.3. One handler serves both: 0.2's request
+/// is 0.3's without the two, and the response is unchanged.
+pub(super) async fn handle_register_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    register_at(state, auth, doc).await
+}
+
+/// Whether a host's refusal says it does not serve the task asked — the framework's
+/// `unsupportedType` / `unsupportedVersion` — rather than refusing the room.
+fn is_unsupported(code: &str) -> bool {
+    code.ends_with("unsupportedType") || code.ends_with("unsupportedVersion")
+}
+
 /// `rooms/owner/register/0.2` — tell a host about a room that already exists.
 ///
 /// `rooms/create` performed by the agent, for the same reason as
@@ -579,9 +596,9 @@ async fn register_at(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // Both versions declare the same two codes under the same strings (the slug carries no
-    // version), so 0.2's generated constants serve both.
-    use vti_specs::rooms::owner::register::v0_2::error_codes as codes;
+    // Every version declares the same two codes under the same strings (the slug carries no
+    // version), so 0.3's generated constants serve both.
+    use vti_specs::rooms::owner::register::v0_3::error_codes as codes;
     if let Err(r) = super::helpers::require_capability(
         state,
         auth,
@@ -594,8 +611,10 @@ async fn register_at(
         return r;
     }
 
-    // The request schemas are identical; the envelope was validated against its own.
-    let req: vti_specs::rooms::owner::register::v0_2::Payload = match parse_payload(&doc) {
+    // 0.2's request is 0.3's without `recordRetention` and `signalDelay`; the envelope was
+    // validated against its own version's schema, so a 0.2 request carrying either never
+    // reaches here.
+    let req: vti_specs::rooms::owner::register::v0_3::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -626,6 +645,17 @@ async fn register_at(
     if let Some(days) = req.retention_days {
         payload["retentionDays"] = serde_json::json!(u64::from(days));
     }
+    // 0.3: passed through as given, to `rooms/create` 0.3, whose descriptions govern.
+    let mut create_v3 = payload.clone();
+    if let Some(retention) = &req.record_retention {
+        create_v3["recordRetention"] = serde_json::to_value(retention).unwrap_or(Value::Null);
+    }
+    if let Some(delay) = &req.signal_delay {
+        create_v3["signalDelay"] = serde_json::to_value(delay).unwrap_or(Value::Null);
+    }
+    // Asked for either, the host must take `rooms/create` 0.3 or the room is not registered:
+    // a room registered under settings other than its owner's is what 0.3 refuses to allow.
+    let states_settings = req.record_retention.is_some() || req.signal_delay.is_some();
 
     // Signed as the owner, not as this agent: `rooms/create` is issued by its Owner, and a
     // host records as owner only the party whose proof is on the request. This is what
@@ -648,25 +678,51 @@ async fn register_at(
         Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
     };
-    let reply = match crate::operations::room_host::send_room_task_typed(
-        signing_context(state, auth),
-        &state.room_groups_ks,
-        &member,
-        &crate::operations::outbound::Outbound::from_app_state(state, &resolver),
-        &req.host,
-        &owner_key.key_id,
-        &owner_did,
-        &owner_key.verification_method,
-        vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
-        &format!("{}#response", vti_rooms::wire::ROOMS_CREATE_V2_TYPE),
-        payload,
-    )
-    .await
+    let outbound = crate::operations::outbound::Outbound::from_app_state(state, &resolver);
+    let (outbound, member, host, owner_key, owner_did) =
+        (&outbound, &member, &req.host, &owner_key, &owner_did);
+    let send = |task: &'static str, body: Value| async move {
+        crate::operations::room_host::send_room_task_typed(
+            signing_context(state, auth),
+            &state.room_groups_ks,
+            member,
+            outbound,
+            host,
+            &owner_key.key_id,
+            owner_did,
+            &owner_key.verification_method,
+            task,
+            &format!("{task}#response"),
+            body,
+        )
+        .await
+    };
+    // `rooms/create` 0.3 for either version, when the host speaks it (0.3, *What changed
+    // from 0.2*). A host that does not is asked at 0.2 only when nothing 0.3 carries was
+    // asked for: then the two requests are the same room. Not a retry — a host answering
+    // `unsupported*` ran nothing.
+    let mut sent = send(vti_rooms::wire::ROOMS_CREATE_V3_TYPE, create_v3).await;
+    if !states_settings
+        && matches!(&sent, Err(RoomTaskError::Refused { code, .. }) if is_unsupported(code))
     {
+        sent = send(vti_rooms::wire::ROOMS_CREATE_V2_TYPE, payload).await;
+    }
+    let reply = match sent {
         Ok(v) => v,
         // These two report the registration alone (0.2): the host's own reason, carried in
         // `details`.
         Err(RoomTaskError::Refused { code, reason, .. }) => {
+            // 0.3: a host that does not accept `rooms/create` 0.3, asked for a setting only
+            // 0.3 carries, is `hostRefused` — never a room registered without it.
+            let reason = if states_settings && is_unsupported(&code) {
+                format!(
+                    "{reason} (the host does not accept rooms/create 0.3, so it cannot record \
+                     the record retention or signal delay asked for; the room is not \
+                     registered)"
+                )
+            } else {
+                reason
+            };
             return super::helpers::reject_with_code(
                 &doc,
                 super::room_group::declared(codes::HOST_REFUSED),
@@ -722,7 +778,7 @@ async fn register_at(
     // **before answering** — a room moving hosts would otherwise arrive without its
     // withdrawals, and its new host honour what the old one refused (trust-tasks-tf #804).
     let delivered =
-        deliver_after_registration(state, auth, &resolver, &req.room_id, &req.host, &owner_did)
+        deliver_after_registration(state, auth, &resolver, &req.room_id, &req.host, owner_did)
             .await;
     match delivered {
         Ok(Some(revocation)) => body["revocation"] = revocation,

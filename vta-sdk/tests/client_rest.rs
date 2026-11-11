@@ -2659,6 +2659,8 @@ async fn room_owner_register_never_falls_back_to_0_1() {
             owner_did: Some("did:webvh:example.com:people:alice"),
             retention_days: None,
             retention_policy: None,
+            record_retention: None,
+            signal_delay: None,
         })
         .await
         .expect_err("no 0.2");

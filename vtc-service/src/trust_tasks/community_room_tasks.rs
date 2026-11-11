@@ -761,6 +761,7 @@ async fn handle_create(
         mirror_of: None,
         record_retention: None,
         last_prune: None,
+        signal_delay: Default::default(),
         epoch_floor: None,
         frozen_at: None,
     };

@@ -4494,6 +4494,26 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_REGISTER_0_3,
+            checked!(
+                specs::rooms::owner::register::v0_3::Payload,
+                specs::rooms::owner::register::v0_3::Response,
+                // A room meant as a conversation, stating both settings at creation.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:standup",
+                    "host": "did:webvh:example.org:rooms-mirror",
+                    "visibility": "attributed",
+                    "recordRetention": { "tombstoneDays": 7, "recordDays": 365 },
+                    "signalDelay": "none"
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:standup",
+                    "host": "did:webvh:example.org:rooms-mirror",
+                    "epoch": 1
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
             checked!(
                 specs::rooms::owner::group::create::v0_1::Payload,

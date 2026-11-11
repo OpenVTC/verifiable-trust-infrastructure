@@ -802,6 +802,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // a host answers as accepted. Its `revocation` reports the list at the host *now*, so a
     // retry's answer is the more current one, not a worse one.
     (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, RetrySafe),
+    // 0.2's, with the room's record retention and signal delay passed to the host's
+    // create: a repeat names the same settings, and a host holding the room already
+    // answers as above.
+    (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_3, RetrySafe),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1, Keyed),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2, Keyed),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3, Keyed),

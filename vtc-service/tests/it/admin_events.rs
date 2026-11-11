@@ -759,6 +759,7 @@ fn hosted_room(epoch_expires_at: Option<u64>) -> vtc_service::rooms::Room {
         mirror_of: None,
         record_retention: None,
         last_prune: None,
+        signal_delay: Default::default(),
         epoch_floor: None,
         frozen_at: None,
     }

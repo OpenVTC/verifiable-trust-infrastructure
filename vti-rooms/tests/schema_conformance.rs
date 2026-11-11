@@ -996,6 +996,18 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::info::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
+            vti_rooms::wire::ROOMS_CREATE_V3_TYPE,
+            <rooms::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_INFO_V4_TYPE,
+            <rooms::info::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_SIGNAL_DELAY_SET_TYPE,
+            <rooms::signal_delay::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
             ROOMS_RECORDS_PRUNE_V2_TYPE,
             <rooms::records::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),

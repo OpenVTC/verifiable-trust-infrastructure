@@ -196,6 +196,11 @@ async fn get_body(
         "limits": effective_json(&limits),
         "usage": { "room": room_usage, "orphans": orphans },
         "largestBlobs": largest,
+        // The room's signal delay (`rooms/signal-delay/set/0.1`; trust-tasks-tf #1084), which
+        // `vtc/rooms/get/0.3` has no member for: what this host applies to the room's watch
+        // signals, `randomised` for a room that never set one. The room's administrators
+        // change it; the community, as host, only shows it.
+        "ext": { "org.openvtc": { "signalDelay": room.signal_delay.as_str() } },
     });
     // Item 5: a count, never the DIDs, and none on a private room.
     if room.visibility != Visibility::Private {

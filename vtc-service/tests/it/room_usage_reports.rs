@@ -88,6 +88,7 @@ async fn room_owned_by(vtc: &TestVtc, visibility: Visibility, owner: &str) -> vt
         mirror_of: None,
         record_retention: None,
         last_prune: None,
+        signal_delay: Default::default(),
         epoch_floor: None,
         frozen_at: None,
     };

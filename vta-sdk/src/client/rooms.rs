@@ -569,19 +569,29 @@ impl VtaClient {
     /// caller MUST treat it so: say so rather than present the room as ready. The VTA goes
     /// on delivering a `pending` list on its own; bring the host up to date at once with
     /// [`Self::room_owner_revoke`] naming it and no withdrawal. Never register again to
-    /// repair it. Sent at 0.2 only: a VTA that does not serve it answers
-    /// [`VtaError::UnsupportedTaskType`] and is upgraded rather than asked at 0.1.
+    /// repair it.
+    ///
+    /// Sent at **0.3** when the request states a `record_retention` or a `signal_delay`
+    /// (which 0.2 cannot carry), and at 0.2 otherwise — the request 0.2 and 0.3 share, so a
+    /// VTA not yet serving 0.3 still registers a room asking nothing new. Neither falls back:
+    /// a VTA that does not serve the version sent answers [`VtaError::UnsupportedTaskType`]
+    /// and is upgraded rather than asked at an older one, because a room registered without
+    /// the settings its owner stated is the failure `rooms/create` 0.3 exists to prevent.
     pub async fn room_owner_register(
         &self,
         request: RoomRegistration<'_>,
-    ) -> Result<vti_specs::rooms::owner::register::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::register::v0_3::Response, VtaError> {
         let payload = serde_json::to_value(room_register_payload(&request)?)?;
+        let task = if request.record_retention.is_some() || request.signal_delay.is_some() {
+            trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_3
+        } else {
+            trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2
+        };
         // One host round trip for the registration and one for the room's list, over
         // whatever transport the host speaks.
         let timeout = ROOM_TT_TIMEOUT * 3;
-        let value = self
-            .dispatch_trust_task(trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, payload, timeout)
-            .await?;
+        let value = self.dispatch_trust_task(task, payload, timeout).await?;
+        // 0.3's response is 0.2's.
         parse_response(value, "rooms/owner/register")
     }
 
@@ -1207,13 +1217,21 @@ pub fn room_label_payload(
 /// item type (`read`, `write`, `curate`, `admin`; parse one with `str::parse`).
 pub type RoomAction = vti_specs::rooms::owner::issue_authority::v0_2::PayloadActionsItem;
 
-/// A room's visibility tier, as `rooms/owner/register/0.2` names it (`open`,
+/// A room's visibility tier, as `rooms/owner/register/0.3` names it (`open`,
 /// `attributed`, `private`; parse one with `str::parse`).
-pub type RoomVisibility = vti_specs::rooms::owner::register::v0_2::Visibility;
+pub type RoomVisibility = vti_specs::rooms::owner::register::v0_3::Visibility;
 
 /// Whether a room keeps its history readable across a membership change
 /// (`chained`, `fromJoin`; parse one with `str::parse`).
-pub type RoomRetentionPolicy = vti_specs::rooms::owner::register::v0_2::RetentionPolicy;
+pub type RoomRetentionPolicy = vti_specs::rooms::owner::register::v0_3::RetentionPolicy;
+
+/// Whether a room's host waits a randomised interval before its watch signals
+/// (`rooms/_shared/0.2` `SignalDelay`: `randomised`, the default, or `none`, for a room
+/// used as a conversation; parse one with `str::parse`).
+pub type RoomSignalDelay = vti_specs::rooms::owner::register::v0_3::SignalDelay;
+
+/// How long a room keeps its records, by age (`rooms/_shared/0.2` `RecordRetention`).
+pub type RoomRecordRetention = vti_specs::rooms::owner::register::v0_3::RecordRetention;
 
 /// What [`VtaClient::room_owner_register`] asks for.
 #[derive(Debug, Clone)]
@@ -1230,19 +1248,29 @@ pub struct RoomRegistration<'a> {
     pub retention_days: Option<std::num::NonZeroU64>,
     /// Immutable once set; `None` takes the host's default for the life of the room.
     pub retention_policy: Option<RoomRetentionPolicy>,
+    /// How long the room keeps its records, by age — changed later with
+    /// `rooms/records/retention/set`. `None` states none: no record is ever eligible by
+    /// age. Stating one sends 0.3.
+    pub record_retention: Option<RoomRecordRetention>,
+    /// Whether the host waits a randomised interval before the room's watch signals —
+    /// changed later with `rooms/signal-delay/set`. `None` is `randomised`. Stating one
+    /// sends 0.3.
+    pub signal_delay: Option<RoomSignalDelay>,
 }
 
 fn room_register_payload(
     r: &RoomRegistration<'_>,
-) -> Result<vti_specs::rooms::owner::register::v0_2::Payload, VtaError> {
-    use vti_specs::rooms::owner::register::v0_2::Payload;
+) -> Result<vti_specs::rooms::owner::register::v0_3::Payload, VtaError> {
+    use vti_specs::rooms::owner::register::v0_3::Payload;
     let payload = Payload::builder()
         .room_id(r.room_id)
         .host(r.host_did)
         .visibility(r.visibility)
         .owner_did(r.owner_did.map(str::to_string))
         .retention_days(r.retention_days)
-        .retention_policy(r.retention_policy);
+        .retention_policy(r.retention_policy)
+        .record_retention(r.record_retention.clone())
+        .signal_delay(r.signal_delay);
     Payload::try_from(payload)
         .map_err(|e| VtaError::Validation(format!("rooms/owner/register request: {e}")))
 }
@@ -1292,6 +1320,8 @@ mod tests {
             owner_did: Some("did:webvh:Qm:example.org:alice"),
             retention_days: std::num::NonZeroU64::new(30),
             retention_policy: Some("chained".parse().unwrap()),
+            record_retention: None,
+            signal_delay: None,
         }
     }
 
@@ -1319,6 +1349,22 @@ mod tests {
         let v = serde_json::to_value(room_register_payload(&r).unwrap()).unwrap();
         assert!(v.get("ownerDid").is_none(), "{v}");
         assert!(v.get("retentionPolicy").is_none(), "{v}");
+        assert!(v.get("signalDelay").is_none(), "{v}");
+    }
+
+    /// 0.3's two members go out as the specification names them, and only when stated.
+    #[test]
+    fn a_registration_states_its_record_retention_and_signal_delay() {
+        let mut r = registration();
+        r.signal_delay = Some("none".parse().unwrap());
+        r.record_retention =
+            Some(serde_json::from_value(json!({ "tombstoneDays": 7, "recordDays": 365 })).unwrap());
+        let v = serde_json::to_value(room_register_payload(&r).unwrap()).unwrap();
+        assert_eq!(v["signalDelay"], "none");
+        assert_eq!(
+            v["recordRetention"],
+            json!({ "tombstoneDays": 7, "recordDays": 365 })
+        );
     }
 
     /// "Confers nothing" and "confers everything" are the two readings of an empty
