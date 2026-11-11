@@ -341,10 +341,17 @@ async fn main() -> anyhow::Result<()> {
     state.set_refuse_rewrites_by_others(!args.allow_rewrites_by_others);
     let creation = args.room_creation();
     match &creation.creators {
-        room_host::creation::Creators::None => tracing::info!(
-            "no --room-creator named: this host registers no new rooms (pass --room-creator \
-             <DID>, or --any-room-creator for a host open to anyone)"
-        ),
+        room_host::creation::Creators::None => {
+            // A warning, not a note: an upgrade from a host that registered anyone's
+            // rooms lands here, and its owners' next `rooms/create` is refused.
+            let held = room_host::rooms_held(&state).await.unwrap_or(0);
+            tracing::warn!(
+                rooms_held = held,
+                "no --room-creator named: this host registers no new rooms. Rooms it \
+                 holds are still served. Pass --room-creator <DID> for each owner that \
+                 registers rooms here, or --any-room-creator for a host open to anyone"
+            );
+        }
         room_host::creation::Creators::Only(dids) => tracing::info!(
             creators = dids.len(),
             max_rooms_per_owner = creation.max_rooms_per_owner,

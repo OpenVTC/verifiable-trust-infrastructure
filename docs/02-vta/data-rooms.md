@@ -1040,8 +1040,13 @@ room-host \
   is a courtesy limit: it counts by current owner, so a party with more DIDs,
   or one that transfers rooms, steps around it. A refusal names the limit, and
   a repeat of a registration that already happened is answered as already
-  registered. Embedding the library (`room_host::open_state`) is closed in the
-  same way until `HostState::set_room_creation` says who may register.
+  registered. A host started with no creator named says so at startup as a
+  warning, with how many rooms it holds, and a refused `rooms/create` is logged
+  (at most one line a minute, naming the signer and the limit, and counting the
+  rest). Embedding the library (`room_host::open_state`) is closed in the same
+  way until `HostState::set_room_creation` says who may register; an embedder
+  that adds or removes rooms through `HostState::rooms` (or calls
+  `HostState::rooms_changed`) has the change counted at the next registration.
 - **Room files have a ceiling by default.** `--storage-capacity-bytes` defaults
   to `50GiB` of room files across every room, deleted files awaiting collection
   included; raise it for a larger disk, or pass `unlimited`.

@@ -148,6 +148,13 @@ pub struct HostState {
     /// ([`RoomCounts`]). The lock is held across a registration's check and its write,
     /// so two concurrent creates cannot both pass a ceiling that has room for one.
     room_counts: Arc<tokio::sync::Mutex<Option<RoomCounts>>>,
+    /// Bumped whenever rooms may have been added, removed or moved between owners other
+    /// than by a registration here ([`HostState::rooms_changed`]). Kept counts taken at
+    /// an older value are recounted before they are relied on.
+    rooms_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// When a refused registration was last logged, and how many were refused since
+    /// ([`HostState::log_refused_registration`]).
+    refusal_log: Arc<std::sync::Mutex<RefusalLog>>,
 }
 
 impl HostState {
@@ -285,8 +292,21 @@ impl HostState {
     /// It is deliberately the *rooms* keyspace and not the records one: seeding rooms is a
     /// legitimate administrative act, and handing out the record store would let an embedder
     /// write records around every authorization check in this file.
+    ///
+    /// Handing it out counts as a change to the rooms ([`Self::rooms_changed`]): whatever
+    /// the caller adds or removes, registration recounts before it next relies on the
+    /// rooms it holds, so a removed room never holds a slot it no longer fills.
     pub fn rooms(&self) -> &KeyspaceHandle {
+        self.rooms_changed();
         &self.rooms
+    }
+
+    /// Say the rooms may have changed other than by a registration here — added,
+    /// removed, or moved between owners — so the counts registration is held to are
+    /// recounted before they are next relied on.
+    pub fn rooms_changed(&self) {
+        self.rooms_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The record keyspace, for the mirror puller.
@@ -936,6 +956,9 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
     // Checked and written under one lock, so concurrent creates cannot overshoot.
     let mut counts = state.room_counts.lock().await;
     if let Err(refusal) = admit_registration(state, &mut counts, &presenter, &room).await {
+        if let RegistrationRefused::Policy(why) = &refusal {
+            state.log_refused_registration(&presenter, why);
+        }
         return refusal_answer(doc, refusal);
     }
     match storage::create_room(&state.rooms, &room).await {
@@ -986,10 +1009,12 @@ struct RoomCounts {
     total: u64,
     per_owner: std::collections::HashMap<String, u64>,
     counted_at: std::time::Instant,
+    /// [`HostState::rooms_generation`] when counted.
+    generation: u64,
 }
 
 impl RoomCounts {
-    async fn count(rooms: &KeyspaceHandle) -> Result<Self, AppError> {
+    async fn count(rooms: &KeyspaceHandle, generation: u64) -> Result<Self, AppError> {
         let all = storage::list_rooms(rooms).await?;
         let mut per_owner = std::collections::HashMap::new();
         for r in &all {
@@ -1001,6 +1026,7 @@ impl RoomCounts {
             total: all.len() as u64,
             per_owner,
             counted_at: std::time::Instant::now(),
+            generation,
         })
     }
 
@@ -1044,12 +1070,15 @@ async fn admit_registration(
             room.room_id
         ))));
     }
+    let generation = state
+        .rooms_generation
+        .load(std::sync::atomic::Ordering::Relaxed);
     if counts
         .as_ref()
-        .is_none_or(|c| c.counted_at.elapsed() > ROOM_COUNTS_MAX_AGE)
+        .is_none_or(|c| c.generation != generation || c.counted_at.elapsed() > ROOM_COUNTS_MAX_AGE)
     {
         *counts = Some(
-            RoomCounts::count(&state.rooms)
+            RoomCounts::count(&state.rooms, generation)
                 .await
                 .map_err(RegistrationRefused::Store)?,
         );
@@ -1060,11 +1089,55 @@ async fn admit_registration(
         .map_err(RegistrationRefused::Policy)
 }
 
+/// The refused-registration log's state: when one was last written, and how many were
+/// refused without a line since.
+#[derive(Default)]
+struct RefusalLog {
+    last: Option<std::time::Instant>,
+    unlogged: u64,
+}
+
+/// At most one refused-registration line per this long; the line counts the rest.
+const REFUSAL_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl HostState {
-    /// Forget the kept room counts, so the next registration recounts. Called after
-    /// anything that moves a room between owners.
-    async fn recount_rooms(&self) {
-        *self.room_counts.lock().await = None;
+    /// Log a refused registration for the operator, at most once per
+    /// [`REFUSAL_LOG_INTERVAL`], counting those not logged in between. A refusal is
+    /// usually a creator the operator has not named yet, or a limit reached; either is
+    /// something they act on, and an unbounded line per refusal is not.
+    fn log_refused_registration(&self, presenter: &str, refusal: &creation::CreationRefused) {
+        let mut log = self
+            .refusal_log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let due = log.last.is_none_or(|t| t.elapsed() >= REFUSAL_LOG_INTERVAL);
+        if !due {
+            log.unlogged += 1;
+            return;
+        }
+        let also = std::mem::take(&mut log.unlogged);
+        log.last = Some(std::time::Instant::now());
+        drop(log);
+        match refusal {
+            creation::CreationRefused::NotACreator => tracing::warn!(
+                presenter,
+                also_refused_since_last_line = also,
+                "refused rooms/create: the signer is not a creator this host was given \
+                 (--room-creator)"
+            ),
+            creation::CreationRefused::OwnerAtLimit { max } => tracing::warn!(
+                presenter,
+                max_rooms_per_owner = max,
+                also_refused_since_last_line = also,
+                "refused rooms/create: the owner holds its limit of rooms on this host"
+            ),
+            creation::CreationRefused::HostAtLimit { max } => tracing::warn!(
+                presenter,
+                max_rooms = max,
+                also_refused_since_last_line = also,
+                "refused rooms/create: this host holds its limit of rooms (--max-rooms)"
+            ),
+        }
     }
 }
 
@@ -1866,7 +1939,7 @@ async fn transfer_owner(state: &HostState, doc: &TrustTask<Value>, payload: Valu
     };
     match storage::set_owner(&state.rooms, &req.room_id, &req.new_owner_did, now()).await {
         Ok(updated) => {
-            state.recount_rooms().await;
+            state.rooms_changed();
             audit_room(&room, &authorized, operation, None);
             respond(
                 doc,
@@ -1954,7 +2027,7 @@ async fn claim_owner(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
     }
     match storage::set_owner(&state.rooms, &req.room_id, &presenter, now()).await {
         Ok(updated) => {
-            state.recount_rooms().await;
+            state.rooms_changed();
             audit_room(&room, &authorized, operation, None);
             respond(
                 doc,
@@ -2134,6 +2207,11 @@ fn cors_layer(allowed_origins: &[String]) -> Option<tower_http::cors::CorsLayer>
     )
 }
 
+/// How many rooms `state` holds, mirrors included.
+pub async fn rooms_held(state: &HostState) -> Result<usize, AppError> {
+    Ok(storage::list_rooms(&state.rooms).await?.len())
+}
+
 /// Open the store with a `did:key`-only verifier.
 ///
 /// The conservative construction, and what a test or the example wants: no network
@@ -2207,6 +2285,8 @@ pub fn open_state_with_files(
         answer_signer: Arc::new(std::sync::OnceLock::new()),
         creation: Arc::new(std::sync::RwLock::new(creation::RoomCreation::default())),
         room_counts: Arc::new(tokio::sync::Mutex::new(None)),
+        rooms_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        refusal_log: Arc::new(std::sync::Mutex::new(RefusalLog::default())),
     }))
 }
 
@@ -2915,6 +2995,50 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// A room removed through [`HostState::rooms`] frees its slot at once: the kept
+    /// counts are not relied on past a change made there.
+    #[tokio::test]
+    async fn a_room_removed_by_the_embedder_frees_its_slot_at_once() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 10,
+            max_rooms: 1,
+        });
+        let app = router(st.clone());
+        let (a, b) = (
+            RoomFixture::new(Visibility::Open).await,
+            RoomFixture::new(Visibility::Open).await,
+        );
+        register(&app, &a).await;
+        let (status, body) = create_as(&app, &b.room.room_id, &b.owner).await;
+        assert_ne!(status, StatusCode::OK, "at the ceiling: {body}");
+
+        vti_rooms::storage::purge_room_rows(
+            st.rooms(),
+            &st.records,
+            &st.epoch_links,
+            &st.revocations,
+            &a.room.room_id,
+        )
+        .await
+        .unwrap();
+        register(&app, &b).await;
+    }
+
+    /// Refused registrations are logged at most once a minute, the rest counted.
+    #[test]
+    fn refused_registrations_are_logged_at_a_bounded_rate() {
+        let (_d, st) = state();
+        let refused = creation::CreationRefused::NotACreator;
+        st.log_refused_registration("did:key:zA", &refused);
+        st.log_refused_registration("did:key:zB", &refused);
+        st.log_refused_registration("did:key:zC", &refused);
+        let log = st.refusal_log.lock().unwrap();
+        assert!(log.last.is_some());
+        assert_eq!(log.unlogged, 2);
     }
 
     /// `open_state` registers nothing until its embedder says who may (R5.1).
