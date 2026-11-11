@@ -798,7 +798,7 @@ pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
 /// `rooms keys list --host-did` — [`cmd_rooms_keys_list`], with each room's own name read
 /// from that host (`rooms/keys/profile/read`), as the member each entry is held as.
 pub async fn cmd_rooms_keys_list_named(client: &VtaClient, host_did: Option<&str>) -> CmdResult {
-    let list = client.room_list(true).await?;
+    let list = client.room_list_v0_3(true).await?;
     if crate::render::is_json_output() {
         crate::render::print_json(&list.rooms)?;
         return Ok(());
@@ -848,6 +848,10 @@ pub async fn cmd_rooms_keys_list_named(client: &VtaClient, host_did: Option<&str
             "    epoch {}, reads back to epoch {}",
             r.epoch, r.earliest_readable_epoch
         );
+        match &r.read_marker {
+            Some(m) => println!("    {}", read_marker_line(m.version, m.created_at.as_ref())),
+            None => println!("    no read marker: each device counts unread on its own"),
+        }
         if let Some(p) = personal {
             if let Some(d) = &p.description {
                 println!("    your description: {}", indent(&as_text(d)));
@@ -942,6 +946,69 @@ pub async fn cmd_rooms_keys_label(
             if let Some(n) = &p.notes {
                 println!("  notes: {}", indent(&as_text(n)));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Where a read marker stands, in words: what a device counts unread after.
+fn read_marker_line<T: std::fmt::Display>(version: u64, created_at: Option<T>) -> String {
+    match (version, created_at) {
+        (0, None) => "read marker: nothing seen — every message is unread".to_string(),
+        (v, None) => format!("read to version {v}: messages after it are unread"),
+        (v, Some(t)) => {
+            format!("read to version {v} (newest seen stored {t}): messages after it are unread")
+        }
+    }
+}
+
+/// `rooms keys mark-read` — move the member's read marker for a room
+/// (`rooms/keys/read-marker/set/0.1`): forward only, unless `rewind` ("mark unread").
+/// Idempotent: asking again changes nothing and says so.
+pub async fn cmd_rooms_keys_mark_read(
+    client: &VtaClient,
+    room_id: &str,
+    member: &str,
+    version: u64,
+    created_at: Option<&str>,
+    rewind: bool,
+) -> CmdResult {
+    let resp = match client
+        .room_read_marker_set(room_id, member, version, created_at, rewind)
+        .await
+    {
+        Ok(r) => r,
+        Err(vta_sdk::error::VtaError::Rejected { code, .. })
+            if code == "rooms/keys/read-marker/set:notHeld" =>
+        {
+            return Err(format!(
+                "this VTA holds no group for room `{room_id}` as `{member}`, or you do not act \
+                 as that member. `pnm rooms keys list` shows each room with the member it is \
+                 held as — pass that DID as --member."
+            )
+            .into());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
+    let now = read_marker_line(
+        resp.read_marker.version,
+        resp.read_marker.created_at.as_ref(),
+    );
+    match (resp.moved, rewind) {
+        (true, true) => println!("{room_id}: marked unread on every device; {now}."),
+        (true, false) => println!("{room_id}: marked read on every device; {now}."),
+        (false, true) => println!("{room_id}: the marker already stands there; {now}."),
+        (false, false) => {
+            println!("{room_id}: another device has read as far or further; {now}.");
+            println!(
+                "  To mark it unread from an earlier message, run:\n    \
+                 pnm rooms keys mark-read {room_id} --member {member} --version <before it> \
+                 --unread"
+            );
         }
     }
     Ok(())

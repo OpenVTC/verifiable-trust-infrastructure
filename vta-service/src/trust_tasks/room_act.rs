@@ -1734,6 +1734,209 @@ mod tests {
             .expect("the body verifies against the persona's key");
     }
 
+    /// The record case again with a **did:webs** persona: the VTA holds the
+    /// did:webs, completes the client's put as it, and a real host that knows
+    /// nothing but the document the did:webs host would serve verifies the proof,
+    /// authorizes the chain and records the did:webs as author. The body's proof
+    /// verifies under the key the did:webs key state names.
+    #[cfg(feature = "webs")]
+    #[tokio::test]
+    async fn a_record_written_by_a_did_webs_personas_own_client_is_the_personas() {
+        use crate::operations::did_webs::{
+            CreateDidWebsParams, WebsDeps, WebsHost, create_did_webs,
+        };
+        use crate::webvh_host::RequestUriResponse;
+
+        /// A did-hosting service that keeps the stream it was given.
+        #[derive(Default)]
+        struct Host(Mutex<Option<String>>);
+        impl WebsHost for Host {
+            async fn resolve_domain(&self, requested: Option<&str>) -> Result<String, AppError> {
+                Ok(requested.unwrap_or("hosting.example").to_string())
+            }
+            async fn publish(
+                &self,
+                mnemonic: &str,
+                keri_cesr: &str,
+                domain: Option<&str>,
+            ) -> Result<RequestUriResponse, AppError> {
+                *self.0.lock().unwrap() = Some(keri_cesr.to_string());
+                let label = domain.unwrap_or("hosting.example").replace(':', "%3A");
+                Ok(RequestUriResponse {
+                    did_url: format!("did:webs:{label}:{}", mnemonic.replace('/', ":")),
+                    mnemonic: mnemonic.to_string(),
+                })
+            }
+            async fn delete(&self, _: &str, _: Option<&str>) -> Result<(), AppError> {
+                Ok(())
+            }
+        }
+
+        let f = fixture(&["read", "write"]).await;
+        // Carol's persona is a did:webs this VTA holds, in a context of her own, so
+        // she is the room's only member her client may act as.
+        crate::contexts::create_context(&f.state.contexts_ks, "carol", "Carol")
+            .await
+            .expect("create context");
+        crate::test_support::seed_webvh_server(
+            &f.state.webvh_ks,
+            "host-1",
+            "did:web:hosting.example",
+        )
+        .await;
+        let mut config = f.state.config.read().await.clone();
+        config.dids.webs_enabled = true;
+        let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .expect("resolver");
+        let webs_host = Host::default();
+        let mut params = CreateDidWebsParams::new("carol", "host-1");
+        params.path = Some("people/carol".into());
+        params.add_tsp_service = Some(false);
+        let carol = create_did_webs(
+            &WebsDeps::from_app_state(&f.state, &config, &resolver),
+            &crate::test_support::super_admin_claims(),
+            params,
+            &webs_host,
+            "test",
+        )
+        .await
+        .expect("a did:webs persona");
+        let stream = webs_host.0.lock().unwrap().clone().expect("published");
+        let doc = affinidi_did_webs::resolve_from_artifacts(
+            &affinidi_did_webs::DidWebs::parse(&carol.did).unwrap(),
+            stream.as_bytes(),
+            None,
+        )
+        .expect("the published stream resolves");
+
+        grant(&f.state, &f.room, &carol.did, "carol", &["read", "write"]).await;
+        found_group(&f, &carol.did).await;
+        let client = crate::test_support::admin_claims_for_context("carol");
+
+        // A real host that resolves the did:webs from what its host serves.
+        let mut seen = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .expect("resolver");
+        seen.add_did_document(&carol.did, doc).await;
+        let host_dir = tempfile::tempdir().unwrap();
+        let host = room_host::open_state_with_resolver(
+            host_dir.path(),
+            vti_common::auth::TrustTaskVmResolver::new(seen),
+        )
+        .expect("a host");
+        vti_rooms::storage::create_room(
+            host.rooms(),
+            &vti_rooms::Room {
+                room_id: f.room.did.clone(),
+                owner_did: carol.did.clone(),
+                visibility: vti_rooms::Visibility::Attributed,
+                retention_policy: vti_rooms::RetentionPolicy::Chained,
+                anchor_cadence: Default::default(),
+                epoch: 1,
+                next_version: 1,
+                retention_days: 90,
+                epoch_expires_at: None,
+                created_at: 0,
+                updated_at: 0,
+                mirror_of: None,
+                record_retention: None,
+                last_prune: None,
+                epoch_floor: None,
+                frozen_at: None,
+            },
+        )
+        .await
+        .expect("seed the room");
+
+        let unsigned_body = json!({
+            "roomId": f.room.did, "key": KEY, "version": 1, "author": carol.did,
+            "title": "Pricing holds", "body": "Agreed not to reprice.",
+        });
+        let sealed = seal(
+            &f.state,
+            &client,
+            json!({
+                "roomId": f.room.did, "key": KEY, "version": 1,
+                "plaintext": b64(&unsigned_body), "signAsPrincipal": true,
+            }),
+        )
+        .await;
+        assert!(
+            sealed["type"].as_str().unwrap().ends_with("#response"),
+            "{sealed}"
+        );
+        let out = act(
+            &f.state,
+            &client,
+            unsigned(
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+                "did:key:zHost",
+                json!({
+                    "roomId": f.room.did, "key": KEY, "expectedVersion": 0,
+                    "sealed": sealed["payload"]["sealed"],
+                }),
+            ),
+        )
+        .await;
+        assert!(
+            out["type"].as_str().unwrap().ends_with("#response"),
+            "{out}"
+        );
+        assert_eq!(out["payload"]["principal"], carol.did);
+        let completed = out["payload"]["document"].clone();
+        assert_eq!(completed["issuer"], carol.did);
+        assert_eq!(
+            completed["proof"]["verificationMethod"], carol.signing_key_id,
+            "{completed}"
+        );
+
+        let answer =
+            room_host::dispatch(&host, serde_json::to_string(&completed).unwrap().as_bytes()).await;
+        assert_eq!(answer.status, 200, "{}", answer.document);
+        let stored = vti_rooms::storage::get_record(host.records(), &f.room.did, KEY)
+            .await
+            .expect("the record");
+        assert_eq!(stored.author.as_deref(), Some(carol.did.as_str()));
+
+        let plaintext = room_groups::open_record(
+            &f.state.room_groups_ks,
+            &Member::new(&f.room.did, &carol.did).unwrap(),
+            KEY,
+            stored.version,
+            stored.sealed.as_deref().unwrap(),
+            stored.nonce.as_deref().unwrap(),
+            stored.epoch.unwrap(),
+        )
+        .await
+        .expect("the record opens");
+        let mut signed: Value = serde_json::from_slice(&plaintext).unwrap();
+        let proof: affinidi_data_integrity::DataIntegrityProof =
+            serde_json::from_value(signed.as_object_mut().unwrap().remove("proof").unwrap())
+                .unwrap();
+        assert_eq!(proof.proof_purpose, "assertionMethod");
+        assert_eq!(proof.verification_method, carol.signing_key_id);
+        let record: crate::keys::KeyRecord = f
+            .state
+            .keys_ks
+            .get(crate::keys::store_key(&carol.signing_key_id))
+            .await
+            .unwrap()
+            .expect("the signing key record");
+        let (_, multikey) = multibase::decode(&record.public_key).unwrap();
+        proof
+            .verify_with_public_key(
+                &signed,
+                &multikey[2..],
+                affinidi_data_integrity::VerifyOptions::new(),
+            )
+            .expect("the body verifies against the did:webs signing key");
+    }
+
     /// A file moved by the member's own client is the persona's too: the begin and the
     /// direct commit are completed as the persona, the bytes go straight to storage over
     /// the host's targets, and a proxied upload's chunks are signed by a single-use key —

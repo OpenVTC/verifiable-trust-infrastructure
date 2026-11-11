@@ -491,6 +491,7 @@ pub async fn cmd_rooms_list(
         for r in records.iter().take(shown) {
             list_row(r, &names);
         }
+        unread_summary(client, target.room_id, &records).await;
     }
     let mut named: Vec<(&str, &str)> = names.iter().collect();
     if !named.is_empty() {
@@ -501,6 +502,66 @@ pub async fn cmd_rooms_list(
         }
     }
     Ok(())
+}
+
+/// How many of `records` are unread against the member's read marker for the room, which
+/// their VTA keeps across their devices (`rooms/keys/list/0.3`, `rooms/keys/read-marker/set`)
+/// — and how to mark them read. Says nothing when no marker is held, or when the room is held
+/// as several members (whose markers differ). This reader keeps no copy of the room, so it
+/// counts as `rooms/changed` step 4 says such a reader does: a record whose `createdAt`
+/// (else `updatedAt`) is after the marker's `createdAt`; without one, a record past the
+/// marker's version.
+async fn unread_summary(client: &VtaClient, room_id: &str, records: &[&Value]) {
+    let Ok(list) = client.room_list_v0_3(true).await else {
+        return;
+    };
+    let held: Vec<_> = list
+        .rooms
+        .iter()
+        .filter(|r| r.room_id.as_str() == room_id)
+        .collect();
+    let [entry] = held.as_slice() else {
+        return;
+    };
+    let Some(marker) = &entry.read_marker else {
+        return;
+    };
+    let stored = |r: &Value| {
+        r.get("createdAt")
+            .or_else(|| r.get("updatedAt"))
+            .and_then(Value::as_str)
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&chrono::Utc))
+    };
+    let unread = records
+        .iter()
+        .filter(|r| match &marker.created_at {
+            Some(seen) => stored(r).is_none_or(|t| t > *seen),
+            None => r.get("version").and_then(Value::as_u64).unwrap_or(0) > marker.version,
+        })
+        .count();
+    let member = entry.member.as_str();
+    if unread == 0 {
+        println!(
+            "\nAll read (your read marker is at version {}).",
+            marker.version
+        );
+        return;
+    }
+    println!(
+        "\n{unread} unread since your read marker (version {}).",
+        marker.version
+    );
+    if let Some(newest) = records
+        .iter()
+        .filter_map(|r| r.get("version").and_then(Value::as_u64))
+        .max()
+    {
+        println!(
+            "Mark read on every device: pnm rooms keys mark-read {room_id} --member {member} \
+             --version {newest}"
+        );
+    }
 }
 
 /// One record of `rooms list`, its writer named as they named themselves where known.

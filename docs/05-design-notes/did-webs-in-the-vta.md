@@ -107,3 +107,55 @@ hosting.
 | 6 | VTI | Personas: `persona_key_for`, `own_document`; a room member on a `did:webs` persona, end to end. *Done (#2563), except the rooms end-to-end test.* |
 | 7 | VTI | `pnm` / `cnm` commands; `docs/02-vta/did-webs.md`. *Done: `pnm webs …` (cnm has no DID commands to mirror) and the operator guide.* |
 | 8 | dtgwg-vti-spec | Issue: name `did:webs` for a service DID once the key-role designation is adopted (VTI-KEY-001, the open issue under VTI-KEY-173). *Filed: dtgwg-vti-spec#120.* |
+
+## 4. Service DIDs: a node's own identity as did:webs
+
+**Status:** decided 2026-11-11 by the maintainer, implementation not started.
+The specification change is dtgwg-vti-spec#121 (refs #120): `did:webs` becomes
+an *optional*, alpha method for a node's durable identity (VTI-KEY-001);
+`did:webvh` stays the default; a node uses a `did:webs` identity only toward a
+peer that has declared it resolves `did:webs` (VTI-KEY-008), and otherwise
+fails with `methodNotDeclared` and sends nothing (VTI-KEY-009). Until #121 is
+merged, §1's boundary stands and the code below stays behind it.
+
+### Decisions
+
+1. **Keys are found by role, not by fragment, for every method.** Node code
+   addresses its own keys as `{did}#key-0` (signing), `#key-1` (key agreement)
+   and `#sealed-transfer-0`. A `did:webs` cannot publish those: a level-1
+   method's id is the key itself, and the key-role designation's roles have
+   key-derived ids. So the VTA, the VTC and the host services look their keys
+   up in their own current document by relationship and role — the signing key
+   by `assertionMethod`/`authentication`, the key agreement key by
+   `keyAgreement`, the sealed-transfer key by its role — and keep the key id the
+   document gives. This is what VTI-KEY-150 and key-roles step 3 ask for
+   anyway, and it changes nothing a webvh peer sees.
+2. **A did:webs node identity carries the key-role designation**
+   (affinidi-did-webs `key_roles`: attestation, operational, messaging), so its
+   signing, sealed-transfer and key agreement keys are distinct as a webvh
+   node's are. Without the designation it would be level 1 with one key for
+   everything.
+3. **First boot registers self-certifyingly.** A node's `did:webs` must be on a
+   host before it exists, and today a VTA proves itself to a host with its own
+   DID. The host (affinidi-webvh-service) accepts a `did/register/0.1` for a
+   `did:webs` whose request is signed by the key the submitted KEL's inception
+   names — the KEL proves control — on a domain whose operator allows
+   self-registration. No interim identity, no manual step.
+4. **Peers declare in their DID document.** `resolvedMethods` (VTI-KEY-008), a
+   top-level member read from a peer's verified current document, the way
+   protocols are matched today (`vta_sdk::protocol::matching`). A webvh node
+   lists it in its own document; a party that addressed the node under its
+   `did:webs` has shown it resolves it.
+
+### Order of work
+
+| # | Where | What |
+|---|---|---|
+| S1 | dtgwg-vti-spec | #121: VTI-KEY-001, 003, 008, 009 |
+| S2 | dtgwg-trust-tasks-tf | `vta/webs/dids/create/0.2`: templates, and service identities |
+| S3 | affinidi-webvh-service | Self-certifying `did/register/0.1` for `did:webs` |
+| S4 | VTI | Node keys by role, for every method (decision 1) |
+| S5 | VTI | `resolvedMethods` in node documents and templates; the declaration check and both refusals |
+| S6 | VTI | A did:webs VTA identity: setup (interactive and TOML), first boot through S3, the key-role designation, readiness, the self-DID preload, `didcomm_light`, runtime services through `update_did_webs`, rotation of its own DID with the live secret swap |
+| S7 | VTI | A did:webs VTC identity, and host services minted through provision-integration templates |
+| S8 | VTI | TEE first boot (the enclave publishes to a host) |

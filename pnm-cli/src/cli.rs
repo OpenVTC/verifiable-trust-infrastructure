@@ -1758,6 +1758,33 @@ pub(crate) enum RoomKeysCommands {
         #[arg(long)]
         remove_tags: bool,
     },
+    /// Mark a room read — or, with `--unread`, unread again — on every one of your
+    /// devices (`rooms/keys/read-marker/set`). Your VTA keeps the marker for you alone:
+    /// never sent to the room, its host or a community. `pnm rooms keys list` shows it.
+    ///
+    /// Read only moves the marker forward: a device that has read further keeps its
+    /// marker, and the answer says so. `--unread` without `--version` marks the whole
+    /// room unread.
+    MarkRead {
+        /// The room's DID.
+        room_id: String,
+        /// The member the marker is for: the DID `pnm rooms keys list` shows the room
+        /// held as. A room held as two personas keeps a marker for each.
+        #[arg(long)]
+        member: String,
+        /// The highest room version you have seen the room to (as `pnm rooms list`
+        /// returns versions). Required unless `--unread`.
+        #[arg(long, required_unless_present = "unread")]
+        version: Option<u64>,
+        /// The host's `createdAt` of the newest message you have seen, exactly as the
+        /// host returned it.
+        #[arg(long, requires = "version")]
+        created_at: Option<String>,
+        /// Mark unread again: take this marker even when it is behind the one held —
+        /// the message after `--version` onwards shows as unread.
+        #[arg(long)]
+        unread: bool,
+    },
 }
 
 /// `pnm rooms name …` — your own name in a room (`memberProfile`).

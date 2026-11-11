@@ -422,6 +422,23 @@ pub(crate) async fn run(
             RoomKeysCommands::List { host_did } => {
                 return custody::cmd_rooms_keys_list_named(client, host_did.as_deref()).await;
             }
+            RoomKeysCommands::MarkRead {
+                room_id,
+                member,
+                version,
+                created_at,
+                unread,
+            } => {
+                return custody::cmd_rooms_keys_mark_read(
+                    client,
+                    &room_id,
+                    &member,
+                    version.unwrap_or(0),
+                    created_at.as_deref(),
+                    unread,
+                )
+                .await;
+            }
             RoomKeysCommands::Label {
                 room_id,
                 member,

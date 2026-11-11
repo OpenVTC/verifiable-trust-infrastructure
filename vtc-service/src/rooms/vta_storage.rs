@@ -85,6 +85,9 @@ pub struct VtaStorage {
     vta: Arc<dyn VtaChannel>,
     community_did: String,
     secrets: Arc<ThreadedSecretsResolver>,
+    /// The id this community's key agreement secret is held under: what its
+    /// own DID document lists (VTI-KEY-150). `#key-1` unless set.
+    key_agreement_id: Option<String>,
 }
 
 impl VtaStorage {
@@ -97,7 +100,16 @@ impl VtaStorage {
             vta,
             community_did,
             secrets,
+            key_agreement_id: None,
         }
+    }
+
+    /// The id the community's key agreement secret is held under, as its own
+    /// DID document lists it, where that is not `#key-1`.
+    #[must_use]
+    pub fn with_key_agreement_id(mut self, id: impl Into<String>) -> Self {
+        self.key_agreement_id = Some(id.into());
+        self
     }
 
     /// A presigner for objects of `account` in `context`, whose requests must
@@ -166,7 +178,10 @@ impl VtaStorage {
 
     /// This community's X25519 key-agreement secret: what the VTA sealed to.
     async fn key_agreement_secret(&self) -> Result<Zeroizing<[u8; 32]>, AppError> {
-        let id = format!("{}#key-1", self.community_did);
+        let id = self
+            .key_agreement_id
+            .clone()
+            .unwrap_or_else(|| format!("{}#key-1", self.community_did));
         let secret = self.secrets.get_secret(&id).await.ok_or_else(|| {
             AppError::Internal("this community has no key-agreement secret loaded".into())
         })?;

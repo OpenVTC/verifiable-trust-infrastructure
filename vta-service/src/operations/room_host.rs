@@ -365,9 +365,19 @@ pub async fn owner_signing_key(
     vta_did: Option<&str>,
 ) -> Result<OwnerKey, AppError> {
     if vta_did == Some(owner) {
+        // This VTA's own signing key, as its own document lists it (VTI-KEY-150).
+        #[cfg(feature = "webvh")]
+        let webvh_ks = Some(stores.webvh_ks);
+        #[cfg(not(feature = "webvh"))]
+        let webvh_ks = None;
+        #[cfg(feature = "webs")]
+        let webs_ks = Some(stores.webs_ks);
+        #[cfg(not(feature = "webs"))]
+        let webs_ks = None;
+        let keys = crate::self_keys::self_keys(owner, webvh_ks, webs_ks).await;
         return Ok(OwnerKey {
-            key_id: format!("{owner}#key-0"),
-            verification_method: crate::operations::credentials::vta_signing_vm(owner),
+            key_id: keys.signing.record_id,
+            verification_method: keys.signing.vm_id,
         });
     }
     crate::operations::persona::persona_signing_key(stores, auth, owner)

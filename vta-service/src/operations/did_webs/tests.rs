@@ -818,3 +818,454 @@ async fn a_did_webs_is_a_persona_signing_as_its_key_state_key() {
         .is_none()
     );
 }
+
+/// A signature a did:webs persona makes, through the same gated signer every
+/// persona path uses, verifies at an independent verifier that knows nothing but
+/// the document the host would serve: the VTA names its key by the method the
+/// did:webs document renders for it, under the relationship the proof claims.
+/// Checked again after a rotation, against the rotated document.
+#[tokio::test]
+async fn a_did_webs_persona_signs_a_trust_task_a_verifier_accepts() {
+    use crate::operations::persona::{Relationship, persona_key_for};
+    use crate::operations::room_issuance::{SigningContext, VtaKeySigner};
+    use serde_json::Value;
+    use trust_tasks_rs::TrustTask;
+    use vta_sdk::trust_task_proof::{TrustTaskVmResolver, verify_trust_task_proof_with};
+
+    let f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let c = created(&f, &host).await;
+    let acme = admin_claims_for_context("acme");
+    let seed_store: std::sync::Arc<dyn crate::keys::seed_store::SeedStore> =
+        std::sync::Arc::new(PlaintextSeedStore::new(&f.ts.data_dir));
+
+    // What a verifier sees: the document derived from the stream the host holds.
+    async fn verifier_for(did: &str, stream: &str) -> TrustTaskVmResolver {
+        let mut cache = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("resolver");
+        cache
+            .add_did_document(did, serde_json::from_value(document(did, stream)).unwrap())
+            .await;
+        TrustTaskVmResolver::new(cache)
+    }
+
+    async fn sign_and_verify(
+        f: &Fixture,
+        seed_store: &std::sync::Arc<dyn crate::keys::seed_store::SeedStore>,
+        acme: &AuthClaims,
+        did: &str,
+        verifier: &TrustTaskVmResolver,
+        id: &str,
+    ) -> Result<String, String> {
+        let key = persona_key_for(persona_stores(f), acme, did, Relationship::Authentication)
+            .await
+            .unwrap()
+            .expect("a persona the caller may act as");
+        let mut task: TrustTask<Value> = TrustTask::new(
+            id.to_string(),
+            "https://trusttasks.org/spec/rooms/create/0.2"
+                .parse()
+                .expect("a type URI"),
+            json!({ "roomId": "room-1", "ownerDid": did, "epoch": 1 }),
+        );
+        task.issuer = Some(did.to_string());
+        task.recipient = Some("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into());
+        task.issued_at = Some(chrono::Utc::now());
+        let mut doc = serde_json::to_value(&task).unwrap();
+        let signer = VtaKeySigner::new(
+            SigningContext {
+                keys_ks: &f.ts.keys_ks,
+                imported_ks: &f.ts.imported_ks,
+                internal_ks: &f.ts.internal_ks,
+                contexts_ks: &f.ts.contexts_ks,
+                acl_ks: &f.ts.acl_ks,
+                seed_store,
+                audit: &f.audit,
+                auth: acme,
+            },
+            key.key_id,
+            key.verification_method,
+        );
+        let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+            &doc,
+            &signer,
+            affinidi_data_integrity::SignOptions::new()
+                .with_proof_purpose(Relationship::Authentication.as_str()),
+        )
+        .await
+        .expect("the persona signs");
+        doc["proof"] = serde_json::to_value(proof).unwrap();
+        let typed: TrustTask<Value> = serde_json::from_value(doc).unwrap();
+        verify_trust_task_proof_with(&typed, verifier)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    let verifier = verifier_for(&c.did, &host.last_stream()).await;
+    let signer = sign_and_verify(
+        &f,
+        &seed_store,
+        &acme,
+        &c.did,
+        &verifier,
+        "urn:uuid:aaaaaaaa-0000-4000-8000-000000000001",
+    )
+    .await
+    .expect("a verifier accepts the persona's proof");
+    assert_eq!(signer, c.did);
+
+    // After a rotation the persona signs with the installed key, and the
+    // rotated document is what a verifier holds it to.
+    rotate_did_webs_keys(&f.deps(), &acme, &c.did, None, &host, "test")
+        .await
+        .expect("rotated");
+    let rotated = verifier_for(&c.did, &host.last_stream()).await;
+    assert_eq!(
+        sign_and_verify(
+            &f,
+            &seed_store,
+            &acme,
+            &c.did,
+            &rotated,
+            "urn:uuid:aaaaaaaa-0000-4000-8000-000000000002",
+        )
+        .await
+        .expect("a verifier accepts the proof after rotation"),
+        c.did
+    );
+    // A verifier still holding the pre-rotation document refuses the new key:
+    // the signature really is under the rotated key, not the old one.
+    assert!(
+        sign_and_verify(
+            &f,
+            &seed_store,
+            &acme,
+            &c.did,
+            &verifier,
+            "urn:uuid:aaaaaaaa-0000-4000-8000-000000000003",
+        )
+        .await
+        .is_err()
+    );
+}
+
+/// A secrets bundle exported for a did:webs (an integration running its own
+/// messaging) names each key by the id its published document gives it: a
+/// mediator matches a JWE recipient kid against these, and a kid the document
+/// does not list is a secret no message can reach (`select_secret_kid`).
+#[tokio::test]
+async fn the_kids_a_did_webs_exports_are_the_ids_its_document_lists() {
+    let f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let c = created(&f, &host).await;
+    let doc = document(&c.did, &host.last_stream());
+
+    // Every id a relationship lists, absolute.
+    let listed = |relationship: &str| -> Vec<String> {
+        doc[relationship]
+            .as_array()
+            .unwrap_or_else(|| panic!("{relationship}: {doc}"))
+            .iter()
+            .map(|e| {
+                let id = e.as_str().or_else(|| e["id"].as_str()).expect("an id");
+                if id.starts_with('#') {
+                    format!("{}{id}", c.did)
+                } else {
+                    id.to_string()
+                }
+            })
+            .collect()
+    };
+
+    for (key_id, relationship) in [
+        (&c.signing_key_id, "authentication"),
+        (&c.signing_key_id, "assertionMethod"),
+        (&c.key_agreement_key_id, "keyAgreement"),
+    ] {
+        let record = key(&f, key_id).await;
+        let kid = vta_sdk::did_secrets::select_secret_kid(
+            &c.did,
+            &record.key_id,
+            record.label.as_deref(),
+        )
+        .unwrap_or_else(|| panic!("{key_id} is exported under no kid"));
+        assert!(
+            listed(relationship).contains(&kid),
+            "{kid} is not listed under {relationship}: {doc}"
+        );
+    }
+}
+
+/// A TSP peer can reach a did:webs persona: TSP's own VID resolver reads its
+/// document for an Ed25519 `authentication` key, an X25519 `keyAgreement` key
+/// and the `#tsp` route, and finds the keys the VTA holds and the mediator it
+/// designated.
+#[cfg(feature = "tsp")]
+#[tokio::test]
+async fn a_tsp_peer_resolves_a_did_webs_persona_to_its_keys_and_mediator() {
+    let f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let mut params = f.params();
+    params.add_tsp_service = Some(true);
+    let c = create_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        params,
+        &host,
+        "test",
+    )
+    .await
+    .expect("created");
+
+    let mut cache = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+        .await
+        .expect("resolver");
+    cache
+        .add_did_document(
+            &c.did,
+            serde_json::from_value(document(&c.did, &host.last_stream())).unwrap(),
+        )
+        .await;
+    let vid = affinidi_tdk::tsp::DidVidResolver::new(cache)
+        .resolve_did(&c.did)
+        .await
+        .expect("a TSP VID");
+
+    // A multikey: the two-byte multicodec prefix, then the key.
+    let public = |record: &crate::keys::KeyRecord| {
+        let (_, bytes) = multibase::decode(&record.public_key).expect("multibase");
+        bytes[2..].to_vec()
+    };
+    let signing = key(&f, &c.signing_key_id).await;
+    let agreement = key(&f, &c.key_agreement_key_id).await;
+    assert_eq!(vid.signing_key.to_vec(), public(&signing));
+    assert_eq!(vid.encryption_key.to_vec(), public(&agreement));
+    assert_eq!(vid.mediators, vec![MEDIATOR.to_string()]);
+}
+
+/// DIDComm both ways with a did:webs persona, through its mediator.
+///
+/// A peer reads only the published document: it authcrypts to the persona's
+/// key agreement key, wraps the message in a forward to the mediator its
+/// `#didcomm` service names, and the mediator finds the persona as `next`. The
+/// VTA unpacks the inner message with the persona's secrets as it exports them
+/// (`build_did_secrets_bundle`, the kids a mediator matches recipients on), and
+/// authcrypts back from the persona to a peer that authenticates the sender.
+#[cfg(feature = "didcomm")]
+#[tokio::test]
+async fn a_did_webs_persona_sends_and_receives_didcomm_through_its_mediator() {
+    use affinidi_secrets_resolver::SecretsResolver as _;
+    use affinidi_secrets_resolver::secrets::Secret;
+    use affinidi_tdk::common::TDKSharedState;
+    use affinidi_tdk::common::config::TDKConfig;
+    use affinidi_tdk::didcomm::Message;
+    use affinidi_tdk::dids::{DID, KeyType, PeerKeyRole};
+    use affinidi_tdk::messaging::ATM;
+    use affinidi_tdk::messaging::config::ATMConfig;
+    use affinidi_tdk::messaging::profiles::ATMProfile;
+    use base64::Engine as _;
+    use std::sync::Arc;
+
+    fn peer_identity() -> (String, Vec<Secret>) {
+        DID::generate_did_peer(
+            vec![
+                (PeerKeyRole::Verification, KeyType::Ed25519),
+                (PeerKeyRole::Encryption, KeyType::X25519),
+            ],
+            None,
+        )
+        .expect("a did:peer")
+    }
+
+    /// An ATM that holds `secrets` and knows `documents` (everything else, a
+    /// did:peer, resolves from the identifier).
+    async fn agent(
+        secrets: &[Secret],
+        documents: &[(&str, &serde_json::Value)],
+        unpack_forwards: bool,
+    ) -> ATM {
+        let mut resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .unwrap();
+        for (did, doc) in documents {
+            resolver
+                .add_did_document(did, serde_json::from_value((*doc).clone()).unwrap())
+                .await;
+        }
+        let tdk = TDKSharedState::new(
+            TDKConfig::builder()
+                .with_did_resolver(resolver)
+                .build()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        for s in secrets {
+            tdk.secrets_resolver().insert(s.clone()).await;
+        }
+        ATM::new(
+            ATMConfig::builder()
+                .with_unpack_forwards(unpack_forwards)
+                .build()
+                .unwrap(),
+            Arc::new(tdk),
+        )
+        .await
+        .unwrap()
+    }
+
+    // The persona, routed through a mediator that exists.
+    let (mediator, mediator_secrets) = peer_identity();
+    let mut f = Fixture::new().await;
+    f.config.messaging =
+        Some(serde_json::from_value(json!({ "mediator_did": mediator })).expect("messaging"));
+    let host = RecordingHost::default();
+    let mut params = f.params();
+    params.set_primary = true;
+    let c = create_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        params,
+        &host,
+        "test",
+    )
+    .await
+    .expect("created");
+    let doc = document(&c.did, &host.last_stream());
+
+    // The persona's secrets, as the VTA exports them for the DID's context.
+    let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
+        Arc::new(PlaintextSeedStore::new(&f.ts.data_dir));
+    let bundle = crate::operations::export::build_did_secrets_bundle(
+        &crate::operations::export::ExportDeps {
+            keys_ks: &f.ts.keys_ks,
+            contexts_ks: &f.ts.contexts_ks,
+            imported_ks: &f.ts.imported_ks,
+            audit: &f.audit,
+            acl_ks: &f.ts.acl_ks,
+            #[cfg(feature = "webvh")]
+            webvh_ks: &f.ts.webvh_ks,
+            seed_store: &seed_store,
+        },
+        &crate::test_support::super_admin_claims(),
+        "acme",
+        crate::operations::keys::ExportChannel::Local("test"),
+    )
+    .await
+    .expect("the persona's secrets");
+    assert_eq!(bundle.did, c.did, "the context's DID is the persona");
+    let persona_secrets: Vec<Secret> = bundle
+        .secrets
+        .iter()
+        .map(|e| Secret::from_multibase(&e.private_key_multibase, Some(&e.key_id)).unwrap())
+        .collect();
+
+    let (peer, peer_secrets) = peer_identity();
+    let persona_atm = agent(&persona_secrets, &[(&c.did, &doc)], true).await;
+    let peer_atm = agent(&peer_secrets, &[(&c.did, &doc)], true).await;
+    let mediator_atm = agent(&mediator_secrets, &[(&c.did, &doc)], false).await;
+
+    // (a) Peer → persona, through the mediator its document names.
+    let route = doc["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"].as_str().is_some_and(|id| id.ends_with("#didcomm")))
+        .unwrap_or_else(|| panic!("a #didcomm service: {doc}"))["serviceEndpoint"][0]["uri"]
+        .as_str()
+        .expect("a mediator uri")
+        .to_string();
+    assert_eq!(route, mediator);
+
+    let to_persona = Message::build(
+        "urn:uuid:7e1b1e1a-0000-4000-8000-000000000001".to_string(),
+        "https://didcomm.org/basicmessage/2.0/message".to_string(),
+        json!({ "content": "hello, did:webs" }),
+    )
+    .from(peer.clone())
+    .to(c.did.clone())
+    .finalize();
+    let (packed, _) = peer_atm
+        .pack_encrypted(&to_persona, &c.did, Some(&peer), None)
+        .await
+        .expect("authcrypt to the persona");
+    let peer_profile = Arc::new(
+        ATMProfile::new(&peer_atm, None, peer.clone(), Some(mediator.clone()))
+            .await
+            .unwrap(),
+    );
+    let (_, envelope) = peer_atm
+        .routing()
+        // Authcrypted, as room-host and the VTA send their forwards.
+        .forward_message(&peer_profile, false, &packed, &route, &c.did, None, None)
+        .await
+        .expect("a forward to the mediator");
+
+    let (forward, _) = mediator_atm
+        .unpack(&envelope)
+        .await
+        .expect("the mediator opens the forward");
+    assert_eq!(forward.typ, "https://didcomm.org/routing/2.0/forward");
+    assert_eq!(
+        forward.body["next"], c.did,
+        "the mediator delivers to the persona"
+    );
+    let attachment = &forward.attachments.as_ref().unwrap()[0];
+    let inner = String::from_utf8(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(
+                attachment
+                    .data
+                    .base64
+                    .as_ref()
+                    .expect("a base64 attachment"),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    // The mediator cannot read what it carries.
+    assert!(mediator_atm.unpack(&inner).await.is_err());
+
+    let (received, meta) = persona_atm
+        .unpack(&inner)
+        .await
+        .expect("the persona's exported secrets open it");
+    assert_eq!(received.body["content"], "hello, did:webs");
+    assert!(meta.encrypted && meta.authenticated, "{meta:?}");
+    assert!(
+        meta.encrypted_from_kid
+            .as_deref()
+            .is_some_and(|kid| kid.starts_with(&format!("{peer}#"))),
+        "{meta:?}"
+    );
+    assert!(
+        meta.encrypted_to_kids
+            .iter()
+            .all(|kid| kid.starts_with(&format!("{}#", c.did))),
+        "{meta:?}"
+    );
+
+    // (b) Persona → peer: the peer authenticates the persona from its document.
+    let reply = Message::build(
+        "urn:uuid:7e1b1e1a-0000-4000-8000-000000000002".to_string(),
+        "https://didcomm.org/basicmessage/2.0/message".to_string(),
+        json!({ "content": "hello back" }),
+    )
+    .from(c.did.clone())
+    .to(peer.clone())
+    .finalize();
+    let (packed, _) = persona_atm
+        .pack_encrypted(&reply, &peer, Some(&c.did), None)
+        .await
+        .expect("authcrypt from the persona");
+    let (received, meta) = peer_atm.unpack(&packed).await.expect("the peer opens it");
+    assert_eq!(received.body["content"], "hello back");
+    assert!(meta.authenticated, "{meta:?}");
+    assert!(
+        meta.encrypted_from_kid
+            .as_deref()
+            .is_some_and(|kid| kid.starts_with(&format!("{}#", c.did))),
+        "{meta:?}"
+    );
+}

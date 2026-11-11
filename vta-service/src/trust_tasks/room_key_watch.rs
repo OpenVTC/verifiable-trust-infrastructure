@@ -626,19 +626,20 @@ pub(crate) async fn sweep(state: &AppState) -> Result<usize, AppError> {
     Ok(forgotten)
 }
 
-/// Whether `w`'s caller may still act as its member, and the member still holds the room's
-/// credentials conferring `read`. A store error keeps the watch: being unable to tell is not
-/// a withdrawal.
+/// The standing `caller` holds now, read from its ACL entry as a session would carry it —
+/// `None` when it has no entry or is a delegate, which acts as no member.
 #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(dead_code))]
-async fn still_stands(state: &AppState, w: &WatchRecord) -> Result<bool, AppError> {
-    let (role, allowed_contexts) = match crate::acl::check_acl_full(&state.acl_ks, &w.caller).await
-    {
+pub(super) async fn standing_of(
+    state: &AppState,
+    caller: &str,
+) -> Result<Option<AuthClaims>, AppError> {
+    let (role, allowed_contexts) = match crate::acl::check_acl_full(&state.acl_ks, caller).await {
         Ok(found) => found,
-        Err(AppError::Forbidden(_)) | Err(AppError::NotFound(_)) => return Ok(false),
+        Err(AppError::Forbidden(_)) | Err(AppError::NotFound(_)) => return Ok(None),
         Err(e) => return Err(e),
     };
     let auth = AuthClaims {
-        did: w.caller.clone(),
+        did: caller.to_string(),
         role,
         allowed_contexts,
         session_id: String::new(),
@@ -648,8 +649,19 @@ async fn still_stands(state: &AppState, w: &WatchRecord) -> Result<bool, AppErro
         acr: String::new(),
     };
     if super::room_act::is_delegate(state, &auth).await? {
-        return Ok(false);
+        return Ok(None);
     }
+    Ok(Some(auth))
+}
+
+/// Whether `w`'s caller may still act as its member, and the member still holds the room's
+/// credentials conferring `read`. A store error keeps the watch: being unable to tell is not
+/// a withdrawal.
+#[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(dead_code))]
+async fn still_stands(state: &AppState, w: &WatchRecord) -> Result<bool, AppError> {
+    let Some(auth) = standing_of(state, &w.caller).await? else {
+        return Ok(false);
+    };
     let key = crate::operations::persona::persona_key_for(
         crate::operations::persona::PersonaStores::from_state(state),
         &auth,

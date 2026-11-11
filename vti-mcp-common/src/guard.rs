@@ -236,6 +236,12 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // VTA refuses it from a delegate — an agent is never the member — so a host approving
     // `vta_call` gains nothing here; named so the class is a decision.
     ("rooms/keys/label", Risk::Mutating),
+    // Moves only the member's own read marker for a room, in their VTA, and is undone by a
+    // rewind. Refused from a delegate, as `label` is; named so the class is a decision.
+    ("rooms/keys/read-marker/set", Risk::Mutating),
+    // The VTA telling the member's other watching clients that the marker moved: one-way,
+    // received rather than called, and changes nothing a client could ask for.
+    ("rooms/keys/read-marker/moved", Risk::ReadOnly),
     // The room's own profile. `read` returns what a sealed room withholds from its host
     // after an outbound call to a host the caller names, as `rooms/keys/read` does.
     // `write` signs, as the member, what every member of the room is shown the room is
