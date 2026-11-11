@@ -187,6 +187,11 @@ pub async fn purge_context(ks: &KeyspaceHandle, context_id: &str) -> Result<usiz
     Ok(removed)
 }
 
+#[cfg(feature = "webs")]
+fn published_default() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,9 +240,4 @@ mod tests {
             .unwrap();
         assert!(purge_context(&ks, "acme").await.is_err());
     }
-}
-
-#[cfg(feature = "webs")]
-fn published_default() -> bool {
-    true
 }
