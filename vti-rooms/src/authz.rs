@@ -680,6 +680,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         }
@@ -769,6 +770,7 @@ mod tests {
             mirror_of: Some("https://primary.example.org".into()),
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
             ..room(Visibility::Open)
@@ -817,6 +819,7 @@ mod tests {
             mirror_of: Some("https://primary.example.org".into()),
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
             epoch_expires_at: Some(NOW - 1),

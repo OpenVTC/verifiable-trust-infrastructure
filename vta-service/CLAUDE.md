@@ -949,6 +949,12 @@ When adding a flow, add it here and a line to the root index.
   reading, checking or changing `address`, `sinceVersion` or `leaseSeconds` (Recipient
   item 6) — never add a recipient-side address check; Producer item 6 binds the client,
   and `pnm rooms watch --via-host` enforces it before sending.
+- **The host's wait** before each `rooms/changed` is the room's **signal delay**
+  (`vti_rooms::signal_delay`, trust-tasks-tf #1084): `randomised` (2–6 s; the default and
+  what an absent field means) or `none`, read from the room record in `RoomWatches::fire`,
+  never from a watch request. Set by `admin` (`rooms/signal-delay/set/0.1`, audited), at
+  `rooms/create/0.3`, or through `rooms/owner/register/0.3`, which refuses `hostRefused`
+  rather than register without it on a host lacking create 0.3.
 - **Code**: `vta-service/src/operations/room_key_watch.rs`,
   `vta-service/src/trust_tasks/{room_key_watch,room_key_watch_tests,room_changed,room_act}.rs`,
   `vta-service/src/messaging/watch_addresses.rs`, `vta_sdk::client` (`room_watch`,

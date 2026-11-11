@@ -1294,6 +1294,7 @@ async fn vtc_rooms_community_reads_answer_not_found() {
         mirror_of: None,
         record_retention: None,
         last_prune: None,
+        signal_delay: Default::default(),
         epoch_floor: None,
         frozen_at: None,
     };
@@ -2202,6 +2203,7 @@ async fn vtc_rooms_community_update_answers_not_found_for_a_room_it_only_hosts()
         mirror_of: None,
         record_retention: None,
         last_prune: None,
+        signal_delay: Default::default(),
         epoch_floor: None,
         frozen_at: None,
     };

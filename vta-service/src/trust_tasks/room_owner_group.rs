@@ -1801,6 +1801,11 @@ mod tests {
         last_mint: Option<Value>,
         /// Who signed the last `rooms/epoch/mint` the host received.
         last_mint_issuer: Option<String>,
+        /// Whether the host accepts `rooms/create/0.3`; one that predates it answers
+        /// `unsupportedType`.
+        speaks_create_v3: bool,
+        /// The last `rooms/create` payload the host took.
+        last_create: Option<Value>,
     }
 
     struct StubHost {
@@ -1822,6 +1827,8 @@ mod tests {
             log: Vec::new(),
             last_mint: None,
             last_mint_issuer: None,
+            speaks_create_v3: true,
+            last_create: None,
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1846,7 +1853,14 @@ mod tests {
                                 "roomId": room_id, "visibility": h.visibility,
                                 "retentionPolicy": "chained", "epoch": h.epoch,
                             }))
-                        } else if task == vti_rooms::wire::ROOMS_CREATE_V2_TYPE {
+                        } else if task == vti_rooms::wire::ROOMS_CREATE_V3_TYPE
+                            && !h.speaks_create_v3
+                        {
+                            Err(("unsupportedType", "this host predates rooms/create/0.3"))
+                        } else if task == vti_rooms::wire::ROOMS_CREATE_V2_TYPE
+                            || task == vti_rooms::wire::ROOMS_CREATE_V3_TYPE
+                        {
+                            h.last_create = Some(req["payload"].clone());
                             match h.create_mode {
                                 Mode::Refuse => Err(("rooms/create:alreadyExists", "held already")),
                                 Mode::Unreachable | Mode::AcceptThenLose => {
@@ -1856,7 +1870,15 @@ mod tests {
                                     );
                                 }
                                 Mode::Accept => {
-                                    Ok(serde_json::json!({ "roomId": room_id, "epoch": h.epoch }))
+                                    let mut body =
+                                        serde_json::json!({ "roomId": room_id, "epoch": h.epoch });
+                                    if task == vti_rooms::wire::ROOMS_CREATE_V3_TYPE {
+                                        body["signalDelay"] = req["payload"]
+                                            .get("signalDelay")
+                                            .cloned()
+                                            .unwrap_or(serde_json::json!("randomised"));
+                                    }
+                                    Ok(body)
                                 }
                             }
                         } else if task == vti_rooms::wire::ROOMS_REVOCATIONS_GET_TYPE {
@@ -4334,11 +4356,89 @@ mod tests {
             .await,
         );
         assert_eq!(out["payload"]["epoch"], 1, "{out}");
+        // `rooms/create/0.3` for either version, when the host speaks it.
         assert_eq!(
             host_log(&o),
             vec![
-                vti_rooms::wire::ROOMS_CREATE_V2_TYPE.to_string(),
+                vti_rooms::wire::ROOMS_CREATE_V3_TYPE.to_string(),
                 vti_rooms::wire::ROOMS_REVOCATIONS_PUT_TYPE.to_string(),
+            ]
+        );
+    }
+
+    fn register_0_3_request(o: &Owner) -> TrustTask<Value> {
+        request(
+            vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_3,
+            serde_json::json!({
+                "roomId": o.room.did, "host": o.host.did,
+                "visibility": "attributed", "ownerDid": o.member,
+                "signalDelay": "none",
+                "recordRetention": { "tombstoneDays": 7, "recordDays": 365 },
+            }),
+        )
+    }
+
+    /// `rooms/owner/register/0.3`: `recordRetention` and `signalDelay` reach the host's
+    /// `rooms/create/0.3` as given (trust-tasks-tf #1084).
+    #[tokio::test]
+    async fn register_0_3_passes_the_record_retention_and_signal_delay_to_create_0_3() {
+        let o = owner().await;
+        let auth = crate::test_support::super_admin_claims();
+        let out = body(
+            super::super::room_owner::handle_register_v0_3(
+                &o.state,
+                &auth,
+                register_0_3_request(&o),
+            )
+            .await,
+        );
+        assert_eq!(out["payload"]["epoch"], 1, "{out}");
+        assert_eq!(
+            host_log(&o),
+            vec![vti_rooms::wire::ROOMS_CREATE_V3_TYPE.to_string()]
+        );
+        let sent = o.host.state.lock().unwrap().last_create.clone().unwrap();
+        assert_eq!(sent["signalDelay"], "none", "{sent}");
+        assert_eq!(
+            sent["recordRetention"],
+            serde_json::json!({ "tombstoneDays": 7, "recordDays": 365 })
+        );
+    }
+
+    /// A host that does not accept `rooms/create/0.3`: a registration asking for either
+    /// setting is `hostRefused`, never registered without it; one asking for neither is
+    /// registered at create 0.2, which is the same room.
+    #[tokio::test]
+    async fn register_refuses_settings_a_host_without_create_0_3_cannot_record() {
+        let o = owner().await;
+        o.host.state.lock().unwrap().speaks_create_v3 = false;
+        let auth = crate::test_support::super_admin_claims();
+        let out = body(
+            super::super::room_owner::handle_register_v0_3(
+                &o.state,
+                &auth,
+                register_0_3_request(&o),
+            )
+            .await,
+        );
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/register:hostRefused",
+            "{out}"
+        );
+        assert_eq!(
+            host_log(&o),
+            vec![vti_rooms::wire::ROOMS_CREATE_V3_TYPE.to_string()],
+            "never asked again at 0.2"
+        );
+
+        o.host.state.lock().unwrap().log.clear();
+        let out = register_0_2(&o).await;
+        assert_eq!(out["payload"]["epoch"], 1, "{out}");
+        assert_eq!(
+            host_log(&o),
+            vec![
+                vti_rooms::wire::ROOMS_CREATE_V3_TYPE.to_string(),
+                vti_rooms::wire::ROOMS_CREATE_V2_TYPE.to_string(),
             ]
         );
     }

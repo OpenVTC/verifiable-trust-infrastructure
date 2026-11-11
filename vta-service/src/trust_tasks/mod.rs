@@ -3025,6 +3025,11 @@ dispatch_table! {
     // `room_list_delivery`, the one retry owner (trust-tasks-tf #821).
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2 => room_owner::handle_register_v0_2
         [ Mutating Metadata true ],
+    // 0.3: 0.2, with `recordRetention` and `signalDelay` passed through to the host's
+    // `rooms/create` 0.3, refused `hostRefused` where the host will not take them
+    // (trust-tasks-tf #1084).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_3 => room_owner::handle_register_v0_3
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1 => room_owner::handle_issue_membership
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2 => room_owner::handle_issue_authority

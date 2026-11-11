@@ -1326,6 +1326,24 @@ pub async fn set_record_retention(
     Ok(previous)
 }
 
+/// Record the room's signal delay (`rooms/signal-delay/set/0.1` item 3). Returns the one it
+/// replaced — `randomised` for a room that never set one. A request naming the setting in
+/// force writes nothing (item 4).
+pub async fn set_signal_delay(
+    rooms: &KeyspaceHandle,
+    room_id: &str,
+    delay: crate::signal_delay::SignalDelay,
+    now: u64,
+) -> Result<crate::signal_delay::SignalDelay, AppError> {
+    let mut room = get_room(rooms, room_id).await?;
+    let previous = std::mem::replace(&mut room.signal_delay, delay);
+    if previous != delay {
+        room.updated_at = now;
+        rooms.insert(room_key(room_id), &room).await?;
+    }
+    Ok(previous)
+}
+
 /// [`tree_head`], with `headVersion` taken as the higher of the highest record's version
 /// and the room's latest prune (`HeadVersion`): a prune removes leaves and takes a version
 /// like any other change to the tree, so a root before it and a root after it are never
@@ -1422,6 +1440,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         }
@@ -2355,6 +2374,7 @@ mod tests {
             mirror_of: Some("https://primary.example.org".into()),
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
             ..room(id, visibility)
@@ -2758,6 +2778,7 @@ mod purge_and_freeze_tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         }
@@ -3185,6 +3206,7 @@ mod record_times_tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         }

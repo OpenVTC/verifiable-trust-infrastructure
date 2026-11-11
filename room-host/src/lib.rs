@@ -362,7 +362,7 @@ fn audit_room_detail(
     room: &Room,
     authorized: &authz::AuthorizedAction,
     operation: RoomOperation,
-    detail: &vti_rooms::record_tasks::RetentionAudit,
+    detail: serde_json::Value,
 ) {
     let entry = rooms_audit::for_operation(room.visibility, authorized, None);
     #[cfg(test)]
@@ -372,7 +372,7 @@ fn audit_room_detail(
         room = %entry.room_id,
         actor = %entry.actor.as_str(),
         visibility = ?room.visibility,
-        detail = %detail.detail(),
+        detail = %detail,
         "room operation"
     );
 }
@@ -688,7 +688,10 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
     let payload = doc.payload.clone();
     match doc.type_uri.to_string().as_str() {
         vti_rooms::record_tasks::CREATE_V2_TYPE => create(state, &doc, payload).await,
+        vti_rooms::signal_delay::CREATE_V3_TYPE => create(state, &doc, payload).await,
         vti_rooms::record_tasks::INFO_V3_TYPE => files::info_v3(state, &doc, payload).await,
+        vti_rooms::signal_delay::INFO_V4_TYPE => files::info_v4(state, &doc, payload).await,
+        vti_rooms::signal_delay::SET_TYPE => files::signal_delay_set(state, &doc, payload).await,
         vti_rooms::record_tasks::LIST_V5_TYPE => files::list_v5(state, &doc, payload).await,
         vti_rooms::record_tasks::LIST_V6_TYPE => files::list_v6(state, &doc, payload).await,
         vti_rooms::record_tasks::PRUNE_TYPE => files::records_prune(state, &doc, payload).await,
@@ -765,6 +768,7 @@ fn is_consequential(type_uri: &str) -> bool {
             | vti_rooms::record_tasks::LIST_V5_TYPE
             | vti_rooms::record_tasks::LIST_V6_TYPE
             | vti_rooms::record_tasks::INFO_V3_TYPE
+            | vti_rooms::signal_delay::INFO_V4_TYPE
             | vti_rooms::revocation_tasks::GET_TYPE
     )
 }
@@ -798,9 +802,23 @@ fn retain_until(
     vti_common::trust_task::acceptance::retain_until(&freshness_policy(), doc, now)
 }
 
-/// `rooms/create/0.2`, which also records the room's record retention.
+/// `rooms/create/0.2`, which also records the room's record retention, and `rooms/create/0.3`,
+/// which also records its signal delay (0.2 records `randomised`).
 async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let (record_retention, payload) = match vti_rooms::record_tasks::create_v2_parts(&payload) {
+    let v3 = doc.type_uri.to_string() == vti_rooms::signal_delay::CREATE_V3_TYPE;
+    let parts = if v3 {
+        vti_rooms::signal_delay::create_v3_parts(&payload).and_then(|(r, d, p)| {
+            vti_rooms::signal_delay::create_v3_permitted(
+                d,
+                vti_rooms::signal_delay::SignalDelayPolicy::Either,
+            )?;
+            Ok((r, d, p))
+        })
+    } else {
+        vti_rooms::record_tasks::create_v2_parts(&payload)
+            .map(|(r, p)| (r, vti_rooms::signal_delay::SignalDelay::Randomised, p))
+    };
+    let (record_retention, signal_delay, payload) = match parts {
         Ok(parts) => parts,
         Err(r) => return files::record_refused(doc, r),
     };
@@ -856,6 +874,8 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         // As given (create 0.2): never shortened, and `{}` records none.
         record_retention: record_retention.filter(|r| !r.is_empty() || r.ext.is_some()),
         last_prune: None,
+        // As given (create 0.3), `randomised` when absent or at 0.2.
+        signal_delay,
         epoch_floor: None,
         frozen_at: None,
     };
@@ -869,7 +889,18 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
                 // tell a caller their choice took effect when it did not.
                 anchor_cadence: Some(room.anchor_cadence),
             };
-            files::create_v2_response(doc, response, room.record_retention.as_ref())
+            if v3 {
+                files::record_refused_or(
+                    doc,
+                    vti_rooms::signal_delay::create_v3_response(
+                        response,
+                        room.record_retention.as_ref(),
+                        room.signal_delay,
+                    ),
+                )
+            } else {
+                files::create_v2_response(doc, response, room.record_retention.as_ref())
+            }
         }
         Err(e) => from_app_error(doc, &e),
     }
@@ -2185,6 +2216,7 @@ mod tests {
                 mirror_of: Some(primary_url.clone()),
                 record_retention: None,
                 last_prune: None,
+                signal_delay: Default::default(),
                 epoch_floor: None,
                 frozen_at: None,
                 next_version: 1,
@@ -2278,6 +2310,7 @@ mod tests {
                 mirror_of: Some("https://primary.example.org".into()),
                 record_retention: None,
                 last_prune: None,
+                signal_delay: Default::default(),
                 epoch_floor: None,
                 frozen_at: None,
                 ..f.room.clone()

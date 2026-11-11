@@ -11,6 +11,7 @@
 use serde_json::{Value, json};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+#[allow(deprecated)]
 use vti_specs_rooms::rooms::create::v0_2 as create_v2;
 use vti_specs_rooms::rooms::info::v0_3 as info_v3;
 use vti_specs_rooms::rooms::records::list::v0_5 as list_v5;
@@ -306,6 +307,7 @@ pub async fn retention_set(
 /// The record retention a `rooms/create/0.2` asks for, after checking the payload is that
 /// task's — `None` when it states none — and the payload read as 0.1, which the hosts'
 /// create path takes for everything else.
+#[allow(deprecated)] // still served beside create/0.3 (trust-tasks-tf #1084)
 pub fn create_v2_parts(payload: &Value) -> Result<(Option<RecordRetention>, Value), Refusal> {
     parse::<create_v2::Payload>(payload)?;
     let retention = match payload.get("recordRetention") {
@@ -321,6 +323,7 @@ pub fn create_v2_parts(payload: &Value) -> Result<(Option<RecordRetention>, Valu
 
 /// The 0.1 members of a `rooms/create` response, with what 0.2 echoes: the record retention the host
 /// recorded, absent when none was.
+#[allow(deprecated)] // still served beside create/0.3 (trust-tasks-tf #1084)
 pub fn create_v2_response(
     response: impl serde::Serialize,
     recorded: Option<&RecordRetention>,
@@ -335,6 +338,8 @@ pub fn create_v2_response(
 
 /// `rooms/info/0.3`: 0.1's answer, and the record retention in force (omitted when there is
 /// none) and the room's latest prune, its instant named `prunedAt` (`rooms/_shared/0.2`).
+/// [`crate::signal_delay::info_v4`] adds the room's signal delay.
+#[allow(deprecated)] // still served beside info/0.4 (trust-tasks-tf #1084)
 pub async fn info_v3(
     files: &BlobHost,
     room: &Room,

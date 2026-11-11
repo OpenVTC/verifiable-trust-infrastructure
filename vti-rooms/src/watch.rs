@@ -26,7 +26,9 @@
 //! one lock, so two writes landing together send one signal, not two. The signal carries
 //! the room and its latest version when sent, and nothing about what moved it (item 6), and
 //! goes after a short randomised delay so its time does not mark one write
-//! (`rooms/changed/0.1` Producer item 4). Delivery is the delivery layer's: a signal is
+//! (`rooms/changed/0.1` Producer item 4) — unless the room's own signal delay is `none`
+//! ([`crate::signal_delay`]), when it goes as soon as the change is stored. The room's
+//! setting decides, never the watch request. Delivery is the delivery layer's: a signal is
 //! never queued per change, re-sent or retried here (Producer item 5) — a lost one costs the
 //! member nothing its next listing does not recover.
 
@@ -67,7 +69,8 @@ pub const MAX_WATCHES_PER_ROOM: usize = 1024;
 /// the presenter's member (`rooms/watch:limitReached`).
 pub const MAX_WATCHES_PER_PRESENTER: usize = 16;
 /// The randomised interval a signal waits after the change that fires it, in milliseconds
-/// (`rooms/changed/0.1` Producer item 4: "a few seconds").
+/// (`rooms/changed/0.1` Producer item 4: "a few seconds"), in a room whose signal delay is
+/// `randomised` — the default. A room whose signal delay is `none` waits not at all.
 pub const SIGNAL_DELAY_MS: std::ops::RangeInclusive<u64> = 2_000..=6_000;
 
 /// How a host reaches a watch's address: its own outbound transport, chosen by what the
@@ -360,7 +363,7 @@ impl RoomWatches {
 
     async fn fire(&self, room_id: &str) -> Result<(), AppError> {
         let now = Utc::now();
-        let due: Vec<Watch> = {
+        let (due, delay): (Vec<Watch>, crate::signal_delay::SignalDelay) = {
             let _held = self.lock.lock().await;
             let held = self.room_watches(room_id).await?;
             if held.is_empty() {
@@ -394,7 +397,9 @@ impl RoomWatches {
                     due.push(w);
                 }
             }
-            due
+            // The room's own setting, read with the watches it fires — never anything the
+            // watch request said (`rooms/changed/0.1` Producer item 4).
+            (due, room.signal_delay)
         };
         if due.is_empty() {
             return Ok(());
@@ -403,12 +408,19 @@ impl RoomWatches {
             return Ok(());
         };
         let rooms = self.rooms.clone();
-        let (from, to) = *self.delay_ms.read().unwrap_or_else(|p| p.into_inner());
+        // `randomised`: the wait of Producer item 4. `none`: no wait of this host's own
+        // (`rooms/signal-delay/set/0.1` item 3).
+        let wait = match delay {
+            crate::signal_delay::SignalDelay::None => None,
+            _ => Some(*self.delay_ms.read().unwrap_or_else(|p| p.into_inner())),
+        };
         for w in due {
             let signals = signals.clone();
             let rooms = rooms.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(signal_delay(from, to)).await;
+                if let Some((from, to)) = wait {
+                    tokio::time::sleep(signal_delay(from, to)).await;
+                }
                 // The room's latest version when the signal is sent (`rooms/changed/0.1`
                 // Producer item 2), never anything about what moved it.
                 let latest = match storage::get_room(&rooms, &w.room_id).await {
@@ -560,6 +572,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         }
@@ -787,6 +800,55 @@ mod tests {
         );
         assert!(check_payload(&request(json!({ "leaseSeconds": 59 }))).is_err());
         assert!(check_payload(&request(json!({ "address": "mailto:x" }))).is_err());
+    }
+
+    /// Sets the room's signal delay, as `rooms/signal-delay/set` would.
+    async fn set_delay(f: &Fixture, delay: crate::signal_delay::SignalDelay) {
+        storage::set_signal_delay(&f.rooms, ROOM, delay, 1)
+            .await
+            .unwrap();
+    }
+
+    /// A room whose signal delay is `none` signals with no wait of the host's own, however
+    /// long the host's randomised wait is (`rooms/signal-delay/set/0.1` item 3).
+    #[tokio::test]
+    async fn a_room_with_no_signal_delay_signals_at_once() {
+        let f = fixture(2).await;
+        f.watches.set_signal_delay_ms(60_000, 60_000);
+        set_delay(&f, crate::signal_delay::SignalDelay::None).await;
+        arm(&f, request(json!({ "sinceVersion": 1 })), None)
+            .await
+            .unwrap();
+        put(&f).await;
+        let sent = signals_after_delay(&f).await;
+        assert_eq!(sent.len(), 1, "sent without the minute's wait: {sent:?}");
+        assert_eq!(sent[0].1["latestVersion"], 2);
+    }
+
+    /// A `randomised` room — and one that never set a delay — still waits; a room turned
+    /// back to `randomised` waits again.
+    #[tokio::test]
+    async fn a_randomised_room_waits() {
+        let f = fixture(2).await;
+        f.watches.set_signal_delay_ms(60_000, 60_000);
+        arm(&f, request(json!({ "sinceVersion": 1 })), None)
+            .await
+            .unwrap();
+        put(&f).await;
+        assert!(
+            signals_after_delay(&f).await.is_empty(),
+            "the default is the randomised wait"
+        );
+
+        let f = fixture(2).await;
+        f.watches.set_signal_delay_ms(60_000, 60_000);
+        set_delay(&f, crate::signal_delay::SignalDelay::None).await;
+        set_delay(&f, crate::signal_delay::SignalDelay::Randomised).await;
+        arm(&f, request(json!({ "sinceVersion": 1 })), None)
+            .await
+            .unwrap();
+        put(&f).await;
+        assert!(signals_after_delay(&f).await.is_empty(), "turned back on");
     }
 
     /// The signal carries the room and its latest version, nothing else.

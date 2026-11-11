@@ -280,6 +280,7 @@ async fn seed_room(host: &Host, room: &str, owner: &str, visibility: vti_rooms::
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         },

@@ -149,6 +149,7 @@ async fn hosted_room(fix: &Fixture) -> String {
         mirror_of: None,
         record_retention: None,
         last_prune: None,
+        signal_delay: Default::default(),
         epoch_floor: None,
         frozen_at: None,
     };

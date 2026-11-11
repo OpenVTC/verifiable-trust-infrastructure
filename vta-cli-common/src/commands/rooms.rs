@@ -2451,6 +2451,9 @@ pub async fn cmd_rooms_retention_show(
         return Ok(());
     }
     println!("{}", retention_lines(&info));
+    if let Some(delay) = info.get("signalDelay").and_then(Value::as_str) {
+        println!("{}", signal_delay_text(delay));
+    }
     Ok(())
 }
 
@@ -2524,7 +2527,116 @@ pub async fn cmd_rooms_retention_set(
     Ok(())
 }
 
-/// `rooms/info/0.3` as JSON, read under `read`.
+/// `rooms signal-delay show` — the room's signal delay (`rooms/info/0.4`).
+pub async fn cmd_rooms_signal_delay_show(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    signer: RoomSigner<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let info = read_info(client, &target, &signer).await?;
+    let delay = info
+        .get("signalDelay")
+        .and_then(Value::as_str)
+        .unwrap_or("randomised");
+    if crate::render::is_json_output() {
+        crate::render::print_json(&serde_json::json!({ "signalDelay": delay }))?;
+        return Ok(());
+    }
+    println!("{}", signal_delay_text(delay));
+    Ok(())
+}
+
+/// A signal delay in words.
+fn signal_delay_text(delay: &str) -> String {
+    match delay {
+        "none" => "Signal delay: none — the host sends a watch signal as soon as a write is \
+                   stored"
+            .to_string(),
+        _ => "Signal delay: randomised — the host waits a few seconds, at random, before each \
+              watch signal"
+            .to_string(),
+    }
+}
+
+/// What `none` gives up, in the specification's terms (`rooms/signal-delay/set/0.1`, *What
+/// `none` gives up*): shown before the request is sent (Producer, SHOULD).
+pub const SIGNAL_DELAY_NONE_TRADE_OFF: &str = "Turning the delay off: the host's wait keeps a \
+signal's time from marking one write. In a busy room that costs little — the room's rhythm \
+shows in its writes anyway. In a quiet room, one write followed by one signal at once tells \
+anyone who sees both reach and leave the host when the writer wrote, and that writer and \
+watcher share the room. `none` removes only the host's own wait: mediators and push gateways \
+still take the time they take.";
+
+/// `rooms signal-delay set` — change the room's signal delay (`rooms/signal-delay/set/0.1`).
+/// Needs `admin`.
+pub async fn cmd_rooms_signal_delay_set(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    signer: RoomSigner<'_>,
+    signal_delay: &str,
+    reason: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if signal_delay == "none" && !crate::render::is_json_output() {
+        eprintln!("{SIGNAL_DELAY_NONE_TRADE_OFF}\n");
+    }
+    let session = present(client, &target, "admin").await?;
+    let set = target
+        .client()
+        .set_signal_delay(
+            &session,
+            signal_delay,
+            &reason,
+            signer.did,
+            signer.key_multibase,
+        )
+        .await
+        .map_err(|e| signal_delay_refused(e, &target))?;
+    let set = serde_json::to_value(&set)?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&set)?;
+        return Ok(());
+    }
+    let now = set["signalDelay"].as_str().unwrap_or(signal_delay);
+    let was = set["previous"].as_str().unwrap_or("randomised");
+    if now == was {
+        println!(
+            "Room {}: the signal delay was already {now}; nothing changed.",
+            target.room_id
+        );
+    } else {
+        println!(
+            "Room {}: signal delay {now} (was {was}). Every member reads it in the room's \
+             info.",
+            target.room_id
+        );
+    }
+    Ok(())
+}
+
+/// A host's refusal of a signal-delay change, with the fix where the code names one.
+fn signal_delay_refused(e: vtc_client::VtcError, target: &RoomTarget<'_>) -> String {
+    let code = vtc_client::git_ns::task_error(&e).map(|(code, _)| code);
+    match code.as_deref() {
+        Some(c) if c.ends_with("signalDelayNotPermitted") => format!(
+            "{e}\n\nThis host keeps the randomised delay on every room it holds; it will not \
+             turn it off for room {}. Nothing was recorded.",
+            target.room_id
+        ),
+        Some(c) if c.ends_with("permissionDenied") => format!(
+            "{e}\n\nChanging the signal delay needs `admin` in the room — the grant that \
+             decides its other terms. The room's owner grants it with `pnm rooms owner \
+             issue-authority --action admin --store`."
+        ),
+        Some(c) if c.ends_with("unsupportedType") => format!(
+            "{e}\n\nThis host predates rooms/signal-delay/set: every room it holds keeps the \
+             randomised delay."
+        ),
+        _ => e.to_string(),
+    }
+}
+
+/// `rooms/info/0.4` as JSON (0.3, read as `randomised`, from a host that predates it), read
+/// under `read`.
 async fn read_info(
     client: &VtaClient,
     target: &RoomTarget<'_>,
@@ -2535,7 +2647,7 @@ async fn read_info(
         .client()
         .room_info(&read, signer.did, signer.key_multibase)
         .await
-        .map_err(|e| format!("could not read the room (rooms/info/0.3): {e}"))?;
+        .map_err(|e| format!("could not read the room (rooms/info): {e}"))?;
     Ok(serde_json::to_value(&info)?)
 }
 
@@ -2804,6 +2916,7 @@ async fn room_tier(
 
 /// [`room_tier`], and the room's current epoch — the one an open room's file is written
 /// at (`rooms/records/put/0.4` Producer item 7).
+#[allow(deprecated)] // info/0.3 is the version rooms/keys/act's table carries
 async fn room_tier_and_epoch(
     client: &VtaClient,
     target: &RoomTarget<'_>,

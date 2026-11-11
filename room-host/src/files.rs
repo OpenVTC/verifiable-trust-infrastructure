@@ -552,6 +552,7 @@ pub(crate) fn create_v2_response(
 }
 
 /// `rooms/info/0.3`: 0.1's answer, the record retention in force and the latest prune.
+#[allow(deprecated)] // still served beside info/0.4 (trust-tasks-tf #1084)
 pub(crate) async fn info_v3(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     if let Err(r) = blob_tasks::parse::<vti_specs::rooms::info::v0_3::Payload>(&payload) {
         return refused(doc, r);
@@ -564,6 +565,62 @@ pub(crate) async fn info_v3(state: &HostState, doc: &TrustTask<Value>, payload: 
         doc,
         record_tasks::info_v3(&state.files, &room, &authorized, &payload).await,
     )
+}
+
+/// `rooms/info/0.4`: 0.3's answer, and the room's signal delay.
+pub(crate) async fn info_v4(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::info::v0_4::Payload>(&payload) {
+        return refused(doc, r);
+    }
+    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    render(
+        doc,
+        vti_rooms::signal_delay::info_v4(&state.files, &room, &authorized, &payload).await,
+    )
+}
+
+/// `rooms/signal-delay/set/0.1`: change whether this host waits a randomised interval before
+/// the room's watch signals. Needs `admin`. This host applies either setting.
+pub(crate) async fn signal_delay_set(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Answer {
+    if let Err(r) =
+        blob_tasks::parse::<vti_specs::rooms::signal_delay::set::v0_1::Payload>(&payload)
+    {
+        return refused(doc, r);
+    }
+    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
+    {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    match vti_rooms::signal_delay::set(
+        &state.files,
+        &state.rooms,
+        &room,
+        &authorized,
+        &payload,
+        vti_rooms::signal_delay::SignalDelayPolicy::Either,
+        now(),
+    )
+    .await
+    {
+        Ok((body, audit)) => {
+            super::audit_room_detail(
+                &room,
+                &authorized,
+                vti_rooms::audit::RoomOperation::SetSignalDelay,
+                audit.detail(),
+            );
+            respond(doc, body)
+        }
+        Err(r) => refused(doc, r),
+    }
 }
 
 /// `rooms/records/prune/0.2`: remove what the room's record retention makes eligible.
@@ -598,7 +655,7 @@ pub(crate) async fn records_prune(
                     &room,
                     &authorized,
                     vti_rooms::audit::RoomOperation::PruneRecords,
-                    &audit,
+                    audit.detail(),
                 );
             }
             respond(doc, body)
@@ -639,7 +696,7 @@ pub(crate) async fn retention_set(
                 &room,
                 &authorized,
                 vti_rooms::audit::RoomOperation::SetRecordRetention,
-                &audit,
+                audit.detail(),
             );
             respond(doc, body)
         }
@@ -3490,6 +3547,103 @@ mod tests {
         assert_eq!(done["blobsReleased"], 1, "{done}");
     }
 
+    /// `rooms/create/0.3` records the signal delay as given and always echoes it; 0.2 still
+    /// creates, recording `randomised`; `rooms/info/0.4` serves it, and 0.3 still answers
+    /// without it (trust-tasks-tf #1084).
+    #[tokio::test]
+    async fn create_v3_records_the_signal_delay_and_info_v4_serves_it() {
+        let h = host(eager());
+        let f = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = call(
+            &h.app,
+            CREATE_V3,
+            json!({ "roomId": f.room.room_id, "ownerDid": f.room.owner_did,
+                    "visibility": "open", "signalDelay": "none",
+                    "recordRetention": { "tombstoneDays": 7 } }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["signalDelay"], "none");
+        assert_eq!(body["recordRetention"], json!({ "tombstoneDays": 7 }));
+        assert_eq!(listing(&h, &f, INFO_V4).await["signalDelay"], "none");
+        assert!(listing(&h, &f, INFO_V2).await.get("signalDelay").is_none());
+
+        // Absent at 0.3 is `randomised`, echoed all the same.
+        let g = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = call(
+            &h.app,
+            CREATE_V3,
+            json!({ "roomId": g.room.room_id, "ownerDid": g.room.owner_did, "visibility": "open" }),
+            &g.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["signalDelay"], "randomised");
+
+        // 0.2 still creates, and its room is `randomised`.
+        let r = room(&h).await;
+        assert_eq!(listing(&h, &r, INFO_V4).await["signalDelay"], "randomised");
+    }
+
+    /// `rooms/signal-delay/set/0.1`: `admin` only (item 1), answered with the setting and the
+    /// one it replaced (item 4), a repeat harmless, and audited (item 5).
+    #[tokio::test]
+    async fn signal_delay_set_needs_admin_is_idempotent_and_audited() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let set = |presentation: Value, delay: &str| {
+            json!({ "roomId": f.room.room_id, "presentation": presentation,
+                    "signalDelay": delay, "reason": "the team's live conversation" })
+        };
+        let (status, out) = call(
+            &h.app,
+            SIGNAL_DELAY_SET,
+            set(serde_json::to_value(f.as_successor()).unwrap(), "none"),
+            &f.successor,
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{out}");
+        assert_eq!(listing(&h, &f, INFO_V4).await["signalDelay"], "randomised");
+
+        let owner = serde_json::to_value(f.as_owner()).unwrap();
+        let (status, out) = call(
+            &h.app,
+            SIGNAL_DELAY_SET,
+            set(owner.clone(), "none"),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(
+            out,
+            json!({ "roomId": f.room.room_id, "signalDelay": "none", "previous": "randomised" })
+        );
+        assert!(
+            crate::tests_audited().contains(&"room.signal-delay.set"),
+            "{:?}",
+            crate::tests_audited()
+        );
+        // A repeat changes nothing and says so.
+        let (status, out) = call(
+            &h.app,
+            SIGNAL_DELAY_SET,
+            set(owner.clone(), "none"),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["previous"], "none");
+        assert_eq!(listing(&h, &f, INFO_V4).await["signalDelay"], "none");
+        // And it turns back on.
+        let (_, out) = call(&h.app, SIGNAL_DELAY_SET, set(owner, "randomised"), &f.owner).await;
+        assert_eq!(out["previous"], "none");
+        assert_eq!(listing(&h, &f, INFO_V4).await["signalDelay"], "randomised");
+    }
+
+    const CREATE_V3: &str = vti_rooms::signal_delay::CREATE_V3_TYPE;
+    const INFO_V4: &str = vti_rooms::signal_delay::INFO_V4_TYPE;
+    const SIGNAL_DELAY_SET: &str = vti_rooms::signal_delay::SET_TYPE;
     const PRUNE: &str = vti_rooms::record_tasks::PRUNE_TYPE;
     const RETENTION_SET: &str = vti_rooms::record_tasks::RETENTION_SET_TYPE;
     const LIST_V3: &str = vti_rooms::record_tasks::LIST_V5_TYPE;

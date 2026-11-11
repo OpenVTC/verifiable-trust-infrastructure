@@ -987,6 +987,27 @@ pub enum AuditEvent {
     /// mark, the reason, the rule and the kinds asked. Counts and rules only —
     /// never a removed record's key or anything it said.
     RoomRetention(RoomRetentionData),
+
+    /// A room's signal delay changed (`rooms/signal-delay/set`): whether its host waits a
+    /// randomised interval before its watch signals — the setting replaced, the one
+    /// recorded, and the reason.
+    RoomSignalDelay(RoomSignalDelayData),
+}
+
+/// Payload for [`AuditEvent::RoomSignalDelay`] (`rooms/signal-delay/set/0.1` item 5).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomSignalDelayData {
+    /// The room's own identifier.
+    pub room_id: String,
+    /// The room's visibility, so a reader can tell an actorless entry from a missing one.
+    pub visibility: String,
+    /// The setting replaced: `randomised` or `none`.
+    pub previous: String,
+    /// The setting recorded: `randomised` or `none`.
+    pub signal_delay: String,
+    /// The administrator's stated reason.
+    pub reason: String,
 }
 
 /// Payload for [`AuditEvent::RoomRetention`].
@@ -1368,6 +1389,7 @@ impl AuditEvent {
             Self::RoomLimitsChanged(..) => "RoomLimitsChanged",
             Self::CommunityRoomChanged(..) => "CommunityRoomChanged",
             Self::RoomRetention(..) => "RoomRetention",
+            Self::RoomSignalDelay(..) => "RoomSignalDelay",
         }
     }
 

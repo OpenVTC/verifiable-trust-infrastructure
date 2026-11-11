@@ -1036,6 +1036,15 @@ pub(crate) enum RoomCommands {
         command: RoomRecordsCommands,
     },
 
+    /// The room's signal delay: whether its host waits a few seconds, at random, before
+    /// it sends a watch signal (`randomised`, the default), or sends it as soon as a write
+    /// is stored (`none`, for a room used as a conversation). The room's setting, read by
+    /// every member — no watcher can change it for itself.
+    SignalDelay {
+        #[command(subcommand)]
+        command: RoomSignalDelayCommands,
+    },
+
     /// Put a file in a room or fetch one, or seal and open one locally.
     ///
     /// Each file is sealed and opened here with that one file's key from your
@@ -1323,6 +1332,25 @@ pub(crate) enum RoomOwnerCommands {
         /// `fromJoin`. Immutable; absent takes the host's default for good.
         #[arg(long)]
         retention_policy: Option<String>,
+        /// A room used as a conversation: no wait before its watch signals
+        /// (`--signal-delay none`), retracted messages' tombstones kept 7 days and
+        /// messages 365 days unless pinned, unless `--signal-delay`,
+        /// `--tombstone-days` or `--record-days` say otherwise. Registers at
+        /// `rooms/owner/register/0.3`.
+        #[arg(long)]
+        chat: bool,
+        /// `randomised` (the default: the host waits a few seconds, at random, before a
+        /// watch signal) or `none` (it sends as soon as a write is stored). Changed later
+        /// with `pnm rooms signal-delay set`.
+        #[arg(long)]
+        signal_delay: Option<String>,
+        /// Days a retracted record's tombstone is kept (1 to 36500): the room's record
+        /// retention, changed later with `pnm rooms records retention set`.
+        #[arg(long)]
+        tombstone_days: Option<u64>,
+        /// Days a record is kept after it last changed, pinned ones excepted (1 to 36500).
+        #[arg(long)]
+        record_days: Option<u64>,
     },
     /// Invite a party to the room (`rooms/owner/invite`): mint a Verifiable
     /// Invitation Credential in the room's name and write it to `--out`.
@@ -1910,6 +1938,48 @@ pub(crate) enum RoomRetentionCommands {
         clear: bool,
         /// Why, for the room's audit trail. Keep member identifiers and record
         /// content out of it.
+        #[arg(long)]
+        reason: String,
+    },
+}
+
+/// `pnm rooms signal-delay …`.
+#[derive(Subcommand)]
+pub(crate) enum RoomSignalDelayCommands {
+    /// Show the room's signal delay (`rooms/info/0.4`). Needs `read`.
+    Show {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+    },
+    /// Change the room's signal delay (`rooms/signal-delay/set/0.1`). Needs `admin`.
+    ///
+    /// What `none` gives up: the wait keeps a signal's time from marking one write. In a
+    /// busy room that costs little; in a quiet one, a write followed by a signal at once
+    /// tells anyone who sees both reach and leave the host when the writer wrote, and that
+    /// writer and watcher share the room.
+    Set {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// Send signals as soon as a write is stored: for a room used as a conversation.
+        #[arg(
+            long,
+            conflicts_with = "randomised",
+            required_unless_present = "randomised"
+        )]
+        none: bool,
+        /// Wait a few seconds, at random, before each signal — the default.
+        #[arg(long)]
+        randomised: bool,
+        /// Why, for the room's audit trail. Keep member identifiers and record content
+        /// out of it.
         #[arg(long)]
         reason: String,
     },

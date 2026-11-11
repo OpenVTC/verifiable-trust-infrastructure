@@ -78,6 +78,9 @@ const AS_RECEIVED_URIS: &[&str] = &[
     vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
     vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
     vti_rooms::wire::ROOMS_RECORDS_RETENTION_SET_TYPE,
+    // The signal delay (trust-tasks-tf #1084), recorded as given.
+    vti_rooms::wire::ROOMS_CREATE_V3_TYPE,
+    vti_rooms::wire::ROOMS_SIGNAL_DELAY_SET_TYPE,
 ];
 
 /// `rooms/revocations/{put,get}/0.1`: served beside the dispatcher, over the payload as
@@ -144,6 +147,10 @@ async fn dispatch_task(
                 super::files::handle_put_record_v5(doc, ctx).await
             }
             vti_rooms::wire::ROOMS_CREATE_V2_TYPE => super::files::handle_create_v2(doc, ctx).await,
+            vti_rooms::wire::ROOMS_CREATE_V3_TYPE => super::files::handle_create_v3(doc, ctx).await,
+            vti_rooms::wire::ROOMS_SIGNAL_DELAY_SET_TYPE => {
+                super::files::handle_signal_delay_set(doc, ctx).await
+            }
             _ => super::files::handle_retention_set(doc, ctx).await,
         };
     }
@@ -197,6 +204,7 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(handle_transfer_owner)
         .on_async(handle_claim_owner)
         .on_async(super::files::handle_info_v3)
+        .on_async(super::files::handle_info_v4)
         .on_async(super::files::handle_list_records_v5)
         .on_async(super::files::handle_list_records_v6)
         .on_async(super::files::handle_records_prune)
@@ -336,6 +344,38 @@ pub(super) async fn audit_room_detail(
     }
 }
 
+/// Record a signal-delay change in the audit trail (`rooms/signal-delay/set/0.1` item 5):
+/// the setting replaced, the one recorded, the reason, and the requester where the tier
+/// discloses one.
+pub(super) async fn audit_signal_delay(
+    state: &AppState,
+    room: &Room,
+    authorized: &authz::AuthorizedAction,
+    audit: &vti_rooms::signal_delay::SignalDelayAudit,
+) {
+    let Some(writer) = state.audit_writer.as_ref() else {
+        return;
+    };
+    let entry = rooms_audit::for_operation(room.visibility, authorized, None);
+    if let Err(e) = writer
+        .write(
+            entry.actor.as_str(),
+            None,
+            AuditEvent::RoomSignalDelay(vti_common::audit::RoomSignalDelayData {
+                room_id: entry.room_id,
+                visibility: format!("{:?}", room.visibility).to_lowercase(),
+                previous: audit.previous.as_str().to_string(),
+                signal_delay: audit.recorded.as_str().to_string(),
+                reason: audit.reason.clone(),
+            }),
+        )
+        .await
+    {
+        tracing::error!(error = %e, action = RoomOperation::SetSignalDelay.action_name(),
+            "failed to record a room audit entry");
+    }
+}
+
 /// Seconds since the Unix epoch.
 pub(super) fn now() -> u64 {
     std::time::SystemTime::now()
@@ -439,6 +479,7 @@ pub(super) async fn create_room<P>(
     ctx: &RoomCtx,
     req: &CreateRoomBody,
     record_retention: Option<vti_rooms::record_retention::RecordRetention>,
+    signal_delay: Option<vti_rooms::signal_delay::SignalDelay>,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
     let presenter = ctx.presenter.as_str();
@@ -500,6 +541,8 @@ pub(super) async fn create_room<P>(
         // As given (create 0.2): never shortened, and `{}` records none.
         record_retention: record_retention.filter(|r| !r.is_empty() || r.ext.is_some()),
         last_prune: None,
+        // As given (create 0.3), `randomised` when absent or at 0.2.
+        signal_delay: signal_delay.unwrap_or_default(),
         epoch_floor: None,
         frozen_at: None,
     };
@@ -521,10 +564,18 @@ pub(super) async fn create_room<P>(
         // tell a caller their choice took effect when it did not.
         anchor_cadence: Some(room.anchor_cadence),
     };
-    super::files::render(
-        doc,
-        vti_rooms::record_tasks::create_v2_response(response, room.record_retention.as_ref()),
-    )
+    // 0.3 echoes the signal delay, always; 0.2 has no member for it.
+    let body = match signal_delay {
+        Some(delay) => vti_rooms::signal_delay::create_v3_response(
+            response,
+            room.record_retention.as_ref(),
+            delay,
+        ),
+        None => {
+            vti_rooms::record_tasks::create_v2_response(response, room.record_retention.as_ref())
+        }
+    };
+    super::files::render(doc, body)
 }
 
 /// Write a record: `rooms/records/put` 0.3 or 0.4, read as [`PutRecordBody`] with its
@@ -3736,6 +3787,93 @@ mod tests {
             "{}",
             payload_of(&out)
         );
+    }
+
+    /// The room's signal delay on the VTC's host, as on room-host (trust-tasks-tf #1084):
+    /// `rooms/create/0.3` records and echoes it, `rooms/info/0.4` serves it,
+    /// `rooms/signal-delay/set/0.1` takes `admin`, answers the setting it replaced, repeats
+    /// harmlessly and is audited — and the watches then signal with no wait.
+    #[tokio::test]
+    async fn the_signal_delay_is_set_served_and_audited_as_on_room_host() {
+        let tv = crate::test_support::TestVtc::builder()
+            .with_audit(true)
+            .build()
+            .await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        seed_creator(state, &f).await;
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_CREATE_V3_TYPE,
+            json!({ "roomId": f.room.room_id, "ownerDid": f.room.owner_did,
+                    "visibility": "open" }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "create 0.3: {}", payload_of(&out));
+        assert_eq!(
+            payload_of(&out)["signalDelay"],
+            "randomised",
+            "always echoed"
+        );
+        let read = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+        let info = |state: &AppState| {
+            let state = state.clone();
+            let read = read.clone();
+            let f = &f;
+            async move { payload_of(&send(&state, vti_rooms::wire::ROOMS_INFO_V4_TYPE, read, f).await) }
+        };
+        assert_eq!(info(state).await["signalDelay"], "randomised");
+
+        // `read` is not enough (item 1): the agent's chain is read-only.
+        let d = doc(
+            state,
+            vti_rooms::wire::ROOMS_SIGNAL_DELAY_SET_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_agent(),
+                    "signalDelay": "none", "reason": "a conversation" }),
+            &f.agent.did,
+            &f.agent.secret_multibase,
+        )
+        .await;
+        let presenter = spine_presenter(state, &d).await;
+        let out = super::dispatch(state, d, &presenter).await;
+        assert!(!out.status.is_success(), "{}", payload_of(&out));
+        assert!(!audit_rows(state).await.contains("RoomSignalDelay"));
+        assert_eq!(info(state).await["signalDelay"], "randomised");
+
+        let set = |delay: &str| {
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(),
+                    "signalDelay": delay, "reason": "the team's live conversation" })
+        };
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_SIGNAL_DELAY_SET_TYPE,
+            set("none"),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        assert_eq!(
+            payload_of(&out),
+            json!({ "roomId": f.room.room_id, "signalDelay": "none", "previous": "randomised" })
+        );
+        let rows = audit_rows(state).await;
+        assert!(rows.contains("RoomSignalDelay"), "{rows}");
+        assert!(rows.contains("the team's live conversation"), "{rows}");
+        // A repeat changes nothing (item 4).
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_SIGNAL_DELAY_SET_TYPE,
+            set("none"),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        assert_eq!(payload_of(&out)["previous"], "none");
+        assert_eq!(info(state).await["signalDelay"], "none");
+        // 0.3 still answers, without it.
+        let out = send(state, vti_rooms::wire::ROOMS_INFO_V3_TYPE, read.clone(), &f).await;
+        assert!(payload_of(&out).get("signalDelay").is_none());
     }
 
     /// `rooms/epoch/prune/0.2` and `rooms/epoch/chain/0.2` on the VTC's host, as on

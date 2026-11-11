@@ -72,10 +72,23 @@ pub const ROOMS_EPOCH_CHAIN_V2_TYPE: &str =
 pub const ROOMS_EPOCH_PRUNE_V2_TYPE: &str =
     <vti_specs_rooms::rooms::epoch::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/create/0.2`: a room states its record retention at creation (trust-tasks-tf #868).
+#[allow(deprecated)] // still served beside create/0.3, to owners that send it (trust-tasks-tf #1084)
 pub const ROOMS_CREATE_V2_TYPE: &str =
     <vti_specs_rooms::rooms::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/create/0.3`: a room may also state its signal delay at creation, echoed in the
+/// response whatever was asked (trust-tasks-tf #1084).
+pub const ROOMS_CREATE_V3_TYPE: &str =
+    <vti_specs_rooms::rooms::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/info/0.4`: 0.3, and the room's signal delay, always present (trust-tasks-tf #1084).
+pub const ROOMS_INFO_V4_TYPE: &str =
+    <vti_specs_rooms::rooms::info::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/signal-delay/set/0.1`: an administrator changes whether the host waits a
+/// randomised interval before the room's watch signals (trust-tasks-tf #1084).
+pub const ROOMS_SIGNAL_DELAY_SET_TYPE: &str =
+    <vti_specs_rooms::rooms::signal_delay::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/info/0.3`: also the record retention in force and the room's latest prune, its
 /// instant named `prunedAt` (`rooms/_shared/0.2`).
+#[allow(deprecated)] // still served beside info/0.4, to readers that ask for it (trust-tasks-tf #1084)
 pub const ROOMS_INFO_V3_TYPE: &str =
     <vti_specs_rooms::rooms::info::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/list/0.5`: rows name their blobs, every page carries the room's
@@ -178,6 +191,10 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_GET_V4_TYPE,
     // A watch, and its one signal (trust-tasks-tf #1036).
     ROOMS_WATCH_TYPE,
+    // The room's signal delay (trust-tasks-tf #1084).
+    ROOMS_CREATE_V3_TYPE,
+    ROOMS_INFO_V4_TYPE,
+    ROOMS_SIGNAL_DELAY_SET_TYPE,
 ];
 
 /// `rooms/watch/0.1`: arm, re-arm or cancel one `rooms/changed/0.1` signal.
@@ -301,10 +318,11 @@ pub struct CleartextContent {
     pub tags: Vec<String>,
 }
 
-/// The `rooms/create/0.2` payload is the type `trust-tasks-rs` generates from the
+/// The `rooms/create/0.3` payload is the type `trust-tasks-rs` generates from the
 /// specification — never a copy here (the generated-wire-types census). A host reads
-/// what it keeps from it with [`CreateRoomTerms::from_request`].
-pub use vti_specs_rooms::rooms::create::v0_2::Payload as CreateRoomBody;
+/// what it keeps from it with [`CreateRoomTerms::from_request`]; a 0.2 request, whose
+/// members 0.3 shares, reads as one too.
+pub use vti_specs_rooms::rooms::create::v0_3::Payload as CreateRoomBody;
 
 /// The terms a host records for a room it is asked to create, in this crate's own types.
 ///
@@ -960,7 +978,7 @@ mod payload_impl_tests {
         fn check<P: Payload>(expected: &str) {
             assert_eq!(P::TYPE_URI, expected);
         }
-        check::<CreateRoomBody>(ROOMS_CREATE_V2_TYPE);
+        check::<CreateRoomBody>(ROOMS_CREATE_V3_TYPE);
         check::<CurateRecordBody>(ROOMS_RECORDS_CURATE_TYPE);
         check::<TransferOwnerBody>(ROOMS_OWNER_TRANSFER_TYPE);
         check::<ClaimOwnerBody>(ROOMS_OWNER_CLAIM_TYPE);
@@ -1012,7 +1030,7 @@ mod payload_impl_tests {
                  task whose spec requires a proof."
             );
         }
-        check::<CreateRoomBody>(ROOMS_CREATE_V2_TYPE);
+        check::<CreateRoomBody>(ROOMS_CREATE_V3_TYPE);
         check::<CurateRecordBody>(ROOMS_RECORDS_CURATE_TYPE);
         check::<TransferOwnerBody>(ROOMS_OWNER_TRANSFER_TYPE);
         check::<ClaimOwnerBody>(ROOMS_OWNER_CLAIM_TYPE);

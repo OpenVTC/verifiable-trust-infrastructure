@@ -92,11 +92,11 @@ knowing which half you are standing on saves an afternoon.
 | **Reading across a membership change** | **Works, including for a member who has just joined.** Records are sealed per epoch, and the *epoch key chain* carries a member back across every advance. The owner hands each rung to the host on `rooms/epoch/mint`; a joiner fetches the chain with `rooms/epoch/chain` and reads everything the room retains. Rungs are ciphertext — the key that opens one is a storage key no host holds |
 | **An agent reading history through its VTA** | **Works.** `rooms/keys/open` resolves from the chain the VTA holds, which it accrues from every commit it applies — and a member who *joined* fills the rest with `rooms/keys/chain/0.2`, handing their own VTA the rungs they fetched from the host. The response says how far back it can now read, which is the only number worth having: a rung extends reach only if every rung above it is present too |
 | **Cryptographic deletion** | **At the host, and at members' key holders as far as they conform.** `rooms/epoch/prune/0.2` (`admin`) erases the epoch key chain below an epoch at a host, and the host keeps the room's **epoch floor** (`beforeEpoch − 1`), which `rooms/epoch/chain/0.2` serves. A member's VTA that learns it — `rooms/keys/backfill/0.2`, `rooms/keys/chain/0.2`, a read's catch-up — discards every rung at or below it, refuses to derive below it (`beyondChain`), and never stores such a rung again from any source (trust-tasks-tf #869). Both hosts serve it (audited `room.epoch.prune`, `notAhead` for a floor at the current epoch); `pnm rooms prune` sends 0.2, warns, and asks first (§10.4). Nothing already read is recalled |
-| **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.3`), and an administrator removes what that makes eligible (`rooms/records/prune/0.2`), leaving a `lastPrune` mark that `rooms/records/list/0.5` and `rooms/keys/browse/0.3` carry. `pnm rooms records {prune,retention}` (§10.5) |
+| **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2` – `0.3`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.3` – `0.4`), and an administrator removes what that makes eligible (`rooms/records/prune/0.2`), leaving a `lastPrune` mark that `rooms/records/list/0.5` and `rooms/keys/browse/0.3` carry. `pnm rooms records {prune,retention}` (§10.5) |
 | **Record provenance and expiry** | **Work.** `basis`, `confidence`, `evidence`, `validFor`, `validUntil` inside a sealed body, or in an open room's cleartext at `rooms/records/put/0.3`; readers hide an expired record by default (§9) |
 | **Record kinds, replies and the host's record times** | **On both hosts.** An open room's cleartext may carry `kind`, `inReplyTo`, `writtenAt` and `editedAt` at `rooms/records/put/0.5`, held to their schema and stored as received; a sealed room carries them inside the body. Every put records `bodyStoredAt`, and a record's first version `createdAt` and (on `open` and `attributed`) `createdBy`, kept across edits and curation; `rooms/records/list/0.6` serves them with an open record's `kind`, `rooms/records/get/0.3` serves them uncommitted. A record stored before this carries none and serves none. On an `open` room the host refuses a new version of a `message` or `reaction` from anyone but its original author (`permissionDenied`, put/0.5 Host item 15) — on by default; `room-host --allow-rewrites-by-others` or the VTC's `[rooms] refuse_rewrites_by_others = false` turns it off |
 | **Members' names in a room** | **Writer and reader in `pnm`.** A member writes its own name as a record of kind `memberProfile` with the name in `title` (`rooms/_shared/0.3` `MemberProfileRecord`, trust-tasks-tf #1035) — sealed on `attributed` and `private`, cleartext at `rooms/records/put/0.5` on `open` — only where the room's profile lists `kind` **and** `memberProfile` in `recordMembers`. `pnm rooms name set` / `clear`; `pnm rooms list`, `get` and `read` show a name record as a name, never a note, and a name beside its author's DID. No host, seal or act change: a name is an ordinary record |
-| **Watching a room** | **On both hosts.** `rooms/watch/0.1` (`read`, as a listing) arms one content-free `rooms/changed/0.1` signal to an address the member names, sent once the room moves past the member's watermark — at once if it already has — after a 2–6 s randomised delay, then disarmed (trust-tasks-tf #1036). Over the host's own messaging, TSP before DIDComm by what the address's DID document advertises; a host with none refuses `addressUnreachable`. `pnm rooms watch` (§9) |
+| **Watching a room** | **On both hosts.** `rooms/watch/0.1` (`read`, as a listing) arms one content-free `rooms/changed/0.1` signal to an address the member names, sent once the room moves past the member's watermark — at once if it already has — after a 2–6 s randomised delay, or with no wait of the host's own where the room's **signal delay** is `none` (§10.6), then disarmed (trust-tasks-tf #1036, #1084). Over the host's own messaging, TSP before DIDComm by what the address's DID document advertises; a host with none refuses `addressUnreachable`. `pnm rooms watch` (§9) |
 | **Witnessed anchoring** | **Works, as an explicit owner task; not yet on every renewal.** `rooms/owner/anchor/0.1` (the owner's VTA) reads the room's head from its host as the owner's persona and publishes a `RoomEpochAnchor` service entry — the epoch, a SHA-256 of the MLS epoch authenticator, `headVersion`, and `dataCommitment` with `recordCount` — as a `did:webvh` update of the room's own DID, replacing the previous one; a room DID with no witnesses is refused. `rooms/keys/read/0.2` and `rooms/keys/browse` compare what a host serves against it (`verification.anchor`: `agrees`, `ahead`, `behind`, `conflict`, `none`, `notChecked`). Not yet: anchoring on renewal (`group-renew` and `rooms/epoch/mint` anchor nothing), a `pnm` command, and refusing writes on a mismatch. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) (§10.1) |
 
 ---
@@ -1744,6 +1744,10 @@ for that one watch and never shown to you. The pass-on reaches you the way a
 `task-consent/granted` does: queued at your mediator, and a sleeping phone woken
 by its mediator for it, never by a doorbell of the VTA's own.
 
+The host sends each signal a few seconds after the change, at random, unless the
+room's **signal delay** is `none` — a room used as a conversation (§10.6). That is
+the room's setting, not yours: no watch request changes it.
+
 What your VTA keeps, per armed watch, is exactly what the specification lets it
 (Recipient item 6): the caller, the member, the room, the host, the address and
 its two private keys, and when the watch lapses — never the watermark, the
@@ -2151,6 +2155,57 @@ Both hosts audit a prune (`room.records.prune`) with the mark, the reason, the
 rule and the kinds asked, and a change (`room.records.retention.set`) with the
 rule replaced, the rule recorded and the reason — never a removed record's key
 or anything it said. On a VTC these are `RoomRetention` audit rows.
+
+### 10.6 The signal delay: a room used as a conversation
+
+A host waits a short randomised interval (2–6 s) before it sends a watch signal
+(`rooms/changed/0.1` Producer item 4), so that a signal's time does not mark one
+write. In a document store that costs nothing; in a conversation it is a few
+seconds between one member writing and another seeing it, on every message. A
+room's **signal delay** (trust-tasks-tf #1084) says which it is: `randomised`, the
+default and what every room that never set one has, or `none`, which sends the
+signal as soon as the write is stored.
+
+```sh
+pnm rooms signal-delay show --room <room-did> --host <host-url>
+pnm rooms signal-delay set  --room <room-did> --host <host-url> --none \
+    --reason "this room is the team's live conversation"
+pnm rooms owner register --room <room-did> --host-did <host-did> --owner <persona> \
+    --visibility attributed --chat
+```
+
+- **The room's, never a watcher's.** Anyone who sees a write reach the host and a
+  signal leave it can line the two up; the wait blurs that for every writer in the
+  room, and one watcher without it would undo it for all of them. So the setting is
+  changed by a holder of `admin` (`rooms/signal-delay/set/0.1`, with a reason), is
+  served to every member (`rooms/info/0.4`), and the host reads it from the room's
+  own record whenever it fires a watch — never from the watch request.
+- **What `none` gives up.** Little in a busy room, whose rhythm shows in its
+  writes anyway; most in a quiet one, where one write and one signal at once line
+  up. `pnm` prints this before it sends `none`; the VTC console shows it beside the
+  setting. `none` removes only the host's wait: mediators and push gateways still
+  take the time they take.
+- **At creation.** `rooms/create/0.3` takes `signalDelay` (absent is `randomised`)
+  and always echoes it; `rooms/create/0.2` still creates, recording `randomised`.
+  Through the owner's VTA, `rooms/owner/register/0.3` passes `recordRetention` and
+  `signalDelay` through to `rooms/create/0.3`, and refuses `hostRefused` rather than
+  register the room without them on a host that does not take 0.3. `pnm rooms owner
+  register --chat` states `signalDelay: none`, tombstones kept 7 days and messages
+  365 days unless pinned (each overridable with `--signal-delay`,
+  `--tombstone-days`, `--record-days`), and prints the `pnm rooms profile set
+  --record-members …` that lets members name themselves and mark their messages
+  once the group exists — the room's record members are its profile's, which
+  `rooms/create` cannot carry.
+- **Changing it** is idempotent — naming the setting in force changes nothing and
+  answers so — applies to every signal sent from then on, and touches no watch.
+  Both hosts audit it (`room.signal-delay.set`: the setting replaced, the one
+  recorded, the reason, the requester where the tier discloses one); on a VTC it is
+  a `RoomSignalDelay` audit row. Both hosts apply either setting today; a host
+  whose governance kept the delay everywhere would refuse `signalDelayNotPermitted`,
+  recording nothing.
+- **On a VTC's console** the room's page shows the setting the community applies
+  (`vtc/rooms/get/0.3` `ext["org.openvtc"].signalDelay`). The community, as host,
+  only shows it: the room's administrators change it.
 
 ---
 

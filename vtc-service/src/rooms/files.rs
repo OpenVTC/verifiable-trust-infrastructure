@@ -35,7 +35,8 @@ use vti_specs::rooms::records::list::v0_6 as list_v6;
 use vti_specs::rooms::usage::v0_1 as rooms_usage;
 use vti_specs::rooms::{
     epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
-    info::v0_3 as info_v3, records::list::v0_5 as list_v5, records::prune::v0_2 as records_prune,
+    info::v0_3 as info_v3, info::v0_4 as info_v4, records::list::v0_5 as list_v5,
+    records::prune::v0_2 as records_prune,
 };
 
 use super::handlers::{RoomCtx, charged, now, presenter_and_verifier};
@@ -586,7 +587,93 @@ pub(crate) async fn handle_create_v2(doc: TrustTask<Value>, ctx: RoomCtx) -> Tru
             );
         }
     };
-    super::handlers::create_room(&doc, &ctx, &req, retention).await
+    super::handlers::create_room(&doc, &ctx, &req, retention, None).await
+}
+
+/// `rooms/create/0.3`: 0.2, and the room's signal delay, recorded as given and always
+/// echoed. This community applies either setting (`rooms/signal-delay/set/0.1` Host item 2).
+pub(crate) async fn handle_create_v3(doc: TrustTask<Value>, ctx: RoomCtx) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (retention, delay, v0_1) = match vti_rooms::signal_delay::create_v3_parts(&payload)
+        .and_then(|(r, d, p)| {
+            vti_rooms::signal_delay::create_v3_permitted(
+                d,
+                vti_rooms::signal_delay::SignalDelayPolicy::Either,
+            )?;
+            Ok((r, d, p))
+        }) {
+        Ok(parts) => parts,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: vti_rooms::wire::CreateRoomBody = match serde_json::from_value(v0_1) {
+        Ok(r) => r,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
+    super::handlers::create_room(&doc, &ctx, &req, retention, Some(delay)).await
+}
+
+/// `rooms/info/0.4`. Needs `read`: 0.3's answer, and the room's signal delay.
+pub(crate) async fn handle_info_v4(
+    doc: TrustTask<info_v4::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    render(
+        &doc,
+        vti_rooms::signal_delay::info_v4(&ctx.state.room_files, &room, &authorized, &payload).await,
+    )
+}
+
+/// `rooms/signal-delay/set/0.1`: change whether this host waits a randomised interval before
+/// the room's watch signals. Needs `admin`; audited with the setting replaced, the one
+/// recorded and the reason.
+pub(crate) async fn handle_signal_delay_set(
+    doc: TrustTask<Value>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Admin).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let state = &ctx.state;
+    match vti_rooms::signal_delay::set(
+        &state.room_files,
+        &state.rooms_ks,
+        &room,
+        &authorized,
+        &payload,
+        vti_rooms::signal_delay::SignalDelayPolicy::Either,
+        now(),
+    )
+    .await
+    {
+        Ok((body, audit)) => {
+            super::handlers::audit_signal_delay(state, &room, &authorized, &audit).await;
+            render(&doc, Ok(body))
+        }
+        Err(r) => refused(&doc, r),
+    }
 }
 
 /// `rooms/epoch/chain/0.2`: the 0.1 chain, and the room's epoch floor on every response.
@@ -615,6 +702,7 @@ pub(crate) async fn handle_epoch_prune_v2(
 
 /// `rooms/info/0.3`. Needs `read`: 0.1's answer, the record retention in force and the
 /// room's latest prune (`prunedAt`).
+#[allow(deprecated)] // still served beside info/0.4 (trust-tasks-tf #1084)
 pub(crate) async fn handle_info_v3(
     doc: TrustTask<info_v3::Payload>,
     ctx: RoomCtx,

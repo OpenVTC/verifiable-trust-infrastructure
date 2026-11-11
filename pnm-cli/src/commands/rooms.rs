@@ -21,6 +21,7 @@ use vta_sdk::client::VtaClient;
 use crate::cli::{
     RoomCommands, RoomFileCommands, RoomKeysCommands, RoomNameCommands, RoomOffersCommands,
     RoomOwnerCommands, RoomProfileCommands, RoomRecordsCommands, RoomRetentionCommands,
+    RoomSignalDelayCommands,
 };
 
 /// The operator's DID and key, from the session this CLI authenticates with.
@@ -63,6 +64,10 @@ pub(crate) async fn run(
                     visibility,
                     retention_days,
                     retention_policy,
+                    chat,
+                    signal_delay,
+                    tombstone_days,
+                    record_days,
                 } => {
                     custody::cmd_rooms_owner_register(
                         client,
@@ -72,6 +77,12 @@ pub(crate) async fn run(
                         &visibility,
                         retention_days,
                         retention_policy.as_deref(),
+                        custody::RoomSettings {
+                            chat,
+                            signal_delay: signal_delay.as_deref(),
+                            tombstone_days,
+                            record_days,
+                        },
                     )
                     .await
                 }
@@ -830,6 +841,45 @@ pub(crate) async fn run(
                     .await
                 }
             },
+        },
+        RoomCommands::SignalDelay { command } => match command {
+            RoomSignalDelayCommands::Show {
+                room_id,
+                host,
+                host_did,
+            } => {
+                rooms::cmd_rooms_signal_delay_show(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                    signer,
+                )
+                .await
+            }
+            RoomSignalDelayCommands::Set {
+                room_id,
+                host,
+                host_did,
+                none,
+                randomised: _,
+                reason,
+            } => {
+                rooms::cmd_rooms_signal_delay_set(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                    signer,
+                    if none { "none" } else { "randomised" },
+                    reason,
+                )
+                .await
+            }
         },
         RoomCommands::Keys { command } => match command {
             RoomKeysCommands::Commit {

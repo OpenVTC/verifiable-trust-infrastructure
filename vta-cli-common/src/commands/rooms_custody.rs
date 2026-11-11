@@ -121,10 +121,80 @@ pub fn parse_actions(actions: &[String]) -> Result<Vec<RoomAction>, Box<dyn std:
 
 // ─── Owner ───────────────────────────────────────────────────────────────
 
+/// What `rooms owner register` states about the room beyond 0.2's terms: its record
+/// retention and signal delay (`rooms/owner/register/0.3`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoomSettings<'a> {
+    /// The conversation preset ([`CHAT_TOMBSTONE_DAYS`], [`CHAT_RECORD_DAYS`], signal delay
+    /// `none`), each overridden by the member given beside it.
+    pub chat: bool,
+    /// `randomised` or `none`.
+    pub signal_delay: Option<&'a str>,
+    /// Days a retracted record's tombstone is kept.
+    pub tombstone_days: Option<u64>,
+    /// Days a record is kept after it last changed, pinned ones excepted.
+    pub record_days: Option<u64>,
+}
+
+/// The conversation preset's tombstone days: a retracted message's tombstone goes after a
+/// week, long enough for every member's client to have seen the retraction.
+pub const CHAT_TOMBSTONE_DAYS: u64 = 7;
+/// The conversation preset's record days: a message is kept a year after it last changed,
+/// unless pinned.
+pub const CHAT_RECORD_DAYS: u64 = 365;
+
+/// The record retention and signal delay a registration states.
+type StatedSettings = (
+    Option<vta_sdk::client::RoomRecordRetention>,
+    Option<vta_sdk::client::RoomSignalDelay>,
+);
+
+impl RoomSettings<'_> {
+    /// The record retention and signal delay to state, after the preset; `None` for each the
+    /// request leaves unstated.
+    pub fn resolve(&self) -> Result<StatedSettings, Box<dyn std::error::Error>> {
+        let signal_delay = match self.signal_delay {
+            Some(d) => Some(d),
+            None if self.chat => Some("none"),
+            None => None,
+        };
+        let signal_delay = match signal_delay {
+            Some(d) => Some(
+                d.parse()
+                    .map_err(|_| "--signal-delay must be `randomised` or `none`")?,
+            ),
+            None => None,
+        };
+        let tombstone = self
+            .tombstone_days
+            .or(self.chat.then_some(CHAT_TOMBSTONE_DAYS));
+        let records = self.record_days.or(self.chat.then_some(CHAT_RECORD_DAYS));
+        let mut r = serde_json::Map::new();
+        for (flag, name, days) in [
+            ("--tombstone-days", "tombstoneDays", tombstone),
+            ("--record-days", "recordDays", records),
+        ] {
+            if let Some(d) = days {
+                if !(1..=36_500).contains(&d) {
+                    return Err(format!("{flag} must be 1 to 36500 days").into());
+                }
+                r.insert(name.into(), serde_json::json!(d));
+            }
+        }
+        let record_retention = if r.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_value(serde_json::Value::Object(r))?)
+        };
+        Ok((record_retention, signal_delay))
+    }
+}
+
 /// `rooms owner register` — have this VTA register the room with its host
-/// (`rooms/owner/register/0.2`, falling back to 0.1 on a VTA that does not serve it),
-/// signing `rooms/create` as `owner`, and say plainly when the room's revocation list is
-/// not in force there.
+/// (`rooms/owner/register/0.3` when a record retention or signal delay is stated, 0.2
+/// otherwise), signing `rooms/create` as `owner`, and say plainly when the room's
+/// revocation list is not in force there.
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_rooms_owner_register(
     client: &VtaClient,
     room_id: &str,
@@ -133,7 +203,16 @@ pub async fn cmd_rooms_owner_register(
     visibility: &str,
     retention_days: Option<u64>,
     retention_policy: Option<&str>,
+    settings: RoomSettings<'_>,
 ) -> CmdResult {
+    let (record_retention, signal_delay) = settings.resolve()?;
+    let states_none = signal_delay
+        .as_ref()
+        .is_some_and(|d| serde_json::to_value(d).ok() == Some(serde_json::json!("none")));
+    if states_none {
+        eprintln!("{}\n", super::rooms::SIGNAL_DELAY_NONE_TRADE_OFF);
+    }
+    let states_settings = record_retention.is_some() || signal_delay.is_some();
     let visibility = visibility
         .parse()
         .map_err(|_| "--visibility must be one of: open, attributed, private")?;
@@ -157,9 +236,29 @@ pub async fn cmd_rooms_owner_register(
             owner_did: Some(owner),
             retention_days,
             retention_policy,
+            record_retention,
+            signal_delay,
         })
         .await
         .map_err(|e| {
+            if states_settings && matches!(e, vta_sdk::error::VtaError::UnsupportedTaskType { .. })
+            {
+                return format!(
+                    "{e}\n\nThis VTA predates rooms/owner/register/0.3, so it cannot pass a \
+                     record retention or signal delay to the host. Upgrade it, or register \
+                     without --chat, --signal-delay, --tombstone-days and --record-days and \
+                     set them afterwards with `pnm rooms records retention set` and `pnm \
+                     rooms signal-delay set`."
+                );
+            }
+            if states_settings && e.to_string().contains("hostRefused") {
+                return format!(
+                    "{e}\n\nA host that does not accept rooms/create 0.3 cannot record the \
+                     record retention or signal delay asked for, and the room was not \
+                     registered. On such a host, register without --chat, --signal-delay, \
+                     --tombstone-days and --record-days: its rooms keep the randomised delay."
+                );
+            }
             format!(
                 "{e}\n\n`permissionDenied` means this VTA holds no signing key for `{owner}` in \
                  a context you act in. {PERSONA_HINT} On a community (VTC) host the owner must \
@@ -203,6 +302,20 @@ pub async fn cmd_rooms_owner_register(
                 resp.host
             ),
         }
+    }
+    if settings.chat {
+        // The room's record members are its profile's, written inside the room once the
+        // group exists (`rooms/keys/profile/write`); `rooms/create` has no member for them.
+        println!(
+            "  As a conversation: no signal delay; tombstones kept {} days, messages {} days \
+             unless pinned. Once the group exists, let members name themselves and mark their \
+             messages with `pnm rooms profile set --room {} --host-did {} --record-members \
+             kind,inReplyTo,writtenAt,editedAt,memberProfile`.",
+            settings.tombstone_days.unwrap_or(CHAT_TOMBSTONE_DAYS),
+            settings.record_days.unwrap_or(CHAT_RECORD_DAYS),
+            resp.room_id,
+            resp.host
+        );
     }
     println!(
         "  Next: issue {owner} the room's credentials — `pnm rooms owner issue-membership` and \
