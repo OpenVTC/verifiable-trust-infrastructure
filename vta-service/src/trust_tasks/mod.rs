@@ -131,6 +131,8 @@ pub(crate) mod collection;
 pub(crate) mod notifications;
 pub(crate) mod step_up;
 mod vault;
+#[cfg(feature = "webs")]
+mod webs;
 #[cfg(feature = "webvh")]
 pub(crate) mod webvh;
 pub(crate) mod wire_v0_2;
@@ -223,6 +225,13 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+    // did:webs DIDs — requires `webs`.
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_1,
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1,
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1,
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_UPDATE_0_1,
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1,
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_DELETE_0_1,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0,
@@ -3311,6 +3320,27 @@ dispatch_table! {
         [ Destructive None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0 => webvh::handle_dids_rotate_keys
+        [ Destructive None false ],
+    // ─── did:webs DIDs (feature-gated: webs) ─────────────────────
+    // Classes are each specification's own: rotate-keys replaces the DID's sole
+    // controlling key, and delete ends the AID, so both are Destructive.
+    #[cfg(feature = "webs")]
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_1 => webs::handle_create
+        [ Mutating Metadata false ],
+    #[cfg(feature = "webs")]
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1 => webs::handle_get
+        [ None Metadata false ],
+    #[cfg(feature = "webs")]
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1 => webs::handle_list
+        [ None Metadata false ],
+    #[cfg(feature = "webs")]
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_UPDATE_0_1 => webs::handle_update
+        [ Mutating Metadata false ],
+    #[cfg(feature = "webs")]
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1 => webs::handle_rotate_keys
+        [ Destructive Metadata false ],
+    #[cfg(feature = "webs")]
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_DELETE_0_1 => webs::handle_delete
         [ Destructive None false ],
     // Mutating rather than Destructive, unlike its two neighbours above: a
     // realign renames records, and the key material behind them is untouched.

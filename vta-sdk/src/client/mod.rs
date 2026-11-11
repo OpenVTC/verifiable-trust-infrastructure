@@ -432,6 +432,7 @@ mod policy;
 mod rooms;
 mod rooms_records;
 mod rooms_watch;
+mod webs;
 mod witness;
 pub use rooms::{
     RoomAction, RoomLabelEdit, RoomRegistration, RoomRetentionPolicy, RoomVisibility,
@@ -446,6 +447,7 @@ pub use rooms_records::{
 pub use rooms_watch::{
     ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal, unsigned_room_request_v0_12,
 };
+pub use webs::webs_refusal_fix;
 mod secrets;
 mod vault;
 mod vta_management;

@@ -27,5 +27,6 @@ pub mod rooms;
 pub mod rooms_custody;
 pub mod services;
 pub mod vault;
+pub mod webs;
 pub mod webvh;
 pub mod webvh_edit;

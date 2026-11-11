@@ -376,6 +376,18 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0, Keyed),
+    // ── did:webs DIDs ───────────────────────────────────────────────────
+    // Every create incepts a new AID: a retried one is a second DID.
+    (trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_1, Keyed),
+    (trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1, ReadOnly),
+    // Each update and rotation appends events to the key event log; two append
+    // two (a second rotation installs a key the first committed).
+    (trust_tasks::TASK_VTA_WEBS_DIDS_UPDATE_0_1, Keyed),
+    (trust_tasks::TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1, Keyed),
+    // A repeated delete finds the DID deactivated, publishes nothing and only
+    // retries the slot removal: it converges.
+    (trust_tasks::TASK_VTA_WEBS_DIDS_DELETE_0_1, RetrySafe),
     // `RetrySafe` where its two neighbours above are `Keyed`, and the difference
     // is convergence rather than caution. `update` and `rotate-keys` append a
     // log entry, so a second execution leaves a second durable artefact. A

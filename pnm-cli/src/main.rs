@@ -373,6 +373,7 @@ async fn main() {
             command: cli::DidMgmtCommands::AgentNames { command },
         } => commands::agent_names::run(&client, command).await,
         Commands::DidMgmt { command } => commands::webvh::run(&client, command.into()).await,
+        Commands::Webs { command } => commands::webs::run(&client, command).await,
         Commands::Audit { command } => commands::audit::run(&client, command).await,
         Commands::Backup { command } => commands::backup::run(&client, command).await,
         Commands::Keys { command } => commands::keys::run(&client, command).await,

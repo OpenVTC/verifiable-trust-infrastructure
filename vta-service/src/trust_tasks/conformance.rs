@@ -5365,7 +5365,149 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
+    // Gated with their dispatch entries: the sweep requires the two to agree in
+    // both directions.
+    #[cfg(feature = "webs")]
+    for (uri, req, resp) in webs_witnesses() {
+        t.push((
+            uri,
+            Conformance::Checked(Witness {
+                request: req.0,
+                parse_request: req.1,
+                validate_request: req.2,
+                response: resp.0,
+                parse_response: resp.1,
+            }),
+        ));
+    }
+
     t
+}
+
+/// `vta/webs/dids/*/0.1` — the did:webs lifecycle.
+#[cfg(feature = "webs")]
+fn webs_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
+    use specs::vta::webs::dids as ws;
+
+    const DID: &str =
+        "did:webs:hosting.example:personas:EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4";
+    const AID: &str = "EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4";
+    const SLOT: &str = "personas/EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4";
+    const VERSION: &str = "1:EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao";
+    const SIGNING: &str = "DHr0-I-mMN7h6cLMOTRJkkfPuMd0vgQPrOk4Y3edaHjr";
+    const KA: &str = "CAbcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    let record = || {
+        json!({
+            "did": DID, "aid": AID, "contextId": "personal", "serverId": "host-1",
+            "domain": "hosting.example", "slot": SLOT,
+            "keriCesrUrl": format!("https://hosting.example/{SLOT}/keri.cesr"),
+            "didJsonUrl": format!("https://hosting.example/{SLOT}/did.json"),
+            "sequenceNumber": 1, "versionId": VERSION,
+            "signingKeyId": format!("{DID}#{SIGNING}"), "signingKey": SIGNING,
+            "nextKeyId": format!("{DID}#pre-rotation-0"),
+            "keyAgreementKeyId": format!("{DID}#{KA}"), "keyAgreementKey": KA,
+            "alsoKnownAs": [DID],
+            "services": [{ "id": "#didcomm", "type": ["DIDCommMessaging"],
+              "serviceEndpoint": [{ "accept": ["didcomm/v2"], "uri": "did:web:mediator.example" }] }],
+            "deactivated": false, "primary": false,
+            "createdAt": "2026-11-11T09:00:00Z", "updatedAt": "2026-11-11T09:00:00Z"
+        })
+    };
+    vec![
+        (
+            uris::TASK_VTA_WEBS_DIDS_CREATE_0_1,
+            (
+                json!({ "contextId": "personal", "serverId": "host-1", "path": "personas",
+                  "addMediatorService": true, "setPrimary": false }),
+                parses::<ws::create::v0_1::Payload>,
+                validates::<ws::create::v0_1::Payload>,
+            ),
+            (
+                json!({
+                    "did": DID, "aid": AID, "contextId": "personal", "serverId": "host-1",
+                    "domain": "hosting.example", "slot": SLOT,
+                    "keriCesrUrl": format!("https://hosting.example/{SLOT}/keri.cesr"),
+                    "didJsonUrl": format!("https://hosting.example/{SLOT}/did.json"),
+                    "signingKeyId": format!("{DID}#{SIGNING}"), "signingKey": SIGNING,
+                    "nextKeyId": format!("{DID}#pre-rotation-0"),
+                    "keyAgreementKeyId": format!("{DID}#{KA}"), "keyAgreementKey": KA,
+                    "sequenceNumber": 1, "versionId": VERSION, "alsoKnownAs": [DID],
+                    "serviceIds": ["#didcomm"], "createdAt": "2026-11-11T09:00:00Z"
+                }),
+                parses::<ws::create::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_GET_0_1,
+            (
+                json!({ "did": DID, "includeKeriCesr": false }),
+                parses::<ws::get::v0_1::Payload>,
+                validates::<ws::get::v0_1::Payload>,
+            ),
+            (
+                json!({ "record": record() }),
+                parses::<ws::get::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_LIST_0_1,
+            (
+                json!({ "contextId": "personal", "limit": 10 }),
+                parses::<ws::list::v0_1::Payload>,
+                validates::<ws::list::v0_1::Payload>,
+            ),
+            (
+                json!({ "dids": [record()] }),
+                parses::<ws::list::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_UPDATE_0_1,
+            (
+                json!({ "did": DID, "expectedVersionId": VERSION,
+                  "services": { "mediator": true, "tsp": false } }),
+                parses::<ws::update::v0_1::Payload>,
+                validates::<ws::update::v0_1::Payload>,
+            ),
+            (
+                json!({ "did": DID, "replaced": ["services"], "sequenceNumber": 2,
+                  "versionId": "2:EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqab",
+                  "keyAgreementKeyId": format!("{DID}#{KA}"), "keyAgreementKey": KA,
+                  "alsoKnownAs": [DID], "serviceIds": ["#didcomm"] }),
+                parses::<ws::update::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1,
+            (
+                json!({ "did": DID, "expectedVersionId": VERSION }),
+                parses::<ws::rotate_keys::v0_1::Payload>,
+                validates::<ws::rotate_keys::v0_1::Payload>,
+            ),
+            (
+                json!({ "did": DID, "sequenceNumber": 2,
+                  "versionId": "2:EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqab",
+                  "signingKeyId": format!("{DID}#DNext"), "signingKey": "DNext",
+                  "nextKeyId": format!("{DID}#pre-rotation-1"),
+                  "retiredKeyId": format!("{DID}#{SIGNING}"), "resumed": false }),
+                parses::<ws::rotate_keys::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_DELETE_0_1,
+            (
+                json!({ "did": DID }),
+                parses::<ws::delete::v0_1::Payload>,
+                validates::<ws::delete::v0_1::Payload>,
+            ),
+            (
+                json!({ "did": DID, "deactivated": true, "newlyDeactivated": true,
+                  "versionId": "2:EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqab",
+                  "slotRemoved": true }),
+                parses::<ws::delete::v0_1::Response>,
+            ),
+        ),
+    ]
 }
 
 type ReqParts = (Value, ParseFn, ValidateFn);

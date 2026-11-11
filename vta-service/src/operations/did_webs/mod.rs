@@ -67,13 +67,39 @@ pub struct WebsDeps<'a> {
     pub did_resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
 }
 
+impl<'a> WebsDeps<'a> {
+    /// The deps of a request served by `s`, under its config `config`.
+    pub fn from_app_state(
+        s: &'a crate::server::AppState,
+        config: &'a AppConfig,
+        did_resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    ) -> Self {
+        Self {
+            keys_ks: &s.keys_ks,
+            contexts_ks: &s.contexts_ks,
+            webvh_ks: &s.webvh_ks,
+            webs_ks: &s.webs_ks,
+            acl_ks: Some(&s.acl_ks),
+            audit: &s.audit_sink,
+            seed_store: &*s.seed_store,
+            config,
+            did_resolver,
+        }
+    }
+}
+
 /// A did-hosting service, as a create needs it.
 ///
 /// The real one is [`crate::webvh_host::WebvhHostClient`]; tests publish to a
 /// recording fake.
 pub trait WebsHost {
-    /// The domain the host serves new DIDs on when none is named.
-    fn default_domain(&self) -> impl Future<Output = Result<String, AppError>> + Send;
+    /// The domain to publish on: `requested` if the host serves it for this
+    /// VTA, otherwise the host's default. A `Validation` error when it serves
+    /// neither.
+    fn resolve_domain(
+        &self,
+        requested: Option<&str>,
+    ) -> impl Future<Output = Result<String, AppError>> + Send;
 
     /// Publish `keri_cesr` to `mnemonic` (`{path}/{AID}`), claiming the slot
     /// if it is free.
@@ -92,13 +118,51 @@ pub trait WebsHost {
     ) -> impl Future<Output = Result<(), AppError>> + Send;
 }
 
+/// A borrowed host is a host: the handler lends one it owns.
+impl<T: WebsHost + Sync> WebsHost for &T {
+    fn resolve_domain(
+        &self,
+        requested: Option<&str>,
+    ) -> impl Future<Output = Result<String, AppError>> + Send {
+        (**self).resolve_domain(requested)
+    }
+
+    fn publish(
+        &self,
+        mnemonic: &str,
+        keri_cesr: &str,
+        domain: Option<&str>,
+    ) -> impl Future<Output = Result<RequestUriResponse, AppError>> + Send {
+        (**self).publish(mnemonic, keri_cesr, domain)
+    }
+
+    fn delete(
+        &self,
+        mnemonic: &str,
+        domain: Option<&str>,
+    ) -> impl Future<Output = Result<(), AppError>> + Send {
+        (**self).delete(mnemonic, domain)
+    }
+}
+
 impl WebsHost for crate::webvh_host::WebvhHostClient<'_> {
-    async fn default_domain(&self) -> Result<String, AppError> {
+    async fn resolve_domain(&self, requested: Option<&str>) -> Result<String, AppError> {
         let domains = self.my_domains().await?.domains;
         let mut active = domains
             .iter()
             .filter(|d| d.status.to_string() == "active")
             .collect::<Vec<_>>();
+        if let Some(requested) = requested {
+            return active
+                .iter()
+                .find(|d| d.name == requested)
+                .map(|d| d.name.clone())
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "the hosting server does not serve the domain {requested} for this VTA"
+                    ))
+                });
+        }
         if let Some(d) = active.iter().find(|d| d.default_domain == Some(true)) {
             return Ok(d.name.clone());
         }
@@ -150,6 +214,11 @@ pub struct CreateDidWebsParams {
     pub add_tsp_service: Option<bool>,
     /// Further `alsoKnownAs` identifiers to designate.
     pub also_known_as: Vec<String>,
+    /// Make the new DID its context's primary DID. Refused where that primary
+    /// is a node's service identity (VTI-KEY-001).
+    pub set_primary: bool,
+    /// Further designated services, beside `#didcomm` and `#tsp`.
+    pub additional_services: Vec<DesignatedService>,
 }
 
 impl CreateDidWebsParams {
@@ -278,31 +347,41 @@ pub async fn create_did_webs<H: WebsHost>(
     params: CreateDidWebsParams,
     host: &H,
     channel: &str,
-) -> Result<CreateDidWebsResult, AppError> {
+) -> Result<CreateDidWebsResult, WebsError> {
     crate::operations::did_webvh::ensure_may_mint(deps.acl_ks, auth).await?;
     auth.require_context(&params.context_id)?;
     if !deps.config.dids.webs_enabled {
-        return Err(AppError::Forbidden(
+        return Err(WebsError::refused(
+            WebsRefusal::MethodDisabled,
             "did:webs creation is off on this VTA (alpha): set `webs_enabled = true` under \
-             `[dids]` (or VTA_DIDS_WEBS_ENABLED=true) to turn it on"
-                .into(),
+             `[dids]` (or VTA_DIDS_WEBS_ENABLED=true) to turn it on",
         ));
     }
     if let Some(path) = params.path.as_deref() {
-        check_path(path)?;
+        check_path(path)
+            .map_err(|e| WebsError::refused(WebsRefusal::PathRefused, e.to_string()))?;
     }
     crate::webvh_store::get_server(deps.webvh_ks, &params.server_id)
         .await?
         .ok_or_else(|| {
-            AppError::NotFound(format!("hosting server not found: {}", params.server_id))
+            WebsError::refused(
+                WebsRefusal::ServerNotFound,
+                format!("hosting server not found: {}", params.server_id),
+            )
         })?;
-    let ctx = crate::contexts::get_context(deps.contexts_ks, &params.context_id)
+    let mut ctx = crate::contexts::get_context(deps.contexts_ks, &params.context_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("context not found: {}", params.context_id)))?;
-    let domain = match params.domain.clone() {
-        Some(d) => d,
-        None => host.default_domain().await?,
-    };
+    if params.set_primary {
+        refuse_service_context(deps.config, &ctx)?;
+    }
+    let domain = host
+        .resolve_domain(params.domain.as_deref())
+        .await
+        .map_err(|e| match e {
+            AppError::Validation(m) => WebsError::refused(WebsRefusal::DomainNotServed, m),
+            e => WebsError::from_host(e),
+        })?;
     let label = params
         .label
         .clone()
@@ -381,11 +460,27 @@ pub async fn create_did_webs<H: WebsHost>(
             ));
         }
     } else if params.add_mediator_service || params.add_tsp_service == Some(true) {
-        return Err(AppError::Validation(
+        return Err(WebsError::App(AppError::Validation(
             "a #didcomm or #tsp service routes through this VTA's mediator, and none is \
              configured (`[messaging] mediator_did`)"
                 .into(),
-        ));
+        )));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    if mediator.is_some() && add_tsp {
+        ids.insert(TSP_SERVICE_FRAGMENT.to_string());
+    }
+    if mediator.is_some() && params.add_mediator_service {
+        ids.insert(DIDCOMM_FRAGMENT.to_string());
+    }
+    for service in &params.additional_services {
+        if !ids.insert(service.id.clone()) {
+            return Err(WebsError::refused(
+                WebsRefusal::ServiceIdConflict,
+                format!("serviceIdConflict: two services have the id {}", service.id),
+            ));
+        }
+        builder = builder.designated_service(service.clone());
     }
     for aka in &params.also_known_as {
         builder = builder.also_known_as(aka.clone());
@@ -408,20 +503,24 @@ pub async fn create_did_webs<H: WebsHost>(
     if did != expected {
         return Err(AppError::Internal(format!(
             "created {did}, but the host would serve {expected} from slot {mnemonic}"
-        )));
+        ))
+        .into());
     }
     let keri_cesr = String::from_utf8(artifacts.keri_cesr.clone()).map_err(|_| {
         AppError::Internal("the key event stream is not text; it cannot be published".into())
     })?;
 
     // ── Publish, then commit (R2.1) ────────────────────────────────────
-    let published = host.publish(&mnemonic, &keri_cesr, Some(&domain)).await?;
+    let published = host
+        .publish(&mnemonic, &keri_cesr, Some(&domain))
+        .await
+        .map_err(WebsError::from_host)?;
     if published.did_url != did {
-        return Err(AppError::Internal(format!(
+        return Err(WebsError::App(AppError::Internal(format!(
             "the hosting server published {} for slot {mnemonic}, not {did}; nothing was \
              recorded here, and the slot must be reconciled on the server",
             published.did_url
-        )));
+        ))));
     }
 
     let signing_key_id = format!("{did}#{signing_qb64}");
@@ -496,6 +595,14 @@ pub async fn create_did_webs<H: WebsHost>(
     )
     .await?;
 
+    if params.set_primary {
+        ctx.did = Some(did.clone());
+        ctx.updated_at = chrono::Utc::now();
+        crate::contexts::store_context(deps.contexts_ks, &ctx)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+    }
+
     vta_audit::record_best_effort(
         deps.audit,
         "did.create.webs",
@@ -549,10 +656,43 @@ pub async fn list_did_webs(
     webs_store::list_by_context(webs_ks, context_id).await
 }
 
+/// Refuse to make a `did:webs` the primary DID of `ctx` when that context's
+/// primary is a node's service identity (VTI-KEY-001: a service DID is
+/// `did:webvh` or `did:scid:vh:1`).
+///
+/// The one service identity a VTA can tell from its own records is its own
+/// DID, `vta_did`. A context provisioned for a community, a VTN or a host
+/// service carries no marker saying so, so it is not refused here: that is a
+/// gap, recorded in `docs/02-vta/did-webs.md`.
+fn refuse_service_context(
+    config: &AppConfig,
+    ctx: &vta_sdk::contexts::ContextRecord,
+) -> Result<(), WebsError> {
+    let Some(primary) = ctx.did.as_deref() else {
+        return Ok(());
+    };
+    if config.vta_did.as_deref() == Some(primary) {
+        return Err(WebsError::refused(
+            WebsRefusal::ServiceDidNotPermitted,
+            format!(
+                "context {} holds this VTA's own DID ({primary}), a service identity: a \
+                 did:webs cannot take its place (VTI-KEY-001: a service DID is did:webvh or \
+                 did:scid:vh:1)",
+                ctx.id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+mod error;
+pub use error::{WebsError, WebsRefusal};
+
 mod lifecycle;
 pub use lifecycle::{
     DeleteDidWebsResult, RotateDidWebsResult, UpdateDidWebsParams, UpdateDidWebsResult,
     WebsServices, delete_did_webs, rotate_did_webs_keys, staged_webs_rotations, update_did_webs,
+    version_id,
 };
 
 #[cfg(test)]
