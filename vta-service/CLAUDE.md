@@ -113,6 +113,17 @@ When adding a flow, add it here and a line to the root index.
 - **Seed**: 24-word BIP-39 mnemonic, stored via `affinidi-secrets-resolver`
   backend (OS keyring by default; AWS/GCP/Azure via feature flags).
 - **Docs**: `docs/02-vta/cold-start.md`, `docs/02-vta/non-interactive-setup.md`.
+- **A did:webs VTA** (`vta_did` kind `create_webs`, alpha): setup mints a
+  key-role identity (`CreateDidWebsParams { key_roles, defer_publish }`) and
+  records it unpublished — setup is offline and the VTA has no standing at the
+  host. `server::publish_own_webs_identity` publishes it at first boot, before
+  messaging starts, through `operations::did_webs::publish_own_identity`: a
+  self-certifying `did/register/0.1` the host accepts from a did:webs outside
+  its ACL. Its authentication key (the `operational` role) is the resident key
+  every request and response proves with; its attestation key signs
+  credentials (`SelfKeys`). Never let first boot fall back to another
+  identifier (VTI-KEY-009), and never treat `published: false` on any record
+  but `vta_did`'s as normal.
 
 ### Mediator connection (readiness gate + reconnect)
 - **What**: How the VTA establishes and *keeps* its outbound mediator DIDComm

@@ -1,14 +1,18 @@
-//! `did:webs` persona, relationship and integration DIDs: create, get, list,
-//! update, rotate and delete (the last three in [`lifecycle`]).
+//! `did:webs` DIDs: create, get, list, update, rotate and delete (the last
+//! three in [`lifecycle`]), and this VTA's own did:webs identity's first
+//! publication ([`publish_own_identity`]).
 //!
-//! Level 1 (one Ed25519 signing key, `kt 1`, and one pre-rotated successor,
-//! `nt 1`), KERI v2 with JSON bodies, through `affinidi-did-webs`' controller
-//! API. Design: `docs/05-design-notes/did-webs-in-the-vta.md`. **Alpha**, and
-//! off at runtime unless `[dids] webs_enabled`.
+//! A persona, relationship or integration DID is level 1 (one Ed25519 signing
+//! key, `kt 1`, and one pre-rotated successor, `nt 1`); a node's durable
+//! identity is a key-role identity (`key_roles`, VTI-KEY-173). KERI v2 with
+//! JSON bodies, through `affinidi-did-webs`' controller API. Design:
+//! `docs/05-design-notes/did-webs-in-the-vta.md`. **Alpha**, and off at
+//! runtime unless `[dids] webs_enabled`.
 //!
-//! A `did:webs` is never this VTA's (or a community's) durable identity:
-//! VTI-KEY-001 names only `did:webvh` and `did:scid:vh:1` for that, so nothing
-//! here can set one as a context's or the VTA's DID.
+//! VTI-KEY-001 admits `did:webs` as an optional method for a node's durable
+//! identity. This VTA takes one at setup (`vta_did` kind `create_webs`),
+//! never by a create addressed to its own context
+//! (`serviceDidNotPermitted`).
 //!
 //! # Keys
 //!
@@ -29,6 +33,7 @@
 
 use std::future::Future;
 
+use affinidi_did_webs::key_roles::{KeyRoles, VerificationKey};
 use affinidi_did_webs::{CreateConfig, DesignatedService, KeyAgreementKey, create_controlled};
 use affinidi_keri::controller::{Inception, KeySigner, NextKey};
 use affinidi_keri_core::threshold::Threshold;
@@ -219,6 +224,19 @@ pub struct CreateDidWebsParams {
     pub set_primary: bool,
     /// Further designated services, beside `#didcomm` and `#tsp`.
     pub additional_services: Vec<DesignatedService>,
+    /// Make it a key-role identity (VTI-KEY-070, VTI-KEY-173): distinct
+    /// `attestation` and `operational` Ed25519 keys and a `messaging` X25519
+    /// key, designated by the key-role extension, with the key event log's
+    /// own key in no relationship. What a node's durable identity needs
+    /// (design note did-webs-in-the-vta §4, decision 2). Off: one key event
+    /// log key for every relationship, and a designated key agreement key.
+    pub key_roles: bool,
+    /// Mint and record the DID without reaching its host: for setup, which is
+    /// offline and whose VTA has no standing at the host yet. `domain` must be
+    /// given (the host is not asked for its default), and the record is left
+    /// unpublished for [`publish_own_identity`] at first boot, which
+    /// registers it on its own authority (design note §4, decision 3).
+    pub defer_publish: bool,
 }
 
 impl CreateDidWebsParams {
@@ -242,6 +260,10 @@ pub struct CreateDidWebsResult {
     pub signing_key_id: String,
     pub next_key_id: String,
     pub key_agreement_key_id: String,
+    /// The `attestation` key's record, for a key-role identity.
+    pub attestation_key_id: Option<String>,
+    /// The `operational` key's record, for a key-role identity.
+    pub operational_key_id: Option<String>,
     /// The sequence number of the latest event: the inception, then one
     /// interaction event per designation registry event.
     pub sn: u64,
@@ -262,7 +284,7 @@ pub(crate) fn did_host_label(domain: &str, path: Option<&str>) -> String {
 
 /// A slot path is the host's to validate in full; refuse here only what would
 /// make the DID and the slot disagree.
-fn check_path(path: &str) -> Result<(), AppError> {
+pub fn check_path(path: &str) -> Result<(), AppError> {
     if path.is_empty()
         || path.starts_with('/')
         || path.ends_with('/')
@@ -280,15 +302,20 @@ fn check_path(path: &str) -> Result<(), AppError> {
 /// An Ed25519 public key in multibase (`z` + multicodec `0xed01`), as key
 /// records hold it, in CESR (`D…`), as a key event holds it.
 pub(crate) fn ed25519_qb64(public_multibase: &str) -> Result<String, AppError> {
-    let (_, bytes) = multibase::decode(public_multibase)
-        .map_err(|e| AppError::Internal(format!("public key {public_multibase}: {e}")))?;
-    let raw = bytes
-        .strip_prefix(&[0xed, 0x01][..])
-        .filter(|raw| raw.len() == 32)
-        .ok_or_else(|| AppError::Internal(format!("{public_multibase} is not an Ed25519 key")))?;
+    let raw = ed25519_raw(public_multibase)?;
     Verfer::new("D", raw.to_vec())
         .and_then(|v| v.qb64())
         .map_err(|e| AppError::Internal(format!("encode an Ed25519 key in CESR: {e}")))
+}
+
+/// The raw 32 bytes of an Ed25519 public key in multibase (`z` + `0xed01`).
+pub(crate) fn ed25519_raw(public_multibase: &str) -> Result<[u8; 32], AppError> {
+    let (_, bytes) = multibase::decode(public_multibase)
+        .map_err(|e| AppError::Internal(format!("public key {public_multibase}: {e}")))?;
+    bytes
+        .strip_prefix(&[0xed, 0x01][..])
+        .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
+        .ok_or_else(|| AppError::Internal(format!("{public_multibase} is not an Ed25519 key")))
 }
 
 /// A KERI signer over an Ed25519 private key the VTA derived. The bytes are
@@ -375,13 +402,21 @@ pub async fn create_did_webs<H: WebsHost>(
     if params.set_primary {
         refuse_service_context(deps.config, &ctx)?;
     }
-    let domain = host
-        .resolve_domain(params.domain.as_deref())
-        .await
-        .map_err(|e| match e {
-            AppError::Validation(m) => WebsError::refused(WebsRefusal::DomainNotServed, m),
-            e => WebsError::from_host(e),
-        })?;
+    let domain = if params.defer_publish {
+        // Setup cannot ask the host: the domain is the operator's to name.
+        params.domain.clone().ok_or_else(|| {
+            WebsError::App(AppError::Validation(
+                "a did:webs minted without its host names its domain".into(),
+            ))
+        })?
+    } else {
+        host.resolve_domain(params.domain.as_deref())
+            .await
+            .map_err(|e| match e {
+                AppError::Validation(m) => WebsError::refused(WebsRefusal::DomainNotServed, m),
+                e => WebsError::from_host(e),
+            })?
+    };
     let label = params
         .label
         .clone()
@@ -423,6 +458,37 @@ pub async fn create_did_webs<H: WebsHost>(
         .to_cesr()
         .map_err(|e| AppError::Internal(format!("{e}")))?;
 
+    // A key-role identity's `attestation` and `operational` keys: two more
+    // Ed25519 keys, each its own path, neither a key event log key (a role
+    // key that were one would bind nothing, VTI-KEY-071). The `messaging` key
+    // is the X25519 key above, derived on its own path, never converted from
+    // an Ed25519 key (VTI-KEY-184).
+    let role_keys = if params.key_roles {
+        let (attestation, _) =
+            fresh_key(deps, &ctx.base_path, &format!("{label} attestation key")).await?;
+        let (operational, _) =
+            fresh_key(deps, &ctx.base_path, &format!("{label} operational key")).await?;
+        let cesr = |key: &keys::PreRotationKeyData| -> Result<(VerificationKey, String), AppError> {
+            let vk = VerificationKey::Ed25519(ed25519_raw(&key.public_key)?);
+            let cesr = vk
+                .to_cesr()
+                .map_err(|e| AppError::Internal(format!("encode a role key: {e}")))?;
+            Ok((vk, cesr))
+        };
+        let (attestation_vk, attestation_cesr) = cesr(&attestation)?;
+        let (operational_vk, operational_cesr) = cesr(&operational)?;
+        Some(RoleKeys {
+            attestation,
+            attestation_vk,
+            attestation_cesr,
+            operational,
+            operational_vk,
+            operational_cesr,
+        })
+    } else {
+        None
+    };
+
     // ── Designations ───────────────────────────────────────────────────
     let mediator = deps
         .config
@@ -442,8 +508,16 @@ pub async fn create_did_webs<H: WebsHost>(
             Threshold::Simple(1),
             vec![NextKey::PublicKey(next_qb64)],
             Threshold::Simple(1),
-        ))
-        .key_agreement(key_agreement);
+        ));
+    builder = match &role_keys {
+        Some(roles) => builder.key_roles(
+            KeyRoles::new()
+                .with_attestation(roles.attestation_vk.clone())
+                .with_operational(roles.operational_vk.clone())
+                .with_messaging(key_agreement),
+        ),
+        None => builder.key_agreement(key_agreement),
+    };
     if let Some(mediator) = mediator.as_deref() {
         if add_tsp {
             builder = builder.designated_service(DesignatedService::new(
@@ -511,16 +585,14 @@ pub async fn create_did_webs<H: WebsHost>(
     })?;
 
     // ── Publish, then commit (R2.1) ────────────────────────────────────
-    let published = host
-        .publish(&mnemonic, &keri_cesr, Some(&domain))
-        .await
-        .map_err(WebsError::from_host)?;
-    if published.did_url != did {
-        return Err(WebsError::App(AppError::Internal(format!(
-            "the hosting server published {} for slot {mnemonic}, not {did}; nothing was \
-             recorded here, and the slot must be reconciled on the server",
-            published.did_url
-        ))));
+    // Deferred, nothing exists outside this VTA until first boot publishes
+    // it, so the commit below is the whole of the effect.
+    if !params.defer_publish {
+        let published = host
+            .publish(&mnemonic, &keri_cesr, Some(&domain))
+            .await
+            .map_err(WebsError::from_host)?;
+        check_published(&published, &did, &mnemonic)?;
     }
 
     let signing_key_id = format!("{did}#{signing_qb64}");
@@ -568,6 +640,35 @@ pub async fn create_did_webs<H: WebsHost>(
         successor.label.clone(),
     )
     .await?;
+    // A role key's record is named by the id the document gives it, so the
+    // VTA finds it by role (`NodeKeyIds::from_document`).
+    let mut attestation_key_id = None;
+    let mut operational_key_id = None;
+    if let Some(roles) = &role_keys {
+        for (cesr, key, slot) in [
+            (
+                &roles.attestation_cesr,
+                &roles.attestation,
+                &mut attestation_key_id,
+            ),
+            (
+                &roles.operational_cesr,
+                &roles.operational,
+                &mut operational_key_id,
+            ),
+        ] {
+            let key_id = format!("{did}#{cesr}");
+            save(
+                key_id.clone(),
+                key.path.clone(),
+                KeyType::Ed25519,
+                key.public_key.clone(),
+                key.label.clone(),
+            )
+            .await?;
+            *slot = Some(key_id);
+        }
+    }
 
     let now = chrono::Utc::now().to_rfc3339();
     let sn = state.sn;
@@ -586,6 +687,9 @@ pub async fn create_did_webs<H: WebsHost>(
             signing_key_id: signing_key_id.clone(),
             next_key_id: next_key_id.clone(),
             key_agreement_key_id: key_agreement_key_id.clone(),
+            attestation_key_id: attestation_key_id.clone(),
+            operational_key_id: operational_key_id.clone(),
+            published: !params.defer_publish,
             staged: None,
             deactivated: false,
             slot_removed: false,
@@ -622,8 +726,138 @@ pub async fn create_did_webs<H: WebsHost>(
         signing_key_id,
         next_key_id,
         key_agreement_key_id,
+        attestation_key_id,
+        operational_key_id,
         sn,
     })
+}
+
+/// A service entry as JSON (`id`, `type`, `serviceEndpoint`, and any further
+/// members) as a designated service. The id is a `#fragment`; a `{DID}#…` id,
+/// as a DID-document builder writes one before the DID exists, is taken by
+/// its fragment, since a designation names a service of the DID it is in.
+///
+/// # Errors
+/// `Validation` for an entry without an id, a `type` or a `serviceEndpoint`.
+pub fn designated_service_from_json(v: &serde_json::Value) -> Result<DesignatedService, AppError> {
+    let malformed = || AppError::Validation(format!("not a service entry: {v}"));
+    let id = v
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(malformed)?;
+    let id = id.strip_prefix("{DID}").unwrap_or(id);
+    let mut service = DesignatedService::new(
+        id,
+        "",
+        v.get("serviceEndpoint").ok_or_else(malformed)?.clone(),
+    );
+    service.type_ = v.get("type").ok_or_else(malformed)?.clone();
+    if let Some(map) = v.as_object() {
+        for (k, val) in map {
+            if !matches!(k.as_str(), "id" | "type" | "serviceEndpoint") {
+                service.properties.insert(k.clone(), val.clone());
+            }
+        }
+    }
+    Ok(service)
+}
+
+/// The host published `did` at `mnemonic`, or the publication is refused.
+fn check_published(
+    published: &RequestUriResponse,
+    did: &str,
+    mnemonic: &str,
+) -> Result<(), WebsError> {
+    if published.did_url != did {
+        return Err(WebsError::App(AppError::Internal(format!(
+            "the hosting server published {} for slot {mnemonic}, not {did}; nothing was \
+             recorded here, and the slot must be reconciled on the server",
+            published.did_url
+        ))));
+    }
+    Ok(())
+}
+
+/// Publish this VTA's own did:webs if setup minted it without its host
+/// (`defer_publish`): register its key event log at its slot, on the
+/// identifier's own authority — the host accepts a did:webs outside its ACL
+/// whose request is signed by a key that log establishes, on a domain whose
+/// operator allows it (design note §4, decision 3; affinidi-webvh-service
+/// `[[hosting.webs_self_register]]`). Afterwards the host has granted it an
+/// owner entry, and every later write takes the ordinary path.
+///
+/// `Ok(false)`: nothing to do — not a did:webs, no record, or already
+/// published. Idempotent: a retry after a lost reply registers the same
+/// slot again, which the host answers as the same identifier.
+///
+/// # Errors
+/// The host's refusal, or a host that published another identifier.
+pub async fn publish_own_identity<H: WebsHost>(
+    webs_ks: &KeyspaceHandle,
+    vta_did: &str,
+    host: &H,
+) -> Result<bool, WebsError> {
+    if !vta_did.starts_with("did:webs:") {
+        return Ok(false);
+    }
+    let Some(mut record) = webs_store::get(webs_ks, vta_did).await? else {
+        return Ok(false);
+    };
+    if record.published {
+        return Ok(false);
+    }
+    let keri_cesr = String::from_utf8(record.keri_cesr.clone()).map_err(|_| {
+        AppError::Internal("the key event stream is not text; it cannot be published".into())
+    })?;
+    let published = host
+        .publish(&record.mnemonic, &keri_cesr, record.domain.as_deref())
+        .await
+        .map_err(WebsError::from_host)?;
+    check_published(&published, vta_did, &record.mnemonic)?;
+    record.published = true;
+    record.updated_at = chrono::Utc::now().to_rfc3339();
+    webs_store::put(webs_ks, &record).await?;
+    Ok(true)
+}
+
+/// The host setup hands [`create_did_webs`] with `defer_publish`: it is never
+/// asked anything, and says so if it were.
+pub struct NoHost;
+
+impl WebsHost for NoHost {
+    async fn resolve_domain(&self, _requested: Option<&str>) -> Result<String, AppError> {
+        Err(AppError::Internal(
+            "no did-hosting server is reachable here (offline setup)".into(),
+        ))
+    }
+
+    async fn publish(
+        &self,
+        _mnemonic: &str,
+        _keri_cesr: &str,
+        _domain: Option<&str>,
+    ) -> Result<RequestUriResponse, AppError> {
+        Err(AppError::Internal(
+            "no did-hosting server is reachable here (offline setup)".into(),
+        ))
+    }
+
+    async fn delete(&self, _mnemonic: &str, _domain: Option<&str>) -> Result<(), AppError> {
+        Err(AppError::Internal(
+            "no did-hosting server is reachable here (offline setup)".into(),
+        ))
+    }
+}
+
+/// A key-role identity's `attestation` and `operational` keys, minted for a
+/// create.
+struct RoleKeys {
+    attestation: keys::PreRotationKeyData,
+    attestation_vk: VerificationKey,
+    attestation_cesr: String,
+    operational: keys::PreRotationKeyData,
+    operational_vk: VerificationKey,
+    operational_cesr: String,
 }
 
 /// The record of `did`, for a caller who may act in its context.
@@ -657,8 +891,10 @@ pub async fn list_did_webs(
 }
 
 /// Refuse to make a `did:webs` the primary DID of `ctx` when that context's
-/// primary is a node's service identity (VTI-KEY-001: a service DID is
-/// `did:webvh` or `did:scid:vh:1`).
+/// primary is this VTA's own identity. Replacing a node's identity is a
+/// re-identification — new keys installed, peers told — which setup does; a
+/// create that only repointed the context would leave the VTA signing as the
+/// old DID.
 ///
 /// The one service identity a VTA can tell from its own records is its own
 /// DID, `vta_did`. A context provisioned for a community, a VTN or a host
@@ -675,9 +911,9 @@ fn refuse_service_context(
         return Err(WebsError::refused(
             WebsRefusal::ServiceDidNotPermitted,
             format!(
-                "context {} holds this VTA's own DID ({primary}), a service identity: a \
-                 did:webs cannot take its place (VTI-KEY-001: a service DID is did:webvh or \
-                 did:scid:vh:1)",
+                "context {} holds this VTA's own DID ({primary}): a create cannot replace a \
+                 node's identity. To make this VTA a did:webs, set it up as one (`vta setup`, \
+                 `vta_did` kind `create_webs`)",
                 ctx.id
             ),
         ));

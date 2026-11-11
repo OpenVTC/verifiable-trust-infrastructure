@@ -50,8 +50,23 @@ pub struct WebsDidRecord {
     /// The key record of the committed successor, installed by the next
     /// rotation.
     pub next_key_id: String,
-    /// The key record of the designated key agreement key.
+    /// The key record of the designated key agreement key (a key-role
+    /// identity's `messaging` key).
     pub key_agreement_key_id: String,
+    /// A key-role identity's `attestation` key record (VTI-KEY-072); `None`
+    /// for an identity without key roles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_key_id: Option<String>,
+    /// A key-role identity's `operational` key record; `None` without key
+    /// roles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_key_id: Option<String>,
+    /// Whether its host serves it. `false` only for this VTA's own identity
+    /// between setup, which mints it offline, and first boot, which registers
+    /// it (`operations::did_webs::publish_own_identity`). A record written
+    /// before this existed was published by its create.
+    #[serde(default = "published_default")]
+    pub published: bool,
     /// A rotation signed but not yet accepted by the host. While one is staged
     /// nothing else is written: every write publishes it again first, since
     /// the successor it installs has signed it and cannot sign another.
@@ -170,6 +185,11 @@ pub async fn purge_context(ks: &KeyspaceHandle, context_id: &str) -> Result<usiz
         }
     }
     Ok(removed)
+}
+
+#[cfg(feature = "webs")]
+fn published_default() -> bool {
+    true
 }
 
 #[cfg(test)]

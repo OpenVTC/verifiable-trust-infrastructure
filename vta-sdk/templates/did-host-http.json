@@ -11,6 +11,7 @@
     "URL"
   ],
   "optionalVars": {
+    "RESOLVED_METHODS": [],
     "SERVICE_SIGN_IN_PORTAL": null,
     "WEBVH_SERVER": null
   },
@@ -22,9 +23,11 @@
   "document": {
     "@context": [
       "https://www.w3.org/ns/did/v1",
-      "https://w3id.org/security/multikey/v1"
+      "https://w3id.org/security/multikey/v1",
+      { "resolvedMethods": { "@id": "https://w3id.org/vti#resolvedMethods", "@type": "@json" } }
     ],
     "id": "{DID}",
+    "resolvedMethods": "{RESOLVED_METHODS}",
     "verificationMethod": [
       {
         "id": "{DID}#key-0",

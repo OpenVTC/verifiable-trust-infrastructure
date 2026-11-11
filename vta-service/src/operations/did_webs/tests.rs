@@ -373,6 +373,191 @@ async fn tsp_asked_for_is_designated_through_the_mediator() {
     assert_eq!(services[0]["serviceEndpoint"], MEDIATOR, "{doc}");
 }
 
+/// S6, decision 2: a key-role did:webs — what a node's durable identity is —
+/// has distinct attestation, operational and messaging keys, each on its own
+/// path and recorded under the id its document gives it, and the key event
+/// log's key in no relationship (VTI-KEY-071, VTI-KEY-072, VTI-KEY-173).
+#[tokio::test]
+async fn a_key_role_did_webs_has_distinct_role_keys_found_by_role() {
+    let f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let mut params = f.params();
+    params.key_roles = true;
+    let created = create_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        params,
+        &host,
+        "test",
+    )
+    .await
+    .expect("created");
+    let attestation = created.attestation_key_id.clone().expect("attestation key");
+    let operational = created.operational_key_id.clone().expect("operational key");
+
+    let published = host.published.lock().unwrap().clone();
+    let [(_, stream, _)] = published.as_slice() else {
+        panic!("one publish: {published:?}");
+    };
+    let doc = document(&created.did, stream);
+    assert!(doc.get("keyRoles").is_some(), "{doc}");
+
+    // By role, the ids the creation recorded.
+    let ids = vta_sdk::node_keys::NodeKeyIds::from_document(&created.did, &doc).unwrap();
+    assert_eq!(ids.signing, attestation);
+    assert_eq!(ids.authentication, operational);
+    assert_eq!(
+        ids.key_agreement.as_deref(),
+        Some(created.key_agreement_key_id.as_str())
+    );
+    // The key event log's key signs no relationship.
+    assert!(
+        !doc["authentication"]
+            .to_string()
+            .contains(created.signing_key_id.split_once('#').unwrap().1)
+            && !doc["assertionMethod"]
+                .to_string()
+                .contains(created.signing_key_id.split_once('#').unwrap().1),
+        "{doc}"
+    );
+
+    // Every key is recorded, in the context, each on its own path.
+    let mut paths = std::collections::BTreeSet::new();
+    for key_id in [
+        &created.signing_key_id,
+        &created.next_key_id,
+        &created.key_agreement_key_id,
+        &attestation,
+        &operational,
+    ] {
+        let record = key(&f, key_id).await;
+        assert_eq!(record.context_id.as_deref(), Some("acme"));
+        assert!(
+            paths.insert(record.derivation_path.clone()),
+            "{key_id} reuses a path"
+        );
+    }
+
+    // And the VTA would read the same keys off its own record.
+    let stored = record(&f, &created.did).await;
+    assert_eq!(
+        stored.attestation_key_id.as_deref(),
+        Some(attestation.as_str())
+    );
+    assert_eq!(
+        stored.operational_key_id.as_deref(),
+        Some(operational.as_str())
+    );
+    let keys = crate::self_keys::self_keys(&created.did, None, Some(&f.ts.webs_ks)).await;
+    assert_eq!(keys.signing.record_id, attestation);
+    assert_eq!(keys.authentication.record_id, operational);
+}
+
+/// S6 decision 3: setup mints a VTA's did:webs without its host, and the
+/// first boot publishes it once — the stream setup minted, at its slot and
+/// domain — after which nothing more is sent.
+#[tokio::test]
+async fn setup_mints_offline_and_the_first_boot_publishes_once() {
+    let f = Fixture::new().await;
+    let mut params = f.params();
+    params.key_roles = true;
+    params.defer_publish = true;
+    params.domain = Some("hosting.example".into());
+    let created = create_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        params,
+        &NoHost,
+        "setup",
+    )
+    .await
+    .expect("minted offline");
+    let stored = record(&f, &created.did).await;
+    assert!(!stored.published);
+    assert_eq!(stored.domain.as_deref(), Some("hosting.example"));
+
+    let host = RecordingHost::default();
+    assert!(
+        publish_own_identity(&f.ts.webs_ks, &created.did, &host)
+            .await
+            .expect("published")
+    );
+    let published = host.published.lock().unwrap().clone();
+    let [(mnemonic, stream, domain)] = published.as_slice() else {
+        panic!("one publish: {published:?}");
+    };
+    assert_eq!(mnemonic, &created.mnemonic);
+    assert_eq!(stream.as_bytes(), stored.keri_cesr.as_slice());
+    assert_eq!(domain.as_deref(), Some("hosting.example"));
+    assert!(record(&f, &created.did).await.published);
+
+    // Published: the next boot sends nothing.
+    assert!(
+        !publish_own_identity(&f.ts.webs_ks, &created.did, &host)
+            .await
+            .unwrap()
+    );
+    assert_eq!(host.published.lock().unwrap().len(), 1);
+}
+
+/// A deferred create must be told its domain: setup cannot ask the host.
+#[tokio::test]
+async fn a_deferred_create_names_its_domain() {
+    let f = Fixture::new().await;
+    let mut params = f.params();
+    params.defer_publish = true;
+    params.domain = None;
+    let err = create_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        params,
+        &NoHost,
+        "setup",
+    )
+    .await
+    .expect_err("refused");
+    assert!(
+        matches!(err, WebsError::App(AppError::Validation(_))),
+        "{err:?}"
+    );
+}
+
+/// The VTA's own DID cannot be deleted through the DID operations.
+#[tokio::test]
+async fn this_vtas_own_did_is_not_deleted() {
+    let mut f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let created = created(&f, &host).await;
+    f.config.vta_did = Some(created.did.clone());
+    let err = delete_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        &created.did,
+        None,
+        &host,
+        "test",
+    )
+    .await
+    .expect_err("refused");
+    assert!(
+        matches!(err, WebsError::App(AppError::Forbidden(_))),
+        "{err:?}"
+    );
+    assert!(!record(&f, &created.did).await.deactivated);
+}
+
+/// Without key roles a did:webs is as it was: no `keyRoles`, no role keys.
+#[tokio::test]
+async fn a_did_webs_without_key_roles_has_no_role_keys() {
+    let f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let created = created(&f, &host).await;
+    assert!(created.attestation_key_id.is_none() && created.operational_key_id.is_none());
+    let published = host.published.lock().unwrap().clone();
+    let doc = document(&created.did, &published[0].1);
+    assert!(doc.get("keyRoles").is_none(), "{doc}");
+}
+
 // ── Update, rotate, delete ────────────────────────────────────────────────
 
 async fn created(f: &Fixture, host: &RecordingHost) -> CreateDidWebsResult {

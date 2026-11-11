@@ -738,6 +738,15 @@ pub async fn delete_did_webs<H: WebsHost>(
 ) -> Result<DeleteDidWebsResult, WebsError> {
     // As `webvh/dids/delete`: an admin of the DID's context.
     auth.require_admin()?;
+    // Deactivating this VTA's own identity would leave it with no DID a peer
+    // can resolve and no key to recover with: a node's identity is retired by
+    // re-identifying it, never by a delete addressed to it.
+    if deps.config.vta_did.as_deref() == Some(did) {
+        return Err(WebsError::App(AppError::Forbidden(format!(
+            "`{did}` is this VTA's own DID; it cannot be deleted while it is. Set up the VTA \
+             under another DID first (`vta setup`), then delete this one"
+        ))));
+    }
     let record = held(deps, auth, did).await?;
     let newly_deactivated = !record.deactivated;
     let mut record = if record.deactivated {
