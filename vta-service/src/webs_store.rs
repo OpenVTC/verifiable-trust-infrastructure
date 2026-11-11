@@ -52,10 +52,41 @@ pub struct WebsDidRecord {
     pub next_key_id: String,
     /// The key record of the designated key agreement key.
     pub key_agreement_key_id: String,
+    /// A rotation signed but not yet accepted by the host. While one is staged
+    /// nothing else is written: every write publishes it again first, since
+    /// the successor it installs has signed it and cannot sign another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged: Option<StagedRotation>,
+    /// The last rotation committed to no next keys: the identifier is ended,
+    /// and nothing more is signed as it.
+    #[serde(default)]
+    pub deactivated: bool,
+    /// Whether the host confirmed removing the slot of a deactivated DID.
+    #[serde(default)]
+    pub slot_removed: bool,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
     pub updated_at: String,
+}
+
+/// A signed rotation, staged before it is published.
+#[cfg(feature = "webs")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedRotation {
+    /// The whole stream with the rotation appended: what is published.
+    #[serde(with = "base64_bytes")]
+    pub keri_cesr: Vec<u8>,
+    /// The controller state after the rotation.
+    pub state: affinidi_keri::controller::ControllerState,
+    /// The key record that becomes the signing key: the successor installed.
+    pub signing_key_id: String,
+    /// The key record of the new successor; `None` for a deactivation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_key_id: Option<String>,
+    /// The key record the rotation retires.
+    pub retired_key_id: String,
 }
 
 #[cfg(feature = "webs")]

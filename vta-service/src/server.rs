@@ -688,6 +688,20 @@ pub async fn build_app_state(
         Err(e) => warn!(error = %e, "could not recover interrupted did:webvh key rotations"),
     }
 
+    // A staged did:webs rotation is finished by publishing it again, which
+    // needs its host: the next write to the DID does that before anything
+    // else (vta/webs/dids, CONVENTIONS §6). Say which are waiting.
+    #[cfg(feature = "webs")]
+    match crate::operations::did_webs::staged_webs_rotations(&webs_ks).await {
+        Ok(dids) if dids.is_empty() => {}
+        Ok(dids) => warn!(
+            ?dids,
+            "did:webs rotations are staged and not yet published; each completes on its \
+             next update, rotation or deletion"
+        ),
+        Err(e) => warn!(error = %e, "could not read staged did:webs rotations"),
+    }
+
     let auth = init_auth(
         &config,
         &*seed_store,

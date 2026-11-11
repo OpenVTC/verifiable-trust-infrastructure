@@ -1,4 +1,5 @@
-//! `did:webs` persona, relationship and integration DIDs: create, get, list.
+//! `did:webs` persona, relationship and integration DIDs: create, get, list,
+//! update, rotate and delete (the last three in [`lifecycle`]).
 //!
 //! Level 1 (one Ed25519 signing key, `kt 1`, and one pre-rotated successor,
 //! `nt 1`), KERI v2 with JSON bodies, through `affinidi-did-webs`' controller
@@ -82,6 +83,13 @@ pub trait WebsHost {
         keri_cesr: &str,
         domain: Option<&str>,
     ) -> impl Future<Output = Result<RequestUriResponse, AppError>> + Send;
+
+    /// Remove the slot `mnemonic` (`did/delete/0.1`).
+    fn delete(
+        &self,
+        mnemonic: &str,
+        domain: Option<&str>,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
 }
 
 impl WebsHost for crate::webvh_host::WebvhHostClient<'_> {
@@ -114,6 +122,10 @@ impl WebsHost for crate::webvh_host::WebvhHostClient<'_> {
         domain: Option<&str>,
     ) -> Result<RequestUriResponse, AppError> {
         self.publish_webs(mnemonic, keri_cesr, domain).await
+    }
+
+    async fn delete(&self, mnemonic: &str, domain: Option<&str>) -> Result<(), AppError> {
+        self.delete_did(mnemonic, domain).await
     }
 }
 
@@ -168,7 +180,7 @@ pub struct CreateDidWebsResult {
 
 /// `did:webs:` + this, + `:{AID}`, is the DID: the domain's port separator
 /// percent-encoded, then each path segment.
-fn did_host_label(domain: &str, path: Option<&str>) -> String {
+pub(crate) fn did_host_label(domain: &str, path: Option<&str>) -> String {
     let mut label = domain.replace(':', "%3A");
     if let Some(path) = path {
         for segment in path.split('/') {
@@ -198,7 +210,7 @@ fn check_path(path: &str) -> Result<(), AppError> {
 
 /// An Ed25519 public key in multibase (`z` + multicodec `0xed01`), as key
 /// records hold it, in CESR (`D…`), as a key event holds it.
-fn ed25519_qb64(public_multibase: &str) -> Result<String, AppError> {
+pub(crate) fn ed25519_qb64(public_multibase: &str) -> Result<String, AppError> {
     let (_, bytes) = multibase::decode(public_multibase)
         .map_err(|e| AppError::Internal(format!("public key {public_multibase}: {e}")))?;
     let raw = bytes
@@ -212,6 +224,38 @@ fn ed25519_qb64(public_multibase: &str) -> Result<String, AppError> {
 
 /// A KERI signer over an Ed25519 private key the VTA derived. The bytes are
 /// copied into the signer, which zeroizes them on drop.
+/// The active seed, for keys minted fresh at paths allocated under a context's
+/// base: create's three keys, and an update's or rotation's new successor or
+/// key agreement key. The one raw seed access of this module (key custody
+/// census): no caller names a path or a key id, and a key a record already
+/// names is re-derived through `key_custody::derive_record_key` instead.
+async fn active_seed(deps: &WebsDeps<'_>) -> Result<(Zeroizing<Vec<u8>>, u32), AppError> {
+    let active_seed_id = get_active_seed_id(deps.keys_ks)
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    let seed = load_seed_bytes(deps.keys_ks, deps.seed_store, Some(active_seed_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    Ok((seed, active_seed_id))
+}
+
+/// A fresh Ed25519 key at a path allocated under `base`: a successor, or the
+/// Ed25519 key whose X25519 image is a new key agreement key.
+async fn fresh_key(
+    deps: &WebsDeps<'_>,
+    base: &str,
+    label: &str,
+) -> Result<(keys::PreRotationKeyData, u32), AppError> {
+    let (seed, seed_id) = active_seed(deps).await?;
+    let (_, mut derived) =
+        keys::derivation::derive_pre_rotation_keys(&seed, base, label, deps.keys_ks, 1).await?;
+    drop(seed);
+    let key = derived
+        .pop()
+        .ok_or_else(|| AppError::Internal("no key was derived".into()))?;
+    Ok((key, seed_id))
+}
+
 pub(crate) fn ed25519_signer(private: &[u8]) -> Result<Signer, AppError> {
     if private.len() != 32 {
         return Err(AppError::Internal(
@@ -265,14 +309,7 @@ pub async fn create_did_webs<H: WebsHost>(
         .unwrap_or_else(|| format!("did:webs in {}", params.context_id));
 
     // ── Keys, at paths allocated under the context's base ──────────────
-    let active_seed_id = get_active_seed_id(deps.keys_ks)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let seed = Zeroizing::new(
-        load_seed_bytes(deps.keys_ks, deps.seed_store, Some(active_seed_id))
-            .await
-            .map_err(|e| AppError::Internal(format!("{e}")))?,
-    );
+    let (seed, active_seed_id) = active_seed(deps).await?;
     let derived = keys::derive_entity_keys(
         &seed,
         &ctx.base_path,
@@ -450,6 +487,9 @@ pub async fn create_did_webs<H: WebsHost>(
             signing_key_id: signing_key_id.clone(),
             next_key_id: next_key_id.clone(),
             key_agreement_key_id: key_agreement_key_id.clone(),
+            staged: None,
+            deactivated: false,
+            slot_removed: false,
             created_at: now.clone(),
             updated_at: now,
         },
@@ -508,6 +548,12 @@ pub async fn list_did_webs(
     auth.require_context(context_id)?;
     webs_store::list_by_context(webs_ks, context_id).await
 }
+
+mod lifecycle;
+pub use lifecycle::{
+    DeleteDidWebsResult, RotateDidWebsResult, UpdateDidWebsParams, UpdateDidWebsResult,
+    WebsServices, delete_did_webs, rotate_did_webs_keys, staged_webs_rotations, update_did_webs,
+};
 
 #[cfg(test)]
 mod tests;

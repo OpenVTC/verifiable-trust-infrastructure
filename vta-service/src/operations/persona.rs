@@ -74,6 +74,9 @@ pub struct PersonaStores<'a> {
     /// so a `did:webvh` is never a persona there.
     #[cfg(feature = "webvh")]
     pub webvh_ks: &'a KeyspaceHandle,
+    /// The `did:webs` records this agent holds, with the key event stream each published.
+    #[cfg(feature = "webs")]
+    pub webs_ks: &'a KeyspaceHandle,
 }
 
 impl<'a> PersonaStores<'a> {
@@ -83,6 +86,8 @@ impl<'a> PersonaStores<'a> {
             keys_ks: &state.keys_ks,
             #[cfg(feature = "webvh")]
             webvh_ks: &state.webvh_ks,
+            #[cfg(feature = "webs")]
+            webs_ks: &state.webs_ks,
         }
     }
 }
@@ -161,6 +166,11 @@ pub async fn persona_key_for(
         return webvh_persona_key(stores.keys_ks, stores.webvh_ks, auth, did, relationship).await;
     }
 
+    #[cfg(feature = "webs")]
+    if did.starts_with("did:webs:") {
+        return webs_persona_key(stores, auth, did, relationship).await;
+    }
+
     // A did:scid persona's keys are its log's, named under the did:scid as the
     // caller named it: bare, or with its `src`, so issuer and method agree in
     // form (VTI-KEY-161, VTI-KEY-163).
@@ -230,8 +240,86 @@ pub async fn own_document(stores: PersonaStores<'_>, did: &str) -> Result<Option
             .map(Some)
             .map_err(|e| AppError::Internal(format!("express {did} as its did:scid: {e}")));
     }
+    // A did:webs this agent holds: the document its own key event stream implies.
+    #[cfg(feature = "webs")]
+    if did.starts_with("did:webs:") {
+        return webs_document(stores.webs_ks, did).await;
+    }
     let _ = stores;
     Ok(None)
+}
+
+/// The document of a `did:webs` this agent holds, derived from the stream it published:
+/// no resolution, since an answer from the network is one a host can shape.
+#[cfg(feature = "webs")]
+async fn webs_document(webs_ks: &KeyspaceHandle, did: &str) -> Result<Option<Value>, AppError> {
+    let Some(record) = crate::webs_store::get(webs_ks, did).await? else {
+        return Ok(None);
+    };
+    let parsed = affinidi_did_webs::DidWebs::parse(did)
+        .map_err(|e| AppError::Internal(format!("{did} is not a did:webs: {e}")))?;
+    let document = affinidi_did_webs::resolve_from_artifacts(&parsed, &record.keri_cesr, None)
+        .map_err(|e| AppError::Internal(format!("read the document of {did}: {e}")))?;
+    serde_json::to_value(&document)
+        .map(Some)
+        .map_err(|e| AppError::Internal(format!("encode the document of {did}: {e}")))
+}
+
+/// The `did:webs` arm of [`persona_key_for`]: a `did:webs` this agent holds, in a context
+/// the caller may act in, not deactivated. Its key is the key state's signing key, which a
+/// level-1 `did:webs` document lists under both `authentication` and `assertionMethod` as
+/// `#{key}`; it is checked there rather than assumed, and its record must be the active
+/// Ed25519 key of the DID's own context.
+#[cfg(feature = "webs")]
+async fn webs_persona_key(
+    stores: PersonaStores<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    relationship: Relationship,
+) -> Result<Option<PersonaKey>, AppError> {
+    let Some(record) = crate::webs_store::get(stores.webs_ks, did).await? else {
+        return Ok(None);
+    };
+    if !auth.has_context_access(&record.context_id) || record.deactivated {
+        return Ok(None);
+    }
+    let kels = affinidi_did_webs::Kels::parse(&record.keri_cesr)
+        .map_err(|e| AppError::Internal(format!("read the stream of {did}: {e}")))?;
+    let state = kels
+        .key_state(&record.aid)
+        .map_err(|e| AppError::Internal(format!("verify the stream of {did}: {e}")))?;
+    let [key] = state.keys.as_slice() else {
+        return Ok(None);
+    };
+    let Some(document) = webs_document(stores.webs_ks, did).await? else {
+        return Ok(None);
+    };
+    let fragment = format!("#{key}");
+    let absolute = format!("{did}{fragment}");
+    let listed = document[relationship.as_str()]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|m| {
+            let id = m.as_str().or_else(|| m.get("id").and_then(Value::as_str));
+            id == Some(fragment.as_str()) || id == Some(absolute.as_str())
+        });
+    if !listed || record.signing_key_id != absolute {
+        return Ok(None);
+    }
+    let held: Option<vta_sdk::keys::KeyRecord> = stores
+        .keys_ks
+        .get(crate::keys::store_key(&record.signing_key_id))
+        .await?;
+    let held = held.filter(|k| {
+        k.status == vta_sdk::keys::KeyStatus::Active
+            && k.key_type == vta_sdk::keys::KeyType::Ed25519
+            && k.context_id.as_deref() == Some(record.context_id.as_str())
+    });
+    Ok(held.map(|k| PersonaKey {
+        key_id: k.key_id,
+        verification_method: absolute,
+    }))
 }
 
 /// The `did:peer` arm of [`persona_key_for`]: the document is derived from the identifier —
@@ -599,6 +687,8 @@ mod tests {
                 keys_ks: &self.ts.keys_ks,
                 #[cfg(feature = "webvh")]
                 webvh_ks: &self.ts.webvh_ks,
+                #[cfg(feature = "webs")]
+                webs_ks: &self.ts.webs_ks,
             }
         }
 

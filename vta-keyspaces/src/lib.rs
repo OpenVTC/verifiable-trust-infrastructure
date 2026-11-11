@@ -796,9 +796,11 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // Material of the DID's imported / internal keys. The cascade removes
         // the key *records* only. (A context deletion takes both.)
         b"internal_keys" | b"imported_secrets" => Orphaned,
-        // A did:webs's own record. Its deletion (`vta/webs/dids/delete`, not
-        // yet served) will take it; until then nothing deletes a did:webs, and
-        // the did:webvh deletion never names one.
+        // A did:webs's own record. Deleting a did:webs (`vta/webs/dids/delete`)
+        // deactivates it and keeps the record on purpose, with the final
+        // stream: the specification requires it, as the only account of the
+        // identifier's last state. Not a gap, but no label here says
+        // "retained by design", and the did:webvh deletion never names one.
         b"webs" => Orphaned,
         // Delivery and protocol state keyed by DID: stale the moment it goes.
         // TSP relationships name this VTA's DID as one half of each
