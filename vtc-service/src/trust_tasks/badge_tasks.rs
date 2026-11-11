@@ -79,6 +79,11 @@ pub(crate) const AWARDS_WITHDRAW_TYPE: &str = <awards_withdraw::Payload as Paylo
 pub(crate) const AWARDS_REVOKE_TYPE: &str = <awards_revoke::Payload as Payload>::TYPE_URI;
 pub(crate) const AWARDS_LIST_TYPE: &str = <awards_list::Payload as Payload>::TYPE_URI;
 pub(crate) const CLAIMS_CREATE_TYPE: &str = <claims_create::Payload as Payload>::TYPE_URI;
+
+/// Tasks whose response carries a claim code, answered once: the community
+/// keeps only its digest, and the duplicate-execution record keeps no copy
+/// either. A redelivery is answered `204`.
+pub(crate) const SECRET_RESPONSES: &[&str] = &[CLAIMS_CREATE_TYPE];
 pub(crate) const CLAIMS_LIST_TYPE: &str = <claims_list::Payload as Payload>::TYPE_URI;
 pub(crate) const CLAIMS_WITHDRAW_TYPE: &str = <claims_withdraw::Payload as Payload>::TYPE_URI;
 pub(crate) const CLAIMS_REDEEM_TYPE: &str = <claims_redeem::Payload as Payload>::TYPE_URI;

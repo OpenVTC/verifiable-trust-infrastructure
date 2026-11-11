@@ -14,20 +14,65 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 use vti_specs::schema_index;
 
-/// Response members that are bearer secrets. A name here, anywhere reachable
-/// in a served response schema, puts that Type URI outside the record.
-const SECRET_MEMBERS: &[&str] = &[
-    "accessToken",
-    "refreshToken",
-    "setupSessionToken",
-    "sessionToken",
-    "claimCode",
-    "secretAccessKey",
-    "privateKeyMultibase",
-    "sealedSecret",
-    "transportToken",
-    "resumeToken",
+/// Whether a response member's name says it may be a bearer secret: it names a
+/// token or a secret, or ends in `code` (a claim code, a device-flow code).
+fn looks_secret(member: &str) -> bool {
+    let lower = member.to_ascii_lowercase();
+    lower.contains("token") || lower.contains("secret") || lower.ends_with("code")
+}
+
+/// Members whose name [`looks_secret`] but that carry no bearer secret, by the
+/// Type URI prefix they appear under: `(prefix, member, why)`. A new entry
+/// needs its reason; a recorded response with a flagged member not listed here
+/// fails the census.
+const NOT_SECRET: &[(&str, &str, &str)] = &[
+    (
+        "https://trusttasks.org/spec/vtc/boards/",
+        "code",
+        "an idea opening's refusal code",
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/join-requests/",
+        "code",
+        "a request's stable refusal code",
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/oid4vp/",
+        "code",
+        "a tabled problem code",
+    ),
+    (
+        "https://trusttasks.org/spec/rooms/",
+        "code",
+        "a host's or this specification's error code",
+    ),
+    (
+        "https://trusttasks.org/spec/rooms/",
+        "hostCode",
+        "the host's trust-task-error code, unaltered",
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/vetting/hidden/",
+        "tokenKey",
+        "the public token verification key",
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/vetting/hidden/",
+        "tokenLabels",
+        "public token labels",
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/vetting/hidden/",
+        "liveTokenLabels",
+        "public token labels",
+    ),
 ];
+
+fn listed_as_not_secret(uri: &str, member: &str) -> bool {
+    NOT_SECRET
+        .iter()
+        .any(|(prefix, m, _)| uri.starts_with(prefix) && *m == member)
+}
 
 /// Every property name reachable from the schema root, following local
 /// `#/$defs/…` references. `$defs` that the response never references (a
@@ -86,6 +131,22 @@ fn the_walk_follows_references_and_skips_unreferenced_defs() {
 }
 
 #[test]
+fn the_pattern_flags_tokens_secrets_and_codes() {
+    for m in [
+        "accessToken",
+        "claimCode",
+        "userCode",
+        "secretAccessKey",
+        "code",
+    ] {
+        assert!(looks_secret(m), "{m}");
+    }
+    for m in ["codec", "decoded", "groupId"] {
+        assert!(!looks_secret(m), "{m}");
+    }
+}
+
+#[test]
 fn token_bearing_responses_are_not_recorded() {
     for uri in [
         super::auth_tasks::AUTHENTICATE_V0_3_TYPE,
@@ -95,6 +156,8 @@ fn token_bearing_responses_are_not_recorded() {
         super::recognise_tasks::RECOGNISE_TYPE,
         super::backup_tasks::INITIATE_EXPORT_TYPE,
         super::backup_tasks::INITIATE_IMPORT_TYPE,
+        super::badge_tasks::CLAIMS_CREATE_TYPE,
+        crate::git_ns::tasks::SECRET_RESPONSES[0],
     ] {
         assert!(
             !super::records_response(uri),
@@ -118,10 +181,10 @@ fn no_recorded_response_carries_a_secret_member() {
             serde_json::from_str(schema).unwrap_or_else(|e| panic!("{uri}#response: {e}"));
         checked += 1;
         let names = reachable_member_names(&schema);
-        let hits: Vec<&str> = SECRET_MEMBERS
+        let hits: Vec<&str> = names
             .iter()
-            .copied()
-            .filter(|m| names.contains(*m))
+            .map(String::as_str)
+            .filter(|m| looks_secret(m) && !listed_as_not_secret(uri, m))
             .collect();
         if !hits.is_empty() && super::records_response(uri) {
             recorded_with_secret.push(format!("{uri} ({})", hits.join(", ")));
@@ -135,7 +198,8 @@ fn no_recorded_response_carries_a_secret_member() {
         recorded_with_secret.is_empty(),
         "these served responses carry a token or secret member but are kept in \
          the duplicate-execution record, so a redelivery would be handed the \
-         secret again. Add each to its module's `SECRET_RESPONSES`:\n  {}",
+         secret again. Add each to its module's `SECRET_RESPONSES`, or — if the \
+         member is not a secret — to `NOT_SECRET` with the reason:\n  {}",
         recorded_with_secret.join("\n  ")
     );
 }
