@@ -475,11 +475,35 @@ pub(crate) async fn get_v4(
 
 /// `rooms/records/list/0.6`: 0.5, with each row's `kind` on an `open` room and the host's
 /// `createdAt`, `createdBy` and `bodyStoredAt`.
+#[allow(deprecated)] // still served beside list/0.7, to readers that ask for it (trust-tasks-tf #1088)
 pub(crate) async fn list_v6(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::list::v0_6::Payload>(&payload) {
         return refused(doc, r);
     }
-    super::list_records(state, doc, blob_tasks::as_v0_1(payload), true).await
+    super::list_records(state, doc, blob_tasks::as_v0_1(payload), super::ListAt::V6).await
+}
+
+/// `rooms/records/list/0.7`: 0.6, oldest or newest first, its cursor bound to the order it
+/// was issued under — refused as `invalidCursor` under the other (trust-tasks-tf #1088).
+pub(crate) async fn list_v7(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    let (order, v0_1) = match record_tasks::list_v7_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(doc, r),
+    };
+    super::list_records(state, doc, v0_1, super::ListAt::V7(order)).await
+}
+
+/// A 0.1 listing answered as 0.7, its rows already `RecordMetadataV3` and in its order.
+pub(crate) async fn list_v7_response(
+    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
+    doc: &TrustTask<Value>,
+    room: &Room,
+    response: impl serde::Serialize,
+) -> Answer {
+    render(
+        doc,
+        record_tasks::list_v7_response(snapshot, room, response).await,
+    )
 }
 
 /// A 0.1 listing answered as 0.6, its rows already `RecordMetadataV3`.
@@ -526,7 +550,7 @@ pub(crate) async fn list_v5(state: &HostState, doc: &TrustTask<Value>, payload: 
     if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::list::v0_5::Payload>(&payload) {
         return refused(doc, r);
     }
-    super::list_records(state, doc, blob_tasks::as_v0_1(payload), false).await
+    super::list_records(state, doc, blob_tasks::as_v0_1(payload), super::ListAt::V5).await
 }
 
 /// A 0.1 listing answered as 0.5.
@@ -766,6 +790,68 @@ mod tests {
             assert!(old_list["records"][0].get(m).is_none(), "{m} on list/0.5");
             assert!(old_get.get(m).is_none(), "{m} on get/0.2");
         }
+    }
+
+    /// `rooms/records/list/0.7` (trust-tasks-tf #1088): `newestFirst` serves the head first
+    /// and pages downward; a cursor is refused with the declared `invalidCursor` under the
+    /// other order; 0.6 is still served, oldest first.
+    #[tokio::test]
+    async fn list_0_7_serves_newest_first_and_binds_its_cursor_to_the_order() {
+        let h = host(eager());
+        let f = room(&h).await;
+        for i in 0..3 {
+            let (status, out) = put_v5(&h, &f, &format!("m{i}"), json!({ "body": "hi" })).await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+        }
+        let list = |extra: Value| {
+            let mut payload = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+            for (k, v) in extra.as_object().unwrap() {
+                payload[k] = v.clone();
+            }
+            call(
+                &h.app,
+                vti_rooms::record_tasks::LIST_V7_TYPE,
+                payload,
+                &f.owner,
+            )
+        };
+        let keys = |out: &Value| -> Vec<String> {
+            out["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["key"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        let (status, head) = list(json!({ "order": "newestFirst", "limit": 2 })).await;
+        assert_eq!(status, StatusCode::OK, "{head}");
+        assert_eq!(keys(&head), ["m2", "m1"], "{head}");
+        assert!(head["dataCommitment"].is_string() && head["recordCount"] == 3);
+        let down = head["nextCursor"].as_str().unwrap().to_string();
+        let (_, rest) = list(json!({ "order": "newestFirst", "limit": 2, "cursor": down })).await;
+        assert_eq!(keys(&rest), ["m0"], "{rest}");
+        assert!(rest.get("nextCursor").is_none(), "{rest}");
+
+        // Under the other order — or none, which is oldest first — the cursor is refused.
+        for other in [
+            json!({ "cursor": down }),
+            json!({ "order": "oldestFirst", "cursor": down }),
+        ] {
+            let (status, out) = list(other).await;
+            assert_ne!(status, StatusCode::OK, "{out}");
+            assert_eq!(
+                out["code"],
+                vti_specs::rooms::records::list::v0_7::error_codes::INVALID_CURSOR.to_string(),
+                "{out}"
+            );
+        }
+        let (_, up) = list(json!({ "limit": 2 })).await;
+        assert_eq!(keys(&up), ["m0", "m1"], "oldest first by default: {up}");
+
+        #[allow(deprecated)] // still served beside 0.7
+        let old = read(&h, &f, vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE, None).await;
+        assert_eq!(keys(&old), ["m0", "m1", "m2"]);
     }
 
     /// Records every `rooms/changed` signal; reaches every address.

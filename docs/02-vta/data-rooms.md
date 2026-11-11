@@ -1425,6 +1425,8 @@ sign as themselves: put it behind a proxy you control.
 # persona) and the room's host (which stores the bytes). --host-did names the
 # host the request is addressed to; the proof covers it.
 pnm rooms list  --room <room-did> --host https://rooms.example.org --host-did <host-did>
+pnm rooms list  --newest --room <room-did> --host … --host-did <host-did>   # a conversation from its head
+pnm rooms read  --newest --limit 20 --room <room-did> --host-did <host-did> # …and its newest records, opened
 pnm rooms get   decision/pricing-2026 --room <room-did> --host https://rooms.example.org
 pnm rooms put   decision/pricing-2026 "Agreed not to reprice." --room <room-did> \
                 --host https://rooms.example.org --title "Pricing holds" --expected-version 0
@@ -1711,6 +1713,50 @@ withdrawn name is not written again, and a room whose profile no longer lists
 history is read only when the name record is not there; a failure is reported
 and never fails the write it followed.
 
+**Opening a conversation at its head.** A listing reads a room oldest first, so a
+chat surface opening a busy room would page through every record it ever held
+before it could show the last one. `rooms/records/list/0.7` (trust-tasks-tf
+#1088) adds `order`: `newestFirst` returns rows in descending `version`, each
+page's cursor continuing downward, `sinceVersion` still a lower bound (a
+newest-first catch-up ends at the reader's watermark), tombstones included, and
+`lastPrune`, `dataCommitment`, `recordCount` and `headVersion` exactly as oldest
+first. A cursor belongs to the order it was issued under: the host refuses one
+offered under the other with `invalidCursor` (both hosts issue `v<N>` oldest
+first and `n<N>` newest first). Both hosts serve 0.7 beside 0.5 and 0.6, which
+stay oldest first.
+
+A member whose surface reaches the room through their VTA uses
+`rooms/keys/browse/0.5`: `order` is passed through, `maxPages` makes the VTA stop
+after so many host pages, and it answers `complete: false` with the host's
+cursor as `nextCursor`, which the next browse passes back as `cursor` (with the
+same `prefix`, `sinceVersion` and `order`). A browse resumed from a cursor is
+never compared against `recordCount`. At a host that does not serve list/0.7 a
+`newestFirst` browse is `hostRefused`, carrying the host's `unsupportedType` —
+never an oldest-first listing passed off as the head; without `order` (or with
+`oldestFirst`) it lists with 0.6 as browse/0.4 does.
+
+`pnm rooms list --newest` is that browse with `maxPages` 1 (`--pages N` for
+more, `--limit` the page size, default 50), and prints the command for the page
+before, with its `--cursor`. `pnm rooms read --newest` reads that page's records
+through `rooms/keys/read/0.2`. Two rules a reader of a newest-first page keeps:
+
+- **Order by `createdAt`, never by row.** A record's `version` is its latest
+  change, so an old message edited this morning heads the listing. pnm shows a
+  page in the order it was written (`createdAt`, else `updatedAt`), newest last.
+- **The watermark is the first page's.** A newest-first catch-up from watermark
+  `W` may show its first page at once, but takes a new watermark only after
+  reading to the end — the highest version on the **first** page (or a higher
+  `lastPrune.version`), never one from a later page: a record changed while the
+  listing was read moved above it, and only that watermark finds it next time.
+
+A reader looking for its authors' names reads at least 500 rows below the
+earliest record it shows (*Near the room's head*, above).
+
+The hosts sort a room's records in memory for either order — records are keyed
+by key, not version — which is no more than every page already costs: the
+data commitment on each page is computed over the whole room, uncached. A
+version index belongs with a cached commitment, in one change.
+
 **Watching instead of polling.** `pnm rooms watch` asks your VTA to watch rooms
 at one host for you (`rooms/keys/watch/0.1`, trust-tasks-tf #1040). For each
 room the VTA arms the host's `rooms/watch` **as your member** — its own
@@ -1833,7 +1879,7 @@ use to whoever hosts it. Depth is capped at `MAX_CHAIN_DEPTH` (8).
 |---|---|---|
 | Write | `rooms/records/put/0.5` (0.3 and 0.4 still served) | `write` |
 | Read | `rooms/records/get/0.3` (0.2 still served) | `read` |
-| List | `rooms/records/list/0.6` (0.5 still served) | `read` |
+| List | `rooms/records/list/0.6` (hosts also serve 0.5, and 0.7 with `order` — not yet sent by `vtc-client`) | `read` |
 | Curate | `rooms/records/curate/0.1` | `curate` |
 | Watch | `rooms/watch/0.1` (`VtcClient::watch`, `cancel_watch`) | `read` |
 | Mint an epoch | `rooms/epoch/mint/0.1` | `admin` |
@@ -2209,6 +2255,7 @@ and `vtc-service` — the same tasks and versions on both:
 | `rooms/records/get/0.3` | `read` — adds `createdAt`, `createdBy` and `bodyStoredAt` |
 | `rooms/records/list/0.5` | `read` — every page carries the room's `lastPrune` |
 | `rooms/records/list/0.6` | `read` — rows add `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`) and `kind` (`open`) |
+| `rooms/records/list/0.7` | `read` — 0.6, and `order` (`oldestFirst` default, `newestFirst`); a cursor is refused `invalidCursor` under the other order |
 | `rooms/create/0.2` | no chain — the signer must be the `ownerDid` (§8.4); records the room's `recordRetention` as given |
 | `rooms/info/0.3` | `read` — adds `recordRetention` and `lastPrune` |
 | `rooms/records/prune/0.2` | `admin` — removes what the record retention makes eligible (§10.5) |
@@ -2246,7 +2293,7 @@ and `vtc-service` — the same tasks and versions on both:
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
 | `rooms/keys/profile/read/0.1` | `roomOpen` capability; reads at the host as the persona, presenting its `read` |
 | `rooms/keys/profile/write/0.1` | `roomOpen` capability; refused to a delegate. The persona's `write` and `curate` or `admin` (`noAuthority` before the host); clearing takes `curate` |
-| `rooms/keys/browse/0.3`, `0.4` | `roomOpen` capability; passes the host's `lastPrune` through. 0.4 lists with `rooms/records/list/0.6` (else 0.5) and passes its `RecordMetadataV3` rows through as served: `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`), `kind` (`open`) |
+| `rooms/keys/browse/0.3`, `0.4`, `0.5` | `roomOpen` capability; passes the host's `lastPrune` through. 0.4 lists with `rooms/records/list/0.6` (else 0.5) and passes its `RecordMetadataV3` rows through as served: `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`), `kind` (`open`). 0.5 lists with list/0.7, passing `order` through, stops at `maxPages`, and answers `nextCursor` exactly when `complete` is false; `newestFirst` at a host without list/0.7 is `hostRefused` |
 | `rooms/keys/read/0.1`, `0.2` | `roomOpen` capability. 0.2 fetches with `rooms/records/get/0.3` (else 0.2) and passes `createdAt`, `createdBy` and `bodyStoredAt` through; `keys` reads up to 32 records, each answered on its own in `results` (`notAttempted` past 512 KiB of answers or 15 s), repairing once per batch |
 | `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
 | `rooms/keys/backfill/0.2` | `roomOpen` capability; fetches with `rooms/epoch/chain/0.2`, applies and reports the floor |

@@ -1,4 +1,4 @@
-//! A member's records, through their own VTA: `rooms/keys/browse/0.4`, `rooms/keys/read/0.2`
+//! A member's records, through their own VTA: `rooms/keys/browse/0.5`, `rooms/keys/read/0.2`
 //! (one record or a batch), `rooms/keys/seal/0.3` and `rooms/keys/act/0.11` — and the
 //! writer's rule for the members a room's profile governs (trust-tasks-tf #1027).
 //!
@@ -22,7 +22,8 @@
 //! # Versions, and older VTAs
 //!
 //! Each method sends the newest version and falls back when the VTA answers
-//! [`VtaError::UnsupportedTaskType`]: browse/0.3, read/0.1 (a batch read key by key), seal/0.2
+//! [`VtaError::UnsupportedTaskType`]: browse/0.4 then 0.3 (only for a browse naming no
+//! `order`, `maxPages` or `cursor`, which only 0.5 carries), read/0.1 (a batch read key by key), seal/0.2
 //! — the last only for a body using none of the governed members, which 0.2 refuses.
 
 use std::collections::HashMap;
@@ -35,7 +36,11 @@ use crate::trust_tasks;
 
 #[allow(deprecated)] // act/0.11: still served and sent; 0.12 adds only rooms/watch
 use vti_specs::rooms::keys::act::v0_11 as act;
-use vti_specs::rooms::keys::{browse::v0_4 as browse, read::v0_2 as read};
+use vti_specs::rooms::keys::{browse::v0_5 as browse, read::v0_2 as read};
+
+/// The order a browse lists a room in (`rooms/_shared/0.2` `ListOrder`): `oldestFirst`,
+/// the default, or `newestFirst`, which reads the room's head first.
+pub use vti_specs::rooms::keys::browse::v0_5::ListOrder as RoomListOrder;
 
 /// Round-trip timeout (seconds) for one record or a listing: one host request at the VTA, a
 /// trace to check, possibly a repair.
@@ -61,6 +66,24 @@ pub struct RoomBrowse {
     pub since_version: Option<u64>,
     /// The page size to ask the host for — never a cap on the result.
     pub limit: Option<u64>,
+    /// Which end of the room to start from (browse/0.5). `None` is the host's default,
+    /// oldest first. `newestFirst` reads the room's head first: rows come in descending
+    /// `version`, and a surface orders the messages it shows by `createdAt`, never by row.
+    pub order: Option<RoomListOrder>,
+    /// The most host pages the VTA reads for this request (browse/0.5). With `newestFirst`
+    /// and `Some(1)`, one page from the head — a conversation's first screen.
+    pub max_pages: Option<u64>,
+    /// A `nextCursor` from an earlier browse of the same room at the same host, with the
+    /// same `prefix`, `since_version` and `order` (browse/0.5).
+    pub cursor: Option<String>,
+}
+
+impl RoomBrowse {
+    /// Whether this browse names anything only browse/0.5 carries, so that an older VTA
+    /// must not be asked it (it would read the whole room, oldest first).
+    pub fn needs_v0_5(&self) -> bool {
+        self.order.is_some() || self.max_pages.is_some() || self.cursor.is_some()
+    }
 }
 
 /// The `recordMembers` this client resolved per room, host and member, with the epoch it
@@ -174,13 +197,20 @@ pub fn check_record_members(
 }
 
 impl VtaClient {
-    /// `rooms/keys/browse/0.4` — the room's records at `host_did`, metadata only, read as the
+    /// `rooms/keys/browse/0.5` — the room's records at `host_did`, metadata only, read as the
     /// member and checked against what the host committed to. Rows are `RecordMetadataV3` as
-    /// the host's `rooms/records/list/0.6` served them: `createdAt`, `bodyStoredAt`,
+    /// the host's `rooms/records/list` served them: `createdAt`, `bodyStoredAt`,
     /// `createdBy` (`open` and `attributed`) and `kind` (`open`), absent where the host
-    /// predates them.
+    /// predates them. With [`RoomBrowse::order`] `newestFirst` they come from the room's
+    /// head down; with [`RoomBrowse::max_pages`] the VTA stops early and answers
+    /// `complete: false` with the `nextCursor` to pass back as [`RoomBrowse::cursor`].
     ///
-    /// A VTA that does not serve 0.4 is asked browse/0.3, whose rows carry none of them.
+    /// A VTA that does not serve 0.5 is asked browse/0.4, then 0.3 — but only for a browse
+    /// that [`RoomBrowse::needs_v0_5`] says does not need it. Otherwise its
+    /// [`VtaError::UnsupportedTaskType`] is returned as it came: an older VTA would read
+    /// the whole room, oldest first, and a surface taking its first rows for the room's
+    /// head would show its oldest records as its newest. A host that serves no
+    /// `rooms/records/list/0.7` answers a `newestFirst` browse `hostRefused`.
     pub async fn room_browse(
         &self,
         room_id: &str,
@@ -199,25 +229,36 @@ impl VtaClient {
             payload["limit"] = json!(l);
         }
         name_member(&mut payload, member);
-        let value = match self
+        let mut v0_5 = payload.clone();
+        if let Some(o) = &options.order {
+            v0_5["order"] = json!(o.to_string());
+        }
+        if let Some(m) = options.max_pages {
+            v0_5["maxPages"] = json!(m);
+        }
+        if let Some(c) = &options.cursor {
+            v0_5["cursor"] = json!(c);
+        }
+        let mut value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4,
-                payload.clone(),
+                trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5,
+                v0_5,
                 ROOM_READ_TIMEOUT,
             )
-            .await
-        {
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                self.dispatch_trust_task(
-                    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3,
-                    payload,
-                    ROOM_READ_TIMEOUT,
-                )
-                .await?
+            .await;
+        #[allow(deprecated)] // browse/0.4 and 0.3 are asked of a VTA that predates 0.5
+        for older in [
+            trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4,
+            trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3,
+        ] {
+            if !matches!(value, Err(VtaError::UnsupportedTaskType { .. })) || options.needs_v0_5() {
+                break;
             }
-            other => other?,
-        };
-        parse(value, "rooms/keys/browse")
+            value = self
+                .dispatch_trust_task(older, payload.clone(), ROOM_READ_TIMEOUT)
+                .await;
+        }
+        parse(value?, "rooms/keys/browse")
     }
 
     /// `rooms/keys/read/0.2` naming `key` — one record, fetched from `host_did` as the

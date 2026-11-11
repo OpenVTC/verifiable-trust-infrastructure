@@ -32,6 +32,7 @@ use vti_specs::rooms::records::get::v0_2 as get_v2;
 use vti_specs::rooms::records::get::v0_3 as get_v3;
 use vti_specs::rooms::records::get::v0_4 as get_v4;
 use vti_specs::rooms::records::list::v0_6 as list_v6;
+use vti_specs::rooms::records::list::v0_7 as list_v7;
 use vti_specs::rooms::usage::v0_1 as rooms_usage;
 use vti_specs::rooms::{
     epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
@@ -527,6 +528,7 @@ pub(crate) async fn handle_get_record_v4(
 
 /// `rooms/records/list/0.6`: 0.5, with each row's `kind` on an `open` room and the host's
 /// `createdAt`, `createdBy` and `bodyStoredAt`.
+#[allow(deprecated)] // still served beside list/0.7, to readers that ask for it (trust-tasks-tf #1088)
 pub(crate) async fn handle_list_records_v6(
     doc: TrustTask<list_v6::Payload>,
     ctx: RoomCtx,
@@ -535,7 +537,28 @@ pub(crate) async fn handle_list_records_v6(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::list_records(&doc, &ctx, req, true).await
+    super::handlers::list_records(&doc, &ctx, req, super::handlers::ListAt::V6).await
+}
+
+/// `rooms/records/list/0.7`: 0.6, oldest or newest first, its cursor bound to the order it
+/// was issued under — refused as `invalidCursor` under the other (trust-tasks-tf #1088).
+pub(crate) async fn handle_list_records_v7(
+    doc: TrustTask<list_v7::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (order, v0_1) = match vti_rooms::record_tasks::list_v7_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: ListRecordsBody = match as_v0_1(&doc, v0_1) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::list_records(&doc, &ctx, req, super::handlers::ListAt::V7(order)).await
 }
 
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the record's blobs.
@@ -562,7 +585,7 @@ pub(crate) async fn handle_list_records_v5(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::list_records(&doc, &ctx, req, false).await
+    super::handlers::list_records(&doc, &ctx, req, super::handlers::ListAt::V5).await
 }
 
 /// `rooms/create/0.2`: 0.1, and the room's record retention, recorded as given.

@@ -1002,43 +1002,104 @@ pub struct Page {
     pub cursor: Option<String>,
 }
 
-/// The cursor's shape: the version of the last record on the page.
+/// Which end of the room a listing starts from (`rooms/records/list/0.7` *Order*).
+///
+/// `OldestFirst` is ascending `version`, what every listing before 0.7 returns and what an
+/// incremental sync reads in. `NewestFirst` is descending `version`: a reader opening a
+/// conversation at its newest records reads the room's head first and pages backwards,
+/// with `since_version` still a lower bound.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RecordOrder {
+    #[default]
+    OldestFirst,
+    NewestFirst,
+}
+
+/// The cursor's shape: the order it continues in, and the version of the last record on
+/// the page — `v<N>` (oldest first: continue *above* `N`) or `n<N>` (newest first:
+/// continue *below* `N`).
 ///
 /// # Why it is not authenticated, and does not need to be
 ///
 /// `rooms/records/list/0.1` calls this an opaque token and says a host MUST NOT
 /// accept one it did not issue, which reads as though it wants a signature. It
 /// does not, and pretending otherwise would be security theatre with a key
-/// nobody has: a cursor here expresses *start above version N*, which is
-/// precisely what `sinceVersion` already lets any caller ask for directly. A
-/// forged cursor can skip a caller's own records and nothing else.
+/// nobody has: a cursor here expresses *start above version N* (or *below* it,
+/// newest first), which is what `sinceVersion` — or a shorter listing — already
+/// lets any caller ask for directly. A forged cursor can skip a caller's own
+/// records and nothing else.
 ///
-/// What the host does enforce is the **shape**, so a value from somewhere else
-/// is refused rather than silently reinterpreted.
-fn encode_cursor(version: u64) -> String {
-    format!("v{version}")
+/// What the host does enforce is the **shape**, so a value from somewhere else is
+/// refused rather than silently reinterpreted — and the **order**: a cursor read in the
+/// direction it was not issued for would skip records or repeat them, and nothing on the
+/// page would show which (`rooms/records/list/0.7` *Order* item 5).
+fn encode_cursor(version: u64, order: RecordOrder) -> String {
+    match order {
+        RecordOrder::OldestFirst => format!("v{version}"),
+        RecordOrder::NewestFirst => format!("n{version}"),
+    }
 }
 
-fn decode_cursor(cursor: &str) -> Result<u64, AppError> {
-    cursor
-        .strip_prefix('v')
-        .and_then(|rest| rest.parse::<u64>().ok())
-        .ok_or_else(|| {
-            AppError::Validation(format!(
-                "`{cursor}` is not a cursor this host issued; continue a listing with the \
+/// Why a cursor is refused: it is not this host's shape, or it was issued under the other
+/// order. Both are `rooms/records/list:invalidCursor` on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CursorError {
+    /// Not a cursor this host issues.
+    NotIssued(String),
+    /// A cursor this host issued under the other [`RecordOrder`].
+    OtherOrder(String),
+}
+
+impl std::fmt::Display for CursorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotIssued(c) => write!(
+                f,
+                "`{c}` is not a cursor this host issued; continue a listing with the \
                  `cursor` from its previous page, or start again without one"
-            ))
-        })
+            ),
+            Self::OtherOrder(c) => write!(
+                f,
+                "cursor `{c}` was issued under the other `order`; continue a listing with \
+                 the `order` it began with, or start again without a cursor"
+            ),
+        }
+    }
 }
 
-/// One page of a room's records, ordered by version, with an honest cursor.
-///
-/// # The filters are the caller's to repeat
-///
-/// A cursor carries **position and nothing else**. A caller that continues with
-/// a different `prefix` or `since_version` gets that different query resumed
-/// from this position, which is a coherent thing to ask for and almost never
-/// what anyone means. Repeat the filters.
+impl std::error::Error for CursorError {}
+
+impl From<CursorError> for AppError {
+    fn from(e: CursorError) -> Self {
+        AppError::Validation(e.to_string())
+    }
+}
+
+/// The version a cursor continues from, if it is this host's and was issued under `order`.
+pub fn decode_cursor(cursor: &str, order: RecordOrder) -> Result<u64, CursorError> {
+    let (issued_under, rest) = if let Some(rest) = cursor.strip_prefix('v') {
+        (RecordOrder::OldestFirst, rest)
+    } else if let Some(rest) = cursor.strip_prefix('n') {
+        (RecordOrder::NewestFirst, rest)
+    } else {
+        return Err(CursorError::NotIssued(cursor.to_string()));
+    };
+    // Digits only: `u64::from_str` would also take a leading `+`.
+    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(CursorError::NotIssued(cursor.to_string()));
+    }
+    let version = rest
+        .parse::<u64>()
+        .map_err(|_| CursorError::NotIssued(cursor.to_string()))?;
+    if issued_under != order {
+        return Err(CursorError::OtherOrder(cursor.to_string()));
+    }
+    Ok(version)
+}
+
+/// One page of a room's records, oldest first, with an honest cursor: what every listing
+/// before `rooms/records/list/0.7` serves. See [`list_records_page_in`].
 pub async fn list_records_page(
     records: &KeyspaceHandle,
     room_id: &str,
@@ -1047,19 +1108,78 @@ pub async fn list_records_page(
     cursor: Option<&str>,
     limit: Option<usize>,
 ) -> Result<Page, AppError> {
-    // A cursor and a watermark say the same kind of thing, so the later of the
-    // two wins rather than one silently overriding the other.
-    let floor = match cursor {
-        Some(c) => Some(decode_cursor(c)?.max(since_version.unwrap_or(0))),
-        None => since_version,
-    };
-    let mut all = list_records(records, room_id, key_prefix, floor).await?;
+    list_records_page_in(
+        records,
+        room_id,
+        key_prefix,
+        since_version,
+        cursor,
+        limit,
+        RecordOrder::OldestFirst,
+    )
+    .await
+}
 
+/// One page of a room's records in `order`, with an honest cursor.
+///
+/// # The filters are the caller's to repeat
+///
+/// A cursor carries **position and direction, nothing else**. A caller that continues with
+/// a different `prefix` or `since_version` gets that different query resumed from this
+/// position, which is a coherent thing to ask for and almost never what anyone means.
+/// Repeat the filters.
+///
+/// # Newest first
+///
+/// Rows in descending `version`, continuing downward page by page; `since_version` is still
+/// a **lower** bound, so a newest-first catch-up ends at the reader's watermark; tombstones
+/// are returned exactly as oldest first returns them (`rooms/records/list/0.7` *Order*
+/// items 2–4).
+///
+/// # Why this reads the room rather than a version index
+///
+/// Records are keyed by record key, not by version, so neither order is a range scan; both
+/// sort the room's rows in memory. That is no worse than the request already is: every page
+/// carries the room's data commitment, which [`tree_head`] computes over every record on
+/// every call (and deliberately does not cache). A version index would change the cost of
+/// a page only once the commitment is kept beside the room row — the two belong in one
+/// change, with the invariant that keeps them in step.
+pub async fn list_records_page_in(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    key_prefix: Option<&str>,
+    since_version: Option<u64>,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+    order: RecordOrder,
+) -> Result<Page, AppError> {
+    let position = cursor.map(|c| decode_cursor(c, order)).transpose()?;
     let page = limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
+    let mut all = match order {
+        RecordOrder::OldestFirst => {
+            // A cursor and a watermark say the same kind of thing, so the later of the
+            // two wins rather than one silently overriding the other.
+            let floor = match position {
+                Some(after) => Some(after.max(since_version.unwrap_or(0))),
+                None => since_version,
+            };
+            list_records(records, room_id, key_prefix, floor).await?
+        }
+        RecordOrder::NewestFirst => {
+            // The watermark bounds the listing from below, the cursor from above.
+            let mut rows = list_records(records, room_id, key_prefix, since_version).await?;
+            if let Some(below) = position {
+                rows.retain(|r| r.version < below);
+            }
+            rows.reverse();
+            rows
+        }
+    };
+
     let more = all.len() > page;
     all.truncate(page);
     let cursor = more
-        .then(|| all.last().map(|r| encode_cursor(r.version)))
+        .then(|| all.last().map(|r| encode_cursor(r.version, order)))
         .flatten();
     Ok(Page {
         records: all,
@@ -1664,6 +1784,206 @@ mod tests {
             .unwrap();
         assert_eq!(page.records.len(), 3);
         assert!(page.cursor.is_none());
+    }
+
+    /// A room of `n` open records `k0`…`k{n-1}`, at versions 1…n.
+    async fn room_of(n: u64) -> (tempfile::TempDir, KeyspaceHandle, KeyspaceHandle) {
+        let (d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        for i in 0..n {
+            put_record(
+                &rooms,
+                &rec,
+                "r1",
+                open_record(&format!("k{i}")),
+                None,
+                i + 1,
+            )
+            .await
+            .unwrap();
+        }
+        (d, rooms, rec)
+    }
+
+    async fn newest(
+        rec: &KeyspaceHandle,
+        since: Option<u64>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page, AppError> {
+        list_records_page_in(
+            rec,
+            "r1",
+            None,
+            since,
+            cursor,
+            Some(limit),
+            RecordOrder::NewestFirst,
+        )
+        .await
+    }
+
+    fn versions(page: &Page) -> Vec<u64> {
+        page.records.iter().map(|r| r.version).collect()
+    }
+
+    /// `rooms/records/list/0.7` *Order* item 2: newest first is descending `version`, and
+    /// each page its cursor leads to continues downward, so paging to the end reads the
+    /// room from its head down — every record exactly once.
+    #[tokio::test]
+    async fn newest_first_pages_downward_from_the_head() {
+        let (_d, _rooms, rec) = room_of(7).await;
+        let first = newest(&rec, None, None, 3).await.unwrap();
+        assert_eq!(versions(&first), [7, 6, 5]);
+        let c1 = first.cursor.clone().expect("four remain");
+        let second = newest(&rec, None, Some(&c1), 3).await.unwrap();
+        assert_eq!(versions(&second), [4, 3, 2]);
+        let c2 = second.cursor.clone().expect("one remains");
+        let last = newest(&rec, None, Some(&c2), 3).await.unwrap();
+        assert_eq!(versions(&last), [1]);
+        assert!(last.cursor.is_none(), "the end of the listing says so");
+    }
+
+    /// Item 3: `sinceVersion` is a lower bound under either order, so a newest-first
+    /// catch-up ends at the reader's watermark rather than at the room's first record.
+    #[tokio::test]
+    async fn newest_first_stops_at_the_watermark() {
+        let (_d, _rooms, rec) = room_of(6).await;
+        let first = newest(&rec, Some(3), None, 2).await.unwrap();
+        assert_eq!(versions(&first), [6, 5]);
+        let rest = newest(&rec, Some(3), first.cursor.as_deref(), 2)
+            .await
+            .unwrap();
+        assert_eq!(versions(&rest), [4], "nothing at or below the watermark");
+        assert!(rest.cursor.is_none());
+    }
+
+    /// Item 4: tombstones are returned newest first exactly as oldest first returns them —
+    /// a retraction moves its record to the head.
+    #[tokio::test]
+    async fn newest_first_returns_tombstones() {
+        let (_d, rooms, rec) = room_of(3).await;
+        curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "k0",
+            Curation {
+                status: Some(RecordStatus::Retracted),
+                pinned: None,
+                expected_version: None,
+            },
+            10,
+        )
+        .await
+        .unwrap();
+        let page = newest(&rec, None, None, 10).await.unwrap();
+        assert_eq!(
+            page.records[0].key, "k0",
+            "the retraction is the newest change"
+        );
+        assert_eq!(page.records[0].status, RecordStatus::Retracted);
+        assert_eq!(page.records.len(), 3);
+    }
+
+    /// Item 5: a cursor belongs to the order it was issued under, and is refused under the
+    /// other — read the other way it would skip records or repeat them.
+    #[tokio::test]
+    async fn a_cursor_is_refused_under_the_other_order() {
+        let (_d, _rooms, rec) = room_of(4).await;
+        let oldest = list_records_page(&rec, "r1", None, None, None, Some(2))
+            .await
+            .unwrap();
+        let up = oldest.cursor.expect("two remain");
+        assert_eq!(
+            newest(&rec, None, Some(&up), 2)
+                .await
+                .unwrap_err()
+                .to_string(),
+            AppError::from(CursorError::OtherOrder(up.clone())).to_string()
+        );
+        let down = newest(&rec, None, None, 2).await.unwrap().cursor.unwrap();
+        assert!(
+            list_records_page(&rec, "r1", None, None, Some(&down), Some(2))
+                .await
+                .is_err(),
+            "a newest-first cursor continues no oldest-first listing"
+        );
+        assert_eq!(
+            decode_cursor(&down, RecordOrder::OldestFirst),
+            Err(CursorError::OtherOrder(down.clone()))
+        );
+        for bad in ["412", "n", "n+4", "x4", "nNaN"] {
+            assert_eq!(
+                decode_cursor(bad, RecordOrder::NewestFirst),
+                Err(CursorError::NotIssued(bad.into())),
+                "{bad}"
+            );
+        }
+    }
+
+    /// *A room that moves while it is listed*: a record edited between two newest-first
+    /// pages takes a version above the listing's first row, so the rest of the listing does
+    /// not return it — and a reader that, having read to the end, takes the FIRST page's
+    /// highest version as its watermark finds it on the next catch-up. A watermark from a
+    /// later page would have skipped nothing here only by luck; from the first page it is
+    /// guaranteed.
+    #[tokio::test]
+    async fn an_edit_while_paging_is_found_from_the_first_pages_watermark() {
+        let (_d, rooms, rec) = room_of(6).await;
+        let first = newest(&rec, None, None, 2).await.unwrap();
+        assert_eq!(versions(&first), [6, 5]);
+        let watermark = first.records[0].version;
+
+        // `k1` (version 2), not yet listed, is edited: it moves to version 7.
+        let mut edit = open_record("k1");
+        edit.cleartext = Some(serde_json::json!({ "body": "edited" }));
+        let edited = put_record(&rooms, &rec, "r1", edit, None, 20)
+            .await
+            .unwrap();
+        assert_eq!(edited.version, 7);
+
+        let mut seen: Vec<u64> = versions(&first);
+        let mut cursor = first.cursor;
+        while let Some(c) = cursor {
+            let page = newest(&rec, None, Some(&c), 2).await.unwrap();
+            seen.extend(versions(&page));
+            cursor = page.cursor;
+        }
+        assert_eq!(
+            seen,
+            [6, 5, 4, 3, 1],
+            "the moved record is not met again below"
+        );
+
+        let catch_up = newest(&rec, Some(watermark), None, 10).await.unwrap();
+        assert_eq!(versions(&catch_up), [7]);
+        assert_eq!(catch_up.records[0].key, "k1");
+    }
+
+    /// The order changes which rows a page carries, never what the room holds (item 6):
+    /// a whole room read newest first is the room read oldest first, reversed.
+    #[tokio::test]
+    async fn both_orders_read_the_same_room() {
+        let (_d, _rooms, rec) = room_of(5).await;
+        let mut down = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = newest(&rec, None, cursor.as_deref(), 2).await.unwrap();
+            down.extend(versions(&page));
+            match page.cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        let up = list_records_page(&rec, "r1", None, None, None, None)
+            .await
+            .unwrap();
+        let mut up = versions(&up);
+        up.reverse();
+        assert_eq!(down, up);
     }
 
     /// The head's three values describe one set, and they are read from it.
