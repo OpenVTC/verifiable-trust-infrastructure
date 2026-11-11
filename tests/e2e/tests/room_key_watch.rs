@@ -133,6 +133,7 @@ impl World {
         // DID keeps the `did:peer:2` under the 1000-byte resolver limit.
         let host_dir = tempfile::tempdir().expect("host data dir");
         let host = room_host::open_state(host_dir.path()).expect("a room host");
+        host.set_room_creation(room_host::creation::RoomCreation::any_creator());
         host.set_watch_signal_delay_ms(10, 20);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

@@ -43,6 +43,7 @@
 //! profile — the refusal comes from `vti-rooms-dtg`, which is also what a VTC uses, so the
 //! two cannot disagree about what is safe to serve.
 
+pub mod creation;
 pub mod mirror;
 
 /// Room files: `rooms/blobs/*`, `rooms/records/put` 0.2 and `rooms/info`.
@@ -141,9 +142,33 @@ pub struct HostState {
     /// it addressed (SPEC §7.3 item 7, VTI-KEY-106), so without this every success this
     /// host returned was refused at the caller as unsigned.
     answer_signer: Arc<std::sync::OnceLock<Arc<dyn vti_trust_task_server::ResponseSigner>>>,
+    /// Who may register a room here, and how many ([`HostState::set_room_creation`]).
+    creation: Arc<std::sync::RwLock<creation::RoomCreation>>,
+    /// The room counts registration is held to, kept rather than recounted per create
+    /// ([`RoomCounts`]). The lock is held across a registration's check and its write,
+    /// so two concurrent creates cannot both pass a ceiling that has room for one.
+    room_counts: Arc<tokio::sync::Mutex<Option<RoomCounts>>>,
 }
 
 impl HostState {
+    /// Set who may register rooms on this host and how many each may hold
+    /// ([`creation::RoomCreation`]). Applies to registrations from here on; rooms already
+    /// registered are kept and served.
+    pub fn set_room_creation(&self, policy: creation::RoomCreation) {
+        *self
+            .creation
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
+    }
+
+    /// See [`Self::set_room_creation`].
+    pub fn room_creation(&self) -> creation::RoomCreation {
+        self.creation
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Sign every answer from here on with `signer`, which signs as this host's DID. First
     /// call wins, as [`Self::set_host_did`]'s does: a host answers as one identity.
     ///
@@ -906,8 +931,19 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         epoch_floor: None,
         frozen_at: None,
     };
+    // The host's own bound on registration (`authorize_create` leaves it to whoever
+    // hosts): who may register, and how many rooms one owner and the host may hold.
+    // Checked and written under one lock, so concurrent creates cannot overshoot.
+    let mut counts = state.room_counts.lock().await;
+    if let Err(refusal) = admit_registration(state, &mut counts, &presenter, &room).await {
+        return refusal_answer(doc, refusal);
+    }
     match storage::create_room(&state.rooms, &room).await {
         Ok(()) => {
+            if let Some(c) = counts.as_mut() {
+                c.add(&room.owner_did);
+            }
+            drop(counts);
             let response = CreateRoomResponse {
                 room_id: req.room_id,
                 epoch: 1,
@@ -930,6 +966,132 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
             }
         }
         Err(e) => from_app_error(doc, &e),
+    }
+}
+
+/// Why a registration was refused before the room was written.
+enum RegistrationRefused {
+    Policy(creation::CreationRefused),
+    Store(AppError),
+}
+
+/// How long kept room counts are trusted before they are recounted. Registration keeps
+/// them current itself; this catches what changes rooms without it — an ownership
+/// transfer, a mirror, an embedder writing the rooms keyspace, a removal — so a count is
+/// at most this stale.
+const ROOM_COUNTS_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Rooms held, in total and per owner, as of `counted_at`.
+struct RoomCounts {
+    total: u64,
+    per_owner: std::collections::HashMap<String, u64>,
+    counted_at: std::time::Instant,
+}
+
+impl RoomCounts {
+    async fn count(rooms: &KeyspaceHandle) -> Result<Self, AppError> {
+        let all = storage::list_rooms(rooms).await?;
+        let mut per_owner = std::collections::HashMap::new();
+        for r in &all {
+            *per_owner
+                .entry(creation::bare_did(&r.owner_did).to_string())
+                .or_insert(0) += 1;
+        }
+        Ok(Self {
+            total: all.len() as u64,
+            per_owner,
+            counted_at: std::time::Instant::now(),
+        })
+    }
+
+    fn owned_by(&self, owner: &str) -> u64 {
+        self.per_owner
+            .get(creation::bare_did(owner))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn add(&mut self, owner: &str) {
+        self.total += 1;
+        *self
+            .per_owner
+            .entry(creation::bare_did(owner).to_string())
+            .or_insert(0) += 1;
+    }
+}
+
+/// Hold a registration of `room` by `presenter` to the host's
+/// [`creation::RoomCreation`], recounting `counts` when absent or stale. The caller
+/// holds the `room_counts` lock.
+async fn admit_registration(
+    state: &HostState,
+    counts: &mut Option<RoomCounts>,
+    presenter: &str,
+    room: &Room,
+) -> Result<(), RegistrationRefused> {
+    let policy = state.room_creation();
+    // Refuse a party this host does not register for before reading anything.
+    if !policy.admits(presenter) {
+        return Err(RegistrationRefused::Policy(
+            creation::CreationRefused::NotACreator,
+        ));
+    }
+    // A repeat of a registration that already happened is answered as that, not as a
+    // ceiling the room already counts toward.
+    if storage::get_room(&state.rooms, &room.room_id).await.is_ok() {
+        return Err(RegistrationRefused::Store(AppError::Conflict(format!(
+            "room `{}` is already registered here",
+            room.room_id
+        ))));
+    }
+    if counts
+        .as_ref()
+        .is_none_or(|c| c.counted_at.elapsed() > ROOM_COUNTS_MAX_AGE)
+    {
+        *counts = Some(
+            RoomCounts::count(&state.rooms)
+                .await
+                .map_err(RegistrationRefused::Store)?,
+        );
+    }
+    let c = counts.as_ref().expect("counted above");
+    policy
+        .check(presenter, c.total, c.owned_by(&room.owner_did))
+        .map_err(RegistrationRefused::Policy)
+}
+
+impl HostState {
+    /// Forget the kept room counts, so the next registration recounts. Called after
+    /// anything that moves a room between owners.
+    async fn recount_rooms(&self) {
+        *self.room_counts.lock().await = None;
+    }
+}
+
+fn refusal_answer(doc: &TrustTask<Value>, refusal: RegistrationRefused) -> Answer {
+    use creation::CreationRefused as R;
+    match refusal {
+        RegistrationRefused::Store(e) => from_app_error(doc, &e),
+        RegistrationRefused::Policy(R::NotACreator) => reject(
+            doc,
+            RejectReason::PermissionDenied {
+                reason: "this host registers rooms only for the parties its operator named".into(),
+            },
+        ),
+        RegistrationRefused::Policy(R::OwnerAtLimit { max }) => reject(
+            doc,
+            RejectReason::TaskFailed {
+                reason: format!("the owner already holds {max} rooms on this host, its limit"),
+                details: Some(serde_json::json!({ "limit": "roomsPerOwner", "max": max })),
+            },
+        ),
+        RegistrationRefused::Policy(R::HostAtLimit { max }) => reject(
+            doc,
+            RejectReason::TaskFailed {
+                reason: format!("this host already holds {max} rooms, its limit"),
+                details: Some(serde_json::json!({ "limit": "rooms", "max": max })),
+            },
+        ),
     }
 }
 
@@ -1704,6 +1866,7 @@ async fn transfer_owner(state: &HostState, doc: &TrustTask<Value>, payload: Valu
     };
     match storage::set_owner(&state.rooms, &req.room_id, &req.new_owner_did, now()).await {
         Ok(updated) => {
+            state.recount_rooms().await;
             audit_room(&room, &authorized, operation, None);
             respond(
                 doc,
@@ -1791,6 +1954,7 @@ async fn claim_owner(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
     }
     match storage::set_owner(&state.rooms, &req.room_id, &presenter, now()).await {
         Ok(updated) => {
+            state.recount_rooms().await;
             audit_room(&room, &authorized, operation, None);
             respond(
                 doc,
@@ -2041,6 +2205,8 @@ pub fn open_state_with_files(
         host_did: Arc::new(std::sync::OnceLock::new()),
         refuse_rewrites_by_others: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         answer_signer: Arc::new(std::sync::OnceLock::new()),
+        creation: Arc::new(std::sync::RwLock::new(creation::RoomCreation::default())),
+        room_counts: Arc::new(tokio::sync::Mutex::new(None)),
     }))
 }
 
@@ -2093,6 +2259,8 @@ mod tests {
     fn state() -> (tempfile::TempDir, Arc<HostState>) {
         let dir = tempfile::tempdir().unwrap();
         let state = open_state(dir.path()).expect("open store");
+        // These tests register rooms as whoever they mint.
+        state.set_room_creation(crate::creation::RoomCreation::any_creator());
         (dir, state)
     }
 
@@ -2605,6 +2773,165 @@ mod tests {
         register(&app, &f).await;
     }
 
+    /// Register `room_id` for `owner`, signed by `owner`.
+    async fn create_as(app: &Router, room_id: &str, owner: &Party) -> (StatusCode, Value) {
+        call(
+            app,
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
+            serde_json::json!({
+                "roomId": room_id,
+                "ownerDid": owner.did,
+                "visibility": "open",
+            }),
+            owner,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_host_that_names_no_creator_registers_no_room() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::None,
+            ..Default::default()
+        });
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &f.room.room_id, &f.owner).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(
+            vti_rooms::storage::get_room(st.rooms(), &f.room.room_id)
+                .await
+                .is_err(),
+            "a refused registration must not create the room"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_named_creator_registers_rooms() {
+        let (_d, st) = state();
+        let f = RoomFixture::new(Visibility::Open).await;
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Only([f.owner.did.clone()].into_iter().collect()),
+            ..Default::default()
+        });
+        let app = router(st.clone());
+        register(&app, &f).await;
+
+        let other = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &other.room.room_id, &other.owner).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    #[tokio::test]
+    async fn an_owner_holds_at_most_its_ceiling_of_rooms() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 1,
+            max_rooms: 100,
+        });
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let second = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &second.room.room_id, &f.owner).await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(body.to_string().contains("roomsPerOwner"), "{body}");
+        assert!(
+            vti_rooms::storage::get_room(st.rooms(), &second.room.room_id)
+                .await
+                .is_err()
+        );
+
+        // Another owner is not held to the first one's count.
+        register(&app, &second).await;
+    }
+
+    #[tokio::test]
+    async fn the_host_holds_at_most_its_ceiling_of_rooms() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 10,
+            max_rooms: 1,
+        });
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let second = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &second.room.room_id, &second.owner).await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(body.to_string().contains("\"rooms\""), "{body}");
+    }
+
+    /// A repeat of a registration is answered as already registered, not as a
+    /// ceiling the room already counts toward.
+    #[tokio::test]
+    async fn a_repeat_registration_is_already_registered_even_at_the_ceiling() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 1,
+            max_rooms: 1,
+        });
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+        let (status, body) = create_as(&app, &f.room.room_id, &f.owner).await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(body.to_string().contains("already registered"), "{body}");
+    }
+
+    /// Two registrations racing for the last slot: exactly one gets it.
+    #[tokio::test]
+    async fn concurrent_registrations_never_overshoot_the_ceiling() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 10,
+            max_rooms: 1,
+        });
+        let app = router(st.clone());
+        let (a, b) = (
+            RoomFixture::new(Visibility::Open).await,
+            RoomFixture::new(Visibility::Open).await,
+        );
+        let ((sa, _), (sb, _)) = tokio::join!(
+            create_as(&app, &a.room.room_id, &a.owner),
+            create_as(&app, &b.room.room_id, &b.owner)
+        );
+        assert_eq!(
+            [sa, sb].iter().filter(|s| **s == StatusCode::OK).count(),
+            1,
+            "{sa} {sb}"
+        );
+        assert_eq!(
+            vti_rooms::storage::list_rooms(st.rooms())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// `open_state` registers nothing until its embedder says who may (R5.1).
+    #[tokio::test]
+    async fn a_host_registers_no_room_until_told_who_may() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = open_state(dir.path()).expect("open store");
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &f.room.room_id, &f.owner).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "the default is closed: {body}"
+        );
+    }
+
     /// A document with no proof has no presenter, and a registration nobody signed
     /// records an owner nobody proved.
     #[tokio::test]
@@ -2791,6 +3118,7 @@ mod tests {
 
         let first = {
             let st = open_state(dir.path()).expect("open store");
+            st.set_room_creation(crate::creation::RoomCreation::any_creator());
             let app = router(st.clone());
             register(&app, &f).await;
             let (status, first) = post_raw(&app, doc.as_bytes()).await;

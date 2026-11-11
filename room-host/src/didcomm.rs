@@ -774,6 +774,7 @@ mod tests {
         let identity = HostIdentity::from_vta(did.clone(), secrets);
         let dir = tempfile::tempdir().unwrap();
         let state = crate::open_state(dir.path()).expect("a host");
+        state.set_room_creation(crate::creation::RoomCreation::any_creator());
         let body = serde_json::to_vec(&document()).unwrap();
 
         let unsigned = crate::dispatch(&state, &body).await.document;
