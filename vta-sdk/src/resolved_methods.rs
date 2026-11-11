@@ -50,6 +50,13 @@ pub const REQUIRED_METHODS: &[&str] = &["webvh", "scid", "key"];
 /// nothing it acts on.
 pub const OPTIONAL_METHODS_DECLARED: &[&str] = &["webs"];
 
+/// The optional methods VTI-KEY-001 admits to the durable position: the only
+/// methods whose identity [`require_declared`] holds to a peer's declaration.
+/// VTI-KEY-008 governs a *durable identity* of an optional method, and no
+/// other method can be one; a `did:peer` or `did:key` a test or a client acts
+/// as is not a node's durable identity and is not this rule's to refuse.
+pub const OPTIONAL_DURABLE_METHODS: &[&str] = &["webs"];
+
 /// Every method this build resolves, required or not: the receive side's
 /// answer to "can I rely on material that needs this method resolved?"
 /// (VTI-KEY-009). A method absent here is refused as `unsupportedDidMethod`
@@ -130,8 +137,9 @@ pub struct MethodNotDeclared {
 /// Permit or refuse an initiation as `own_did` toward `peer_did`, whose
 /// verified current document is `peer_doc` (VTI-KEY-008).
 ///
-/// Always `Ok` when `own_did` is of a required method. For an optional one,
-/// `Ok` only when `peer_doc` declares it; otherwise [`MethodNotDeclared`], and
+/// Always `Ok` unless `own_did` is of an optional method admitted to the
+/// durable position ([`OPTIONAL_DURABLE_METHODS`]); for one, `Ok` only when
+/// `peer_doc` declares it; otherwise [`MethodNotDeclared`], and
 /// the caller sends nothing and does not fall back to another identifier
 /// (VTI-KEY-009). A sender to itself needs no declaration.
 ///
@@ -145,7 +153,7 @@ pub fn require_declared(
     let Some(method) = method_name(own_did) else {
         return Ok(());
     };
-    if is_required(method) || base(own_did) == base(peer_did) {
+    if !OPTIONAL_DURABLE_METHODS.contains(&method) || base(own_did) == base(peer_did) {
         return Ok(());
     }
     if declared(peer_doc).contains(method) {
@@ -262,6 +270,19 @@ mod tests {
             "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
         ] {
             require_declared(own, PEER, &declaring_nothing).unwrap();
+        }
+    }
+
+    /// Only a method admitted to the durable position is held to the rule: a
+    /// `did:peer` or an unknown method is no node's durable identity.
+    #[test]
+    fn vti_key_008_only_optional_durable_methods_need_a_declaration() {
+        let silent = json!({ "id": PEER });
+        for own in ["did:peer:2.Vz6Mk", "did:example:123", "did:web:a.example"] {
+            require_declared(own, PEER, &silent).unwrap();
+        }
+        for m in OPTIONAL_DURABLE_METHODS {
+            assert!(OPTIONAL_METHODS_DECLARED.contains(m), "{m} is declared too");
         }
     }
 
