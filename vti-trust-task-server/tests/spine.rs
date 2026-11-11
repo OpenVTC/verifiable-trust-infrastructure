@@ -20,6 +20,8 @@ use vti_trust_task_server::{
 const ME: &str = "did:example:service";
 const PING: &str = "https://trusttasks.org/spec/test/ping/0.1";
 const SIGNED_PING: &str = "https://trusttasks.org/spec/test/signed-ping/0.1";
+/// Answered with a bearer token, so its result is never recorded.
+const TOKEN_PING: &str = "https://trusttasks.org/spec/test/token-ping/0.1";
 
 /// `SIGNED_PING` declares `proof` REQUIRED; `PING` declares nothing.
 fn policy(type_uri: &str) -> Option<SpecPolicy> {
@@ -60,9 +62,22 @@ impl Dispatcher for Echo {
                     self.runs.fetch_add(1, Ordering::SeqCst);
                     success_response(&doc, json!({ "signer": ctx.verified_signer }))
                 }
-                other => unsupported_type_or_version(&doc, other, [PING, SIGNED_PING], "node"),
+                TOKEN_PING => {
+                    let n = self.runs.fetch_add(1, Ordering::SeqCst);
+                    success_response(&doc, json!({ "accessToken": format!("token-{n}") }))
+                }
+                other => unsupported_type_or_version(
+                    &doc,
+                    other,
+                    [PING, SIGNED_PING, TOKEN_PING],
+                    "node",
+                ),
             }
         })
+    }
+
+    fn records_response(&self, type_uri: &str) -> bool {
+        type_uri != TOKEN_PING
     }
 }
 
@@ -247,6 +262,28 @@ async fn a_messaging_document_must_be_signed_by_its_sender() {
     let (status, answer) = f.send(&ArrivalCtx::didcomm(did), &doc).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(f.echo.runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn an_unrecorded_response_is_not_handed_to_a_redelivery() {
+    let f = Fixture::new();
+    let doc = unsigned(TOKEN_PING);
+    let (first_status, first) = f.send(&ArrivalCtx::rest(), &doc).await;
+    assert_eq!(first_status, StatusCode::OK, "{first}");
+    assert_eq!(first["payload"]["accessToken"], "token-0", "{first}");
+
+    let (again_status, again) = f.send(&ArrivalCtx::rest(), &doc).await;
+    assert_eq!(
+        again_status,
+        StatusCode::NO_CONTENT,
+        "a redelivery is acknowledged without the token: {again}"
+    );
+    assert_eq!(again, Value::Null, "and carries no body");
+    assert_eq!(
+        f.echo.runs.load(Ordering::SeqCst),
+        1,
+        "and is not executed twice"
+    );
 }
 
 #[tokio::test]
