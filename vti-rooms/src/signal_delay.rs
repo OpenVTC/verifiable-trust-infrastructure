@@ -22,17 +22,28 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(feature = "host")]
 use vti_common::error::AppError;
+#[cfg(feature = "host")]
 use vti_common::store::KeyspaceHandle;
+#[cfg(feature = "host")]
 use vti_specs_rooms::rooms::create::v0_3 as create_v3;
+#[cfg(feature = "host")]
 use vti_specs_rooms::rooms::info::v0_4 as info_v4;
+#[cfg(feature = "host")]
 use vti_specs_rooms::rooms::signal_delay::set::v0_1 as set_spec;
 
+#[cfg(feature = "host")]
 use crate::Room;
+#[cfg(feature = "host")]
 use crate::authz::{Action, AuthorizedAction};
+#[cfg(feature = "host")]
 use crate::blob_tasks::{Refusal, TaskResult, checked, declared, parse};
+#[cfg(feature = "host")]
 use crate::blobs::BlobHost;
+#[cfg(feature = "host")]
 use crate::record_retention::RecordRetention;
+#[cfg(feature = "host")]
 use crate::storage;
 
 pub use crate::wire::{
@@ -139,6 +150,7 @@ impl SignalDelayAudit {
 ///
 /// Returns the response body and what to audit (item 5), which the host records with the
 /// requester where the tier discloses one.
+#[cfg(feature = "host")]
 pub async fn set(
     files: &BlobHost,
     rooms: &KeyspaceHandle,
@@ -196,6 +208,7 @@ pub async fn set(
 /// What a `rooms/create/0.3` asks for: the record retention (`None` when it states none),
 /// the signal delay (`randomised` when absent), and the payload read as 0.1, which the
 /// hosts' create path takes for everything else.
+#[cfg(feature = "host")]
 pub fn create_v3_parts(
     payload: &Value,
 ) -> Result<(Option<RecordRetention>, SignalDelay, Value), Refusal> {
@@ -219,6 +232,7 @@ pub fn create_v3_parts(
 /// Refuse a create whose signal delay this host's governance will not apply, rather than
 /// register the room under another (`rooms/create/0.3`: "**MUST** refuse the create rather
 /// than record a different one").
+#[cfg(feature = "host")]
 pub fn create_v3_permitted(delay: SignalDelay, policy: SignalDelayPolicy) -> Result<(), Refusal> {
     if policy.permits(delay) {
         return Ok(());
@@ -233,6 +247,7 @@ pub fn create_v3_permitted(delay: SignalDelay, policy: SignalDelayPolicy) -> Res
 
 /// The 0.1 members of a `rooms/create` response, with what 0.3 echoes: the record retention
 /// recorded (absent when none was) and the signal delay recorded, always present.
+#[cfg(feature = "host")]
 pub fn create_v3_response(
     response: impl serde::Serialize,
     recorded: Option<&RecordRetention>,
@@ -249,6 +264,7 @@ pub fn create_v3_response(
 
 /// `rooms/info/0.4`: 0.3's answer, and the signal delay the host applies to the room's
 /// signals — always present, `randomised` for a room that never set one (item 8).
+#[cfg(feature = "host")]
 pub async fn info_v4(
     files: &BlobHost,
     room: &Room,
@@ -299,6 +315,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "host")]
     fn create_v3_takes_both_settings_apart() {
         let payload = json!({
             "roomId": "did:webvh:QmRoom:rooms.example:chat",
@@ -324,6 +341,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "host")]
     fn the_create_response_always_echoes_the_delay() {
         let body = create_v3_response(
             json!({ "roomId": "did:webvh:QmRoom:rooms.example:chat", "epoch": 1 }),
