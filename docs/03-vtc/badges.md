@@ -28,6 +28,13 @@ the community's authority credential to it and so every credential it issued. A 
 group never carries authority, is not listed among the community's groups, and is not
 counted among the groups two members share.
 
+The group follows its badge and is never changed on its own: `vtc/groups/update` and
+`vtc/groups/delete` refuse a badge group (`permissionDenied`), whoever signs. Its name, who
+may ask for it and who sees its holders change with `vtc/badges/update`; it is deleted only
+by `vtc/badges/retire`. An owner's acts on it through `vtc/groups/*` (deciding requests,
+removing a holder, appointing or removing an owner) take the owner's own key, never the
+member portal's delegated sign-in key (VTI-BDG-095).
+
 ## Turning it on
 
 Badges are off until an administrator turns them on with `vtc/badges/settings/update`

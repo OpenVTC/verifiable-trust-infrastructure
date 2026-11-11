@@ -390,6 +390,25 @@ async fn standing(
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
 ) -> Result<Standing, TrustTaskOutcome> {
+    standing_signed(state, ctx, doc).await.map(|(who, _)| who)
+}
+
+/// How a group task was signed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SignedWith {
+    /// The signer's own key (or a console key for its administrator).
+    Own,
+    /// The member portal's delegated sign-in key, acting for the member.
+    Portal,
+}
+
+/// [`standing`], and whether the document was signed with the portal's
+/// delegated key.
+async fn standing_signed(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Result<(Standing, SignedWith), TrustTaskOutcome> {
     let delegated = match ctx.verified_signer.as_deref() {
         Some(signer) => crate::member_portal::delegation::accept(
             state,
@@ -401,13 +420,32 @@ async fn standing(
         .map_err(|e| app_error_to_reject(doc, &e))?,
         None => None,
     };
-    let did = match delegated {
-        Some(member) => member,
-        None => member_signer(state, ctx, doc).await?.did,
+    let (did, signed) = match delegated {
+        Some(member) => (member, SignedWith::Portal),
+        None => (member_signer(state, ctx, doc).await?.did, SignedWith::Own),
     };
     Standing::read(state, &did)
         .await
+        .map(|who| (who, signed))
         .map_err(|e| app_error_to_reject(doc, &e))
+}
+
+/// A badge owner's act on the badge's group takes the owner's own key, never
+/// the portal's delegated key (VTI-BDG-095), as the badge's own owner tasks
+/// do. Every other group is unaffected.
+fn badge_owner_key(
+    doc: &TrustTask<Value>,
+    group: &Group,
+    signed: SignedWith,
+) -> Result<(), TrustTaskOutcome> {
+    if group.badge_id.is_some() && signed == SignedWith::Portal {
+        return Err(denied(
+            doc,
+            "this group backs a badge: its owners act on it with their own key, not the \
+             portal's sign-in key",
+        ));
+    }
+    Ok(())
 }
 
 /// The group a manager acts on: `notFound` where the caller may not see it,
@@ -713,6 +751,14 @@ async fn handle_update(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    // A badge group is the badge's (VTI-BDG-012): its name, who may ask for it and who
+    // sees its holders follow the badge, changed with vtc/badges/update.
+    if before.badge_id.is_some() {
+        return denied(
+            &doc,
+            "this group backs a badge: change it with vtc/badges/update",
+        );
+    }
     let dynamic = before.kind == groups::GroupKind::Dynamic;
     let mut next = before.clone();
     let mut changed = Vec::new();
@@ -903,6 +949,14 @@ async fn handle_delete(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    // A badge group goes only with its badge: vtc/badges/retire deletes it and
+    // revokes what the badge gave (VTI-BDG-012).
+    if group.badge_id.is_some() {
+        return denied(
+            &doc,
+            "this group backs a badge: retire the badge with vtc/badges/retire",
+        );
+    }
     // Item 5: deleting a group carrying authority takes it from every member,
     // a reduction of each (VTI-DIR-104).
     let carries = match groups::authority::carries_authority(state, &group.group_id).await {
@@ -1446,7 +1500,7 @@ async fn handle_members_remove(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let who = match standing(state, ctx, &doc).await {
+    let (who, signed) = match standing_signed(state, ctx, &doc).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
@@ -1460,6 +1514,9 @@ async fn handle_members_remove(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    if let Err(reject) = badge_owner_key(&doc, &group, signed) {
+        return reject;
+    }
     if group.kind == groups::GroupKind::Dynamic {
         return declared(
             &doc,
@@ -2289,7 +2346,7 @@ async fn handle_requests_decide(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let who = match standing(state, ctx, &doc).await {
+    let (who, signed) = match standing_signed(state, ctx, &doc).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
@@ -2340,6 +2397,9 @@ async fn handle_requests_decide(
         }
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(reject) = badge_owner_key(&doc, &group, signed) {
+        return reject;
+    }
     let mut member = None;
     if approve {
         // Item 2: re-checked now. A requester who has left, or a group that no
@@ -2414,7 +2474,7 @@ async fn handle_managers_add(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let who = match standing(state, ctx, &doc).await {
+    let (who, signed) = match standing_signed(state, ctx, &doc).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
@@ -2429,6 +2489,9 @@ async fn handle_managers_add(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    if let Err(reject) = badge_owner_key(&doc, &group, signed) {
+        return reject;
+    }
     let did = match active_entry(state, entry_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
@@ -2487,7 +2550,7 @@ async fn handle_managers_remove(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let who = match standing(state, ctx, &doc).await {
+    let (who, signed) = match standing_signed(state, ctx, &doc).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
@@ -2502,6 +2565,9 @@ async fn handle_managers_remove(
             Ok(g) => g,
             Err(reject) => return reject,
         };
+    if let Err(reject) = badge_owner_key(&doc, &group, signed) {
+        return reject;
+    }
     // Item 2: managers of one group do not remove one another.
     let own = who.entry_id.as_deref() == Some(entry_id);
     if !own && !who.manages_all {
