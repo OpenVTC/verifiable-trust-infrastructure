@@ -261,8 +261,13 @@ pub(super) async fn handle_list(
     };
     // The operation enforces super-admin itself; letting it do so keeps one
     // authorization decision rather than two that can drift apart.
-    match crate::operations::protocol::list::list_services(&state_.config, &state_.webvh_ks, auth)
-        .await
+    match crate::operations::protocol::list::list_services(
+        &state_.config,
+        &state_.webvh_ks,
+        &state_.webs_ks,
+        auth,
+    )
+    .await
     {
         Ok(body) => match built::<spec::list::v1_1::Response, _>(
             spec::list::v1_1::Response::builder()
@@ -284,8 +289,13 @@ pub(super) async fn handle_get(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match crate::operations::protocol::list::list_services(&state_.config, &state_.webvh_ks, auth)
-        .await
+    match crate::operations::protocol::list::list_services(
+        &state_.config,
+        &state_.webvh_ks,
+        &state_.webs_ks,
+        auth,
+    )
+    .await
     {
         Ok(body) => {
             // `get` narrows `list` rather than having its own operation: the

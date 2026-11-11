@@ -523,6 +523,8 @@ fn desired_services(
         }
     }
     out.extend(services.additional.iter().cloned());
+    // In transport-preference order, as a create designates them.
+    super::sort_designated_services(&mut out);
     let mut ids = std::collections::BTreeSet::new();
     for s in &out {
         if !ids.insert(s.id.clone()) {

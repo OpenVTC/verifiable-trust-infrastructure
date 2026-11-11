@@ -42,8 +42,9 @@ use crate::messaging::handshake::{
     HandshakeError, HandshakeOptions, ListenerProver, mediator_handshake,
 };
 use crate::messaging::registry::{MediatorBinding, RegistryError};
-use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
+use crate::operations::did_webvh::UpdateDidWebvhError;
 use crate::operations::protocol::document::{DocumentPatchError, with_didcomm_service};
+use crate::operations::protocol::preconditions::VtaDocBacking;
 use crate::operations::protocol::{OpContext, PROTOCOL_LOCK, ServiceOpDeps};
 use crate::store::KeyspaceHandle;
 
@@ -117,7 +118,7 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
         match value {
             E::VtaDidNotConfigured => Self::VtaDidNotConfigured,
             E::VtaDidRecordMissing(s) => Self::VtaDidRecordMissing(s),
-            E::VtaDidLogMissing(s) => Self::VtaDidLogMissing(s),
+            E::VtaDidLogMissing(s) | E::VtaDidNotPublished(s) => Self::VtaDidLogMissing(s),
             E::EmptyLog => Self::EmptyLog,
             E::Storage(s) | E::DocumentParse(s) => Self::Storage(s),
         }
@@ -143,7 +144,8 @@ pub async fn enable_didcomm(
 
     // Pre-flight: must currently be disabled, VTA DID must exist,
     // current DID document must be loadable.
-    let (vta_did, scid, current_doc) = read_preconditions(deps.config, deps.webvh_ks).await?;
+    let (vta_did, backing, current_doc) =
+        read_preconditions(deps.config, deps.webvh_ks, deps.webs_ks).await?;
 
     // Step 1–5: handshake (with --force gating step 2–5). On failure
     // this returns before any LogEntry is published — atomicity
@@ -184,17 +186,9 @@ pub async fn enable_didcomm(
     // Publish via update_did_webvh — single source of truth for
     // LogEntry append. Rotates control keys; preserves
     // verificationMethod.
-    let update_result = update_did_webvh(
-        &deps.webvh(),
-        auth,
-        &scid,
-        UpdateDidWebvhOptions {
-            document: Some(patched),
-            ..Default::default()
-        },
-        Some(vta_did.as_str()),
-        channel,
-    )
+    let update_result = crate::operations::protocol::service_lifecycle::publish_patch::<
+        EnableDidcommError,
+    >(deps, auth, &backing, &vta_did, patched, channel)
     .await?;
 
     // Persist:
@@ -257,15 +251,16 @@ pub async fn enable_didcomm(
 async fn read_preconditions(
     config: &Arc<RwLock<AppConfig>>,
     webvh_ks: &KeyspaceHandle,
-) -> Result<(String, String, JsonValue), EnableDidcommError> {
+    webs_ks: &KeyspaceHandle,
+) -> Result<(String, VtaDocBacking, JsonValue), EnableDidcommError> {
     {
         let cfg = config.read().await;
         if cfg.services.didcomm {
             return Err(EnableDidcommError::DidcommAlreadyEnabled);
         }
     }
-    let state = super::preconditions::load_vta_doc_state(config, webvh_ks).await?;
-    Ok((state.vta_did, state.scid, state.current_doc))
+    let state = super::preconditions::load_vta_doc_state(config, webvh_ks, webs_ks).await?;
+    Ok((state.vta_did, state.backing, state.current_doc))
 }
 
 async fn persist_didcomm_enabled(
@@ -435,6 +430,7 @@ mod tests {
         imported_ks: KeyspaceHandle,
         contexts_ks: KeyspaceHandle,
         webvh_ks: KeyspaceHandle,
+        webs_ks: KeyspaceHandle,
         audit: vta_audit::SharedAuditSink,
         snapshot_ks: KeyspaceHandle,
         service_state_ks: KeyspaceHandle,
@@ -455,6 +451,7 @@ mod tests {
             let (d2, imported_ks) = empty_keyspace("imported_secrets").await;
             let (d3, contexts_ks) = empty_keyspace("contexts").await;
             let (d4, webvh_ks) = empty_keyspace("webvh").await;
+            let (d_webs, webs_ks) = empty_keyspace("webs").await;
             let (d5, audit_ks) = empty_keyspace("audit").await;
             let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks);
             let (d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
@@ -472,11 +469,12 @@ mod tests {
             .await
             .unwrap();
             Self {
-                _dirs: vec![d1, d2, d3, d4, d5, d6, d7, d8],
+                _dirs: vec![d1, d2, d3, d4, d_webs, d5, d6, d7, d8],
                 keys_ks,
                 imported_ks,
                 contexts_ks,
                 webvh_ks,
+                webs_ks,
                 audit,
                 snapshot_ks,
                 service_state_ks,
@@ -498,6 +496,8 @@ mod tests {
                 imported_ks: &self.imported_ks,
                 contexts_ks: &self.contexts_ks,
                 webvh_ks: &self.webvh_ks,
+                webs_ks: &self.webs_ks,
+                webs_host: None,
                 audit: &self.audit,
                 snapshot_ks: &self.snapshot_ks,
                 service_state_ks: &self.service_state_ks,

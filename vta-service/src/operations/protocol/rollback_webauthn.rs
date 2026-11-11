@@ -103,7 +103,7 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
         match value {
             E::VtaDidNotConfigured => Self::VtaDidNotConfigured,
             E::VtaDidRecordMissing(s) => Self::VtaDidRecordMissing(s),
-            E::VtaDidLogMissing(s) => Self::VtaDidLogMissing(s),
+            E::VtaDidLogMissing(s) | E::VtaDidNotPublished(s) => Self::VtaDidLogMissing(s),
             E::EmptyLog => Self::EmptyLog,
             E::Storage(s) | E::DocumentParse(s) => Self::Storage(s),
         }
@@ -132,7 +132,7 @@ pub async fn rollback_webauthn(
         }
     };
 
-    let current_url = read_current_webauthn_url(deps.config, deps.webvh_ks).await?;
+    let current_url = read_current_webauthn_url(deps.config, deps.webvh_ks, deps.webs_ks).await?;
 
     info!(
         channel,
@@ -208,7 +208,8 @@ pub async fn rollback_webauthn(
 async fn read_current_webauthn_url(
     config: &Arc<RwLock<AppConfig>>,
     webvh_ks: &KeyspaceHandle,
+    webs_ks: &KeyspaceHandle,
 ) -> Result<Option<String>, RollbackWebauthnError> {
-    let state = super::preconditions::load_vta_doc_state(config, webvh_ks).await?;
+    let state = super::preconditions::load_vta_doc_state(config, webvh_ks, webs_ks).await?;
     Ok(current_webauthn_service(&state.current_doc).map(|svc| svc.url))
 }

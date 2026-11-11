@@ -94,7 +94,7 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
         match value {
             E::VtaDidNotConfigured => Self::VtaDidNotConfigured,
             E::VtaDidRecordMissing(s) => Self::VtaDidRecordMissing(s),
-            E::VtaDidLogMissing(s) => Self::VtaDidLogMissing(s),
+            E::VtaDidLogMissing(s) | E::VtaDidNotPublished(s) => Self::VtaDidLogMissing(s),
             E::EmptyLog => Self::EmptyLog,
             E::Storage(s) | E::DocumentParse(s) => Self::Storage(s),
         }
@@ -133,9 +133,12 @@ pub async fn disable_tsp(
     let _guard = PROTOCOL_LOCK.lock().await;
 
     // Brick-prevention (§3.2) + preconditions, capturing the prior mediator.
-    let (state, prior_mediator_did) =
-        check_disable_preconditions::<TspService, DisableTspError>(deps.config, deps.webvh_ks)
-            .await?;
+    let (state, prior_mediator_did) = check_disable_preconditions::<TspService, DisableTspError>(
+        deps.config,
+        deps.webvh_ks,
+        deps.webs_ks,
+    )
+    .await?;
 
     // Snapshot BEFORE the mutation (spec §3.5a): pre-state is the prior mediator.
     snapshot::write(
@@ -146,9 +149,15 @@ pub async fn disable_tsp(
     .map_err(|e| DisableTspError::Storage(format!("snapshot write: {e}")))?;
 
     let patched = TspService::without_service(state.current_doc);
-    let update_result =
-        publish_patch::<DisableTspError>(deps, auth, &state.scid, &state.vta_did, patched, channel)
-            .await?;
+    let update_result = publish_patch::<DisableTspError>(
+        deps,
+        auth,
+        &state.backing,
+        &state.vta_did,
+        patched,
+        channel,
+    )
+    .await?;
 
     // Persist services.tsp = false to fjall (authoritative runtime state) +
     // mirror into the in-memory config. Same post-publish risk window as the
@@ -216,6 +225,9 @@ mod tests {
         fn webvh_ks(&self) -> KeyspaceHandle {
             self.store.keyspace(crate::keyspaces::WEBVH).unwrap()
         }
+        fn webs_ks(&self) -> KeyspaceHandle {
+            self.store.keyspace(crate::keyspaces::WEBS).unwrap()
+        }
     }
 
     fn build_fixture(tsp_initially: bool, didcomm_initially: bool) -> TestFixture {
@@ -248,10 +260,13 @@ mod tests {
     #[tokio::test]
     async fn preconditions_reject_when_tsp_disabled() {
         let fx = build_fixture(false, true);
-        let err =
-            check_disable_preconditions::<TspService, DisableTspError>(&fx.config, &fx.webvh_ks())
-                .await
-                .unwrap_err();
+        let err = check_disable_preconditions::<TspService, DisableTspError>(
+            &fx.config,
+            &fx.webvh_ks(),
+            &fx.webs_ks(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, DisableTspError::ServiceNotPresent));
     }
 
@@ -260,10 +275,13 @@ mod tests {
     #[tokio::test]
     async fn preconditions_reject_when_would_brick() {
         let fx = build_fixture(true, false);
-        let err =
-            check_disable_preconditions::<TspService, DisableTspError>(&fx.config, &fx.webvh_ks())
-                .await
-                .unwrap_err();
+        let err = check_disable_preconditions::<TspService, DisableTspError>(
+            &fx.config,
+            &fx.webvh_ks(),
+            &fx.webs_ks(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, DisableTspError::LastServiceRefused));
     }
 
@@ -271,10 +289,13 @@ mod tests {
     async fn preconditions_reject_without_vta_did() {
         let fx = build_fixture(true, true);
         fx.config.write().await.vta_did = None;
-        let err =
-            check_disable_preconditions::<TspService, DisableTspError>(&fx.config, &fx.webvh_ks())
-                .await
-                .unwrap_err();
+        let err = check_disable_preconditions::<TspService, DisableTspError>(
+            &fx.config,
+            &fx.webvh_ks(),
+            &fx.webs_ks(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, DisableTspError::VtaDidNotConfigured));
     }
 
