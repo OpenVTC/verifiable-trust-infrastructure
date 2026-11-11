@@ -134,8 +134,6 @@ impl World {
         let host_dir = tempfile::tempdir().expect("host data dir");
         let host = room_host::open_state(host_dir.path()).expect("a room host");
         host.set_watch_signal_delay_ms(10, 20);
-        // The VTA reaches this loopback host only with private endpoints enabled.
-        vta_sdk::http::set_allow_private_endpoints(true);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind the host's HTTP port");

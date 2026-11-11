@@ -652,6 +652,8 @@ pub struct Outbound<'a> {
     /// Where this VTA's own durable DID is read from at send time, for the
     /// VTI-KEY-008 declaration check ([`Self::own_did`]).
     node: NodeDid<'a>,
+    /// Which peer endpoints a REST send may dial ([`send_rest_to`]).
+    endpoint_policy: vta_sdk::http::EndpointPolicy,
 }
 
 /// Where an [`Outbound`] learns the VTA's own durable DID: the live config
@@ -712,6 +714,7 @@ impl<'a> Outbound<'a> {
             bridge,
             https_base: None,
             node: NodeDid::Known(node_did),
+            endpoint_policy: vta_sdk::http::EndpointPolicy::process_default(),
         }
     }
 
@@ -737,6 +740,7 @@ impl<'a> Outbound<'a> {
             bridge: state.didcomm_bridge.as_ref(),
             https_base: None,
             node: NodeDid::Config(&state.config),
+            endpoint_policy: state.endpoint_policy,
         }
     }
 
@@ -1169,13 +1173,7 @@ impl Outbound<'_> {
         endpoint: &str,
         document: &Value,
     ) -> Result<Value, AppError> {
-        send_rest_to(
-            recipient,
-            endpoint,
-            document,
-            vta_sdk::http::EndpointPolicy::process_default(),
-        )
-        .await
+        send_rest_to(recipient, endpoint, document, self.endpoint_policy).await
     }
 
     /// Seal a Trust Task to `recipient` over TSP and wait for the reply to come

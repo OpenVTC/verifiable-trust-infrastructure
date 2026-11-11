@@ -75,8 +75,6 @@ async fn start_host_refusing(contend: bool, refused: &'static [&'static str]) ->
     let state = room_host::open_state(dir.path()).expect("a host");
     state.set_host_did(&party.did).expect("bind the host DID");
 
-    // A loopback peer is reached only with private endpoints enabled.
-    vta_sdk::http::set_allow_private_endpoints(true);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let shared = state.clone();

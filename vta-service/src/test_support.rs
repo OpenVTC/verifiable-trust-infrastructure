@@ -696,6 +696,8 @@ pub async fn build_signing_test_app_state_with_sink(
         // even though `tests/audit_sink.rs` cannot use it from outside.
         AppStateParts {
             audit_sink,
+            // Tests on this state stand up room hosts on loopback.
+            endpoint_policy: Some(vta_sdk::http::EndpointPolicy::private_allowed()),
             ..Default::default()
         },
     )
@@ -1645,6 +1647,11 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         atm: transport.atm.or(opts.atm),
         tee: None,
         restart_gate: std::sync::Arc::new(crate::server::RestartGate::new(restart_tx)),
+        // The harness's stand-in peers (room hosts, a DID hosting service)
+        // listen on loopback, so its outbound sends may dial private and
+        // loopback endpoints. Stated here rather than through the process-wide
+        // switch, so it is this state's and nothing else's.
+        endpoint_policy: vta_sdk::http::EndpointPolicy::private_allowed(),
         #[cfg(feature = "rest")]
         metrics_handle: None,
     };
