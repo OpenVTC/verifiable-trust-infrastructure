@@ -227,6 +227,16 @@ What the service refuses before reading a request:
   `issuedAt`, or one more than five minutes ahead;
 - a cast not signed by a `did:key` — a cast's key is made for it, and must resolve without the
   service fetching anything the sender chose;
+- a community's or a trustee's request (register, close, cancel, trustee steps, authorize)
+  issued longer ago than the acceptance window every VTI node applies (ten minutes, with a
+  minute's clock skew), as `expired`: a copy of one is not a standing instruction;
+- a proof whose verification method is not the issuer's, before anything is resolved;
+- on the HTTPS door, which proves no sender, a signer the service has no reason to know, as
+  `permissionDenied` and before anything is fetched. A `did:key` or `did:peer` resolves with no
+  I/O; any other DID is resolved only for a community named in `[communities] allowed`, or for a
+  party the election the request names — held here — lists (its community, auditors or
+  trustees). An open box (`allow_any`) names no community, so a registration reaches it over
+  TSP or DIDComm, as the VTC sends one;
 - a payload that does not validate against its task's schema.
 
 And when it reads a cast: an encrypted form whose ciphertexts are already on the board under

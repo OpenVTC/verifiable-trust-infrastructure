@@ -868,6 +868,20 @@ impl BallotBox {
             .contains_key(&(community.to_string(), election_id.to_string()))
     }
 
+    /// Whether `did` is a party `community`'s election `election_id`, registered here, names:
+    /// the community itself, one of its board's auditors, or one of its trustees. `false` for
+    /// an election not held here.
+    #[must_use]
+    pub fn names_party(&self, community: &str, election_id: &str, did: &str) -> bool {
+        self.elections
+            .get(&(community.to_string(), election_id.to_string()))
+            .is_some_and(|e| {
+                e.manifest.community.as_str() == did
+                    || e.manifest.board.auditors.iter().any(|a| a.as_str() == did)
+                    || e.is_trustee(Caller::Did(did))
+            })
+    }
+
     /// How many of `community`'s elections are neither tallied nor cancelled: the work a
     /// registration quota bounds.
     #[must_use]
