@@ -1091,6 +1091,7 @@ pub async fn run_context_delete(
     let collection_ks = cs.keyspace(crate::keyspaces::COLLECTION)?;
     #[cfg(feature = "webvh")]
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
+    let webs_ks = cs.keyspace(crate::keyspaces::WEBS)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-delete");
 
@@ -1145,6 +1146,7 @@ pub async fn run_context_delete(
         collection: &collection_ks,
         #[cfg(feature = "webvh")]
         webvh: &webvh_ks,
+        webs: &webs_ks,
     };
 
     // Assigned by whichever arm below compiles, so neither build carries a

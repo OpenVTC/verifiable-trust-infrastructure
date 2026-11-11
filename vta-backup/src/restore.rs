@@ -328,6 +328,7 @@ async fn write_state(
         let collection = target.keyspace(vta_keyspaces::COLLECTION)?;
         #[cfg(feature = "webvh")]
         let webvh = target.keyspace(vta_keyspaces::WEBVH)?;
+        let webs = target.keyspace(vta_keyspaces::WEBS)?;
         let ks = vta_keyspaces::Keyspaces {
             keys: &keys,
             acl: &acl,
@@ -349,6 +350,7 @@ async fn write_state(
             collection: &collection,
             #[cfg(feature = "webvh")]
             webvh: &webvh,
+            webs: &webs,
         };
         return crate::ops::write_legacy_payload(payload, &ks, seed).await;
     }

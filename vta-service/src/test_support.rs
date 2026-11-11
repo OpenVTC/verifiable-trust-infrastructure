@@ -70,6 +70,8 @@ pub struct TestStore {
     /// service generated rather than one a caller imported.
     pub internal_ks: KeyspaceHandle,
     pub webvh_ks: KeyspaceHandle,
+    /// `did:webs` records ([`crate::webs_store`]).
+    pub webs_ks: KeyspaceHandle,
     pub sealed_nonces_ks: KeyspaceHandle,
     /// Persisted drain set for the runtime service-management
     /// surface. Required by `disable_didcomm` / `update_didcomm` /
@@ -116,6 +118,7 @@ pub async fn open_test_store() -> TestStore {
             .keyspace(crate::keyspaces::INTERNAL_KEYS)
             .expect("internal keys ks"),
         webvh_ks: store.keyspace(crate::keyspaces::WEBVH).expect("webvh ks"),
+        webs_ks: store.keyspace(crate::keyspaces::WEBS).expect("webs ks"),
         sealed_nonces_ks: store
             .keyspace(crate::keyspaces::SEALED_NONCES)
             .expect("nonces ks"),
@@ -1582,6 +1585,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         backup_blob_dir: backup_blob_dir.clone(),
         #[cfg(feature = "webvh")]
         webvh_ks: webvh_ks.clone(),
+        webs_ks: store.keyspace(crate::keyspaces::WEBS).unwrap(),
         #[cfg(feature = "webvh")]
         passkey_vms_ks,
         #[cfg(feature = "webvh")]

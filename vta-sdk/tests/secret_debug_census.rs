@@ -98,6 +98,18 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
         "a webvh host's path label for the DID, not a BIP-39 phrase",
     ),
     (
+        "vta-service/src/webs_store.rs",
+        "WebsDidRecord",
+        "mnemonic",
+        "a did-hosting slot path ending in the did:webs AID, not a BIP-39 phrase",
+    ),
+    (
+        "vta-service/src/operations/did_webs/mod.rs",
+        "CreateDidWebsResult",
+        "mnemonic",
+        "a did-hosting slot path ending in the did:webs AID, not a BIP-39 phrase",
+    ),
+    (
         "vta-service/src/webvh_host.rs",
         "HostedDidEntry",
         "mnemonic",
@@ -162,7 +174,7 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// The size of [`NOT_SECRET`], asserted so the list cannot grow quietly.
-const NOT_SECRET_COUNT: usize = 18;
+const NOT_SECRET_COUNT: usize = 20;
 
 /// Field names that are exactly one of these are record or index keys, not
 /// key material.
