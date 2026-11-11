@@ -138,26 +138,24 @@ impl Rig {
         );
         let hosts = Fake(&self.host);
         let (s, a, r) = (&self.state, &self.auth, &self.resolver);
-        if uri == uris::TASK_VTA_WEBS_DIDS_CREATE_0_1 {
-            use spec::create::v0_1 as t;
-            if let Err(out) = parse_payload::<t::Payload>(&doc) {
+        if uri == uris::TASK_VTA_WEBS_DIDS_CREATE_0_1 || uri == uris::TASK_VTA_WEBS_DIDS_CREATE_0_2
+        {
+            #[allow(deprecated)] // 0.1 is superseded by 0.2, still served
+            let (parsed, version) = if uri == uris::TASK_VTA_WEBS_DIDS_CREATE_0_1 {
+                (
+                    parse_payload::<spec::create::v0_1::Payload>(&doc).map(|_| ()),
+                    CreateVersion::V0_1,
+                )
+            } else {
+                (
+                    parse_payload::<spec::create::v0_2::Payload>(&doc).map(|_| ()),
+                    CreateVersion::V0_2,
+                )
+            };
+            if let Err(out) = parsed {
                 return out;
             }
-            let codes = Codes {
-                method_disabled: Some(t::error_codes::METHOD_DISABLED),
-                server_not_found: Some(t::error_codes::SERVER_NOT_FOUND),
-                host_does_not_host_webs: Some(t::error_codes::HOST_DOES_NOT_HOST_WEBS),
-                domain_not_served: Some(t::error_codes::DOMAIN_NOT_SERVED),
-                path_refused: Some(t::error_codes::PATH_REFUSED),
-                service_did_not_permitted: Some(t::error_codes::SERVICE_DID_NOT_PERMITTED),
-                service_id_conflict: Some(t::error_codes::SERVICE_ID_CONFLICT),
-                publish_refused: Some(t::error_codes::PUBLISH_REFUSED),
-                ..Codes::default()
-            };
-            return match create(s, a, &doc.payload, r, &hosts).await {
-                Ok(v) => respond::<t::Response>(&doc, v),
-                Err(e) => refuse(&doc, e, &codes),
-            };
+            return create_outcome(s, a, &doc, version, r, &hosts).await;
         }
         if uri == uris::TASK_VTA_WEBS_DIDS_UPDATE_0_1 {
             use spec::update::v0_1 as t;
@@ -488,4 +486,472 @@ async fn create_refuses_as_the_specification_declares() {
         .run(uris::TASK_VTA_WEBS_DIDS_CREATE_0_1, create_payload())
         .await;
     assert_eq!(code(&out), "vta/webs/dids/create:methodDisabled");
+}
+
+// ─── create/0.2 ────────────────────────────────────────────────────────
+
+const C02: &str = uris::TASK_VTA_WEBS_DIDS_CREATE_0_2;
+
+fn create_02(class: &str) -> Value {
+    json!({ "contextId": CTX, "serverId": "host-1", "didClass": class, "path": "people",
+            "addMediatorService": true })
+}
+
+/// The aliases every did:webs designates before the caller's: the DID, its
+/// did:web twin and its did:keri form.
+fn equivalents(did: &str) -> Vec<String> {
+    let rest = did.strip_prefix("did:webs:").expect("a did:webs");
+    let aid = rest.rsplit(':').next().unwrap();
+    vec![
+        did.to_string(),
+        format!("did:web:{rest}"),
+        format!("did:keri:{aid}"),
+    ]
+}
+
+fn details(out: &TrustTaskOutcome) -> Value {
+    body(out)
+        .pointer("/payload/details")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+impl Rig {
+    async fn record(&self, did: &str) -> WebsDidRecord {
+        crate::webs_store::get(&self.state.webs_ks, did)
+            .await
+            .unwrap()
+            .expect("recorded")
+    }
+
+    async fn nothing_created(&self) {
+        assert!(
+            crate::webs_store::list(&self.state.webs_ks)
+                .await
+                .unwrap()
+                .is_empty(),
+            "no record"
+        );
+        assert!(
+            self.host.published.lock().unwrap().is_empty(),
+            "nothing published"
+        );
+    }
+
+    async fn set_primary_did(&self, did: Option<&str>) {
+        let mut ctx = crate::contexts::get_context(&self.state.contexts_ks, CTX)
+            .await
+            .unwrap()
+            .unwrap();
+        ctx.did = did.map(str::to_string);
+        crate::contexts::store_context(&self.state.contexts_ks, &ctx)
+            .await
+            .unwrap();
+    }
+
+    /// Every row of the keys keyspace: key records and derivation counters.
+    async fn key_rows(&self) -> usize {
+        self.state.keys_ks.prefix_iter_raw("").await.unwrap().len()
+    }
+}
+
+/// VTI-KEY-190, VTI-KEY-191: a relationship and a persona DID are created in
+/// their class, which the record keeps and the response returns.
+#[tokio::test]
+async fn create_0_2_makes_a_relationship_and_a_persona_did_in_their_class() {
+    let rig = Rig::new().await;
+    for class in ["relationship", "persona"] {
+        let created = ok(&rig.run(C02, create_02(class)).await);
+        assert_eq!(created["didClass"], class);
+        assert_eq!(created["serviceIds"], json!(["#didcomm"]));
+        assert!(created.get("template").is_none(), "no template was named");
+        assert!(created.get("templateScope").is_none());
+        let did = created["did"].as_str().unwrap();
+        assert_eq!(
+            rig.record(did).await.did_class.map(WebsDidClass::as_str),
+            Some(class)
+        );
+    }
+}
+
+/// create/0.2 Changes from 0.1: a 0.1 request records no class, and none is
+/// inferred.
+#[tokio::test]
+async fn create_0_1_records_no_class() {
+    let rig = Rig::new().await;
+    let created = ok(&rig
+        .run(uris::TASK_VTA_WEBS_DIDS_CREATE_0_1, create_payload())
+        .await);
+    assert!(created.get("didClass").is_none());
+    let record = rig.record(created["did"].as_str().unwrap()).await;
+    assert_eq!(record.did_class, None);
+    assert_eq!(record.template, None);
+}
+
+/// CONVENTIONS.md 0.2 §1.1 item 1: a service DID is refused unless
+/// `[dids] webs_service_dids` enables it, separately from `webs_enabled`.
+#[tokio::test]
+async fn a_service_did_needs_its_own_switch() {
+    let rig = Rig::new().await;
+    let out = rig.run(C02, create_02("service")).await;
+    assert_eq!(code(&out), "vta/webs/dids/create:serviceDidNotPermitted");
+    assert!(
+        body(&out)["payload"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("webs_service_dids"),
+        "the message names the switch"
+    );
+    rig.nothing_created().await;
+
+    rig.state.config.write().await.dids.webs_service_dids = true;
+    let created = ok(&rig.run(C02, create_02("service")).await);
+    assert_eq!(created["didClass"], "service");
+    assert_eq!(
+        rig.record(created["did"].as_str().unwrap()).await.did_class,
+        Some(WebsDidClass::Service)
+    );
+
+    // Creation off still answers first.
+    rig.state.config.write().await.dids.webs_enabled = false;
+    let out = rig.run(C02, create_02("service")).await;
+    assert_eq!(code(&out), "vta/webs/dids/create:methodDisabled");
+}
+
+/// CONVENTIONS.md 0.2 §1.2 items 1 and 2 (VTI-KEY-193).
+#[tokio::test]
+async fn a_class_that_disagrees_with_the_primary_it_would_replace_is_a_did_class_conflict() {
+    let rig = Rig::new().await;
+    rig.state.config.write().await.dids.webs_service_dids = true;
+
+    // Item 1: a persona or relationship DID cannot become the primary of a
+    // context whose primary is a service DID — here this VTA's own.
+    let vta_did = rig.state.config.read().await.vta_did.clone().unwrap();
+    rig.set_primary_did(Some(&vta_did)).await;
+    for class in ["persona", "relationship"] {
+        let mut p = create_02(class);
+        p["setPrimary"] = json!(true);
+        let out = rig.run(C02, p).await;
+        assert_eq!(
+            code(&out),
+            "vta/webs/dids/create:didClassConflict",
+            "{class}"
+        );
+        assert_eq!(details(&out), json!({ "requiredClass": "service" }));
+    }
+    // A service DID agrees with the class, but a create still never
+    // re-identifies this VTA: 0.2 has no code of its own for that.
+    let mut p = create_02("service");
+    p["setPrimary"] = json!(true);
+    let out = rig.run(C02, p).await;
+    assert_eq!(code(&out), "permissionDenied");
+    // 0.1 answers the same as it always has.
+    let mut p = create_payload();
+    p["setPrimary"] = json!(true);
+    let out = rig.run(uris::TASK_VTA_WEBS_DIDS_CREATE_0_1, p).await;
+    assert_eq!(code(&out), "vta/webs/dids/create:serviceDidNotPermitted");
+    rig.nothing_created().await;
+
+    // Item 1 again, where the primary is a service did:webs this VTA made.
+    rig.set_primary_did(None).await;
+    let mut p = create_02("service");
+    p["setPrimary"] = json!(true);
+    let service = ok(&rig.run(C02, p).await);
+    assert_eq!(service["primary"], true);
+    let mut p = create_02("persona");
+    p["setPrimary"] = json!(true);
+    let out = rig.run(C02, p).await;
+    assert_eq!(code(&out), "vta/webs/dids/create:didClassConflict");
+
+    // Item 2: a service DID does not replace a persona primary.
+    rig.set_primary_did(None).await;
+    let mut p = create_02("persona");
+    p["setPrimary"] = json!(true);
+    let persona = ok(&rig.run(C02, p).await);
+    let mut p = create_02("service");
+    p["setPrimary"] = json!(true);
+    let out = rig.run(C02, p).await;
+    assert_eq!(code(&out), "vta/webs/dids/create:didClassConflict");
+    assert_eq!(
+        details(&out),
+        Value::Null,
+        "persona and relationship would both be accepted"
+    );
+    // ... and a persona replacing a persona is no conflict.
+    let mut p = create_02("persona");
+    p["setPrimary"] = json!(true);
+    ok(&rig.run(C02, p).await);
+    assert!(persona["did"].is_string());
+}
+
+/// CONVENTIONS.md 0.2 §9: a built-in whose every member the derivation
+/// expresses (`ai-agent`) shapes the DID whole, and the response names it.
+#[tokio::test]
+async fn a_representable_builtin_template_shapes_the_did() {
+    let rig = Rig::new().await;
+    rig.state.config.write().await.dids.webs_service_dids = true;
+    let created = ok(&rig
+        .run(
+            C02,
+            json!({ "contextId": CTX, "serverId": "host-1", "didClass": "service",
+                    "path": "agents", "template": "ai-agent",
+                    "templateVars": { "MEDIATOR_DID": "did:web:mediator.example" } }),
+        )
+        .await);
+    assert_eq!(created["template"], "ai-agent");
+    assert_eq!(created["templateScope"], "builtin");
+    assert_eq!(created["templateKind"], "ai-agent");
+    let did = created["did"].as_str().unwrap().to_string();
+    // The template lists no alias; the DID designates itself first, then the
+    // did:web twin and the did:keri form the did:webs derivation always
+    // designates (affinidi-did-webs `attestation::designation`, as for 0.1).
+    assert_eq!(created["alsoKnownAs"], json!(equivalents(&did)));
+
+    // The designations are the template's, ids reduced to fragments.
+    let got = ok(&rig
+        .run(uris::TASK_VTA_WEBS_DIDS_GET_0_1, json!({ "did": did }))
+        .await);
+    let services = got["record"]["services"].as_array().unwrap();
+    let by_id = |id: &str| {
+        services
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap_or_else(|| panic!("{id} in {services:?}"))
+            .clone()
+    };
+    assert_eq!(by_id("#tsp")["type"], "TSPTransport");
+    assert_eq!(by_id("#tsp")["serviceEndpoint"], "did:web:mediator.example");
+    assert_eq!(by_id("#vta-didcomm")["type"], "DIDCommMessaging");
+    assert_eq!(
+        by_id("#vta-didcomm")["serviceEndpoint"][0]["uri"],
+        "did:web:mediator.example"
+    );
+    assert_eq!(services.len(), 2);
+    let record = rig.record(&did).await;
+    assert_eq!(
+        record.template,
+        Some(crate::webs_store::WebsTemplateUse {
+            name: "ai-agent".into(),
+            scope: "builtin".into(),
+            kind: "ai-agent".into(),
+        })
+    );
+}
+
+/// A context's own template resolves before the global scope and the
+/// built-ins, and the response names the context as its scope.
+#[tokio::test]
+async fn a_context_template_resolves_in_its_scope() {
+    let rig = Rig::new().await;
+    let template = vta_sdk::did_templates::DidTemplate::from_json(json!({
+        "schemaVersion": 1, "name": "webs-persona", "kind": "custom",
+        "document": {
+            "id": "{DID}",
+            "verificationMethod": [
+                { "id": "{DID}#key-0", "type": "Multikey", "controller": "{DID}",
+                  "publicKeyMultibase": "{SIGNING_KEY_MB}" },
+                { "id": "{DID}#key-1", "type": "Multikey", "controller": "{DID}",
+                  "publicKeyMultibase": "{KA_KEY_MB}" }
+            ],
+            "authentication": ["{DID}#key-0"],
+            "assertionMethod": ["{DID}#key-0"],
+            "keyAgreement": ["{DID}#key-1"],
+            "service": [{ "id": "{DID}#files", "type": "LinkedDomains",
+                          "serviceEndpoint": "https://files.example" }],
+            "alsoKnownAs": ["did:web:alice.example"]
+        }
+    }))
+    .unwrap();
+    crate::did_templates::store_context_template(
+        &rig.state.did_templates_ks,
+        CTX,
+        &vta_sdk::did_templates::DidTemplateRecord {
+            template,
+            scope: vta_sdk::did_templates::Scope::Context {
+                context_id: CTX.into(),
+            },
+            created_at: 0,
+            updated_at: 0,
+            created_by: "did:key:test".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let created = ok(&rig
+        .run(
+            C02,
+            json!({ "contextId": CTX, "serverId": "host-1", "didClass": "persona",
+                    "template": "webs-persona", "templateContext": CTX }),
+        )
+        .await);
+    let did = created["did"].as_str().unwrap();
+    assert_eq!(created["templateScope"], CTX);
+    assert_eq!(created["templateKind"], "custom");
+    assert_eq!(created["serviceIds"], json!(["#files"]));
+    let mut aliases = equivalents(did);
+    aliases.push("did:web:alice.example".into());
+    assert_eq!(created["alsoKnownAs"], json!(aliases));
+}
+
+/// CONVENTIONS.md 0.2 §9.2, as written: `resolvedMethods` is a member the
+/// derivation does not render, so the node built-ins that carry it are
+/// refused (trustoverip/dtgwg-trust-tasks-tf#1164 asks whether it should be
+/// honoured; if so, `vta_sdk::did_templates::webs::DOCUMENT_MEMBERS` gains it
+/// and this test turns into a happy path). Nothing is derived or published.
+#[tokio::test]
+async fn a_template_the_derivation_cannot_reproduce_is_refused_before_any_key() {
+    let rig = Rig::new().await;
+    rig.state.config.write().await.dids.webs_service_dids = true;
+    let keys_before = rig.key_rows().await;
+    let out = rig
+        .run(
+            C02,
+            json!({ "contextId": CTX, "serverId": "host-1", "didClass": "service",
+                    "path": "witnesses", "template": "dtg-witness",
+                    "templateVars": { "MEDIATOR_DID": "did:web:mediator.example" } }),
+        )
+        .await;
+    assert_eq!(code(&out), "vta/webs/dids/create:templateNotRepresentable");
+    assert_eq!(
+        details(&out),
+        json!({ "reason": "documentMember", "members": ["/document/resolvedMethods"] })
+    );
+
+    // The specification's own example: swiyu-verifier's keys.
+    let out = rig
+        .run(
+            C02,
+            json!({ "contextId": CTX, "serverId": "host-1", "didClass": "service",
+                    "template": "swiyu-verifier" }),
+        )
+        .await;
+    assert_eq!(code(&out), "vta/webs/dids/create:templateNotRepresentable");
+    assert_eq!(
+        details(&out),
+        json!({ "reason": "keyAlgorithm", "members": ["/keys/signing", "/keys/verifier"] })
+    );
+    rig.nothing_created().await;
+    assert_eq!(
+        keys_before,
+        rig.key_rows().await,
+        "no key record, and no derivation path allocated"
+    );
+}
+
+#[tokio::test]
+async fn template_names_and_variables_are_checked() {
+    let rig = Rig::new().await;
+    rig.state.config.write().await.dids.webs_service_dids = true;
+    let out = rig
+        .run(
+            C02,
+            json!({ "contextId": CTX, "serverId": "host-1", "didClass": "service",
+                    "template": "no-such-template" }),
+        )
+        .await;
+    assert_eq!(code(&out), "vta/webs/dids/create:templateNotFound");
+    assert_eq!(details(&out), json!({ "template": "no-such-template" }));
+
+    let out = rig
+        .run(
+            C02,
+            json!({ "contextId": CTX, "serverId": "host-1", "didClass": "service",
+                    "template": "ai-agent" }),
+        )
+        .await;
+    assert_eq!(code(&out), "vta/webs/dids/create:templateVarsInvalid");
+    assert_eq!(details(&out), json!({ "missing": ["MEDIATOR_DID"] }));
+
+    let out = rig
+        .run(
+            C02,
+            json!({ "contextId": CTX, "serverId": "host-1", "didClass": "service",
+                    "template": "ai-agent",
+                    "templateVars": { "MEDIATOR_DID": "did:web:m.example", "BOGUS": "x",
+                                      "DID": "did:web:mine" } }),
+        )
+        .await;
+    assert_eq!(code(&out), "vta/webs/dids/create:templateVarsInvalid");
+    assert_eq!(details(&out), json!({ "unknown": ["BOGUS", "DID"] }));
+    rig.nothing_created().await;
+}
+
+/// CONVENTIONS.md 0.2 §9.2 MAY: a node's template under a class other than
+/// `service` is a class conflict.
+#[tokio::test]
+async fn a_node_template_under_a_persona_class_is_a_did_class_conflict() {
+    let rig = Rig::new().await;
+    let out = rig
+        .run(
+            C02,
+            json!({ "contextId": CTX, "serverId": "host-1", "didClass": "persona",
+                    "template": "dtg-witness",
+                    "templateVars": { "MEDIATOR_DID": "did:web:mediator.example" } }),
+        )
+        .await;
+    assert_eq!(code(&out), "vta/webs/dids/create:didClassConflict");
+    assert_eq!(details(&out), json!({ "requiredClass": "service" }));
+    rig.nothing_created().await;
+}
+
+/// The bundle's `payload.invalid-examples.json`, each refused by the payload
+/// schema the dispatch spine validates against; the response example by the
+/// generated response type.
+#[test]
+fn create_0_2_invalid_examples_are_refused() {
+    use trust_tasks_rs::validate::ValidatedPayload;
+    let payloads = [
+        json!({ "contextId": "alice", "serverId": "prod", "path": "people/alice" }),
+        json!({ "contextId": "bridge", "serverId": "prod", "didClass": "integration" }),
+        json!({ "contextId": "alice", "didClass": "persona", "path": "people/alice" }),
+        json!({ "contextId": "alice", "serverId": "prod", "didClass": "persona",
+                "path": "people/ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe" }),
+        json!({ "contextId": "alice", "serverId": "prod", "didClass": "persona",
+                "signingKeyId": "my-key" }),
+        json!({ "contextId": "witness-1", "serverId": "prod", "didClass": "service",
+                "template": "dtg-witness",
+                "templateVars": { "MEDIATOR_DID": "did:webvh:QmMediatorScid:mediator.example" },
+                "addTspService": true }),
+        json!({ "contextId": "witness-1", "serverId": "prod", "didClass": "service",
+                "template": "dtg-witness",
+                "alsoKnownAs": ["did:webvh:QmWitnessScid:example.com:w1"] }),
+        json!({ "contextId": "witness-1", "serverId": "prod", "didClass": "service",
+                "templateVars": { "MEDIATOR_DID": "did:webvh:QmMediatorScid:mediator.example" } }),
+        json!({ "contextId": "witness-1", "serverId": "prod", "didClass": "service",
+                "templateContext": "witness-1" }),
+        json!({ "contextId": "witness-1", "serverId": "prod", "didClass": "service",
+                "template": "DTG Witness" }),
+        json!({ "contextId": "alice", "serverId": "prod", "didClass": "persona",
+                "additionalServices": [{ "id": "did:webs:other.example:EAbc#files",
+                  "type": "FileStore", "serviceEndpoint": "https://files.example.com" }] }),
+    ];
+    for p in &payloads {
+        assert!(
+            spec::create::v0_2::Payload::validate_value(p).is_err(),
+            "the schema accepts {p}"
+        );
+    }
+    let response = json!({
+        "did": "did:webs:example.com:people:alice:ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe",
+        "aid": "ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe",
+        "contextId": "alice", "serverId": "prod", "domain": "example.com",
+        "slot": "people/alice/ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe",
+        "keriCesrUrl": "https://example.com/people/alice/E/keri.cesr",
+        "didJsonUrl": "https://example.com/people/alice/E/did.json",
+        "signingKeyId": "webs-alice-sign-0", "signingKey": "DKxy",
+        "nextKeyId": "webs-alice-sign-1", "keyAgreementKeyId": "webs-alice-ka-0",
+        "keyAgreementKey": "CBwO", "sequenceNumber": 1, "versionId": "1:EHmL",
+        "alsoKnownAs": ["did:webs:example.com:people:alice:E"],
+        "createdAt": "2026-11-11T10:00:02Z"
+    });
+    assert!(serde_json::from_value::<spec::create::v0_2::Response>(response).is_err());
+    // And a valid one is accepted, so the refusals above are the examples'.
+    assert!(
+        spec::create::v0_2::Payload::validate_value(&json!({
+            "contextId": "witness-1", "serverId": "prod", "didClass": "service",
+            "template": "dtg-witness",
+            "templateVars": { "MEDIATOR_DID": "did:webvh:QmMediatorScid:mediator.example" }
+        }))
+        .is_ok()
+    );
 }

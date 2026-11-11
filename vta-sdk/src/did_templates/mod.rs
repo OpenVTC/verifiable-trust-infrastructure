@@ -44,6 +44,7 @@ mod sign_in_portal;
 mod transports;
 mod trust_registry;
 mod validate;
+pub mod webs;
 
 #[cfg(test)]
 mod tests;
@@ -346,6 +347,27 @@ impl DidTemplate {
     /// names in the wrong place all produce errors.
     pub fn render(&self, vars: &TemplateVars) -> Result<Value, TemplateError> {
         render::render(self, vars)
+    }
+
+    /// The caller-supplied variable names this template declares neither in
+    /// `requiredVars` nor in `optionalVars`, sorted. A reserved name (`DID`, a
+    /// key slot's placeholder, …) is the renderer's to supply, so a caller
+    /// supplying one is supplying an unknown variable too.
+    ///
+    /// [`Self::render`] takes extra variables without complaint, because the
+    /// server passes its ambient ones through the same map; a caller whose
+    /// variables come from a request checks them here first.
+    pub fn undeclared_vars<'a>(&self, supplied: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        let mut unknown: Vec<String> = supplied
+            .into_iter()
+            .filter(|k| {
+                !self.required_vars.iter().any(|r| r == k) && !self.optional_vars.contains_key(*k)
+            })
+            .map(str::to_string)
+            .collect();
+        unknown.sort();
+        unknown.dedup();
+        unknown
     }
 
     /// Structural + semantic lint. Called automatically by [`Self::from_json`].

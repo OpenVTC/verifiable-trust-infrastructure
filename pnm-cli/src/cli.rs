@@ -6654,7 +6654,7 @@ mod rooms_prune_flag_tests {
     }
 }
 
-/// `pnm webs …` — the `vta/webs/dids/*/0.1` Trust Tasks.
+/// `pnm webs …` — the `vta/webs/dids/*/0.1` Trust Tasks, and `create/0.2`.
 #[derive(Subcommand)]
 pub(crate) enum WebsCommands {
     /// Create a did:webs in a context and publish it to a hosting server
@@ -6688,6 +6688,23 @@ pub(crate) enum WebsCommands {
         /// Make it the context's primary DID.
         #[arg(long)]
         set_primary: bool,
+        /// The DID class: `relationship`, `persona` or `service`
+        /// (`vta/webs/dids/create/0.2`). A `service` DID is level 1 and alpha,
+        /// and needs `[dids] webs_service_dids` on the VTA. Left out, the
+        /// classless 0.1 create is sent.
+        #[arg(long, value_parser = ["relationship", "persona", "service"])]
+        class: Option<String>,
+        /// A DID template to shape the services and aliases from, instead of
+        /// `--didcomm`, `--tsp` and `--also-known-as`. Needs `--class`.
+        #[arg(long, requires = "class", conflicts_with_all = ["didcomm", "tsp", "also_known_as"])]
+        template: Option<String>,
+        /// Look the template up in this context's scope first, then global,
+        /// then the built-ins.
+        #[arg(long, requires = "template")]
+        template_context: Option<String>,
+        /// `KEY=VALUE` — a template variable. Repeatable.
+        #[arg(long = "var", value_parser = parse_key_value, requires = "template")]
+        vars: Vec<(String, String)>,
     },
     /// Show a did:webs this VTA holds
     Get {

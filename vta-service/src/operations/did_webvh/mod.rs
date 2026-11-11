@@ -546,7 +546,7 @@ fn plan_key_slots(
     Ok(plan)
 }
 
-async fn resolve_template_for_render(
+pub(crate) async fn resolve_template_for_render(
     did_templates_ks: &KeyspaceHandle,
     name: &str,
     template_context: Option<&str>,

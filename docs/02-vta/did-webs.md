@@ -6,48 +6,147 @@ answers. A `did:webs` created while the integration is alpha may have to be
 created again. Don't use one for a trust relationship that must outlive that.
 
 A VTA can create, host, update, rotate, deactivate and act as `did:webs`
-identifiers, the way it does `did:webvh` ones. They are **persona,
-relationship and integration DIDs**: identities the VTA holds for a person or
-an integration in one of its trust contexts. The design is
+identifiers, the way it does `did:webvh` ones. The design is
 [did:webs in the VTA](../05-design-notes/did-webs-in-the-vta.md); the wire is
-the `vta/webs/dids/*/0.1` Trust Task family (dtgwg-trust-tasks-tf).
+the `vta/webs/dids/*/0.1` Trust Task family, and `vta/webs/dids/create/0.2`
+(dtgwg-trust-tasks-tf), served beside `create/0.1`.
 
-## A node's identity: not yet
+## A node's identity
 
-The VTI specification now admits `did:webs` as an **optional**, alpha method
-for the durable identity of a VTA, a VTC or a host service (VTI-KEY-001,
+The VTI specification admits `did:webs` as an **optional**, alpha method for
+the durable identity of a VTA, a VTC or a host service (VTI-KEY-001,
 VTI-KEY-003). `did:webvh` stays the default. A node whose identity is a
 `did:webs` acts as it only toward a peer whose DID document declares that it
 resolves `did:webs`, and otherwise sends nothing (VTI-KEY-008, VTI-KEY-009).
 
-This VTA cannot take a `did:webs` as its own DID yet: setup, first boot and
-rotation for it are the next steps of the design note's plan (S6–S8). Until
-then `create` with `--set-primary` on the context that holds this VTA's own
-DID is still refused as `serviceDidNotPermitted`. A context provisioned for a
-community, a VTN or a host service carries no marker saying so, so making a
-`did:webs` the primary DID of one is not refused. Don't, yet.
+**A VTA** can be set up with a `did:webs` as its own DID: `vta setup`, VTA DID
+kind `create_webs` (see [non-interactive setup](non-interactive-setup.md)). It
+is a key-role identity — distinct attestation, operational and messaging keys
+(VTI-KEY-173) — minted offline and registered at its host on its own
+authority at first boot, which the host must allow
+(`[[hosting.webs_self_register]]`) and whose DID document must declare
+`resolvedMethods: ["webs"]`. Its runtime services (`pnm services …`) are
+designations, published as for any did:webs; its role keys rotate by a new
+designation, after which the VTA restarts to load them. It cannot be deleted
+while it is the VTA's DID, and `create --set-primary` on its context is still
+refused: re-identifying the VTA is setup's job.
 
-### What is in place
+A VTC or host service as a `did:webs` is the next step (the design note's S7).
+
+### What is in place for every node
 
 - **Declaration.** Every DID document this VTA mints carries
   `"resolvedMethods": ["webs"]`, with the JSON-LD term in `@context`, and so
   do the built-in `vtc-host`, `room-host`, `dtg-witness` and `ballot-box`
-  templates. A peer whose identity is a `did:webs` may act toward any of them.
-  An existing DID gains the member when its document is next rebuilt.
+  templates; the `did-host-*` templates take it as `RESOLVED_METHODS`. A peer
+  whose identity is a `did:webs` may act toward any of them. An existing DID
+  gains the member when its document is next rebuilt.
 - **The sending check.** A node acting as its own DID — the VTA through its
   outbound sender, the VTC toward its VTA, git bridge, ballot boxes and trust
   registry, room-host toward a watch address — refuses to send when that DID
   is of an optional method and the peer has not declared it:
-  `methodNotDeclared`, naming the method and the peer. Today no node's DID is
-  one, so the check passes every send.
+  `methodNotDeclared`, naming the method and the peer.
 - **The receiving refusal.** A Trust Task signed by a DID of a method this VTA
   does not resolve is refused `proofInvalid`, with `details.reason`
   `unsupportedDidMethod` and the `method`, not as an unexplained proof
   failure.
 
+## DID classes
+
+`create/0.2` creates every DID in a stated **class**, recorded with it and
+fixed for its life (VTI-KEY-190 – 193):
+
+| `--class` | What it is |
+|---|---|
+| `relationship` | an identifier for one relationship, community or trust context |
+| `persona` | a person's own identity |
+| `service` | the durable identity of a node or a service: the VTA, a VTC, a VTN, a host service, an integration |
+
+A `create/0.1` (`pnm webs create` without `--class`) states no class, and the
+VTA records none and infers none; the family reads that as "not a service DID".
+
+A DID belongs to one class only, so a create whose class disagrees with the
+identity it would become or replace is refused as `didClassConflict`:
+
+- a `persona` or `relationship` DID with `--set-primary` on a context whose
+  primary DID is a service DID — this VTA's own DID, or a `did:webs` it created
+  as `service` (`requiredClass: service`);
+- a `service` DID with `--set-primary` on a context whose primary DID is a
+  persona `did:webs`;
+- a DID made from a template of a node's kind (`mediator`, `dtg-witness`,
+  `push-gateway`, `trust-registry`, `vtc-host`, `room-host`, `ballot-box`,
+  `did-host-*`) in a class other than `service` (the specification's MAY).
+
+A create never re-identifies this VTA: `--set-primary` on the context holding
+its own DID is refused for a `service` DID too (`permissionDenied`; a 0.1
+create answers `serviceDidNotPermitted`). Setting a VTA up as a `did:webs` is
+`vta setup`'s job.
+
+The VTA knows a context's primary DID's class only for its own DID and the
+`did:webs` DIDs it created in a class. A context provisioned for a community, a
+VTN or a host service carries no marker saying so, so a persona `did:webs` made
+the primary DID of one is not refused. Don't.
+
+## Service DIDs
+
+A `did:webs` service DID is **optional and alpha** (CONVENTIONS.md 0.2 §1.1,
+dtgwg-vti-spec#120), at key assurance level 1 — one signing key, no key roles —
+and is off unless enabled on its own:
+
+```toml
+[dids]
+webs_enabled = true        # creation at all
+webs_service_dids = true   # or VTA_DIDS_WEBS_SERVICE_DIDS=true
+```
+
+With it off, `--class service` is refused as `serviceDidNotPermitted`, and
+nothing is derived. Turning it off affects no service DID already created.
+Its key agreement key and services are designations that resolve in full only
+for verifiers whose `did:webs` resolver implements them, and a peer that has
+not declared `did:webs` resolution may not verify it at all: keep a
+`did:webvh` identity for such peers. VTI-KEY-196 recommends level 2 or higher
+for a VTA, VTC or VTN identity, which this task does not create (that is
+`vta/dids/create` with the `webs` profile).
+
+## Templates
+
+`create/0.2` can shape a DID from a [DID template](did-templates.md) instead of
+`--didcomm`, `--tsp` and `--also-known-as` (never both):
+
+```sh
+pnm webs create --context bots --server host-1 --class service \
+  --template ai-agent --var MEDIATOR_DID=did:webvh:…:mediator.example
+```
+
+The template resolves in `--template-context`, then the global scope, then the
+built-ins, and its variables are checked as `did:webvh` creation checks them
+(`templateNotFound`, `templateVarsInvalid`). A `did:webs` document is derived,
+not authored, so the VTA reads the template rather than publishing it
+(CONVENTIONS.md 0.2 §9.2): it must describe exactly one Ed25519 signing key in
+`authentication` and `assertionMethod`, one X25519 key agreement key in
+`keyAgreement`, services (designated, ids reduced to fragments) and aliases
+(designated after the DID itself and the did:web twin and did:keri form every
+`did:webs` designates). Anything else is refused as
+`templateNotRepresentable`, with the rule (`reason`) and the members (JSON
+Pointers) — a key-role template, another key or algorithm (`swiyu-verifier`),
+another verification method or relationship, a member the derivation does not
+render. The check runs before any key is derived: a refused template leaves
+nothing behind. The checker is `vta_sdk::did_templates::webs::map_webs_document`.
+
+The VTA computes the inception first, because the AID is its digest and
+`{DID}` is the final DID, renders the template with the real DID and keys,
+and only then writes the designations and publishes.
+
+**Known gap (#1164).** The node built-ins (`dtg-witness`, `did-host-*`,
+`vtc-host`, `room-host`, `ballot-box`) carry a top-level `resolvedMethods`
+member, which §9.2 as written refuses as `documentMember` — so today they are
+refused, though the specification's own example uses `dtg-witness`
+(trustoverip/dtgwg-trust-tasks-tf#1164). Built-ins without it (`ai-agent`,
+`room`) are representable, as is any stored template of the shape above.
+
 ## Turning it on
 
-Creation is off by default:
+Creation is off by default (service DIDs have a switch of their own, above):
 
 ```toml
 [dids]
@@ -93,7 +192,8 @@ https://<domain>/<path>/<AID>/did.json
 ## Commands
 
 ```sh
-pnm webs create --context alice --server host-1 --path people --didcomm
+pnm webs create --context alice --server host-1 --path people --didcomm --class persona
+pnm webs create --context bots --server host-1 --class service --template ai-agent --var MEDIATOR_DID=…
 pnm webs get    did:webs:hosting.example:people:EKYL…  [--keri-cesr]
 pnm webs list   [--context alice] [--server host-1] [--include-deactivated]
 pnm webs update did:webs:… --services didcomm,tsp

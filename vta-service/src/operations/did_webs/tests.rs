@@ -116,6 +116,7 @@ impl Fixture {
             contexts_ks: &self.ts.contexts_ks,
             webvh_ks: &self.ts.webvh_ks,
             webs_ks: &self.ts.webs_ks,
+            did_templates_ks: Some(&self.ts.did_templates_ks),
             acl_ks: Some(&self.ts.acl_ks),
             audit: &self.audit,
             seed_store: &self.seed_store,
