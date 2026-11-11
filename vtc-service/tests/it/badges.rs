@@ -2491,6 +2491,150 @@ async fn a_badge_groups_own_paths_give_and_end_the_badge_as_its_awards_do() {
     assert_eq!(a.state, vtc_service::badges::AwardState::Revoked);
 }
 
+/// VTI-BDG-012: a badge group is the badge's. `vtc/groups/update` and `vtc/groups/delete`
+/// refuse it, whoever signs: it changes with `vtc/badges/update` and goes with
+/// `vtc/badges/retire`. VTI-BDG-095: its owners' acts through `vtc/groups/*` take their own
+/// key, never the portal's delegated sign-in key.
+#[tokio::test]
+async fn a_badge_group_is_changed_only_through_its_badge_and_by_its_owners_own_key() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["requestable"] = json!(true);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group_id = doc["payload"]["badge"]["groupId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let stored = |fix: &Fixture| {
+        let ks = fix.vtc.state.directory.ks().clone();
+        let group_id = group_id.clone();
+        async move { vtc_service::groups::get(&ks, &group_id).await.unwrap() }
+    };
+
+    // Re-opening the badge's group is refused: who may ask for a badge is the badge's.
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("update"),
+        json!({ "groupId": group_id, "joinPolicy": "open" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert_eq!(
+        stored(&fix).await.unwrap().join_policy,
+        vtc_service::groups::JoinPolicy::Request
+    );
+
+    // Deleting it is refused: the badge is retired, never orphaned.
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("delete"),
+        json!({ "groupId": group_id, "reason": "tidying up" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert!(stored(&fix).await.is_some());
+
+    // A member asks for the badge.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("join"),
+        json!({ "groupId": group_id, "message": "I ran one." }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let request_id = doc["payload"]["request"]["requestId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Arm the portal's sign-in key `K_b` for the owner's live session, scoped to groups.
+    let k_b = Party::new();
+    let now = vti_common::auth::session::now_epoch();
+    let session: vti_common::auth::session::Session = serde_json::from_value(json!({
+        "session_id": "sess-badge-group-portal",
+        "did": fix.admin.did,
+        "challenge": "c",
+        "state": "Authenticated",
+        "created_at": now,
+        "refresh_token": null,
+        "refresh_expires_at": now + 3600,
+        "not_after": now + 3600,
+        "session_pubkey_b58btc": k_b.did.strip_prefix("did:key:").unwrap(),
+    }))
+    .unwrap();
+    vti_common::auth::session::store_session(&fix.vtc.state.member_sessions_ks, &session)
+        .await
+        .unwrap();
+    vtc_service::member_portal::delegation::record(
+        &fix.vtc.state.member_sessions_ks,
+        &k_b.did,
+        &vtc_service::member_portal::delegation::Delegation {
+            member_did: fix.admin.did.clone(),
+            session_id: "sess-badge-group-portal".into(),
+            scope: vec!["vtc/groups".into()],
+            not_after: now + 3600,
+            grant_id: Some("urn:uuid:badge-group-portal-grant".into()),
+        },
+    )
+    .await
+    .unwrap();
+
+    // The portal's key decides nothing, appoints no owner and removes nobody.
+    let (_, doc) = call(
+        &fix.vtc,
+        &k_b,
+        &group_task("requests/decide"),
+        json!({ "requestId": request_id, "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+    let (_, doc) = call(
+        &fix.vtc,
+        &k_b,
+        &group_task("managers/add"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    let (_, doc) = call(
+        &fix.vtc,
+        &k_b,
+        &group_task("managers/remove"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    let (_, doc) = call(
+        &fix.vtc,
+        &k_b,
+        &group_task("members/remove"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+
+    // The owner's own key decides it.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("requests/decide"),
+        json!({ "requestId": request_id, "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+}
+
 /// VTI-BDG-013: an automatic badge is held by whoever its rule admits, each holding an
 /// award the rule made; opting out of its group declines it.
 #[tokio::test]
