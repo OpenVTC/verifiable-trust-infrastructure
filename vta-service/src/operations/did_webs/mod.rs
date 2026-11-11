@@ -29,6 +29,7 @@
 
 use std::future::Future;
 
+use affinidi_did_webs::key_roles::{KeyRoles, VerificationKey};
 use affinidi_did_webs::{CreateConfig, DesignatedService, KeyAgreementKey, create_controlled};
 use affinidi_keri::controller::{Inception, KeySigner, NextKey};
 use affinidi_keri_core::threshold::Threshold;
@@ -219,6 +220,13 @@ pub struct CreateDidWebsParams {
     pub set_primary: bool,
     /// Further designated services, beside `#didcomm` and `#tsp`.
     pub additional_services: Vec<DesignatedService>,
+    /// Make it a key-role identity (VTI-KEY-070, VTI-KEY-173): distinct
+    /// `attestation` and `operational` Ed25519 keys and a `messaging` X25519
+    /// key, designated by the key-role extension, with the key event log's
+    /// own key in no relationship. What a node's durable identity needs
+    /// (design note did-webs-in-the-vta §4, decision 2). Off: one key event
+    /// log key for every relationship, and a designated key agreement key.
+    pub key_roles: bool,
 }
 
 impl CreateDidWebsParams {
@@ -242,6 +250,10 @@ pub struct CreateDidWebsResult {
     pub signing_key_id: String,
     pub next_key_id: String,
     pub key_agreement_key_id: String,
+    /// The `attestation` key's record, for a key-role identity.
+    pub attestation_key_id: Option<String>,
+    /// The `operational` key's record, for a key-role identity.
+    pub operational_key_id: Option<String>,
     /// The sequence number of the latest event: the inception, then one
     /// interaction event per designation registry event.
     pub sn: u64,
@@ -280,15 +292,20 @@ fn check_path(path: &str) -> Result<(), AppError> {
 /// An Ed25519 public key in multibase (`z` + multicodec `0xed01`), as key
 /// records hold it, in CESR (`D…`), as a key event holds it.
 pub(crate) fn ed25519_qb64(public_multibase: &str) -> Result<String, AppError> {
-    let (_, bytes) = multibase::decode(public_multibase)
-        .map_err(|e| AppError::Internal(format!("public key {public_multibase}: {e}")))?;
-    let raw = bytes
-        .strip_prefix(&[0xed, 0x01][..])
-        .filter(|raw| raw.len() == 32)
-        .ok_or_else(|| AppError::Internal(format!("{public_multibase} is not an Ed25519 key")))?;
+    let raw = ed25519_raw(public_multibase)?;
     Verfer::new("D", raw.to_vec())
         .and_then(|v| v.qb64())
         .map_err(|e| AppError::Internal(format!("encode an Ed25519 key in CESR: {e}")))
+}
+
+/// The raw 32 bytes of an Ed25519 public key in multibase (`z` + `0xed01`).
+pub(crate) fn ed25519_raw(public_multibase: &str) -> Result<[u8; 32], AppError> {
+    let (_, bytes) = multibase::decode(public_multibase)
+        .map_err(|e| AppError::Internal(format!("public key {public_multibase}: {e}")))?;
+    bytes
+        .strip_prefix(&[0xed, 0x01][..])
+        .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
+        .ok_or_else(|| AppError::Internal(format!("{public_multibase} is not an Ed25519 key")))
 }
 
 /// A KERI signer over an Ed25519 private key the VTA derived. The bytes are
@@ -423,6 +440,37 @@ pub async fn create_did_webs<H: WebsHost>(
         .to_cesr()
         .map_err(|e| AppError::Internal(format!("{e}")))?;
 
+    // A key-role identity's `attestation` and `operational` keys: two more
+    // Ed25519 keys, each its own path, neither a key event log key (a role
+    // key that were one would bind nothing, VTI-KEY-071). The `messaging` key
+    // is the X25519 key above, derived on its own path, never converted from
+    // an Ed25519 key (VTI-KEY-184).
+    let role_keys = if params.key_roles {
+        let (attestation, _) =
+            fresh_key(deps, &ctx.base_path, &format!("{label} attestation key")).await?;
+        let (operational, _) =
+            fresh_key(deps, &ctx.base_path, &format!("{label} operational key")).await?;
+        let cesr = |key: &keys::PreRotationKeyData| -> Result<(VerificationKey, String), AppError> {
+            let vk = VerificationKey::Ed25519(ed25519_raw(&key.public_key)?);
+            let cesr = vk
+                .to_cesr()
+                .map_err(|e| AppError::Internal(format!("encode a role key: {e}")))?;
+            Ok((vk, cesr))
+        };
+        let (attestation_vk, attestation_cesr) = cesr(&attestation)?;
+        let (operational_vk, operational_cesr) = cesr(&operational)?;
+        Some(RoleKeys {
+            attestation,
+            attestation_vk,
+            attestation_cesr,
+            operational,
+            operational_vk,
+            operational_cesr,
+        })
+    } else {
+        None
+    };
+
     // ── Designations ───────────────────────────────────────────────────
     let mediator = deps
         .config
@@ -442,8 +490,16 @@ pub async fn create_did_webs<H: WebsHost>(
             Threshold::Simple(1),
             vec![NextKey::PublicKey(next_qb64)],
             Threshold::Simple(1),
-        ))
-        .key_agreement(key_agreement);
+        ));
+    builder = match &role_keys {
+        Some(roles) => builder.key_roles(
+            KeyRoles::new()
+                .with_attestation(roles.attestation_vk.clone())
+                .with_operational(roles.operational_vk.clone())
+                .with_messaging(key_agreement),
+        ),
+        None => builder.key_agreement(key_agreement),
+    };
     if let Some(mediator) = mediator.as_deref() {
         if add_tsp {
             builder = builder.designated_service(DesignatedService::new(
@@ -568,6 +624,35 @@ pub async fn create_did_webs<H: WebsHost>(
         successor.label.clone(),
     )
     .await?;
+    // A role key's record is named by the id the document gives it, so the
+    // VTA finds it by role (`NodeKeyIds::from_document`).
+    let mut attestation_key_id = None;
+    let mut operational_key_id = None;
+    if let Some(roles) = &role_keys {
+        for (cesr, key, slot) in [
+            (
+                &roles.attestation_cesr,
+                &roles.attestation,
+                &mut attestation_key_id,
+            ),
+            (
+                &roles.operational_cesr,
+                &roles.operational,
+                &mut operational_key_id,
+            ),
+        ] {
+            let key_id = format!("{did}#{cesr}");
+            save(
+                key_id.clone(),
+                key.path.clone(),
+                KeyType::Ed25519,
+                key.public_key.clone(),
+                key.label.clone(),
+            )
+            .await?;
+            *slot = Some(key_id);
+        }
+    }
 
     let now = chrono::Utc::now().to_rfc3339();
     let sn = state.sn;
@@ -586,6 +671,8 @@ pub async fn create_did_webs<H: WebsHost>(
             signing_key_id: signing_key_id.clone(),
             next_key_id: next_key_id.clone(),
             key_agreement_key_id: key_agreement_key_id.clone(),
+            attestation_key_id: attestation_key_id.clone(),
+            operational_key_id: operational_key_id.clone(),
             staged: None,
             deactivated: false,
             slot_removed: false,
@@ -622,8 +709,21 @@ pub async fn create_did_webs<H: WebsHost>(
         signing_key_id,
         next_key_id,
         key_agreement_key_id,
+        attestation_key_id,
+        operational_key_id,
         sn,
     })
+}
+
+/// A key-role identity's `attestation` and `operational` keys, minted for a
+/// create.
+struct RoleKeys {
+    attestation: keys::PreRotationKeyData,
+    attestation_vk: VerificationKey,
+    attestation_cesr: String,
+    operational: keys::PreRotationKeyData,
+    operational_vk: VerificationKey,
+    operational_cesr: String,
 }
 
 /// The record of `did`, for a caller who may act in its context.

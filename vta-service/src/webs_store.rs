@@ -50,8 +50,17 @@ pub struct WebsDidRecord {
     /// The key record of the committed successor, installed by the next
     /// rotation.
     pub next_key_id: String,
-    /// The key record of the designated key agreement key.
+    /// The key record of the designated key agreement key (a key-role
+    /// identity's `messaging` key).
     pub key_agreement_key_id: String,
+    /// A key-role identity's `attestation` key record (VTI-KEY-072); `None`
+    /// for an identity without key roles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_key_id: Option<String>,
+    /// A key-role identity's `operational` key record; `None` without key
+    /// roles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_key_id: Option<String>,
     /// A rotation signed but not yet accepted by the host. While one is staged
     /// nothing else is written: every write publishes it again first, since
     /// the successor it installs has signed it and cannot sign another.

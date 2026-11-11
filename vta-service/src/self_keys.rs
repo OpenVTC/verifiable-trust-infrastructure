@@ -327,6 +327,8 @@ pub(crate) mod tests {
             signing_key_id: format!("{did}#kel-0"),
             next_key_id: format!("{did}#kel-1"),
             key_agreement_key_id: format!("{did}#ka-0"),
+            attestation_key_id: None,
+            operational_key_id: None,
             staged: None,
             deactivated: false,
             slot_removed: false,
