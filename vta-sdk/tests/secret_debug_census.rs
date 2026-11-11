@@ -44,12 +44,6 @@ use syn::{Attribute, Fields, GenericArgument, Item, Meta, PathArguments, Type};
 /// *holds*; "it is awkward to redact" is never one.
 const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
     (
-        "vta-service/src/operations/did_webs/lifecycle.rs",
-        "RotateDidWebsResult",
-        "signing_key",
-        "the public half of the did:webs signing key a rotation installed, qb64, as its key event log publishes it",
-    ),
-    (
         "vti-oob-server/src/record.rs",
         "OobRequest",
         "start_key",

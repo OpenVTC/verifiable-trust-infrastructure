@@ -110,7 +110,7 @@ pub struct RotateDidWebsResult {
     /// The key record of the key the rotation installed.
     pub signing_key_id: String,
     /// That key, qb64.
-    pub signing_key: String,
+    pub signing_public_key: String,
     pub next_key_id: String,
     pub retired_key_id: String,
     /// The rotation answered was one already staged.
@@ -440,7 +440,7 @@ pub async fn rotate_did_webs_keys<H: WebsHost>(
         sequence_number: record.state.sn,
         version_id: version_id(&record.state),
         signing_key_id: record.signing_key_id.clone(),
-        signing_key,
+        signing_public_key: signing_key,
         next_key_id: record.next_key_id.clone(),
         retired_key_id,
         resumed,

@@ -539,7 +539,7 @@ async fn a_rotation_installs_the_committed_successor() {
     .await
     .expect("rotated");
     assert!(!rotated.resumed);
-    assert_eq!(rotated.signing_key, successor_qb64);
+    assert_eq!(rotated.signing_public_key, successor_qb64);
     assert_eq!(
         rotated.signing_key_id,
         format!("{}#{successor_qb64}", c.did)
@@ -593,7 +593,7 @@ async fn a_rotation_installs_the_committed_successor() {
     let kels = Kels::parse(host.last_stream().as_bytes()).unwrap();
     assert_eq!(
         kels.key_state(&c.aid).unwrap().keys,
-        vec![again.signing_key.clone()]
+        vec![again.signing_public_key.clone()]
     );
 }
 
