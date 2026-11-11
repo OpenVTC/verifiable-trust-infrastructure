@@ -100,6 +100,16 @@ impl Bitstring {
             .take((LIST_BITS / 8 + 1) as u64 * 8)
             .read_to_end(&mut bytes)
             .map_err(|e| VtnError::Rejected(e.to_string()))?;
+        // W3C Bitstring Status List v1.0 §3.2 step 9: "If the length of the
+        // revocation bitstring divided by statusSize is less than
+        // minimumNumberOfEntries, raise a STATUS_LIST_LENGTH_ERROR." Step 2 sets
+        // minimumNumberOfEntries to 131,072.
+        if bytes.len() < LIST_BITS / 8 {
+            return Err(VtnError::Rejected(format!(
+                "encodedList holds {} entries, fewer than the minimum of {LIST_BITS}",
+                bytes.len() * 8
+            )));
+        }
         Ok(Self { bytes })
     }
 }
@@ -179,6 +189,23 @@ mod tests {
         let decoded = Bitstring::decode(&encoded).unwrap();
         assert_eq!(decoded.len_bits(), (LIST_BITS / 8 + 1) * 8 * 8);
         assert_eq!(Bitstring::default().len_bits(), LIST_BITS);
+    }
+
+    #[test]
+    fn a_list_shorter_than_the_minimum_is_refused() {
+        let encode = |len: usize| {
+            let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+            gz.write_all(&vec![0u8; len]).unwrap();
+            format!("u{}", URL_SAFE_NO_PAD.encode(gz.finish().unwrap()))
+        };
+        assert!(Bitstring::decode(&encode(LIST_BITS / 8 - 1)).is_err());
+        assert!(Bitstring::decode(&encode(0)).is_err());
+        assert_eq!(
+            Bitstring::decode(&encode(LIST_BITS / 8))
+                .unwrap()
+                .len_bits(),
+            LIST_BITS
+        );
     }
 
     #[test]
