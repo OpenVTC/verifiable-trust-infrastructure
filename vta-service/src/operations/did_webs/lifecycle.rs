@@ -909,12 +909,8 @@ pub async fn rotate_did_webs_role_keys<H: WebsHost>(
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
         let retired = match role {
-            KeyRole::Attestation => {
-                Some(std::mem::replace(&mut record.attestation_key_id, Some(id)))
-            }
-            KeyRole::Operational => {
-                Some(std::mem::replace(&mut record.operational_key_id, Some(id)))
-            }
+            KeyRole::Attestation => Some(record.attestation_key_id.replace(id)),
+            KeyRole::Operational => Some(record.operational_key_id.replace(id)),
             _ => {
                 // The replaced messaging key stays held, for what was sent to it.
                 record.key_agreement_key_id = id;
