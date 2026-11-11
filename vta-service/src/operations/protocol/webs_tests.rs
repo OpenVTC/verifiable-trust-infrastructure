@@ -148,6 +148,7 @@ impl Env {
                 seed_store: &seed,
                 config: &cfg,
                 did_resolver: &resolver,
+                did_templates_ks: None,
             },
             &super_admin_claims(),
             params,

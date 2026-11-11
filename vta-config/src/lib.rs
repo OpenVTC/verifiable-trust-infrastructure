@@ -621,6 +621,16 @@ pub struct DidsConfig {
     /// off never strands one.
     #[serde(default)]
     pub webs_enabled: bool,
+    /// Whether `vta/webs/dids/create/0.2` creates a `did:webs` **service** DID
+    /// — the durable identity of a node or a service, at key assurance level 1.
+    /// Default `false`: a service `did:webs` is optional and alpha, peers that
+    /// have not declared `did:webs` resolution may not verify one, and the
+    /// specification has it enabled separately from `webs_enabled`
+    /// (`vta/webs/_shared/0.2` CONVENTIONS.md §1.1). Needs `webs_enabled` as
+    /// well; off refuses only new ones (`serviceDidNotPermitted`), never a
+    /// service DID already created.
+    #[serde(default)]
+    pub webs_service_dids: bool,
 }
 
 impl Default for DidsConfig {
@@ -629,6 +639,7 @@ impl Default for DidsConfig {
             default_did_method: vta_sdk::did_scid::DidMethod::default(),
             scid_also_known_as: true,
             webs_enabled: false,
+            webs_service_dids: false,
         }
     }
 }
@@ -1521,6 +1532,17 @@ impl AppConfig {
                 other => {
                     return Err(AppError::Config(format!(
                         "invalid VTA_DIDS_WEBS_ENABLED '{other}', expected 'true' or 'false'"
+                    )));
+                }
+            };
+        }
+        if let Ok(enabled) = std::env::var("VTA_DIDS_WEBS_SERVICE_DIDS") {
+            config.dids.webs_service_dids = match enabled.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                other => {
+                    return Err(AppError::Config(format!(
+                        "invalid VTA_DIDS_WEBS_SERVICE_DIDS '{other}', expected 'true' or 'false'"
                     )));
                 }
             };

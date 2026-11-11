@@ -218,19 +218,21 @@ fn derived_service_fragments(record: &WebsDidRecord) -> Result<Vec<String>, Upda
 /// op's error type, route mapping and operator guidance stay as they are.
 fn as_publish_error(e: WebsError) -> UpdateDidWebvhError {
     match e {
-        WebsError::Refused(kind, message) => match kind {
-            WebsRefusal::NotFound => UpdateDidWebvhError::NotFound(message),
-            WebsRefusal::VersionConflict => UpdateDidWebvhError::Conflict(message),
-            WebsRefusal::ServiceIdConflict => UpdateDidWebvhError::InvalidDocument(message),
-            WebsRefusal::PublishRefused
-            | WebsRefusal::HostDoesNotHostWebs
-            | WebsRefusal::DomainNotServed
-            | WebsRefusal::PathRefused
-            | WebsRefusal::ServerNotFound => {
-                UpdateDidWebvhError::Publish(format!("publish_did: {message}"))
+        WebsError::Refused(kind, message) | WebsError::RefusedWith(kind, message, _) => {
+            match kind {
+                WebsRefusal::NotFound => UpdateDidWebvhError::NotFound(message),
+                WebsRefusal::VersionConflict => UpdateDidWebvhError::Conflict(message),
+                WebsRefusal::ServiceIdConflict => UpdateDidWebvhError::InvalidDocument(message),
+                WebsRefusal::PublishRefused
+                | WebsRefusal::HostDoesNotHostWebs
+                | WebsRefusal::DomainNotServed
+                | WebsRefusal::PathRefused
+                | WebsRefusal::ServerNotFound => {
+                    UpdateDidWebvhError::Publish(format!("publish_did: {message}"))
+                }
+                _ => UpdateDidWebvhError::Rejected(message),
             }
-            _ => UpdateDidWebvhError::Rejected(message),
-        },
+        }
         WebsError::App(AppError::Forbidden(m)) => UpdateDidWebvhError::Forbidden(m),
         WebsError::App(e) => UpdateDidWebvhError::publish_failed("publish_did", e),
     }
@@ -315,6 +317,8 @@ pub(crate) async fn publish(
         seed_store: deps.seed_store,
         config: &config,
         did_resolver: deps.did_resolver,
+        // An update renders no template.
+        did_templates_ks: None,
     };
 
     let updated = match deps.webs_host {

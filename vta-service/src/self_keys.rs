@@ -329,6 +329,8 @@ pub(crate) mod tests {
             key_agreement_key_id: format!("{did}#ka-0"),
             attestation_key_id: None,
             operational_key_id: None,
+            did_class: None,
+            template: None,
             published: true,
             staged: None,
             deactivated: false,

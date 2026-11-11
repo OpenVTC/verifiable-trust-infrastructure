@@ -151,11 +151,11 @@ fails with `methodNotDeclared` and sends nothing (VTI-KEY-009).
 | # | Where | What |
 |---|---|---|
 | S1 | dtgwg-vti-spec | #121: VTI-KEY-001, 003, 008, 009. *Done.* |
-| S2 | dtgwg-trust-tasks-tf | `vta/webs/dids/create/0.2`: templates, and service identities. *Done (trust-tasks-tf#1159).* |
+| S2 | dtgwg-trust-tasks-tf | `vta/webs/dids/create/0.2`: templates, and service identities. *Done (trust-tasks-tf#1159); pinned and served in VTI.* |
 | S3 | affinidi-webvh-service | Self-certifying `did/register/0.1` for `did:webs`. *Done (webvh-service#411).* |
 | S4 | VTI | Node keys by role, for every method (decision 1). *Done (#2670).* |
 | S5 | VTI | `resolvedMethods` in node documents and templates; the declaration check and both refusals. *Done (below).* |
-| S6 | VTI | A did:webs VTA identity: setup (interactive and TOML), first boot through S3, the key-role designation, readiness, the self-DID preload, `didcomm_light`, runtime services through `update_did_webs`, rotation of its own DID with the live secret swap |
+| S6 | VTI | A did:webs VTA identity: setup (interactive and TOML), first boot through S3, the key-role designation, readiness, the self-DID preload, `didcomm_light`, runtime services through `update_did_webs`, rotation of its own DID. *Done (#2675 and the PRs after it), except the wire for rotating role keys, which belongs to the `vta/dids` family (trust-tasks-tf#993): the operation restarts the VTA to load keys whose ids changed, rather than swapping them live.* |
 | S7 | VTI | A did:webs VTC identity, and host services minted through provision-integration templates |
 | S8 | VTI | TEE first boot (the enclave publishes to a host) |
 

@@ -2,7 +2,7 @@
 //! three in [`lifecycle`]), and this VTA's own did:webs identity's first
 //! publication ([`publish_own_identity`]).
 //!
-//! A persona, relationship or integration DID is level 1 (one Ed25519 signing
+//! A relationship, persona or service DID is level 1 (one Ed25519 signing
 //! key, `kt 1`, and one pre-rotated successor, `nt 1`); a node's durable
 //! identity is a key-role identity (`key_roles`, VTI-KEY-173). KERI v2 with
 //! JSON bodies, through `affinidi-did-webs`' controller API. Design:
@@ -12,7 +12,10 @@
 //! VTI-KEY-001 admits `did:webs` as an optional method for a node's durable
 //! identity. This VTA takes one at setup (`vta_did` kind `create_webs`),
 //! never by a create addressed to its own context
-//! (`serviceDidNotPermitted`).
+//! ([`WebsRefusal::NodeIdentityContext`]). A `create/0.2` states the DID's
+//! class (CONVENTIONS.md 0.2 §1), records it, and may make a level-1 service
+//! DID where `[dids] webs_service_dids` allows; it may also be shaped by a DID
+//! template ([`template`], §9).
 //!
 //! # Keys
 //!
@@ -49,7 +52,7 @@ use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
 use crate::keys::{self, KeyType};
 use crate::operations::protocol::document::{TSP_SERVICE_FRAGMENT, TSP_SERVICE_TYPE};
 use crate::store::KeyspaceHandle;
-use crate::webs_store::{self, WebsDidRecord};
+use crate::webs_store::{self, WebsDidClass, WebsDidRecord, WebsTemplateUse};
 use crate::webvh_host::RequestUriResponse;
 use vta_sdk::protocol::matching::DIDCOMM_SERVICE_TYPE;
 
@@ -63,6 +66,9 @@ pub struct WebsDeps<'a> {
     pub contexts_ks: &'a KeyspaceHandle,
     pub webvh_ks: &'a KeyspaceHandle,
     pub webs_ks: &'a KeyspaceHandle,
+    /// The stored DID templates, for a create from a template; `None` where no
+    /// template is read (setup), and a create naming one then fails.
+    pub did_templates_ks: Option<&'a KeyspaceHandle>,
     /// For the `KeyMint` gate; `None` only for offline callers (as for
     /// `did:webvh` creation).
     pub acl_ks: Option<&'a KeyspaceHandle>,
@@ -84,6 +90,7 @@ impl<'a> WebsDeps<'a> {
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
             webs_ks: &s.webs_ks,
+            did_templates_ks: Some(&s.did_templates_ks),
             acl_ks: Some(&s.acl_ks),
             audit: &s.audit_sink,
             seed_store: &*s.seed_store,
@@ -237,6 +244,37 @@ pub struct CreateDidWebsParams {
     /// unpublished for [`publish_own_identity`] at first boot, which
     /// registers it on its own authority (design note §4, decision 3).
     pub defer_publish: bool,
+    /// The DID class (`create/0.2`'s `didClass`), recorded with the DID.
+    /// `None` is a `create/0.1` request, which states none: none is recorded
+    /// and none inferred, and the class rules of CONVENTIONS.md 0.2 §1.2 do
+    /// not apply to it.
+    pub did_class: Option<WebsDidClass>,
+    /// Shape the services and aliases from a DID template instead of the
+    /// explicit members above (`add_mediator_service`, `add_tsp_service`,
+    /// `also_known_as`, `additional_services`), which must then be left unset
+    /// (CONVENTIONS.md 0.2 §9.3).
+    pub template: Option<WebsTemplateRequest>,
+}
+
+/// A DID template to shape a create from (`template`, `templateContext`,
+/// `templateVars`).
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct WebsTemplateRequest {
+    pub name: String,
+    /// The context scope to look in first; then global, then the built-ins.
+    pub context: Option<String>,
+    /// The caller's variables, checked against the template's declarations.
+    pub vars: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl WebsTemplateRequest {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Self::default()
+        }
+    }
 }
 
 impl CreateDidWebsParams {
@@ -267,6 +305,10 @@ pub struct CreateDidWebsResult {
     /// The sequence number of the latest event: the inception, then one
     /// interaction event per designation registry event.
     pub sn: u64,
+    /// The class it was created in, as recorded.
+    pub did_class: Option<WebsDidClass>,
+    /// The template it was shaped from, as recorded.
+    pub template: Option<WebsTemplateUse>,
 }
 
 /// `did:webs:` + this, + `:{AID}`, is the DID: the domain's port separator
@@ -364,10 +406,27 @@ pub(crate) fn ed25519_signer(private: &[u8]) -> Result<Signer, AppError> {
 
 /// Create a `did:webs` in `params.context_id`, publish it and record it.
 ///
+/// # Order (CONVENTIONS.md 0.2 §9.1, conformance items 1–7)
+///
+/// 1. The gates that need nothing derived: `KeyMint` and the context,
+///    `methodDisabled`, `serviceDidNotPermitted`, the path, `serverNotFound`
+///    and the class rules (`didClassConflict`).
+/// 2. With a template: resolve it (`templateNotFound`), check its variables
+///    (`templateVarsInvalid`), and render it once with placeholder keys and DID
+///    to check every member (`templateNotRepresentable`) — all before a key is
+///    derived, so a refused template leaves nothing at all.
+/// 3. The domain (`domainNotServed`): part of the DID.
+/// 4. Derive the keys and compute the inception, whose digest is the AID; the
+///    DID is built from it.
+/// 5. With a template: render it again with the real DID and keys, and map it
+///    onto the designations. No key record exists yet.
+/// 6. Write the events, publish, and only then record the keys and the DID
+///    (R2.1): a refusal from here leaves only allocated derivation paths.
+///
 /// # Errors
-/// `Forbidden` without `KeyMint` or context access, or when `[dids]
-/// webs_enabled` is off; `NotFound` for an unknown context or server;
-/// `Validation` for a bad path; the host's refusal as it reported it.
+/// `Forbidden` without `KeyMint` or context access; the declared refusals
+/// above; `NotFound` for an unknown context; the host's refusal as it
+/// reported it.
 pub async fn create_did_webs<H: WebsHost>(
     deps: &WebsDeps<'_>,
     auth: &AuthClaims,
@@ -382,6 +441,20 @@ pub async fn create_did_webs<H: WebsHost>(
             WebsRefusal::MethodDisabled,
             "did:webs creation is off on this VTA (alpha): set `webs_enabled = true` under \
              `[dids]` (or VTA_DIDS_WEBS_ENABLED=true) to turn it on",
+        ));
+    }
+    // A level-1 service DID is enabled separately (CONVENTIONS.md 0.2 §1.1). A
+    // key-role identity is not this family's (§1): setup makes one for this
+    // VTA under its own switch.
+    if params.did_class == Some(WebsDidClass::Service)
+        && !params.key_roles
+        && !deps.config.dids.webs_service_dids
+    {
+        return Err(WebsError::refused(
+            WebsRefusal::ServiceDidNotPermitted,
+            "did:webs service DIDs are off on this VTA (alpha). Peers that have not declared \
+             did:webs resolution may not verify one; enable it with [dids] webs_service_dids = \
+             true (or VTA_DIDS_WEBS_SERVICE_DIDS=true), or create the identity as did:webvh.",
         ));
     }
     if let Some(path) = params.path.as_deref() {
@@ -400,8 +473,18 @@ pub async fn create_did_webs<H: WebsHost>(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("context not found: {}", params.context_id)))?;
     if params.set_primary {
-        refuse_service_context(deps.config, &ctx)?;
+        match params.did_class {
+            None => refuse_service_context(deps.config, &ctx)?,
+            Some(class) => check_primary_class(deps, &ctx, class).await?,
+        }
     }
+
+    // ── The template, checked before anything is derived (§9.1, §9.2) ──
+    let template = match &params.template {
+        Some(request) => Some(plan_template(deps, auth, &params, &ctx, request).await?),
+        None => None,
+    };
+
     let domain = if params.defer_publish {
         // Setup cannot ask the host: the domain is the operator's to name.
         params.domain.clone().ok_or_else(|| {
@@ -489,26 +572,23 @@ pub async fn create_did_webs<H: WebsHost>(
         None
     };
 
-    // ── Designations ───────────────────────────────────────────────────
-    let mediator = deps
-        .config
-        .messaging
-        .as_ref()
-        .map(|m| m.mediator_did.trim().to_string())
-        .filter(|did| !did.is_empty());
-    let add_tsp = crate::operations::did_webvh::document::resolve_add_tsp_service(
-        params.add_tsp_service,
-        deps.config,
-        deps.did_resolver,
-    )
-    .await;
-    let mut builder = CreateConfig::builder(did_host_label(&domain, params.path.as_deref()))
-        .controlled(Inception::new(
-            vec![signing_qb64.clone()],
-            Threshold::Simple(1),
-            vec![NextKey::PublicKey(next_qb64)],
-            Threshold::Simple(1),
-        ));
+    // ── The inception, and the DID it makes (§9.1 item 4) ──────────────
+    // The AID is the digest of an inception event that carries no services or
+    // aliases, so it is known before the designations are written, and a
+    // template can be rendered with `{DID}` as the DID it will be.
+    let inception = Inception::new(
+        vec![signing_qb64.clone()],
+        Threshold::Simple(1),
+        vec![NextKey::PublicKey(next_qb64)],
+        Threshold::Simple(1),
+    );
+    let aid = affinidi_keri::controller::incept(&inception)
+        .map_err(|e| AppError::Internal(format!("compute the inception event: {e}")))?
+        .said;
+    let host_label = did_host_label(&domain, params.path.as_deref());
+    let did = format!("did:webs:{host_label}:{aid}");
+
+    let mut builder = CreateConfig::builder(host_label.clone()).controlled(inception);
     builder = match &role_keys {
         Some(roles) => builder.key_roles(
             KeyRoles::new()
@@ -518,74 +598,62 @@ pub async fn create_did_webs<H: WebsHost>(
         ),
         None => builder.key_agreement(key_agreement),
     };
-    let mut services = Vec::new();
-    if let Some(mediator) = mediator.as_deref() {
-        if add_tsp {
-            services.push(DesignatedService::new(
-                TSP_SERVICE_FRAGMENT,
-                TSP_SERVICE_TYPE,
-                json!(mediator),
-            ));
+
+    // ── Designations ───────────────────────────────────────────────────
+    let (mut services, aliases, template_use) = match &template {
+        Some(plan) => {
+            // §9.1 items 3–4: render with the final DID and the keys the
+            // inception was computed with, and map it member by member.
+            let rendered_keys = rendered_keys(&derived.signing_pub, &derived.ka_pub);
+            let vars = ambient_vars(deps, &params, &ctx, plan, &did, &rendered_keys);
+            let designations = render_and_map(plan, &vars, &did, &rendered_keys)?;
+            let services = designations
+                .services
+                .iter()
+                .map(designated_service_from_json)
+                .collect::<Result<Vec<_>, _>>()?;
+            (
+                services,
+                designations.also_known_as,
+                Some(plan.used.clone()),
+            )
         }
-        if params.add_mediator_service {
-            services.push(DesignatedService::new(
-                DIDCOMM_FRAGMENT,
-                DIDCOMM_SERVICE_TYPE,
-                json!([{ "accept": ["didcomm/v2"], "uri": mediator }]),
-            ));
+        None => {
+            let (services, aliases) = explicit_designations(deps, &params).await?;
+            (services, aliases, None)
         }
-    } else if params.add_mediator_service || params.add_tsp_service == Some(true) {
-        return Err(WebsError::App(AppError::Validation(
-            "a #didcomm or #tsp service routes through this VTA's mediator, and none is \
-             configured (`[messaging] mediator_did`)"
-                .into(),
-        )));
-    }
-    let mut ids = std::collections::BTreeSet::new();
-    if mediator.is_some() && add_tsp {
-        ids.insert(TSP_SERVICE_FRAGMENT.to_string());
-    }
-    if mediator.is_some() && params.add_mediator_service {
-        ids.insert(DIDCOMM_FRAGMENT.to_string());
-    }
-    for service in &params.additional_services {
-        if !ids.insert(service.id.clone()) {
-            return Err(WebsError::refused(
-                WebsRefusal::ServiceIdConflict,
-                format!("serviceIdConflict: two services have the id {}", service.id),
-            ));
-        }
-        services.push(service.clone());
-    }
+    };
     // A resolver renders designated services in the designation's order, and
     // peers walking `service[]` take the first transport they share, so the
     // designation is in transport-preference order (TSP > DIDComm > REST),
-    // whatever order the services were asked for in.
+    // whatever order the template or the request gave.
     sort_designated_services(&mut services);
     for service in services {
         builder = builder.designated_service(service);
     }
-    for aka in &params.also_known_as {
-        builder = builder.also_known_as(aka.clone());
+    for aka in aliases {
+        builder = builder.also_known_as(aka);
     }
 
     let created = create_controlled(builder.build(), &[&signer as &dyn KeySigner])
         .map_err(|e| AppError::Internal(format!("create the did:webs: {e}")))?;
     drop(signer);
-    let did = created.did().to_string();
+    let created_did = created.did().to_string();
     let (artifacts, state) = created.into_parts();
-    let aid = state.prefix.clone();
+    if state.prefix != aid {
+        return Err(AppError::Internal(format!(
+            "the inception established {}, not the AID {aid} it was computed to",
+            state.prefix
+        ))
+        .into());
+    }
     let mnemonic = match params.path.as_deref() {
         Some(path) => format!("{path}/{aid}"),
         None => aid.clone(),
     };
-    let expected = format!(
-        "did:webs:{}:{aid}",
-        did_host_label(&domain, params.path.as_deref())
-    );
-    if did != expected {
+    if created_did != did {
         return Err(AppError::Internal(format!(
-            "created {did}, but the host would serve {expected} from slot {mnemonic}"
+            "created {created_did}, but the host would serve {did} from slot {mnemonic}"
         ))
         .into());
     }
@@ -698,6 +766,8 @@ pub async fn create_did_webs<H: WebsHost>(
             key_agreement_key_id: key_agreement_key_id.clone(),
             attestation_key_id: attestation_key_id.clone(),
             operational_key_id: operational_key_id.clone(),
+            did_class: params.did_class,
+            template: template_use.clone(),
             published: !params.defer_publish,
             staged: None,
             deactivated: false,
@@ -738,6 +808,8 @@ pub async fn create_did_webs<H: WebsHost>(
         attestation_key_id,
         operational_key_id,
         sn,
+        did_class: params.did_class,
+        template: template_use,
     })
 }
 
@@ -746,6 +818,66 @@ pub async fn create_did_webs<H: WebsHost>(
 /// ([`crate::operations::protocol::document::service_type_rank`]). Stable.
 pub fn sort_designated_services(services: &mut [DesignatedService]) {
     services.sort_by_key(|s| crate::operations::protocol::document::service_type_rank(&s.type_));
+}
+
+/// The explicit designations of a request without a template: `#didcomm` and
+/// `#tsp` at this VTA's mediator, the additional services, the aliases.
+async fn explicit_designations(
+    deps: &WebsDeps<'_>,
+    params: &CreateDidWebsParams,
+) -> Result<(Vec<DesignatedService>, Vec<String>), WebsError> {
+    let mut services = Vec::new();
+    let mediator = deps
+        .config
+        .messaging
+        .as_ref()
+        .map(|m| m.mediator_did.trim().to_string())
+        .filter(|did| !did.is_empty());
+    let add_tsp = crate::operations::did_webvh::document::resolve_add_tsp_service(
+        params.add_tsp_service,
+        deps.config,
+        deps.did_resolver,
+    )
+    .await;
+    if let Some(mediator) = mediator.as_deref() {
+        if add_tsp {
+            services.push(DesignatedService::new(
+                TSP_SERVICE_FRAGMENT,
+                TSP_SERVICE_TYPE,
+                json!(mediator),
+            ));
+        }
+        if params.add_mediator_service {
+            services.push(DesignatedService::new(
+                DIDCOMM_FRAGMENT,
+                DIDCOMM_SERVICE_TYPE,
+                json!([{ "accept": ["didcomm/v2"], "uri": mediator }]),
+            ));
+        }
+    } else if params.add_mediator_service || params.add_tsp_service == Some(true) {
+        return Err(WebsError::App(AppError::Validation(
+            "a #didcomm or #tsp service routes through this VTA's mediator, and none is \
+             configured (`[messaging] mediator_did`)"
+                .into(),
+        )));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    if mediator.is_some() && add_tsp {
+        ids.insert(TSP_SERVICE_FRAGMENT.to_string());
+    }
+    if mediator.is_some() && params.add_mediator_service {
+        ids.insert(DIDCOMM_FRAGMENT.to_string());
+    }
+    for service in &params.additional_services {
+        if !ids.insert(service.id.clone()) {
+            return Err(WebsError::refused(
+                WebsRefusal::ServiceIdConflict,
+                format!("serviceIdConflict: two services have the id {}", service.id),
+            ));
+        }
+        services.push(service.clone());
+    }
+    Ok((services, params.also_known_as.clone()))
 }
 
 /// A service entry as JSON (`id`, `type`, `serviceEndpoint`, and any further
@@ -916,7 +1048,7 @@ pub async fn list_did_webs(
 /// DID, `vta_did`. A context provisioned for a community, a VTN or a host
 /// service carries no marker saying so, so it is not refused here: that is a
 /// gap, recorded in `docs/02-vta/did-webs.md`.
-fn refuse_service_context(
+pub(super) fn refuse_service_context(
     config: &AppConfig,
     ctx: &vta_sdk::contexts::ContextRecord,
 ) -> Result<(), WebsError> {
@@ -925,7 +1057,7 @@ fn refuse_service_context(
     };
     if config.vta_did.as_deref() == Some(primary) {
         return Err(WebsError::refused(
-            WebsRefusal::ServiceDidNotPermitted,
+            WebsRefusal::NodeIdentityContext,
             format!(
                 "context {} holds this VTA's own DID ({primary}): a create cannot replace a \
                  node's identity. To make this VTA a did:webs, set it up as one (`vta setup`, \
@@ -939,6 +1071,9 @@ fn refuse_service_context(
 
 mod error;
 pub use error::{WebsError, WebsRefusal};
+
+mod template;
+use template::{ambient_vars, check_primary_class, plan_template, render_and_map, rendered_keys};
 
 mod lifecycle;
 pub use lifecycle::{

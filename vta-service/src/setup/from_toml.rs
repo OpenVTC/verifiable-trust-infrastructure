@@ -2214,6 +2214,7 @@ async fn create_vta_did_webs(
         contexts_ks,
         webvh_ks,
         webs_ks,
+        did_templates_ks: None,
         acl_ks: None,
         audit,
         seed_store,
@@ -2235,6 +2236,8 @@ async fn create_vta_did_webs(
     params.set_primary = true;
     params.key_roles = true;
     params.defer_publish = true;
+    // This VTA's own durable identity (VTI-KEY-192).
+    params.did_class = Some(crate::webs_store::WebsDidClass::Service);
     let created = create_did_webs(&deps, &cli_super_admin(), params, &NoHost, "setup")
         .await
         .map_err(|e| format!("{e}"))?;

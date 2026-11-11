@@ -61,6 +61,15 @@ pub struct WebsDidRecord {
     /// roles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operational_key_id: Option<String>,
+    /// The DID class it was created in (VTI-KEY-190 – 193), fixed for its
+    /// life. `None` for a DID `vta/webs/dids/create/0.1` made, which states
+    /// none and is never inferred one: the family reads that as "not a service
+    /// DID".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_class: Option<WebsDidClass>,
+    /// The DID template it was shaped from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<WebsTemplateUse>,
     /// Whether its host serves it. `false` only for this VTA's own identity
     /// between setup, which mints it offline, and first boot, which registers
     /// it (`operations::did_webs::publish_own_identity`). A record written
@@ -83,6 +92,44 @@ pub struct WebsDidRecord {
     pub created_at: String,
     /// RFC 3339.
     pub updated_at: String,
+}
+
+/// A `did:webs` DID's class (VTI-KEY-190 – 193; `vta/webs/_shared/0.2`
+/// `WebsDidClass`), as the record keeps it.
+#[cfg(feature = "webs")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebsDidClass {
+    /// One relationship, community or trust context (VTI-KEY-190).
+    Relationship,
+    /// A person's own identity (VTI-KEY-191).
+    Persona,
+    /// A node's or a service's durable identity (VTI-KEY-192).
+    Service,
+}
+
+#[cfg(feature = "webs")]
+impl WebsDidClass {
+    /// The wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Relationship => "relationship",
+            Self::Persona => "persona",
+            Self::Service => "service",
+        }
+    }
+}
+
+/// The DID template a `did:webs` was shaped from: its name, the scope it
+/// resolved in (`builtin`, `global`, or a context id) and its `kind`, the DID's
+/// integration kind. Recorded, never published.
+#[cfg(feature = "webs")]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsTemplateUse {
+    pub name: String,
+    pub scope: String,
+    pub kind: String,
 }
 
 /// A signed rotation, staged before it is published.
