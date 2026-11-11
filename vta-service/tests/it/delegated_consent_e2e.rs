@@ -156,6 +156,20 @@ fn envelope(type_uri: &str, issuer: &Approver, recipient: &str, payload: Value) 
 /// key come from one place.
 const REQUESTER_SEED: u8 = 0x51;
 
+/// The `@context` a document this VTA mints carries, with the
+/// `resolvedMethods` term (VTI-KEY-008), so an edit that keeps it and the
+/// declaration changes only what the edit is about.
+fn minted_context() -> Value {
+    json!([
+        "https://www.w3.org/ns/did/v1",
+        "https://www.w3.org/ns/cid/v1",
+        { "resolvedMethods": {
+            "@id": vta_sdk::resolved_methods::RESOLVED_METHODS_IRI,
+            "@type": "@json"
+        } }
+    ])
+}
+
 /// The update keys actually in force on `did`, read from the committed log.
 ///
 /// webvh parameters are a delta — an entry that does not restate `update_keys`
@@ -217,8 +231,9 @@ async fn a_did_update_is_approved_by_a_human_and_the_keys_they_saw_are_the_keys_
     //       form a real client sends, and a mismatch here once silently disabled
     //       the concurrency precondition entirely.
     let new_doc = json!({
-        "@context": ["https://www.w3.org/ns/did/v1"],
+        "@context": minted_context(),
         "id": did,
+        "resolvedMethods": ["webs"],
         "service": [{
             "id": "#files",
             "type": "FileStore",
@@ -1075,8 +1090,9 @@ async fn a_consent_refusal_keeps_its_coordinates_however_many_approvers() {
             &requester,
             &ctx.vta_did,
             json!({ "did": did, "document": {
-                "@context": ["https://www.w3.org/ns/did/v1"],
+                "@context": minted_context(),
                 "id": did,
+                "resolvedMethods": ["webs"],
                 "service": [{
                     "id": "#files",
                     "type": "FileStore",

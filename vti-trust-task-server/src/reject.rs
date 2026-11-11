@@ -46,6 +46,10 @@ pub fn parse_payload<T: serde::de::DeserializeOwned>(
 ///   [`vta_sdk::protocols::trust_task_reject_reasons`] so a client recovers
 ///   the typed variant
 /// - `ApprovalRequired` → `taskFailed` with its code as `details.reason`
+/// - `NoMatchingProtocol` / `MethodNotDeclared` → `taskFailed`, discriminated
+///   (`no_matching_protocol` / `methodNotDeclared`) with what each names
+/// - `UnsupportedDidMethod` → `proofInvalid`, `details.reason`
+///   `unsupportedDidMethod` and the `method` (VTI-KEY-009)
 /// - everything else → `internalError`, with the cause logged and **not** sent
 ///   ([`OPAQUE_INTERNAL_ERROR`])
 ///
@@ -74,6 +78,42 @@ pub fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> TrustTaskOu
             task_failed_because(message, reasons::CONFLICT)
         }
         AppError::Gone(_) => task_failed_because(message, reasons::GONE),
+        // No transport in common with a peer this service had to reach: the
+        // same `taskFailed` and `details` the VTA answers with, so the SDK
+        // reads both back into `VtaError::NoMatchingProtocol`.
+        AppError::NoMatchingProtocol(refusal) => RejectReason::TaskFailed {
+            reason: message,
+            details: Some(serde_json::json!({
+                "reason": reasons::NO_MATCHING_PROTOCOL,
+                "counterpartyDid": refusal.peer,
+                "ours": refusal.ours,
+                "theirs": refusal.theirs,
+            })),
+        },
+        // VTI-KEY-009, sending side: this service sent nothing because the
+        // peer has not declared the method of the identity that would act.
+        AppError::MethodNotDeclared(refusal) => RejectReason::TaskFailed {
+            reason: message,
+            details: Some(serde_json::json!({
+                "reason": reasons::METHOD_NOT_DECLARED,
+                "method": refusal.method,
+                "counterpartyDid": refusal.peer,
+            })),
+        },
+        // VTI-KEY-009, receiving side: the proof needs a method this service
+        // does not resolve. `proofInvalid` is what it is; the discriminator
+        // and the method say why.
+        AppError::UnsupportedDidMethod { method } => {
+            return reject_with_code(
+                doc,
+                TrustTaskCode::Standard(StandardCode::ProofInvalid),
+                message,
+                Some(serde_json::json!({
+                    "reason": reasons::UNSUPPORTED_DID_METHOD,
+                    "method": method,
+                })),
+            );
+        }
         // A decision the caller can still obtain — another party's consent
         // (VTI-APV-002), said the way the VTA's gate says it.
         AppError::ApprovalRequired { code, details } => {
@@ -411,6 +451,30 @@ mod tests {
             (AppError::Conflict("already open".into()), reasons::CONFLICT),
             (AppError::Gone("withdrawn".into()), reasons::GONE),
             (AppError::IdempotencyKeyConflict, reasons::CONFLICT),
+            (
+                vti_common::error::NoMatchingProtocol {
+                    peer: "did:webvh:Qm:peer.example".into(),
+                    ours: vec![],
+                    theirs: vec![],
+                    note: None,
+                }
+                .into(),
+                reasons::NO_MATCHING_PROTOCOL,
+            ),
+            (
+                vta_sdk::resolved_methods::MethodNotDeclared {
+                    method: "webs".into(),
+                    peer: "did:webvh:Qm:peer.example".into(),
+                }
+                .into(),
+                reasons::METHOD_NOT_DECLARED,
+            ),
+            (
+                AppError::UnsupportedDidMethod {
+                    method: "example".into(),
+                },
+                reasons::UNSUPPORTED_DID_METHOD,
+            ),
         ] {
             let out = app_error_to_reject(&doc(), &err);
             let body: Value = serde_json::from_slice(&out.body).expect("reject body is JSON");
@@ -421,6 +485,22 @@ mod tests {
                 "{err:?} must carry {want}: {body}"
             );
         }
+    }
+
+    /// VTI-KEY-009: a document relying on an unresolved method is
+    /// `proofInvalid`, naming the method; never `permissionDenied` or an
+    /// `internalError`.
+    #[test]
+    fn vti_key_009_an_unsupported_method_is_proof_invalid_naming_it() {
+        let out = app_error_to_reject(
+            &doc(),
+            &AppError::UnsupportedDidMethod {
+                method: "example".into(),
+            },
+        );
+        let body: Value = serde_json::from_slice(&out.body).expect("reject body is JSON");
+        assert_eq!(body["payload"]["code"], "proofInvalid", "{body}");
+        assert_eq!(body["payload"]["details"]["method"], "example", "{body}");
     }
 
     /// The unrouted error claims the same document type a routed one does.

@@ -413,6 +413,10 @@ fn build_did_document_inner(
     // `services … enable` agree.
     crate::operations::protocol::document::sort_services_canonical(&mut did_document);
 
+    // VTI-KEY-008: this VTA resolves `did:webs`, so a peer whose durable
+    // identity is one may act toward it as that identity.
+    vta_sdk::resolved_methods::declare(&mut did_document);
+
     did_document
 }
 
@@ -664,6 +668,32 @@ mod tests {
             assert_eq!(doc["assertionMethod"][0], "{DID}#key-0", "{doc}");
             assert_eq!(doc["verificationMethod"][0]["id"], "{DID}#key-0");
         }
+    }
+
+    /// VTI-KEY-008: every document the VTA mints declares the optional
+    /// methods the VTA resolves, with the JSON-LD term, so a peer whose
+    /// identity is a `did:webs` may act toward it. Personas included: the VTA
+    /// is what resolves for them.
+    #[test]
+    fn vti_key_008_a_minted_document_declares_what_the_vta_resolves() {
+        let config = crate::test_support::test_app_config(std::path::PathBuf::from("/tmp/x"));
+        let doc = build_did_document_inner(&fake_keys(), None, &config, true, false, &None);
+        assert_eq!(
+            vta_sdk::resolved_methods::declared(&doc),
+            vta_sdk::resolved_methods::OPTIONAL_METHODS_DECLARED
+                .iter()
+                .map(|m| m.to_string())
+                .collect()
+        );
+        assert!(
+            doc["@context"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["resolvedMethods"]["@id"]
+                    == vta_sdk::resolved_methods::RESOLVED_METHODS_IRI),
+            "{doc}"
+        );
     }
 
     const MEDIATOR: &str = "did:webvh:mediator.example.com:mediator";

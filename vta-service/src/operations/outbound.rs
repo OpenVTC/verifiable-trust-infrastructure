@@ -1188,6 +1188,19 @@ async fn verify_reply(
                  proof: the request may have taken effect at `{recipient}`, so check its state \
                  before sending it again"
             )),
+            // VTI-KEY-009 on a reply: the peer signed as a DID of a method this
+            // agent does not resolve. The same caution as a retrieval failure
+            // applies — the reply was never checked, but the request may have
+            // taken effect — and the method is named so the operator knows why.
+            vti_common::auth::DiProofError::UnsupportedDidMethod { method } => {
+                AppError::Forbidden(format!(
+                    "could not retrieve `{recipient}`'s verification key: its reply is signed \
+                     as a did:{method}, a method this agent does not resolve \
+                     (unsupportedDidMethod), so it was not checked and is not believed. This is \
+                     not a bad proof: the request may have taken effect at `{recipient}`, so \
+                     check its state before sending it again"
+                ))
+            }
             other => AppError::Forbidden(format!(
                 "the reply from `{recipient}` is unsigned or its proof does not verify \
                  ({other}), so nothing in it can be believed — an unsigned answer is bytes, not \
@@ -1282,6 +1295,10 @@ mod tests {
         assert!(
             matches!(err, AppError::Forbidden(_)),
             "a retrieval failure must stay a refusal the SDK does not retry: {err:?}"
+        );
+        assert!(
+            msg.contains("unsupportedDidMethod") && msg.contains("did:example"),
+            "an unresolved method is named (VTI-KEY-009): {msg}"
         );
         assert!(
             !msg.contains("does not verify"),

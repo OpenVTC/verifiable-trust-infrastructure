@@ -119,7 +119,8 @@ pub(super) async fn verify_did_signed_gate(
         DiProofError::NoDid
         | DiProofError::ResolverFailed(_)
         | DiProofError::VerifyFailed(_)
-        | DiProofError::WrongPurpose { .. } => GateError::ProofInvalid(e.to_string()),
+        | DiProofError::WrongPurpose { .. }
+        | DiProofError::UnsupportedDidMethod { .. } => GateError::ProofInvalid(e.to_string()),
         // `DiProofError` is `#[non_exhaustive]`: any other failure is an
         // invalid proof.
         _ => GateError::ProofInvalid(e.to_string()),

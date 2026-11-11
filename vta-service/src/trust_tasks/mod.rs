@@ -2093,6 +2093,22 @@ async fn dispatch_claimed(
             }
             Err(e) => {
                 tracing::info!(type_uri, error = %e, "document proof failed verification");
+                // VTI-KEY-009: a signer of a method this VTA does not resolve
+                // is refused by name, so the producer can tell "use another
+                // identity here" from "your proof is wrong".
+                if let vti_common::auth::DiProofError::UnsupportedDidMethod { method } = &e {
+                    return helpers::reject_with_code(
+                        &doc,
+                        trust_tasks_rs::TrustTaskCode::Standard(
+                            trust_tasks_rs::StandardCode::ProofInvalid,
+                        ),
+                        e.to_string(),
+                        Some(serde_json::json!({
+                            "reason": vta_sdk::protocols::trust_task_reject_reasons::UNSUPPORTED_DID_METHOD,
+                            "method": method,
+                        })),
+                    );
+                }
                 return reject_with(
                     &doc,
                     RejectReason::ProofInvalid {

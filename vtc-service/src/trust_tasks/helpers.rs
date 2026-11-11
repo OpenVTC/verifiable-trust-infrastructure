@@ -150,7 +150,7 @@ pub(crate) async fn verify_trust_task_proof(
 ) -> Result<String, AppError> {
     vti_common::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
         .await
-        .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
+        .map_err(vti_common::auth::proof_refusal)
 }
 
 /// [`verify_trust_task_proof`] over the document **as received** — `received`

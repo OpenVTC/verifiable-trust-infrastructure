@@ -27,14 +27,16 @@ pub trait ProofVerifier: Send + Sync {
 ///
 /// A resolver failure and a bad signature render identically
 /// (`AppError::Unauthorized`), so an anonymous caller cannot learn whether a
-/// DID resolves.
+/// DID resolves. A signer of a method this party does not resolve at all is
+/// the exception, refused by name (`AppError::UnsupportedDidMethod`,
+/// VTI-KEY-009) — the method is in the producer's own identifier.
 pub async fn verify_received_proof(
     resolver: &TrustTaskVmResolver,
     received: &Value,
 ) -> Result<String, AppError> {
     verify_trust_task_proof_value(received, resolver)
         .await
-        .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
+        .map_err(vti_common::auth::proof_refusal)
 }
 
 /// Verify a human approver's own decision as received: the proof must be made
@@ -55,7 +57,7 @@ pub async fn verify_received_approval_proof(
                 cause = e.cause().unwrap_or_default(),
                 "approval refused at its proof"
             );
-            AppError::Unauthorized(format!("Trust Task {e}"))
+            vti_common::auth::proof_refusal(e)
         })
 }
 
