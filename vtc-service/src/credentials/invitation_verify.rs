@@ -456,6 +456,8 @@ async fn check_not_revoked(
     let index: usize = index_str
         .parse()
         .map_err(|e| forbidden(format!("invitation statusListIndex {index_str}: {e}")))?;
+    crate::recognition::verify::check_status_size(status.additional.get("statusSize"))
+        .map_err(|e| forbidden(format!("invitation credentialStatus {e}")))?;
 
     match fetcher.check_status_bit(url, index, Some(issuer_did)).await {
         Ok(false) => Ok(()),

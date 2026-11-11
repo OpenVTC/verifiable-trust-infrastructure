@@ -52,6 +52,15 @@ impl Default for Bitstring {
 }
 
 impl Bitstring {
+    /// How many entries the bitstring holds.
+    pub fn len_bits(&self) -> usize {
+        self.bytes.len().saturating_mul(8)
+    }
+
+    /// The bit at `index`; an index past the end reads as clear. A reader of
+    /// someone else's list uses [`Bitstring::len_bits`] first, since W3C
+    /// Bitstring Status List v1.0 §3.2 step 10 makes such an index a
+    /// RANGE_ERROR, not a clear bit.
     pub fn get(&self, index: StatusIndex) -> bool {
         let i = index as usize;
         self.bytes
@@ -159,6 +168,17 @@ mod tests {
         assert!(!decoded.get(1));
         bits.set(9, false).unwrap();
         assert!(!bits.get(9));
+    }
+
+    #[test]
+    fn decoding_reads_only_a_bounded_prefix_of_a_long_list() {
+        // 4 MiB of zeros compresses to a few KiB; decoding stops at the cap.
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(&vec![0u8; 4 << 20]).unwrap();
+        let encoded = format!("u{}", URL_SAFE_NO_PAD.encode(gz.finish().unwrap()));
+        let decoded = Bitstring::decode(&encoded).unwrap();
+        assert_eq!(decoded.len_bits(), (LIST_BITS / 8 + 1) * 8 * 8);
+        assert_eq!(Bitstring::default().len_bits(), LIST_BITS);
     }
 
     #[test]

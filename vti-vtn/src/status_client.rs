@@ -81,7 +81,17 @@ impl StatusChecker {
                 .as_str()
                 .and_then(|i| i.parse().ok())
                 .ok_or_else(|| ClientError::Unexpected("bad statusListIndex".into()))?;
+            check_status_size(entry.get("statusSize"))?;
             let bits = self.list(url, issuer, purpose).await?;
+            // W3C Bitstring Status List v1.0 §3.2 step 10: "If the
+            // credentialIndex multiplied by the size is a value outside of the
+            // range of the bitstring, a RANGE_ERROR MUST be raised." Not clear.
+            if index as usize >= bits.len_bits() {
+                return Err(ClientError::Unexpected(format!(
+                    "statusListIndex {index} is outside the {}-entry status list {url}",
+                    bits.len_bits()
+                )));
+            }
             if bits.get(index) {
                 match purpose {
                     "revocation" => return Ok(CredentialState::Revoked),
@@ -124,5 +134,36 @@ impl StatusChecker {
             .await
             .insert(url.to_string(), (now, issuer.to_string(), bits.clone()));
         Ok(bits)
+    }
+}
+
+/// W3C Bitstring Status List v1.0 §2.1: "If statusSize is not present as a
+/// property of the credentialStatus, then statusSize MUST be processed as 1",
+/// and "If present, statusSize MUST be an integer greater than zero." §1.3:
+/// "Conforming processors MAY choose to only support bitstring entry sizes of
+/// 1." Only 1 is read here; a wider entry is refused rather than read as one
+/// bit.
+fn check_status_size(value: Option<&Value>) -> Result<(), ClientError> {
+    match value {
+        None => Ok(()),
+        Some(v) if v.as_u64() == Some(1) => Ok(()),
+        Some(v) => Err(ClientError::Unexpected(format!(
+            "statusSize {v} is not supported: only 1-bit status entries are read"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_one_bit_status_entries_are_read() {
+        assert!(check_status_size(None).is_ok());
+        assert!(check_status_size(Some(&json!(1))).is_ok());
+        for size in [json!(0), json!(2), json!(u64::MAX), json!("1"), json!(-1)] {
+            assert!(check_status_size(Some(&size)).is_err(), "{size}");
+        }
     }
 }

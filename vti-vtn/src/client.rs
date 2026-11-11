@@ -133,14 +133,42 @@ impl VtnClient {
     }
 
     /// GET an absolute URL (a status list).
+    ///
+    /// The URL is named by a credential, not by this client, so its body is read
+    /// under [`MAX_FETCHED_BODY`] rather than buffered whole.
     pub async fn get_url(&self, url: &str) -> Result<Value> {
-        let res = self
+        let mut res = self
             .http
             .get(url)
             .send()
             .await
             .map_err(|e| ClientError::Transport(e.to_string()))?;
-        Self::read(res).await
+        let status = res.status();
+        if res
+            .content_length()
+            .is_some_and(|n| n > MAX_FETCHED_BODY as u64)
+        {
+            return Err(body_too_large(url));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = res
+            .chunk()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?
+        {
+            if bytes.len().saturating_add(chunk.len()) > MAX_FETCHED_BODY {
+                return Err(body_too_large(url));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        if !status.is_success() {
+            return Err(ClientError::Http {
+                status: status.as_u16(),
+                message: body["message"].as_str().unwrap_or("no message").to_string(),
+            });
+        }
+        Ok(body)
     }
 
     fn url(&self, path: &str) -> String {
@@ -166,6 +194,16 @@ impl VtnClient {
         }
         Ok(body)
     }
+}
+
+/// Largest body [`VtnClient::get_url`] reads: 2 MiB, generous for a status list
+/// (a 131,072-entry list is 16 KiB before compression).
+pub const MAX_FETCHED_BODY: usize = 2 * 1024 * 1024;
+
+fn body_too_large(url: &str) -> ClientError {
+    ClientError::Unexpected(format!(
+        "{url} answered with more than {MAX_FETCHED_BODY} bytes"
+    ))
 }
 
 fn encode(value: &str, keep: impl Fn(u8) -> bool) -> String {
@@ -202,5 +240,51 @@ mod tests {
             "did:webvh:Qm%2541:x.org"
         );
         assert_eq!(encode_query("new zealand&x"), "new%20zealand%26x");
+    }
+
+    /// Serve one HTTP response with a `len`-byte JSON string body, optionally
+    /// without a `Content-Length` so only the streaming cap can stop it.
+    async fn serve_once(len: usize, with_length: bool) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let body = format!("\"{}\"", "a".repeat(len.saturating_sub(2)));
+            let head = if with_length {
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                )
+            } else {
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n"
+                    .to_string()
+            };
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        });
+        format!("http://{addr}/status")
+    }
+
+    #[tokio::test]
+    async fn get_url_reads_a_body_within_the_cap() {
+        let url = serve_once(1024, true).await;
+        let body = VtnClient::new("").get_url(&url).await.unwrap();
+        assert_eq!(body.as_str().unwrap().len(), 1022);
+    }
+
+    #[tokio::test]
+    async fn get_url_refuses_a_body_past_the_cap() {
+        for with_length in [true, false] {
+            let url = serve_once(MAX_FETCHED_BODY + 1, with_length).await;
+            let err = VtnClient::new("").get_url(&url).await.unwrap_err();
+            assert!(
+                matches!(&err, ClientError::Unexpected(m) if m.contains("more than")),
+                "{with_length}: {err:?}"
+            );
+        }
     }
 }
