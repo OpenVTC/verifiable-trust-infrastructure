@@ -96,7 +96,7 @@ knowing which half you are standing on saves an afternoon.
 | **Record provenance and expiry** | **Work.** `basis`, `confidence`, `evidence`, `validFor`, `validUntil` inside a sealed body, or in an open room's cleartext at `rooms/records/put/0.3`; readers hide an expired record by default (§9) |
 | **Record kinds, replies and the host's record times** | **On both hosts.** An open room's cleartext may carry `kind`, `inReplyTo`, `writtenAt` and `editedAt` at `rooms/records/put/0.5`, held to their schema and stored as received; a sealed room carries them inside the body. Every put records `bodyStoredAt`, and a record's first version `createdAt` and (on `open` and `attributed`) `createdBy`, kept across edits and curation; `rooms/records/list/0.6` serves them with an open record's `kind`, `rooms/records/get/0.3` serves them uncommitted. A record stored before this carries none and serves none. On an `open` room the host refuses a new version of a `message` or `reaction` from anyone but its original author (`permissionDenied`, put/0.5 Host item 15) — on by default; `room-host --allow-rewrites-by-others` or the VTC's `[rooms] refuse_rewrites_by_others = false` turns it off |
 | **Members' names in a room** | **Writer and reader in `pnm`.** A member writes its own name as a record of kind `memberProfile` with the name in `title` (`rooms/_shared/0.3` `MemberProfileRecord`, trust-tasks-tf #1035) — sealed on `attributed` and `private`, cleartext at `rooms/records/put/0.5` on `open` — only where the room's profile lists `kind` **and** `memberProfile` in `recordMembers`. `pnm rooms name set` / `clear`; `pnm rooms list`, `get` and `read` show a name record as a name, never a note, and a name beside its author's DID. No host, seal or act change: a name is an ordinary record |
-| **Watching a room** | **On both hosts.** `rooms/watch/0.1` (`read`, as a listing) arms one content-free `rooms/changed/0.1` signal to an address the member names, sent once the room moves past the member's watermark — at once if it already has — after a 2–6 s randomised delay, or with no wait of the host's own where the room's **signal delay** is `none` (§10.6), then disarmed (trust-tasks-tf #1036, #1084). Over the host's own messaging, TSP before DIDComm by what the address's DID document advertises; a host with none refuses `addressUnreachable`. `pnm rooms watch` (§9) |
+| **Watching a room** | **On both hosts.** `rooms/watch/0.1` (`read`, as a listing) arms one content-free `rooms/changed/0.1` signal to an address the member names, sent once the room moves past the member's watermark — at once if it already has — after a 2–6 s randomised delay, or with no wait of the host's own where the room's **signal delay** is `none` (§10.6), then disarmed (trust-tasks-tf #1036, #1084). `rooms/watch/0.2` adds a **live** watch (`live: true`, trust-tasks-tf #1087) for a conversation on screen: a signal each time the room moves past the version last signalled, coalesced to at most one a second per watch — never a queue per change, never a resend — under a lease of at most 120 s the member renews; only where the signal delay is `none` (`liveNotPermitted` otherwise), and ended at once, silently, when it goes back to `randomised`. Over the host's own messaging, TSP before DIDComm by what the address's DID document advertises; a host with none refuses `addressUnreachable`. `pnm rooms watch [--live]` (§9) |
 | **Witnessed anchoring** | **Works, as an explicit owner task; not yet on every renewal.** `rooms/owner/anchor/0.1` (the owner's VTA) reads the room's head from its host as the owner's persona and publishes a `RoomEpochAnchor` service entry — the epoch, a SHA-256 of the MLS epoch authenticator, `headVersion`, and `dataCommitment` with `recordCount` — as a `did:webvh` update of the room's own DID, replacing the previous one; a room DID with no witnesses is refused. `rooms/keys/read/0.2` and `rooms/keys/browse` compare what a host serves against it (`verification.anchor`: `agrees`, `ahead`, `behind`, `conflict`, `none`, `notChecked`). Not yet: anchoring on renewal (`group-renew` and `rooms/epoch/mint` anchor nothing), a `pnm` command, and refusing writes on a mismatch. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) (§10.1) |
 
 ---
@@ -1849,6 +1849,38 @@ The host sends each signal a few seconds after the change, at random, unless the
 room's **signal delay** is `none` — a room used as a conversation (§10.6). That is
 the room's setting, not yours: no watch request changes it.
 
+**A live watch, while a conversation is open.** On a room whose signal delay is
+`none`, `--live` watches the room as a tail (`rooms/keys/watch/0.2` and
+`rooms/watch/0.2`, trust-tasks-tf #1087): the host signals each time the room
+moves past the version it last signalled — coalesced, at most one a second, no
+queue per change and no resends — and your VTA passes on **every** signal, not
+just the first. pnm prints each as it arrives, renews the watch about every 60
+seconds (the host leases a live watch for at most 120) and cancels it when you
+press Ctrl-C:
+
+```bash
+pnm rooms watch --live --room <room-did> --host-did <host-did> --host <url>
+```
+
+A watch is live only when its outcome says `live: true`; a VTA or host that
+implements only 0.1 arms a one-shot watch instead, and pnm says so and cancels
+it. On a room whose signal delay is `randomised` the host refuses —
+`hostRefused` with `hostCode` `rooms/watch:liveNotPermitted` — and your VTA arms
+nothing in its place: whether to watch one-shot instead is yours. pnm prints the
+`pnm rooms signal-delay set --room <room-did> --host <url> --none --reason …`
+that an administrator would run. When the room goes back to `randomised` the
+host ends every live watch at once and sends nothing; you learn of it at the next
+renewal, which is refused the same way, and your VTA forgets the watch.
+
+A live watch keeps its address across renewals, and only for that sitting:
+switching a room between one-shot and live arms the new watch at a **new**
+address first, and cancels the old one at the host only once the host has armed
+the new one — so a refused live watch leaves your one-shot watch in place. Your
+VTA keeps no more for a live watch than for a one-shot one: whether it is live,
+never a watermark, a version or when a signal came. Hold one only while you are
+reading the room: each signal tells the address's mediator, and the push path,
+when the room changed.
+
 What your VTA keeps, per armed watch, is exactly what the specification lets it
 (Recipient item 6): the caller, the member, the room, the host, the address and
 its two private keys, and when the watch lapses — never the watermark, the
@@ -2372,6 +2404,7 @@ and `vtc-service` — the same tasks and versions on both:
 | `rooms/records/retention/set/0.1` | `admin` — replaces the record retention (§10.5) |
 | `rooms/records/curate/0.1` | `curate` |
 | `rooms/watch/0.1` | `read` — arms, re-arms or cancels one `rooms/changed/0.1` signal to `address`; `addressUnreachable` without a transport to it, `limitReached` past 1024 per room or 16 per member; lease 7 days by default, 30 at most |
+| `rooms/watch/0.2` | `read` — 0.1, and `live: true`: a signal per change, coalesced at least 1 s apart, lease at most 120 s from each renewal; only where the signal delay is `none` (`liveNotPermitted`, leaving any watch as it was); a renewal without `sinceVersion` keeps the version last signalled; ended silently when the delay goes back to `randomised` |
 | `rooms/epoch/mint/0.1` | `admin` |
 | `rooms/epoch/chain/0.2` | `read` — reading the room and reading what was written before you joined are the same act; the room's `epochFloor` on every response once pruned, and no rung at or below it |
 | `rooms/epoch/prune/0.2` | `admin` — raises the epoch floor and returns it (§10.4) |
@@ -2399,6 +2432,7 @@ and `vtc-service` — the same tasks and versions on both:
 | `rooms/keys/seal/0.2`, `0.3` | `roomOpen` capability; `signAsPrincipal` refused to a delegate. 0.3 accepts `kind`, `inReplyTo`, `writtenAt`, `editedAt` and a file's `width`, `height` and `preview`, which 0.2 refuses `bodyInvalid` |
 | `rooms/keys/act/0.8`, `0.9`, `0.10`, `0.11`, `0.12` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.11 adds `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3`; 0.12 adds `rooms/watch/0.1` (`read`), its `address`, `sinceVersion` and `leaseSeconds` passed through unread |
 | `rooms/keys/watch/0.1` | `roomPresent` capability + acting as `member` (`memberNotPrincipal` otherwise); refused to a delegate. Up to 64 rooms at one host, one outcome each; each armed with its own `rooms/watch/0.1`, presentation and `did:peer` address; bounds 64 per member, 64 per client, 256 in all |
+| `rooms/keys/watch/0.2` | as 0.1, and `live: true`: each room armed with `rooms/watch/0.2` live, every signal passed on, the address kept across renewals; a switch one-shot ↔ live arms a new address first and cancels the old after; the host's `liveNotPermitted` is `hostRefused`, never a fallback to one-shot |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/list/0.3` | as 0.2; `includePersonal` also adds each entry's `readMarker` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |

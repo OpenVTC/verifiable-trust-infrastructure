@@ -3078,6 +3078,41 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        (
+            uris::TASK_ROOMS_KEYS_WATCH_0_2,
+            checked!(
+                specs::rooms::keys::watch::v0_2::Payload,
+                specs::rooms::keys::watch::v0_2::Response,
+                json!({
+                    "member": "did:webvh:example.com:people:alice",
+                    "host": "did:web:rooms.example.com",
+                    "rooms": [
+                        { "roomId": "did:webvh:example.com:rooms:standup", "sinceVersion": 2071 },
+                        { "roomId": "did:webvh:example.com:rooms:deal" }
+                    ],
+                    "leaseSeconds": 120,
+                    "live": true
+                }),
+                json!({
+                    "member": "did:webvh:example.com:people:alice",
+                    "host": "did:web:rooms.example.com",
+                    "watches": [
+                        {
+                            "roomId": "did:webvh:example.com:rooms:standup",
+                            "armed": true,
+                            "live": true,
+                            "expiresAt": "2026-01-01T00:02:00Z"
+                        },
+                        {
+                            "roomId": "did:webvh:example.com:rooms:deal",
+                            "armed": false,
+                            "refused": "hostRefused",
+                            "hostCode": "rooms/watch:liveNotPermitted"
+                        }
+                    ]
+                })
+            ),
+        ),
         // ─── rooms/changed: a watch's signal ─────────────────────
         // One-way: the specification declares no response and this VTA answers
         // nothing, so the response side is the empty acknowledgement.

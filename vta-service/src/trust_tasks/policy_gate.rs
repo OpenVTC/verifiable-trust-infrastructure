@@ -129,6 +129,7 @@ async fn task_subject(
     if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WATCH_0_2
     {
         return payload
             .get("member")

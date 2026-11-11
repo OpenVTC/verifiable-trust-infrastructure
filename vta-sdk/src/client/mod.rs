@@ -445,8 +445,8 @@ pub use rooms_records::{
     record_members_used, unsigned_room_request_v0_11,
 };
 pub use rooms_watch::{
-    ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal, room_read_marker_moved,
-    unsigned_room_request_v0_12,
+    LIVE_NOT_PERMITTED, LIVE_RENEW_EVERY, ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal,
+    room_read_marker_moved, unsigned_room_request_v0_12,
 };
 pub use webs::webs_refusal_fix;
 mod secrets;

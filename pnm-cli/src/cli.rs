@@ -977,6 +977,14 @@ pub(crate) enum RoomCommands {
         /// End the watches on these rooms instead.
         #[arg(long)]
         cancel: bool,
+        /// Watch live, as a tail of the room: your VTA passes on a signal each time the
+        /// room changes (at most one a second), not just the first, and this prints each
+        /// one until Ctrl-C, renewing the watch about every minute and cancelling it on
+        /// exit (`rooms/keys/watch/0.2`). Only on a room whose signal delay is `none` —
+        /// `pnm rooms signal-delay set --none` changes it — and only while you are
+        /// reading the room.
+        #[arg(long, conflicts_with_all = ["cancel", "via_host"])]
+        live: bool,
     },
 
     /// Change a record's standing. Needs `curate`, which `write` does not imply.

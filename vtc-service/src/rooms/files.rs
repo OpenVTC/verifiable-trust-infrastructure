@@ -693,6 +693,11 @@ pub(crate) async fn handle_signal_delay_set(
     {
         Ok((body, audit)) => {
             super::handlers::audit_signal_delay(state, &room, &authorized, &audit).await;
+            // `rooms/watch/0.2` Host item 6: a room set back to `randomised` holds no live
+            // watch, from now — ended without a signal.
+            if audit.recorded.is_randomised() {
+                state.room_watches.end_live_watches(&room.room_id).await;
+            }
             render(&doc, Ok(body))
         }
         Err(r) => refused(&doc, r),

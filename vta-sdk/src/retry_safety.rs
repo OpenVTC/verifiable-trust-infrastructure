@@ -754,6 +754,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // armed at the same watermark keeps its address and answers the same; cancelling one
     // the VTA does not hold answers `armed: false` (VTI-OPS-060's second class).
     (trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1, RetrySafe),
+    // A live renewal extends the lease of the same watch at the same address; a repeat is
+    // harmless (rooms/keys/watch/0.2, *A repeated request*).
+    (trust_tasks::TASK_ROOMS_KEYS_WATCH_0_2, RetrySafe),
     // A one-way signal: the VTA passes it on once to the client that armed the watch and
     // forgets the watch, which a repeat finds gone and drops.
     (trust_tasks::TASK_ROOMS_CHANGED_0_1, RetrySafe),

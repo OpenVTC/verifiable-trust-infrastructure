@@ -930,7 +930,7 @@ When adding a flow, add it here and a line to the root index.
   `pnm rooms records {prune,retention}`, `pnm rooms prune`.
 - **Docs**: `docs/02-vta/data-rooms.md` (§9, §10.4, §10.5).
 
-### Watching rooms for a client (`rooms/keys/watch/0.1`, `rooms/keys/changed/0.1`)
+### Watching rooms for a client (`rooms/keys/watch/0.1` + `0.2`, `rooms/keys/changed/0.1`)
 - **What**: a wallet with no member keys and no address asks its VTA to watch up to 64
   rooms at one host (trust-tasks-tf #1040). The VTA arms `rooms/watch/0.1` at the host per
   room as the member (presentation narrowed to `read`, member-signed, as `act/0.12`
@@ -953,6 +953,22 @@ When adding a flow, add it here and a line to the root index.
   reading, checking or changing `address`, `sinceVersion` or `leaseSeconds` (Recipient
   item 6) — never add a recipient-side address check; Producer item 6 binds the client,
   and `pnm rooms watch --via-host` enforces it before sending.
+- **Live watches** (`rooms/keys/watch/0.2`, `rooms/watch/0.2`, trust-tasks-tf #1087):
+  `live: true` arms the host's watch live and passes on **every** signal — the record
+  (`WatchRecord::live`) is kept after each, never compared with an earlier one. The
+  address is kept across renewals (`held.live == live` and not lapsed); a switch
+  one-shot ↔ live mints a new address, parks the old record under its own key
+  (`WatchRecord::retiring`, still receiving), arms the new one, and only then cancels the
+  old at the host and forgets it — a refusal puts the old record back. Never fall back to
+  one-shot for the caller: the host's `liveNotPermitted` is `hostRefused`, and a refused
+  renewal forgets the watch. `live` in the outcome only when the host answered it. Host
+  side (`vti_rooms::watch`): live only where the room's signal delay is `none`, lease
+  ≤ 120 s from each renewal, a renewal without `sinceVersion` keeps the watermark (the
+  version last signalled), signals paced ≥ 1 s per watch by one timer that carries the
+  latest version (no queue per change, no resends), and `end_live_watches` — called by
+  both hosts' `rooms/signal-delay/set` on `randomised` — ends them silently; `fire` also
+  drops any live watch it finds on a randomised room. `pnm rooms watch --live` renews every
+  60 s and cancels on Ctrl-C.
 - **The host's wait** before each `rooms/changed` is the room's **signal delay**
   (`vti_rooms::signal_delay`, trust-tasks-tf #1084): `randomised` (2–6 s; the default and
   what an absent field means) or `none`, read from the room record in `RoomWatches::fire`,

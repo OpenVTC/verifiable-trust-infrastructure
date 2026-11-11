@@ -7,6 +7,15 @@
 //! the VTA, the way `task-consent/granted` does; read it with [`room_changed_signal`]. One
 //! signal per arming: read the room, then arm again with the version read to.
 //!
+//! [`VtaClient::room_watch_live`] is `rooms/keys/watch/0.2` (trust-tasks-tf #1087): a
+//! **live** watch for a conversation on screen — the VTA passes on every signal the host
+//! sends, coalesced to at most one a second, until the watch ends. The host leases it for
+//! at most 120 seconds; renew it with the same call about every 60 seconds while the room
+//! is on screen, and cancel it ([`VtaClient::room_watch_cancel`]) when the screen closes.
+//! Treat it as live only when the outcome says `live: true`. A room whose signal delay is
+//! not `none` refuses it — `hostRefused` with `hostCode` `rooms/watch:liveNotPermitted` —
+//! and the VTA never falls back to a one-shot watch on the client's behalf.
+//!
 //! A VTA that predates the task answers [`VtaError::UnsupportedTaskType`]. There is nothing
 //! to fall back to without an address of the client's own: such a client polls the room,
 //! or arms the host's `rooms/watch` itself through [`VtaClient::room_act_v0_12`] with an
@@ -18,7 +27,20 @@ use super::VtaClient;
 use crate::error::VtaError;
 use crate::trust_tasks;
 
-use vti_specs::rooms::keys::{act::v0_12 as act, changed::v0_1 as changed, watch::v0_1 as watch};
+#[allow(deprecated)] // 0.1 is still sent for one-shot watches, beside 0.2 for live ones
+use vti_specs::rooms::keys::watch::v0_1 as watch;
+use vti_specs::rooms::keys::{
+    act::v0_12 as act, changed::v0_1 as changed, watch::v0_2 as watch_v2,
+};
+
+/// `hostCode` of a host's refusal of a live watch on a room whose signal delay is not `none`
+/// (`rooms/watch/0.2`).
+pub const LIVE_NOT_PERMITTED: &str =
+    vti_specs::rooms::watch::v0_2::error_codes::LIVE_NOT_PERMITTED.code;
+
+/// How often a live watch is renewed while its room is on screen (`rooms/keys/watch/0.2`
+/// Producer item 6: about every 60 seconds, inside the host's lease of at most 120).
+pub const LIVE_RENEW_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The most rooms one `rooms/keys/watch/0.1` request names.
 pub const ROOM_WATCH_MAX_ROOMS: usize = 64;
@@ -44,6 +66,7 @@ impl VtaClient {
     /// `member`, which must be one of the members `rooms/keys/list` says this client reads
     /// the rooms as. `lease_seconds` (60 to 2 592 000) is how long each lasts if it does not
     /// fire; `None` is the host's default. One outcome per room, in order.
+    #[allow(deprecated)] // one-shot watches are still sent as 0.1
     pub async fn room_watch(
         &self,
         member: &str,
@@ -68,8 +91,50 @@ impl VtaClient {
         self.send_room_watch(payload).await
     }
 
+    /// `rooms/keys/watch/0.2` with `live: true` — arm, or renew, a **live** watch on each of
+    /// `rooms` at `host` as `member`: every signal the host sends is passed on, until the
+    /// watch ends. Renew with the same call about every [`LIVE_RENEW_EVERY`]; a room's
+    /// `sinceVersion` may be `None` on a renewal, which keeps the watch's watermark. A
+    /// room's outcome is live only when it says `live: true`.
+    pub async fn room_watch_live(
+        &self,
+        member: &str,
+        host: &str,
+        rooms: &[RoomWatch],
+        lease_seconds: Option<u64>,
+    ) -> Result<watch_v2::Response, VtaError> {
+        let rooms: Vec<Value> = rooms
+            .iter()
+            .map(|r| {
+                let mut room = json!({ "roomId": r.room_id });
+                if let Some(v) = r.since_version {
+                    room["sinceVersion"] = json!(v);
+                }
+                room
+            })
+            .collect();
+        let mut payload = json!({ "member": member, "host": host, "rooms": rooms, "live": true });
+        if let Some(l) = lease_seconds {
+            payload["leaseSeconds"] = json!(l);
+        }
+        check_rooms(&payload)?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_WATCH_0_2,
+                payload,
+                ROOM_WATCH_TIMEOUT,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| {
+            VtaError::Protocol(format!(
+                "rooms/keys/watch/0.2 response does not match its schema: {e}"
+            ))
+        })
+    }
+
     /// `rooms/keys/watch/0.1` with `cancel` — end the watches on `rooms` at `host` as
     /// `member`. A room with no watch answers `armed: false`, so a retry is harmless.
+    #[allow(deprecated)] // one-shot watches are still sent as 0.1
     pub async fn room_watch_cancel(
         &self,
         member: &str,
@@ -83,13 +148,9 @@ impl VtaClient {
         .await
     }
 
+    #[allow(deprecated)] // one-shot watches are still sent as 0.1
     async fn send_room_watch(&self, payload: Value) -> Result<watch::Response, VtaError> {
-        let rooms = payload["rooms"].as_array().map_or(0, Vec::len);
-        if rooms == 0 || rooms > ROOM_WATCH_MAX_ROOMS {
-            return Err(VtaError::Validation(format!(
-                "a watch names 1 to {ROOM_WATCH_MAX_ROOMS} rooms at one host, not {rooms}"
-            )));
-        }
+        check_rooms(&payload)?;
         let value = self
             .dispatch_trust_task(
                 trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1,
@@ -129,6 +190,16 @@ impl VtaClient {
             ))
         })
     }
+}
+
+fn check_rooms(payload: &Value) -> Result<(), VtaError> {
+    let rooms = payload["rooms"].as_array().map_or(0, Vec::len);
+    if rooms == 0 || rooms > ROOM_WATCH_MAX_ROOMS {
+        return Err(VtaError::Validation(format!(
+            "a watch names 1 to {ROOM_WATCH_MAX_ROOMS} rooms at one host, not {rooms}"
+        )));
+    }
+    Ok(())
 }
 
 /// [`super::unsigned_room_request`], as `rooms/keys/act/0.12` takes it.

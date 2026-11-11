@@ -1932,6 +1932,7 @@ pub struct WatchThroughVta<'a> {
 /// read to. A VTA that does not serve `rooms/keys/watch/0.1` is refused with what to do
 /// instead: `--via-host` with an address of your own ([`cmd_rooms_watch_via_host`]), or
 /// polling.
+#[allow(deprecated)] // one-shot watches are rooms/keys/watch/0.1 and rooms/watch/0.1, still served
 pub async fn cmd_rooms_watch(
     client: &VtaClient,
     req: WatchThroughVta<'_>,
@@ -2002,6 +2003,217 @@ pub async fn cmd_rooms_watch(
         }
     }
     Ok(())
+}
+
+/// `rooms watch --live` — a **live** watch through your VTA (`rooms/keys/watch/0.2`,
+/// trust-tasks-tf #1087): a tail of the room while this command runs in the foreground.
+/// Your VTA arms the host's `rooms/watch/0.2` live and passes on every signal the host
+/// sends — coalesced to at most one a second — and each is printed as it arrives. The
+/// watch is renewed about every [`vta_sdk::client::LIVE_RENEW_EVERY`] (the host leases at
+/// most 120 seconds) and cancelled when the command ends (Ctrl-C), as Producer item 6 asks.
+///
+/// Only on a room whose signal delay is `none`: elsewhere the host refuses
+/// `rooms/watch:liveNotPermitted`, and this says how to change the room's setting. A watch
+/// answered without `live` — a VTA or host that implements only 0.1 — is one-shot, so this
+/// cancels it and says so rather than tail a room that will signal once.
+pub async fn cmd_rooms_watch_live(
+    client: &VtaClient,
+    req: WatchThroughVta<'_>,
+    vta_did: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if req.cancel {
+        return Err("--live arms a watch; cancel one with --cancel alone".into());
+    }
+    if req.room_ids.is_empty() || req.room_ids.len() > vta_sdk::client::ROOM_WATCH_MAX_ROOMS {
+        return Err(format!(
+            "name 1 to {} rooms (--room) at one host",
+            vta_sdk::client::ROOM_WATCH_MAX_ROOMS
+        )
+        .into());
+    }
+    if req.since.is_some() && req.room_ids.len() > 1 {
+        return Err(
+            "--since is the version one room was read to: watch one room with it, or \
+             watch several without it"
+                .into(),
+        );
+    }
+    let member = match req.member {
+        Some(m) => m.to_string(),
+        None => watch_member(client, &req).await?,
+    };
+    let host = req.host_did;
+    let vta_did = vta_did.or(client.vta_did()).map(str::to_string);
+    let rooms_at = |since: Option<u64>| -> Vec<vta_sdk::client::RoomWatch> {
+        req.room_ids
+            .iter()
+            .map(|r| vta_sdk::client::RoomWatch {
+                room_id: r.clone(),
+                since_version: since,
+            })
+            .collect()
+    };
+
+    let answer = client
+        .room_watch_live(&member, host, &rooms_at(req.since), req.lease_secs)
+        .await
+        .map_err(|e| vta_watch_refused(e, &req, &member))?;
+    let live = live_rooms(&answer, &req)?;
+    if live.is_empty() {
+        cancel_live(client, &member, host, req.room_ids).await;
+        return Err("no room is watched live; nothing to tail".into());
+    }
+    eprintln!(
+        "Watching {} live as {member}: each signal is printed as it arrives. Ctrl-C ends \
+         the watch.",
+        live.join(", ")
+    );
+
+    let mut renew_at = tokio::time::Instant::now() + vta_sdk::client::LIVE_RENEW_EVERY;
+    let mut failed_renewals = 0u32;
+    let ended = loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break Ok(()),
+            _ = tokio::time::sleep_until(renew_at) => {
+                renew_at = tokio::time::Instant::now() + vta_sdk::client::LIVE_RENEW_EVERY;
+                // A renewal names the room alone: the watch keeps the version it last
+                // signalled as its watermark (`rooms/watch/0.2` Host item 3).
+                match client
+                    .room_watch_live(&member, host, &rooms_at(None), req.lease_secs)
+                    .await
+                {
+                    Ok(renewed) => {
+                        failed_renewals = 0;
+                        if let Err(e) = live_rooms(&renewed, &req).and_then(|still| {
+                            if still.is_empty() {
+                                Err("no room is watched live any more".into())
+                            } else {
+                                Ok(())
+                            }
+                        }) {
+                            break Err(e);
+                        }
+                    }
+                    // A renewal is this command's schedule, not a retry: the next one is a
+                    // minute away and the lease outlasts it. Two in a row end the tail.
+                    Err(e) => {
+                        failed_renewals += 1;
+                        eprintln!("Could not renew the live watch: {e}");
+                        if failed_renewals >= 2 {
+                            break Err(format!("the live watch could not be renewed: {e}").into());
+                        }
+                    }
+                }
+            }
+            frame = client.receive_next(1) => match frame {
+                Ok(Some(frame)) => print_live_signal(&frame, &member, host, vta_did.as_deref()),
+                Ok(None) => {}
+                Err(e) => break Err(format!(
+                    "this client cannot receive the signals ({e}); a live watch needs the \
+                     DIDComm or TSP transport"
+                ).into()),
+            },
+        }
+    };
+    cancel_live(client, &member, host, req.room_ids).await;
+    ended
+}
+
+/// The rooms `answer` says are watched live, printing each one that is not with what to do;
+/// an error when a room was refused live because of its signal delay.
+fn live_rooms(
+    answer: &vti_specs::rooms::keys::watch::v0_2::Response,
+    req: &WatchThroughVta<'_>,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut live = Vec::new();
+    for w in &answer.watches {
+        let room = wire_str(&w.room_id);
+        let refused = w.refused.as_ref().map(wire_str);
+        let host_code = w.host_code.as_ref().map(wire_str);
+        match (w.armed, w.live == Some(true), refused.as_deref()) {
+            (true, true, _) => live.push(room),
+            (true, false, _) => eprintln!(
+                "Room {room} is watched one-shot, not live: your VTA or the host implements \
+                 only rooms/watch 0.1. Watch it without --live and re-arm after each read."
+            ),
+            (false, _, Some("hostRefused"))
+                if host_code.as_deref() == Some(vta_sdk::client::LIVE_NOT_PERMITTED) =>
+            {
+                return Err(live_not_permitted(&room, req).into());
+            }
+            (false, _, Some(reason)) => eprintln!(
+                "Not watching room {room}: {}",
+                watch_reason(reason, host_code.as_deref())
+            ),
+            (false, _, None) => eprintln!("No watch on room {room}."),
+        }
+    }
+    Ok(live)
+}
+
+/// What to do when a host refuses a live watch: the room's signal delay is not `none`.
+fn live_not_permitted(room: &str, req: &WatchThroughVta<'_>) -> String {
+    format!(
+        "the host refused a live watch on room {room}: its signal delay is not `none` \
+         (rooms/watch:liveNotPermitted). A live watch is permitted only on a room that sends \
+         its signals at once. A room administrator can change that for every member:\n\n  \
+         pnm rooms signal-delay set --room {room} --host {} --none --reason \"<why>\"\n\nor \
+         watch it one-shot, without --live.",
+        req.host_url.unwrap_or("<URL>")
+    )
+}
+
+/// Print one frame if it is a `rooms/keys/changed` for this watch from this client's VTA
+/// (Consumer item 1); anything else is not this command's.
+fn print_live_signal(frame: &str, member: &str, host: &str, vta_did: Option<&str>) {
+    let Ok(value) = serde_json::from_str::<Value>(frame) else {
+        return;
+    };
+    let doc = [
+        value.get("document"),
+        value.get("body").and_then(|b| b.get("document")),
+        value.get("body"),
+        Some(&value),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|d| vta_sdk::client::room_changed_signal(d).is_some());
+    let Some(doc) = doc else {
+        return;
+    };
+    if let (Some(vta), Some(issuer)) = (vta_did, doc.get("issuer").and_then(Value::as_str))
+        && issuer.split('#').next() != Some(vta)
+    {
+        return;
+    }
+    let Some(signal) = vta_sdk::client::room_changed_signal(doc) else {
+        return;
+    };
+    if wire_str(&signal.member) != member || wire_str(&signal.host) != host {
+        return;
+    }
+    if crate::render::is_json_output() {
+        println!("{}", serde_json::to_string(&signal).unwrap_or_default());
+    } else {
+        println!(
+            "{}  room {} is at version {}",
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            wire_str(&signal.room_id),
+            signal.latest_version.get()
+        );
+    }
+}
+
+/// End the live watches (Producer item 6's SHOULD). A cancel that does not land leaves the
+/// host's watch to its two-minute lease.
+async fn cancel_live(client: &VtaClient, member: &str, host: &str, room_ids: &[String]) {
+    let rooms: Vec<&str> = room_ids.iter().map(String::as_str).collect();
+    match client.room_watch_cancel(member, host, &rooms).await {
+        Ok(_) => eprintln!("Live watch cancelled."),
+        Err(e) => eprintln!(
+            "Could not cancel the live watch ({e}); it ends by itself within two minutes."
+        ),
+    }
 }
 
 /// The member to watch as, where none was named: the one `rooms/keys/list` names for every
@@ -2119,6 +2331,7 @@ fn vta_watch_refused(e: VtaError, req: &WatchThroughVta<'_>, member: &str) -> St
 /// reading the address, so they are refused here, before anything is sent to the host);
 /// on a `private` room, one you use for that one watch. A VTA that predates act/0.12 is
 /// asked the way #2457 did: it presents for this client (`read`) and this client signs.
+#[allow(deprecated)] // one-shot watches are rooms/keys/watch/0.1 and rooms/watch/0.1, still served
 pub async fn cmd_rooms_watch_via_host(
     client: &VtaClient,
     target: RoomTarget<'_>,
@@ -2156,6 +2369,7 @@ pub async fn cmd_rooms_watch_via_host(
         None,
         payload,
     )?;
+    #[allow(deprecated)] // `--via-host` arms a one-shot watch, still rooms/watch/0.1
     let answer: vti_specs::rooms::watch::v0_1::Response =
         match client.room_act_v0_12(&document).await {
             Ok(completed) => {

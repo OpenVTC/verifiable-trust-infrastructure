@@ -216,6 +216,7 @@ pub fn actable_0_11(type_uri: &str) -> Option<Option<&'static str>> {
 /// check or change `address`, `sinceVersion` or `leaseSeconds` (Recipient item 6): the
 /// address is the producer's, and Producer item 6, which says which DID it may be, binds
 /// the producer alone.
+#[allow(deprecated)] // act/0.12's table names rooms/watch/0.1, which is still served
 pub const ACT_TABLE_0_12_ADDS: &[ActRow] = &[(spec::watch::v0_1::Payload::TYPE_URI, Some("read"))];
 
 /// The row of `rooms/keys/act/0.12`'s table for `type_uri`: 0.11's, and
@@ -522,6 +523,7 @@ mod tests {
     /// 0.12 adds `rooms/watch/0.1` (`read`); 0.11 does not name it, and every type 0.11
     /// completes 0.12 completes on the same terms.
     #[test]
+    #[allow(deprecated)]
     fn act_0_12_adds_rooms_watch() {
         let watch = spec::watch::v0_1::Payload::TYPE_URI;
         assert_eq!(actable_0_11(watch), None, "0.11's table is closed to it");
