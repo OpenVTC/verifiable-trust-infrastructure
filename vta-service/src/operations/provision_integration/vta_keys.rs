@@ -60,16 +60,27 @@ async fn load_vta_key_as_secret(
     Ok(secret)
 }
 
-/// Load `{vta_did}#key-0` for issuing the VtaAuthorization VC's
+/// This VTA's keys by role, from its own `did:webvh` log. (A did:webs VTA
+/// identity reads its stream too once the deps carry the `webs` keyspace —
+/// design note did-webs-in-the-vta.md §4, S6.)
+async fn provision_self_keys(
+    state: &ProvisionIntegrationDeps,
+    vta_did: &str,
+) -> crate::self_keys::SelfKeys {
+    crate::self_keys::self_keys(vta_did, Some(&state.webvh_ks), None).await
+}
+
+/// Load the VTA's signing key (`{vta_did}#key-0` on a did:webvh) for issuing the VtaAuthorization VC's
 /// Data-Integrity proof.
 pub(super) async fn load_vta_vc_issuance_secret(
     state: &ProvisionIntegrationDeps,
     vta_did: &str,
 ) -> Result<Secret, AppError> {
-    // Stored as `#key-0` whatever the method; the proof names the method the
-    // VTA's DID document lists (`did:key:<id>#<id>` for a did:key VTA).
-    let mut secret = load_vta_key_as_secret(state, format!("{vta_did}#key-0")).await?;
-    secret.id = crate::operations::credentials::vta_signing_vm(vta_did);
+    // The key this VTA's own document lists for signing, stored under its
+    // record id; the proof names the method the document gives it (VTI-KEY-150).
+    let keys = provision_self_keys(state, vta_did).await;
+    let mut secret = load_vta_key_as_secret(state, keys.signing.record_id.clone()).await?;
+    secret.id = keys.signing.vm_id;
     Ok(secret)
 }
 
@@ -83,7 +94,13 @@ pub(super) async fn load_vta_sealed_transfer_secret(
     state: &ProvisionIntegrationDeps,
     vta_did: &str,
 ) -> Result<Secret, AppError> {
-    load_vta_key_as_secret(state, format!("{vta_did}#sealed-transfer-0"))
+    let keys = provision_self_keys(state, vta_did).await;
+    let record_id = keys.sealed_transfer.map(|k| k.record_id).ok_or_else(|| {
+        AppError::Internal(format!(
+            "VTA '{vta_did}' lists no sealed-transfer key — re-bootstrap required"
+        ))
+    })?;
+    load_vta_key_as_secret(state, record_id)
         .await
         .map_err(|e| match e {
             AppError::NotFound(_) => AppError::Internal(format!(

@@ -98,8 +98,13 @@ pub const ROOMS_RECORDS_LIST_V5_TYPE: &str =
     <vti_specs_rooms::rooms::records::list::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/list/0.6`: rows are `RecordMetadataV3` — an `open` record's `kind`, and
 /// the host's `createdAt`, `createdBy` and `bodyStoredAt` (trust-tasks-tf #1027).
+#[allow(deprecated)] // still served beside list/0.7, to readers that ask for it (trust-tasks-tf #1088)
 pub const ROOMS_RECORDS_LIST_V6_TYPE: &str =
     <vti_specs_rooms::rooms::records::list::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/list/0.7`: list 0.6, oldest or newest first (`order`), a cursor bound to
+/// the order it was issued under (trust-tasks-tf #1088).
+pub const ROOMS_RECORDS_LIST_V7_TYPE: &str =
+    <vti_specs_rooms::rooms::records::list::v0_7::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/prune/0.2`: an administrator removes what the record retention makes
 /// eligible.
 pub const ROOMS_RECORDS_PRUNE_V2_TYPE: &str =
@@ -197,6 +202,8 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_CREATE_V3_TYPE,
     ROOMS_INFO_V4_TYPE,
     ROOMS_SIGNAL_DELAY_SET_TYPE,
+    // A listing newest first, to open a conversation at its head (trust-tasks-tf #1088).
+    ROOMS_RECORDS_LIST_V7_TYPE,
 ];
 
 /// `rooms/watch/0.1`: arm, re-arm or cancel one `rooms/changed/0.1` signal.

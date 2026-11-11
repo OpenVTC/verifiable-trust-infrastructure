@@ -916,7 +916,11 @@ When adding a flow, add it here and a line to the root index.
   serves a rung at or below it. A member's VTA keeps the floor in its own
   `room-epoch-floor` row, discards rungs at or below it before answering, applies it in
   every chain walk (`SealedRoom::apply_epoch_floor`), and never takes such a rung back.
-  Hosts never prune on their own.
+  Hosts never prune on their own. **Newest first** (`rooms/records/list/0.7`,
+  `rooms/keys/browse/0.5`; #1088): a cursor is bound to its order (`v<N>` / `n<N>`) and
+  refused `invalidCursor` under the other; `sinceVersion` stays a lower bound; browse 0.5
+  answers `nextCursor` exactly when `complete` is false, never compares a resumed listing,
+  and answers `newestFirst` at a host without list/0.7 `hostRefused` — never oldest first.
 - **Code**: `vti-rooms/src/{provenance,record_retention,record_tasks}.rs`,
   `vti-rooms/src/{storage,retention,sealed}.rs`, `room-host/src/{lib,files}.rs`,
   `vtc-service/src/rooms/{handlers,files}.rs`,
@@ -978,6 +982,33 @@ When adding a flow, add it here and a line to the root index.
   through a real mediator (address session, a signal queued before it opens, the pass-on
   to the wallet): `tests/e2e/tests/room_key_watch.rs`.
 - **Docs**: `docs/02-vta/data-rooms.md` (*Watching instead of polling*).
+
+### A member's read marker (`rooms/keys/read-marker/*/0.1`, `rooms/keys/list/0.3`)
+- **What**: the VTA keeps, per room and member, where the member has seen the conversation
+  to (`version`, the host's `createdAt`), so every device agrees on unread (trust-tasks-tf
+  #1086). `set` merges forward only (greater version, then later `createdAt` as an instant,
+  absent earliest) unless `rewind`; `list/0.3` returns it under `includePersonal`; a move
+  sends `moved` to the member's **other** clients watching the room as that member.
+- **Invariants to preserve**: authorization as `rooms/keys/label` (acting as the member,
+  one `notHeld` for both causes decided before the marker is read, a delegate
+  `permissionDenied`). `createdAt` is stored and returned **as received** — read from the
+  payload, never the generated type, which reparses it. One row beside the group state
+  (`room_groups` `room-read-marker/…`), written only conditionally on the group being held,
+  removed by `room_groups::forget` and nothing else; no history. **Never audited or logged**
+  — no audit row for a set, the spine's receipt log skips it (`logs_receipt`), the replay
+  record keeps no response and schema errors quote nothing (`carries_personal_state`),
+  `ReadMarker` has no derived `Debug`; only the `room_read_markers_set_total` counter.
+  `moved` goes only to watch callers other than the setter that still stand for the member
+  (`room_key_watch::standing_of` + `acting_as`) when sent, carries room/member/marker only,
+  is coalesced per (room, member) in `RoomKeyWatches` (in memory; the last setter is left
+  out), pushed like `rooms/keys/changed` (one attempt window, no doorbell), never consumes
+  the watch, and its send is never logged as delivered (R1.1).
+- **Code**: `vta-service/src/operations/room_groups.rs` (`ReadMarker`,
+  `set_read_marker`), `vta-service/src/trust_tasks/{room_read_marker,room_read_marker_tests,room_label}.rs`,
+  `vta-service/src/operations/room_key_watch.rs` (`schedule_moved`), `vta_sdk::client`
+  (`room_read_marker_set`, `room_list_v0_3`, `room_read_marker_moved`),
+  `pnm rooms keys mark-read`, `pnm rooms keys list`, `pnm rooms list` (unread count).
+- **Docs**: `docs/02-vta/data-rooms.md` (*Where you have read to, on every device*).
 
 ### Held notifications (`notifications/*`, `vta/notifications/*/0.1`)
 - **What**: The VTA as **recipient** of `notifications/notify/0.1` and `notifications/relay/0.1`

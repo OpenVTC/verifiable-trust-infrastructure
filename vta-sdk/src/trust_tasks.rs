@@ -997,9 +997,18 @@ pub const TASK_ROOMS_KEYS_BROWSE_0_3: &str =
 /// `spec/rooms/keys/browse/0.4` — [`TASK_ROOMS_KEYS_BROWSE_0_3`], its rows the
 /// `RecordMetadataV3` the host's `rooms/records/list/0.6` serves, passed through exactly as
 /// served: `createdAt` and `bodyStoredAt`, `createdBy` (`open` and `attributed`), `kind`
-/// (`open`) and `blobs`. Auth: `roomOpen` capability. The version this SDK sends.
+/// (`open`) and `blobs`. Auth: `roomOpen` capability.
+#[allow(deprecated)] // superseded by 0.5, and still served
 pub const TASK_ROOMS_KEYS_BROWSE_0_4: &str =
     <vti_specs::rooms::keys::browse::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/browse/0.5` — [`TASK_ROOMS_KEYS_BROWSE_0_4`], and `order` passed
+/// through to the host's `rooms/records/list/0.7` (`newestFirst` opens a conversation at
+/// its head), `maxPages` to stop after so many host pages, and `cursor` / `nextCursor` to
+/// come back for the next (trust-tasks-tf #1088). Auth: `roomOpen` capability. The version
+/// this SDK sends.
+pub const TASK_ROOMS_KEYS_BROWSE_0_5: &str =
+    <vti_specs::rooms::keys::browse::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/seal/0.2` — seal one record body with the room's current epoch key;
 /// it does not write. With `signAsPrincipal` the VTA signs the
@@ -1114,6 +1123,28 @@ pub const TASK_ROOMS_KEYS_FILE_KEY_0_3: &str =
 /// (`rooms/keys/label/0.1`). Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_LIST_0_2: &str =
     <vti_specs::rooms::keys::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/list/0.3` — [`TASK_ROOMS_KEYS_LIST_0_2`], with `includePersonal` also
+/// adding each entry's read marker ([`TASK_ROOMS_KEYS_READ_MARKER_SET_0_1`]) where one is
+/// held. Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_LIST_0_3: &str =
+    <vti_specs::rooms::keys::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/read-marker/set/0.1` — tell the VTA where the member has now seen one
+/// room's conversation up to, so every one of their devices agrees on what is unread. Only
+/// forward (the greater `version`, then the later `createdAt`) unless `rewind`; answers the
+/// marker in force and whether it `moved`. Kept beside the group state, sent to nobody but
+/// the member's own clients. Auth: `roomOpen` capability, and acting as the named `member`;
+/// a delegate is refused.
+pub const TASK_ROOMS_KEYS_READ_MARKER_SET_0_1: &str =
+    <vti_specs::rooms::keys::read_marker::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/read-marker/moved/0.1` — the VTA tells the member's other clients
+/// watching a room ([`TASK_ROOMS_KEYS_WATCH_0_1`]) that the member's read marker moved: the
+/// room, the member and the marker in force, no response. Not in [`ALL_URIS`]: a VTA sends
+/// it and serves nothing under it.
+pub const TASK_ROOMS_KEYS_READ_MARKER_MOVED_0_1: &str =
+    <vti_specs::rooms::keys::read_marker::moved::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/label/0.1` — set, change or remove the member's own private
 /// name, description, notes and tags for one room they hold, kept by this VTA
@@ -2913,6 +2944,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_READ_0_3,
     TASK_ROOMS_KEYS_BROWSE_0_3,
     TASK_ROOMS_KEYS_BROWSE_0_4,
+    TASK_ROOMS_KEYS_BROWSE_0_5,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_SEAL_0_3,
     TASK_ROOMS_KEYS_ACT_0_8,
@@ -2926,7 +2958,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_FILE_KEY_0_3,
     TASK_ROOMS_KEYS_LIST_0_2,
+    TASK_ROOMS_KEYS_LIST_0_3,
     TASK_ROOMS_KEYS_LABEL_0_1,
+    TASK_ROOMS_KEYS_READ_MARKER_SET_0_1,
     TASK_ROOMS_KEYS_PROFILE_READ_0_1,
     TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,

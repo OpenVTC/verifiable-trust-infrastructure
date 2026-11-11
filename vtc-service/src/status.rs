@@ -320,12 +320,25 @@ async fn send_trust_ping(
 
     let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
 
+    // Under the ids the VTC's own document gives its keys, by role
+    // (VTI-KEY-150; `#key-0` / `#key-1` on the VTC's own did:webvh).
+    let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+        vta_sdk::resolver::build_verifier_did_cache_config(
+            None,
+            config.did_cache.ttl_secs,
+            config.did_cache.capacity,
+        ),
+    )
+    .await
+    .ok();
+    let (signing_id, ka_id) = crate::messaging::vtc_key_ids(resolver.as_ref(), vtc_did).await;
+
     let mut signing_secret = Secret::generate_ed25519(None, Some(&ed25519_bytes));
-    signing_secret.id = format!("{vtc_did}#key-0");
+    signing_secret.id = signing_id;
     tdk.secrets_resolver().insert(signing_secret).await;
 
     let mut ka_secret = Secret::generate_x25519(None, Some(&x25519_bytes))?;
-    ka_secret.id = format!("{vtc_did}#key-1");
+    ka_secret.id = ka_id.unwrap_or_else(|| format!("{vtc_did}#key-1"));
     tdk.secrets_resolver().insert(ka_secret).await;
 
     let atm = Arc::new(ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?);

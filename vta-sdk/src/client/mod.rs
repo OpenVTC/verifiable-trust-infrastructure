@@ -437,16 +437,16 @@ mod witness;
 pub use rooms::{
     RoomAction, RoomLabelEdit, RoomRecordRetention, RoomRegistration, RoomRetentionPolicy,
     RoomSignalDelay, RoomVisibility, is_community_type, is_offer_type, room_label_payload,
-    unsigned_community_request, unsigned_room_request,
+    room_read_marker_payload, unsigned_community_request, unsigned_room_request,
 };
 pub use rooms_records::{
     MEMBER_PROFILE_KIND, RECORD_BODY_MEMBERS, RECORD_FILE_MEMBERS, RECORD_KIND_VALUES,
-    ROOM_READ_MAX_KEYS, RoomBrowse, check_record_members, record_members_permitted,
+    ROOM_READ_MAX_KEYS, RoomBrowse, RoomListOrder, check_record_members, record_members_permitted,
     record_members_used, unsigned_room_request_v0_11,
 };
 pub use rooms_watch::{
     LIVE_NOT_PERMITTED, LIVE_RENEW_EVERY, ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal,
-    unsigned_room_request_v0_12,
+    room_read_marker_moved, unsigned_room_request_v0_12,
 };
 pub use webs::webs_refusal_fix;
 mod secrets;

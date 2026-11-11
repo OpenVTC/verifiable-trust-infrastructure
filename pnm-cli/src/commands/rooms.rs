@@ -33,6 +33,26 @@ fn signer(keyring_key: &str) -> Result<vta_sdk::session::SessionInfo, Box<dyn st
     })
 }
 
+/// `rooms read`'s `--limit`, `--pages` and `--cursor` read the head of a conversation, and
+/// mean nothing beside named keys. Clap cannot refuse them there (`keys` conflicts with
+/// `--newest`, which suppresses `requires`), so this does, naming the command meant.
+pub(crate) fn read_newest_flags(
+    newest: bool,
+    limit: Option<usize>,
+    pages: Option<u64>,
+    cursor: Option<&str>,
+) -> Result<(), String> {
+    if newest || (limit.is_none() && pages.is_none() && cursor.is_none()) {
+        return Ok(());
+    }
+    Err(
+        "`--limit`, `--pages` and `--cursor` read the newest records of a conversation, not \
+         named keys. Drop the keys and add --newest, e.g.\n  pnm rooms read --newest \
+         --limit 20 --room <room-did> --host-did <host-did>"
+            .into(),
+    )
+}
+
 pub(crate) async fn run(
     client: &VtaClient,
     keyring_key: &str,
@@ -422,6 +442,23 @@ pub(crate) async fn run(
             RoomKeysCommands::List { host_did } => {
                 return custody::cmd_rooms_keys_list_named(client, host_did.as_deref()).await;
             }
+            RoomKeysCommands::MarkRead {
+                room_id,
+                member,
+                version,
+                created_at,
+                unread,
+            } => {
+                return custody::cmd_rooms_keys_mark_read(
+                    client,
+                    &room_id,
+                    &member,
+                    version.unwrap_or(0),
+                    created_at.as_deref(),
+                    unread,
+                )
+                .await;
+            }
             RoomKeysCommands::Label {
                 room_id,
                 member,
@@ -514,36 +551,67 @@ pub(crate) async fn run(
             prefix,
             since_version,
             limit,
+            newest,
+            pages,
+            cursor,
         } => {
-            rooms::cmd_rooms_list(
-                client,
-                RoomTarget {
-                    host_url: &host,
-                    host_did: host_did.as_deref(),
-                    room_id: &room_id,
-                },
-                prefix.as_deref(),
-                since_version,
-                limit,
-            )
-            .await
+            let target = RoomTarget {
+                host_url: &host,
+                host_did: host_did.as_deref(),
+                room_id: &room_id,
+            };
+            if newest {
+                rooms::cmd_rooms_list_newest(
+                    client,
+                    target,
+                    rooms::NewestPage {
+                        prefix: prefix.as_deref(),
+                        since_version,
+                        limit,
+                        pages,
+                        cursor: cursor.as_deref(),
+                    },
+                )
+                .await
+            } else {
+                rooms::cmd_rooms_list(client, target, prefix.as_deref(), since_version, limit).await
+            }
         }
         RoomCommands::Read {
             keys,
+            newest,
+            limit,
+            pages,
+            cursor,
             room_id,
             host,
             host_did,
         } => {
-            rooms::cmd_rooms_read(
-                client,
-                RoomTarget {
-                    host_url: host.as_deref().unwrap_or_default(),
-                    host_did: Some(&host_did),
-                    room_id: &room_id,
-                },
-                &keys,
-            )
-            .await
+            read_newest_flags(newest, limit, pages, cursor.as_deref())?;
+            let target = RoomTarget {
+                // Unused by `read`, which reaches the host through the VTA; named in the
+                // command a `--newest` read prints for the page before.
+                host_url: host
+                    .as_deref()
+                    .unwrap_or(if newest { "<the host's URL>" } else { "" }),
+                host_did: Some(&host_did),
+                room_id: &room_id,
+            };
+            if newest {
+                rooms::cmd_rooms_read_newest(
+                    client,
+                    target,
+                    rooms::NewestPage {
+                        limit,
+                        pages,
+                        cursor: cursor.as_deref(),
+                        ..Default::default()
+                    },
+                )
+                .await
+            } else {
+                rooms::cmd_rooms_read(client, target, &keys).await
+            }
         }
         RoomCommands::Get {
             key,

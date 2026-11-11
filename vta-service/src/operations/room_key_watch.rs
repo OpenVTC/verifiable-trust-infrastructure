@@ -179,6 +179,12 @@ pub struct RoomKeyWatches {
     /// Wakes the address supervisor when the records changed.
     kick: tokio::sync::Notify,
     sessions: std::sync::Mutex<HashMap<String, Arc<dyn AddressSession>>>,
+    /// `rooms/keys/read-marker/moved/0.1` waiting out its coalescing window, per (room,
+    /// member): the client whose set last moved the marker, which is not told
+    /// (Producer items 1 and 3). In memory only — the key holder keeps no record of sending
+    /// one (*Retention*), and a restart drops what is pending, which the client's next
+    /// `rooms/keys/list` restores.
+    moved_pending: std::sync::Mutex<HashMap<(String, String), String>>,
 }
 
 impl RoomKeyWatches {
@@ -188,6 +194,7 @@ impl RoomKeyWatches {
             lock: tokio::sync::Mutex::new(()),
             kick: tokio::sync::Notify::new(),
             sessions: std::sync::Mutex::new(HashMap::new()),
+            moved_pending: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -330,6 +337,28 @@ impl RoomKeyWatches {
         for address in self.receiving() {
             self.stop(&address).await;
         }
+    }
+
+    /// A set by `setter` moved `member`'s read marker for `room_id`: hold a `moved` notice
+    /// for the coalescing window. `true` when none was pending — the caller starts the
+    /// window; `false` when one was, which now leaves out `setter` instead, so one window
+    /// sends at most one notice whatever number of sets it saw.
+    pub fn schedule_moved(&self, room_id: &str, member: &str, setter: &str) -> bool {
+        let mut pending = self.moved_pending.lock().unwrap_or_else(|p| p.into_inner());
+        pending
+            .insert(
+                (room_id.to_string(), member.to_string()),
+                setter.to_string(),
+            )
+            .is_none()
+    }
+
+    /// The end of a coalescing window: the client to leave out, if a notice was pending.
+    pub fn take_moved(&self, room_id: &str, member: &str) -> Option<String> {
+        self.moved_pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&(room_id.to_string(), member.to_string()))
     }
 }
 

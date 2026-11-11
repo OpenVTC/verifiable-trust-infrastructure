@@ -355,13 +355,18 @@ async fn send_trust_ping(
 
     let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
 
-    // Internal storage always uses #key-0 for the signing record, regardless
-    // of DID method. The X25519 record at #key-1 only exists for did:webvh
-    // (did:key curve-converts the X25519 key from Ed25519 at runtime).
-    let signing_key_id = format!("{vta_did}#key-0");
+    // Which keys are which, from this VTA's own document (VTI-KEY-150). A
+    // did:key VTA stores only its signing record, at `#key-0`; its X25519 key
+    // is converted from the Ed25519 one at runtime.
+    #[cfg(feature = "webvh")]
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).ok();
+    #[cfg(not(feature = "webvh"))]
+    let webvh_ks: Option<crate::store::KeyspaceHandle> = None;
+    let webs_ks = store.keyspace(crate::keyspaces::WEBS).ok();
+    let self_keys = crate::self_keys::self_keys(vta_did, webvh_ks.as_ref(), webs_ks.as_ref()).await;
 
     let signing: KeyRecord = keys_ks
-        .get(crate::keys::store_key(&signing_key_id))
+        .get(crate::keys::store_key(&self_keys.signing.record_id))
         .await?
         .ok_or("VTA signing key record not found")?;
 
@@ -377,19 +382,23 @@ async fn send_trust_ping(
         tdk.secrets_resolver().insert(secrets.signing).await;
         tdk.secrets_resolver().insert(secrets.key_agreement).await;
     } else {
-        // did:webvh / other methods: independently derived keys, #key-0/#key-1 IDs.
-        let ka_key_id = format!("{vta_did}#key-1");
+        // did:webvh, did:webs and other methods: independently derived keys,
+        // under the ids this VTA's own document gives them.
+        let ka_key = self_keys
+            .key_agreement
+            .clone()
+            .ok_or("this VTA's DID document lists no key-agreement key")?;
         let ka: KeyRecord = keys_ks
-            .get(crate::keys::store_key(&ka_key_id))
+            .get(crate::keys::store_key(&ka_key.record_id))
             .await?
             .ok_or("VTA key-agreement key record not found")?;
 
         let mut signing_secret = root.derive_ed25519(&signing.derivation_path)?;
-        signing_secret.id = signing_key_id;
+        signing_secret.id = self_keys.signing.vm_id.clone();
         tdk.secrets_resolver().insert(signing_secret).await;
 
         let mut ka_secret = root.derive_x25519(&ka.derivation_path)?;
-        ka_secret.id = ka_key_id;
+        ka_secret.id = ka_key.vm_id;
         tdk.secrets_resolver().insert(ka_secret).await;
     }
 

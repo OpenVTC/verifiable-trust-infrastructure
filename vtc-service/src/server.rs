@@ -1004,7 +1004,11 @@ pub async fn run(
     if let (Some(link), Some(vtc_did), Some(secrets)) =
         (vta_link, config.vtc_did.clone(), secrets_resolver.clone())
     {
-        let storage = crate::rooms::vta_storage::VtaStorage::new(link, vtc_did, secrets);
+        let (_, ka_id) = crate::messaging::vtc_key_ids(did_resolver.as_ref(), &vtc_did).await;
+        let mut storage = crate::rooms::vta_storage::VtaStorage::new(link, vtc_did, secrets);
+        if let Some(ka_id) = ka_id {
+            storage = storage.with_key_agreement_id(ka_id);
+        }
         room_storage.set_vta_storage(Arc::new(storage)).await?;
     }
 
@@ -2605,13 +2609,16 @@ async fn init_auth(
     // 2. Secrets resolver with VTC's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
 
+    // Under the ids the VTC's own document gives its keys, by role
+    // (VTI-KEY-150; `#key-0` / `#key-1` on the VTC's own did:webvh).
+    let (signing_id, ka_id) = crate::messaging::vtc_key_ids(Some(&did_resolver), &vtc_did).await;
     let mut signing_secret = Secret::generate_ed25519(None, Some(&*ed25519_bytes));
-    signing_secret.id = format!("{vtc_did}#key-0");
+    signing_secret.id = signing_id;
     secrets_resolver.insert(signing_secret).await;
 
     match Secret::generate_x25519(None, Some(&*x25519_bytes)) {
         Ok(mut ka_secret) => {
-            ka_secret.id = format!("{vtc_did}#key-1");
+            ka_secret.id = ka_id.unwrap_or_else(|| format!("{vtc_did}#key-1"));
             secrets_resolver.insert(ka_secret).await;
         }
         Err(e) => warn!("failed to create VTC key-agreement secret: {e}"),

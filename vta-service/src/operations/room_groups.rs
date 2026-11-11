@@ -182,6 +182,19 @@ const ADMITTED: &str = "room-admitted";
 /// or audited (item 10).
 const LABEL: &str = "room-label";
 
+/// The member's read marker for the room, per member: `room-read-marker/<roomId>/<persona>`
+/// (`rooms/keys/read-marker/set/0.1`, trust-tasks-tf #1086).
+///
+/// Beside the group state, as the [`LABEL`] is, for the same reasons (Recipient item 7):
+/// protected as the group state is, carried by a backup with it (which the specification
+/// allows, *Retention*), and discarded by [`forget`] with it — and by nothing else. Only the
+/// marker in force: never an earlier one, when it was set, or which client set it.
+///
+/// **Never leaves this VTA except to a caller that acts as its member** (item 8): nothing
+/// that completes, signs or seals for the member reads it, and neither its values nor when
+/// it moved are logged or audited (item 9).
+const READ_MARKER: &str = "room-read-marker";
+
 /// How long a retained admission is kept at most — `rooms/owner/group/add/0.3` item 8's
 /// 24 hours.
 pub const ADMISSION_RETENTION_SECS: u64 = 24 * 60 * 60;
@@ -3132,11 +3145,173 @@ pub async fn personal_label(
         .map_err(|e| AppError::Internal(format!("read a personal label: {e}")))
 }
 
+// ─── The member's read marker (`rooms/keys/read-marker/set/0.1`) ───────────
+
+/// A member's read marker for one room, as this VTA keeps it ([`READ_MARKER`]).
+///
+/// `created_at` is kept **exactly as received** (Recipient item 5) — the string, never a
+/// reparsed timestamp, which would rewrite its precision or offset — and compared as an
+/// instant ([`ReadMarker::further_than`]).
+///
+/// No `Debug` derive: a marker is not to reach a log (item 9), and a derived `Debug` is how
+/// a value ends up in one.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadMarker {
+    /// The highest room version the member has seen the conversation to; `0` is none.
+    pub version: u64,
+    /// The host's `createdAt` of the newest message the member has seen, as received.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
+impl std::fmt::Debug for ReadMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReadMarker(<redacted>)")
+    }
+}
+
+impl ReadMarker {
+    /// A marker from what a request carried: `created_at` must be an RFC 3339 instant.
+    pub fn new(version: u64, created_at: Option<String>) -> Result<Self, AppError> {
+        if let Some(t) = &created_at {
+            chrono::DateTime::parse_from_rfc3339(t).map_err(|_| {
+                AppError::Validation("`readMarker.createdAt` is not an RFC 3339 date-time".into())
+            })?;
+        }
+        Ok(Self {
+            version,
+            created_at,
+        })
+    }
+
+    /// `createdAt` as an instant; an absent one is earlier than any present one.
+    fn instant(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.created_at.as_deref().and_then(|t| {
+            chrono::DateTime::parse_from_rfc3339(t)
+                .ok()
+                .map(|d| d.with_timezone(&chrono::Utc))
+        })
+    }
+
+    /// The total order *Further on* defines: `version`, then `createdAt` as an instant, an
+    /// absent `createdAt` before any present one (`Option`'s order is exactly that).
+    pub fn position(&self) -> (u64, Option<chrono::DateTime<chrono::Utc>>) {
+        (self.version, self.instant())
+    }
+
+    /// Whether `self` is further on than `other` (Recipient item 3).
+    pub fn further_than(&self, other: &Self) -> bool {
+        self.position() > other.position()
+    }
+
+    /// Whether the two stand at the same place (Recipient item 4's "equal"): the same
+    /// version and the same instant, whatever its spelling.
+    pub fn same_place(&self, other: &Self) -> bool {
+        self.position() == other.position()
+    }
+}
+
+/// What [`set_read_marker`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadMarkerOutcome {
+    /// This VTA holds no group state for the room as this member — nothing was written.
+    NotHeld,
+    /// The marker now in force, and whether this request moved it.
+    Applied { marker: ReadMarker, moved: bool },
+}
+
+/// How many times [`set_read_marker`] re-reads after a concurrent write moved the row.
+const READ_MARKER_WRITE_ATTEMPTS: usize = 8;
+
+/// Move `member`'s read marker for its room (`rooms/keys/read-marker/set/0.1`).
+///
+/// Without `rewind`, the further of the stored marker and `requested` is kept (Recipient
+/// item 3): `requested` replaces the stored one whole when it is further on, and nothing is
+/// written otherwise. With `rewind`, `requested` replaces the stored one unless they stand
+/// at the same place (item 4). The write is one [`Batch`](vti_common::store::Batch)
+/// conditional on the group state still being held and the marker row being as it was
+/// read, so a marker is never written beside group state [`forget`] has discarded, and two
+/// devices setting at once converge on the further marker. A refusal re-reads and retries.
+///
+/// The caller has decided that it acts as `member`; this does not ask again.
+pub async fn set_read_marker(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    requested: &ReadMarker,
+    rewind: bool,
+) -> Result<ReadMarkerOutcome, AppError> {
+    for _ in 0..READ_MARKER_WRITE_ATTEMPTS {
+        if groups.get_raw(member.key(GROUP)).await?.is_none() {
+            return Ok(ReadMarkerOutcome::NotHeld);
+        }
+        let raw = groups
+            .get_raw(member.key(READ_MARKER))
+            .await
+            .map_err(|e| AppError::Internal(format!("read a read marker: {e}")))?;
+        let current: Option<ReadMarker> = match &raw {
+            Some(bytes) => Some(serde_json::from_slice(bytes).map_err(|e| {
+                AppError::Internal(format!("decode the read marker for a room: {e}"))
+            })?),
+            None => None,
+        };
+        let moves = match &current {
+            None => true,
+            Some(c) if rewind => !requested.same_place(c),
+            Some(c) => requested.further_than(c),
+        };
+        if !moves {
+            return Ok(ReadMarkerOutcome::Applied {
+                marker: current.unwrap_or_else(|| requested.clone()),
+                moved: false,
+            });
+        }
+
+        let mut batch = vti_common::store::Batch::new();
+        batch.require_present(member.key(GROUP));
+        match raw {
+            Some(bytes) => batch.require_unchanged(member.key(READ_MARKER), bytes),
+            None => batch.require_absent(member.key(READ_MARKER)),
+        };
+        batch.insert(member.key(READ_MARKER), requested)?;
+        match groups.apply_batch(batch).await? {
+            vti_common::store::BatchOutcome::Applied => {
+                return Ok(ReadMarkerOutcome::Applied {
+                    marker: requested.clone(),
+                    moved: true,
+                });
+            }
+            vti_common::store::BatchOutcome::Refused { check: 0 } => {
+                return Ok(ReadMarkerOutcome::NotHeld);
+            }
+            // Another device moved the marker: read it again and decide again.
+            vti_common::store::BatchOutcome::Refused { .. } => continue,
+        }
+    }
+    Err(AppError::Conflict(
+        "the read marker kept moving while this request was applying; send it again".into(),
+    ))
+}
+
+/// `member`'s read marker for its room, if one is held — for `rooms/keys/list/0.3` with
+/// `includePersonal` and for `rooms/keys/read-marker/moved`, and for nothing that
+/// completes, signs or seals for the member (`rooms/keys/read-marker/set/0.1` item 8).
+pub async fn read_marker(
+    groups: &KeyspaceHandle,
+    member: &Member,
+) -> Result<Option<ReadMarker>, AppError> {
+    groups
+        .get(member.key(READ_MARKER))
+        .await
+        .map_err(|e| AppError::Internal(format!("read a read marker: {e}")))
+}
+
 /// Discard everything this VTA holds for a room.
 ///
 /// The discard of the member's group state — the current group and every prior membership
 /// a removal ended ([`PRIOR`]) — and with it the member's personal label
-/// (`rooms/keys/label/0.1` recipient item 8). A commit removing the member does **not**
+/// (`rooms/keys/label/0.1` recipient item 8) and read marker
+/// (`rooms/keys/read-marker/set/0.1` recipient item 7). A commit removing the member does **not**
 /// come here: [`apply_commit`] records the removal and keeps the group state, so what was
 /// readable before it still is — and the label stays with it. Nor does a re-admission:
 /// [`join`] moves the ended group into [`PRIOR`] and keeps reading it.
@@ -3170,6 +3345,11 @@ pub async fn forget(groups: &KeyspaceHandle, member: &Member) -> Result<(), AppE
     groups.remove(member.key(LABEL)).await.map_err(|e| {
         AppError::Internal(format!("discard the personal label for `{room_id}`: {e}"))
     })?;
+    // So is the read marker (`rooms/keys/read-marker/set/0.1` recipient item 7).
+    groups
+        .remove(member.key(READ_MARKER))
+        .await
+        .map_err(|e| AppError::Internal(format!("discard the read marker for `{room_id}`: {e}")))?;
     // The root history goes with the membership. It carries no record content,
     // but it is a record of when this member read this room, and an agent that
     // kept it afterwards would be keeping a diary of a room its principal can no

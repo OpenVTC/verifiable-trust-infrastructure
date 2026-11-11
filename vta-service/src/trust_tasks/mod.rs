@@ -111,6 +111,7 @@ mod room_owner_group;
 mod room_owner_revoke;
 mod room_profile;
 mod room_read;
+mod room_read_marker;
 mod seeds;
 #[cfg(test)]
 mod spec_pin_census;
@@ -646,7 +647,7 @@ async fn validate_payload(
             // person wrote for themselves, that value must not reach a log
             // (`rooms/keys/label/0.1` recipient item 10); the caller, who wrote it, still
             // gets the full reason.
-            if carries_personal_text(type_uri) {
+            if carries_personal_state(type_uri) {
                 tracing::info!(type_uri, "payload failed schema validation");
             } else {
                 tracing::info!(type_uri, error = %e, "payload failed schema validation");
@@ -663,14 +664,24 @@ async fn validate_payload(
 
 /// Whether a task's request or response can carry a member's personal label — text a
 /// person wrote for themselves, which `rooms/keys/label/0.1` keeps with the group state
-/// and nowhere else. Such text is never written to a log, even quoted in an error
-/// (recipient item 10), and such a response is never kept for redelivery: the label would
+/// and nowhere else — or their read marker (`rooms/keys/read-marker/set/0.1`). Neither is
+/// ever written to a log, even quoted in an error (label recipient item 10, read-marker
+/// item 9), and such a response is never kept for redelivery: the label or marker would
 /// outlive a change or a removal in the replay record, which is a history of earlier
-/// values the specification forbids (*Retention*).
-fn carries_personal_text(type_uri: &str) -> bool {
+/// values both specifications forbid (*Retention*; read-marker item 7).
+fn carries_personal_state(type_uri: &str) -> bool {
     let bare = type_uri.split('#').next().unwrap_or(type_uri);
     bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_3
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1
+}
+
+/// Whether the spine may name a received task in its receipt log. Not a read-marker set:
+/// the line's time is when the member read the room, which no log may record
+/// (`rooms/keys/read-marker/set/0.1` recipient item 9).
+fn logs_receipt(type_uri: &str) -> bool {
+    type_uri.split('#').next() != Some(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1)
 }
 
 /// Attach this agent's Data-Integrity proof to a success response.
@@ -1918,10 +1929,10 @@ async fn dispatch_trust_task_validated(
         // same document again. A duplicate of such a task is absorbed with no
         // body instead. The effect still happened once and the claim still
         // stands, so §7.2 item 11 holds. A member's personal label is not kept
-        // either ([`carries_personal_text`]).
+        // either ([`carries_personal_state`]).
         let discloses_secret = class_for(&type_uri)
             .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
-        let recorded = if discloses_secret || carries_personal_text(&type_uri) {
+        let recorded = if discloses_secret || carries_personal_state(&type_uri) {
             None
         } else {
             serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
@@ -1966,12 +1977,14 @@ async fn dispatch_claimed(
     // tell a `dids/update` submit from a `task-consent/decision` — which made a
     // consent loop (requester re-submits pile up, the approver's decision never
     // arrives) impossible to distinguish from the log alone.
-    tracing::info!(
-        type_uri = %type_uri,
-        actor = %auth.did,
-        id = %doc.id,
-        "trust-task received"
-    );
+    if logs_receipt(&type_uri) {
+        tracing::info!(
+            type_uri = %type_uri,
+            actor = %auth.did,
+            id = %doc.id,
+            "trust-task received"
+        );
+    }
 
     // Payload schema validation — before the policy gate, and deliberately not
     // behind `policy.enforcement`.
@@ -2982,6 +2995,9 @@ dispatch_table! {
     // 0.4: list/0.6's `RecordMetadataV3` rows, passed through exactly as served.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4 => room_group::handle_browse_v0_4
         [ None Metadata true ],
+    // 0.5: `order` passed through to list/0.7, `maxPages`, and `cursor` / `nextCursor`.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5 => room_group::handle_browse_v0_5
+        [ None Metadata true ],
     // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
     // 0.3 accepts the members a room's `recordMembers` governs, which 0.2 refuses.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2
@@ -3011,6 +3027,14 @@ dispatch_table! {
     // The member's own label for a room: written to this VTA's storage only, sent
     // nowhere, its text never logged or audited (`rooms/keys/label/0.1` items 9–10).
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1 => room_label::handle_label
+        [ Mutating Metadata false ],
+    // 0.3: 0.2, with `includePersonal` adding the member's read marker.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_3 => room_label::handle_list_v0_3
+        [ None Metadata false ],
+    // The member's read marker for a room: this VTA's storage only, told to the member's
+    // other watching clients and nobody else, never logged or audited
+    // (`rooms/keys/read-marker/set/0.1` items 6-9).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1 => room_read_marker::handle_set
         [ Mutating Metadata false ],
     // The room's own profile. `actsAsSubject` both ways: the reads and writes reach the
     // room's host as the member, presenting their grant. `read` returns what a sealed room

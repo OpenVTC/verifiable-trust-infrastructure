@@ -116,11 +116,14 @@ pub struct VtcMessaging {
 /// fallback when no resolver is configured or the DID can't be resolved, so
 /// the production `did:webvh` path is unchanged either way — a `did:webvh`
 /// document lists those exact ids, so resolution returns them anyway.
-async fn vtc_key_ids(
+pub(crate) async fn vtc_key_ids(
     did_resolver: Option<&DIDCacheClient>,
     vtc_did: &str,
 ) -> (String, Option<String>) {
-    let conventional = || (format!("{vtc_did}#key-0"), Some(format!("{vtc_did}#key-1")));
+    let conventional = || {
+        let ids = vta_sdk::node_keys::NodeKeyIds::conventional(vtc_did);
+        (ids.authentication, ids.key_agreement)
+    };
 
     let Some(resolver) = did_resolver else {
         return conventional();
@@ -136,28 +139,13 @@ async fn vtc_key_ids(
             return conventional();
         }
     };
-
-    // A relationship id may be a bare fragment (`"#key-1"`) rather than an
-    // absolute DID URL; the secrets resolver is keyed by the absolute id, so
-    // re-attach the DID before looking it up.
-    let absolutize = |id: &str| -> String {
-        match id.strip_prefix('#') {
-            Some(fragment) => format!("{vtc_did}#{fragment}"),
-            None => id.to_string(),
-        }
-    };
-
-    let doc = &resolved.doc;
-    let signing = doc
-        .authentication
-        .first()
-        .map(|vr| vr.get_id())
-        .or_else(|| doc.verification_method.first().map(|vm| vm.id.as_str()))
-        .map(absolutize);
-    let ka = doc.key_agreement.first().map(|vr| absolutize(vr.get_id()));
-
-    match signing {
-        Some(signing) => (signing, ka),
+    // By relationship and role (`vta_sdk::node_keys`): DIDComm signs with the
+    // authentication key and decrypts with the key agreement key.
+    let ids = serde_json::to_value(&resolved.doc)
+        .ok()
+        .and_then(|doc| vta_sdk::node_keys::NodeKeyIds::from_document(vtc_did, &doc).ok());
+    match ids {
+        Some(ids) => (ids.authentication, ids.key_agreement),
         // A document with no usable verification method at all — keep the old
         // behaviour so the failure surfaces as the existing "signing secret
         // not found" warn rather than some new path.

@@ -726,6 +726,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3, RetrySafe),
     // 0.3 over list/0.6's rows: still a read, stores nothing.
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4, RetrySafe),
+    // 0.4, in either order and a page at a time: still a read, stores nothing. A resend
+    // with the same cursor reads the same position again.
+    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
     // same body yields a different nonce, which is correct and changes nothing. The
@@ -763,6 +766,15 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // replaced, not appended, so a repeat leaves the label as the first left it and answers
     // `changed: false`. No key needed — there is nothing a repeat could duplicate.
     (trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1, RetrySafe),
+    // 0.2's read, which can also carry the member's read markers.
+    (trust_tasks::TASK_ROOMS_KEYS_LIST_0_3, RetrySafe),
+    // Idempotent by specification (`rooms/keys/read-marker/set/0.1` *Retry safety*,
+    // VTI-OPS-060's second class): a repeated forward set finds the marker where it put it
+    // and answers `moved: false`; a repeated rewind finds it equal. A late forward set after
+    // a rewind is the client's to avoid (it SHOULD NOT retry one issued before a rewind).
+    (trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1, RetrySafe),
+    // `rooms/keys/read-marker/moved/0.1` is not here: the VTA sends it and serves nothing
+    // under it, as `rooms/keys/changed/0.1`, so it is not in `ALL_URIS`.
     // A read, as `rooms/keys/read` is: the host serves the same records and this agent
     // opens and judges them again. A retry costs another disclosure of the presentation.
     (trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1, RetrySafe),

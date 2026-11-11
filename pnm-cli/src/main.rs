@@ -911,6 +911,114 @@ mod tests {
         );
     }
 
+    /// `rooms list --newest` opens a conversation at its head (`rooms/keys/browse/0.5`):
+    /// `--pages` and `--cursor` only mean something with it.
+    #[test]
+    fn rooms_list_newest_takes_pages_and_a_cursor() {
+        use crate::cli::RoomCommands;
+        let base = ["list", "--room", "did:webvh:r", "--host", "https://h"];
+        let with = |extra: &[&str]| {
+            let mut v = vec!["pnm", "rooms"];
+            v.extend_from_slice(&base);
+            v.extend_from_slice(extra);
+            Cli::try_parse_from(v)
+        };
+        match with(&[
+            "--host-did",
+            "did:web:h",
+            "--newest",
+            "--pages",
+            "2",
+            "--limit",
+            "20",
+        ])
+        .expect("parses")
+        .command
+        {
+            Commands::Rooms {
+                command:
+                    RoomCommands::List {
+                        newest,
+                        pages,
+                        limit,
+                        cursor,
+                        ..
+                    },
+            } => {
+                assert!(newest);
+                assert_eq!(pages, Some(2));
+                assert_eq!(limit, Some(20));
+                assert!(cursor.is_none());
+            }
+            _ => panic!("expected List"),
+        }
+        match with(&["--newest", "--cursor", "n412"])
+            .expect("parses")
+            .command
+        {
+            Commands::Rooms {
+                command: RoomCommands::List { cursor, .. },
+            } => assert_eq!(cursor.as_deref(), Some("n412")),
+            _ => panic!("expected List"),
+        }
+        assert!(with(&["--pages", "2"]).is_err(), "--pages needs --newest");
+        assert!(
+            with(&["--cursor", "n4"]).is_err(),
+            "--cursor needs --newest"
+        );
+        match with(&[]).expect("parses").command {
+            Commands::Rooms {
+                command: RoomCommands::List { newest, .. },
+            } => assert!(!newest, "oldest first, to the end, by default"),
+            _ => panic!("expected List"),
+        }
+    }
+
+    /// `rooms read --newest` reads the head of the conversation instead of named keys.
+    #[test]
+    fn rooms_read_newest_needs_no_keys_and_takes_none() {
+        use crate::cli::RoomCommands;
+        let base = [
+            "pnm",
+            "rooms",
+            "read",
+            "--room",
+            "did:webvh:r",
+            "--host-did",
+            "did:web:h",
+        ];
+        let mut v = base.to_vec();
+        v.extend(["--newest", "--limit", "30"]);
+        match Cli::try_parse_from(v).expect("parses").command {
+            Commands::Rooms {
+                command:
+                    RoomCommands::Read {
+                        newest,
+                        limit,
+                        keys,
+                        ..
+                    },
+            } => {
+                assert!(newest);
+                assert_eq!(limit, Some(30));
+                assert!(keys.is_empty());
+            }
+            _ => panic!("expected Read"),
+        }
+        let mut v = base.to_vec();
+        v.extend(["k1", "--newest"]);
+        assert!(
+            Cli::try_parse_from(v).is_err(),
+            "keys or --newest, not both"
+        );
+        // `k1 --limit 3` parses — clap does not enforce `requires` on an argument whose
+        // requirement conflicts with one present — and is refused before anything is sent,
+        // naming the command to run (`commands::rooms::read_newest_flags`).
+        assert!(crate::commands::rooms::read_newest_flags(false, Some(3), None, None).is_err());
+        assert!(crate::commands::rooms::read_newest_flags(true, Some(3), Some(2), None).is_ok());
+        assert!(crate::commands::rooms::read_newest_flags(false, None, None, None).is_ok());
+    }
+
     #[test]
     fn rooms_owner_register_requires_an_explicit_owner_and_tier() {
         use crate::cli::{RoomCommands, RoomOwnerCommands};
@@ -1096,6 +1204,71 @@ mod tests {
             }
             _ => panic!("expected keys label"),
         }
+    }
+
+    #[test]
+    fn rooms_keys_mark_read_needs_a_member_and_a_version_unless_unread() {
+        use crate::cli::{RoomCommands, RoomKeysCommands};
+        let base = ["pnm", "rooms", "keys", "mark-read", "did:webvh:r"];
+        let parse = |extra: &[&str]| {
+            Cli::try_parse_from(base.iter().chain(extra.iter())).map(|c| match c.command {
+                Commands::Rooms {
+                    command:
+                        RoomCommands::Keys {
+                            command:
+                                RoomKeysCommands::MarkRead {
+                                    member,
+                                    version,
+                                    created_at,
+                                    unread,
+                                    ..
+                                },
+                        },
+                    ..
+                } => (member, version, created_at, unread),
+                _ => panic!("expected keys mark-read"),
+            })
+        };
+        assert!(
+            parse(&["--version", "4"]).is_err(),
+            "the member is never inferred"
+        );
+        assert!(
+            parse(&["--member", "did:key:z"]).is_err(),
+            "marking read names how far"
+        );
+        assert!(
+            parse(&[
+                "--member",
+                "did:key:z",
+                "--created-at",
+                "2027-02-01T10:14:02Z"
+            ])
+            .is_err(),
+            "a createdAt without its version"
+        );
+        assert_eq!(
+            parse(&["--member", "did:key:z", "--unread"]).unwrap(),
+            ("did:key:z".to_string(), None, None, true),
+            "the whole room unread"
+        );
+        assert_eq!(
+            parse(&[
+                "--member",
+                "did:key:z",
+                "--version",
+                "415",
+                "--created-at",
+                "2027-02-01T10:14:02Z"
+            ])
+            .unwrap(),
+            (
+                "did:key:z".to_string(),
+                Some(415),
+                Some("2027-02-01T10:14:02Z".to_string()),
+                false
+            )
+        );
     }
 
     #[test]

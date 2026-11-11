@@ -171,6 +171,9 @@ impl DIDCommBridge {
         keys_ks: &crate::store::KeyspaceHandle,
         imported_ks: &crate::store::KeyspaceHandle,
         contexts_ks: &crate::store::KeyspaceHandle,
+        // This VTA's own `did:webvh` log, from which its signing key's id is
+        // read (VTI-KEY-150); `None` falls back to the did:webvh convention.
+        webvh_ks: Option<&crate::store::KeyspaceHandle>,
         seed_store: &dyn crate::keys::seed_store::SeedStore,
         audit: &vta_audit::SharedAuditSink,
     ) -> Result<Self, AppError> {
@@ -178,13 +181,14 @@ impl DIDCommBridge {
         let Some(vta_did) = vta_did else {
             return Ok(bridge);
         };
+        let self_keys = crate::self_keys::self_keys(vta_did, webvh_ks, None).await;
         let secret = crate::operations::credentials::load_vta_issuer_secret_from_store(
             keys_ks,
             imported_ks,
             contexts_ks,
             seed_store,
             audit,
-            vta_did,
+            &self_keys,
             "cli-did-management",
         )
         .await?;
@@ -690,6 +694,7 @@ mod tests {
             &state.keys_ks,
             &state.imported_ks,
             &state.contexts_ks,
+            Some(&state.webvh_ks),
             &*state.seed_store,
             &state.audit_sink,
         )
