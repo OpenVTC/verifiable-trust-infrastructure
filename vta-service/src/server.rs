@@ -1356,6 +1356,12 @@ pub async fn run(
             .await?
         };
 
+        // A did:webs VTA minted by setup is published here, at its first boot:
+        // registered at its host on its own authority, before messaging starts
+        // and its readiness gate waits for the DID to resolve.
+        #[cfg(feature = "webs")]
+        publish_own_webs_identity(&app_state).await;
+
         // Agent memory written by `vta/memory/*/0.1` before the store was
         // versioned (#2115) moves into the versioned layout before anything is
         // served, so both versions read one store from the first request.
@@ -3406,6 +3412,71 @@ pub(crate) async fn preload_self_did_document(
 
         did_resolver.add_did_document(vta_did, doc).await;
         info!(did = %vta_did, "preloaded VTA DID into resolver cache from local did.jsonl");
+    }
+}
+
+/// Publish this VTA's own did:webs if setup left it unpublished
+/// (`operations::did_webs::publish_own_identity`). Over the host's Trust Task
+/// HTTPS endpoint, since no mediator session exists yet, signed by the key the
+/// DID's own key event log establishes. A failure is logged and boot goes on:
+/// the readiness gate then reports the DID unresolved, and the next boot
+/// tries again.
+#[cfg(feature = "webs")]
+async fn publish_own_webs_identity(state: &AppState) {
+    let Some(vta_did) = state.config.read().await.vta_did.clone() else {
+        return;
+    };
+    if !vta_did.starts_with("did:webs:") {
+        return;
+    }
+    let record = match crate::webs_store::get(&state.webs_ks, &vta_did).await {
+        Ok(Some(record)) if !record.published => record,
+        Ok(_) => return,
+        Err(e) => {
+            warn!(did = %vta_did, error = %e, "could not read this VTA's did:webs record");
+            return;
+        }
+    };
+    let Some(resolver) = state.did_resolver.as_ref() else {
+        warn!(did = %vta_did, "no DID resolver; this VTA's did:webs cannot be published yet");
+        return;
+    };
+    let server = match crate::webvh_store::get_server(&state.webvh_ks, &record.server_id).await {
+        Ok(Some(server)) => server,
+        Ok(None) => {
+            error!(
+                did = %vta_did,
+                server_id = %record.server_id,
+                "this VTA's did:webs names a hosting server that is not registered; register it \
+                 (`pnm webvh add-server`) and restart"
+            );
+            return;
+        }
+        Err(e) => {
+            warn!(did = %vta_did, error = %e, "could not read this VTA's hosting server");
+            return;
+        }
+    };
+    let deps = crate::operations::did_webvh::WebvhDeps::from_app_state(state, resolver);
+    let host = match crate::operations::did_webvh::host::host_client(&deps, &vta_did, &server).await
+    {
+        Ok(host) => host,
+        Err(e) => {
+            error!(did = %vta_did, error = %e, "cannot reach this VTA's did:webs host");
+            return;
+        }
+    };
+    match crate::operations::did_webs::publish_own_identity(&state.webs_ks, &vta_did, &host).await {
+        Ok(true) => info!(did = %vta_did, "published this VTA's did:webs at its host"),
+        Ok(false) => {}
+        Err(e) => error!(
+            did = %vta_did,
+            server = %server.did,
+            error = %e,
+            "could not publish this VTA's did:webs; the host must allow self-registration on \
+             its domain (`[[hosting.webs_self_register]]`) and declare `resolvedMethods: \
+             [\"webs\"]` in its DID document. Retried at the next boot"
+        ),
     }
 }
 

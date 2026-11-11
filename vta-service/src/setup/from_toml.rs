@@ -737,6 +737,31 @@ pub enum VtaDidInput {
         #[serde(default)]
         ka_key_id: Option<String>,
     },
+    /// Mint a new `did:webs` for the VTA (alpha; VTI-KEY-001): a key-role
+    /// identity — distinct attestation, operational and messaging keys
+    /// (VTI-KEY-173) — at `did:webs:{domain}[:{path}]:{AID}` on a did-hosting
+    /// server. Needs `[dids] webs_enabled = true`.
+    ///
+    /// Setup is offline, so it only mints: the first boot registers the
+    /// identifier at its host on its own authority, which the host's operator
+    /// must allow for `domain` (`[[hosting.webs_self_register]]`), and the
+    /// host's DID document must declare `resolvedMethods: ["webs"]`
+    /// (VTI-KEY-008). Peers that do not declare `did:webs` cannot be reached
+    /// as this identity.
+    CreateWebs {
+        /// The did-hosting server's DID (`did:webvh:…`).
+        server_did: String,
+        /// The domain the host serves it on, e.g. `did.example.com`.
+        domain: String,
+        /// Slot path before the AID, `/`-separated (`nodes`); absent puts it
+        /// at the top of the domain. Must be under one of the host's
+        /// self-registration prefixes when it lists any.
+        #[serde(default)]
+        path: Option<String>,
+        /// The id this VTA registers the server under. Default `vta-host`.
+        #[serde(default)]
+        server_id: Option<String>,
+    },
 }
 
 /// The interactive wizard's advanced webvh-DID options, lifted into the
@@ -1133,6 +1158,44 @@ pub async fn apply_inputs(
                 create_vta_did_key("vta", &keys_ks, &contexts_ks, &*wizard_seed_store).await?;
             Some(did)
         }
+        #[cfg(feature = "webs")]
+        VtaDidInput::CreateWebs {
+            server_did,
+            domain,
+            path,
+            server_id,
+        } => {
+            let services = super::build_vta_additional_services(
+                &inputs.services,
+                inputs.public_url.as_deref(),
+                messaging.as_ref().map(|m| m.mediator_did.as_str()),
+            );
+            let did = create_vta_did_webs(
+                server_did,
+                domain,
+                path.as_deref(),
+                server_id.as_deref().unwrap_or(DEFAULT_WEBS_SERVER_ID),
+                services.unwrap_or_default(),
+                messaging.is_some() && inputs.services.didcomm,
+                &keys_ks,
+                &contexts_ks,
+                &webvh_ks,
+                &maybe_encrypt(store.keyspace(crate::keyspaces::WEBS)?),
+                &audit,
+                &*wizard_seed_store,
+                &wizard_config,
+            )
+            .await?;
+            Some(did)
+        }
+        #[cfg(not(feature = "webs"))]
+        VtaDidInput::CreateWebs { .. } => {
+            return Err(
+                "vta_did kind = \"create_webs\" needs a VTA built with the `webs` \
+                        feature"
+                    .into(),
+            );
+        }
         VtaDidInput::CreateWebvh {
             url,
             portable,
@@ -1506,6 +1569,27 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
                     "messaging.ws_url '{trimmed}' must start with ws:// or wss://"
                 ));
             }
+        }
+    }
+    if let VtaDidInput::CreateWebs { domain, path, .. } = &inputs.vta_did {
+        if !inputs.dids.webs_enabled {
+            errors.push(
+                "vta_did kind = \"create_webs\" needs did:webs turned on: set \
+                 `webs_enabled = true` under `[dids]` (did:webs is alpha)"
+                    .into(),
+            );
+        }
+        if domain.trim().is_empty() || domain.contains('/') {
+            errors.push(format!(
+                "vta_did.domain '{domain}' must be a bare domain, e.g. did.example.com"
+            ));
+        }
+        if let Some(path) = path
+            && crate::operations::did_webs::check_path(path).is_err()
+        {
+            errors.push(format!(
+                "vta_did.path '{path}' must be `/`-separated segments with no `:` (e.g. nodes)"
+            ));
         }
     }
     if let VtaDidInput::CreateWebvh {
@@ -2080,6 +2164,82 @@ async fn create_simple_webvh_did(
     Ok(final_did)
 }
 
+/// The id setup registers a did:webs VTA's hosting server under.
+#[cfg(feature = "webs")]
+const DEFAULT_WEBS_SERVER_ID: &str = "vta-host";
+
+/// Mint this VTA's own did:webs at setup: register its hosting server, then
+/// create a key-role identity in the `vta` context, its primary DID, recorded
+/// unpublished — the first boot registers it at the host on its own
+/// authority (`operations::did_webs::publish_own_identity`).
+#[cfg(feature = "webs")]
+#[allow(clippy::too_many_arguments)]
+async fn create_vta_did_webs(
+    server_did: &str,
+    domain: &str,
+    path: Option<&str>,
+    server_id: &str,
+    additional_services: Vec<serde_json::Value>,
+    add_mediator_service: bool,
+    keys_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    webvh_ks: &KeyspaceHandle,
+    webs_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
+    seed_store: &dyn SeedStore,
+    config: &AppConfig,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use crate::operations::did_webs::{
+        CreateDidWebsParams, NoHost, WebsDeps, create_did_webs, designated_service_from_json,
+    };
+
+    let now = chrono::Utc::now();
+    crate::webvh_store::store_server(
+        webvh_ks,
+        &vta_sdk::webvh::WebvhServerRecord {
+            id: server_id.to_string(),
+            did: server_did.to_string(),
+            label: Some("this VTA's did:webs host".into()),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await?;
+
+    let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
+    let deps = WebsDeps {
+        keys_ks,
+        contexts_ks,
+        webvh_ks,
+        webs_ks,
+        acl_ks: None,
+        audit,
+        seed_store,
+        config,
+        did_resolver: &did_resolver,
+    };
+    let mut params = CreateDidWebsParams::new("vta", server_id);
+    params.path = path.map(str::to_string);
+    params.domain = Some(domain.to_string());
+    params.label = Some("VTA".into());
+    params.add_mediator_service = add_mediator_service;
+    // `build_vta_additional_services` supplies `#tsp` and the REST entry.
+    params.add_tsp_service = Some(false);
+    params.additional_services = additional_services
+        .iter()
+        .map(designated_service_from_json)
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("{e}"))?;
+    params.set_primary = true;
+    params.key_roles = true;
+    params.defer_publish = true;
+    let created = create_did_webs(&deps, &cli_super_admin(), params, &NoHost, "setup")
+        .await
+        .map_err(|e| format!("{e}"))?;
+    eprintln!("  Created DID: {} (published at first boot)", created.did);
+    Ok(created.did)
+}
+
 /// Seed the first super-admin and seal the VTA. Library counterpart to
 /// `vta bootstrap-admin --did <X>`.
 ///
@@ -2446,6 +2606,80 @@ mod tests {
             .expect("read seed record")
             .expect("generation 0 must exist after setup")
             .created_at
+    }
+
+    /// S6: setup makes a did:webs VTA — a key-role identity in the `vta`
+    /// context, its primary DID and `vta_did`, with its hosting server
+    /// registered — and publishes nothing: first boot does (decision 3).
+    #[cfg(all(feature = "keyring", feature = "webs"))]
+    #[tokio::test]
+    async fn setup_mints_a_key_role_did_webs_vta_for_its_first_boot_to_publish() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut inputs = offline_inputs(dir.path(), "vta-test-webs-identity");
+        inputs.dids.webs_enabled = true;
+        inputs.vta_did = VtaDidInput::CreateWebs {
+            server_did: "did:webvh:QmHost:host.example".into(),
+            domain: "did.example.com".into(),
+            path: Some("nodes".into()),
+            server_id: None,
+        };
+        apply_inputs(inputs, &SilentUi).await.expect("setup");
+
+        let config = AppConfig::load(Some(dir.path().join("config.toml"))).expect("config");
+        let vta_did = config.vta_did.clone().expect("vta_did");
+        assert!(
+            vta_did.starts_with("did:webs:did.example.com:nodes:"),
+            "{vta_did}"
+        );
+        assert!(config.dids.webs_enabled);
+
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().join("data"),
+        })
+        .expect("open store");
+        let webs_ks = store.keyspace(crate::keyspaces::WEBS).unwrap();
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+        let record = crate::webs_store::get(&webs_ks, &vta_did)
+            .await
+            .unwrap()
+            .expect("recorded");
+        assert!(!record.published, "setup is offline; first boot publishes");
+        assert_eq!(record.domain.as_deref(), Some("did.example.com"));
+        assert!(record.attestation_key_id.is_some() && record.operational_key_id.is_some());
+        let server = crate::webvh_store::get_server(&webvh_ks, &record.server_id)
+            .await
+            .unwrap()
+            .expect("the host is registered");
+        assert_eq!(server.did, "did:webvh:QmHost:host.example");
+        let ctx = crate::contexts::get_context(&contexts_ks, "vta")
+            .await
+            .unwrap()
+            .expect("vta context");
+        assert_eq!(ctx.did.as_deref(), Some(vta_did.as_str()));
+
+        // The VTA would authenticate with its operational key.
+        let keys = crate::self_keys::self_keys(&vta_did, Some(&webvh_ks), Some(&webs_ks)).await;
+        assert_eq!(
+            Some(keys.authentication.record_id.as_str()),
+            record.operational_key_id.as_deref()
+        );
+    }
+
+    /// did:webs is alpha and off by default: setup names the switch.
+    #[cfg(all(feature = "keyring", feature = "webs"))]
+    #[test]
+    fn a_did_webs_vta_needs_webs_enabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut inputs = offline_inputs(dir.path(), "vta-test-webs-off");
+        inputs.vta_did = VtaDidInput::CreateWebs {
+            server_did: "did:webvh:QmHost:host.example".into(),
+            domain: "did.example.com".into(),
+            path: None,
+            server_id: None,
+        };
+        let err = validate_inputs(&inputs).expect_err("refused").to_string();
+        assert!(err.contains("webs_enabled"), "{err}");
     }
 
     #[cfg(feature = "keyring")]

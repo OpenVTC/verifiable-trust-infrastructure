@@ -1,9 +1,11 @@
 {
   "@context": [
     "https://www.w3.org/ns/did/v1",
-    "https://www.w3.org/ns/cid/v1"
+    "https://www.w3.org/ns/cid/v1",
+    { "resolvedMethods": { "@id": "https://w3id.org/vti#resolvedMethods", "@type": "@json" } }
   ],
   "id": "did:webvh:QmTEST:example.com",
+  "resolvedMethods": [],
   "verificationMethod": [
     {
       "id": "did:webvh:QmTEST:example.com#key-0",

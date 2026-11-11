@@ -897,6 +897,7 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
         "Create a new did:key (no external hosting; great for local dev)",
         "Enter an existing DID",
         "Skip (no VTA DID for now)",
+        "Create a new did:webs (alpha; on a did-hosting server, published at first boot)",
     ];
     let choice = p.select("VTA DID", &did_options, 0)?;
 
@@ -985,6 +986,28 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
             let did = p.text("VTA DID", None, false, None)?;
             Ok(VtaDidInput::Existing { did })
         }
+        4 => {
+            eprintln!();
+            eprintln!(
+                "  \x1b[2mdid:webs is alpha. The host's operator must allow self-registration on\n  \
+                 the domain ([[hosting.webs_self_register]]) and its DID document must declare\n  \
+                 resolvedMethods: [\"webs\"]. Only peers that declare did:webs can be reached.\x1b[0m"
+            );
+            let server_did = p.text("did-hosting server DID", None, false, None)?;
+            let domain = p.text("Domain the host serves it on", None, false, None)?;
+            let path = p.text(
+                "Slot path before the AID (e.g. nodes; empty for none)",
+                None,
+                true,
+                None,
+            )?;
+            Ok(VtaDidInput::CreateWebs {
+                server_did,
+                domain,
+                path: (!path.trim().is_empty()).then(|| path.trim().to_string()),
+                server_id: None,
+            })
+        }
         _ => Ok(VtaDidInput::Skip),
     }
 }
@@ -997,6 +1020,11 @@ fn prompt_did_presentation(
     vta_did: &VtaDidInput,
 ) -> Result<crate::config::DidsConfig, DynErr> {
     let mut dids = crate::config::DidsConfig::default();
+    // A did:webs VTA turns did:webs on: choosing it is the opt-in.
+    if matches!(vta_did, VtaDidInput::CreateWebs { .. }) {
+        dids.webs_enabled = true;
+        return Ok(dids);
+    }
     if !matches!(vta_did, VtaDidInput::CreateWebvh { .. }) {
         return Ok(dids);
     }

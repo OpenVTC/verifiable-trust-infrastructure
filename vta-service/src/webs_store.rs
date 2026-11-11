@@ -61,6 +61,12 @@ pub struct WebsDidRecord {
     /// roles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operational_key_id: Option<String>,
+    /// Whether its host serves it. `false` only for this VTA's own identity
+    /// between setup, which mints it offline, and first boot, which registers
+    /// it (`operations::did_webs::publish_own_identity`). A record written
+    /// before this existed was published by its create.
+    #[serde(default = "published_default")]
+    pub published: bool,
     /// A rotation signed but not yet accepted by the host. While one is staged
     /// nothing else is written: every write publishes it again first, since
     /// the successor it installs has signed it and cannot sign another.
@@ -229,4 +235,9 @@ mod tests {
             .unwrap();
         assert!(purge_context(&ks, "acme").await.is_err());
     }
+}
+
+#[cfg(feature = "webs")]
+fn published_default() -> bool {
+    true
 }

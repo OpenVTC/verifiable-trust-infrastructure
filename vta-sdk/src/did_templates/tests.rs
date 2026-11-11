@@ -782,9 +782,43 @@ fn did_host_didcomm_builtin_context_is_did_v1_plus_cid_v1() {
         doc["@context"],
         json!([
             "https://www.w3.org/ns/did/v1",
-            "https://www.w3.org/ns/cid/v1"
+            "https://www.w3.org/ns/cid/v1",
+            // VTI-KEY-008's term, for the `resolvedMethods` the host may set.
+            { "resolvedMethods": {
+                "@id": crate::resolved_methods::RESOLVED_METHODS_IRI,
+                "@type": "@json"
+            } }
         ])
     );
+}
+
+/// VTI-KEY-008: a host declares the optional methods it resolves only when
+/// its operator says it does (`RESOLVED_METHODS`, e.g. `["webs"]` for a host
+/// built with `method-webs`); left unset it declares none.
+#[test]
+fn a_did_host_declares_only_what_its_operator_says_it_resolves() {
+    for name in [
+        "did-host-http",
+        "did-host-didcomm",
+        "did-host-tsp",
+        "did-host-http-didcomm",
+        "did-host-http-tsp",
+    ] {
+        let tpl = load_embedded(name).unwrap();
+        let mut vars = did_host_didcomm_fixture_vars();
+        vars.insert_string("URL", "https://host.example");
+        let silent = tpl.render(&vars).unwrap();
+        assert!(
+            crate::resolved_methods::declared(&silent).is_empty(),
+            "{name}: {silent}"
+        );
+        vars.insert("RESOLVED_METHODS", json!(["webs"]));
+        let declaring = tpl.render(&vars).unwrap();
+        assert!(
+            crate::resolved_methods::declared(&declaring).contains("webs"),
+            "{name}: {declaring}"
+        );
+    }
 }
 
 #[test]
@@ -1679,7 +1713,12 @@ fn did_host_tsp_builtin_context_is_did_v1_plus_cid_v1() {
         doc["@context"],
         json!([
             "https://www.w3.org/ns/did/v1",
-            "https://www.w3.org/ns/cid/v1"
+            "https://www.w3.org/ns/cid/v1",
+            // VTI-KEY-008's term, for the `resolvedMethods` the host may set.
+            { "resolvedMethods": {
+                "@id": crate::resolved_methods::RESOLVED_METHODS_IRI,
+                "@type": "@json"
+            } }
         ])
     );
 }

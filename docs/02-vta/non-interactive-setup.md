@@ -242,6 +242,17 @@ secret_key  = "seed"       # optional; default "seed"
 | `"skip"` | — | No VTA DID — the VTA has no signing identity. **The daemon refuses to boot in this state** (see note below). |
 | `"existing"` | `did` | You already have a VTA DID. |
 | `"create_webvh"` | `url`, `portable` (default `true`), `pre_rotation_count` (default `1`) | Mint a new did:webvh in "simple mode". |
+| `"create_webs"` | `server_did`, `domain`, `path` (optional), `server_id` (default `vta-host`) | Mint a new **did:webs** (alpha): a key-role identity on a did-hosting server, published at first boot. Needs `[dids] webs_enabled = true`. |
+
+`create_webs` mints the VTA's did:webs offline and registers the hosting
+server it names; nothing is sent until the first boot, which registers the
+identifier at its host on its own authority (the key event log is the proof).
+That needs the host's operator to allow it on `domain`
+(`[[hosting.webs_self_register]]`, under `path` when they list prefixes), and
+the host's DID document to declare `resolvedMethods: ["webs"]` (a host minted
+from a `did-host-*` template sets it with `RESOLVED_METHODS`). A did:webs VTA
+reaches only peers that declare `did:webs` (VTI-KEY-008); see
+[did:webs DIDs](did-webs.md).
 
 `create_webvh` writes the DID's `did.jsonl` to
 `<data_dir>/did-logs/<label>-did.jsonl` for re-publishing or audit.

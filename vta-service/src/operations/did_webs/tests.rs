@@ -453,6 +453,75 @@ async fn a_key_role_did_webs_has_distinct_role_keys_found_by_role() {
     assert_eq!(keys.authentication.record_id, operational);
 }
 
+/// S6 decision 3: setup mints a VTA's did:webs without its host, and the
+/// first boot publishes it once — the stream setup minted, at its slot and
+/// domain — after which nothing more is sent.
+#[tokio::test]
+async fn setup_mints_offline_and_the_first_boot_publishes_once() {
+    let f = Fixture::new().await;
+    let mut params = f.params();
+    params.key_roles = true;
+    params.defer_publish = true;
+    params.domain = Some("hosting.example".into());
+    let created = create_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        params,
+        &NoHost,
+        "setup",
+    )
+    .await
+    .expect("minted offline");
+    let stored = record(&f, &created.did).await;
+    assert!(!stored.published);
+    assert_eq!(stored.domain.as_deref(), Some("hosting.example"));
+
+    let host = RecordingHost::default();
+    assert!(
+        publish_own_identity(&f.ts.webs_ks, &created.did, &host)
+            .await
+            .expect("published")
+    );
+    let published = host.published.lock().unwrap().clone();
+    let [(mnemonic, stream, domain)] = published.as_slice() else {
+        panic!("one publish: {published:?}");
+    };
+    assert_eq!(mnemonic, &created.mnemonic);
+    assert_eq!(stream.as_bytes(), stored.keri_cesr.as_slice());
+    assert_eq!(domain.as_deref(), Some("hosting.example"));
+    assert!(record(&f, &created.did).await.published);
+
+    // Published: the next boot sends nothing.
+    assert!(
+        !publish_own_identity(&f.ts.webs_ks, &created.did, &host)
+            .await
+            .unwrap()
+    );
+    assert_eq!(host.published.lock().unwrap().len(), 1);
+}
+
+/// A deferred create must be told its domain: setup cannot ask the host.
+#[tokio::test]
+async fn a_deferred_create_names_its_domain() {
+    let f = Fixture::new().await;
+    let mut params = f.params();
+    params.defer_publish = true;
+    params.domain = None;
+    let err = create_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        params,
+        &NoHost,
+        "setup",
+    )
+    .await
+    .expect_err("refused");
+    assert!(
+        matches!(err, WebsError::App(AppError::Validation(_))),
+        "{err:?}"
+    );
+}
+
 /// The VTA's own DID cannot be deleted through the DID operations.
 #[tokio::test]
 async fn this_vtas_own_did_is_not_deleted() {

@@ -296,17 +296,7 @@ async fn stored(state: &AppState, did: &str) -> Result<WebsDidRecord, WebsError>
 
 /// Services as the payload states them (`DesignatedService`).
 fn designated(v: &Value) -> Option<DesignatedService> {
-    let id = str_of(v, "id")?;
-    let mut service = DesignatedService::new(id, "", v.get("serviceEndpoint")?.clone());
-    service.type_ = v.get("type")?.clone();
-    if let Some(map) = v.as_object() {
-        for (k, val) in map {
-            if !matches!(k.as_str(), "id" | "type" | "serviceEndpoint") {
-                service.properties.insert(k.clone(), val.clone());
-            }
-        }
-    }
-    Some(service)
+    crate::operations::did_webs::designated_service_from_json(v).ok()
 }
 
 fn designated_list(v: Option<&Value>) -> Vec<DesignatedService> {
