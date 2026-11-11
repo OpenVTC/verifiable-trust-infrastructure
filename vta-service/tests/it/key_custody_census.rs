@@ -80,7 +80,7 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     (
         "vta-service/src/operations/did_webs/mod.rs",
         1,
-        "did:webs create: fresh signing, key-agreement and successor keys at paths allocated under the target context's base (the caller names the context, never a path or key id); later events sign through derive_record_key",
+        "did:webs: one `active_seed` door for keys minted fresh at paths allocated under the DID's context base: create's signing, key-agreement and successor keys, a rotation's new successor, an update's new key-agreement key (the caller names the context or DID, never a path or key id); every event signs through derive_record_key",
     ),
     (
         "vta-service/src/operations/did_webvh/update/keys.rs",

@@ -420,6 +420,8 @@ mod tests {
                 keys_ks: &self.ts.keys_ks,
                 #[cfg(feature = "webvh")]
                 webvh_ks: &self.ts.webvh_ks,
+                #[cfg(feature = "webs")]
+                webs_ks: &self.ts.webs_ks,
             }
         }
 

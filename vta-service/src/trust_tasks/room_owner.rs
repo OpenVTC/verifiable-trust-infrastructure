@@ -632,11 +632,7 @@ async fn register_at(
     // `rooms/owner/register` means by the key holder speaking "as its principal".
     // Authorization item 2: `permissionDenied`, before the host is contacted.
     let owner_key = match crate::operations::room_host::owner_signing_key(
-        crate::operations::room_host::OwnerKeyStores {
-            keys_ks: &state.keys_ks,
-            #[cfg(feature = "webvh")]
-            webvh_ks: &state.webvh_ks,
-        },
+        crate::operations::room_host::OwnerKeyStores::from_state(state),
         auth,
         &owner_did,
         vta_did.as_deref(),
