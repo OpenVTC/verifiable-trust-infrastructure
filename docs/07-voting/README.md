@@ -230,13 +230,17 @@ What the service refuses before reading a request:
 - a community's or a trustee's request (register, close, cancel, trustee steps, authorize)
   issued longer ago than the acceptance window every VTI node applies (ten minutes, with a
   minute's clock skew), as `expired`: a copy of one is not a standing instruction;
-- a proof whose verification method is not the issuer's, before anything is resolved;
+- a proof whose verification method is not a DID URL (with a fragment) under the issuer, before
+  anything is resolved;
 - on the HTTPS door, which proves no sender, a signer the service has no reason to know, as
   `permissionDenied` and before anything is fetched. A `did:key` or `did:peer` resolves with no
   I/O; any other DID is resolved only for a community named in `[communities] allowed`, or for a
   party the election the request names — held here — lists (its community, auditors or
-  trustees). An open box (`allow_any`) names no community, so a registration reaches it over
-  TSP or DIDComm, as the VTC sends one;
+  trustees), and then only when that election's community is named in `allowed` or is itself a
+  DID that had to be resolved to register (so over TSP or DIDComm). On an open box
+  (`allow_any`) a `did:key` community's auditors and trustees sign with a `did:key` or
+  `did:peer` on this door, or reach the box over TSP or DIDComm;
+- verification that takes longer than 15 seconds, resolution included, as `unavailable`;
 - a payload that does not validate against its task's schema.
 
 And when it reads a cast: an encrypted form whose ciphertexts are already on the board under
