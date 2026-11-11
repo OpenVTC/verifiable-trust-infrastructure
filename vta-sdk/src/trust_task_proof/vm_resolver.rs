@@ -66,6 +66,19 @@ fn unretrievable(detail: impl std::fmt::Display) -> DataIntegrityError {
     DataIntegrityError::Resolver(format!("{UNRETRIEVABLE}{detail}"))
 }
 
+/// Prefix of the refusal for a signer whose DID method this build does not
+/// resolve (VTI-KEY-009); the method follows it.
+const UNSUPPORTED_METHOD: &str = "the signer's DID method is not one this party resolves: ";
+
+/// The method of a refusal for a DID method this build does not resolve, if
+/// `e` is one.
+pub(crate) fn unsupported_method(e: &DataIntegrityError) -> Option<&str> {
+    match e {
+        DataIntegrityError::Resolver(msg) => msg.strip_prefix(UNSUPPORTED_METHOD),
+        _ => None,
+    }
+}
+
 /// Whether `e` means the signer's key could not be retrieved, as opposed to
 /// the proof being wrong.
 pub(crate) fn is_unretrievable(e: &DataIntegrityError) -> bool {
@@ -194,6 +207,19 @@ impl TrustTaskVmResolver {
         // need, and accept the exposure that flag exists to gate.
         if base_did.starts_with("did:peer:") {
             return resolve_did_peer(vm, base_did, purpose);
+        }
+
+        // VTI-KEY-009: material that can be relied on only by resolving a
+        // method this party does not resolve is refused as that, by name,
+        // before any resolver is asked — never as a lookup that happened to
+        // fail. The method is in the identifier, so naming it discloses
+        // nothing the producer did not send.
+        if let Some(method) = crate::resolved_methods::method_name(base_did)
+            && !crate::resolved_methods::resolves(method)
+        {
+            return Err(DataIntegrityError::Resolver(format!(
+                "{UNSUPPORTED_METHOD}{method}"
+            )));
         }
 
         let resolver = self.resolver.as_ref().ok_or_else(|| {

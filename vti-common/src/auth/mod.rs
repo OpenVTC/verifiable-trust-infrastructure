@@ -34,3 +34,20 @@ pub use vta_sdk::trust_task_proof::{
 pub use vta_sdk::trust_task_proof::{
     ProofPurpose, PurposeBound, PurposeVmResolver, purpose_for_document_type,
 };
+
+/// The refusal a failed Trust Task proof becomes.
+///
+/// A signer of a method this party does not resolve is refused as that, by
+/// name (VTI-KEY-009: `unsupportedDidMethod`). Every other failure renders as
+/// one opaque [`AppError::Unauthorized`], so an anonymous caller cannot learn
+/// whether a DID resolves or how a signature failed.
+///
+/// [`AppError::Unauthorized`]: crate::error::AppError::Unauthorized
+pub fn proof_refusal(e: DiProofError) -> crate::error::AppError {
+    match e {
+        DiProofError::UnsupportedDidMethod { method } => {
+            crate::error::AppError::UnsupportedDidMethod { method }
+        }
+        other => crate::error::AppError::Unauthorized(format!("Trust Task {other}")),
+    }
+}

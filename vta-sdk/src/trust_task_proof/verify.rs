@@ -70,6 +70,15 @@ pub enum DiProofError {
         /// The purpose the document needs.
         expected: &'static str,
     },
+    /// The signer's DID is of a method this party does not resolve, so the
+    /// proof cannot be checked and the document is refused unprocessed
+    /// (VTI-KEY-009). A refusal names the method with the discriminator
+    /// `unsupportedDidMethod`; the method is the producer's own identifier's,
+    /// so naming it reveals nothing.
+    UnsupportedDidMethod {
+        /// The method-name component of the signer's DID.
+        method: String,
+    },
 }
 
 impl DiProofError {
@@ -119,6 +128,10 @@ impl std::fmt::Display for DiProofError {
             Self::WrongPurpose { expected } => {
                 write!(f, "proof must be made for `{expected}`")
             }
+            Self::UnsupportedDidMethod { method } => write!(
+                f,
+                "proof verification failed: did:{method} is not a method this party resolves"
+            ),
         }
     }
 }
@@ -134,6 +147,11 @@ impl std::fmt::Display for DiProofError {
 /// one as "could not retrieve" would tell a caller a forged reply "may be
 /// genuine".
 fn classify(e: DataIntegrityError) -> DiProofError {
+    if let Some(method) = super::vm_resolver::unsupported_method(&e) {
+        return DiProofError::UnsupportedDidMethod {
+            method: method.to_string(),
+        };
+    }
     if super::vm_resolver::is_unretrievable(&e) {
         return DiProofError::ResolverFailed(e.to_string());
     }
@@ -538,6 +556,38 @@ mod tests {
             matches!(err, DiProofError::ResolverFailed(_)),
             "expected ResolverFailed, got {err:?}"
         );
+    }
+
+    /// VTI-KEY-009: a signer of a method this party does not resolve is
+    /// refused as that, naming the method — whatever resolver is configured,
+    /// and before any is asked — never as a lookup that happened to fail.
+    #[tokio::test]
+    async fn vti_key_009_a_signer_of_an_unresolved_method_is_refused_by_name() {
+        let doc: TrustTask<Value> = serde_json::from_value(serde_json::json!({
+            "id": "urn:uuid:11111111-1111-4111-8111-111111111112",
+            "type": "https://trusttasks.org/spec/vta/contexts/create/1.0",
+            "issuer": "did:example:123",
+            "recipient": "did:key:z6MkVta",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": "did:example:123#key-0",
+                "created": "2026-08-29T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        }))
+        .expect("a well-formed Trust Task");
+
+        let err = verify_trust_task_proof_with(&doc, &TrustTaskVmResolver::did_key_only())
+            .await
+            .expect_err("did:example is not resolved here");
+        match &err {
+            DiProofError::UnsupportedDidMethod { method } => assert_eq!(method, "example"),
+            other => panic!("expected UnsupportedDidMethod, got {other:?}"),
+        }
+        assert!(err.to_string().contains("did:example"), "{err}");
     }
 
     /// The resolver refuses keys the signer's DID document does not authorise

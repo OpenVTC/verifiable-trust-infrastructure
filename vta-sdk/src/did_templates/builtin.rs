@@ -82,6 +82,38 @@ pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
 mod tests {
     use super::*;
 
+    /// VTI-KEY-008: the nodes this workspace runs declare the optional
+    /// methods they resolve in their own documents, exactly the SDK's list and
+    /// with the JSON-LD term, so a peer whose identity is a `did:webs` may act
+    /// toward them. Templates for software outside this workspace (a mediator,
+    /// a trust registry, a push gateway) declare nothing: what they resolve is
+    /// not this workspace's to say.
+    #[test]
+    fn vti_key_008_workspace_node_templates_declare_what_they_resolve() {
+        use crate::resolved_methods::{
+            OPTIONAL_METHODS_DECLARED, RESOLVED_METHODS_IRI, RESOLVED_METHODS_MEMBER,
+        };
+        for name in ["vtc-host", "room-host", "dtg-witness", "ballot-box"] {
+            let doc = load_embedded(name).unwrap().document;
+            assert_eq!(
+                doc[RESOLVED_METHODS_MEMBER],
+                serde_json::json!(OPTIONAL_METHODS_DECLARED),
+                "{name}"
+            );
+            let defines = doc["@context"].as_array().is_some_and(|ctx| {
+                ctx.iter().any(|e| {
+                    e[RESOLVED_METHODS_MEMBER]["@id"] == RESOLVED_METHODS_IRI
+                        && e[RESOLVED_METHODS_MEMBER]["@type"] == "@json"
+                })
+            });
+            assert!(defines, "{name}: @context must define resolvedMethods");
+        }
+        for name in ["didcomm-mediator", "trust-registry", "push-gateway"] {
+            let doc = load_embedded(name).unwrap().document;
+            assert!(doc.get(RESOLVED_METHODS_MEMBER).is_none(), "{name}");
+        }
+    }
+
     #[test]
     fn every_builtin_parses_and_validates() {
         for name in BUILTIN_NAMES {

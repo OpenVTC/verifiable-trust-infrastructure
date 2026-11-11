@@ -114,6 +114,29 @@ pub enum AppError {
     #[error("{0}")]
     NoMatchingProtocol(Box<NoMatchingProtocol>),
 
+    /// This node would have acted as an identity of an optional method
+    /// (`did:webs`) toward a peer whose verified DID document does not declare
+    /// it resolves that method (VTI-KEY-008), so it sent nothing and did not
+    /// fall back to another identifier (VTI-KEY-009). Rendered as **502** with
+    /// the discriminator `methodNotDeclared`: like
+    /// [`Self::NoMatchingProtocol`], the failure is in reaching the peer, and
+    /// the remedy is on one side or the other, never a retry.
+    ///
+    /// Boxed for the reason [`Self::NoMatchingProtocol`] is.
+    #[error("{0}")]
+    MethodNotDeclared(Box<vta_sdk::resolved_methods::MethodNotDeclared>),
+
+    /// The request can be relied on only by resolving an identifier of a
+    /// method this service does not resolve, so it was refused unprocessed
+    /// (VTI-KEY-009). Rendered as **401** (a proof that cannot be checked)
+    /// with the discriminator `unsupportedDidMethod` and the method — which
+    /// is the requester's own identifier's, so naming it reveals nothing.
+    #[error("did:{method} is not a DID method this service resolves (VTI-KEY-009)")]
+    UnsupportedDidMethod {
+        /// The method-name component of the identifier.
+        method: String,
+    },
+
     /// The request did not carry a required `Trust-Task` header. Routes
     /// registered via [`crate::trust_task::TrustTaskRouter::route_with_task`]
     /// reject missing headers with this variant (400). Only `/health` is
@@ -201,6 +224,12 @@ pub struct NoMatchingProtocol {
     /// evident from the two sets (a plaintext REST endpoint; a document
     /// issued by a DID the messaging transports do not authenticate).
     pub note: Option<String>,
+}
+
+impl From<vta_sdk::resolved_methods::MethodNotDeclared> for AppError {
+    fn from(e: vta_sdk::resolved_methods::MethodNotDeclared) -> Self {
+        Self::MethodNotDeclared(Box::new(e))
+    }
 }
 
 impl From<NoMatchingProtocol> for AppError {
@@ -332,6 +361,8 @@ impl IntoResponse for AppError {
             AppError::ApprovalRequired { .. } => StatusCode::FORBIDDEN,
             AppError::Validation(_) => StatusCode::BAD_REQUEST,
             AppError::NoMatchingProtocol(_) => StatusCode::BAD_GATEWAY,
+            AppError::MethodNotDeclared(_) => StatusCode::BAD_GATEWAY,
+            AppError::UnsupportedDidMethod { .. } => StatusCode::UNAUTHORIZED,
             AppError::TrustTaskMissing => StatusCode::BAD_REQUEST,
             AppError::TrustTaskMismatch { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::TrustTaskMalformed(_) => StatusCode::BAD_REQUEST,
@@ -398,6 +429,18 @@ impl IntoResponse for AppError {
                 "counterpartyDid": e.peer,
                 "ours": e.ours,
                 "theirs": e.theirs,
+            }),
+            // VTI-KEY-009's discriminators, with what each names.
+            AppError::MethodNotDeclared(e) => serde_json::json!({
+                "error": vta_sdk::protocols::trust_task_reject_reasons::METHOD_NOT_DECLARED,
+                "message": self.to_string(),
+                "method": e.method,
+                "counterpartyDid": e.peer,
+            }),
+            AppError::UnsupportedDidMethod { method } => serde_json::json!({
+                "error": vta_sdk::protocols::trust_task_reject_reasons::UNSUPPORTED_DID_METHOD,
+                "message": self.to_string(),
+                "method": method,
             }),
             _ => serde_json::json!({ "error": self.to_string() }),
         };

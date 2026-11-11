@@ -247,6 +247,31 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
                 "theirs": refusal.theirs,
             })),
         },
+        // VTI-KEY-009, sending side: this VTA sent nothing, because the peer
+        // has not declared the optional method of the identity that would
+        // have acted. `taskFailed` for the reason `NoMatchingProtocol` is: a
+        // retry meets the same document. The method and the peer are public.
+        AppError::MethodNotDeclared(refusal) => RejectReason::TaskFailed {
+            reason: message,
+            details: Some(serde_json::json!({
+                "reason": reasons::METHOD_NOT_DECLARED,
+                "method": refusal.method,
+                "counterpartyDid": refusal.peer,
+            })),
+        },
+        // VTI-KEY-009, receiving side: relying on the request needs a method
+        // this VTA does not resolve.
+        AppError::UnsupportedDidMethod { method } => {
+            return reject_with_code(
+                doc,
+                TrustTaskCode::Standard(StandardCode::ProofInvalid),
+                message,
+                Some(serde_json::json!({
+                    "reason": reasons::UNSUPPORTED_DID_METHOD,
+                    "method": method,
+                })),
+            );
+        }
         AppError::Internal(cause) => {
             tracing::error!(cause = %cause, "trust task failed with an internal error");
             RejectReason::InternalError {
@@ -1368,6 +1393,53 @@ mod tests {
             }
             other => panic!("expected the typed variant back, got {other:?}"),
         }
+    }
+
+    /// VTI-KEY-009, sending side: a refusal to act toward a peer that has not
+    /// declared the method is `taskFailed`, names the method and the peer
+    /// under the specification's discriminator, and reads back typed.
+    #[test]
+    fn vti_key_009_method_not_declared_names_the_method_and_reads_back_typed() {
+        let err = AppError::from(vta_sdk::resolved_methods::MethodNotDeclared {
+            method: "webs".into(),
+            peer: "did:webvh:Qm:peer.example".into(),
+        });
+        let parsed: Value = serde_json::from_slice(&app_error_to_reject(&doc(), err).body)
+            .expect("error doc parses");
+        let payload = &parsed["payload"];
+        assert_eq!(payload["code"], "taskFailed", "{payload}");
+        assert_eq!(payload["details"]["reason"], "methodNotDeclared");
+        assert_eq!(payload["details"]["method"], "webs");
+        match vta_sdk::error::VtaError::method_refusal_from(&payload["details"]) {
+            Some(vta_sdk::error::VtaError::MethodNotDeclared {
+                method,
+                counterparty_did,
+            }) => {
+                assert_eq!(method, "webs");
+                assert_eq!(counterparty_did, "did:webvh:Qm:peer.example");
+            }
+            other => panic!("expected the typed variant back, got {other:?}"),
+        }
+    }
+
+    /// VTI-KEY-009, receiving side: material that needs a method this VTA
+    /// does not resolve is refused `proofInvalid`, discriminated
+    /// `unsupportedDidMethod` with the method, and reads back typed.
+    #[test]
+    fn vti_key_009_unsupported_did_method_is_proof_invalid_and_reads_back_typed() {
+        let err = AppError::UnsupportedDidMethod {
+            method: "example".into(),
+        };
+        let parsed: Value = serde_json::from_slice(&app_error_to_reject(&doc(), err).body)
+            .expect("error doc parses");
+        let payload = &parsed["payload"];
+        assert_eq!(payload["code"], "proofInvalid", "{payload}");
+        assert_eq!(payload["details"]["reason"], "unsupportedDidMethod");
+        assert_eq!(payload["details"]["method"], "example");
+        assert!(matches!(
+            vta_sdk::error::VtaError::method_refusal_from(&payload["details"]),
+            Some(vta_sdk::error::VtaError::UnsupportedDidMethod { method }) if method == "example"
+        ));
     }
 
     /// Only the gateway statuses are upstream failures. Any other
