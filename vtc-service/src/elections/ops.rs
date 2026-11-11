@@ -62,11 +62,13 @@ pub async fn registrar(state: &AppState) -> Result<Arc<Registrar>, AppError> {
                         .into(),
                 )
             })?;
-            let master = signer.ed25519_signing_key().ok_or_else(|| {
-                AppError::Internal("the credential signer holds no Ed25519 key".into())
+            // The derivation root, not the current signing key: an open
+            // election's voting key must survive a rotation of it.
+            let master = signer.derivation_root().ok_or_else(|| {
+                AppError::Internal("the credential signer holds no derivation root".into())
             })?;
             let mut secret = zeroize::Zeroizing::new([0u8; 32]);
-            Hkdf::<Sha256>::new(None, &master.to_bytes())
+            Hkdf::<Sha256>::new(None, master.as_bytes())
                 .expand(KEY_INFO, secret.as_mut())
                 .map_err(|e| AppError::Internal(format!("derive the voting secret: {e}")))?;
             Registrar::derive(&community, &secret)

@@ -23,10 +23,26 @@
 //! - The DIDComm `Secret::generate_ed25519` / `generate_x25519`
 //!   constructors — they become the VTC DID's `#key-0` and
 //!   `#key-1` resolver entries.
-//! - HKDF derivations for the install-token signer and the audit
-//!   key. The Ed25519 private bytes (32) are the master IKM;
-//!   `info` strings (`vtc-install-jwt-key/v2`, `vtc-audit-key/v2`)
-//!   domain-separate them. Bumping from `/v1` is intentional —
+//! - HKDF derivations for the at-rest storage key, the install-token
+//!   signer, the audit key and the community's other long-lived keys
+//!   (hidden-vetting, voting, tag mask, storage-credential
+//!   fingerprint). Their IKM is the **derivation root**
+//!   ([`VtcKeyBundle::derivation_root`]): the Ed25519 private bytes for
+//!   every bundle that stores none — every VTC to date — and a stored
+//!   root once the signing key can rotate, so a rotation of the
+//!   signing key leaves them all unchanged. `info` strings
+//!   (`vtc-storage-key/v1`, `vtc-install-jwt-key/v2`, `vtc-audit-key/v2`)
+//!   domain-separate them.
+//!
+//! ## Keys by role
+//!
+//! A key-role identity — a `did:webs` VTC (VTI-KEY-001, the S7 step of
+//! `docs/05-design-notes/did-webs-in-the-vta.md`) — carries a distinct
+//! authentication (`operational`) key in
+//! [`VtcKeyBundle::authentication_key`], and names every key by the
+//! id its document gives it ([`VtcKeyBundle::key_role_ids`]); the
+//! Ed25519 key is then its `attestation` key. Without one, the
+//! `#key-0` / `#key-1` convention holds as before. Bumping from `/v1` is intentional —
 //!   any pre-rework keyring entry derived from a 64-byte BIP-39
 //!   seed produces different HKDF output under `/v2`, so a stale
 //!   deployment fails loud at the verification step rather than
@@ -85,6 +101,33 @@ pub struct VtcKeyBundle {
     /// this change requires re-provisioning. Stated rather than discovered.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_signing_keys: Vec<AdditionalSigningKey>,
+    /// The key that authenticates this VTC, when it is not the Ed25519 key
+    /// above: the `operational` key of a key-role identity (a `did:webs` VTC,
+    /// VTI-KEY-072), which signs its Trust Task requests and responses
+    /// (`proofPurpose: authentication`) and its DIDComm messages, while the
+    /// Ed25519 key above is its `attestation` key and signs credentials.
+    ///
+    /// **Absent for every `did:webvh` VTC**, whose one Ed25519 `#key-0` serves
+    /// both relationships. Its presence is what makes the bundle a key-role
+    /// identity: the VTC then names its keys by the ids stored here rather than
+    /// by the `#key-0` / `#key-1` convention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication_key: Option<AdditionalSigningKey>,
+    /// The secret the VTC's long-lived local keys derive from — the at-rest
+    /// storage key, the install-token signer, the initial audit HMAC key and
+    /// the community's other HKDF-derived keys — as base58btc multibase of the
+    /// 32 raw bytes.
+    ///
+    /// **Absent means the Ed25519 private key above**, which is what every VTC
+    /// to date derives from, so an existing bundle derives exactly what it
+    /// always did. It is written down only when the signing key can stop being
+    /// the key the VTC was set up with — a key-role rotation replaces the
+    /// attestation key — because a root that followed the current signing key
+    /// would make everything encrypted at rest unreadable on the first
+    /// rotation. [`VtcKeyBundle::carry_derivation_root_to`] is how a successor
+    /// bundle keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_root_multibase: Option<String>,
 }
 
 /// One signing key beyond `#key-0`, as stored in the secret store.
@@ -137,6 +180,14 @@ impl std::fmt::Debug for VtcKeyBundle {
             .field("x25519_public_multibase", &self.x25519_public_multibase)
             .field("x25519_private_multibase", &"<redacted>")
             .field("additional_signing_keys", &self.additional_signing_keys)
+            .field("authentication_key", &self.authentication_key)
+            .field(
+                "derivation_root_multibase",
+                &self
+                    .derivation_root_multibase
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -201,6 +252,8 @@ impl VtcKeyBundle {
             x25519_public_multibase: material.ka_key.public_key_multibase.clone(),
             x25519_private_multibase: material.ka_key.private_key_multibase.clone(),
             additional_signing_keys: Vec::new(),
+            authentication_key: None,
+            derivation_root_multibase: None,
         }
     }
 
@@ -240,7 +293,102 @@ impl VtcKeyBundle {
                     private_key_multibase: k.private_key_multibase.clone(),
                 })
                 .collect(),
+            authentication_key: None,
+            derivation_root_multibase: None,
         }
+    }
+
+    /// The 32-byte secret this VTC's long-lived local keys derive from (see
+    /// [`Self::derivation_root_multibase`]): the stored root when there is one,
+    /// otherwise the Ed25519 private key — byte-identical to the input every
+    /// existing deployment has always derived from.
+    pub fn derivation_root(&self) -> Result<Zeroizing<[u8; 32]>, AppError> {
+        match &self.derivation_root_multibase {
+            None => self.ed25519_private_bytes(),
+            Some(mb) => {
+                let (base, bytes) = multibase::decode(mb).map_err(|e| {
+                    AppError::Internal(format!("derivation root multibase decode: {e}"))
+                })?;
+                let raw: [u8; 32] = bytes
+                    .as_slice()
+                    .try_into()
+                    .ok()
+                    .filter(|_| base == Base::Base58Btc)
+                    .ok_or_else(|| {
+                        AppError::Internal(
+                            "the derivation root is not 32 bytes of base58btc multibase".into(),
+                        )
+                    })?;
+                Ok(Zeroizing::new(raw))
+            }
+        }
+    }
+
+    /// Make `next` — a bundle that replaces this one, such as one carrying a
+    /// rotated signing key — derive from the same root as this one, writing the
+    /// root down when `next` does not already carry it.
+    ///
+    /// Every key encrypted at rest, the install-token signer and the audit key
+    /// derive from the root, so a successor with another root is a VTC that can
+    /// no longer read its own store. That is refused rather than written: the
+    /// caller learns it before anything is replaced.
+    pub fn carry_derivation_root_to(&self, next: &mut VtcKeyBundle) -> Result<(), AppError> {
+        if next.integration_did != self.integration_did {
+            return Err(AppError::Validation(format!(
+                "the successor bundle is for {}, not this VTC's {}",
+                next.integration_did, self.integration_did
+            )));
+        }
+        let root = self.derivation_root()?;
+        if next.derivation_root_multibase.is_some() {
+            if *next.derivation_root()? != *root {
+                return Err(AppError::Conflict(
+                    "the successor bundle derives from another root: this VTC's at-rest \
+                     storage key, install-token signer and audit key would all change, and \
+                     everything it has encrypted would become unreadable — refusing to \
+                     replace the bundle"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        }
+        next.derivation_root_multibase = Some(multibase::encode(Base::Base58Btc, *root));
+        Ok(())
+    }
+
+    /// Whether this is a key-role identity (see [`Self::authentication_key`]).
+    pub fn has_key_roles(&self) -> bool {
+        self.authentication_key.is_some()
+    }
+
+    /// The verification-method ids this bundle gives the VTC's keys by role,
+    /// under `vtc_did` — for a key-role identity only; `None` for one that
+    /// follows the `#key-0` / `#key-1` convention.
+    ///
+    /// The ids are the ones the VTA minted the keys under and published in the
+    /// VTC's document, so they are the document's own ids, read from local
+    /// state rather than resolved: the same shape
+    /// [`vta_sdk::node_keys::NodeKeyIds::from_document`] reads from a key-role
+    /// document (the attestation key signs and seals, the operational key
+    /// authenticates, the messaging key agrees).
+    pub fn key_role_ids(&self, vtc_did: &str) -> Option<vta_sdk::node_keys::NodeKeyIds> {
+        let authentication = self.authentication_key.as_ref()?;
+        let signing = method_under(vtc_did, &self.ed25519_key_id);
+        // `NodeKeyIds` is non-exhaustive: start from a value and set every field.
+        let mut ids = vta_sdk::node_keys::NodeKeyIds::conventional(vtc_did);
+        ids.authentication = method_under(vtc_did, &authentication.key_id);
+        ids.key_agreement = Some(method_under(vtc_did, &self.x25519_key_id));
+        ids.sealed_transfer = Some(signing.clone());
+        ids.signing = signing;
+        Some(ids)
+    }
+}
+
+/// `key_id`'s fragment under `did` (`key_id` itself when it has none).
+fn method_under(did: &str, key_id: &str) -> String {
+    match vta_sdk::node_keys::fragment(key_id) {
+        Some(fragment) => format!("{did}#{fragment}"),
+        None => key_id.to_string(),
     }
 }
 
@@ -331,6 +479,8 @@ pub fn bundle_from_raw(
         // exists for tests and the legacy bootstrap, neither of which mints a
         // post-quantum key.
         additional_signing_keys: Vec::new(),
+        authentication_key: None,
+        derivation_root_multibase: None,
     }
 }
 
@@ -362,8 +512,8 @@ fn encode_public_multibase(bytes: &[u8; 32], codec: [u8; 2]) -> String {
 ///
 /// The first is always the Ed25519 `#key-0`, which keeps
 /// [`crate::credentials::LocalSigner`]'s primary — the assertion method every
-/// existing consumer expects, and the key whose seed the install-token, audit
-/// and storage derivations use.
+/// existing consumer expects, and (without a stored derivation root) the key
+/// whose seed the install-token, audit and storage derivations use.
 ///
 /// Returns an error rather than skipping a key it cannot decode. A
 /// post-quantum key the VTA minted, published in the DID document and sealed
@@ -430,6 +580,82 @@ pub fn decode_secret_store_value(
         .x25519_private_bytes()
         .map_err(|e| format!("bundle X25519 decode: {e}"))?;
     Ok((ed, x))
+}
+
+/// The VTC's own key material by role, decoded from whatever the secret store
+/// holds (both shapes [`decode_secret_store_value`] accepts).
+pub struct OwnKeyMaterial {
+    /// The Ed25519 private key: the attestation key, which signs credentials
+    /// (and, without key roles, authenticates too).
+    pub ed25519: Zeroizing<[u8; 32]>,
+    /// The X25519 key-agreement private key.
+    pub x25519: Zeroizing<[u8; 32]>,
+    /// What the long-lived local keys derive from
+    /// ([`VtcKeyBundle::derivation_root`]).
+    pub derivation_root: Zeroizing<[u8; 32]>,
+    /// The distinct authentication (`operational`) key of a key-role identity,
+    /// as a secret named by its verification method; `None` without key roles.
+    pub authentication: Option<affinidi_secrets_resolver::secrets::Secret>,
+    /// The ids a key-role identity's bundle gives its keys
+    /// ([`VtcKeyBundle::key_role_ids`]); `None` without key roles.
+    pub key_role_ids: Option<vta_sdk::node_keys::NodeKeyIds>,
+}
+
+/// Decode the VTC's own key material by role (see [`OwnKeyMaterial`]).
+///
+/// Errors as [`decode_secret_store_value`] does, and when a key-role bundle's
+/// authentication key does not decode or does not match the public key stored
+/// beside it: the document publishes that key as the VTC's authentication
+/// method, so booting without it would leave every Trust Task and DIDComm
+/// message the VTC sends failing verification.
+pub fn own_key_material(vtc_did: &str, stored: &[u8]) -> Result<OwnKeyMaterial, String> {
+    let (ed25519, x25519) = decode_secret_store_value(vtc_did, stored)?;
+    if stored.len() == 64 {
+        return Ok(OwnKeyMaterial {
+            derivation_root: ed25519.clone(),
+            ed25519,
+            x25519,
+            authentication: None,
+            key_role_ids: None,
+        });
+    }
+    let bundle = VtcKeyBundle::from_secret_store_bytes(stored)
+        .map_err(|e| format!("secret store payload not a VtcKeyBundle: {e}"))?;
+    let derivation_root = bundle
+        .derivation_root()
+        .map_err(|e| format!("bundle derivation root: {e}"))?;
+    let key_role_ids = bundle.key_role_ids(vtc_did);
+    let authentication = match (&bundle.authentication_key, &key_role_ids) {
+        (Some(key), Some(ids)) => {
+            let secret = affinidi_secrets_resolver::secrets::Secret::from_multibase(
+                &key.private_key_multibase,
+                Some(&ids.authentication),
+            )
+            .map_err(|e| {
+                format!(
+                    "the authentication key '{}' does not decode: {e}",
+                    key.key_id
+                )
+            })?;
+            if secret.get_public_keymultibase().ok().as_deref()
+                != Some(key.public_key_multibase.as_str())
+            {
+                return Err(format!(
+                    "the authentication key '{}' does not match the public key stored with it",
+                    key.key_id
+                ));
+            }
+            Some(secret)
+        }
+        _ => None,
+    };
+    Ok(OwnKeyMaterial {
+        ed25519,
+        x25519,
+        derivation_root,
+        authentication,
+        key_role_ids,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -771,5 +997,297 @@ mod hybrid_tests {
             msg.contains("pq-signing") && msg.contains("refusing to boot"),
             "the refusal must name the slot and say what it is refusing: {msg}"
         );
+    }
+}
+
+/// A VTC whose own DID is a key-role did:webs (S7), and the derivation root
+/// that keeps its long-lived keys stable across a signing-key rotation.
+#[cfg(test)]
+mod key_role_tests {
+    use super::*;
+    use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+    use affinidi_secrets_resolver::secrets::Secret;
+    use vta_sdk::node_keys::NodeKeyIds;
+
+    const ATTESTATION: [u8; 32] = [0x31; 32];
+    const OPERATIONAL: [u8; 32] = [0x32; 32];
+    const MESSAGING: [u8; 32] = [0x33; 32];
+
+    fn ed25519_public(seed: &[u8; 32]) -> [u8; 32] {
+        ed25519_dalek::SigningKey::from_bytes(seed)
+            .verifying_key()
+            .to_bytes()
+    }
+
+    /// A key-role did:webs as the VTA mints one: distinct attestation,
+    /// operational and messaging keys, the KEL's own key in no relationship.
+    fn key_role_vtc() -> (String, serde_json::Value) {
+        use affinidi_did_webs::key_roles::{KeyRoles, VerificationKey};
+        use affinidi_did_webs::{CreateConfig, DidWebs, KeyAgreementKey, create_controlled};
+        use affinidi_keri::controller::{Inception, KeySigner, NextKey};
+        use affinidi_keri_core::threshold::Threshold;
+        use affinidi_keri_crypto::Signer;
+
+        let controller = Signer::new("A", vec![1u8; 32]).unwrap();
+        let next = Signer::new("A", vec![2u8; 32]).unwrap();
+        let x25519 =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(MESSAGING)).to_bytes();
+        let roles = KeyRoles::new()
+            .with_attestation(VerificationKey::Ed25519(ed25519_public(&ATTESTATION)))
+            .with_operational(VerificationKey::Ed25519(ed25519_public(&OPERATIONAL)))
+            .with_messaging(KeyAgreementKey::X25519(x25519));
+        let config = CreateConfig::builder("vtc.example")
+            .controlled(Inception::new(
+                vec![controller.public_key().unwrap()],
+                Threshold::Simple(1),
+                vec![NextKey::PublicKey(next.public_key().unwrap())],
+                Threshold::Simple(1),
+            ))
+            .key_roles(roles)
+            .build();
+        let created = create_controlled(config, &[&controller as &dyn KeySigner]).unwrap();
+        let did = created.did().to_string();
+        let parsed = DidWebs::parse(&did).unwrap();
+        let document = serde_json::to_value(
+            affinidi_did_webs::resolve_from_artifacts(
+                &parsed,
+                &created.artifacts().keri_cesr,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        (did, document)
+    }
+
+    /// The bundle the VTA would seal to such a VTC: each key under the id its
+    /// document gives it.
+    fn key_role_bundle(did: &str, document: &serde_json::Value) -> VtcKeyBundle {
+        let ids = NodeKeyIds::from_document(did, document).expect("key-role ids");
+        let mut bundle = bundle_from_raw(did, &ATTESTATION, &MESSAGING);
+        bundle.ed25519_key_id = ids.signing.clone();
+        bundle.x25519_key_id = ids.key_agreement.clone().expect("messaging key");
+        let operational = Secret::generate_ed25519(None, Some(&OPERATIONAL));
+        bundle.authentication_key = Some(AdditionalSigningKey {
+            slot: "operational".into(),
+            key_type: vta_sdk::keys::KeyType::Ed25519,
+            key_id: ids.authentication.clone(),
+            public_key_multibase: operational.get_public_keymultibase().unwrap(),
+            private_key_multibase: operational.get_private_keymultibase().unwrap(),
+        });
+        bundle
+    }
+
+    fn signer_for(did: &str, bundle: &VtcKeyBundle) -> crate::credentials::LocalSigner {
+        let stored = bundle.to_secret_store_bytes().unwrap();
+        let own = own_key_material(did, &stored).expect("decodes");
+        crate::credentials::LocalSigner::for_own_keys(did.into(), &own)
+    }
+
+    fn verify(doc: &serde_json::Value, public: &[u8; 32]) {
+        let proof: DataIntegrityProof = serde_json::from_value(doc["proof"].clone()).unwrap();
+        let mut unsigned = doc.clone();
+        unsigned.as_object_mut().unwrap().remove("proof");
+        proof
+            .verify_with_public_key(&unsigned, public, VerifyOptions::new())
+            .expect("the proof verifies under the key its method names");
+    }
+
+    #[test]
+    fn a_key_role_bundle_names_its_keys_as_its_document_does() {
+        let (did, document) = key_role_vtc();
+        let bundle = key_role_bundle(&did, &document);
+        assert!(bundle.has_key_roles());
+        let from_document = NodeKeyIds::from_document(&did, &document).unwrap();
+        assert_eq!(bundle.key_role_ids(&did), Some(from_document.clone()));
+        assert_ne!(from_document.signing, from_document.authentication);
+        assert!(!from_document.signing.ends_with("#key-0"));
+    }
+
+    /// S7: credentials are signed with the attestation key, Trust Task
+    /// requests with the operational key, each under its document id.
+    #[tokio::test]
+    async fn a_did_webs_vtc_signs_credentials_with_attestation_and_trust_tasks_with_operational() {
+        let (did, document) = key_role_vtc();
+        let ids = NodeKeyIds::from_document(&did, &document).unwrap();
+        let signer = signer_for(&did, &key_role_bundle(&did, &document));
+        assert_eq!(signer.assertion_method_id(), ids.signing);
+        assert_eq!(signer.authentication_method_id(), ids.authentication);
+
+        let mut vc = serde_json::json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "id": "urn:uuid:webs-vtc-probe",
+            "type": ["VerifiableCredential"],
+            "issuer": did,
+            "credentialSubject": { "id": "did:key:z6MkHolder" },
+        });
+        signer
+            .sign_doc(&mut vc)
+            .await
+            .expect("signs the credential");
+        assert_eq!(vc["proof"]["verificationMethod"], ids.signing.as_str());
+        assert_eq!(vc["proof"]["proofPurpose"], "assertionMethod");
+        verify(&vc, &ed25519_public(&ATTESTATION));
+
+        let task = vti_common::capability_client::build_document(
+            &did,
+            "did:web:registry.example",
+            "https://trusttasks.org/spec/registry/record/put/0.3",
+            serde_json::json!({}),
+        );
+        let mut task = serde_json::to_value(&task).unwrap();
+        signer
+            .sign_operational_doc(&mut task)
+            .await
+            .expect("signs the request");
+        assert_eq!(
+            task["proof"]["verificationMethod"],
+            ids.authentication.as_str()
+        );
+        assert_eq!(task["proof"]["proofPurpose"], "authentication");
+        verify(&task, &ed25519_public(&OPERATIONAL));
+
+        // An attested response is an assertion: the attestation key.
+        let mut attested = serde_json::json!({
+            "type": "urn:example:attested-response",
+            "payload": {},
+        });
+        signer.sign_attested_response(&mut attested).await.unwrap();
+        assert_eq!(
+            attested["proof"]["verificationMethod"],
+            ids.signing.as_str()
+        );
+    }
+
+    /// Without key roles nothing moves: `#key-0` signs everything.
+    #[tokio::test]
+    async fn a_did_webvh_vtc_still_signs_everything_as_key_0() {
+        const DID: &str = "did:webvh:abc:vtc.example.com";
+        let signer = signer_for(DID, &bundle_from_raw(DID, &[0x11; 32], &[0x22; 32]));
+        assert_eq!(signer.assertion_method_id(), format!("{DID}#key-0"));
+        assert_eq!(signer.authentication_method_id(), format!("{DID}#key-0"));
+        assert!(signer.key_role_ids().is_none());
+    }
+
+    /// The derived keys of an existing did:webvh VTC are exactly what they were
+    /// — golden values for the seed `0x11…`, computed with HKDF-SHA256 before
+    /// the derivation root existed (IKM = the Ed25519 seed, no salt).
+    #[test]
+    fn an_existing_vtcs_derived_keys_are_unchanged() {
+        const DID: &str = "did:webvh:abc:vtc.example.com";
+        let stored = bundle_from_raw(DID, &[0x11; 32], &[0x22; 32])
+            .to_secret_store_bytes()
+            .unwrap();
+        let own = own_key_material(DID, &stored).unwrap();
+        assert_eq!(*own.derivation_root, [0x11; 32]);
+        let storage = crate::server::derive_storage_key(&*own.derivation_root).unwrap();
+        assert_eq!(
+            hex::encode(storage),
+            "61b49277009d388472d2e748c42f723d0936653268f427ba486db56327fec7f7"
+        );
+        let hkdf = |info: &[u8]| {
+            let mut out = [0u8; 32];
+            hkdf::Hkdf::<sha2::Sha256>::new(None, &*own.derivation_root)
+                .expand(info, &mut out)
+                .unwrap();
+            hex::encode(out)
+        };
+        assert_eq!(
+            hkdf(vti_common::audit::key_store::VTC_AUDIT_KEY_INFO),
+            "224c148c2fd6dbf2980e3a68ec275bfbad16d612647ce4f5863725fc9c78c3b7"
+        );
+        assert_eq!(
+            hkdf(b"vtc-install-jwt-key/v2"),
+            "4397515aed931ed8af00b9157c8d662bd0bd03de67bce45938c04cdc1d626300"
+        );
+        // The signer's root (hidden-vetting, voting, mask, fingerprint keys)
+        // is the same bytes.
+        let signer = crate::credentials::LocalSigner::for_own_keys(DID.into(), &own);
+        assert_eq!(signer.derivation_root().unwrap().as_bytes(), &[0x11; 32]);
+        // And a legacy 64-byte fixture derives from its Ed25519 half.
+        let mut raw = vec![0x11; 32];
+        raw.extend_from_slice(&[0x22; 32]);
+        assert_eq!(
+            *own_key_material(DID, &raw).unwrap().derivation_root,
+            [0x11; 32]
+        );
+        // An unchanged bundle writes no new field.
+        let text = String::from_utf8(stored).unwrap();
+        assert!(!text.contains("derivation_root"), "{text}");
+        assert!(!text.contains("authentication_key"), "{text}");
+    }
+
+    /// A successor bundle with a rotated signing key keeps the root, so the
+    /// storage key, install-token key and audit key survive the rotation.
+    #[test]
+    fn the_derived_keys_survive_a_signing_key_rotation() {
+        const DID: &str = "did:webvh:abc:vtc.example.com";
+        let current = bundle_from_raw(DID, &[0x11; 32], &[0x22; 32]);
+        let mut rotated = bundle_from_raw(DID, &[0x44; 32], &[0x22; 32]);
+        current.carry_derivation_root_to(&mut rotated).unwrap();
+
+        let before = own_key_material(DID, &current.to_secret_store_bytes().unwrap()).unwrap();
+        let after = own_key_material(DID, &rotated.to_secret_store_bytes().unwrap()).unwrap();
+        assert_ne!(*before.ed25519, *after.ed25519, "the signing key rotated");
+        assert_eq!(*before.derivation_root, *after.derivation_root);
+        assert_eq!(
+            crate::server::derive_storage_key(&*before.derivation_root),
+            crate::server::derive_storage_key(&*after.derivation_root),
+        );
+
+        // An install token minted before the rotation verifies after it.
+        use crate::install::token::{
+            InstallTokenSigner, mint_passkey_install_token, parse_install_token,
+        };
+        let minted = mint_passkey_install_token(
+            &InstallTokenSigner::from_master_seed(&*before.derivation_root).unwrap(),
+            DID,
+            3600,
+        )
+        .unwrap();
+        parse_install_token(
+            &InstallTokenSigner::from_master_seed(&*after.derivation_root).unwrap(),
+            &minted.jwt,
+        )
+        .expect("an outstanding install token survives the rotation");
+
+        // Carrying again is a no-op; a successor with another root is refused.
+        let mut again = rotated.clone();
+        rotated.carry_derivation_root_to(&mut again).unwrap();
+        assert_eq!(again, rotated);
+        let mut foreign = bundle_from_raw(DID, &[0x55; 32], &[0x22; 32]);
+        foreign.derivation_root_multibase = Some(multibase::encode(Base::Base58Btc, [0x66; 32]));
+        let err = current.carry_derivation_root_to(&mut foreign).unwrap_err();
+        assert!(err.to_string().contains("another root"), "{err}");
+        let mut other_did = bundle_from_raw("did:webvh:x:other.example", &[0x55; 32], &[0x22; 32]);
+        assert!(current.carry_derivation_root_to(&mut other_did).is_err());
+    }
+
+    /// The root is redacted from `Debug`.
+    #[test]
+    fn the_root_is_redacted() {
+        let mut b = bundle_from_raw("did:webvh:abc:vtc.example.com", &[0x11; 32], &[0x22; 32]);
+        let root = multibase::encode(Base::Base58Btc, [0x66; 32]);
+        b.derivation_root_multibase = Some(root.clone());
+        assert!(!format!("{b:?}").contains(&root));
+        assert_eq!(*b.derivation_root().unwrap(), [0x66; 32]);
+    }
+
+    /// A key-role bundle whose operational key does not match its stored
+    /// public half refuses to load.
+    #[test]
+    fn a_mismatched_operational_key_refuses() {
+        let (did, document) = key_role_vtc();
+        let mut bundle = key_role_bundle(&did, &document);
+        let other = Secret::generate_ed25519(None, Some(&[0x77; 32]));
+        bundle
+            .authentication_key
+            .as_mut()
+            .unwrap()
+            .public_key_multibase = other.get_public_keymultibase().unwrap();
+        let err = own_key_material(&did, &bundle.to_secret_store_bytes().unwrap())
+            .err()
+            .expect("refused");
+        assert!(err.contains("does not match"), "{err}");
     }
 }

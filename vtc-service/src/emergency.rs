@@ -334,8 +334,10 @@ pub async fn run_emergency_bootstrap_with_store(
     // `vtc/admin/bootstrap` writes the entry; the authority is recorded on the
     // invitation regardless, so a claim on a community that has meanwhile
     // gained one writes it at finish instead (item 9).
-    let ed25519 = bundle.ed25519_private_bytes()?;
-    let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
+    // The daemon derives the install-token key from the derivation root
+    // (`server::init_auth`); a token minted under anything else never verifies.
+    let root = bundle.derivation_root()?;
+    let signer = InstallTokenSigner::from_master_seed(&*root)?;
     let issuer = bundle.integration_did.clone();
     let minted = mint_passkey_install_token(&signer, &issuer, INSTALL_TOKEN_DEFAULT_TTL_SECS)?;
     let claim_code = crate::install::claim_secret::generate();

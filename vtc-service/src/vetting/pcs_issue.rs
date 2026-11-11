@@ -404,11 +404,13 @@ pub fn derive_issuer(state: &AppState, community_did: &str) -> Result<Issuer, Ap
                 .into(),
         )
     })?;
-    let master = signer.ed25519_signing_key().ok_or_else(|| {
-        AppError::Internal("the credential signer holds no Ed25519 key to derive from".into())
+    // The derivation root, not the current signing key: the community's
+    // published vetting keys must survive a rotation of its attestation key.
+    let master = signer.derivation_root().ok_or_else(|| {
+        AppError::Internal("the credential signer holds no derivation root to derive from".into())
     })?;
     let mut secret = [0u8; 32];
-    Hkdf::<Sha256>::new(None, &master.to_bytes())
+    Hkdf::<Sha256>::new(None, master.as_bytes())
         .expand(KEY_INFO, &mut secret)
         .map_err(|e| AppError::Internal(format!("derive hidden-vetting secret: {e}")))?;
 

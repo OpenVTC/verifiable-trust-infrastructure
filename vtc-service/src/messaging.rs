@@ -116,10 +116,20 @@ pub struct VtcMessaging {
 /// fallback when no resolver is configured or the DID can't be resolved, so
 /// the production `did:webvh` path is unchanged either way — a `did:webvh`
 /// document lists those exact ids, so resolution returns them anyway.
+///
+/// A key-role identity (a `did:webs` VTC) passes `key_roles`, the ids its own
+/// key bundle gives its keys — the ids the VTA minted them under and published
+/// — and they are used without resolving: local state, not an answer the host
+/// serving the document could shape, and no fallback to `#key-0` / `#key-1`,
+/// which such a document does not have.
 pub(crate) async fn vtc_key_ids(
     did_resolver: Option<&DIDCacheClient>,
     vtc_did: &str,
+    key_roles: Option<&vta_sdk::node_keys::NodeKeyIds>,
 ) -> (String, Option<String>) {
+    if let Some(ids) = key_roles {
+        return (ids.authentication.clone(), ids.key_agreement.clone());
+    }
     let conventional = || {
         let ids = vta_sdk::node_keys::NodeKeyIds::conventional(vtc_did);
         (ids.authentication, ids.key_agreement)
@@ -451,7 +461,12 @@ pub async fn run_didcomm_service(
 
     // Collect secrets for the profile, keyed by the verification-method ids
     // the VTC's own DID document actually declares (see `vtc_key_ids`).
-    let (signing_id, ka_id) = vtc_key_ids(state.did_resolver.as_ref(), vtc_did).await;
+    let key_roles = state
+        .credential_signer
+        .as_ref()
+        .and_then(|s| s.key_role_ids().cloned());
+    let (signing_id, ka_id) =
+        vtc_key_ids(state.did_resolver.as_ref(), vtc_did, key_roles.as_ref()).await;
     let mut secrets = Vec::new();
     if let Some(s) = secrets_resolver.get_secret(&signing_id).await {
         secrets.push(s);

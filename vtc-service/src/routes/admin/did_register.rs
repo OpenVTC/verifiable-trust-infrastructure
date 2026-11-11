@@ -99,9 +99,16 @@ pub(crate) async fn register_inner(
     };
 
     let host = root_host(&did).ok_or_else(|| {
-        refused(InstallRefusal::NotServedHere(format!(
-            "{did} has a path, so a DID host publishes it; send the new entry there"
-        )))
+        refused(InstallRefusal::NotServedHere(
+            if did.starts_with("did:webs:") {
+                format!(
+                    "{did} is a did:webs, which the VTA holding it publishes to its host; \
+                     there is no log served here"
+                )
+            } else {
+                format!("{did} has a path, so a DID host publishes it; send the new entry there")
+            },
+        ))
     })?;
     if payload.path.as_str() != ROOT_SLOT {
         return Err(AppError::Validation(format!(
