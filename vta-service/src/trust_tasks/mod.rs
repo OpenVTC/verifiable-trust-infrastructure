@@ -894,7 +894,7 @@ pub(crate) async fn load_operational_secret(
             return Ok(secret);
         }
     }
-    crate::operations::credentials::load_vta_issuer_secret(state, vta_did, purpose).await
+    crate::operations::credentials::load_vta_operational_secret(state, vta_did, purpose).await
 }
 
 /// Sign `doc` in place with `secret` and `proofPurpose: authentication` — the

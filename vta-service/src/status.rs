@@ -365,8 +365,10 @@ async fn send_trust_ping(
     let webs_ks = store.keyspace(crate::keyspaces::WEBS).ok();
     let self_keys = crate::self_keys::self_keys(vta_did, webvh_ks.as_ref(), webs_ks.as_ref()).await;
 
+    // The DIDComm sender's key: the authentication key (a key-role
+    // identity's `operational` one; a webvh VTA's `#key-0`).
     let signing: KeyRecord = keys_ks
-        .get(crate::keys::store_key(&self_keys.signing.record_id))
+        .get(crate::keys::store_key(&self_keys.authentication.record_id))
         .await?
         .ok_or("VTA signing key record not found")?;
 
@@ -394,7 +396,7 @@ async fn send_trust_ping(
             .ok_or("VTA key-agreement key record not found")?;
 
         let mut signing_secret = root.derive_ed25519(&signing.derivation_path)?;
-        signing_secret.id = self_keys.signing.vm_id.clone();
+        signing_secret.id = self_keys.authentication.vm_id.clone();
         tdk.secrets_resolver().insert(signing_secret).await;
 
         let mut ka_secret = root.derive_x25519(&ka.derivation_path)?;

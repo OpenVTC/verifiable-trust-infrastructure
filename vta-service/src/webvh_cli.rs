@@ -42,6 +42,7 @@ async fn offline_signing_bridge(
     imported_ks: &crate::store::KeyspaceHandle,
     contexts_ks: &crate::store::KeyspaceHandle,
     webvh_ks: &crate::store::KeyspaceHandle,
+    webs_ks: Option<&crate::store::KeyspaceHandle>,
     seed_store: &dyn crate::keys::seed_store::SeedStore,
     audit: &vta_audit::SharedAuditSink,
 ) -> Arc<DIDCommBridge> {
@@ -51,6 +52,7 @@ async fn offline_signing_bridge(
         imported_ks,
         contexts_ks,
         Some(webvh_ks),
+        webs_ks,
         seed_store,
         audit,
     )
@@ -277,6 +279,7 @@ pub async fn run_create_did(
         &imported_ks,
         &contexts_ks,
         &webvh_ks,
+        cs.keyspace(crate::keyspaces::WEBS).ok().as_ref(),
         &*seed_store,
         &audit,
     )
@@ -453,6 +456,7 @@ pub async fn run_delete_did(
         &imported_ks,
         &contexts_ks,
         &webvh_ks,
+        cs.keyspace(crate::keyspaces::WEBS).ok().as_ref(),
         &*seed_store,
         &audit,
     )
@@ -601,6 +605,7 @@ pub async fn run_edit_did(
         &imported_ks,
         &contexts_ks,
         &webvh_ks,
+        cs.keyspace(crate::keyspaces::WEBS).ok().as_ref(),
         &*seed_store,
         &audit,
     )
@@ -859,6 +864,7 @@ pub async fn run_register_did(
         &imported_ks,
         &contexts_ks,
         &webvh_ks,
+        cs.keyspace(crate::keyspaces::WEBS).ok().as_ref(),
         &*seed_store,
         &audit,
     )

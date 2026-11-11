@@ -239,7 +239,29 @@ pub(crate) async fn load_vta_issuer_secret(
         &state.contexts_ks,
         &*state.seed_store,
         &state.audit_sink,
-        &self_keys,
+        &self_keys.signing,
+        purpose,
+    )
+    .await
+}
+
+/// This VTA's authentication key (the `operational` key of a key-role
+/// identity; `#key-0` of a webvh one), through the audited internal path: for
+/// a document this VTA originates and signs with `proofPurpose:
+/// authentication` when no resident secret is configured.
+pub(crate) async fn load_vta_operational_secret(
+    state: &AppState,
+    vta_did: &str,
+    purpose: &'static str,
+) -> Result<Secret, AppError> {
+    let self_keys = crate::self_keys::self_keys_from_state(state, vta_did).await;
+    load_vta_issuer_secret_from_store(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.contexts_ks,
+        &*state.seed_store,
+        &state.audit_sink,
+        &self_keys.authentication,
         purpose,
     )
     .await
@@ -253,12 +275,13 @@ pub async fn load_vta_issuer_secret_from_store(
     contexts_ks: &KeyspaceHandle,
     seed_store: &dyn crate::keys::seed_store::SeedStore,
     audit: &vta_audit::SharedAuditSink,
-    self_keys: &crate::self_keys::SelfKeys,
+    key: &crate::self_keys::SelfKey,
     purpose: &'static str,
 ) -> Result<Secret, AppError> {
-    // The record of the key this VTA's document lists for signing, and the
-    // method a proof names (VTI-KEY-150, VTI-KEY-022).
-    let key_id = self_keys.signing.record_id.clone();
+    // The record of the key, and the method a proof names: the one this
+    // VTA's document lists for the role the caller asked for (VTI-KEY-150,
+    // VTI-KEY-022).
+    let key_id = key.record_id.clone();
     let authority = InternalAuthority::new(purpose);
     let resp = crate::operations::keys::get_key_secret_internal(
         keys_ks,
@@ -278,7 +301,7 @@ pub async fn load_vta_issuer_secret_from_store(
         .map_err(|e| AppError::Internal(format!("decode VTA issuer key {key_id}: {e}")))?;
     let mut secret = Secret::from_multibase(&resp.private_key_multibase, None)
         .map_err(|e| AppError::Internal(format!("construct issuer Secret for {key_id}: {e}")))?;
-    secret.id = self_keys.signing.vm_id.clone();
+    secret.id = key.vm_id.clone();
     Ok(secret)
 }
 
