@@ -1042,10 +1042,23 @@ pub(super) async fn handle_browse_v0_4(
     browse_at(state, auth, doc, BrowseVersion::V0_4).await
 }
 
+/// `rooms/keys/browse/0.5`: 0.4, and `order` passed through to the host's
+/// `rooms/records/list/0.7`, `maxPages` to stop early, and `cursor` / `nextCursor` to come
+/// back for the next page — how a member's surface opens a conversation at its newest
+/// records (trust-tasks-tf #1088, *Order and paging*).
+pub(super) async fn handle_browse_v0_5(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    browse_at(state, auth, doc, BrowseVersion::V0_5).await
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BrowseVersion {
     V0_3,
     V0_4,
+    V0_5,
 }
 
 /// The request members `browse` reads.
@@ -1055,12 +1068,25 @@ struct BrowseRequest {
     prefix: Option<String>,
     since_version: Option<u64>,
     limit: Option<u64>,
+    /// 0.5: the order as the caller gave it (`oldestFirst` / `newestFirst`), absent where
+    /// the caller omitted it — passed through exactly so (*Order and paging* item 1).
+    order: Option<&'static str>,
+    /// 0.5: the most host pages to read.
+    max_pages: Option<u64>,
+    /// 0.5: the host's cursor, passed through on the first page, never read here.
+    cursor: Option<String>,
 }
+
+/// The most host pages one browse reads of its own accord, whatever the caller asked.
+const BROWSE_MAX_PAGES: usize = 64;
 
 /// `rooms/keys/browse/0.3` lists with `rooms/records/list/0.5` (*The room's prunes*): a
 /// host that predates it is not read from. 0.4 lists with `rooms/records/list/0.6` where
-/// the host serves it, else 0.5. 0.1 and 0.2 are not served.
-#[allow(deprecated)] // browse/0.3 and list/0.5 are still served and read beside browse/0.4 and list/0.6
+/// the host serves it, else 0.5. 0.5 lists with `rooms/records/list/0.7` where the host
+/// serves it; else, for a request that does not ask for `newestFirst`, as 0.4 does — and
+/// for one that does, it answers `hostRefused` rather than list oldest first. 0.1 and 0.2
+/// are not served.
+#[allow(deprecated)] // browse/0.3–0.4 and list/0.5–0.6 are still served and read beside browse/0.5 and list/0.7
 async fn browse_at(
     state: &AppState,
     auth: &AuthClaims,
@@ -1087,6 +1113,9 @@ async fn browse_at(
                 prefix: r.prefix.map(|p| p.to_string()),
                 since_version: r.since_version,
                 limit: r.limit.map(u64::from),
+                order: None,
+                max_pages: None,
+                cursor: None,
             }),
         BrowseVersion::V0_4 => parse_payload::<vti_specs::rooms::keys::browse::v0_4::Payload>(&doc)
             .map(|r| BrowseRequest {
@@ -1095,7 +1124,42 @@ async fn browse_at(
                 prefix: r.prefix.map(|p| p.to_string()),
                 since_version: r.since_version,
                 limit: r.limit.map(u64::from),
+                order: None,
+                max_pages: None,
+                cursor: None,
             }),
+        BrowseVersion::V0_5 => {
+            use vti_specs::rooms::keys::browse::v0_5 as browse;
+            match parse_payload::<browse::Payload>(&doc) {
+                Ok(r) => {
+                    let order = match r.order {
+                        None => Ok(None),
+                        Some(browse::ListOrder::OldestFirst) => Ok(Some("oldestFirst")),
+                        Some(browse::ListOrder::NewestFirst) => Ok(Some("newestFirst")),
+                        Some(other) => Err(other),
+                    };
+                    match order {
+                        Ok(order) => Ok(BrowseRequest {
+                            room_id: r.room_id.to_string(),
+                            host: r.host.to_string(),
+                            prefix: r.prefix.map(|p| p.to_string()),
+                            since_version: r.since_version,
+                            limit: r.limit.map(u64::from),
+                            order,
+                            max_pages: r.max_pages.map(u64::from),
+                            cursor: r.cursor.map(|c| c.to_string()),
+                        }),
+                        Err(other) => Err(app_error_to_reject(
+                            &doc,
+                            vti_common::error::AppError::Validation(format!(
+                                "`order` {other} is not one this agent lists in"
+                            )),
+                        )),
+                    }
+                }
+                Err(resp) => Err(resp),
+            }
+        }
     };
     let req = match parsed {
         Ok(r) => r,
@@ -1116,12 +1180,14 @@ async fn browse_at(
         Ok(v) => v,
         // 0.4 answers a principal holding nothing this room issued with its declared code;
         // 0.3 keeps the refusal it has always given.
-        Err(vti_common::error::AppError::NotFound(why)) if version == BrowseVersion::V0_4 => {
-            return super::helpers::reject_declared(
-                &doc,
-                vti_specs::rooms::keys::browse::v0_4::error_codes::NOT_A_MEMBER,
-                why,
-            );
+        Err(vti_common::error::AppError::NotFound(why)) if version != BrowseVersion::V0_3 => {
+            let code = match version {
+                BrowseVersion::V0_5 => {
+                    vti_specs::rooms::keys::browse::v0_5::error_codes::NOT_A_MEMBER
+                }
+                _ => vti_specs::rooms::keys::browse::v0_4::error_codes::NOT_A_MEMBER,
+            };
+            return super::helpers::reject_declared(&doc, code, why);
         }
         Err(e) => return app_error_to_reject(&doc, e),
     };
@@ -1131,19 +1197,30 @@ async fn browse_at(
     let mut list_task = match version {
         BrowseVersion::V0_3 => vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
         BrowseVersion::V0_4 => vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE,
+        BrowseVersion::V0_5 => vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE,
     };
+    let newest_first = req.order == Some("newestFirst");
 
     let mut records: Vec<Value> = Vec::new();
-    let mut cursor: Option<String> = None;
+    // On the first page, the caller's cursor (0.5 item 5) — the host's, never read here.
+    let mut cursor: Option<String> = req.cursor.clone();
     let mut head: Option<Value> = None;
     let mut complete = false;
     // The host's `lastPrune`, exactly as served.
     let mut last_prune: Option<Value> = None;
     // A listing is read to its END, and absence of the cursor is the only thing
     // that says so. A short page says nothing — which is exactly why the count
-    // check below is conditioned on having reached the end.
-    const MAX_PAGES: usize = 64;
-    for page in 0..MAX_PAGES {
+    // check below is conditioned on having reached the end. 0.5's `maxPages` stops it
+    // sooner, where the caller asks (item 3).
+    let max_pages = req
+        .max_pages
+        .map_or(BROWSE_MAX_PAGES, |m| {
+            usize::try_from(m)
+                .unwrap_or(usize::MAX)
+                .min(BROWSE_MAX_PAGES)
+        })
+        .max(1);
+    for page in 0..max_pages {
         let mut payload = serde_json::json!({ "roomId": req.room_id });
         if let Some(p) = &req.prefix {
             payload["prefix"] = serde_json::json!(p);
@@ -1157,6 +1234,11 @@ async fn browse_at(
         if let Some(c) = &cursor {
             payload["cursor"] = serde_json::json!(c);
         }
+        if list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE
+            && let Some(o) = req.order
+        {
+            payload["order"] = serde_json::json!(o);
+        }
 
         let mut sent = send_as_member_typed(
             state,
@@ -1168,13 +1250,40 @@ async fn browse_at(
             payload.clone(),
         )
         .await;
-        if let Err(MemberSendError::Host(crate::operations::room_host::RoomTaskError::Refused {
-            code,
-            ..
-        })) = &sent
-            && code == "unsupportedType"
+        // A host predating the version asked is listed with the one before it — only on
+        // the first page, since a listing is answered at one version throughout — except
+        // that a `newestFirst` browse is never answered oldest first (0.5 item 1).
+        let unsupported = |sent: &Result<Value, MemberSendError>| {
+            matches!(
+                sent,
+                Err(MemberSendError::Host(
+                    crate::operations::room_host::RoomTaskError::Refused { code, .. }
+                )) if code == "unsupportedType"
+            )
+        };
+        if page == 0
+            && unsupported(&sent)
+            && list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE
+            && !newest_first
+        {
+            list_task = vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE;
+            if let Some(obj) = payload.as_object_mut() {
+                obj.remove("order");
+            }
+            sent = send_as_member_typed(
+                state,
+                auth,
+                &presenting,
+                &resolver,
+                &req.host,
+                list_task,
+                payload.clone(),
+            )
+            .await;
+        }
+        if page == 0
+            && unsupported(&sent)
             && list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE
-            && page == 0
         {
             list_task = vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE;
             sent = send_as_member_typed(
@@ -1193,6 +1302,16 @@ async fn browse_at(
             (Err(e), BrowseVersion::V0_3) => return app_error_to_reject(&doc, e.into_app_error()),
             (Err(e), BrowseVersion::V0_4) => {
                 use vti_specs::rooms::keys::browse::v0_4::error_codes as codes;
+                return host_failure(
+                    &doc,
+                    e,
+                    &req.host,
+                    codes::HOST_UNREACHABLE,
+                    codes::HOST_REFUSED,
+                );
+            }
+            (Err(e), BrowseVersion::V0_5) => {
+                use vti_specs::rooms::keys::browse::v0_5::error_codes as codes;
                 return host_failure(
                     &doc,
                     e,
@@ -1240,22 +1359,23 @@ async fn browse_at(
         match listing.cursor {
             Some(next) => cursor = Some(next),
             None => {
+                cursor = None;
                 complete = true;
                 break;
             }
         }
-        // Stopping of this agent's own accord is not the end of the listing, and
-        // saying otherwise would turn a page bound into a withheld record.
-        if page + 1 == MAX_PAGES {
-            break;
-        }
+        // Stopping — at the caller's `maxPages` or of this agent's own accord — is not the
+        // end of the listing, and saying otherwise would turn a page bound into a withheld
+        // record. The loop ends with the host's cursor in hand.
     }
 
     // The one check a listing can make with no anchor and no second party — and
     // it is only meaningful against a complete, unfiltered listing. Anything
     // else legitimately holds fewer, and comparing it is a discrepancy the
-    // reader manufactured.
-    let filtered = req.prefix.is_some() || req.since_version.is_some();
+    // reader manufactured. A listing resumed from a cursor did not start at the room's
+    // first record in its order, however it ends (0.5 item 6); the order itself does not
+    // matter — a whole room read newest first holds what one read oldest first does.
+    let filtered = req.prefix.is_some() || req.since_version.is_some() || req.cursor.is_some();
     let count = match (&head, complete, filtered) {
         (None, _, _) => "notOffered",
         (Some(_), false, _) | (Some(_), _, true) => "notComparable",
@@ -1297,6 +1417,14 @@ async fn browse_at(
     });
     if let Some(mark) = last_prune {
         body["lastPrune"] = mark;
+    }
+    // 0.5 item 4: the host's continuation, unchanged, exactly when the listing is not
+    // complete. Earlier versions carry none.
+    if version == BrowseVersion::V0_5
+        && !complete
+        && let Some(next) = cursor
+    {
+        body["nextCursor"] = serde_json::json!(next);
     }
     success_response(&doc, body)
 }

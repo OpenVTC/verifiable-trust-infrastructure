@@ -16,6 +16,7 @@ use vti_specs_rooms::rooms::create::v0_2 as create_v2;
 use vti_specs_rooms::rooms::info::v0_3 as info_v3;
 use vti_specs_rooms::rooms::records::list::v0_5 as list_v5;
 use vti_specs_rooms::rooms::records::list::v0_6 as list_v6;
+use vti_specs_rooms::rooms::records::list::v0_7 as list_v7;
 use vti_specs_rooms::rooms::records::prune::v0_2 as prune_spec;
 use vti_specs_rooms::rooms::records::retention::set::v0_1 as set_spec;
 
@@ -24,12 +25,12 @@ use crate::authz::{Action, AuthorizedAction};
 use crate::blob_tasks::{Refusal, TaskResult, checked, declared, parse};
 use crate::blobs::{BlobHost, ReadSnapshot};
 use crate::record_retention::{PruneKind, RecordPrune, RecordRetention};
-use crate::storage;
+use crate::storage::{self, RecordOrder};
 
 pub use crate::wire::{
     ROOMS_CREATE_V2_TYPE as CREATE_V2_TYPE, ROOMS_INFO_V3_TYPE as INFO_V3_TYPE,
     ROOMS_RECORDS_LIST_V5_TYPE as LIST_V5_TYPE, ROOMS_RECORDS_LIST_V6_TYPE as LIST_V6_TYPE,
-    ROOMS_RECORDS_PRUNE_V2_TYPE as PRUNE_TYPE,
+    ROOMS_RECORDS_LIST_V7_TYPE as LIST_V7_TYPE, ROOMS_RECORDS_PRUNE_V2_TYPE as PRUNE_TYPE,
     ROOMS_RECORDS_RETENTION_SET_TYPE as RETENTION_SET_TYPE,
 };
 
@@ -377,6 +378,7 @@ pub async fn list_v5_response(
 /// A listing as `rooms/records/list/0.6` answers: 0.5's, with rows that are
 /// `RecordMetadataV3` — which the host builds with [`crate::Record::metadata_v3`] for the
 /// room's tier — and `blobs` on each, as before.
+#[allow(deprecated)] // still served beside list/0.7, to readers that ask for it (trust-tasks-tf #1088)
 pub async fn list_v6_response(
     snapshot: &ReadSnapshot<'_>,
     room: &Room,
@@ -384,6 +386,50 @@ pub async fn list_v6_response(
 ) -> TaskResult {
     let body = list_v5_body(snapshot, room, response).await?;
     checked::<list_v6::Response>(body)
+}
+
+/// A `rooms/records/list/0.7` request, checked against its schema, as the order it asks
+/// for and the payload read as 0.1 — which the hosts' listing takes for everything else.
+///
+/// The cursor is checked here, against the order, so a cursor issued under the other order
+/// (or not by this host) is the task's declared `invalidCursor` (*Order* item 5) and never
+/// a page read in the wrong direction.
+pub fn list_v7_parts(payload: &Value) -> Result<(RecordOrder, Value), Refusal> {
+    let req: list_v7::Payload = parse(payload)?;
+    let order = match req.order {
+        Some(list_v7::ListOrder::NewestFirst) => RecordOrder::NewestFirst,
+        Some(list_v7::ListOrder::OldestFirst) | None => RecordOrder::OldestFirst,
+        Some(other) => {
+            return Err(Refusal::Malformed(format!(
+                "`order` {other:?} is not one this host lists in"
+            )));
+        }
+    };
+    if let Some(cursor) = payload.get("cursor").and_then(Value::as_str)
+        && let Err(e) = storage::decode_cursor(cursor, order)
+    {
+        return Err(declared(
+            list_v7::error_codes::INVALID_CURSOR,
+            e.to_string(),
+            None,
+        ));
+    }
+    let mut v0_1 = crate::blob_tasks::as_v0_1(payload.clone());
+    if let Some(obj) = v0_1.as_object_mut() {
+        obj.remove("order");
+    }
+    Ok((order, v0_1))
+}
+
+/// A listing as `rooms/records/list/0.7` answers: 0.6's page, its rows in the order the
+/// request asked for. The response shape is 0.6's; only its type moves.
+pub async fn list_v7_response(
+    snapshot: &ReadSnapshot<'_>,
+    room: &Room,
+    response: impl serde::Serialize,
+) -> TaskResult {
+    let body = list_v5_body(snapshot, room, response).await?;
+    checked::<list_v7::Response>(body)
 }
 
 /// 0.5's page before its schema check, which 0.6 shares.

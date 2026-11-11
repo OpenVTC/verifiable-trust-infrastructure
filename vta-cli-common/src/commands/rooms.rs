@@ -623,6 +623,200 @@ async fn list_page(
     parse_reply("rooms/records/list", reply)
 }
 
+/// How `rooms list --newest` / `rooms read --newest` open a conversation at its head.
+#[derive(Debug, Clone, Default)]
+pub struct NewestPage<'a> {
+    /// Only records whose key starts with this.
+    pub prefix: Option<&'a str>,
+    /// Only records above this version — a newest-first catch-up stops here.
+    pub since_version: Option<u64>,
+    /// Records per host page; [`NEWEST_DEFAULT_LIMIT`] when unset.
+    pub limit: Option<usize>,
+    /// Host pages to read; one when unset — a conversation's first screen.
+    pub pages: Option<u64>,
+    /// A `nextCursor` an earlier `--newest` printed, to read the page before it.
+    pub cursor: Option<&'a str>,
+}
+
+/// The page size `--newest` asks for when `--limit` is not given.
+pub const NEWEST_DEFAULT_LIMIT: usize = 50;
+
+/// The rows of a newest-first page as a conversation shows them: a member's name record
+/// set aside (it is a name, not a message), the rest ordered by the host's `createdAt` —
+/// else `updatedAt`, for a record stored before the host kept `createdAt` — oldest first,
+/// so the newest message is printed last, nearest the prompt. Never by row order: an old
+/// message edited a moment ago sits at the head of a newest-first listing, and is shown
+/// where it was written (`rooms/records/list/0.7` *What a newest-first page holds*).
+pub fn conversation_order(records: &[Value]) -> Vec<&Value> {
+    let mut rows: Vec<&Value> = records
+        .iter()
+        .filter(|r| r.get("kind").and_then(Value::as_str) != Some(vti_rooms::member_profile::KIND))
+        .collect();
+    let at = |r: &Value| {
+        r.get("createdAt")
+            .or_else(|| r.get("updatedAt"))
+            .and_then(Value::as_str)
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+    };
+    // Stable, so two records written in one instant keep the host's (descending) order
+    // reversed by version below.
+    rows.sort_by(|a, b| {
+        at(a).cmp(&at(b)).then_with(|| {
+            let v = |r: &Value| r.get("version").and_then(Value::as_u64).unwrap_or(0);
+            v(a).cmp(&v(b))
+        })
+    });
+    rows
+}
+
+/// The pnm command line that lists a room oldest first, to the end — what to run where
+/// `--newest` cannot be served.
+fn oldest_first_command(room_id: &str, host_url: &str, host_did: &str) -> String {
+    format!("pnm rooms list --room {room_id} --host {host_url} --host-did {host_did}")
+}
+
+/// `rooms/keys/browse/0.5`, newest first: the member's VTA lists the room at its host from
+/// the head down, `pages` host pages, and answers the host's cursor when it stopped early.
+/// Every refusal that has a better command names it.
+async fn browse_newest(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    page: &NewestPage<'_>,
+    verb: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let host_did = target.host_did.ok_or_else(|| {
+        format!(
+            "`rooms {verb} --newest` has your VTA list the room at its host, which it finds by \
+             its DID: pass --host-did, e.g.\n  pnm rooms {verb} --newest --room {} --host {} \
+             --host-did <the host's DID>",
+            target.room_id, target.host_url
+        )
+    })?;
+    let options = vta_sdk::client::RoomBrowse {
+        prefix: page.prefix.map(str::to_string),
+        since_version: page.since_version,
+        limit: Some(page.limit.unwrap_or(NEWEST_DEFAULT_LIMIT) as u64),
+        order: Some(vta_sdk::client::RoomListOrder::NewestFirst),
+        max_pages: Some(page.pages.unwrap_or(1).max(1)),
+        cursor: page.cursor.map(str::to_string),
+    };
+    let fallback = oldest_first_command(target.room_id, target.host_url, host_did);
+    match client
+        .room_browse(target.room_id, host_did, &options, None)
+        .await
+    {
+        Ok(listing) => Ok(serde_json::to_value(listing)?),
+        Err(VtaError::UnsupportedTaskType { .. }) => Err(format!(
+            "your VTA does not serve `rooms/keys/browse/0.5`, which lists a room newest first. \
+             Upgrade it, or list the room oldest first, to the end:\n  {fallback}"
+        )
+        .into()),
+        Err(VtaError::Rejected {
+            code,
+            message,
+            details,
+        }) if code.ends_with(":hostRefused") => {
+            let host_code = details
+                .as_ref()
+                .and_then(|d| d.get("code"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if host_code == "unsupportedType" {
+                Err(format!(
+                    "the room's host does not serve `rooms/records/list/0.7`, so it cannot list \
+                     newest first. List the room oldest first, to the end:\n  {fallback}"
+                )
+                .into())
+            } else if host_code.ends_with("invalidCursor") {
+                Err(format!(
+                    "the host refused the cursor: it was not issued for this newest-first \
+                     listing (or has expired). Start again from the head:\n  pnm rooms {verb} \
+                     --newest --room {} --host {} --host-did {host_did}",
+                    target.room_id, target.host_url
+                )
+                .into())
+            } else {
+                Err(format!("trust task failed [{code}]: {message}").into())
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// What to run for the page before this one, when the VTA stopped with a cursor.
+fn older_page_hint(verb: &str, target: &RoomTarget<'_>, listing: &Value) -> Option<String> {
+    let cursor = listing.get("nextCursor").and_then(Value::as_str)?;
+    Some(format!(
+        "Older records: pnm rooms {verb} --newest --room {} --host {} --host-did {} --cursor {cursor}",
+        target.room_id,
+        target.host_url,
+        target.host_did.unwrap_or("<the host's DID>")
+    ))
+}
+
+/// `rooms list --newest` — a conversation from its head: the newest page of the room's
+/// records, metadata only, read by the member's VTA (`rooms/keys/browse/0.5`), shown in
+/// the order they were written with the newest last, and the command for the page before.
+pub async fn cmd_rooms_list_newest(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    page: NewestPage<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let listing = browse_newest(client, &target, &page, "list").await?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&listing)?;
+        return Ok(());
+    }
+    let records = listing["records"].as_array().cloned().unwrap_or_default();
+    let shown = conversation_order(&records);
+    let names = vti_rooms::member_profile::Names::default();
+    if shown.is_empty() {
+        println!("No records at the head of this room.");
+    } else {
+        println!(
+            "The {} newest record(s), oldest first, the newest last:",
+            shown.len()
+        );
+        for r in shown {
+            list_row(r, &names);
+        }
+    }
+    match older_page_hint("list", &target, &listing) {
+        Some(hint) => println!("\n{hint}"),
+        None => println!("\nThat is the whole listing."),
+    }
+    Ok(())
+}
+
+/// `rooms read --newest` — the newest records of a conversation, opened: the head page
+/// from [`cmd_rooms_list_newest`]'s listing, its live records read through the VTA as
+/// `rooms read` reads named keys, in the order they were written.
+pub async fn cmd_rooms_read_newest(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    page: NewestPage<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let listing = browse_newest(client, &target, &page, "read").await?;
+    let records = listing["records"].as_array().cloned().unwrap_or_default();
+    let keys: Vec<String> = conversation_order(&records)
+        .into_iter()
+        .filter(|r| r.get("status").and_then(Value::as_str) != Some("retracted"))
+        .filter_map(|r| r.get("key").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let hint = older_page_hint("read", &target, &listing);
+    if keys.is_empty() {
+        println!("No records at the head of this room.");
+    } else {
+        cmd_rooms_read(client, target, &keys).await?;
+    }
+    if !crate::render::is_json_output()
+        && let Some(hint) = hint
+    {
+        println!("\n{hint}");
+    }
+    Ok(())
+}
+
 /// `rooms get` — one record, read as the member and opened through the VTA when it is
 /// sealed.
 ///
@@ -4887,6 +5081,27 @@ pub async fn cmd_rooms_memberships(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A newest-first page is shown in the order it was written, never in row order: an old
+    /// message edited a moment ago heads the listing and is shown where it was written; a
+    /// member's name is not a message (`rooms/records/list/0.7` *What a newest-first page
+    /// holds*).
+    #[test]
+    fn a_newest_first_page_is_shown_in_the_order_it_was_written() {
+        let rows = vec![
+            json!({ "key": "edited", "version": 9, "createdAt": "2026-01-01T09:00:00Z",
+                    "updatedAt": "2026-01-03T09:00:00Z" }),
+            json!({ "key": "name", "version": 8, "kind": vti_rooms::member_profile::KIND,
+                    "createdAt": "2026-01-03T08:00:00Z" }),
+            json!({ "key": "newest", "version": 7, "createdAt": "2026-01-02T12:00:00Z" }),
+            json!({ "key": "legacy", "version": 6, "updatedAt": "2026-01-02T10:00:00Z" }),
+        ];
+        let keys: Vec<&str> = conversation_order(&rows)
+            .into_iter()
+            .map(|r| r["key"].as_str().unwrap())
+            .collect();
+        assert_eq!(keys, ["edited", "legacy", "newest"]);
+    }
 
     fn prune_target() -> RoomTarget<'static> {
         RoomTarget {

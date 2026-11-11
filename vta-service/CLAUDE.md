@@ -916,7 +916,11 @@ When adding a flow, add it here and a line to the root index.
   serves a rung at or below it. A member's VTA keeps the floor in its own
   `room-epoch-floor` row, discards rungs at or below it before answering, applies it in
   every chain walk (`SealedRoom::apply_epoch_floor`), and never takes such a rung back.
-  Hosts never prune on their own.
+  Hosts never prune on their own. **Newest first** (`rooms/records/list/0.7`,
+  `rooms/keys/browse/0.5`; #1088): a cursor is bound to its order (`v<N>` / `n<N>`) and
+  refused `invalidCursor` under the other; `sinceVersion` stays a lower bound; browse 0.5
+  answers `nextCursor` exactly when `complete` is false, never compares a resumed listing,
+  and answers `newestFirst` at a host without list/0.7 `hostRefused` — never oldest first.
 - **Code**: `vti-rooms/src/{provenance,record_retention,record_tasks}.rs`,
   `vti-rooms/src/{storage,retention,sealed}.rs`, `room-host/src/{lib,files}.rs`,
   `vtc-service/src/rooms/{handlers,files}.rs`,

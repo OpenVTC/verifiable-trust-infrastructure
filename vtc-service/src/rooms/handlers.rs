@@ -207,6 +207,7 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(super::files::handle_info_v4)
         .on_async(super::files::handle_list_records_v5)
         .on_async(super::files::handle_list_records_v6)
+        .on_async(super::files::handle_list_records_v7)
         .on_async(super::files::handle_records_prune)
         .on_async(super::files::handle_epoch_chain_v2)
         .on_async(super::files::handle_epoch_prune_v2)
@@ -829,8 +830,20 @@ pub(super) async fn get_record<P>(
     }
 }
 
+/// The version a `rooms/records/list` is answered at.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ListAt {
+    /// 0.5: `RecordMetadata` rows, oldest first.
+    V5,
+    /// 0.6: `RecordMetadataV3` rows, oldest first.
+    V6,
+    /// 0.7: 0.6's rows, in the order the request asked for (trust-tasks-tf #1088).
+    V7(storage::RecordOrder),
+}
+
 /// `rooms/records/list/0.5`: rows name their blobs, every page carries the room's
-/// `lastPrune`, and the continuation token is `nextCursor`.
+/// `lastPrune`, and the continuation token is `nextCursor`. From 0.6 the rows are
+/// `RecordMetadataV3`; at 0.7 they come oldest or newest first.
 ///
 /// Returns metadata, never bodies — and returns tombstones to a watermark caller, because a
 /// puller that never sees a retraction resurrects the record on its next full rebuild.
@@ -838,8 +851,13 @@ pub(super) async fn list_records<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: ListRecordsBody,
-    v6: bool,
+    at: ListAt,
 ) -> TrustTaskOutcome {
+    let v6 = !matches!(at, ListAt::V5);
+    let order = match at {
+        ListAt::V7(order) => order,
+        ListAt::V5 | ListAt::V6 => storage::RecordOrder::OldestFirst,
+    };
     let state = &ctx.state;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
@@ -871,13 +889,14 @@ pub(super) async fn list_records<P>(
     // Paginated honestly: the page the caller asked for, and a cursor when more
     // remain. This used to `take(limit)` and drop the rest without a word, so a
     // short page and a complete room were indistinguishable.
-    let page = match storage::list_records_page(
+    let page = match storage::list_records_page_in(
         &state.room_records_ks,
         &req.room_id,
         req.prefix.as_deref(),
         req.since_version,
         req.cursor.as_deref(),
         req.limit,
+        order,
     )
     .await
     {
@@ -915,6 +934,10 @@ pub(super) async fn list_records<P>(
     match storage::get_room(&state.rooms_ks, &req.room_id).await {
         // The room as it stands under the lock: its `lastPrune` is the one the page and head
         // were taken with.
+        Ok(now_room) if matches!(at, ListAt::V7(_)) => super::files::render(
+            doc,
+            vti_rooms::record_tasks::list_v7_response(&snapshot, &now_room, response).await,
+        ),
         Ok(now_room) if v6 => super::files::render(
             doc,
             vti_rooms::record_tasks::list_v6_response(&snapshot, &now_room, response).await,
@@ -3451,6 +3474,67 @@ mod tests {
         .await;
         assert!(!out.status.is_success());
         assert_eq!(payload_of(&out)["code"], "malformedRequest");
+    }
+
+    /// `rooms/records/list/0.7` on the VTC's host, as room-host serves it (trust-tasks-tf
+    /// #1088): newest first from the head, paging down, and a cursor refused with the
+    /// declared `invalidCursor` under the other order.
+    #[tokio::test]
+    async fn list_0_7_serves_newest_first_and_binds_its_cursor_to_the_order() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+        for key in ["m0", "m1", "m2"] {
+            let out = send(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
+                json!({ "roomId": f.room.room_id, "key": key, "presentation": f.as_owner(),
+                        "cleartext": { "body": key } }),
+                &f,
+            )
+            .await;
+            assert!(out.status.is_success(), "put: {}", payload_of(&out));
+        }
+        let list = |extra: Value| {
+            let mut payload = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+            for (k, v) in extra.as_object().unwrap() {
+                payload[k] = v.clone();
+            }
+            send(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE,
+                payload,
+                &f,
+            )
+        };
+        let keys = |p: &Value| -> Vec<String> {
+            p["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["key"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        let head = payload_of(&list(json!({ "order": "newestFirst", "limit": 2 })).await);
+        assert_eq!(keys(&head), ["m2", "m1"], "{head}");
+        let cursor = head["nextCursor"]
+            .as_str()
+            .expect("one remains")
+            .to_string();
+        let rest = payload_of(
+            &list(json!({ "order": "newestFirst", "limit": 2, "cursor": cursor })).await,
+        );
+        assert_eq!(keys(&rest), ["m0"], "{rest}");
+        assert!(rest.get("nextCursor").is_none(), "{rest}");
+
+        let out = list(json!({ "order": "oldestFirst", "cursor": cursor })).await;
+        assert!(!out.status.is_success());
+        assert_eq!(
+            payload_of(&out)["code"],
+            vti_specs::rooms::records::list::v0_7::error_codes::INVALID_CURSOR.to_string()
+        );
     }
 
     /// VTI-ACL-110 on the community's host: get/0.4 holds a read to the purposes the
