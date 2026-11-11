@@ -570,9 +570,17 @@ pub async fn run_didcomm_service(
                 Duration::from_secs(2),
             ));
         }
+        // A recipient's REST endpoint comes from its DID document: the URL guard
+        // and the client's resolver both hold it to this process's endpoint
+        // policy (loopback and private networks only with
+        // `VTA_ALLOW_PRIVATE_ENDPOINTS`).
+        let push_policy = vta_sdk::http::EndpointPolicy::process_default();
         let rest: Arc<dyn MessageTransport> = Arc::new(crate::member_push::RestPushTransport::new(
             state.member_pushes_ks.clone(),
-            crate::recognition::verify::foreign_fetch_client(),
+            vta_sdk::http::foreign_fetch_client_for(push_policy),
+            Arc::new(move |url: &str| {
+                vta_sdk::http::guard_peer_endpoint(url, push_policy).map_err(|e| e.to_string())
+            }),
         ));
         service.add_transport(crate::member_push::REST_TRANSPORT_ID.into(), rest.clone());
         tokio::spawn(affinidi_messaging_delivery::drain_loop_via(

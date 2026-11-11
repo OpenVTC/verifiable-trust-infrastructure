@@ -2637,6 +2637,8 @@ mod tests {
     async fn recording_host_serving(content: Value) -> (Party, Value, Arc<Mutex<Vec<Value>>>) {
         let party = Party::new();
         let seen = Arc::new(Mutex::new(Vec::new()));
+        // A loopback peer is reached only with private endpoints enabled.
+        vta_sdk::http::set_allow_private_endpoints(true);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let host_did = party.did.clone();

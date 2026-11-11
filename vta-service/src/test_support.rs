@@ -1918,6 +1918,10 @@ impl StubWebvhHost {
     }
 
     /// Start the stub host on a random loopback port and return once bound.
+    ///
+    /// Enables private endpoints for the whole process
+    /// ([`vta_sdk::http::set_allow_private_endpoints`]), since the VTA reaches
+    /// a loopback host only with that opt-in.
     pub async fn start() -> StubWebvhHost {
         use axum::routing::post;
         use std::sync::Arc;
@@ -1945,6 +1949,10 @@ impl StubWebvhHost {
                 }),
             );
 
+        // The VTA reaches this loopback host over plain http, which its
+        // outbound REST send allows only with private endpoints enabled for
+        // the process (`VTA_ALLOW_PRIVATE_ENDPOINTS`).
+        vta_sdk::http::set_allow_private_endpoints(true);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind stub webvh host port");
