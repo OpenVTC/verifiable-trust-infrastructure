@@ -942,7 +942,7 @@ k8s-openapi = { version = "0.29", features = ["latest"] }
 # 0.8.50 (did-webs 0.12): a recovery rotation supersedes the interaction events
 # after the last establishment event, and what only they anchored (a
 # designation, a revocation, a delegation) stops counting as the identifier's.
-affinidi-did-resolver-cache-sdk = { version = "0.8.50", features = ["network", "did-webs"] }
+affinidi-did-resolver-cache-sdk = { version = "0.8.51", features = ["network", "did-webs"] }
 # The local-only resolvers, for methods that carry their keys in the identifier. Not a
 # second resolver: the cache SDK already depends on this and uses the same types, but does
 # not re-export them, and a verifier promising "no I/O" needs to reach them directly.
@@ -950,11 +950,12 @@ affinidi-did-resolver-traits = { version = "0.1" }
 # Creating and continuing a did:webs (docs/05-design-notes/did-webs-in-the-vta.md):
 # the controller side of affinidi-did-webs, the same release the resolver above
 # reads with. `create` pulls `affinidi-keri`, whose LMDB store (`heed`) the
-# controller path never uses; making that optional upstream is a follow-up.
-affinidi-did-webs = { version = "0.12", features = ["create"] }
-affinidi-keri = "0.7"
-affinidi-keri-core = "0.7"
-affinidi-keri-crypto = "0.7"
+# controller path never uses. affinidi-keri 0.8.1 makes the store optional and
+# affinidi-did-webs 0.13.1 drops it; until then it is compiled in.
+affinidi-did-webs = { version = "0.13", features = ["create"] }
+affinidi-keri = "0.8"
+affinidi-keri-core = "0.8"
+affinidi-keri-crypto = "0.8"
 
 # Agent names — human-memorable `example.com/@alice` shortcuts that resolve to
 # DIDs. Consumed by `vta_sdk::display_name` (feature `agent-names`) for the
