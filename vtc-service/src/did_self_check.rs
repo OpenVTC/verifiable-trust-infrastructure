@@ -163,6 +163,20 @@ pub fn warning_text(vtc_did: &str, missing: &[MissingService], serves_own_log: b
         .map(|m| format!("  {}", m.entry))
         .collect::<Vec<_>>()
         .join(",\n");
+    // A did:webs is published by the VTA that holds it, to its host: there is
+    // no log here to install and no `did-mgmt` edit to make.
+    if vtc_did.starts_with("did:webs:") {
+        return format!(
+            "wallet sign-in will not work: this VTC's published DID document is missing {types}, \
+             so wallets will refuse its sign-in codes (\"This code can't be used\").\n{reasons}\n\
+             The document needs, in its `service` array:\n{entries}\n\
+             This VTC's DID is a did:webs: the VTA that holds it publishes the document to its \
+             host, and nothing is served from here. `pnm webs update {vtc_did} --services …` at \
+             that VTA designates only DIDComm and TSP today, so these entries cannot yet be added \
+             to a did:webs document (docs/05-design-notes/did-webs-in-the-vta.md, S7). Passkey \
+             and other sign-in options keep working."
+        );
+    }
     let install = if serves_own_log {
         "then, because this VTC serves its own did.jsonl, fetch the new log \
          (`pnm did-mgmt dids get-log <did> --out did.jsonl`) and install it here with \
@@ -428,5 +442,26 @@ mod tests {
         );
         assert!(text.contains("cnm did-log install"), "{text}");
         assert!(text.contains("community-lifecycle.md"), "{text}");
+    }
+
+    /// A did:webs VTC serves no log and is not a `did-mgmt` DID: the hint
+    /// names the VTA that publishes it, not a local install.
+    #[test]
+    fn the_warning_for_a_did_webs_vtc_names_its_vta_not_a_local_log() {
+        const WEBS: &str = "did:webs:vtc.example:EAbc";
+        let Outcome::Missing(m) = evaluate(&doc(json!([])), WEBS, URL) else {
+            panic!()
+        };
+        let text = warning_text(WEBS, &m, false);
+        assert!(text.contains("did:webs"), "{text}");
+        assert!(text.contains(&format!("pnm webs update {WEBS}")), "{text}");
+        // The fix it names (after the per-service reasons) is not a local
+        // install or a did:webvh edit.
+        let fix = text
+            .split("This VTC's DID is a did:webs")
+            .nth(1)
+            .expect("fix");
+        assert!(!fix.contains("cnm did-log install"), "{text}");
+        assert!(!fix.contains("did-mgmt dids edit"), "{text}");
     }
 }

@@ -476,6 +476,13 @@ vti-voting-service = { path = "../vti-voting-service" }
 # its documents to this community over HTTP and the cast to the ballot box. Dev-only, path-only.
 vta-service = { path = "../vta-service", features = ["test-support", "rest"] }
 vta-cli-common = { path = "../vta-cli-common" }
+# A key-role did:webs document for the VTC's own keys-by-role tests
+# (`setup::bundle` key_role_tests): the VTA mints a did:webs VTC this way, and
+# `vta-service` above already builds these.
+affinidi-did-webs = { workspace = true }
+affinidi-keri = { workspace = true }
+affinidi-keri-core = { workspace = true }
+affinidi-keri-crypto = { workspace = true }
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.
 http-body-util = "0.1"

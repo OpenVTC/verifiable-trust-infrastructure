@@ -824,8 +824,10 @@ async fn run_invite_cli(
         .ok_or("secret store has no VTC bundle — has setup completed?")?;
     let bundle = VtcKeyBundle::from_secret_store_bytes(&bundle_bytes)?;
 
-    let ed25519 = bundle.ed25519_private_bytes()?;
-    let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
+    // The daemon derives the install-token key from the derivation root
+    // (`server::init_auth`); a token minted under anything else never verifies.
+    let root = bundle.derivation_root()?;
+    let signer = InstallTokenSigner::from_master_seed(&*root)?;
 
     // Open the install + ACL keyspaces directly, which fjall allows only while
     // the daemon is stopped. Unlike most offline commands this one has an

@@ -216,7 +216,8 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     //    /.well-known/did.jsonl` route can serve it after restart.
     let did_log = provision.webvh_log().ok_or_else(|| {
         AppError::Internal(
-            "vtc-host template did not produce a did.jsonl output — the VTC must be a did:webvh"
+            "the VTA did not return a did.jsonl for the VTC's DID: this setup path mints a \
+             did:webvh VTC, and a did:webs VTC is not yet supported here"
                 .into(),
         )
     })?;
@@ -2017,8 +2018,10 @@ async fn mint_initial_install_token(
     co_admin_did: Option<&str>,
     base_url: &str,
 ) -> Result<(String, String), AppError> {
-    let ed25519 = bundle.ed25519_private_bytes()?;
-    let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
+    // The daemon derives the install-token key from the derivation root
+    // (`server::init_auth`); a token minted under anything else never verifies.
+    let root = bundle.derivation_root()?;
+    let signer = InstallTokenSigner::from_master_seed(&*root)?;
     let minted = mint_passkey_install_token(
         &signer,
         &bundle.integration_did,
@@ -2127,7 +2130,12 @@ fn did_log_label_or_err(did: &str) -> Result<String, AppError> {
     did.strip_prefix("did:webvh:")
         .and_then(|suffix| suffix.split(':').next_back())
         .map(str::to_string)
-        .ok_or_else(|| AppError::Internal(format!("VTA returned non-webvh DID: {did}")))
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "the VTA returned {did}, which is not a did:webvh: this setup path mints a \
+                 did:webvh VTC, and a did:webs VTC is not yet supported here"
+            ))
+        })
 }
 
 fn prompt_err(e: dialoguer::Error) -> AppError {
@@ -2164,7 +2172,9 @@ mod tests {
     #[test]
     fn did_log_label_refuses_non_webvh() {
         let err = did_log_label_or_err("did:key:z6Mk…").unwrap_err();
-        assert!(format!("{err}").contains("non-webvh"));
+        let msg = format!("{err}");
+        assert!(msg.contains("not a did:webvh"), "{msg}");
+        assert!(msg.contains("did:webs VTC is not yet supported"), "{msg}");
     }
 
     #[test]

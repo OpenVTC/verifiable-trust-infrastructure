@@ -173,3 +173,18 @@ async fn route_is_trust_task_exempt() {
         .expect("oneshot");
     assert_eq!(res.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn a_did_webs_vtc_serves_no_log() {
+    // A did:webs VTC is published by its VTA to its host: nothing is served
+    // locally, even with a file on disk under the DID's last label.
+    let did = "did:webs:vtc.example.com:EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4";
+    let fix = build_fixture(did).await;
+    seed_did_log(
+        &fix.data_dir,
+        "EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4",
+        "{}",
+    );
+    let (status, _, _) = get(&fix.router, "/.well-known/did.jsonl").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
