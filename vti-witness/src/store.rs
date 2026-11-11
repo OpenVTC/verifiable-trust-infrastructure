@@ -72,6 +72,11 @@ pub struct SessionRecord {
     pub opened_at: DateTime<Utc>,
     /// When it stops being submittable.
     pub expires_at: DateTime<Utc>,
+    /// Submissions on it whose presentation did not verify. The session is
+    /// closed when this reaches `witness::MAX_FAILED_SUBMITS`. Absent on a row
+    /// written before it was counted, which reads as none.
+    #[serde(default)]
+    pub failed_submits: u32,
 }
 
 /// Hand-written: the challenge is live binding material while the session is
@@ -91,6 +96,14 @@ impl SessionRecord {
     /// Whether the session can no longer be submitted at `now`.
     pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
         self.expires_at <= now
+    }
+
+    /// The party the session names other than its opener.
+    pub fn counterparty(&self) -> Option<&str> {
+        self.parties
+            .iter()
+            .map(String::as_str)
+            .find(|p| *p != self.opener_did)
     }
 }
 
@@ -221,6 +234,14 @@ impl WitnessStore {
         .transpose()
     }
 
+    /// Overwrite a stored session with `session` (its failure count moved).
+    pub async fn replace_session(&self, session: &SessionRecord) -> anyhow::Result<()> {
+        self.sessions
+            .insert(row_key(&session.identity_did, &session.session_id), session)
+            .await
+            .map_err(|e| anyhow::anyhow!("update a session: {e}"))
+    }
+
     /// Put back a session taken by [`Self::take_session`] whose VWC could not
     /// be issued, so the party can submit again.
     pub async fn restore_session(&self, session: &SessionRecord) -> anyhow::Result<()> {
@@ -320,6 +341,7 @@ mod tests {
             document: "{\"secret-ish\":true}".into(),
             opened_at: Utc::now(),
             expires_at: Utc::now(),
+            failed_submits: 0,
         };
         let shown = format!("{s:?}");
         assert!(!shown.contains("CHALLENGE-VALUE"), "{shown}");

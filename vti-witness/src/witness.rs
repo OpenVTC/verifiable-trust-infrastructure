@@ -20,7 +20,9 @@
 //!    witness DIDs, the operator's VTA, or an excluded DID;
 //! 4. the identity witnesses somebody (`communities` is not empty), and the
 //!    optional allow-list admits the opener;
-//! 5. the caps: open sessions at this identity, and per opener.
+//! 5. the caps: open sessions per opener and per counterparty, and at this
+//!    identity. An identity with no allow-list makes room at its cap by
+//!    closing its oldest open sessions; one with an allow-list refuses.
 //!
 //! Any of 2–5 is `witness/session:refused`, always with the same message: a
 //! refusal that said *which* rule failed would answer "is this DID one the
@@ -43,6 +45,9 @@
 //! a party whose membership credential names its member DID rather than its
 //! relationship DID): `presentationInvalid`. The member DID goes nowhere — not
 //! into the VWC, the attestation record or a log line.
+//!
+//! A submission whose presentation does not verify leaves the session open,
+//! up to [`MAX_FAILED_SUBMITS`] of them; then it is closed.
 //!
 //! **Then the session is taken** — an atomic get-and-delete, so of two
 //! submissions racing on one session exactly one goes on to mint; the other
@@ -150,6 +155,11 @@ impl WitnessPolicy {
                 .communities
                 .as_ref()
                 .is_some_and(|c| c.contains(community))
+    }
+
+    /// Whether any opener is admitted (no allow-list).
+    fn admits_any_opener(&self) -> bool {
+        self.allowed_parties.is_none()
     }
 
     fn admits_opener(&self, opener: &str) -> bool {
@@ -294,6 +304,7 @@ pub(crate) async fn open_session(
         document,
         opened_at: now,
         expires_at: now + TimeDelta::seconds(limits.ttl_secs as i64),
+        failed_submits: 0,
     };
 
     {
@@ -306,11 +317,30 @@ pub(crate) async fn open_session(
             .open_sessions(witness.did, now)
             .await
             .map_err(|e| internal("could not read the open sessions", e))?;
-        if open.len() >= limits.max_open {
-            return Err(refused("capacity", witness));
-        }
         if open.iter().filter(|s| s.opener_did == sender).count() >= limits.max_open_per_party {
             return Err(refused("capacity-per-party", witness));
+        }
+        // The same bound on the other side: sessions naming one party as the
+        // counterparty. A pairwise relationship DID is named by one other
+        // party, so many openers naming it is not a relationship being witnessed.
+        let counterparty = record.counterparty();
+        if open
+            .iter()
+            .filter(|s| s.counterparty() == counterparty)
+            .count()
+            >= limits.max_open_per_party
+        {
+            return Err(refused("capacity-per-counterparty", witness));
+        }
+        if open.len() >= limits.max_open {
+            // An identity that admits any opener cannot let whoever opened
+            // first hold every slot for a session lifetime: the oldest
+            // un-submitted sessions make way. One with an allow-list holds
+            // only sessions its named parties opened, and refuses instead.
+            if !policy.admits_any_opener() {
+                return Err(refused("capacity", witness));
+            }
+            evict_oldest(witness, open, limits.max_open).await?;
         }
         let inserted = witness
             .state
@@ -332,6 +362,69 @@ pub(crate) async fn open_session(
         .try_into()
         .map_err(|e| internal("could not build the session response", e))?;
     serde_json::to_value(response).map_err(|e| internal("could not encode the response", e))
+}
+
+/// Make room for one more session at an identity holding `open`, at most
+/// `max_open`: take the oldest until there is a free slot. The caller holds
+/// the `opening` lock.
+async fn evict_oldest(
+    witness: &Witness<'_>,
+    mut open: Vec<SessionRecord>,
+    max_open: usize,
+) -> Result<(), Refusal> {
+    open.sort_by_key(|s| s.opened_at);
+    let excess = (open.len() + 1).saturating_sub(max_open);
+    for s in open.iter().take(excess) {
+        witness
+            .state
+            .store()
+            .take_session(witness.did, &s.session_id)
+            .await
+            .map_err(|e| internal("could not close an old session", e))?;
+    }
+    tracing::info!(
+        identity = %witness.name,
+        closed = excess,
+        "session capacity reached: the oldest open sessions were closed"
+    );
+    Ok(())
+}
+
+/// After this many submissions whose presentation did not verify, a session
+/// is closed. Each verification resolves DIDs over the network; a party with
+/// a valid presentation needs one attempt, and a few more absorb a mistake.
+pub const MAX_FAILED_SUBMITS: u32 = 3;
+
+/// Count a failed submission against the session on `thread` with `challenge`,
+/// closing it at [`MAX_FAILED_SUBMITS`]. Logged, never an error to the party:
+/// its answer is the presentation's refusal either way.
+async fn note_failed_submit(witness: &Witness<'_>, thread: &str, challenge: &str) {
+    let store = witness.state.store();
+    // The `opening` lock serialises this read-modify-write against another
+    // failure on the same session; it guards only local store calls (R1.3).
+    let _counting = witness.state.opening.lock().await;
+    let mut session = match store.session(witness.did, thread).await {
+        // The same session, not one a later open put under this id.
+        Ok(Some(s)) if s.challenge == challenge => s,
+        Ok(_) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not count a failed submission");
+            return;
+        }
+    };
+    session.failed_submits = session.failed_submits.saturating_add(1);
+    let result = if session.failed_submits >= MAX_FAILED_SUBMITS {
+        tracing::info!(
+            identity = %witness.name,
+            "session closed after {MAX_FAILED_SUBMITS} submissions that did not verify"
+        );
+        store.take_session(witness.did, thread).await.map(|_| ())
+    } else {
+        store.replace_session(&session).await
+    };
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "could not count a failed submission");
+    }
 }
 
 /// `witness/session/submit/0.2`.
@@ -399,8 +492,14 @@ pub(crate) async fn submit(
         resolver,
         now,
     )
-    .await
-    .map_err(|why| presentation_invalid(&why))?;
+    .await;
+    let verified = match verified {
+        Ok(v) => v,
+        Err(why) => {
+            note_failed_submit(witness, thread, &session.challenge).await;
+            return Err(presentation_invalid(&why));
+        }
+    };
     drop(vp);
     drop(member_presentation);
 

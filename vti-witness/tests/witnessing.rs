@@ -510,10 +510,94 @@ async fn the_caps_bound_open_sessions_in_total_and_per_party() {
         "another party has its own allowance"
     );
 
+    // Bob is already named as the other side of Alice's session.
     let carol = Key::new();
     let third = session_doc(&carol.did, w.witness_did(), [&carol.did, &w.bob.did]);
-    let full = w.h.send(&carol.did, &third).await;
-    assert_eq!(error_code(&full), "witness/session:refused", "two in total");
+    let named = w.h.send(&carol.did, &third).await;
+    assert_eq!(
+        error_code(&named),
+        "witness/session:refused",
+        "one per counterparty"
+    );
+}
+
+/// An identity that admits any opener makes room at its cap by closing its
+/// oldest open session, so openers that came first cannot hold every slot.
+#[tokio::test]
+async fn at_capacity_an_open_identity_closes_its_oldest_session() {
+    let w = World::with_policy(|_, p| {
+        p.limits = SessionLimits {
+            ttl_secs: 600,
+            max_open: 2,
+            max_open_per_party: 1,
+        }
+    });
+    let (first, _) = w.open().await;
+    let bob = session_doc(&w.bob.did, w.witness_did(), [&w.alice.did, &w.bob.did]);
+    let reply = w.h.send(&w.bob.did, &bob).await;
+    assert!(reply["payload"]["challenge"].is_string(), "{reply:#}");
+
+    let (carol, dave) = (Key::new(), Key::new());
+    let third = session_doc(&carol.did, w.witness_did(), [&carol.did, &dave.did]);
+    let reply = w.h.send(&carol.did, &third).await;
+    assert!(
+        reply["payload"]["challenge"].is_string(),
+        "the cap makes room: {reply:#}"
+    );
+    assert!(
+        w.h.store()
+            .session(w.witness_did(), id(&first))
+            .await
+            .unwrap()
+            .is_none(),
+        "the oldest session was closed"
+    );
+    assert!(
+        w.h.store()
+            .session(w.witness_did(), id(&bob))
+            .await
+            .unwrap()
+            .is_some(),
+        "only as many as needed"
+    );
+    assert_eq!(
+        w.h.store()
+            .open_sessions(w.witness_did(), Utc::now())
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+/// With an allow-list every open session is a named party's, so a full
+/// identity refuses rather than closing one.
+#[tokio::test]
+async fn at_capacity_an_allow_listed_identity_refuses() {
+    let (carol, dave) = (Key::new(), Key::new());
+    let carol_did = carol.did.clone();
+    let w = World::with_policy(|_, p| {
+        p.limits = SessionLimits {
+            ttl_secs: 600,
+            max_open: 1,
+            max_open_per_party: 2,
+        };
+        p.allowed = Some(vec![carol_did]);
+    });
+    let one = session_doc(&carol.did, w.witness_did(), [&carol.did, &dave.did]);
+    let ok = w.h.send(&carol.did, &one).await;
+    assert!(ok["payload"]["challenge"].is_string(), "{ok:#}");
+    let erin = Key::new();
+    let two = session_doc(&carol.did, w.witness_did(), [&carol.did, &erin.did]);
+    let full = w.h.send(&carol.did, &two).await;
+    assert_eq!(error_code(&full), "witness/session:refused");
+    assert!(
+        w.h.store()
+            .session(w.witness_did(), id(&one))
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -738,6 +822,102 @@ async fn a_replayed_submission_is_answered_with_the_same_vwc() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+/// A session survives a presentation that does not verify, but not
+/// indefinitely: each attempt costs DID resolutions.
+#[tokio::test]
+async fn a_session_closes_after_repeated_presentations_that_do_not_verify() {
+    let w = World::new();
+    let (doc, reply) = w.open().await;
+    let bad = vp(
+        &w.alice,
+        vec![vrc(&w.alice, &w.bob.did).await],
+        challenge(&reply),
+        domain(&reply),
+    )
+    .await;
+    for attempt in 1..=vti_witness::witness::MAX_FAILED_SUBMITS {
+        let sub = submit_doc(&w.alice, w.witness_did(), id(&doc), bad.clone()).await;
+        let out = w.h.send(&w.alice.did, &sub).await;
+        assert_eq!(
+            error_code(&out),
+            "witness/session/submit:presentationInvalid",
+            "attempt {attempt}: {out:#}"
+        );
+        let open =
+            w.h.store()
+                .session(w.witness_did(), id(&doc))
+                .await
+                .unwrap()
+                .is_some();
+        assert_eq!(
+            open,
+            attempt < vti_witness::witness::MAX_FAILED_SUBMITS,
+            "attempt {attempt}"
+        );
+    }
+    // A valid presentation now finds no session.
+    let sub = submit_doc(
+        &w.alice,
+        w.witness_did(),
+        id(&doc),
+        w.alice_vp(&reply).await,
+    )
+    .await;
+    let out = w.h.send(&w.alice.did, &sub).await;
+    assert_eq!(
+        error_code(&out),
+        "witness/session/submit:challengeMismatch",
+        "{out:#}"
+    );
+}
+
+/// The credential count is bounded before any issuer is resolved.
+#[tokio::test]
+async fn a_presentation_with_too_many_credentials_is_presentation_invalid() {
+    let w = World::new();
+    let (doc, reply) = w.open().await;
+    let mut creds = vec![
+        vrc(&w.alice, &w.bob.did).await,
+        vmc(&w.community, &w.alice.did, None).await,
+    ];
+    while creds.len() <= vti_witness::presentation::MAX_CREDENTIALS {
+        creds.push(vmc(&w.community, &w.alice.did, None).await);
+    }
+    let p = vp(&w.alice, creds, challenge(&reply), domain(&reply)).await;
+    let sub = submit_doc(&w.alice, w.witness_did(), id(&doc), p).await;
+    let out = w.h.send(&w.alice.did, &sub).await;
+    assert_eq!(
+        error_code(&out),
+        "witness/session/submit:presentationInvalid",
+        "{out:#}"
+    );
+}
+
+/// A credential that could not count — here a relationship credential a third
+/// party issued, with a proof that would not verify — is not resolved and does
+/// not stop an otherwise valid presentation.
+#[tokio::test]
+async fn a_credential_that_cannot_count_is_not_checked() {
+    let w = World::new();
+    let mallory = Key::new();
+    let (doc, reply) = w.open().await;
+    let mut unrelated = vrc(&mallory, &w.bob.did).await;
+    unrelated["validFrom"] = json!("2020-01-01T00:00:00Z");
+    let creds = vec![
+        vrc(&w.alice, &w.bob.did).await,
+        vmc(&w.community, &w.alice.did, None).await,
+        unrelated,
+    ];
+    let p = vp(&w.alice, creds, challenge(&reply), domain(&reply)).await;
+    let sub = submit_doc(&w.alice, w.witness_did(), id(&doc), p).await;
+    let out = w.h.send(&w.alice.did, &sub).await;
+    assert_eq!(
+        out["type"],
+        format!("{WITNESS_SESSION_SUBMIT_V0_2}#response"),
+        "{out:#}"
     );
 }
 
