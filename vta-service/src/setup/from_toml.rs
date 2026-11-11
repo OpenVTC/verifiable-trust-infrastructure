@@ -1584,6 +1584,8 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
                 "vta_did.domain '{domain}' must be a bare domain, e.g. did.example.com"
             ));
         }
+        // Without the `webs` feature setup refuses `create_webs` outright.
+        #[cfg(feature = "webs")]
         if let Some(path) = path
             && crate::operations::did_webs::check_path(path).is_err()
         {
