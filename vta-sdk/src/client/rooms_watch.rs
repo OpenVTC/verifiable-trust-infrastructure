@@ -155,9 +155,48 @@ pub fn room_changed_signal(document: &Value) -> Option<changed::Payload> {
     serde_json::from_value(document.get("payload")?.clone()).ok()
 }
 
+/// A `rooms/keys/read-marker/moved/0.1` document this client received — the member's read
+/// marker for a room moved on another of their devices — or `None` for anything else. The
+/// caller acts on it only when its `issuer` is its own VTA and it names a room and member
+/// the caller watches through that VTA (Consumer item 1): it takes the marker as the one in
+/// force, whether further on or behind, recounts unread, and clears notifications at or
+/// before it. It is not a signal that the room changed, and does not touch the watch.
+pub fn room_read_marker_moved(
+    document: &Value,
+) -> Option<vti_specs::rooms::keys::read_marker::moved::v0_1::Payload> {
+    let type_uri = document.get("type")?.as_str()?;
+    if type_uri.split('#').next() != Some(trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_MOVED_0_1) {
+        return None;
+    }
+    serde_json::from_value(document.get("payload")?.clone()).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_moved_notice_is_read_only_from_its_own_type() {
+        let doc = json!({
+            "type": trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_MOVED_0_1,
+            "payload": {
+                "roomId": "did:example:room",
+                "member": "did:example:member",
+                "readMarker": { "version": 415, "createdAt": "2027-02-01T10:14:02Z" }
+            }
+        });
+        let m = room_read_marker_moved(&doc).expect("a notice");
+        assert_eq!(m.read_marker.version, 415);
+        let mut other = doc.clone();
+        other["type"] = json!(trust_tasks::TASK_ROOMS_KEYS_CHANGED_0_1);
+        assert!(room_read_marker_moved(&other).is_none());
+        let mut extra = doc;
+        extra["payload"]["setBy"] = json!("did:example:phone");
+        assert!(
+            room_read_marker_moved(&extra).is_none(),
+            "the schema is closed: nothing says which device moved it"
+        );
+    }
 
     #[test]
     fn a_signal_is_read_only_from_its_own_type() {

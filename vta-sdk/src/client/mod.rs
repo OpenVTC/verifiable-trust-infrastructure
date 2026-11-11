@@ -436,8 +436,8 @@ mod webs;
 mod witness;
 pub use rooms::{
     RoomAction, RoomLabelEdit, RoomRegistration, RoomRetentionPolicy, RoomVisibility,
-    is_community_type, is_offer_type, room_label_payload, unsigned_community_request,
-    unsigned_room_request,
+    is_community_type, is_offer_type, room_label_payload, room_read_marker_payload,
+    unsigned_community_request, unsigned_room_request,
 };
 pub use rooms_records::{
     MEMBER_PROFILE_KIND, RECORD_BODY_MEMBERS, RECORD_FILE_MEMBERS, RECORD_KIND_VALUES,
@@ -445,7 +445,8 @@ pub use rooms_records::{
     record_members_used, unsigned_room_request_v0_11,
 };
 pub use rooms_watch::{
-    ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal, unsigned_room_request_v0_12,
+    ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal, room_read_marker_moved,
+    unsigned_room_request_v0_12,
 };
 pub use webs::webs_refusal_fix;
 mod secrets;

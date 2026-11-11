@@ -254,6 +254,61 @@ A surface showing rooms prefers your label, then the room's profile name, then
 the community's offer label, then the DID — and keeps the room's own name
 visible beside yours.
 
+### Where you have read to, on every device (`rooms/keys/read-marker`)
+
+Read a room on your phone and your laptop still shows it unread — unless the
+**read marker** is kept by your VTA rather than by each client.
+`rooms/keys/read-marker/set/0.1` (trust-tasks-tf #1086) keeps one per room and
+member, beside the label: the room `version` you have seen the conversation to,
+and the host's `createdAt` of the newest message you have seen.
+
+```bash
+pnm rooms keys list                     # each room's read marker ("read to version 415 …")
+pnm rooms list --room <room-did> …      # the records, and how many are unread against it
+pnm rooms keys mark-read <room-did> --member <persona-did> --version 415 \
+    --created-at 2027-02-01T10:14:02Z   # read, on every device
+pnm rooms keys mark-read <room-did> --member <persona-did> --version 408 --unread
+pnm rooms keys mark-read <room-did> --member <persona-did> --unread   # the whole room
+```
+
+- **Forward only.** The VTA keeps the further of its marker and yours: the
+  greater `version`; at an equal version, the later `createdAt` (compared as an
+  instant; an absent one is the earliest). Two devices setting at once converge
+  whatever order the sets arrive in, and the answer is the marker in force
+  (`moved: false` when another device had read further — adopt it). `--unread`
+  (`rewind: true`) takes yours even when it is behind; `version 0` and no
+  `createdAt` is the whole room unread. A repeat moves nothing, so the task is
+  safe to retry — but not a forward set issued before a rewind sent since.
+- **As received.** `createdAt` is stored and returned exactly as the client sent
+  it, and the marker is never checked against the room or its host: the VTA asks
+  the host nothing to serve it.
+- **Who may.** As for the label: the `roomOpen` capability and acting as the
+  member; `rooms/keys/read-marker/set:notHeld` for a room not held as that member
+  and for a member you do not act as, alike; a delegate is `permissionDenied` —
+  what an agent read is not what you have seen.
+- **Your other devices are told.** When a set moves the marker, the VTA sends
+  `rooms/keys/read-marker/moved/0.1` — the room, the member and the marker in
+  force, nothing about which device or when — to each of the member's **other**
+  clients holding a `rooms/keys/watch` on the room as that member and still
+  standing for it, never the setter, a delegate or anyone else. Sets within 3 s
+  are coalesced into one notice carrying the latest marker. It goes the way
+  `rooms/keys/changed` does (signed, one attempt window, no doorbell), best
+  effort: a lost one costs nothing the next `rooms/keys/list` does not restore,
+  and it does not consume the watch. A client reads it with
+  `vta_sdk::client::room_read_marker_moved`.
+- **Listed with `includePersonal`.** `rooms/keys/list/0.3` returns `readMarker`
+  on each entry that has one, only with `includePersonal: true`; 0.2 never does.
+- **Private, and no history.** Only the marker in force is kept — no earlier one,
+  no time it was set, no record of which client set it. It goes to no room, host,
+  owner, other member or community, and into nothing the VTA completes, signs or
+  seals. A set writes **no** audit row and no log line (the spine leaves it out
+  of its receipt log); the VTA counts sets in the `room_read_markers_set_total`
+  metric and nothing more. Neither the set response nor a 0.3 list is kept for
+  replay redelivery.
+- **Kept with the group state.** In `room_groups`
+  (`room-read-marker/<room>/<persona>`), backed up with it, discarded only with
+  that member's group state.
+
 Your own client never reaches a host as itself: it builds each room request
 unsigned and your VTA completes it **as the persona** (`rooms/keys/act/0.8`,
 §9). The one place a client DID does appear is as a *presenter* (§7): an
@@ -2243,7 +2298,9 @@ and `vtc-service` — the same tasks and versions on both:
 | `rooms/keys/act/0.8`, `0.9`, `0.10`, `0.11`, `0.12` | `roomPresent` capability; refused to a delegate. 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.11 adds `rooms/records/put/0.5`, `rooms/records/list/0.6` and `rooms/records/get/0.3`; 0.12 adds `rooms/watch/0.1` (`read`), its `address`, `sinceVersion` and `leaseSeconds` passed through unread |
 | `rooms/keys/watch/0.1` | `roomPresent` capability + acting as `member` (`memberNotPrincipal` otherwise); refused to a delegate. Up to 64 rooms at one host, one outcome each; each armed with its own `rooms/watch/0.1`, presentation and `did:peer` address; bounds 64 per member, 64 per client, 256 in all |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
+| `rooms/keys/list/0.3` | as 0.2; `includePersonal` also adds each entry's `readMarker` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
+| `rooms/keys/read-marker/set/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate. Forward only unless `rewind`; never audited or logged. A move sends `rooms/keys/read-marker/moved/0.1` to the member's other watching clients (coalesced, 3 s) |
 | `rooms/keys/profile/read/0.1` | `roomOpen` capability; reads at the host as the persona, presenting its `read` |
 | `rooms/keys/profile/write/0.1` | `roomOpen` capability; refused to a delegate. The persona's `write` and `curate` or `admin` (`noAuthority` before the host); clearing takes `curate` |
 | `rooms/keys/browse/0.3`, `0.4` | `roomOpen` capability; passes the host's `lastPrune` through. 0.4 lists with `rooms/records/list/0.6` (else 0.5) and passes its `RecordMetadataV3` rows through as served: `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`), `kind` (`open`) |
