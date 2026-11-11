@@ -824,3 +824,151 @@ async fn readiness_follows_the_mediator_session_both_ways() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A copy of [`sign`]'s output with its proof's verification method moved to `did`: what a
+/// document naming a DID of its sender's choosing looks like. Its signature no longer verifies,
+/// which does not matter: nothing that names such a DID may get as far as resolving it.
+fn naming_method(mut d: Value, did: &str) -> Value {
+    d["issuer"] = json!(did);
+    d["proof"]["verificationMethod"] = json!(format!("{did}#key-0"));
+    d
+}
+
+/// On the HTTPS door, which proves nobody, the service resolves a signer only where it has a
+/// reason to know it: a `did:key` (or `did:peer`), a community `[communities] allowed` names, or a
+/// party an election held here names. Anyone else is refused before anything is fetched
+/// (`permissionDenied`), and a proof whose verification method is not the issuer's is refused
+/// before it is resolved (`proofInvalid`).
+#[tokio::test]
+async fn the_https_door_resolves_only_a_signer_it_has_a_reason_to_know() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let svc = state(&dir);
+    let service_did = svc.identity.did.clone();
+    let community = Identity::from_seed(&[31; 32]).unwrap();
+    let auditor = "did:webvh:QmAuditor:audit.example";
+    let stranger = "did:webvh:QmStranger:stranger.example";
+
+    let mut register = registration(&community, &service_did, "e-door");
+    register["manifest"]["board"]["auditors"] = json!([auditor]);
+    let digest = manifest_digest(&register["manifest"]).unwrap();
+    register["manifestDigest"] = json!(digest_multibase(&digest));
+    let (status, answer) = send(
+        &svc,
+        doc(
+            "election/register",
+            &service_did,
+            Some(&community),
+            register,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    let sel = json!({ "community": community.did, "electionId": "e-door" });
+    let signed_read = doc("board/head", &service_did, Some(&community), sel.clone()).await;
+
+    // A stranger's DID is never resolved: refused as no party, not as a failed resolution.
+    let (status, answer) = send(&svc, naming_method(signed_read.clone(), stranger)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    assert_eq!(answer["payload"]["code"], "permissionDenied", "{answer}");
+
+    // Nor one naming an election not held here.
+    let mut elsewhere = signed_read.clone();
+    elsewhere["payload"]["electionId"] = json!("not-here");
+    let (status, answer) = send(&svc, naming_method(elsewhere, auditor)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    assert_eq!(answer["payload"]["code"], "permissionDenied", "{answer}");
+
+    // A party the election names is resolved: here the test resolver cannot, so the proof
+    // fails — after the door let it through.
+    let (status, answer) = send(&svc, naming_method(signed_read.clone(), auditor)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
+
+    // A verification method that is not the issuer's is refused before it is resolved.
+    let mut mismatched = signed_read.clone();
+    mismatched["proof"]["verificationMethod"] = json!(format!("{stranger}#key-0"));
+    let (status, answer) = send(&svc, mismatched).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
+
+    // A did:key signer still reads.
+    let (status, answer) = send(&svc, signed_read).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A community named in `[communities] allowed` is resolved on the HTTPS door; an open box
+/// (`allow_any`) names nobody, so a stranger registering there over HTTPS is never resolved.
+#[tokio::test]
+async fn an_allowed_community_is_resolved_on_the_https_door_and_an_open_box_names_nobody() {
+    let listed = "did:webvh:QmListed:community.example";
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let svc = state_serving(
+        &dir,
+        CommunitiesConfig {
+            allowed: vec![listed.to_string()],
+            ..CommunitiesConfig::default()
+        },
+    );
+    let service_did = svc.identity.did.clone();
+    let community = Identity::from_seed(&[32; 32]).unwrap();
+    let register = registration(&community, &service_did, "e-listed");
+    let signed = doc(
+        "election/register",
+        &service_did,
+        Some(&community),
+        register,
+    )
+    .await;
+    let (status, answer) = send(&svc, naming_method(signed, listed)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let open = state(&dir);
+    let open_did = open.identity.did.clone();
+    let signed = doc(
+        "election/register",
+        &open_did,
+        Some(&community),
+        registration(&community, &open_did, "e-listed"),
+    )
+    .await;
+    let (status, answer) = send(&open, naming_method(signed, listed)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    assert_eq!(answer["payload"]["code"], "permissionDenied", "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A community's or a trustee's request is refused once older than the acceptance window every
+/// VTI node applies (VTI-OPS-024): a copy of one is not a standing instruction. A cast is not
+/// held to it: its key is made for it, and its sender may resend it until voting closes.
+#[tokio::test]
+async fn a_communitys_request_older_than_the_acceptance_window_is_refused() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let svc = state(&dir);
+    let service_did = svc.identity.did.clone();
+    let community = Identity::from_seed(&[33; 32]).unwrap();
+    let register = registration(&community, &service_did, "e-window");
+
+    let mut old = doc("election/register", &service_did, None, register.clone()).await;
+    old["issuer"] = json!(community.did);
+    old["issuedAt"] = json!(
+        (Utc::now() - Duration::minutes(20)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
+    let (status, answer) = send(&svc, sign(old, &community).await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["payload"]["code"], "expired", "{answer}");
+
+    let mut recent = doc("election/register", &service_did, None, register).await;
+    recent["issuer"] = json!(community.did);
+    recent["issuedAt"] = json!(
+        (Utc::now() - Duration::minutes(5)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
+    let (status, answer) = send(&svc, sign(recent, &community).await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

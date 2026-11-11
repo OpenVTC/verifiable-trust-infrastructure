@@ -17,11 +17,23 @@ use crate::identity::Identity;
 
 const SPEC: &str = "https://trusttasks.org/spec/";
 
+/// How old a community's or a trustee's request may be: the window every VTI node applies
+/// (VTI-OPS-024), with its clock skew.
+fn acceptance_max_age() -> chrono::TimeDelta {
+    let window = vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW;
+    window.max_age + window.clock_skew
+}
+
 pub struct AppState {
     /// Held only for what reads or changes it: a cast's costly checks run without it.
     pub ballot_box: Mutex<BallotBox>,
     pub identity: Identity,
+    /// Resolves any DID method the operator configured — used only for a signer this service
+    /// has a reason to know ([`resolver_for`]).
     pub resolver: vti_common::auth::TrustTaskVmResolver,
+    /// Resolves `did:key` and `did:peer` only, with no I/O: every other signer on a binding that
+    /// proves nobody.
+    local_resolver: vti_common::auth::TrustTaskVmResolver,
     /// Whose elections are registered, and how many each may hold open.
     pub communities: CommunitiesConfig,
     /// One permit per cast being checked: the checks run on blocking threads, never more at
@@ -45,6 +57,7 @@ impl AppState {
             ballot_box: Mutex::new(ballot_box),
             identity,
             resolver,
+            local_resolver: vti_common::auth::TrustTaskVmResolver::did_key_only(),
             communities,
             cast_checks: tokio::sync::Semaphore::new(cores),
             messaging: None,
@@ -204,6 +217,89 @@ impl Task {
     }
 }
 
+impl Task {
+    /// Tasks a community or a trustee signs: consequential, and signed by a DID that keeps its
+    /// key. Each is held to the acceptance window every VTI node applies (VTI-OPS-024), so a
+    /// copy of one is not a standing instruction. A cast is not: its key is made for that one
+    /// cast, the voter's agent may resend it until voting closes, and the ballot box answers a
+    /// resend as it did.
+    fn within_window(self) -> bool {
+        matches!(
+            self,
+            Task::Register
+                | Task::Close
+                | Task::Cancel
+                | Task::Enrol
+                | Task::Deal
+                | Task::Confirm
+                | Task::Justify
+                | Task::Decrypt
+                | Task::Authorize
+        )
+    }
+}
+
+/// The DID of a received proof's `verificationMethod`: the DID verifying it resolves.
+fn proof_method_did(received: &Value) -> Option<&str> {
+    received
+        .pointer("/proof/verificationMethod")
+        .and_then(Value::as_str)
+        .and_then(|vm| vm.split('#').next())
+        .filter(|d| !d.is_empty())
+}
+
+/// A DID that carries its keys in itself: resolving it fetches nothing.
+fn resolves_locally(did: &str) -> bool {
+    did.starts_with("did:key:") || did.starts_with("did:peer:")
+}
+
+/// The election a request names: `(community, electionId)` — at the top of the payload, or in
+/// a registration's manifest.
+fn named_election(task: Task, payload: &Value) -> (&str, &str) {
+    let at = if task == Task::Register {
+        &payload["manifest"]
+    } else {
+        payload
+    };
+    (
+        at["community"].as_str().unwrap_or_default(),
+        at["electionId"].as_str().unwrap_or_default(),
+    )
+}
+
+/// The resolver for `signer`'s proof, or `None` where this service will not resolve it.
+///
+/// A `did:key` or `did:peer` resolves with no I/O, on any binding. Any other DID needs a fetch
+/// the sender chose, so it is resolved only where the service has a reason to know the signer:
+/// a transport proved it (TSP, DIDComm — the sender is the issuer, checked above); or, on the
+/// HTTPS binding, which proves nobody, it is a community named in `[communities] allowed`, or a
+/// party the election the request names, held here, names (its community, auditors or
+/// trustees). An open box (`allow_any`) names no community, so a stranger's DID is never
+/// fetched on its HTTPS door.
+fn resolver_for<'a>(
+    state: &'a AppState,
+    transport_sender: Option<&str>,
+    task: Task,
+    signer: &str,
+    payload: &Value,
+) -> Option<&'a vti_common::auth::TrustTaskVmResolver> {
+    if resolves_locally(signer) {
+        return Some(&state.local_resolver);
+    }
+    if transport_sender.is_some() {
+        return Some(&state.resolver);
+    }
+    if state.communities.allowed.iter().any(|c| c == signer) {
+        return Some(&state.resolver);
+    }
+    let (community, election_id) = named_election(task, payload);
+    let named = state
+        .ballot_box
+        .lock()
+        .is_ok_and(|bb| bb.names_party(community, election_id, signer));
+    named.then_some(&state.resolver)
+}
+
 fn status_for(code: &TrustTaskCode) -> StatusCode {
     match code.to_string().as_str() {
         "malformedRequest" => StatusCode::BAD_REQUEST,
@@ -330,8 +426,9 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
     }
 
     // A signed request names its recipient (SPEC §4.8.2), and a consequential one when it was
-    // issued (each task's issuedAt requirement): a captured document is not a bearer token for
-    // ever, and not one for another ballot box.
+    // issued (each task's issuedAt requirement). A community's or a trustee's is also refused
+    // once older than the acceptance window, so a copy of one is not a standing instruction;
+    // and none is one for another ballot box.
     if doc.proof.is_some() && doc.recipient.is_none() {
         return refuse(
             state,
@@ -361,6 +458,15 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
                 )
                 .await;
             }
+            Some(at) if task.within_window() && at + acceptance_max_age() < now => {
+                return refuse(
+                    state,
+                    &doc,
+                    standard("expired"),
+                    "issued longer ago than this ballot box accepts",
+                )
+                .await;
+            }
             Some(_) => {}
         }
     }
@@ -382,9 +488,35 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
     }
 
     // The signer, proven by the document's own proof over the bytes as received, and required
-    // to be the document's issuer (framework SPEC §4.7).
+    // to be the document's issuer (framework SPEC §4.7). Verifying resolves the proof's
+    // verification method, so both checks come first: the method must be the issuer's, and the
+    // issuer one this service will resolve ([`resolver_for`]).
     let signer = if doc.proof.is_some() {
-        match vti_common::auth::verify_trust_task_proof_value(&received, &state.resolver).await {
+        let Some(issuer) = doc
+            .issuer
+            .as_deref()
+            .filter(|i| proof_method_did(&received) == Some(*i))
+        else {
+            return refuse(
+                state,
+                &doc,
+                standard("proofInvalid"),
+                "the proof is not the issuer's",
+            )
+            .await;
+        };
+        let Some(resolver) = resolver_for(state, transport_sender, task, issuer, &doc.payload)
+        else {
+            return refuse(
+                state,
+                &doc,
+                standard("permissionDenied"),
+                "on this binding a request is signed by a did:key, by a community this ballot \
+                 box serves, or by a party the election it names lists",
+            )
+            .await;
+        };
+        match vti_common::auth::verify_trust_task_proof_value(&received, resolver).await {
             Ok(s) if doc.issuer.as_deref() == Some(s.as_str()) => Some(s),
             Ok(_) => {
                 return refuse(
