@@ -30,15 +30,16 @@ const KEY_AGREEMENT_ALGORITHM: &str = "x25519";
 /// The most services one designation carries (the payload's own bound).
 pub const MAX_DESIGNATED_SERVICES: usize = 32;
 
-/// The document members the derivation renders (or, for `@context`, ignores).
-/// Anything else is `documentMember`.
+/// The document members the derivation renders or (`@context`,
+/// `resolvedMethods`) ignores. Anything else is `documentMember`.
 ///
-/// `resolvedMethods` is deliberately absent: VTI's own node templates carry it
-/// as a top-level member, and §9.2 as written refuses every member the
-/// derivation is not given (trustoverip/dtgwg-trust-tasks-tf#1164). Should the
-/// specification come to honour it, it is added here.
+/// `resolvedMethods` is ignored, not refused (CONVENTIONS.md 0.2 §9.2,
+/// trustoverip/dtgwg-trust-tasks-tf#1170): a did:webs node declares did:webs
+/// by using it, and the derivation renders no declaration of further methods
+/// (VTI-KEY-008), so a node template written for any method carries it.
 const DOCUMENT_MEMBERS: &[&str] = &[
     "@context",
+    "resolvedMethods",
     "id",
     "controller",
     "verificationMethod",

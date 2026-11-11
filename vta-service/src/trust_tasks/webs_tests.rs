@@ -793,30 +793,32 @@ async fn a_context_template_resolves_in_its_scope() {
     assert_eq!(created["alsoKnownAs"], json!(aliases));
 }
 
-/// CONVENTIONS.md 0.2 §9.2, as written: `resolvedMethods` is a member the
-/// derivation does not render, so the node built-ins that carry it are
-/// refused (trustoverip/dtgwg-trust-tasks-tf#1164 asks whether it should be
-/// honoured; if so, `vta_sdk::did_templates::webs::DOCUMENT_MEMBERS` gains it
-/// and this test turns into a happy path). Nothing is derived or published.
+/// CONVENTIONS.md 0.2 §9.2: a node template's `resolvedMethods` is ignored
+/// (trustoverip/dtgwg-trust-tasks-tf#1170), so the specification's own example
+/// — a witness from `dtg-witness` — is created, with the template's services.
 #[tokio::test]
-async fn a_template_the_derivation_cannot_reproduce_is_refused_before_any_key() {
+async fn a_node_template_carrying_resolved_methods_is_representable() {
     let rig = Rig::new().await;
     rig.state.config.write().await.dids.webs_service_dids = true;
-    let keys_before = rig.key_rows().await;
-    let out = rig
+    let created = ok(&rig
         .run(
             C02,
             json!({ "contextId": CTX, "serverId": "host-1", "didClass": "service",
                     "path": "witnesses", "template": "dtg-witness",
                     "templateVars": { "MEDIATOR_DID": "did:web:mediator.example" } }),
         )
-        .await;
-    assert_eq!(code(&out), "vta/webs/dids/create:templateNotRepresentable");
-    assert_eq!(
-        details(&out),
-        json!({ "reason": "documentMember", "members": ["/document/resolvedMethods"] })
-    );
+        .await);
+    assert_eq!(created["template"], "dtg-witness");
+    assert_eq!(created["didClass"], "service");
+}
 
+/// A template the derivation cannot reproduce is refused before any key is
+/// derived or anything published.
+#[tokio::test]
+async fn a_template_the_derivation_cannot_reproduce_is_refused_before_any_key() {
+    let rig = Rig::new().await;
+    rig.state.config.write().await.dids.webs_service_dids = true;
+    let keys_before = rig.key_rows().await;
     // The specification's own example: swiyu-verifier's keys.
     let out = rig
         .run(

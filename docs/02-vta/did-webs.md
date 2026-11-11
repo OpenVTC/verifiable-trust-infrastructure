@@ -137,12 +137,11 @@ The VTA computes the inception first, because the AID is its digest and
 `{DID}` is the final DID, renders the template with the real DID and keys,
 and only then writes the designations and publishes.
 
-**Known gap (#1164).** The node built-ins (`dtg-witness`, `did-host-*`,
-`vtc-host`, `room-host`, `ballot-box`) carry a top-level `resolvedMethods`
-member, which §9.2 as written refuses as `documentMember` — so today they are
-refused, though the specification's own example uses `dtg-witness`
-(trustoverip/dtgwg-trust-tasks-tf#1164). Built-ins without it (`ai-agent`,
-`room`) are representable, as is any stored template of the shape above.
+A template's `resolvedMethods` member is ignored, as its `@context` is
+(CONVENTIONS §9.2): a did:webs node declares did:webs by using it. So the node
+built-ins that carry it (`dtg-witness`, `did-host-*`, `room-host`,
+`ballot-box`) are representable; `vtc-host` is not, for its post-quantum
+second signing key, which a level-1 did:webs cannot hold.
 
 ## Turning it on
 

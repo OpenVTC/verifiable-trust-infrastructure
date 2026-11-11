@@ -289,29 +289,16 @@ fn two_services_with_one_id_are_a_service_id_conflict() {
     );
 }
 
-/// What the built-ins are today. Every node template carries a top-level
-/// `resolvedMethods`, which §9.2 as written refuses as `documentMember`
-/// (trustoverip/dtgwg-trust-tasks-tf#1164). If the specification comes to
-/// honour it, `DOCUMENT_MEMBERS` gains it and this test changes with it.
+/// What the built-ins are. A node template's top-level `resolvedMethods` is
+/// ignored (CONVENTIONS.md 0.2 §9.2, trustoverip/dtgwg-trust-tasks-tf#1170),
+/// so the node templates are representable unless something else refuses them.
 #[test]
 fn the_builtins_as_section_9_2_reads_them_today() {
     let cases: &[(&str, Option<(NotRepresentableReason, &[&str])>)] = &[
         ("ai-agent", None),
         ("room", None),
-        (
-            "dtg-witness",
-            Some((
-                NotRepresentableReason::DocumentMember,
-                &["/document/resolvedMethods"],
-            )),
-        ),
-        (
-            "did-host-tsp",
-            Some((
-                NotRepresentableReason::DocumentMember,
-                &["/document/resolvedMethods"],
-            )),
-        ),
+        ("dtg-witness", None),
+        ("did-host-tsp", None),
         (
             "swiyu-verifier",
             Some((
