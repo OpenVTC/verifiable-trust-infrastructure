@@ -949,11 +949,10 @@ affinidi-did-resolver-cache-sdk = { version = "0.8.51", features = ["network", "
 affinidi-did-resolver-traits = { version = "0.1" }
 # Creating and continuing a did:webs (docs/05-design-notes/did-webs-in-the-vta.md):
 # the controller side of affinidi-did-webs, the same release the resolver above
-# reads with. `create` pulls `affinidi-keri`, whose LMDB store (`heed`) the
-# controller path never uses. affinidi-keri 0.8.1 makes the store optional and
-# affinidi-did-webs 0.13.1 drops it; until then it is compiled in.
-affinidi-did-webs = { version = "0.13", features = ["create"] }
-affinidi-keri = "0.8"
+# reads with. `create` pulls `affinidi-keri` without its LMDB store (did-webs
+# 0.13.1, affinidi-keri 0.8.1): the controller keeps the log in `keri.cesr`.
+affinidi-did-webs = { version = "0.13.1", features = ["create"] }
+affinidi-keri = { version = "0.8.1", default-features = false }
 affinidi-keri-core = "0.8"
 affinidi-keri-crypto = "0.8"
 
