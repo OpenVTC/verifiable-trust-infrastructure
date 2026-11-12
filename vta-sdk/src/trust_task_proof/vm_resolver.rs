@@ -61,8 +61,9 @@ use std::sync::{Arc, Mutex};
 const UNRETRIEVABLE: &str = "the signer's key could not be retrieved: ";
 
 /// A refusal meaning the signer's key could not be retrieved (see
-/// [`UNRETRIEVABLE`]).
-fn unretrievable(detail: impl std::fmt::Display) -> DataIntegrityError {
+/// [`UNRETRIEVABLE`]): no resolver for the method, or the DID did not resolve.
+/// Public so a resolver wrapping this one can say the same, and a test can.
+pub fn unretrievable(detail: impl std::fmt::Display) -> DataIntegrityError {
     DataIntegrityError::Resolver(format!("{UNRETRIEVABLE}{detail}"))
 }
 
@@ -81,7 +82,14 @@ pub(crate) fn unsupported_method(e: &DataIntegrityError) -> Option<&str> {
 
 /// Whether `e` means the signer's key could not be retrieved, as opposed to
 /// the proof being wrong.
-pub(crate) fn is_unretrievable(e: &DataIntegrityError) -> bool {
+///
+/// Every other [`DataIntegrityError::Resolver`] this resolver returns — a key
+/// not listed under the proof's purpose, a controller mismatch, a `did:key`
+/// fragment that does not match, a malformed method, an unsupported key type —
+/// is a verdict on the proof. A caller that treats retrieval failures more
+/// leniently than verdicts (a retry, a separate budget) must ask this, never
+/// match the variant.
+pub fn is_unretrievable(e: &DataIntegrityError) -> bool {
     matches!(e, DataIntegrityError::Resolver(msg) if msg.starts_with(UNRETRIEVABLE))
 }
 

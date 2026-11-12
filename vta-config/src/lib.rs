@@ -621,6 +621,16 @@ pub struct DidsConfig {
     /// off never strands one.
     #[serde(default)]
     pub webs_enabled: bool,
+    /// Whether `vta/webs/dids/create/0.2` creates a `did:webs` **service** DID
+    /// — the durable identity of a node or a service, at key assurance level 1.
+    /// Default `false`: a service `did:webs` is optional and alpha, peers that
+    /// have not declared `did:webs` resolution may not verify one, and the
+    /// specification has it enabled separately from `webs_enabled`
+    /// (`vta/webs/_shared/0.2` CONVENTIONS.md §1.1). Needs `webs_enabled` as
+    /// well; off refuses only new ones (`serviceDidNotPermitted`), never a
+    /// service DID already created.
+    #[serde(default)]
+    pub webs_service_dids: bool,
 }
 
 impl Default for DidsConfig {
@@ -629,6 +639,7 @@ impl Default for DidsConfig {
             default_did_method: vta_sdk::did_scid::DidMethod::default(),
             scid_also_known_as: true,
             webs_enabled: false,
+            webs_service_dids: false,
         }
     }
 }
@@ -954,6 +965,19 @@ pub struct TeeKmsConfig {
     /// Ignored if `vta_did` is already set in config or the store.
     #[serde(default)]
     pub vta_did_template: Option<String>,
+    /// Mint a key-role `did:webs` as this VTA's identity on first boot instead
+    /// of a `did:webvh` (alpha; VTI-KEY-001, design note did-webs-in-the-vta
+    /// §4, S8). The enclave derives the identity from its bootstrapped seed —
+    /// the same create `vta setup`'s `create_webs` runs — records it
+    /// unpublished, and registers it at its host on its own authority before
+    /// messaging starts. Needs `[dids] webs_enabled = true` and an enclave
+    /// built with the `webs` feature; exclusive with `vta_did_template`.
+    ///
+    /// Absent (the default) leaves first boot as it was. Ignored, like the
+    /// template, once the store holds an identity or config sets `vta_did`.
+    /// Not overlay-settable: a fleet tenant overlay cannot ask for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vta_did_webs: Option<TeeWebsIdentityConfig>,
     /// Context ID used for the auto-bootstrapped admin (default: "default").
     ///
     /// On first boot, the VTA auto-creates this context and grants the
@@ -1057,6 +1081,31 @@ pub struct TeeKmsConfig {
     /// is no channel for the parent to set it.
     #[serde(default)]
     pub allow_unanchored: bool,
+}
+
+/// The `did:webs` a TEE VTA mints as its identity on first boot
+/// ([`TeeKmsConfig::vta_did_webs`]): the same inputs as `vta setup`'s
+/// `vta_did` kind `create_webs`. The DID is
+/// `did:webs:{domain}[:{path}]:{AID}`.
+#[cfg(feature = "tee")]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TeeWebsIdentityConfig {
+    /// The did-hosting server's DID (`did:webvh:…`). Its operator must allow
+    /// self-registration on `domain` (`[[hosting.webs_self_register]]`). The
+    /// enclave's egress must reach its Trust-Task HTTPS endpoint.
+    pub server_did: String,
+    /// The domain the host serves the DID on, e.g. `did.example.com`
+    /// (`host:port` for a non-default port).
+    pub domain: String,
+    /// Slot path before the AID, `/`-separated (`nodes`); absent puts it at
+    /// the top of the domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The id the VTA registers the server under. Default `vta-host`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
 }
 
 /// External anti-rollback anchor configuration (P0.2b counter + P0.2c writer).
@@ -1521,6 +1570,17 @@ impl AppConfig {
                 other => {
                     return Err(AppError::Config(format!(
                         "invalid VTA_DIDS_WEBS_ENABLED '{other}', expected 'true' or 'false'"
+                    )));
+                }
+            };
+        }
+        if let Ok(enabled) = std::env::var("VTA_DIDS_WEBS_SERVICE_DIDS") {
+            config.dids.webs_service_dids = match enabled.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                other => {
+                    return Err(AppError::Config(format!(
+                        "invalid VTA_DIDS_WEBS_SERVICE_DIDS '{other}', expected 'true' or 'false'"
                     )));
                 }
             };

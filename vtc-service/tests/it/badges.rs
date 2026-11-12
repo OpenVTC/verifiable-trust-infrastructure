@@ -3065,3 +3065,65 @@ async fn an_automatic_badge_counts_accepted_kudos_and_only_a_badge_may() {
         json!({ "all": [ { "fact": "role", "op": "equals", "value": "member", "count": 2 } ] });
     assert!(vtc_service::groups::check_badge_rule(&bad, &[]).is_err());
 }
+
+/// A list cursor is tagged under a key only the community holds, for one
+/// caller and one question. One made without the key, edited, or presented
+/// by another caller is refused, and an offset past any list (the largest
+/// `usize`) is refused rather than reaching the slice.
+#[tokio::test]
+async fn a_list_cursor_is_honoured_only_as_the_community_minted_it() {
+    use sha2::{Digest, Sha256};
+
+    let fix = fixture().await;
+    fix.community_badge("A", false).await;
+    fix.community_badge("B", false).await;
+
+    let (status, doc) = fix.as_member("list", json!({ "limit": 1 })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let next = doc["payload"]["nextCursor"]
+        .as_str()
+        .expect("two badges, one per page")
+        .to_string();
+    let (status, page2) = fix
+        .as_member("list", json!({ "limit": 1, "cursor": next }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page2}");
+    assert_ne!(
+        doc["payload"]["items"][0]["badge"]["badgeId"],
+        page2["payload"]["items"][0]["badge"]["badgeId"]
+    );
+
+    // The construction before keys: anyone could compute it, at any offset.
+    let binding = format!("badges/list|{}||false|false|false", fix.member.did);
+    let unkeyed = |offset: usize| {
+        let mut h = Sha256::new();
+        h.update(b"vtc/badges/cursor/v1\0");
+        for part in [binding.as_str(), &offset.to_string()] {
+            h.update((part.len() as u64).to_be_bytes());
+            h.update(part.as_bytes());
+        }
+        format!("{offset}.{}", hex::encode(&h.finalize()[..12]))
+    };
+    let (offset, tag) = next.split_once('.').unwrap();
+    for cursor in [
+        unkeyed(1),
+        unkeyed(usize::MAX),
+        format!("{}.{tag}", usize::MAX),
+        format!("{}.{tag}", offset.parse::<usize>().unwrap() + 1),
+    ] {
+        let (_, doc) = fix
+            .as_member("list", json!({ "limit": 1, "cursor": cursor }))
+            .await;
+        assert_eq!(
+            tt_error_code(&doc),
+            LIST_ERR_CURSOR_INVALID,
+            "{cursor}: {doc}"
+        );
+    }
+
+    // The member's cursor is not the administrator's.
+    let (_, doc) = fix
+        .as_admin("list", json!({ "limit": 1, "cursor": next }))
+        .await;
+    assert_eq!(tt_error_code(&doc), LIST_ERR_CURSOR_INVALID, "{doc}");
+}

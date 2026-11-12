@@ -135,8 +135,53 @@ struct Args {
     #[arg(long)]
     allow_rewrites_by_others: bool,
 
+    /// A party this host registers rooms for (`rooms/create`), by DID. Repeatable. A
+    /// `#fragment` is ignored: the signer is compared by DID.
+    ///
+    /// With none named and no `--any-room-creator`, this host registers no rooms: it still
+    /// serves the rooms it holds and the ones it mirrors. Every room a stranger registers
+    /// is storage this host carries, so who may register is an operator's decision rather
+    /// than a default they inherit.
+    #[arg(long = "room-creator", value_name = "DID")]
+    room_creators: Vec<String>,
+
+    /// Register rooms for any party that signs as the owner it names, within
+    /// `--max-rooms-per-owner` and `--max-rooms`. For a host deliberately open to the
+    /// public.
+    #[arg(long, conflicts_with = "room_creators")]
+    any_room_creator: bool,
+
+    /// Rooms one owner may hold on this host. A courtesy limit: it counts by current
+    /// owner, so more DIDs or a transfer step around it. `--room-creator` and
+    /// `--max-rooms` are the bounds.
+    #[arg(long, default_value_t = room_host::creation::DEFAULT_MAX_ROOMS_PER_OWNER)]
+    max_rooms_per_owner: u64,
+
+    /// Rooms this host holds in total, mirrors included.
+    #[arg(long, default_value_t = room_host::creation::DEFAULT_MAX_ROOMS)]
+    max_rooms: u64,
+
     #[command(flatten)]
     files: FileArgs,
+}
+
+impl Args {
+    /// Who may register rooms here, from the flags.
+    fn room_creation(&self) -> room_host::creation::RoomCreation {
+        use room_host::creation::{Creators, RoomCreation};
+        let creators = if self.any_room_creator {
+            Creators::Any
+        } else if self.room_creators.is_empty() {
+            Creators::None
+        } else {
+            RoomCreation::only(&self.room_creators).creators
+        };
+        RoomCreation {
+            creators,
+            max_rooms_per_owner: self.max_rooms_per_owner,
+            max_rooms: self.max_rooms,
+        }
+    }
 }
 
 /// How this host stores room files. One storage config: a local directory, with
@@ -172,9 +217,10 @@ struct FileArgs {
     /// Total each member may store in a room.
     #[arg(long, value_parser = parse_size)]
     member_max_bytes: Option<u64>,
-    /// Total this host stores across every room.
-    #[arg(long, value_parser = parse_size)]
-    storage_capacity_bytes: Option<u64>,
+    /// Total size of the room files this host stores, across every room, deleted files
+    /// awaiting collection included. `unlimited` sets no ceiling.
+    #[arg(long, value_parser = parse_capacity, default_value = DEFAULT_STORAGE_CAPACITY)]
+    storage_capacity_bytes: Capacity,
     /// How long a file nothing names any more is kept before it is deleted.
     #[arg(long, default_value_t = 168)]
     orphan_grace_hours: u64,
@@ -188,7 +234,7 @@ impl FileArgs {
         let mut limits = vti_rooms::blobs::HostLimits {
             files_enabled: !self.files_disabled,
             orphan_grace_secs: self.orphan_grace_hours * 3600,
-            storage_capacity_bytes: self.storage_capacity_bytes,
+            storage_capacity_bytes: self.storage_capacity_bytes.0,
             ..Default::default()
         };
         if let Some(v) = self.max_file_bytes {
@@ -216,6 +262,23 @@ impl FileArgs {
             }),
             config_id: None,
         }
+    }
+}
+
+/// The host-wide storage ceiling when none is given: ten rooms at the default per-room
+/// limit. An operator with more disk raises it, or passes `unlimited`.
+const DEFAULT_STORAGE_CAPACITY: &str = "50GiB";
+
+/// A storage ceiling, or none (`unlimited`).
+#[derive(Debug, Clone, Copy)]
+struct Capacity(Option<u64>);
+
+/// A size ([`parse_size`]) or `unlimited`.
+fn parse_capacity(s: &str) -> Result<Capacity, String> {
+    if s.trim().eq_ignore_ascii_case("unlimited") {
+        Ok(Capacity(None))
+    } else {
+        parse_size(s).map(|n| Capacity(Some(n)))
     }
 }
 
@@ -276,6 +339,32 @@ async fn main() -> anyhow::Result<()> {
     // Before a room is served: rows in the earlier, ambiguous key layout (#2382).
     state.migrate_room_keys().await?;
     state.set_refuse_rewrites_by_others(!args.allow_rewrites_by_others);
+    let creation = args.room_creation();
+    match &creation.creators {
+        room_host::creation::Creators::None => {
+            // A warning, not a note: an upgrade from a host that registered anyone's
+            // rooms lands here, and its owners' next `rooms/create` is refused.
+            let held = room_host::rooms_held(&state).await.unwrap_or(0);
+            tracing::warn!(
+                rooms_held = held,
+                "no --room-creator named: this host registers no new rooms. Rooms it \
+                 holds are still served. Pass --room-creator <DID> for each owner that \
+                 registers rooms here, or --any-room-creator for a host open to anyone"
+            );
+        }
+        room_host::creation::Creators::Only(dids) => tracing::info!(
+            creators = dids.len(),
+            max_rooms_per_owner = creation.max_rooms_per_owner,
+            max_rooms = creation.max_rooms,
+            "registering rooms for the named creators"
+        ),
+        room_host::creation::Creators::Any => tracing::warn!(
+            max_rooms_per_owner = creation.max_rooms_per_owner,
+            max_rooms = creation.max_rooms,
+            "--any-room-creator: registering rooms for any signer, within the room limits"
+        ),
+    }
+    state.set_room_creation(creation);
 
     // Room files: deleted files past their grace window and abandoned uploads
     // are collected on a timer. A pass that fails is logged and retried at the
@@ -536,5 +625,78 @@ mod secrets_file_tests {
     fn a_valid_file_reports_nothing() {
         let (_, unknown) = parse_secrets_file("[secrets]\n").unwrap();
         assert!(unknown.is_empty(), "{unknown:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use room_host::creation::Creators;
+
+    fn args(extra: &[&str]) -> Args {
+        Args::try_parse_from(std::iter::once("room-host").chain(extra.iter().copied()))
+            .expect("flags parse")
+    }
+
+    #[test]
+    fn no_creator_flag_registers_no_rooms() {
+        assert_eq!(args(&[]).room_creation().creators, Creators::None);
+    }
+
+    #[test]
+    fn named_creators_and_the_open_opt_in() {
+        let named = args(&[
+            "--room-creator",
+            "did:key:zA",
+            "--room-creator",
+            "did:key:zB",
+        ]);
+        assert_eq!(
+            named.room_creation().creators,
+            Creators::Only(
+                ["did:key:zA", "did:key:zB"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            )
+        );
+        assert_eq!(
+            args(&["--any-room-creator"]).room_creation().creators,
+            Creators::Any
+        );
+        assert!(
+            Args::try_parse_from([
+                "room-host",
+                "--any-room-creator",
+                "--room-creator",
+                "did:key:zA"
+            ])
+            .is_err(),
+            "the two are exclusive"
+        );
+    }
+
+    #[test]
+    fn storage_capacity_defaults_to_a_ceiling_and_can_be_lifted_explicitly() {
+        assert_eq!(
+            args(&[]).files.config().limits.storage_capacity_bytes,
+            Some(50 * (1 << 30))
+        );
+        assert_eq!(
+            args(&["--storage-capacity-bytes", "unlimited"])
+                .files
+                .config()
+                .limits
+                .storage_capacity_bytes,
+            None
+        );
+        assert_eq!(
+            args(&["--storage-capacity-bytes", "1GiB"])
+                .files
+                .config()
+                .limits
+                .storage_capacity_bytes,
+            Some(1 << 30)
+        );
     }
 }

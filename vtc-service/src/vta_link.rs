@@ -105,7 +105,6 @@ impl VtaLink {
                     "no transport to the VTA: {m} (this VTC speaks TSP or DIDComm once its \
                      messaging is up)"
                 )),
-                PeerError::MethodNotDeclared(refusal) => AppError::from(refusal),
             })
     }
 }

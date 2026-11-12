@@ -185,6 +185,7 @@ pub fn test_deps(ts: &TestStore) -> ProvisionIntegrationDeps {
         did_templates_ks: ts.did_templates_ks.clone(),
         imported_ks: ts.imported_ks.clone(),
         webvh_ks: ts.webvh_ks.clone(),
+        webs_ks: ts.webs_ks.clone(),
         sealed_nonces_ks: ts.sealed_nonces_ks.clone(),
         seed_store: Arc::new(PlaintextSeedStore::new(&ts.data_dir)),
         config: Arc::new(RwLock::new(test_app_config(ts.data_dir.clone()))),
@@ -616,6 +617,7 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
         did_templates_ks: ts.did_templates_ks.clone(),
         imported_ks: ts.imported_ks.clone(),
         webvh_ks: ts.webvh_ks.clone(),
+        webs_ks: ts.webs_ks.clone(),
         sealed_nonces_ks: ts.sealed_nonces_ks.clone(),
         seed_store: Arc::new(PlaintextSeedStore::new(&ts.data_dir)),
         config: Arc::new(RwLock::new(config)),
@@ -696,6 +698,8 @@ pub async fn build_signing_test_app_state_with_sink(
         // even though `tests/audit_sink.rs` cannot use it from outside.
         AppStateParts {
             audit_sink,
+            // Tests on this state stand up room hosts on loopback.
+            endpoint_policy: Some(vta_sdk::http::EndpointPolicy::private_allowed()),
             ..Default::default()
         },
     )
@@ -1645,6 +1649,11 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         atm: transport.atm.or(opts.atm),
         tee: None,
         restart_gate: std::sync::Arc::new(crate::server::RestartGate::new(restart_tx)),
+        // The harness's stand-in peers (room hosts, a DID hosting service)
+        // listen on loopback, so its outbound sends may dial private and
+        // loopback endpoints. Stated here rather than through the process-wide
+        // switch, so it is this state's and nothing else's.
+        endpoint_policy: vta_sdk::http::EndpointPolicy::private_allowed(),
         #[cfg(feature = "rest")]
         metrics_handle: None,
     };
@@ -1918,6 +1927,10 @@ impl StubWebvhHost {
     }
 
     /// Start the stub host on a random loopback port and return once bound.
+    ///
+    /// Enables private endpoints for the whole process
+    /// ([`vta_sdk::http::set_allow_private_endpoints`]), since the VTA reaches
+    /// a loopback host only with that opt-in.
     pub async fn start() -> StubWebvhHost {
         use axum::routing::post;
         use std::sync::Arc;
@@ -1945,6 +1958,10 @@ impl StubWebvhHost {
                 }),
             );
 
+        // The VTA reaches this loopback host over plain http, which its
+        // outbound REST send allows only with private endpoints enabled for
+        // the process (`VTA_ALLOW_PRIVATE_ENDPOINTS`).
+        vta_sdk::http::set_allow_private_endpoints(true);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind stub webvh host port");

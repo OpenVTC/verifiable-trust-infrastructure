@@ -82,7 +82,7 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
         match value {
             E::VtaDidNotConfigured => Self::VtaDidNotConfigured,
             E::VtaDidRecordMissing(s) => Self::VtaDidRecordMissing(s),
-            E::VtaDidLogMissing(s) => Self::VtaDidLogMissing(s),
+            E::VtaDidLogMissing(s) | E::VtaDidNotPublished(s) => Self::VtaDidLogMissing(s),
             E::EmptyLog => Self::EmptyLog,
             E::Storage(s) | E::DocumentParse(s) => Self::Storage(s),
         }
@@ -156,6 +156,9 @@ mod tests {
         fn webvh_ks(&self) -> KeyspaceHandle {
             self.store.keyspace(crate::keyspaces::WEBVH).unwrap()
         }
+        fn webs_ks(&self) -> KeyspaceHandle {
+            self.store.keyspace(crate::keyspaces::WEBS).unwrap()
+        }
     }
 
     fn build_fixture(tsp_initially: bool) -> TestFixture {
@@ -183,10 +186,13 @@ mod tests {
     #[tokio::test]
     async fn preconditions_reject_when_tsp_disabled() {
         let fx = build_fixture(false);
-        let err =
-            check_update_preconditions::<TspService, UpdateTspError>(&fx.config, &fx.webvh_ks())
-                .await
-                .unwrap_err();
+        let err = check_update_preconditions::<TspService, UpdateTspError>(
+            &fx.config,
+            &fx.webvh_ks(),
+            &fx.webs_ks(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, UpdateTspError::ServiceNotPresent));
     }
 
@@ -194,10 +200,13 @@ mod tests {
     async fn preconditions_reject_without_vta_did() {
         let fx = build_fixture(true);
         fx.config.write().await.vta_did = None;
-        let err =
-            check_update_preconditions::<TspService, UpdateTspError>(&fx.config, &fx.webvh_ks())
-                .await
-                .unwrap_err();
+        let err = check_update_preconditions::<TspService, UpdateTspError>(
+            &fx.config,
+            &fx.webvh_ks(),
+            &fx.webs_ks(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, UpdateTspError::VtaDidNotConfigured));
     }
 

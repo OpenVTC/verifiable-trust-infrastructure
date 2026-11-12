@@ -1114,6 +1114,29 @@ pub(super) async fn handle_upsert(
         );
     }
 
+    // A password entry's login URL is where `vault/proxy-login` will later
+    // POST the password. Refuse one the driver would refuse, now, so a writer
+    // learns at write time rather than at first use. Only a newly sealed
+    // secret is checked: a metadata-only update keeps the stored secret, and
+    // the driver checks it again at use.
+    #[cfg(feature = "webvh")]
+    if req.sealed_secret.is_some()
+        && let VaultSecret::Password {
+            login_config: Some(login_config),
+            ..
+        } = &secret
+        && let Err(e) =
+            crate::operations::vault::password_post::validate_login_url(&login_config.login_url)
+    {
+        return reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: format!("vault/upsert:sealedSecretInvalid — loginConfig.loginUrl: {e}"),
+                details: Some(serde_json::json!({ "reason": "login_url_invalid" })),
+            },
+        );
+    }
+
     // Build the resulting VaultEntry. Some fields come from `existing`
     // (immutable / sticky), some from the request, some are computed.
     let now = chrono::Utc::now().to_rfc3339();

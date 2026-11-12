@@ -355,6 +355,8 @@ async fn check_status_list(
     let index: usize = index_str.parse().map_err(|e| {
         RecognitionError::Malformed(format!("{label} statusListIndex {index_str}: {e}"))
     })?;
+    check_status_size(status.additional.get("statusSize"))
+        .map_err(|e| RecognitionError::Malformed(format!("{label} credentialStatus {e}")))?;
     // The status list MUST be signed by the foreign issuer (the same issuer that
     // signed the VAC/VMC). The production fetcher verifies this; a substituted or
     // forged list is rejected before the bit is read.
@@ -671,6 +673,8 @@ impl StatusListFetcher for HttpStatusListFetcher {
         index: usize,
         expected_issuer: Option<&str>,
     ) -> Result<bool, RecognitionError> {
+        // An index no list read here can hold is refused before dialing.
+        check_status_index(index, url)?;
         guard_status_list_url(url)?;
         let resp = self
             .client
@@ -697,52 +701,7 @@ impl StatusListFetcher for HttpStatusListFetcher {
             verify_status_list_signature(&body, expected_issuer, resolver.as_ref(), url).await?;
         }
 
-        // BitstringStatusList encoding: the status-list
-        // credential's `credentialSubject.encodedList` carries
-        // a base64url-encoded GZIP'd bitstring. Capacity +
-        // purpose are also in the subject; we infer capacity
-        // from the encoded bytes.
-        let encoded = body
-            .pointer("/credentialSubject/encodedList")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                RecognitionError::StatusListFailed(format!(
-                    "status-list at {url} missing credentialSubject.encodedList"
-                ))
-            })?;
-        let purpose_str = body
-            .pointer("/credentialSubject/statusPurpose")
-            .and_then(|v| v.as_str())
-            .unwrap_or("revocation");
-        let purpose = match purpose_str {
-            "revocation" => affinidi_status_list::StatusPurpose::Revocation,
-            "suspension" => affinidi_status_list::StatusPurpose::Suspension,
-            other => {
-                return Err(RecognitionError::StatusListFailed(format!(
-                    "unsupported statusPurpose {other}"
-                )));
-            }
-        };
-        // Capacity defaults to 131,072 (16 KiB compressed) —
-        // the spec-mandated minimum. Foreign status lists may
-        // be larger; the decoder fails closed if the actual
-        // bitstring is shorter than `index`.
-        let capacity = body
-            .pointer("/credentialSubject/statusSize")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(131_072);
-
-        let decoded = affinidi_status_list::BitstringStatusList::decode(encoded, capacity, purpose)
-            .map_err(|e| RecognitionError::StatusListFailed(format!("decode {url}: {e}")))?;
-        if index >= capacity {
-            return Err(RecognitionError::StatusListFailed(format!(
-                "index {index} exceeds capacity {capacity} for {url}"
-            )));
-        }
-        decoded
-            .get(index)
-            .map_err(|e| RecognitionError::StatusListFailed(format!("get {index}: {e}")))
+        read_status_bit(&body, index, url)
     }
 
     /// A Token Status List is trusted only as its credential issuer's
@@ -785,6 +744,255 @@ impl StatusListFetcher for HttpStatusListFetcher {
         )
         .await
         .map_err(|e| RecognitionError::StatusListFailed(e.to_string()))
+    }
+}
+
+/// The largest Bitstring Status List read, in entries: 32 times the minimum
+/// (512 KiB of bitstring).
+///
+/// W3C Bitstring Status List v1.0 sets only a minimum length (§1.1: "This
+/// specification uses a minimum list length of 131,072") and describes
+/// `statusListIndex` as "an arbitrary size integer greater than or equal to 0",
+/// so a reader picks its own ceiling. Decoding allocates in proportion to the
+/// entries read (the `affinidi-status-list` decoder keeps one byte of
+/// bookkeeping per entry), which this bounds. It matches
+/// `vta_sdk::vetting::status::MAX_STATUS_LIST_BITS`.
+pub(crate) const MAX_STATUS_LIST_BITS: usize = 1 << 22;
+
+/// The minimum number of entries a list must hold.
+///
+/// §3.2 step 2: "Let minimumNumberOfEntries be 131,072 unless a different lower
+/// bound is established by a specific ecosystem specification." §2.2: "The
+/// uncompressed bitstring MUST be at least 16KB in size."
+const MIN_STATUS_LIST_BITS: usize = 131_072;
+
+/// Longest `encodedList` read, in characters: base64 of a compressed list is
+/// already bounded by the fetched body, this refuses it before decoding.
+/// Matches `vta_sdk::vetting::status::MAX_ENCODED_LIST_CHARS`.
+const MAX_ENCODED_LIST_CHARS: usize = 1 << 22;
+
+/// base64url of the GZIP magic bytes. §2.2 writes `encodedList` as a Multibase
+/// value (base64url, prefix `u`); an unprefixed value is read too, as the
+/// lists this workspace has always published are unprefixed.
+const GZIP_BASE64URL_PREFIX: &str = "H4sI";
+
+/// Refuse a `statusListIndex` past [`MAX_STATUS_LIST_BITS`].
+fn check_status_index(index: usize, url: &str) -> Result<(), RecognitionError> {
+    if index >= MAX_STATUS_LIST_BITS {
+        return Err(RecognitionError::StatusListFailed(format!(
+            "statusListIndex {index} for {url} is past the largest status list read \
+             ({MAX_STATUS_LIST_BITS} entries)"
+        )));
+    }
+    Ok(())
+}
+
+/// Check a `statusSize` value: the bits per status entry.
+///
+/// W3C Bitstring Status List v1.0 §2.1 defines `statusSize` on the
+/// `BitstringStatusListEntry`: "If statusSize is not present as a property of
+/// the credentialStatus, then statusSize MUST be processed as 1", and "If
+/// present, statusSize MUST be an integer greater than zero." §1.3: "Conforming
+/// processors MAY choose to only support bitstring entry sizes of 1." This
+/// reader supports only 1, so anything else is refused rather than read as a
+/// single bit. It is never a list length.
+pub(crate) fn check_status_size(value: Option<&JsonValue>) -> Result<(), String> {
+    match value {
+        None => Ok(()),
+        Some(v) if v.as_u64() == Some(1) => Ok(()),
+        Some(v) if v.as_u64().is_some_and(|n| n > 1) => Err(format!(
+            "statusSize {v} is not supported: only 1-bit status entries are read"
+        )),
+        Some(v) => Err(format!(
+            "statusSize {v} is not an integer greater than zero"
+        )),
+    }
+}
+
+/// Read the bit at `index` from a fetched `BitstringStatusListCredential`.
+///
+/// Every size used here is bounded before anything is allocated: the index by
+/// [`MAX_STATUS_LIST_BITS`], the `encodedList` by [`MAX_ENCODED_LIST_CHARS`],
+/// and the decompressed bitstring by the number of entries read — the larger of
+/// `index + 1` and [`MIN_STATUS_LIST_BITS`] — which the decoder never inflates
+/// past. Nothing the list declares about itself sizes a buffer.
+///
+/// §3.2 step 9: "If the length of the revocation bitstring divided by
+/// statusSize is less than minimumNumberOfEntries, raise a
+/// STATUS_LIST_LENGTH_ERROR." Step 10: "If the credentialIndex multiplied by
+/// the size is a value outside of the range of the bitstring, a RANGE_ERROR
+/// MUST be raised." Both are a decode that comes up short here.
+pub(crate) fn read_status_bit(
+    body: &JsonValue,
+    index: usize,
+    url: &str,
+) -> Result<bool, RecognitionError> {
+    let failed = |msg: String| RecognitionError::StatusListFailed(msg);
+    check_status_index(index, url)?;
+    let subject = body
+        .get("credentialSubject")
+        .ok_or_else(|| failed(format!("status-list at {url} has no credentialSubject")))?;
+
+    // `statusSize` belongs on the entry (§2.1). A list that carries one anyway
+    // is held to the same rule; it does not describe the list's length.
+    check_status_size(subject.get("statusSize"))
+        .map_err(|e| failed(format!("status-list at {url}: {e}")))?;
+
+    let encoded = subject
+        .get("encodedList")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            failed(format!(
+                "status-list at {url} missing credentialSubject.encodedList"
+            ))
+        })?;
+    if encoded.is_empty() || encoded.len() > MAX_ENCODED_LIST_CHARS {
+        return Err(failed(format!(
+            "status-list at {url} encodedList is empty or longer than \
+             {MAX_ENCODED_LIST_CHARS} characters"
+        )));
+    }
+    let encoded = match encoded.strip_prefix('u') {
+        Some(rest) if rest.starts_with(GZIP_BASE64URL_PREFIX) => rest,
+        _ => encoded,
+    };
+
+    let purpose_str = subject
+        .get("statusPurpose")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("revocation");
+    let purpose = match purpose_str {
+        "revocation" => affinidi_status_list::StatusPurpose::Revocation,
+        "suspension" => affinidi_status_list::StatusPurpose::Suspension,
+        other => {
+            return Err(failed(format!("unsupported statusPurpose {other}")));
+        }
+    };
+
+    // Decode only as far as needed: the decoder inflates at most
+    // `entries / 8 + 1` bytes and fails when the list is shorter.
+    let entries = index.saturating_add(1).max(MIN_STATUS_LIST_BITS);
+    let decoded = affinidi_status_list::BitstringStatusList::decode(encoded, entries, purpose)
+        .map_err(|e| {
+            failed(format!(
+                "status-list at {url} does not decode to the {entries} entries needed \
+                 (at least {MIN_STATUS_LIST_BITS}, and past index {index}): {e}"
+            ))
+        })?;
+    decoded
+        .get(index)
+        .map_err(|e| failed(format!("get {index}: {e}")))
+}
+
+#[cfg(test)]
+mod status_bit_bounds_tests {
+    use super::*;
+    use affinidi_status_list::{BitstringStatusList, StatusPurpose};
+    use serde_json::json;
+
+    const URL: &str = "https://issuer.example/status/1";
+
+    fn encoded(entries: usize, set: &[usize]) -> String {
+        let mut list = BitstringStatusList::new(entries, StatusPurpose::Revocation);
+        for &i in set {
+            list.set(i, true).unwrap();
+        }
+        list.encode().unwrap()
+    }
+
+    fn list_body(encoded_list: &str, status_size: Option<JsonValue>) -> JsonValue {
+        let mut subject = json!({
+            "type": "BitstringStatusList",
+            "statusPurpose": "revocation",
+            "encodedList": encoded_list,
+        });
+        if let Some(size) = status_size {
+            subject["statusSize"] = size;
+        }
+        json!({ "credentialSubject": subject })
+    }
+
+    #[test]
+    fn reads_set_and_clear_bits_of_a_minimum_size_list() {
+        let body = list_body(&encoded(MIN_STATUS_LIST_BITS, &[7]), None);
+        assert!(read_status_bit(&body, 7, URL).unwrap());
+        assert!(!read_status_bit(&body, 8, URL).unwrap());
+        assert!(!read_status_bit(&body, MIN_STATUS_LIST_BITS - 1, URL).unwrap());
+    }
+
+    #[test]
+    fn a_list_status_size_of_one_does_not_shrink_the_list() {
+        // `statusSize` is bits per entry, not the list length: a list carrying
+        // `1` is read in full.
+        let body = list_body(&encoded(MIN_STATUS_LIST_BITS, &[1000]), Some(json!(1)));
+        assert!(read_status_bit(&body, 1000, URL).unwrap());
+    }
+
+    #[test]
+    fn a_large_list_status_size_is_refused_without_sizing_anything() {
+        for size in [json!(u64::MAX), json!(1u64 << 40), json!(2)] {
+            let body = list_body(&encoded(MIN_STATUS_LIST_BITS, &[]), Some(size.clone()));
+            let err = read_status_bit(&body, 0, URL).expect_err("refused");
+            assert!(
+                matches!(&err, RecognitionError::StatusListFailed(m) if m.contains("statusSize")),
+                "{size}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_status_size_that_is_not_a_positive_integer_is_refused() {
+        for size in [json!(0), json!(-1), json!(1.5), json!("1"), json!(null)] {
+            assert!(check_status_size(Some(&size)).is_err(), "{size}");
+        }
+        assert!(check_status_size(None).is_ok());
+        assert!(check_status_size(Some(&json!(1))).is_ok());
+    }
+
+    #[test]
+    fn an_index_past_the_ceiling_is_refused() {
+        let body = list_body(&encoded(MIN_STATUS_LIST_BITS, &[]), None);
+        for index in [MAX_STATUS_LIST_BITS, usize::MAX] {
+            let err = read_status_bit(&body, index, URL).expect_err("refused");
+            assert!(matches!(err, RecognitionError::StatusListFailed(_)));
+            assert!(check_status_index(index, URL).is_err());
+        }
+    }
+
+    #[test]
+    fn a_list_shorter_than_the_minimum_is_refused() {
+        let body = list_body(&encoded(1024, &[]), None);
+        let err = read_status_bit(&body, 0, URL).expect_err("too short");
+        assert!(matches!(err, RecognitionError::StatusListFailed(_)));
+    }
+
+    #[test]
+    fn an_index_past_the_end_of_the_list_is_refused() {
+        let body = list_body(&encoded(MIN_STATUS_LIST_BITS, &[]), None);
+        let err = read_status_bit(&body, MIN_STATUS_LIST_BITS, URL).expect_err("out of range");
+        assert!(matches!(err, RecognitionError::StatusListFailed(_)));
+    }
+
+    #[test]
+    fn a_list_larger_than_the_minimum_is_read_past_the_minimum() {
+        let entries = MIN_STATUS_LIST_BITS * 4;
+        let body = list_body(&encoded(entries, &[entries - 1]), None);
+        assert!(read_status_bit(&body, entries - 1, URL).unwrap());
+        assert!(!read_status_bit(&body, 3, URL).unwrap());
+    }
+
+    #[test]
+    fn a_multibase_prefixed_encoded_list_is_read() {
+        let body = list_body(&format!("u{}", encoded(MIN_STATUS_LIST_BITS, &[42])), None);
+        assert!(read_status_bit(&body, 42, URL).unwrap());
+    }
+
+    #[test]
+    fn an_over_long_or_empty_encoded_list_is_refused() {
+        for list in [String::new(), "A".repeat(MAX_ENCODED_LIST_CHARS + 1)] {
+            let err = read_status_bit(&list_body(&list, None), 0, URL).expect_err("refused");
+            assert!(matches!(err, RecognitionError::StatusListFailed(_)));
+        }
     }
 }
 

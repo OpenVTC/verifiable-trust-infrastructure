@@ -232,6 +232,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     // did:webs DIDs — requires `webs`.
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_1,
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_2,
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1,
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1,
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_UPDATE_0_1,
@@ -3408,6 +3409,9 @@ dispatch_table! {
     // controlling key, and delete ends the AID, so both are Destructive.
     #[cfg(feature = "webs")]
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_1 => webs::handle_create
+        [ Mutating Metadata false ],
+    #[cfg(feature = "webs")]
+    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_2 => webs::handle_create_0_2
         [ Mutating Metadata false ],
     #[cfg(feature = "webs")]
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1 => webs::handle_get

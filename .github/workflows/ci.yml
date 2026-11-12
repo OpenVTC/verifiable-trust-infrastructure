@@ -1192,6 +1192,12 @@ jobs:
       - name: vta-service TEE Mode B carve-out
         run: cargo test -p vta-service --no-default-features --features tee,rest,didcomm --no-fail-fast --lib routes::bootstrap
 
+      # A TEE VTA's first boot as a did:webs (`tee_webs`) and the did:webvh
+      # autogen beside it (`tee_webvh`). Like the carve-out, nothing else builds
+      # these: they need `tee`, and `tee_webs` needs `webs` with it.
+      - name: vta-service TEE first-boot identity (did:webvh, did:webs)
+        run: cargo test -p vta-service --no-default-features --features tee,rest,didcomm,webs --no-fail-fast --lib tee_
+
   features-sdk-tee:
     # vta-sdk's feature combinations and vta-tee's fleet path. ~10.5 min
     # (attest-verify 1.7, client + sealed-transfer 1.9, vetting 2.6,
@@ -1658,6 +1664,8 @@ jobs:
       # vsock config fetch + apply), so a change that compiles for the baked
       # build can still break the un-baked one.
       - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store,vsock-log,tenant-overlay
+      # A did:webs as the enclave's own identity (`[tee.kms.vta_did_webs]`).
+      - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store,vsock-log,webs
 
       # The enclave's store: connection pool, per-key locks, and the
       # exactly-one tests that run its multi-step operations (refresh-token

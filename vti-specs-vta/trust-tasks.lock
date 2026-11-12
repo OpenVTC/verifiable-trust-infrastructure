@@ -750,7 +750,13 @@ digest = "sha256:b54dafcd2182ea94819747381629279e178ddefe04e5e93d33257b8da38a681
 slug = "vta/webs/dids/create"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/webs/dids/create/0.1"
-digest = "sha256:88f4dcbd4edfae9d8227f57a23d1c396a7d38bd1da069e19c859bc5aa4b8acf7"
+digest = "sha256:288eef7130f972080e23c37effdf5432ffb717dd7e2916f14431a48c48ac775b"
+
+[[task]]
+slug = "vta/webs/dids/create"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vta/webs/dids/create/0.2"
+digest = "sha256:ae64810e06e0c39f7c2d0829c3a082d9eb0b88c6456fba9bcdffd797d56251fb"
 
 [[task]]
 slug = "vta/webs/dids/delete"

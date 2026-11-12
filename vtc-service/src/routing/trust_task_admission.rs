@@ -30,7 +30,9 @@
 //!
 //! - every such document from an address is first charged that address's
 //!   [`SIGNED_ADDRESS_LIMITER`] ceiling, generous enough for a console and
-//!   small enough to bound the verification work one address can cause;
+//!   small enough to bound the verification work one address can cause. Its
+//!   refusal is reported as [`UNAUTH_LIMITER`]'s, word for word, so a `429`
+//!   before verification never says whether the named DID is known here;
 //! - one that then fails to verify as that signer is charged the strict
 //!   per-address limiter too, so an address sending forgeries loses its
 //!   anonymous budget exactly as an anonymous flood would;
@@ -542,6 +544,20 @@ where
         .map_err(|TooManyRequests { retry_after_secs }| retry_after_secs)
 }
 
+/// Charge a document that claims a signer the community knows to its
+/// address's [`SIGNED_ADDRESS_LIMITER`] ceiling. A refusal is the anonymous
+/// one, name and message alike, so the `429` does not say whether the
+/// claimed signer is known here; the bucket that refused is logged.
+fn charge_claimed_signer(limits: &TrustTaskLimits, address: &IpAddr) -> Result<(), RateLimited> {
+    charge(&limits.signed_address, address).map_err(|wait| {
+        tracing::debug!(
+            limiter = SIGNED_ADDRESS_LIMITER,
+            "signed document refused before verification"
+        );
+        unauth_refusal(wait)
+    })
+}
+
 fn unauth_refusal(wait: u64) -> RateLimited {
     RateLimited::new(
         UNAUTH_LIMITER,
@@ -700,14 +716,7 @@ impl Admission {
             sign_in: false,
         };
         if admission.claimed.is_some() {
-            charge(&limits.signed_address, &address).map_err(|wait| {
-                RateLimited::new(
-                    SIGNED_ADDRESS_LIMITER,
-                    wait,
-                    "too many signed documents from this address; wait for the \
-                     Retry-After period before retrying",
-                )
-            })?;
+            charge_claimed_signer(limits, &address)?;
         } else {
             admission.charge_address()?;
         }
@@ -1030,6 +1039,17 @@ mod tests {
         let a = admission(&limits, Some("did:key:zAdmin"));
         assert!(!a.admit_verified("did:key:zAdmin"));
         assert_eq!(a.finish().unwrap_err().limiter(), SIGNER_LIMITER);
+    }
+
+    #[test]
+    fn a_known_signer_claim_is_refused_exactly_as_an_anonymous_document() {
+        let limits = limits(1, 10);
+        charge_claimed_signer(&limits, &HERE).expect("within the ceiling");
+        let claimed = charge_claimed_signer(&limits, &HERE).unwrap_err();
+        let anonymous = unauth_refusal(claimed.retry_after_secs());
+        assert_eq!(claimed.limiter(), UNAUTH_LIMITER);
+        // Name, message and wait alike: nothing in the 429 tells them apart.
+        assert_eq!(format!("{claimed:?}"), format!("{anonymous:?}"));
     }
 
     #[test]

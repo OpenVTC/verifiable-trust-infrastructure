@@ -1,4 +1,5 @@
 //! The `did:webs` lifecycle: `vta/webs/dids/{create,get,list,update,rotate-keys,delete}/0.1`
+//! and `create/0.2`
 //! (trustoverip/dtgwg-trust-tasks-tf#1082; design note
 //! `docs/05-design-notes/did-webs-in-the-vta.md`).
 //!
@@ -18,9 +19,9 @@
 //! | `get`, `list` | access to the DID's context |
 //! | `update`, `rotate-keys`, `delete` | admin, in the DID's context (as webvh's) |
 //!
-//! `did:webs` is for persona, relationship and integration DIDs: never a node's
-//! service identity (VTI-KEY-001), which `create` refuses as
-//! `serviceDidNotPermitted`.
+//! `create/0.2` (beside 0.1) states the DID's class — relationship, persona or
+//! service — and may shape it from a DID template (CONVENTIONS.md 0.2 §1, §9).
+//! A 0.1 create states none, and none is recorded or inferred.
 
 #![cfg(feature = "webs")]
 
@@ -35,15 +36,15 @@ use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::operations::did_webs::{
     self as engine, CreateDidWebsParams, UpdateDidWebsParams, WebsDeps, WebsError, WebsRefusal,
-    WebsServices,
+    WebsServices, WebsTemplateRequest,
 };
 use crate::server::AppState;
-use crate::webs_store::{self, WebsDidRecord};
+use crate::webs_store::{self, WebsDidClass, WebsDidRecord};
 use crate::webvh_host::WebvhHostClient;
 
 use super::helpers::{
     TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, parse_payload, reject_declared,
-    reject_with, success_response,
+    reject_with, reject_with_code, success_response,
 };
 
 // ─── Refusals ──────────────────────────────────────────────────────────
@@ -58,6 +59,11 @@ struct Codes {
     domain_not_served: Option<DeclaredErrorCode>,
     path_refused: Option<DeclaredErrorCode>,
     service_did_not_permitted: Option<DeclaredErrorCode>,
+    node_identity_context: Option<DeclaredErrorCode>,
+    did_class_conflict: Option<DeclaredErrorCode>,
+    template_not_found: Option<DeclaredErrorCode>,
+    template_vars_invalid: Option<DeclaredErrorCode>,
+    template_not_representable: Option<DeclaredErrorCode>,
     not_found: Option<DeclaredErrorCode>,
     version_conflict: Option<DeclaredErrorCode>,
     no_change: Option<DeclaredErrorCode>,
@@ -75,12 +81,57 @@ impl Codes {
             WebsRefusal::DomainNotServed => self.domain_not_served,
             WebsRefusal::PathRefused => self.path_refused,
             WebsRefusal::ServiceDidNotPermitted => self.service_did_not_permitted,
+            WebsRefusal::NodeIdentityContext => self.node_identity_context,
+            WebsRefusal::DidClassConflict => self.did_class_conflict,
+            WebsRefusal::TemplateNotFound => self.template_not_found,
+            WebsRefusal::TemplateVarsInvalid => self.template_vars_invalid,
+            WebsRefusal::TemplateNotRepresentable => self.template_not_representable,
             WebsRefusal::NotFound => self.not_found,
             WebsRefusal::VersionConflict => self.version_conflict,
             WebsRefusal::NoChange => self.no_change,
             WebsRefusal::ServiceIdConflict => self.service_id_conflict,
             WebsRefusal::Deactivated => self.deactivated,
             WebsRefusal::PublishRefused => self.publish_refused,
+        }
+    }
+
+    /// `vta/webs/dids/create/0.1`'s codes. It knows no class, so the context
+    /// holding this VTA's own DID is its `serviceDidNotPermitted`.
+    #[allow(deprecated)] // superseded by 0.2, still served
+    fn create_0_1() -> Self {
+        use spec::create::v0_1::error_codes as c;
+        Self {
+            method_disabled: Some(c::METHOD_DISABLED),
+            server_not_found: Some(c::SERVER_NOT_FOUND),
+            host_does_not_host_webs: Some(c::HOST_DOES_NOT_HOST_WEBS),
+            domain_not_served: Some(c::DOMAIN_NOT_SERVED),
+            path_refused: Some(c::PATH_REFUSED),
+            node_identity_context: Some(c::SERVICE_DID_NOT_PERMITTED),
+            service_id_conflict: Some(c::SERVICE_ID_CONFLICT),
+            publish_refused: Some(c::PUBLISH_REFUSED),
+            ..Self::default()
+        }
+    }
+
+    /// `vta/webs/dids/create/0.2`'s codes. `serviceDidNotPermitted` means only
+    /// the configuration switch; the context holding this VTA's own DID, for
+    /// a service DID, has no code of its own and is `permissionDenied`.
+    fn create_0_2() -> Self {
+        use spec::create::v0_2::error_codes as c;
+        Self {
+            method_disabled: Some(c::METHOD_DISABLED),
+            service_did_not_permitted: Some(c::SERVICE_DID_NOT_PERMITTED),
+            did_class_conflict: Some(c::DID_CLASS_CONFLICT),
+            server_not_found: Some(c::SERVER_NOT_FOUND),
+            host_does_not_host_webs: Some(c::HOST_DOES_NOT_HOST_WEBS),
+            domain_not_served: Some(c::DOMAIN_NOT_SERVED),
+            path_refused: Some(c::PATH_REFUSED),
+            template_not_found: Some(c::TEMPLATE_NOT_FOUND),
+            template_vars_invalid: Some(c::TEMPLATE_VARS_INVALID),
+            template_not_representable: Some(c::TEMPLATE_NOT_REPRESENTABLE),
+            service_id_conflict: Some(c::SERVICE_ID_CONFLICT),
+            publish_refused: Some(c::PUBLISH_REFUSED),
+            ..Self::default()
         }
     }
 }
@@ -90,6 +141,28 @@ impl Codes {
 fn refuse(doc: &TrustTask<Value>, e: WebsError, codes: &Codes) -> TrustTaskOutcome {
     match e {
         WebsError::App(e) => app_error_to_reject(doc, e),
+        WebsError::RefusedWith(kind, message, details) if codes.of(kind).is_some() => {
+            let code = codes.of(kind).expect("checked");
+            reject_with_code(
+                doc,
+                trust_tasks_rs::TrustTaskCode::Extended {
+                    slug: code.namespace().to_string(),
+                    local: code.local().to_string(),
+                },
+                message,
+                (details.as_object().is_some_and(|d| !d.is_empty())).then_some(details),
+            )
+        }
+        WebsError::RefusedWith(kind, message, _) => {
+            refuse(doc, WebsError::Refused(kind, message), codes)
+        }
+        // A refusal one version of the task gives a code and another does
+        // not, where the framework's own code is the answer.
+        WebsError::Refused(WebsRefusal::NodeIdentityContext, message)
+            if codes.of(WebsRefusal::NodeIdentityContext).is_none() =>
+        {
+            app_error_to_reject(doc, AppError::Forbidden(message))
+        }
         WebsError::Refused(kind, message) => match codes.of(kind) {
             Some(code) => reject_declared(doc, code, message),
             // A refusal the task declares no code for is a defect in this
@@ -151,10 +224,17 @@ async fn host_for<'a>(
     let server = crate::webvh_store::get_server(&state.webvh_ks, server_id)
         .await?
         .ok_or_else(|| {
-            WebsError::refused(
-                WebsRefusal::ServerNotFound,
-                format!("hosting server not found: {server_id}"),
-            )
+            // A restore that replaced another identity detaches every hosted
+            // did:webs by clearing its server (`vta_backup::restore`): its
+            // slot was registered by the source VTA.
+            let message = if server_id.is_empty() {
+                "this did:webs was detached from its hosting server by a restore that replaced \
+                 another VTA's identity; nothing is published for it from here"
+                    .to_string()
+            } else {
+                format!("hosting server not found: {server_id}")
+            };
+            WebsError::refused(WebsRefusal::ServerNotFound, message)
         })?;
     let vta_did = state.config.read().await.vta_did.clone().ok_or_else(|| {
         AppError::Validation(
@@ -296,17 +376,7 @@ async fn stored(state: &AppState, did: &str) -> Result<WebsDidRecord, WebsError>
 
 /// Services as the payload states them (`DesignatedService`).
 fn designated(v: &Value) -> Option<DesignatedService> {
-    let id = str_of(v, "id")?;
-    let mut service = DesignatedService::new(id, "", v.get("serviceEndpoint")?.clone());
-    service.type_ = v.get("type")?.clone();
-    if let Some(map) = v.as_object() {
-        for (k, val) in map {
-            if !matches!(k.as_str(), "id" | "type" | "serviceEndpoint") {
-                service.properties.insert(k.clone(), val.clone());
-            }
-        }
-    }
-    Some(service)
+    crate::operations::did_webs::designated_service_from_json(v).ok()
 }
 
 fn designated_list(v: Option<&Value>) -> Vec<DesignatedService> {
@@ -336,34 +406,93 @@ fn reserved_ids(additional: &[DesignatedService]) -> Result<(), WebsError> {
 
 // ─── Handlers ──────────────────────────────────────────────────────────
 
+/// Which `create` a request is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreateVersion {
+    /// No class: none is recorded, and none inferred.
+    V0_1,
+    /// A stated class, and optionally a template.
+    V0_2,
+}
+
 /// `vta/webs/dids/create/0.1`.
+#[allow(deprecated)] // superseded by 0.2, still served
 pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::create::v0_1 as t;
-    let codes = Codes {
-        method_disabled: Some(t::error_codes::METHOD_DISABLED),
-        server_not_found: Some(t::error_codes::SERVER_NOT_FOUND),
-        host_does_not_host_webs: Some(t::error_codes::HOST_DOES_NOT_HOST_WEBS),
-        domain_not_served: Some(t::error_codes::DOMAIN_NOT_SERVED),
-        path_refused: Some(t::error_codes::PATH_REFUSED),
-        service_did_not_permitted: Some(t::error_codes::SERVICE_DID_NOT_PERMITTED),
-        service_id_conflict: Some(t::error_codes::SERVICE_ID_CONFLICT),
-        publish_refused: Some(t::error_codes::PUBLISH_REFUSED),
-        ..Codes::default()
-    };
-    if let Err(r) = parse_payload::<t::Payload>(&doc) {
+    if let Err(r) = parse_payload::<spec::create::v0_1::Payload>(&doc) {
         return r;
     }
-    let hosts = match registered_hosts(state, &doc) {
-        Ok(h) => h,
-        Err(r) => return r,
-    };
-    match create(state, auth, &doc.payload, hosts.resolver, &hosts).await {
-        Ok(v) => respond::<t::Response>(&doc, v),
-        Err(e) => refuse(&doc, e, &codes),
+    match registered_hosts(state, &doc) {
+        Ok(hosts) => {
+            create_outcome(
+                state,
+                auth,
+                &doc,
+                CreateVersion::V0_1,
+                hosts.resolver,
+                &hosts,
+            )
+            .await
+        }
+        Err(r) => r,
+    }
+}
+
+/// `vta/webs/dids/create/0.2`.
+pub(super) async fn handle_create_0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = parse_payload::<spec::create::v0_2::Payload>(&doc) {
+        return r;
+    }
+    match registered_hosts(state, &doc) {
+        Ok(hosts) => {
+            create_outcome(
+                state,
+                auth,
+                &doc,
+                CreateVersion::V0_2,
+                hosts.resolver,
+                &hosts,
+            )
+            .await
+        }
+        Err(r) => r,
+    }
+}
+
+/// A parsed create, answered as its version declares.
+#[allow(deprecated)] // 0.1 is superseded by 0.2, still served
+async fn create_outcome(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    version: CreateVersion,
+    did_resolver: &Resolver,
+    hosts: &impl HostSource,
+) -> TrustTaskOutcome {
+    let result = create(state, auth, &doc.payload, version, did_resolver, hosts).await;
+    match (version, result) {
+        (CreateVersion::V0_1, Ok(v)) => respond::<spec::create::v0_1::Response>(doc, v),
+        (CreateVersion::V0_2, Ok(v)) => respond::<spec::create::v0_2::Response>(doc, v),
+        (CreateVersion::V0_1, Err(e)) => refuse(doc, e, &Codes::create_0_1()),
+        (CreateVersion::V0_2, Err(e)) => refuse(doc, e, &Codes::create_0_2()),
+    }
+}
+
+/// The class a `create/0.2` payload states.
+fn did_class_of(p: &Value) -> Result<WebsDidClass, WebsError> {
+    match str_of(p, "didClass") {
+        Some("relationship") => Ok(WebsDidClass::Relationship),
+        Some("persona") => Ok(WebsDidClass::Persona),
+        Some("service") => Ok(WebsDidClass::Service),
+        // The schema refuses anything else before this is reached.
+        other => Err(AppError::Validation(format!("didClass {other:?} is not a DID class")).into()),
     }
 }
 
@@ -371,6 +500,7 @@ async fn create(
     state: &AppState,
     auth: &AuthClaims,
     p: &Value,
+    version: CreateVersion,
     did_resolver: &Resolver,
     hosts: &impl HostSource,
 ) -> Result<Value, WebsError> {
@@ -383,10 +513,28 @@ async fn create(
     params.domain = str_of(p, "domain").map(str::to_string);
     params.label = str_of(p, "label").map(str::to_string);
     params.add_mediator_service = bool_of(p, "addMediatorService").unwrap_or(false);
-    params.add_tsp_service = bool_of(p, "addTspService");
+    params.add_tsp_service = match version {
+        // 0.1 leaves an absent `addTspService` to what the stack serves.
+        CreateVersion::V0_1 => bool_of(p, "addTspService"),
+        // 0.2: "Absent means no."
+        CreateVersion::V0_2 => Some(bool_of(p, "addTspService").unwrap_or(false)),
+    };
     params.also_known_as = strings_of(p, "alsoKnownAs").unwrap_or_default();
     params.set_primary = bool_of(p, "setPrimary").unwrap_or(false);
     params.additional_services = additional;
+    if version == CreateVersion::V0_2 {
+        params.did_class = Some(did_class_of(p)?);
+        if let Some(name) = str_of(p, "template") {
+            // The schema has already refused a template beside an explicit
+            // member (CONVENTIONS.md 0.2 §9.3); nothing here merges the two.
+            let mut t = WebsTemplateRequest::new(name);
+            t.context = str_of(p, "templateContext").map(str::to_string);
+            if let Some(vars) = p.get("templateVars").and_then(Value::as_object) {
+                t.vars = vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            }
+            params.template = Some(t);
+        }
+    }
     let set_primary = params.set_primary;
 
     let host = hosts.host(server_id).await?;
@@ -418,6 +566,17 @@ async fn create(
             m.insert("primary".into(), json!(true));
         } else {
             m.remove("primary");
+        }
+        if version == CreateVersion::V0_2 {
+            if let Some(class) = created.did_class {
+                m.insert("didClass".into(), json!(class.as_str()));
+            }
+            // Exactly when the request named a template (conformance item 8).
+            if let Some(t) = &created.template {
+                m.insert("template".into(), json!(t.name));
+                m.insert("templateScope".into(), json!(t.scope));
+                m.insert("templateKind".into(), json!(t.kind));
+            }
         }
     }
     Ok(v)

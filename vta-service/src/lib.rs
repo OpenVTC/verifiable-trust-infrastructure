@@ -94,6 +94,10 @@ pub mod store;
 /// `vta-enclave` and every existing call site.
 #[cfg(feature = "tee")]
 pub use vta_tee as tee;
+/// A TEE VTA whose own identity is a `did:webs` (`[tee.kms] vta_did_webs`):
+/// the first-boot mint, through the create `vta setup` runs.
+#[cfg(feature = "tee")]
+pub mod tee_webs;
 /// Bridges the TEE first-boot DID auto-generation (`tee::did_autogen`) into the
 /// `webvh` keyspace so `list_services`, the self-DID resolver preload, and
 /// `/.well-known/did.jsonl` can find the serverless VTA's own DID record + log.

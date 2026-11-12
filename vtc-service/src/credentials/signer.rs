@@ -16,8 +16,18 @@
 //!    and the caller can't pass mismatched values.
 //! 2. **Assertion-method id.** `secret.id` is the
 //!    `verificationMethod` URI the proof carries. Building it
-//!    once at construction (`{vtc_did}#key-0`) keeps the wire
+//!    once at construction (`{vtc_did}#key-0` on a `did:webvh`, the
+//!    `attestation` key's id on a key-role identity) keeps the wire
 //!    shape consistent.
+//!
+//! ## Keys by role
+//!
+//! Credentials are signed with the primary (`assertionMethod`) key and every
+//! additional one. Everything signed for `proofPurpose: authentication` —
+//! Trust Task requests and responses, sign-in proofs — is signed with the
+//! authentication key: the `operational` key of a key-role identity (a
+//! `did:webs` VTC, VTI-KEY-072), which is the primary for a `did:webvh` VTC
+//! whose `#key-0` serves both relationships.
 //! 3. **Test fixtures.** Tests want a "from seed bytes" shortcut
 //!    that doesn't go through the keyring / secrets-resolver
 //!    plumbing. [`LocalSigner::from_ed25519_seed`] gives them
@@ -60,6 +70,41 @@ pub struct LocalSigner {
     /// two. There is no flag to set and no stored bundle to rewrite — the
     /// number of proofs simply follows the number of keys.
     secrets: Vec<Secret>,
+    /// The key that authenticates this VTC, when it is not the primary: the
+    /// `operational` key of a key-role identity (VTI-KEY-072). Trust Task
+    /// requests and responses and sign-in proofs (`proofPurpose:
+    /// authentication`) are signed with it; credentials never are. `None` for
+    /// a `did:webvh` VTC, whose `#key-0` does both.
+    authentication: Option<Secret>,
+    /// The ids a key-role identity's bundle gives its keys
+    /// ([`crate::setup::bundle::VtcKeyBundle::key_role_ids`]); `None` for one
+    /// that follows the `#key-0` / `#key-1` convention.
+    key_role_ids: Option<vta_sdk::node_keys::NodeKeyIds>,
+    /// What the community's long-lived derived keys come from, when it is not
+    /// the primary key's seed ([`Self::derivation_root`]).
+    derivation_root: Option<DerivationRoot>,
+}
+
+/// The 32-byte secret the community's long-lived keys derive from
+/// ([`crate::setup::bundle::VtcKeyBundle::derivation_root`]). Redacted in
+/// `Debug`, wiped on drop.
+#[derive(Clone)]
+pub struct DerivationRoot(zeroize::Zeroizing<[u8; 32]>);
+
+impl DerivationRoot {
+    pub fn new(bytes: zeroize::Zeroizing<[u8; 32]>) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for DerivationRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DerivationRoot(<redacted>)")
+    }
 }
 
 impl LocalSigner {
@@ -73,6 +118,9 @@ impl LocalSigner {
         Self {
             issuer_did,
             secrets: vec![secret],
+            authentication: None,
+            key_role_ids: None,
+            derivation_root: None,
         }
     }
 
@@ -94,6 +142,59 @@ impl LocalSigner {
     pub fn with_additional_key(mut self, secret: Secret) -> Self {
         self.secrets.push(secret);
         self
+    }
+
+    /// Authenticate with `secret` rather than the primary key: the
+    /// `operational` key of a key-role identity. `secret.id` is the
+    /// verification method its proofs name.
+    #[must_use]
+    pub fn with_authentication_key(mut self, secret: Secret) -> Self {
+        self.authentication = Some(secret);
+        self
+    }
+
+    /// Record the ids a key-role identity's bundle gives its keys.
+    #[must_use]
+    pub fn with_key_role_ids(mut self, ids: vta_sdk::node_keys::NodeKeyIds) -> Self {
+        self.key_role_ids = Some(ids);
+        self
+    }
+
+    /// Derive the community's long-lived keys from `root` rather than from the
+    /// primary key's seed — so they survive a rotation of the signing key.
+    #[must_use]
+    pub fn with_derivation_root(mut self, root: DerivationRoot) -> Self {
+        self.derivation_root = Some(root);
+        self
+    }
+
+    /// The ids a key-role identity's bundle gives its keys, if it is one.
+    pub fn key_role_ids(&self) -> Option<&vta_sdk::node_keys::NodeKeyIds> {
+        self.key_role_ids.as_ref()
+    }
+
+    /// What the community's long-lived derived keys (the hidden-vetting and
+    /// voting keys, the tag mask, the storage-credential fingerprint) come
+    /// from: the bundle's derivation root, which is the primary key's seed for
+    /// every VTC without one — the very bytes these keys have always derived
+    /// from. `None` when there is neither (a non-Ed25519 primary and no root).
+    pub fn derivation_root(&self) -> Option<DerivationRoot> {
+        self.derivation_root
+            .clone()
+            .or_else(|| self.ed25519_seed().map(DerivationRoot))
+    }
+
+    /// The verification method this VTC authenticates as
+    /// (`proofPurpose: authentication`).
+    pub fn authentication_method_id(&self) -> &str {
+        &self.authentication_key().id
+    }
+
+    /// The authenticating key: the operational key, or the primary.
+    fn authentication_key(&self) -> &Secret {
+        self.authentication
+            .as_ref()
+            .unwrap_or_else(|| self.primary())
     }
 
     /// How many keys sign each credential.
@@ -125,7 +226,46 @@ impl LocalSigner {
         Self {
             issuer_did,
             secrets: vec![secret],
+            authentication: None,
+            key_role_ids: None,
+            derivation_root: None,
         }
+    }
+
+    /// Construct from 32 raw Ed25519 seed bytes signing as `assertion_method`
+    /// — the verification method the VTC's own document lists for
+    /// `assertionMethod` (a key-role identity's `attestation` key), where it
+    /// is not the conventional `#key-0`.
+    pub fn from_ed25519_seed_as(
+        issuer_did: String,
+        assertion_method: &str,
+        seed: &[u8; 32],
+    ) -> Self {
+        Self::new(
+            issuer_did,
+            Secret::generate_ed25519(Some(assertion_method), Some(seed)),
+        )
+    }
+
+    /// The VTC's own signer, from its key material by role
+    /// ([`crate::setup::bundle::own_key_material`]): credentials signed as the
+    /// attestation method its key-role bundle names (`#key-0` without key
+    /// roles), Trust Tasks with its operational key where it has a distinct
+    /// one, and derived keys from its derivation root. Additional
+    /// (post-quantum) keys are added with [`Self::with_additional_key`].
+    pub fn for_own_keys(vtc_did: String, own: &crate::setup::bundle::OwnKeyMaterial) -> Self {
+        let mut signer = match &own.key_role_ids {
+            Some(ids) => Self::from_ed25519_seed_as(vtc_did, &ids.signing, &own.ed25519),
+            None => Self::from_ed25519_seed(vtc_did, &own.ed25519),
+        }
+        .with_derivation_root(DerivationRoot::new(own.derivation_root.clone()));
+        if let Some(secret) = own.authentication.clone() {
+            signer = signer.with_authentication_key(secret);
+        }
+        if let Some(ids) = own.key_role_ids.clone() {
+            signer = signer.with_key_role_ids(ids);
+        }
+        signer
     }
 
     /// A signer whose issuer is the `did:key` of its own Ed25519 key, signing
@@ -312,14 +452,16 @@ impl LocalSigner {
             .as_object_mut()
             .ok_or_else(|| AppError::Internal("request document is not a JSON object".into()))?;
         obj.remove("proof");
-        // One proof, from the primary key, whatever else this signer holds. A
-        // Trust Task's `proof` is a single object (`trust_tasks_rs::Document`),
-        // so a hybrid signer's proof *array* — right for a credential, which
-        // carries a proof set — fails to reparse locally ("invalid type:
-        // sequence, expected struct Proof") before anything is sent.
+        // One proof, from the authentication key, whatever else this signer
+        // holds — the operational key of a key-role identity, the primary
+        // otherwise. A Trust Task's `proof` is a single object
+        // (`trust_tasks_rs::Document`), so a hybrid signer's proof *array* —
+        // right for a credential, which carries a proof set — fails to reparse
+        // locally ("invalid type: sequence, expected struct Proof") before
+        // anything is sent.
         let proof_value = self
             .proof_value_from(
-                std::slice::from_ref(self.primary()),
+                std::slice::from_ref(self.authentication_key()),
                 &*doc,
                 SignOptions::new().with_proof_purpose("authentication"),
             )
@@ -330,8 +472,8 @@ impl LocalSigner {
         Ok(())
     }
 
-    /// Sign `doc` with the primary key for `proofPurpose: authentication` — proof of control
-    /// of this VTC's DID, as a sign-in challenge asks for. Unlike
+    /// Sign `doc` with the authentication key for `proofPurpose: authentication` — proof of
+    /// control of this VTC's DID, as a sign-in challenge asks for. Unlike
     /// [`sign_operational_doc`](Self::sign_operational_doc) it seals no Trust Task envelope,
     /// so it signs any JSON object as it stands.
     pub async fn sign_authentication_doc(
@@ -344,7 +486,7 @@ impl LocalSigner {
         obj.remove("proof");
         let proof_value = self
             .proof_value_from(
-                std::slice::from_ref(self.primary()),
+                std::slice::from_ref(self.authentication_key()),
                 &*doc,
                 SignOptions::new().with_proof_purpose("authentication"),
             )

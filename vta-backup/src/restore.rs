@@ -264,7 +264,8 @@ impl ReadyRestore {
             warn!(
                 dids = ?provenance.hosted_dids_detached,
                 "the restore replaced a different identity, so hosted-DID registrations \
-                 were detached; re-attach each with `did-mgmt dids register`"
+                 were detached; re-attach each did:webvh with `did-mgmt dids register`; a \
+                 did:webs keeps its slot and is refused writes until it is re-attached"
             );
         }
         Ok(AppliedRestore {
@@ -437,6 +438,46 @@ async fn detach_hosted_dids(target: &BackupTarget<'_>) -> Result<Vec<String>, Ap
         record.mnemonic = String::new();
         webvh.insert(key, &record).await?;
         detached.push(record.did);
+    }
+    detached.extend(detach_hosted_webs_dids(target).await?);
+    Ok(detached)
+}
+
+/// The id a detached `did:webs` record names as its server: no server is
+/// registered under it, so every write that would reach the source's host is
+/// refused as `serverNotFound` until the operator re-attaches the identifier.
+const DETACHED_WEBS_SERVER_ID: &str = "";
+
+/// [`detach_hosted_dids`] for `did:webs` records (`webs` keyspace, rows
+/// `did:{did}`, owned by `vta_service::webs_store`). A did:webs has no
+/// serverless form — it is always served by a host — so the record keeps its
+/// slot (`mnemonic`), which the DID itself names, and loses only the server it
+/// would publish to. Read as JSON: the record's type lives in `vta-service`,
+/// above this crate; `serverId` is its wire name.
+async fn detach_hosted_webs_dids(target: &BackupTarget<'_>) -> Result<Vec<String>, AppError> {
+    let webs = target.keyspace(vta_keyspaces::WEBS)?;
+    let mut detached = Vec::new();
+    for key in webs.prefix_keys("did:").await? {
+        let Some(mut record) = webs.get::<serde_json::Value>(key.clone()).await? else {
+            continue;
+        };
+        let Some(fields) = record.as_object_mut() else {
+            continue;
+        };
+        let attached = fields
+            .get("serverId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| id != DETACHED_WEBS_SERVER_ID);
+        if !attached {
+            continue;
+        }
+        fields.insert("serverId".into(), DETACHED_WEBS_SERVER_ID.into());
+        let did = fields
+            .get("did")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        webs.insert(key, &record).await?;
+        detached.extend(did);
     }
     Ok(detached)
 }

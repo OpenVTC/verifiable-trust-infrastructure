@@ -113,6 +113,32 @@ When adding a flow, add it here and a line to the root index.
 - **Seed**: 24-word BIP-39 mnemonic, stored via `affinidi-secrets-resolver`
   backend (OS keyring by default; AWS/GCP/Azure via feature flags).
 - **Docs**: `docs/02-vta/cold-start.md`, `docs/02-vta/non-interactive-setup.md`.
+- **A did:webs VTA** (`vta_did` kind `create_webs`, alpha): setup mints a
+  key-role identity (`CreateDidWebsParams { key_roles, defer_publish }`) and
+  records it unpublished — setup is offline and the VTA has no standing at the
+  host. `server::publish_own_webs_identity` publishes it at first boot, before
+  messaging starts, through `operations::did_webs::publish_own_identity`: a
+  self-certifying `did/register/0.1` the host accepts from a did:webs outside
+  its ACL. Its authentication key (the `operational` role) is the resident key
+  every request and response proves with; its attestation key signs
+  credentials (`SelfKeys`). Never let first boot fall back to another
+  identifier (VTI-KEY-009), and never treat `published: false` on any record
+  but `vta_did`'s as normal.
+  It acts toward any peer exactly as a did:webvh VTA does: every node resolves
+  did:webs (VTI-KEY-003) and none requires a peer's method (VTI-KEY-001). The
+  `resolvedMethods` declaration and its send-side gate (VTI-KEY-008) are
+  withdrawn — don't reintroduce a per-peer method check; the only method
+  refusal is the receiving `unsupportedDidMethod` (VTI-KEY-009).
+- **A did:webs TEE VTA** (`[tee.kms.vta_did_webs]`, `vta-enclave` feature
+  `webs`, S8): `tee_webs::maybe_generate_webs_vta_did` runs after
+  `did_autogen` (which restores a stored identity and refuses a template
+  beside it) and mints through `operations::did_webs::create_own_identity` —
+  the one create setup's `create_webs` also calls, on first-boot authority
+  (no claims; it refuses once the VTA has an identity, and no transport
+  reaches it). It persists `tee:vta_did`; the webs row is the record; a boot
+  that died before that adopts what it minted (`own_identity_in_progress`).
+  Startup publishes it as above. The enclave proxy allowlists the host and
+  domain from the same setting. Not overlay-settable.
 
 ### Mediator connection (readiness gate + reconnect)
 - **What**: How the VTA establishes and *keeps* its outbound mediator DIDComm
@@ -383,6 +409,18 @@ When adding a flow, add it here and a line to the root index.
     the context); the standard `e.p.msg.unauthorized` code is
     reserved for actual auth failures so the CLI doesn't print
     a misleading "Token may be expired" hint.
+- **did:webs integrations** (design note did-webs-in-the-vta §4, S7): the
+  template var `DID_METHOD=webs` routes the mint to
+  `operations::did_webs::create_did_webs` (level 1, class `service`, the
+  template, `[dids] webs_service_dids`) through
+  `provision_integration/webs.rs`, published at `WEBVH_SERVER` (required — no
+  serverless mode). The bundle stays `TemplateBootstrap`: keys under their
+  `<did>#<CESR key>` ids (the record ids, checked against the derived
+  document), and `TemplateOutput::WebsKeriCesr` in place of a `did.jsonl` —
+  emitted only for a did:webs, so webvh bundles are byte-identical and an old
+  opener is refused it by name. Never add a provision wire member for the
+  method; a spec change goes to dtgwg-trust-tasks-tf first. Tests inject the
+  host through `WebsHostSource` (`provision_integration_with`).
 - **Code**: `vta-service/src/operations/provision_integration.rs`,
   `vta-sdk/src/provision_integration/{http,didcomm}.rs`,
   `vta-service/src/routes/bootstrap.rs:provision_integration`,
@@ -432,6 +470,22 @@ When adding a flow, add it here and a line to the root index.
   highest-preference transport first. Enforced in
   `protocol::document::sort_services_canonical` at the end of
   every `with_*_service` patcher.
+- **A did:webs VTA** (alpha): `preconditions::load_vta_doc_state` switches
+  on the DID's method; `VtaDocBacking::Webs` carries the `WebsDidRecord`,
+  whose document is derived from the stored key event stream. The patchers
+  run unchanged, and `service_lifecycle::publish_patch` (which every family,
+  DIDComm included, publishes through) designates the patched `service[]`
+  as the whole designated service set (`protocol::webs_backing` →
+  `update_did_webs`, host from the record's `server_id`, or
+  `ServiceOpDeps::webs_host`), then reseeds the self-DID resolver entry.
+  The version is the KEL's `<sn>:<said>`; `serverless` is always false.
+  The resolver renders designations in designation order, so canonical
+  order holds (creates and updates sort designations by type too); KERI's
+  own endpoint services, which this VTA never writes, would render first.
+  `#didcomm` (the did:webs convention) is shown to the patchers as
+  `#vta-didcomm` and designated back as `#didcomm`. WebAuthn works as a
+  plain service: passkey VMs live only on webvh DIDs the VTA manages. An
+  identity not yet published at first boot is refused (`VtaDidNotPublished`).
 - **Handshake**: `update`/`rollback`-into-update uses a *live*
   `DIDCommServiceProver` against the running service; first-enable
   spins up a transient `DIDCommService` just for the round-trip
@@ -853,7 +907,7 @@ When adding a flow, add it here and a line to the root index.
   the SDK, always available): `ai-agent`, `ai-agent-peer`,
   `ballot-box`, `did-host-didcomm`, `did-host-http`, `did-host-http-didcomm`,
   `did-host-http-tsp`, `did-host-tsp`, `didcomm-mediator`,
-  `dtg-witness`, `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-group`, `vtc-host`. The `did-host-*` names encode
+  `dtg-witness`, `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-group`, `vtc-host`, `vtc-host-classical` (`vtc-host` less its post-quantum slot, derived at load: a did:webs VTC's template). The `did-host-*` names encode
   the DID-document **shape** (`http` = WebVHHosting, `didcomm` =
   DIDCommMessaging, `tsp` = TSPTransport), so a deployment role maps onto
   a shape: control = `did-host-http-didcomm`, hosting daemon =

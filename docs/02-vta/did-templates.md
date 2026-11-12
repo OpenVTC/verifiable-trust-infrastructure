@@ -14,7 +14,7 @@ consumer gets the new shape on the next create. No redeploy.
 
 - **Data, not code.** An operator can ship a new agent kind by dropping a JSON
   file, no recompile. The built-ins (`ai-agent`, `didcomm-mediator`,
-  `push-gateway`, `trust-registry`, `vta-admin`, `vtc-host`, `dtg-witness`, `ballot-box`, `did-host-http-didcomm`,
+  `push-gateway`, `trust-registry`, `vta-admin`, `vtc-host`, `vtc-host-classical`, `dtg-witness`, `ballot-box`, `did-host-http-didcomm`,
   `did-host-http`, `did-host-didcomm`, `did-host-http-tsp`, `did-host-tsp`)
   are baseline shapes, not the only shapes.
 - **Method-agnostic.** Same format works for `did:webvh`, `did:web`, or
@@ -282,6 +282,13 @@ template without explicit scope is **context → global → builtin**:
     Requires `WEBVH_SERVER`; optional `WITNESSES`. The community's VTA mints and
     holds it; the group's DID issues its members' membership credentials under
     an authorization credential the community issues it.
+  - `vtc-host-classical` — `vtc-host` without its post-quantum `pq-signing`
+    slot: one Ed25519 signing key and one X25519 key agreement key, with every
+    `vtc-host` variable and service. Derived from `vtc-host` when it is loaded,
+    not a second file, so the two cannot drift. It is what `vtc setup` names for
+    a did:webs VTC, because a level-1 did:webs holds one signing key and
+    CONVENTIONS.md 0.2 §9.2 refuses `vtc-host`'s second signing slot rather than
+    letting the VTA drop it ([did:webs DIDs](did-webs.md#a-vtc-as-a-didwebs)).
   - `vtc-host` — Verifiable Trust Community (VTC) service identity. Mints
     the did:webvh under which a `vtc-service` binary operates and advertises
     its REST endpoint plus a placeholder URL for the BitstringStatusList

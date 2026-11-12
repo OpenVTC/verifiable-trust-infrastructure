@@ -21,9 +21,28 @@ pub enum WebsRefusal {
     DomainNotServed,
     /// The slot path is malformed or the host refused it (`create:pathRefused`).
     PathRefused,
-    /// The DID would become the primary DID of a context that holds a node's
-    /// service identity (`create:serviceDidNotPermitted`, VTI-KEY-001).
+    /// A `service` DID, and `[dids] webs_service_dids` is off
+    /// (`create/0.2:serviceDidNotPermitted`, CONVENTIONS.md 0.2 §1.1).
     ServiceDidNotPermitted,
+    /// The DID would become the primary DID of the context holding this VTA's
+    /// own identity: a create cannot re-identify a node. `create/0.1` answers
+    /// it as `serviceDidNotPermitted`; `create/0.2`, whose code of that name
+    /// now means only the configuration switch, as `permissionDenied`.
+    NodeIdentityContext,
+    /// The class disagrees with the identity the DID would become or replace
+    /// (`create/0.2:didClassConflict`, CONVENTIONS.md 0.2 §1.2). Details:
+    /// `requiredClass`, when one class would be accepted.
+    DidClassConflict,
+    /// No such template in any scope visible to the caller
+    /// (`create/0.2:templateNotFound`).
+    TemplateNotFound,
+    /// Missing, unknown or unresolved template variables
+    /// (`create/0.2:templateVarsInvalid`). Details: `missing`, `unknown`.
+    TemplateVarsInvalid,
+    /// The template describes what a did:webs derivation cannot reproduce
+    /// (`create/0.2:templateNotRepresentable`, CONVENTIONS.md 0.2 §9.2).
+    /// Details: `reason`, `members`.
+    TemplateNotRepresentable,
     /// No such `did:webs`, or not one the caller may reach (`*:notFound`).
     NotFound,
     /// `expectedVersionId` is not the DID's latest event (`*:versionConflict`).
@@ -44,6 +63,8 @@ pub enum WebsRefusal {
 pub enum WebsError {
     /// A refusal the task declares, with what to tell the caller.
     Refused(WebsRefusal, String),
+    /// A refusal the task declares, with the `details` its code declares.
+    RefusedWith(WebsRefusal, String, serde_json::Value),
     /// Everything else: authorisation, storage, transport.
     App(AppError),
 }
@@ -53,10 +74,18 @@ impl WebsError {
         Self::Refused(kind, message.into())
     }
 
+    pub(crate) fn refused_with(
+        kind: WebsRefusal,
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self::RefusedWith(kind, message.into(), details)
+    }
+
     /// The declared refusal, if this is one.
     pub fn refusal(&self) -> Option<WebsRefusal> {
         match self {
-            Self::Refused(kind, _) => Some(*kind),
+            Self::Refused(kind, _) | Self::RefusedWith(kind, _, _) => Some(*kind),
             Self::App(_) => None,
         }
     }
@@ -95,7 +124,7 @@ impl WebsError {
 impl fmt::Display for WebsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Refused(_, message) => f.write_str(message),
+            Self::Refused(_, message) | Self::RefusedWith(_, message, _) => f.write_str(message),
             Self::App(e) => e.fmt(f),
         }
     }
@@ -115,14 +144,17 @@ impl From<WebsError> for AppError {
     fn from(e: WebsError) -> Self {
         match e {
             WebsError::App(e) => e,
-            WebsError::Refused(kind, m) => match kind {
-                WebsRefusal::NotFound | WebsRefusal::ServerNotFound => AppError::NotFound(m),
-                WebsRefusal::MethodDisabled | WebsRefusal::ServiceDidNotPermitted => {
-                    AppError::Forbidden(m)
-                }
+            WebsError::Refused(kind, m) | WebsError::RefusedWith(kind, m, _) => match kind {
+                WebsRefusal::NotFound
+                | WebsRefusal::ServerNotFound
+                | WebsRefusal::TemplateNotFound => AppError::NotFound(m),
+                WebsRefusal::MethodDisabled
+                | WebsRefusal::ServiceDidNotPermitted
+                | WebsRefusal::NodeIdentityContext => AppError::Forbidden(m),
                 WebsRefusal::VersionConflict
                 | WebsRefusal::ServiceIdConflict
-                | WebsRefusal::Deactivated => AppError::Conflict(m),
+                | WebsRefusal::Deactivated
+                | WebsRefusal::DidClassConflict => AppError::Conflict(m),
                 _ => AppError::Validation(m),
             },
         }

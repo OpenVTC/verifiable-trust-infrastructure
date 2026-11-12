@@ -47,7 +47,12 @@ mod preconditions;
 mod seal;
 mod templates;
 mod vta_keys;
+mod webs;
+#[cfg(all(test, feature = "webs"))]
+mod webs_tests;
 mod webvh;
+
+pub(crate) use webs::{RegisteredWebsHosts, WebsHostSource};
 
 pub use preconditions::{
     AmbiguousContext, ResolveContextError, ensure_target_context_or_create, infer_target_context,
@@ -118,6 +123,9 @@ pub struct ProvisionIntegrationDeps {
     pub did_templates_ks: KeyspaceHandle,
     pub imported_ks: KeyspaceHandle,
     pub webvh_ks: KeyspaceHandle,
+    /// A did:webs VTA's own key event log: where its keys by role and its
+    /// trust bundle are read from.
+    pub webs_ks: KeyspaceHandle,
     /// Sealed-bundle nonce store, for replay protection.
     pub sealed_nonces_ks: KeyspaceHandle,
     pub seed_store: Arc<dyn SeedStore>,
@@ -136,6 +144,7 @@ impl From<&AppState> for ProvisionIntegrationDeps {
             did_templates_ks: state.did_templates_ks.clone(),
             imported_ks: state.imported_ks.clone(),
             webvh_ks: state.webvh_ks.clone(),
+            webs_ks: state.webs_ks.clone(),
             sealed_nonces_ks: state.sealed_nonces_ks.clone(),
             seed_store: state.seed_store.clone(),
             config: state.config.clone(),
@@ -252,6 +261,17 @@ pub async fn provision_integration(
     auth: &AuthClaims,
     params: ProvisionIntegrationParams,
 ) -> Result<ProvisionIntegrationOutput, AppError> {
+    provision_integration_with(state, auth, params, &RegisteredWebsHosts).await
+}
+
+/// [`provision_integration`], publishing a `did:webs` integration DID through
+/// `webs_hosts` (the registered servers; a recording fake in tests).
+pub(crate) async fn provision_integration_with<W: WebsHostSource>(
+    state: &ProvisionIntegrationDeps,
+    auth: &AuthClaims,
+    params: ProvisionIntegrationParams,
+    webs_hosts: &W,
+) -> Result<ProvisionIntegrationOutput, AppError> {
     let ProvisionIntegrationParams {
         request,
         context,
@@ -357,7 +377,18 @@ pub async fn provision_integration(
     // ACL default → system default). Removed from the map for the same
     // reason as `WEBVH_PATH` — transport metadata, not document content.
     let webvh_domain = webvh::take_webvh_domain(&mut template_vars)?;
+    // `DID_METHOD=webs`: a did:webs integration DID (design note
+    // did-webs-in-the-vta §4, S7). Taken first; any other `DID_METHOD` is the
+    // presentation of a webvh log.
+    let use_webs = webvh::take_webs_method(&mut template_vars);
     let (did_method, scid_also_known_as) = webvh::take_did_presentation(&mut template_vars)?;
+    if use_webs && scid_also_known_as.is_some() {
+        return Err(AppError::Validation(
+            "SCID_ALSO_KNOWN_AS lists a did:webvh log's did:scid alias, and DID_METHOD=webs \
+             mints a did:webs, which has no such log. Omit SCID_ALSO_KNOWN_AS."
+                .into(),
+        ));
+    }
 
     // Decide whether the minted DID should become the context's primary
     // DID. First-integration wins: when the context has no DID yet, bind
@@ -396,6 +427,14 @@ pub async fn provision_integration(
     // before the did:key / did:webvh dispatch.
     let use_did_peer = templates::template_targets_did_peer(&integration_template);
     let use_did_key = templates::template_targets_did_key_only(&integration_template);
+    if use_webs && (use_did_peer || use_did_key) {
+        return Err(AppError::Validation(format!(
+            "template '{template_name}' declares methods {:?}, a self-contained DID with \
+             nothing to publish, and DID_METHOD=webs asks for a did:webs published at a host. \
+             Omit DID_METHOD, or provision from a template that describes a hosted DID.",
+            integration_template.methods
+        )));
+    }
     // did:key and did:peer mint their own signing + key-agreement pair; only
     // a webvh template's slots decide what the bundle can carry. Refused
     // before the mint, so a refusal leaves no DID behind.
@@ -411,9 +450,42 @@ pub async fn provision_integration(
     // path. Capture it here so the readback section below can skip
     // `get_key_secret` on those branches.
     let mut did_key_material: Option<DidKeyMaterial> = None;
+    // A did:webs integration's key event stream, shipped in place of a log.
+    let mut webs_keri_cesr: Option<String> = None;
 
     let (integration_did, signing_key_id, ka_key_id, additional_key_ids, did_document, did_log) =
-        if use_did_peer {
+        if use_webs {
+            // did:webs path — level 1, class `service`, from the template,
+            // published at the registered server `WEBVH_SERVER`. The keys are
+            // read back below exactly as the webvh path's are, through
+            // `get_key_secret`; their record ids are the ids the document
+            // gives them (`<did>#<CESR key>`).
+            let minted = webs::mint(
+                state,
+                auth,
+                webs_hosts,
+                &context,
+                &client_did,
+                &template_name,
+                &template_vars,
+                webs::WebsTarget {
+                    server_id: webvh_server_id.clone(),
+                    domain: webvh_domain.clone(),
+                    path: webvh_path.clone(),
+                },
+                set_primary,
+            )
+            .await?;
+            webs_keri_cesr = Some(minted.keri_cesr);
+            (
+                minted.did,
+                minted.signing_key_id,
+                minted.ka_key_id,
+                std::collections::BTreeMap::new(),
+                minted.did_document,
+                None,
+            )
+        } else if use_did_peer {
             // did:peer path — self-contained. Mint an Ed25519 signing key +
             // X25519 key-agreement key and encode them into a did:peer:2 with
             // a DIDCommMessaging service on MEDIATOR_DID (matching how the
@@ -646,25 +718,49 @@ pub async fn provision_integration(
         // match its own VM ids — a consumer storing the bundle verbatim
         // can then resolve an inbound JWE's kid against the live document
         // and find the matching private key.
-        let signing_kid =
-            published_kid_for(&did_document, &signing_secret_resp.public_key_multibase)
+        //
+        // A did:webs document carries its keys as JWKs, each under the id the
+        // key itself makes (`<did>#<CESR key>`), and the key records are named
+        // by exactly that id; so there the record id is the kid, once the
+        // document is seen to list it.
+        let webs_kid = |key_id: &str| -> Result<String, AppError> {
+            lists_verification_method(&did_document, key_id)
+                .then(|| key_id.to_string())
                 .ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "the did:webs document of '{integration_did}' lists no verification \
+                         method {key_id}"
+                    ))
+                })
+        };
+        let signing_kid = if use_webs {
+            webs_kid(&signing_key_id)?
+        } else {
+            published_kid_for(&did_document, &signing_secret_resp.public_key_multibase).ok_or_else(
+                || {
                     AppError::Internal(format!(
                         "rendered DID document for '{integration_did}' has no \
                  verificationMethod matching the minted signing publicKeyMultibase \
                  — template '{template_name}' likely references a different \
                  SIGNING_KEY_MB binding"
                     ))
-                })?;
-        let ka_kid = published_kid_for(&did_document, &ka_secret_resp.public_key_multibase)
-            .ok_or_else(|| {
-                AppError::Internal(format!(
-                    "rendered DID document for '{integration_did}' has no \
+                },
+            )?
+        };
+        let ka_kid = if use_webs {
+            webs_kid(&ka_key_id)?
+        } else {
+            published_kid_for(&did_document, &ka_secret_resp.public_key_multibase).ok_or_else(
+                || {
+                    AppError::Internal(format!(
+                        "rendered DID document for '{integration_did}' has no \
                      verificationMethod matching the minted key-agreement \
                      publicKeyMultibase — template '{template_name}' likely \
                      references a different KA_KEY_MB binding"
-                ))
-            })?;
+                    ))
+                },
+            )?
+        };
 
         // A did:scid integration's document lists its keys under the bare
         // did:scid DID (VTI-KEY-161), so the bundle names them there; the
@@ -849,6 +945,15 @@ pub async fn provision_integration(
         outputs.push(TemplateOutput::WebvhLog {
             did: integration_did.clone(),
             log,
+        });
+    }
+    // A did:webs integration's key event stream. Emitted only for a did:webs,
+    // so every other bundle is byte-identical to what it was; an opener that
+    // predates the variant is refused it by name (`TemplateOutput` docs).
+    if let Some(keri_cesr) = webs_keri_cesr {
+        outputs.push(TemplateOutput::WebsKeriCesr {
+            did: integration_did.clone(),
+            keri_cesr,
         });
     }
 
@@ -1561,6 +1666,18 @@ fn string_list_var(vars: &BTreeMap<String, Value>, key: &str) -> Option<Vec<Stri
 /// `target_mb`. Used to align bundle `key_id` fields with the published
 /// DID document so a consumer storing the bundle verbatim can resolve
 /// the kid against the live document and find a matching private key.
+/// Whether `doc` lists a verification method with the absolute id `key_id`
+/// (a method's `id` may be relative, `#fragment`).
+fn lists_verification_method(doc: &Value, key_id: &str) -> bool {
+    let fragment = key_id.split_once('#').map(|(_, f)| f);
+    doc.get("verificationMethod")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|vm| vm.get("id").and_then(Value::as_str))
+        .any(|id| id == key_id || (id.starts_with('#') && Some(&id[1..]) == fragment))
+}
+
 fn published_kid_for(doc: &Value, target_mb: &str) -> Option<String> {
     doc.get("verificationMethod")?
         .as_array()?

@@ -75,11 +75,11 @@ fn mask_key(state: &AppState) -> Result<[u8; 32], ProtoError> {
     let signer = state.credential_signer.as_ref().ok_or_else(|| {
         ProtoError::Serialization("credential signer not initialised — cannot mask tags".into())
     })?;
-    let master = signer.ed25519_signing_key().ok_or_else(|| {
-        ProtoError::Serialization("the credential signer holds no Ed25519 key".into())
+    let master = signer.derivation_root().ok_or_else(|| {
+        ProtoError::Serialization("the credential signer holds no derivation root".into())
     })?;
     let mut key = [0u8; 32];
-    Hkdf::<Sha256>::new(None, &master.to_bytes())
+    Hkdf::<Sha256>::new(None, master.as_bytes())
         .expand(MASK_KEY_INFO, &mut key)
         .map_err(|e| ProtoError::Serialization(format!("derive the tag-mask key: {e}")))?;
     Ok(key)

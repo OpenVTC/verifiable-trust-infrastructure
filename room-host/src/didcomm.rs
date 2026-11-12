@@ -480,15 +480,6 @@ impl MediatorSignals {
             .await
             .ok()?;
         let doc = serde_json::to_value(&resolved.doc).ok()?;
-        // VTI-KEY-008 / VTI-KEY-009: the signal goes out as this host's own
-        // DID, so a did:webs host signals only an address that has declared
-        // did:webs, and otherwise sends nothing.
-        if let Err(refusal) =
-            vta_sdk::resolved_methods::require_declared(&self.host_did, address, &doc)
-        {
-            tracing::warn!(%address, %refusal, "not signalling the watch address");
-            return None;
-        }
         let theirs = ServiceCapabilities::from_did_document(&doc);
         let ours = ServiceCapabilities {
             tsp: Some(self.host_did.clone()),
@@ -774,6 +765,7 @@ mod tests {
         let identity = HostIdentity::from_vta(did.clone(), secrets);
         let dir = tempfile::tempdir().unwrap();
         let state = crate::open_state(dir.path()).expect("a host");
+        state.set_room_creation(crate::creation::RoomCreation::any_creator());
         let body = serde_json::to_vec(&document()).unwrap();
 
         let unsigned = crate::dispatch(&state, &body).await.document;

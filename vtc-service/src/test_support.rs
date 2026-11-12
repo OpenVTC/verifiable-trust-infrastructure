@@ -662,7 +662,10 @@ impl TestVtcBuilder {
         }
         // Sealed storage credentials, as `server::run` attaches them: opened with the
         // signer's key, encrypted under a fixed test storage key.
-        if let Some(seed) = credential_signer.as_ref().and_then(|s| s.ed25519_seed()) {
+        if let Some((seed, root)) = credential_signer
+            .as_ref()
+            .and_then(|s| Some((s.ed25519_seed()?, s.derivation_root()?)))
+        {
             room_storage
                 .set_sealed_credentials(Arc::new(
                     crate::rooms::storage_credentials::SealedCredentials::new(
@@ -671,6 +674,7 @@ impl TestVtcBuilder {
                             .expect("storage_credentials ks"),
                         [0x5Au8; 32],
                         &seed,
+                        root.as_bytes(),
                     ),
                 ))
                 .await

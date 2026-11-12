@@ -315,8 +315,7 @@ async fn send_trust_ping(
     // 64-raw-byte fixture shape. The old `len() == 64` guard here rejected
     // the bundle shape, so the trust-ping failed on every production VTC
     // with a baffling byte-count error (P0.19).
-    let (ed25519_bytes, x25519_bytes) =
-        crate::setup::bundle::decode_secret_store_value(vtc_did, &key_material)?;
+    let own = crate::setup::bundle::own_key_material(vtc_did, &key_material)?;
 
     let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
 
@@ -331,13 +330,19 @@ async fn send_trust_ping(
     )
     .await
     .ok();
-    let (signing_id, ka_id) = crate::messaging::vtc_key_ids(resolver.as_ref(), vtc_did).await;
+    let (signing_id, ka_id) =
+        crate::messaging::vtc_key_ids(resolver.as_ref(), vtc_did, own.key_role_ids.as_ref()).await;
 
-    let mut signing_secret = Secret::generate_ed25519(None, Some(&ed25519_bytes));
+    // The authenticating key: a key-role identity's operational key, else the
+    // Ed25519 key that serves both relationships.
+    let mut signing_secret = match own.authentication.clone() {
+        Some(operational) => operational,
+        None => Secret::generate_ed25519(None, Some(&*own.ed25519)),
+    };
     signing_secret.id = signing_id;
     tdk.secrets_resolver().insert(signing_secret).await;
 
-    let mut ka_secret = Secret::generate_x25519(None, Some(&x25519_bytes))?;
+    let mut ka_secret = Secret::generate_x25519(None, Some(&*own.x25519))?;
     ka_secret.id = ka_id.unwrap_or_else(|| format!("{vtc_did}#key-1"));
     tdk.secrets_resolver().insert(ka_secret).await;
 

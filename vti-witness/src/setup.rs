@@ -37,7 +37,7 @@ use vti_secrets::{SecretBackend, SecretsConfig};
 
 use crate::config::{WitnessConfig, WitnessIdentity, identity_errors};
 use crate::correlation::{self, OperatorFootprint};
-use crate::keys::{WitnessKeyring, bundle_from_material};
+use crate::keys::WitnessKeyring;
 
 /// The VTA context witness identities are provisioned into unless the
 /// operator names another.
@@ -128,6 +128,12 @@ pub struct SetupWitness {
     /// Serverless: the URL the operator will serve the DID log from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The DID method: `webvh` (the default), `scid` (the same log,
+    /// presented as `did:scid`), or `webs` — a `did:webs` the VTA publishes at
+    /// `webvh_server` (alpha; the VTA must allow did:webs service DIDs; every
+    /// peer resolves did:webs, VTI-KEY-003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_method: Option<String>,
 }
 
 fn default_context() -> String {
@@ -170,20 +176,50 @@ impl SetupInputs {
             );
         }
         for w in &self.witnesses {
-            match (&w.webvh_server, &w.url) {
-                (None, None) => errors.push(format!(
-                    "witness {:?}: name webvh_server (a registered DID-hosting server) or url \
-                     (where you will serve the DID log yourself) — the VTA needs one to know \
-                     where the log is published",
-                    w.name
-                )),
-                (_, Some(url)) if !(url.starts_with("https://") || url.starts_with("http://")) => {
+            let webs = match w.did_method.as_deref() {
+                None | Some("webvh" | "scid") => false,
+                Some("webs") => true,
+                Some(other) => {
                     errors.push(format!(
-                        "witness {:?}: url must start with https:// (got {url:?})",
+                        "witness {:?}: did_method must be webvh, scid or webs (got {other:?})",
                         w.name
-                    ))
+                    ));
+                    false
                 }
-                _ => {}
+            };
+            if webs {
+                if w.webvh_server.is_none() {
+                    errors.push(format!(
+                        "witness {:?}: a did:webs is published by the VTA at a DID-hosting \
+                         server; name webvh_server",
+                        w.name
+                    ));
+                }
+                if w.url.is_some() {
+                    errors.push(format!(
+                        "witness {:?}: url is where a serverless did:webvh log is served; a \
+                         did:webs has none, so remove it",
+                        w.name
+                    ));
+                }
+            } else {
+                match (&w.webvh_server, &w.url) {
+                    (None, None) => errors.push(format!(
+                        "witness {:?}: name webvh_server (a registered DID-hosting server) or \
+                         url (where you will serve the DID log yourself) — the VTA needs one to \
+                         know where the log is published",
+                        w.name
+                    )),
+                    (_, Some(url))
+                        if !(url.starts_with("https://") || url.starts_with("http://")) =>
+                    {
+                        errors.push(format!(
+                            "witness {:?}: url must start with https:// (got {url:?})",
+                            w.name
+                        ))
+                    }
+                    _ => {}
+                }
             }
             if w.mediator_did == self.vta_did {
                 errors.push(format!(
@@ -227,6 +263,7 @@ pub fn witness_ask(context: &str, witness: &SetupWitness) -> ProvisionAsk {
         ("WEBVH_SERVER", &witness.webvh_server),
         ("WEBVH_DOMAIN", &witness.webvh_domain),
         ("WEBVH_PATH", &witness.webvh_path),
+        ("DID_METHOD", &witness.did_method),
     ] {
         if let Some(value) = value {
             vars.insert(key.to_string(), Value::String(value.clone()));
@@ -303,15 +340,19 @@ pub async fn run_from_file(path: &Path) -> anyhow::Result<()> {
                 return Err(e.context(format!("provision witness {:?}", witness.name)));
             }
         };
-        let (Some(did), Some(material)) = (result.integration_did(), result.integration_key())
-        else {
+        // Led by the key the document lists for authentication, which every
+        // Trust Task this witness answers is signed with (VTI-KEY-150).
+        let (Some(did), Some(bundle)) = (
+            result.integration_did(),
+            result.integration_secrets_bundle(),
+        ) else {
             report_orphans(&provisioned);
             anyhow::bail!(
                 "the VTA's bundle for witness {:?} carries no integration DID or keys",
                 witness.name
             );
         };
-        keyring.insert(bundle_from_material(material));
+        keyring.insert(bundle);
         provisioned.push(Provisioned {
             identity: WitnessIdentity::provisioned(
                 witness.name.clone(),
@@ -604,6 +645,32 @@ webvh_server = "prod"
             ask.admin_template.is_none(),
             "a witness takes no VTA admin credential"
         );
+    }
+
+    /// `did_method = "webs"` passes `DID_METHOD=webs` through, needs a
+    /// hosting server, and takes no serverless `url` (a did:webs has no
+    /// did.jsonl to serve).
+    #[test]
+    fn a_did_webs_witness_names_its_server_and_no_url() {
+        let webs = format!("{ONE}did_method = \"webs\"\n");
+        let inputs = SetupInputs::from_toml_str(&setup_toml(&webs)).expect("parses");
+        let ask = witness_ask(&inputs.context, &inputs.witnesses[0]);
+        assert_eq!(
+            ask.integration_template_vars["DID_METHOD"],
+            Value::String("webs".into())
+        );
+
+        let no_server = "\n[[witness]]\nname = \"a\"\nmediator_did = \"did:web:m.example\"\n\
+                         did_method = \"webs\"\nurl = \"https://a.example\"\n";
+        let err = SetupInputs::from_toml_str(&setup_toml(no_server))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("name webvh_server"), "{err}");
+        assert!(err.contains("remove it"), "{err}");
+
+        let unknown = format!("{ONE}did_method = \"peer\"\n");
+        let err = SetupInputs::from_toml_str(&setup_toml(&unknown)).unwrap_err();
+        assert!(err.to_string().contains("did_method"), "{err}");
     }
 
     #[test]

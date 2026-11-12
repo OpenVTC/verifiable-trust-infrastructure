@@ -73,6 +73,8 @@ async fn start_host_refusing(contend: bool, refused: &'static [&'static str]) ->
     let party = Party::new();
     let dir = tempfile::tempdir().unwrap();
     let state = room_host::open_state(dir.path()).expect("a host");
+    // Owners here are minted per test, and register their rooms on this host.
+    state.set_room_creation(room_host::creation::RoomCreation::any_creator());
     state.set_host_did(&party.did).expect("bind the host DID");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

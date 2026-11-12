@@ -313,6 +313,37 @@ impl DidKeyMaterialV2 {
             additional_signing_keys: Vec::new(),
         }
     }
+
+    /// The integration's working [`DidSecretsBundle`](crate::did_secrets::DidSecretsBundle):
+    /// every key in this material, under the ids the DID document gives them,
+    /// led by the key `document` lists for authentication.
+    ///
+    /// `document` is the integration's own DID document as the bundle carries
+    /// it ([`TemplateBootstrapConfig::did_document`]). A host service signs its
+    /// Trust Tasks with the key its document lists under `authentication`
+    /// (VTI-KEY-150), and it stores this bundle and later signs from it without
+    /// the document; leading with that key is what makes
+    /// [`DidSecretsBundle::trust_task_signing_key`](crate::did_secrets::DidSecretsBundle::trust_task_signing_key)
+    /// answer it. For every bundle a VTA has issued so far the primary signing
+    /// key *is* that key, so the order is the one the material already had.
+    pub fn secrets_bundle(
+        &self,
+        document: &serde_json::Value,
+    ) -> crate::did_secrets::DidSecretsBundle {
+        let entry = |key: &SlotKeyPair| crate::did_secrets::SecretEntry {
+            key_id: key.key_id.clone(),
+            key_type: key.key_type.clone(),
+            private_key_multibase: key.private_key_multibase.clone(),
+        };
+        let mut secrets = vec![entry(&self.signing_key), entry(&self.ka_key)];
+        secrets.extend(self.additional_signing_keys.iter().map(entry));
+        let mut bundle = crate::did_secrets::DidSecretsBundle {
+            did: self.did.clone(),
+            secrets,
+        };
+        bundle.lead_with_trust_task_signing_key(document);
+        bundle
+    }
 }
 
 impl SlotKeyPair {
@@ -378,8 +409,18 @@ pub struct TemplateBootstrapConfig {
 /// forward to a default handler or log-and-ignore. Preserves the
 /// "uploading a template is the whole author surface for new
 /// integrations" invariant from `CLAUDE.md`.
+///
+/// # A new typed variant is additive on the wire
+///
+/// A producer emits a variant only for the DID method that has one, so every
+/// bundle an existing opener can use stays byte-identical when a variant is
+/// added. An opener that predates a variant and receives it is refused by name
+/// (`unknown variant `webs_keri_cesr``), never handed a bundle it would
+/// half-install — the same property `TemplateBootstrapV2` has one layer up.
+/// `#[non_exhaustive]` keeps the next addition from breaking Rust callers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TemplateOutput {
     /// Raw `did.jsonl` log for a `did:webvh` DID. The integration writes
     /// this to `/.well-known/did.jsonl` on its own webvh host at first
@@ -389,6 +430,19 @@ pub enum TemplateOutput {
         did: String,
         /// Raw newline-delimited JSON log content.
         log: String,
+    },
+    /// The key event stream (`keri.cesr`) of a `did:webs` integration DID:
+    /// its KERI key event log and designations, from which its DID document
+    /// is derived (`did:webs` 0.9 §3). The VTA has already published it at
+    /// the DID's host, so there is nothing for the integration to serve; it
+    /// is carried so the integration holds the log its keys are bound by and
+    /// can derive its own current document offline (design note
+    /// `did-webs-in-the-vta` §4, S7). A `did:webs` has no `did.jsonl`.
+    WebsKeriCesr {
+        /// Which DID the stream establishes.
+        did: String,
+        /// The stream, as text (CESR, as the host serves it).
+        keri_cesr: String,
     },
     /// DIDComm v2 service-endpoint advertisement the integration should
     /// publish on its DID doc (and which the template already embedded
@@ -555,6 +609,81 @@ mod tests {
             }
             other => panic!("expected Generic, got {other:?}"),
         }
+    }
+
+    /// A did:webs integration's key event stream rides `outputs` under its own
+    /// tag; a webvh bundle carries no such tag, so it is what it always was.
+    #[test]
+    fn template_output_webs_keri_cesr_tag_on_wire() {
+        let out = TemplateOutput::WebsKeriCesr {
+            did: "did:webs:hosting.example:EAid".into(),
+            keri_cesr: "{\"v\":\"KERI20JSON\"}-AAB".into(),
+        };
+        let v = serde_json::to_value(&out).unwrap();
+        assert_eq!(v["type"], "webs_keri_cesr");
+        assert_eq!(v["keri_cesr"], "{\"v\":\"KERI20JSON\"}-AAB");
+        let back: TemplateOutput = serde_json::from_value(v).unwrap();
+        assert!(matches!(back, TemplateOutput::WebsKeriCesr { .. }));
+
+        let webvh = serde_json::to_string(&sample_payload()).unwrap();
+        assert!(!webvh.contains("webs_keri_cesr"), "{webvh}");
+    }
+
+    /// A `TemplateBootstrapV2` payload as producers have written it opens
+    /// unchanged: the new output variant reshapes nothing that existed.
+    #[test]
+    fn an_existing_v2_bundle_still_opens() {
+        let wire = json!({
+            "template_bootstrap_v2": {
+                "authorization": { "type": ["VerifiableCredential"] },
+                "secrets": {
+                    "did:webvh:QmScid:vtc.example": {
+                        "did": "did:webvh:QmScid:vtc.example",
+                        "signing_key": {
+                            "slot": "signing", "key_type": "ed25519",
+                            "key_id": "did:webvh:QmScid:vtc.example#key-0",
+                            "public_key_multibase": "z6Mk", "private_key_multibase": "z"
+                        },
+                        "ka_key": {
+                            "slot": "ka", "key_type": "x25519",
+                            "key_id": "did:webvh:QmScid:vtc.example#key-1",
+                            "public_key_multibase": "z6LS", "private_key_multibase": "z"
+                        },
+                        "additional_signing_keys": [{
+                            "slot": "pq-signing", "key_type": "mldsa44",
+                            "key_id": "did:webvh:QmScid:vtc.example#key-2",
+                            "public_key_multibase": "zPQ", "private_key_multibase": "z"
+                        }]
+                    }
+                },
+                "config": {
+                    "template_name": "vtc-host",
+                    "template_kind": "vtc",
+                    "did_document": { "id": "did:webvh:QmScid:vtc.example" },
+                    "outputs": [
+                        { "type": "webvh_log", "did": "did:webvh:QmScid:vtc.example", "log": "{}" }
+                    ],
+                    "vta_trust": {
+                        "vta_did": "did:webvh:QmVta:vta.example",
+                        "vta_did_document": { "id": "did:webvh:QmVta:vta.example" }
+                    }
+                }
+            }
+        });
+        let parsed: SealedPayloadV1 = serde_json::from_value(wire).expect("opens");
+        let SealedPayloadV1::TemplateBootstrapV2(p) = parsed else {
+            panic!("TemplateBootstrapV2");
+        };
+        assert!(matches!(
+            p.config.outputs.as_slice(),
+            [TemplateOutput::WebvhLog { .. }]
+        ));
+        assert_eq!(
+            p.secrets["did:webvh:QmScid:vtc.example"]
+                .additional_signing_keys
+                .len(),
+            1
+        );
     }
 
     fn sample_admin_rotation_payload() -> AdminRotationPayload {

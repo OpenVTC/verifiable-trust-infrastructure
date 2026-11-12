@@ -60,14 +60,13 @@ async fn load_vta_key_as_secret(
     Ok(secret)
 }
 
-/// This VTA's keys by role, from its own `did:webvh` log. (A did:webs VTA
-/// identity reads its stream too once the deps carry the `webs` keyspace —
-/// design note did-webs-in-the-vta.md §4, S6.)
+/// This VTA's keys by role, from its own `did:webvh` log or `did:webs` key
+/// event log.
 async fn provision_self_keys(
     state: &ProvisionIntegrationDeps,
     vta_did: &str,
 ) -> crate::self_keys::SelfKeys {
-    crate::self_keys::self_keys(vta_did, Some(&state.webvh_ks), None).await
+    crate::self_keys::self_keys(vta_did, Some(&state.webvh_ks), Some(&state.webs_ks)).await
 }
 
 /// Load the VTA's signing key (`{vta_did}#key-0` on a did:webvh) for issuing the VtaAuthorization VC's
@@ -135,9 +134,18 @@ pub(super) async fn load_vta_trust_bundle(
     #[cfg(not(feature = "webvh"))]
     let vta_did_log: Option<String> = None;
 
-    let vta_did_document = match &vta_did_log {
+    // A did:webs VTA's document is derived from the key event log it holds,
+    // as its host serves it: offline-safe, and right before its first-boot
+    // publication too.
+    let own_webs = if vta_did.starts_with("did:webs:") {
+        crate::self_keys::own_document(vta_did, None, Some(&state.webs_ks)).await
+    } else {
+        None
+    };
+    let vta_did_document = match (&vta_did_log, own_webs) {
+        (_, Some(document)) => document,
         #[cfg(feature = "webvh")]
-        Some(log) => {
+        (Some(log), None) => {
             let mut webvh_state = didwebvh_rs::DIDWebVHState::default();
             let (log_entry, _meta) =
                 webvh_state
@@ -228,4 +236,43 @@ pub(super) fn build_did_signed_assertion(
             verification_method: vta_signing_secret.id.clone(),
         }),
     })
+}
+
+#[cfg(all(test, feature = "webs"))]
+mod tests {
+    use super::*;
+
+    /// S6: a did:webs VTA provisions from its own key event log — its trust
+    /// bundle is the document its log derives (offline, and before its
+    /// first-boot publication), and the VC and sealed transfer are signed by
+    /// its attestation key, by role, not by a webvh `#key-0` it does not have.
+    #[tokio::test]
+    async fn a_did_webs_vta_provisions_from_its_own_key_event_log() {
+        let ts = crate::test_support::open_test_store().await;
+        let (_, mut deps) = crate::test_support::bootstrap_test_vta(&ts).await;
+        let (did, record) = crate::self_keys::tests::key_role_webs_record();
+        crate::webs_store::put(&ts.webs_ks, &record).await.unwrap();
+        deps.config.write().await.vta_did = Some(did.clone());
+        // No network: the resolver must not be what answers.
+        deps.did_resolver = None;
+
+        let bundle = load_vta_trust_bundle(&deps, &did).await.expect("bundle");
+        assert_eq!(bundle.vta_did, did);
+        assert!(bundle.vta_did_log.is_none());
+        assert!(
+            bundle.vta_did_document.get("keyRoles").is_some(),
+            "{}",
+            bundle.vta_did_document
+        );
+
+        let keys = provision_self_keys(&deps, &did).await;
+        let ids =
+            vta_sdk::node_keys::NodeKeyIds::from_document(&did, &bundle.vta_did_document).unwrap();
+        assert_eq!(keys.signing.record_id, ids.signing);
+        assert_eq!(
+            keys.sealed_transfer.map(|k| k.record_id),
+            Some(ids.signing),
+            "a key-role identity's sealed transfer is its attestation key"
+        );
+    }
 }

@@ -38,6 +38,10 @@ pub(crate) async fn run(
             tsp,
             also_known_as,
             set_primary,
+            class,
+            template,
+            template_context,
+            vars,
         } => {
             webs::cmd_webs_create(
                 client,
@@ -51,6 +55,10 @@ pub(crate) async fn run(
                     tsp,
                     also_known_as,
                     set_primary,
+                    class,
+                    template,
+                    template_context,
+                    vars,
                 },
             )
             .await

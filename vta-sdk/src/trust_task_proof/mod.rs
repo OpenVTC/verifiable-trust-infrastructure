@@ -45,4 +45,4 @@ pub use verify::{
     verify_approval_proof_with, verify_trust_task_proof, verify_trust_task_proof_value,
     verify_trust_task_proof_with,
 };
-pub use vm_resolver::TrustTaskVmResolver;
+pub use vm_resolver::{TrustTaskVmResolver, is_unretrievable, unretrievable};

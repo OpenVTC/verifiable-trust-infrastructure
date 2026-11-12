@@ -988,11 +988,13 @@ pub async fn run(
     // `required`.
     if let (Some(signer), Some(key)) = (credential_signer.as_ref(), storage_key)
         && let Some(seed) = signer.ed25519_seed()
+        && let Some(root) = signer.derivation_root()
     {
         let sealed = crate::rooms::storage_credentials::SealedCredentials::new(
             store.keyspace(keyspaces::STORAGE_CREDENTIALS)?,
             key,
             &seed,
+            root.as_bytes(),
         );
         room_storage
             .set_sealed_credentials(Arc::new(sealed))
@@ -1004,7 +1006,12 @@ pub async fn run(
     if let (Some(link), Some(vtc_did), Some(secrets)) =
         (vta_link, config.vtc_did.clone(), secrets_resolver.clone())
     {
-        let (_, ka_id) = crate::messaging::vtc_key_ids(did_resolver.as_ref(), &vtc_did).await;
+        let local_ids = credential_signer
+            .as_ref()
+            .and_then(|s| s.key_role_ids().cloned());
+        let (_, ka_id) =
+            crate::messaging::vtc_key_ids(did_resolver.as_ref(), &vtc_did, local_ids.as_ref())
+                .await;
         let mut storage = crate::rooms::vta_storage::VtaStorage::new(link, vtc_did, secrets);
         if let Some(ka_id) = ka_id {
             storage = storage.with_key_agreement_id(ka_id);
@@ -1777,6 +1784,8 @@ pub async fn run(
         state.accepted_ids_ks.clone(),
         state.step_up_marks_ks.clone(),
         state.step_up_passkeys_ks.clone(),
+        state.passkey_ks.clone(),
+        state.member_passkey_ks.clone(),
         state.backup_bundles_ks.clone(),
         crate::trust_tasks::backup_tasks::blob_dir(&boot_cfg.store.data_dir),
         boot_cfg.join_requests.clone(),
@@ -2475,26 +2484,29 @@ async fn init_auth(
             Err(_) => Vec::new(),
         };
 
-    let (ed25519_bytes, x25519_bytes) =
-        match crate::setup::bundle::decode_secret_store_value(&vtc_did, &stored) {
-            Ok(pair) => pair,
-            Err(msg) => {
-                return Err(AppError::Config(format!(
-                    "vtc_did is configured ({vtc_did}) but the stored key material does not \
+    let own = match crate::setup::bundle::own_key_material(&vtc_did, &stored) {
+        Ok(own) => own,
+        Err(msg) => {
+            return Err(AppError::Config(format!(
+                "vtc_did is configured ({vtc_did}) but the stored key material does not \
                      match it: {msg}. This usually means the secret store holds a different \
                      identity's bundle; refusing to boot into an auth-dead state"
-                )));
-            }
-        };
+            )));
+        }
+    };
 
-    // P0.7: derive the at-rest storage-encryption key from the same 32-byte
-    // Ed25519 seed (HKDF-SHA256, info `vtc-storage-key/v1`). Domain-separated
-    // from the install-token (`vtc-install-jwt-key/v2`) and audit
-    // (`vtc-audit-key/v2`) derivations by its info string, so the same IKM
-    // yields three independent keys. `None` only on the (practically
-    // impossible) HKDF-expand failure, in which case keyspaces stay
-    // plaintext rather than the daemon refusing to boot.
-    let storage_key: Option<[u8; 32]> = derive_storage_key(&*ed25519_bytes);
+    let derivation_root = own.derivation_root.clone();
+
+    // P0.7: derive the at-rest storage-encryption key from the derivation root
+    // (HKDF-SHA256, info `vtc-storage-key/v1`) — the bundle's Ed25519 seed for
+    // every VTC that has no explicit root, so the key is what it always was,
+    // and a stored root once the signing key can rotate, so a rotation does not
+    // strand what is encrypted. Domain-separated from the install-token
+    // (`vtc-install-jwt-key/v2`) and audit (`vtc-audit-key/v2`) derivations by
+    // its info string, so the same IKM yields three independent keys. `None`
+    // only on the (practically impossible) HKDF-expand failure, in which case
+    // keyspaces stay plaintext rather than the daemon refusing to boot.
+    let storage_key: Option<[u8; 32]> = derive_storage_key(&*derivation_root);
 
     // M2.9 credential signer — wraps the same 32-byte Ed25519
     // seed in a [`LocalSigner`] handle so VMC / VAC / status-list
@@ -2506,10 +2518,21 @@ async fn init_auth(
     // has not migrated checks, the post-quantum one a verifier that has. A VTC
     // holding only `#key-0` adds nothing and issues exactly what it always did:
     // one key emits a proof object, several emit an array.
+    //
+    // Keys by role: a key-role identity (a did:webs VTC) signs credentials as
+    // the `attestation` method its bundle names and authenticates with its
+    // distinct `operational` key; a did:webvh VTC signs both as `#key-0`.
     let signer = additional_secrets.into_iter().fold(
-        crate::credentials::LocalSigner::from_ed25519_seed(vtc_did.clone(), &ed25519_bytes),
+        crate::credentials::LocalSigner::for_own_keys(vtc_did.clone(), &own),
         |signer, secret| signer.with_additional_key(secret),
     );
+    let crate::setup::bundle::OwnKeyMaterial {
+        ed25519: ed25519_bytes,
+        x25519: x25519_bytes,
+        authentication: authentication_secret,
+        key_role_ids,
+        ..
+    } = own;
     info!(
         vtc_did = %vtc_did,
         signing_keys = signer.key_count(),
@@ -2517,14 +2540,14 @@ async fn init_auth(
     );
     let credential_signer = Some(Arc::new(signer));
 
-    // Derive the install-token signer from the 32-byte Ed25519
-    // private. HKDF info is `vtc-install-jwt-key/v2` — bumped from
+    // Derive the install-token signer from the derivation root (the
+    // 32-byte Ed25519 private for every VTC without a stored root). HKDF info is `vtc-install-jwt-key/v2` — bumped from
     // /v1 alongside the VTA-driven-keys rework so any pre-rework
     // deployment that still feeds a BIP-39-derived 64-byte seed
     // derives a different signing key and fails token verification
     // loudly instead of silently accepting tokens minted under the
     // old derivation. See `tasks/vtc-mvp/vta-driven-keys.md` §5.2.
-    let install_signer = match InstallTokenSigner::from_master_seed(&*ed25519_bytes) {
+    let install_signer = match InstallTokenSigner::from_master_seed(&*derivation_root) {
         Ok(s) => Some(Arc::new(s)),
         Err(e) => {
             warn!("failed to derive install token signer: {e} — install routes disabled");
@@ -2557,12 +2580,13 @@ async fn init_auth(
         None => audit_key_ks,
     };
 
-    // Derive the HMAC audit key from the same 32 bytes. The
+    // Derive the initial HMAC audit key from the derivation root (it is
+    // persisted on first boot, encrypted under the storage key). The
     // `AuditKeyStore` info string is also bumped to /v2 in
     // vti-common — see the rework note there.
     let audit_writer = {
         let key_store = AuditKeyStore::new(audit_key_ks);
-        match key_store.ensure_initial(&*ed25519_bytes).await {
+        match key_store.ensure_initial(&*derivation_root).await {
             Ok(_) => Some(AuditWriter::new(audit_ks, key_store)),
             Err(e) => {
                 warn!("failed to derive initial audit key: {e} — audit-emitting routes disabled");
@@ -2606,15 +2630,54 @@ async fn init_auth(
             }
         };
 
+    // A did:webs VTC whose VTA rotated its key (`pnm webs rotate`) holds a key
+    // its document no longer lists, and a verifier refuses what that key signs
+    // (VTI-KEY-042): refuse to boot, naming `vtc keys request` / `refresh`. An
+    // unreachable host proves nothing, so it only warns.
+    if vtc_did.starts_with("did:webs:")
+        && let Ok(bundle) = crate::setup::bundle::VtcKeyBundle::from_secret_store_bytes(&stored)
+    {
+        match did_resolver.resolve(&vtc_did).await {
+            Ok(resolved) => {
+                if let Ok(document) = serde_json::to_value(&resolved.doc)
+                    && let Some(why) = crate::setup::refresh::stale_signing_key(&bundle, &document)
+                {
+                    return Err(AppError::Config(why));
+                }
+            }
+            Err(e) => warn!(
+                %vtc_did,
+                error = %e,
+                "could not resolve the VTC's did:webs to check its keys are current"
+            ),
+        }
+    }
+
     // 2. Secrets resolver with VTC's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
 
     // Under the ids the VTC's own document gives its keys, by role
     // (VTI-KEY-150; `#key-0` / `#key-1` on the VTC's own did:webvh).
-    let (signing_id, ka_id) = crate::messaging::vtc_key_ids(Some(&did_resolver), &vtc_did).await;
-    let mut signing_secret = Secret::generate_ed25519(None, Some(&*ed25519_bytes));
-    signing_secret.id = signing_id;
-    secrets_resolver.insert(signing_secret).await;
+    let (signing_id, ka_id) =
+        crate::messaging::vtc_key_ids(Some(&did_resolver), &vtc_did, key_role_ids.as_ref()).await;
+    match authentication_secret {
+        // A key-role identity authenticates (DIDComm, mediator login) with its
+        // operational key; its attestation key is held too, under its own id.
+        Some(mut operational) => {
+            operational.id = signing_id;
+            secrets_resolver.insert(operational).await;
+            if let Some(ids) = key_role_ids.as_ref() {
+                let mut attestation = Secret::generate_ed25519(None, Some(&*ed25519_bytes));
+                attestation.id = ids.signing.clone();
+                secrets_resolver.insert(attestation).await;
+            }
+        }
+        None => {
+            let mut signing_secret = Secret::generate_ed25519(None, Some(&*ed25519_bytes));
+            signing_secret.id = signing_id;
+            secrets_resolver.insert(signing_secret).await;
+        }
+    }
 
     match Secret::generate_x25519(None, Some(&*x25519_bytes)) {
         Ok(mut ka_secret) => {
@@ -2715,7 +2778,9 @@ async fn init_auth(
 
 /// Derive the at-rest storage-encryption key (P0.7).
 ///
-/// `HKDF-SHA256(IKM = bundle Ed25519 seed, info = b"vtc-storage-key/v1")`.
+/// `HKDF-SHA256(IKM = derivation root, info = b"vtc-storage-key/v1")`, where the
+/// root is the bundle's Ed25519 seed unless the bundle stores one
+/// ([`crate::setup::bundle::VtcKeyBundle::derivation_root`]).
 /// The info string domain-separates this key from the install-token signer
 /// (`vtc-install-jwt-key/v2`) and audit HMAC key (`vtc-audit-key/v2`) that
 /// share the same IKM. Returns `None` only if HKDF expand fails (it cannot
@@ -2737,15 +2802,14 @@ pub(crate) async fn offline_storage_key(config: &AppConfig) -> Result<[u8; 32], 
         .await
         .map_err(|e| AppError::Config(format!("the secret store failed to load: {e}")))?
         .ok_or_else(|| AppError::Config("the secret store holds no key bundle".into()))?;
-    let (ed25519, _) = crate::setup::bundle::decode_secret_store_value(vtc_did, &stored)
-        .map_err(AppError::Config)?;
-    derive_storage_key(&*ed25519)
+    let own = crate::setup::bundle::own_key_material(vtc_did, &stored).map_err(AppError::Config)?;
+    derive_storage_key(&*own.derivation_root)
         .ok_or_else(|| AppError::Internal("storage-key derivation failed".into()))
 }
 
-fn derive_storage_key(ed25519_seed: &[u8]) -> Option<[u8; 32]> {
+pub(crate) fn derive_storage_key(root: &[u8]) -> Option<[u8; 32]> {
     let mut key = [0u8; 32];
-    match Hkdf::<Sha256>::new(None, ed25519_seed).expand(b"vtc-storage-key/v1", &mut key) {
+    match Hkdf::<Sha256>::new(None, root).expand(b"vtc-storage-key/v1", &mut key) {
         Ok(()) => Some(key),
         Err(e) => {
             warn!("failed to derive storage-encryption key: {e} — keyspaces left unencrypted");

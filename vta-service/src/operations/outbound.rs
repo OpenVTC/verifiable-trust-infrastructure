@@ -649,17 +649,8 @@ pub struct Outbound<'a> {
     /// an advertised `TrustTaskHTTPS` endpoint wins, and TSP and DIDComm still
     /// come first.
     https_base: Option<String>,
-    /// Where this VTA's own durable DID is read from at send time, for the
-    /// VTI-KEY-008 declaration check ([`Self::own_did`]).
-    node: NodeDid<'a>,
-}
-
-/// Where an [`Outbound`] learns the VTA's own durable DID: the live config
-/// (a DID set up or rotated after construction is what is current), or one
-/// its caller already holds.
-enum NodeDid<'a> {
-    Config(&'a tokio::sync::RwLock<crate::config::AppConfig>),
-    Known(String),
+    /// Which peer endpoints a REST send may dial ([`send_rest_to`]).
+    endpoint_policy: vta_sdk::http::EndpointPolicy,
 }
 
 impl<'a> Outbound<'a> {
@@ -695,14 +686,10 @@ impl<'a> Outbound<'a> {
     /// so silently removed TSP from selection for every webvh call. The name is
     /// the difference: a caller now has to pass *something* for TSP, and
     /// passing `None` is visible at the call site.
-    ///
-    /// `node_did` is this VTA's own durable DID, which the VTI-KEY-008
-    /// declaration check holds every send it acts in to.
     pub fn from_parts(
         resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
         #[cfg(feature = "didcomm")] bridge: &'a DIDCommBridge,
         #[cfg(feature = "tsp")] tsp: Option<TspSender>,
-        node_did: String,
     ) -> Self {
         Self {
             resolver,
@@ -711,7 +698,7 @@ impl<'a> Outbound<'a> {
             #[cfg(feature = "didcomm")]
             bridge,
             https_base: None,
-            node: NodeDid::Known(node_did),
+            endpoint_policy: vta_sdk::http::EndpointPolicy::process_default(),
         }
     }
 
@@ -736,72 +723,83 @@ impl<'a> Outbound<'a> {
             #[cfg(feature = "didcomm")]
             bridge: state.didcomm_bridge.as_ref(),
             https_base: None,
-            node: NodeDid::Config(&state.config),
+            endpoint_policy: state.endpoint_policy,
         }
-    }
-
-    /// This VTA's own durable DID as it is now: the configured one, or the
-    /// one the caller gave. `None` before setup.
-    async fn own_did(&self) -> Option<String> {
-        match &self.node {
-            NodeDid::Config(config) => config.read().await.vta_did.clone(),
-            NodeDid::Known(did) => Some(did.clone()),
-        }
-    }
-
-    /// [`may_act_toward`] with this VTA's own DID as it is now.
-    async fn require_declared(
-        &self,
-        recipient: &str,
-        peer_doc: &Value,
-        issuer: Option<&str>,
-        protocol: Protocol,
-    ) -> Result<(), AppError> {
-        may_act_toward(
-            self.own_did().await.as_deref(),
-            recipient,
-            peer_doc,
-            issuer,
-            protocol,
-        )
     }
 }
 
-/// VTI-KEY-008 / VTI-KEY-009: refuse, before anything is sent, a send in which
-/// this VTA acts as its own durable identity `own` — as the document's
-/// `issuer`, or as the TSP or DIDComm sender, which authenticate this agent as
-/// that DID — when that identity is of an optional method (`did:webs`) and
-/// `peer_doc`, the peer's verified current document, does not declare it.
-/// Nothing falls back to another identifier.
+/// The largest reply [`send_rest_to`] reads from a peer. A reply carries at
+/// most a batch of room records (512 KiB of entries plus one record, itself
+/// at most about 1.4 MiB of base64url) and its envelope; 4 MiB holds that with
+/// room to spare and stops a peer from streaming an unbounded body into
+/// memory.
+pub(crate) const MAX_REST_REPLY_BYTES: usize = 4 * 1024 * 1024;
+
+/// The total time a REST round trip may take. The peer runs the task before
+/// it answers, so this is the general REST budget rather than the shorter
+/// foreign-fetch one; the connect timeout stays the foreign-fetch one.
+const REST_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How much of a peer's unparseable reply goes to the debug log.
+const REPLY_LOG_EXCERPT_CHARS: usize = 256;
+
+/// POST `document` to `{endpoint}/trust-tasks` and parse the reply.
 ///
-/// A persona or relationship DID as `issuer`, over HTTPS, is not this VTA's
-/// durable identity (VTI-KEY-001) and is not held to this. Neither is a reply:
-/// a party that addressed this VTA under its identity has shown it resolves
-/// it, and replies are not sent through [`Outbound::send`].
-fn may_act_toward(
-    own: Option<&str>,
+/// `endpoint` comes from the recipient's DID document, which whoever controls
+/// that DID writes, so it is vetted as a foreign target
+/// ([`vta_sdk::http::guard_peer_endpoint`]) and dialled through the guarded
+/// foreign-fetch client under the same `policy`: no proxy, no redirects, and a
+/// resolver that refuses a name answering with an address the policy does not
+/// admit. Loopback and private-network peers need the process opt-in
+/// ([`vta_sdk::http::ALLOW_PRIVATE_ENDPOINTS_ENV`]). The reply is read under
+/// [`MAX_REST_REPLY_BYTES`], and a reply that is not JSON is reported by
+/// class only — its text goes to the debug log, never into the error.
+pub(crate) async fn send_rest_to(
     recipient: &str,
-    peer_doc: &Value,
-    issuer: Option<&str>,
-    protocol: Protocol,
-) -> Result<(), AppError> {
-    let Some(own) = own else {
-        return Ok(());
-    };
-    let bare = |did: &str| did.split(['#', '?']).next().unwrap_or(did).to_string();
-    let acts = matches!(protocol, Protocol::Tsp | Protocol::Didcomm)
-        || issuer.is_some_and(|i| bare(i) == bare(own));
-    if !acts {
-        return Ok(());
-    }
-    vta_sdk::resolved_methods::require_declared(own, recipient, peer_doc).map_err(|refusal| {
-        tracing::warn!(
-            peer = %refusal.peer,
-            method = %refusal.method,
-            "not sending: the peer has not declared it resolves this VTA's DID method \
-             (VTI-KEY-008)"
+    endpoint: &str,
+    document: &Value,
+    policy: vta_sdk::http::EndpointPolicy,
+) -> Result<Value, AppError> {
+    let url = format!("{}/trust-tasks", endpoint.trim_end_matches('/'));
+    vta_sdk::http::guard_peer_endpoint(&url, policy).map_err(|e| {
+        bad_gateway_error(format!(
+            "`{recipient}` advertises a REST endpoint this VTA will not dial: {e}"
+        ))
+    })?;
+    let response = vta_sdk::http::foreign_fetch_client_for(policy)
+        .post(&url)
+        .timeout(REST_SEND_TIMEOUT)
+        .header("content-type", "application/json")
+        .json(document)
+        .send()
+        .await
+        .map_err(|e| bad_gateway_error(format!("`{recipient}` at {url} did not answer: {e}")))?;
+
+    // The body is read once, and before the status is judged: a refusal
+    // arrives as a `trust-task-error` document with a code an operator can
+    // act on, and throwing on the status first would discard it (guide rule
+    // R3.7).
+    let status = response.status();
+    let body = vta_sdk::http::read_body_capped(response, MAX_REST_REPLY_BYTES)
+        .await
+        .map_err(|e| bad_gateway_error(format!("`{recipient}` sent an unreadable body: {e}")))?;
+    serde_json::from_slice(&body).map_err(|e| {
+        let text = String::from_utf8_lossy(&body);
+        tracing::debug!(
+            recipient,
+            %status,
+            excerpt = %text.chars().take(REPLY_LOG_EXCERPT_CHARS).collect::<String>(),
+            error = %e,
+            "peer REST reply is not JSON"
         );
-        AppError::from(refusal)
+        bad_gateway_error(format!(
+            "`{recipient}` sent a body that is not a Trust-Task document (HTTP {status}, \
+             {} bytes, {:?} error at line {} column {})",
+            body.len(),
+            e.classify(),
+            e.line(),
+            e.column()
+        ))
     })
 }
 
@@ -1056,8 +1054,6 @@ impl Outbound<'_> {
                 }
                 (e, _) => e,
             })?;
-        self.require_declared(recipient, &doc_value, issuer, protocol)
-            .await?;
 
         let reply = match protocol {
             Protocol::Rest => self.send_rest(recipient, &endpoint, &document).await?,
@@ -1094,29 +1090,7 @@ impl Outbound<'_> {
         endpoint: &str,
         document: &Value,
     ) -> Result<Value, AppError> {
-        let url = format!("{}/trust-tasks", endpoint.trim_end_matches('/'));
-        let response = vta_sdk::http::rest_client()
-            .post(&url)
-            .header("content-type", "application/json")
-            .json(document)
-            .send()
-            .await
-            .map_err(|e| {
-                bad_gateway_error(format!("`{recipient}` at {url} did not answer: {e}"))
-            })?;
-
-        // The body is read once, and before the status is judged: a refusal
-        // arrives as a `trust-task-error` document with a code an operator can
-        // act on, and throwing on the status first would discard it (guide rule
-        // R3.7).
-        let body = response.text().await.map_err(|e| {
-            bad_gateway_error(format!("`{recipient}` sent an unreadable body: {e}"))
-        })?;
-        serde_json::from_str(&body).map_err(|e| {
-            bad_gateway_error(format!(
-                "`{recipient}` sent a body that is not a Trust-Task document: {e}: {body}"
-            ))
-        })
+        send_rest_to(recipient, endpoint, document, self.endpoint_policy).await
     }
 
     /// Seal a Trust Task to `recipient` over TSP and wait for the reply to come
@@ -1304,6 +1278,126 @@ async fn verify_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod send_rest_guard {
+        use super::*;
+        use vta_sdk::http::{ALLOW_PRIVATE_ENDPOINTS_ENV, EndpointPolicy};
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn doc() -> Value {
+            serde_json::json!({ "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1" })
+        }
+
+        /// A peer advertising a loopback endpoint is not dialled under the
+        /// default policy, and the refusal names the opt-in.
+        #[tokio::test]
+        async fn loopback_peer_is_not_dialled_without_private_endpoints() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(doc()))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let err = send_rest_to(
+                "did:example:peer",
+                &server.uri(),
+                &doc(),
+                EndpointPolicy::public_only(),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains(ALLOW_PRIVATE_ENDPOINTS_ENV),
+                "{err}"
+            );
+            server.verify().await;
+        }
+
+        #[tokio::test]
+        async fn non_public_peers_are_refused_under_the_default_policy() {
+            for endpoint in [
+                "https://10.0.0.5",
+                "https://169.254.169.254",
+                "http://127.0.0.1.example.net",
+                "https://user:pw@example.com",
+            ] {
+                let err = send_rest_to(
+                    "did:example:peer",
+                    endpoint,
+                    &doc(),
+                    EndpointPolicy::public_only(),
+                )
+                .await
+                .unwrap_err();
+                assert!(!err.to_string().contains("pw@"), "{endpoint}: {err}");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_json_reply_is_returned() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(doc()))
+                .mount(&server)
+                .await;
+            let reply = send_rest_to(
+                "did:example:peer",
+                &server.uri(),
+                &doc(),
+                EndpointPolicy::private_allowed(),
+            )
+            .await
+            .expect("a JSON reply");
+            assert_eq!(reply, doc());
+        }
+
+        /// A reply that is not JSON is reported by class, size and position;
+        /// none of its text reaches the error the caller sees.
+        #[tokio::test]
+        async fn a_non_json_reply_is_not_echoed() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string("<html>internal-only-text"),
+                )
+                .mount(&server)
+                .await;
+            let err = send_rest_to(
+                "did:example:peer",
+                &server.uri(),
+                &doc(),
+                EndpointPolicy::private_allowed(),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("not a Trust-Task document"), "{err}");
+            assert!(!err.contains("internal-only-text"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn an_oversized_reply_is_refused() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("x".repeat(MAX_REST_REPLY_BYTES + 1)),
+                )
+                .mount(&server)
+                .await;
+            let err = send_rest_to(
+                "did:example:peer",
+                &server.uri(),
+                &doc(),
+                EndpointPolicy::private_allowed(),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("cap"), "{err}");
+        }
+    }
 
     fn caps_from(services: Value) -> ServiceCapabilities {
         ServiceCapabilities::from_did_document(&serde_json::json!({ "service": services }))
@@ -1651,54 +1745,62 @@ mod tests {
     const PERSONA: &str = "did:example:persona";
 
     const WEBS_VTA: &str = "did:webs:vta.example:nodes:EAbc";
-    const PEER: &str = "did:webvh:Qm1:peer.example";
 
-    /// VTI-KEY-008 / VTI-KEY-009: a did:webs VTA does not act toward a peer
-    /// that has not declared did:webs — over a messaging transport, which
-    /// authenticates it as its DID, or as the issuer over HTTPS — and the
-    /// refusal is the typed one; a declaring peer is reached.
-    #[test]
-    fn vti_key_008_a_did_webs_vta_acts_only_toward_a_declaring_peer() {
-        let silent = serde_json::json!({ "id": PEER });
-        let declaring = serde_json::json!({ "id": PEER, "resolvedMethods": ["webs"] });
-        for (issuer, protocol) in [
-            (None, Protocol::Didcomm),
-            (Some(PERSONA), Protocol::Tsp),
-            (Some(WEBS_VTA), Protocol::Rest),
-        ] {
-            match may_act_toward(Some(WEBS_VTA), PEER, &silent, issuer, protocol) {
-                Err(AppError::MethodNotDeclared(r)) => {
-                    assert_eq!(r.method, "webs");
-                    assert_eq!(r.peer, PEER);
-                }
-                other => {
-                    panic!("{issuer:?} over {protocol:?}: expected the refusal, got {other:?}")
-                }
-            }
-            may_act_toward(Some(WEBS_VTA), PEER, &declaring, issuer, protocol)
-                .expect("a declaring peer is reached");
-        }
+    /// A `did:peer:2` peer advertising one Trust-Task HTTPS endpoint, and no
+    /// `resolvedMethods` — resolved offline, so the whole send runs.
+    fn rest_peer(endpoint: &str) -> String {
+        use base64::Engine as _;
+        let service = serde_json::json!({ "t": "TrustTaskHTTPS", "s": endpoint });
+        format!(
+            "did:peer:2.Vz6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK.S{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(service.to_string())
+        )
     }
 
-    /// What the rule does not cover: a persona issuing over HTTPS (not this
-    /// VTA's durable identity acting), a did:webvh VTA, and a VTA with no DID
-    /// yet.
-    #[test]
-    fn vti_key_008_only_an_optional_durable_identity_needs_the_declaration() {
-        let silent = serde_json::json!({ "id": PEER });
-        may_act_toward(Some(WEBS_VTA), PEER, &silent, Some(PERSONA), Protocol::Rest)
-            .expect("a persona over HTTPS is not the VTA acting");
-        for protocol in [Protocol::Didcomm, Protocol::Tsp, Protocol::Rest] {
-            may_act_toward(
-                Some("did:webvh:Qm1:vta.example"),
-                PEER,
-                &silent,
-                None,
-                protocol,
-            )
-            .expect("a required method needs no declaration");
-            may_act_toward(None, PEER, &silent, None, protocol).expect("no DID yet");
-        }
+    /// VTI-KEY-003 / VTI-KEY-001, and VTI-KEY-008 withdrawn: every node
+    /// resolves did:webs, so a did:webs VTA acts toward a peer whose document
+    /// declares nothing (no `resolvedMethods`) exactly as a did:webvh VTA
+    /// does — the document is sent and the reply returned.
+    #[tokio::test]
+    async fn vti_key_003_a_did_webs_vta_sends_to_a_peer_that_declares_nothing() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let reply = serde_json::json!({ "type": "urn:example:reply", "payload": {} });
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&reply))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let peer = rest_peer(&server.uri());
+        let resolver = test_resolver().await;
+        let peer_doc = serde_json::to_value(resolver.resolve(&peer).await.unwrap().doc).unwrap();
+        assert!(peer_doc.get("resolvedMethods").is_none(), "{peer_doc}");
+
+        #[cfg(feature = "didcomm")]
+        let bridge = DIDCommBridge::placeholder();
+        let mut outbound = Outbound::from_parts(
+            &resolver,
+            #[cfg(feature = "didcomm")]
+            &bridge,
+            #[cfg(feature = "tsp")]
+            None,
+        );
+        outbound.endpoint_policy = vta_sdk::http::EndpointPolicy::private_allowed();
+        let document = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000003",
+            "type": "urn:example:request",
+            "issuer": WEBS_VTA,
+            "recipient": peer,
+            "payload": {},
+        });
+        let got = outbound
+            .send(&peer, document, ReplyTrust::TransportAuthenticated)
+            .await
+            .expect("a did:webs VTA reaches a peer that declares nothing");
+        assert_eq!(got, reply);
+        server.verify().await;
     }
 
     /// Every messaging transport this build compiles, wired as this VTA.

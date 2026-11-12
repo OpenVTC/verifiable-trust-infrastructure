@@ -145,17 +145,12 @@ pub enum PeerError {
     /// No transport in common with the peer. Not retried: it changes only when
     /// one side advertises another.
     NoMatchingProtocol(String),
-    /// This VTC's DID is of an optional method (`did:webs`) and the peer's DID
-    /// document does not declare it resolves it (VTI-KEY-008), so nothing was
-    /// sent (VTI-KEY-009). Not retried: it changes only when the peer declares.
-    MethodNotDeclared(vta_sdk::resolved_methods::MethodNotDeclared),
 }
 
 impl std::fmt::Display for PeerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Transient(m) | Self::NoMatchingProtocol(m) => f.write_str(m),
-            Self::MethodNotDeclared(refusal) => refusal.fmt(f),
         }
     }
 }
@@ -181,14 +176,6 @@ impl PeerTasks {
             .map_err(|e| PeerError::Transient(format!("could not resolve {peer_did}: {e}")))?;
         let doc = serde_json::to_value(&resolved.doc)
             .map_err(|e| PeerError::Transient(format!("unreadable DID document: {e}")))?;
-        // VTI-KEY-008 / VTI-KEY-009: every send this selects is made as this
-        // VTC's own DID (TSP and DIDComm authenticate it as that), so a
-        // did:webs VTC reaches only a peer that has declared did:webs, and
-        // otherwise sends nothing.
-        if let Some(messaging) = self.didcomm.get() {
-            vta_sdk::resolved_methods::require_declared(&messaging.vtc_did, peer_did, &doc)
-                .map_err(PeerError::MethodNotDeclared)?;
-        }
         let theirs = ServiceCapabilities::from_did_document(&doc);
         let up = self.didcomm.get().is_some();
         let ours = ServiceCapabilities {
@@ -390,6 +377,118 @@ pub(crate) fn seal_trust_task_tsp(doc: &TrustTask<Value>) -> Result<Vec<u8>, Out
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A transport that is never asked to carry anything: [`PeerTasks::select`]
+    /// reads only that messaging is up.
+    struct Idle(tokio::sync::watch::Sender<affinidi_messaging_core::transport::ConnState>);
+
+    #[async_trait::async_trait]
+    impl affinidi_messaging_core::transport::MessageTransport for Idle {
+        fn kind(&self) -> affinidi_messaging_core::transport::TransportKind {
+            affinidi_messaging_core::transport::TransportKind::Didcomm
+        }
+        async fn send(
+            &self,
+            _dest: &str,
+            _packed: Vec<u8>,
+        ) -> Result<
+            affinidi_messaging_core::transport::SendReceipt,
+            affinidi_messaging_core::MessagingError,
+        > {
+            unreachable!("select sends nothing")
+        }
+        fn connection_state(
+            &self,
+        ) -> tokio::sync::watch::Receiver<affinidi_messaging_core::transport::ConnState> {
+            self.0.subscribe()
+        }
+        fn inbound(
+            &self,
+        ) -> futures_util::stream::BoxStream<'static, affinidi_messaging_core::transport::Inbound>
+        {
+            Box::pin(futures_util::stream::empty())
+        }
+        async fn ack(
+            &self,
+            _ack: affinidi_messaging_core::transport::InboundAck,
+        ) -> Result<(), affinidi_messaging_core::MessagingError> {
+            Ok(())
+        }
+    }
+
+    /// VTI-KEY-003 / VTI-KEY-001, and VTI-KEY-008 withdrawn: every node
+    /// resolves did:webs, so a did:webs VTC selects a transport toward a peer
+    /// whose document declares nothing (no `resolvedMethods`), exactly as a
+    /// did:webvh VTC does.
+    #[tokio::test]
+    async fn vti_key_003_a_did_webs_vtc_selects_toward_a_peer_that_declares_nothing() {
+        use affinidi_tdk::dids::{
+            DID, OneOrMany, PeerKeyRole, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
+        };
+        use vta_sdk::protocol::matching::Protocol;
+
+        let (peer, _) = DID::generate_did_peer_with_services(
+            vec![(
+                PeerKeyRole::Verification,
+                affinidi_tdk::dids::KeyType::Ed25519,
+            )],
+            Some(vec![PeerService {
+                type_: "dm".into(),
+                endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                    uri: "did:web:mediator.example".into(),
+                    accept: vec![],
+                    routing_keys: vec![],
+                })),
+                id: None,
+            }]),
+        )
+        .expect("mint the peer");
+        let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .expect("resolver");
+        let peer_doc = serde_json::to_value(resolver.resolve(&peer).await.unwrap().doc).unwrap();
+        assert!(peer_doc.get("resolvedMethods").is_none(), "{peer_doc}");
+
+        const WEBS_VTC: &str = "did:webs:vtc.example:nodes:EAbc";
+        let atm = crate::test_support::build_offline_atm().await;
+        let profile = affinidi_tdk::messaging::profiles::ATMProfile::new(
+            &atm,
+            None,
+            WEBS_VTC.to_string(),
+            None,
+        )
+        .await
+        .expect("profile");
+        let (state, _) =
+            tokio::sync::watch::channel(affinidi_messaging_core::transport::ConnState::Connected);
+        let messaging = std::sync::Arc::new(VtcMessaging {
+            service: std::sync::Arc::new(affinidi_messaging_delivery::MessagingService::new(
+                std::sync::Arc::new(Idle(state)),
+                std::sync::Arc::new(affinidi_messaging_delivery::InMemoryOutboxStore::default()),
+            )),
+            atm: std::sync::Arc::new(atm),
+            vtc_did: WEBS_VTC.into(),
+            profile: std::sync::Arc::new(profile),
+            mediator_did: "did:web:mediator.example".into(),
+            inbox: vti_common::inbox::InboxWatch::new(),
+            uncollected: std::sync::Arc::new(vti_common::inbox::UncollectedPeers::new()),
+        });
+        let cell = std::sync::Arc::new(tokio::sync::OnceCell::new());
+        assert!(cell.set(messaging).is_ok());
+        let peers = PeerTasks {
+            didcomm: cell,
+            signer: None,
+            replies: crate::hooks::PendingReplies::new(),
+            resolver: Some(resolver),
+        };
+        let matched = peers
+            .select(&peer)
+            .await
+            .expect("a did:webs VTC reaches a peer that declares nothing");
+        assert_eq!(matched.protocol, Protocol::Didcomm);
+    }
 
     /// The seal is the published binding, read from the crate that defines it.
     ///

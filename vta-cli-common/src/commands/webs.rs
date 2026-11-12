@@ -1,5 +1,6 @@
-//! `did:webs` DIDs (`vta/webs/dids/*/0.1`): create, show, list, update, rotate
-//! and deactivate a persona, relationship or integration DID on KERI. Alpha.
+//! `did:webs` DIDs (`vta/webs/dids/*/0.1`, `create/0.2` with `--class`): create,
+//! show, list, update, rotate and deactivate a relationship, persona or service
+//! DID on KERI. Alpha.
 //!
 //! `create`, `update` and `rotate` each append to a public key event log, so
 //! they run under [`VtaClient::idempotent`]: a lost reply is answered from the
@@ -36,9 +37,124 @@ pub struct CreateArgs {
     pub tsp: Option<bool>,
     pub also_known_as: Vec<String>,
     pub set_primary: bool,
+    /// `relationship`, `persona` or `service`: sends `create/0.2`. Left out,
+    /// `create/0.1`, which states no class.
+    pub class: Option<String>,
+    /// A DID template to shape the DID from (0.2 only), instead of
+    /// `didcomm`, `tsp` and `also_known_as`.
+    pub template: Option<String>,
+    pub template_context: Option<String>,
+    /// `KEY=VALUE` template variables.
+    pub vars: Vec<(String, String)>,
+}
+
+/// The `create/0.2` payload of `args`, which name a class.
+fn create_0_2_payload(args: &CreateArgs, class: &str) -> Value {
+    let mut v = json!({
+        "contextId": args.context,
+        "serverId": args.server,
+        "didClass": class,
+    });
+    for (k, val) in [
+        ("path", &args.path),
+        ("domain", &args.domain),
+        ("label", &args.label),
+    ] {
+        if let Some(val) = val {
+            v[k] = json!(val);
+        }
+    }
+    if args.set_primary {
+        v["setPrimary"] = json!(true);
+    }
+    match &args.template {
+        // A template excludes the explicit members (CONVENTIONS.md 0.2 §9.3):
+        // the flags are not sent, and the CLI refuses them beside it.
+        Some(t) => {
+            v["template"] = json!(t);
+            if let Some(c) = &args.template_context {
+                v["templateContext"] = json!(c);
+            }
+            if !args.vars.is_empty() {
+                let vars: serde_json::Map<String, Value> = args
+                    .vars
+                    .iter()
+                    .map(|(k, val)| (k.clone(), json!(val)))
+                    .collect();
+                v["templateVars"] = Value::Object(vars);
+            }
+        }
+        None => {
+            if args.didcomm {
+                v["addMediatorService"] = json!(true);
+            }
+            if let Some(tsp) = args.tsp {
+                v["addTspService"] = json!(tsp);
+            }
+            if !args.also_known_as.is_empty() {
+                v["alsoKnownAs"] = json!(args.also_known_as);
+            }
+        }
+    }
+    v
+}
+
+async fn cmd_webs_create_0_2(client: &VtaClient, args: &CreateArgs, class: &str) -> CmdResult {
+    let explicit = args.didcomm || args.tsp.is_some() || !args.also_known_as.is_empty();
+    if args.template.is_some() && explicit {
+        return Err(
+            "--template shapes the services and aliases itself; leave out --didcomm, \
+                    --tsp and --also-known-as"
+                .into(),
+        );
+    }
+    if args.template.is_none() && (args.template_context.is_some() || !args.vars.is_empty()) {
+        return Err("--template-context and --var need --template".into());
+    }
+    let req: dids::create::v0_2::Payload = payload("create", create_0_2_payload(args, class))?;
+    let r = client
+        .idempotent(|| client.create_did_webs_classed(&req))
+        .await?;
+    if is_json_output() {
+        print_json(&r)?;
+        return Ok(());
+    }
+    println!("did:webs created (alpha):");
+    println!("  DID:            {}", *r.did);
+    println!("  Class:          {}", r.did_class);
+    println!("  Context:        {}", r.context_id);
+    println!("  Hosted at:      {}", r.keri_cesr_url);
+    println!("  Signing key:    {}", r.signing_key_id);
+    println!("  Key agreement:  {}", r.key_agreement_key_id);
+    println!("  Version:        {}", *r.version_id);
+    if !r.service_ids.is_empty() {
+        println!("  Services:       {}", r.service_ids.join(", "));
+    }
+    if let (Some(t), Some(scope)) = (&r.template, &r.template_scope) {
+        println!("  Template:       {t} ({scope})");
+    }
+    if r.did_class.to_string() == "service" {
+        println!(
+            "  Note: a did:webs service DID is level 1 and alpha; keep a did:webvh identity \
+             for peers that have not declared did:webs resolution."
+        );
+    }
+    Ok(())
 }
 
 pub async fn cmd_webs_create(client: &VtaClient, args: CreateArgs) -> CmdResult {
+    if let Some(class) = args.class.clone() {
+        return cmd_webs_create_0_2(client, &args, &class).await;
+    }
+    if args.template.is_some() {
+        return Err("--template needs --class (relationship, persona or service)".into());
+    }
+    cmd_webs_create_0_1(client, args).await
+}
+
+/// `create/0.1`: no class.
+#[allow(deprecated)] // superseded by 0.2, still served
+async fn cmd_webs_create_0_1(client: &VtaClient, args: CreateArgs) -> CmdResult {
     let mut v = json!({
         "contextId": args.context,
         "serverId": args.server,
@@ -174,8 +290,21 @@ pub struct UpdateArgs {
 
 pub async fn cmd_webs_update(client: &VtaClient, args: UpdateArgs) -> CmdResult {
     let mut v = json!({ "did": args.did });
+    let mut expected_version = args.expected_version;
     if let Some((mediator, tsp)) = args.services {
-        v["services"] = json!({ "mediator": mediator, "tsp": tsp });
+        // `services` replaces the whole set in force (`vta/webs/dids/update`),
+        // and `--services` names only the transports. Every other designated
+        // service — a VTC's `VTCRest`, `VTCStatusList`, `TrustTaskHTTPS` and
+        // `SignInPortal`, a host service's own endpoints — is read back and
+        // stated again, against the version it was read at, so changing a
+        // transport never withdraws them.
+        let (additional, version) = designated_beyond_transports(client, &args.did).await?;
+        if !additional.is_empty() {
+            v["services"] = json!({ "mediator": mediator, "tsp": tsp, "additional": additional });
+            expected_version.get_or_insert(version);
+        } else {
+            v["services"] = json!({ "mediator": mediator, "tsp": tsp });
+        }
     }
     if args.rotate_key_agreement {
         v["rotateKeyAgreementKey"] = json!(true);
@@ -183,7 +312,7 @@ pub async fn cmd_webs_update(client: &VtaClient, args: UpdateArgs) -> CmdResult 
     if let Some(aliases) = args.also_known_as {
         v["alsoKnownAs"] = json!(aliases);
     }
-    if let Some(e) = args.expected_version {
+    if let Some(e) = expected_version {
         v["expectedVersionId"] = json!(e);
     }
     let req: dids::update::v0_1::Payload = payload("update", v)?;
@@ -206,6 +335,37 @@ pub async fn cmd_webs_update(client: &VtaClient, args: UpdateArgs) -> CmdResult 
     println!("  Key agreement:  {}", r.key_agreement_key_id);
     println!("  Services:       {}", r.service_ids.join(", "));
     Ok(())
+}
+
+/// The services `did` designates other than `#didcomm` and `#tsp`, and the
+/// version they were read at.
+async fn designated_beyond_transports(
+    client: &VtaClient,
+    did: &str,
+) -> Result<(Vec<Value>, String), Box<dyn std::error::Error>> {
+    let req: dids::get::v0_1::Payload =
+        payload("get", json!({ "did": did, "includeKeriCesr": false }))?;
+    let record = serde_json::to_value(&client.get_did_webs(&req).await?.record)?;
+    let version = record["versionId"]
+        .as_str()
+        .ok_or("the did:webs record carries no versionId")?
+        .to_string();
+    Ok((additional_services(&record), version))
+}
+
+/// A record's designated services other than the two `--services` names.
+fn additional_services(record: &Value) -> Vec<Value> {
+    record["services"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| {
+            let id = s["id"].as_str().unwrap_or_default();
+            let fragment = id.rsplit_once('#').map_or(id, |(_, f)| f);
+            fragment != "didcomm" && fragment != "tsp"
+        })
+        .cloned()
+        .collect()
 }
 
 pub async fn cmd_webs_rotate(
@@ -267,4 +427,26 @@ pub async fn cmd_webs_delete(
         println!("  Run the same delete again to retry the removal.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A did:webs VTC's own endpoints survive a transport change: only
+    /// `#didcomm` and `#tsp` are the flag's to set.
+    #[test]
+    fn a_transport_change_keeps_every_other_designated_service() {
+        let record = json!({ "services": [
+            { "id": "#didcomm", "type": "DIDCommMessaging", "serviceEndpoint": "did:x" },
+            { "id": "#tsp", "type": "TSPTransport", "serviceEndpoint": "did:x" },
+            { "id": "#vtc-rest", "type": "VTCRest", "serviceEndpoint": "https://vtc.example/v1" },
+            { "id": "#sign-in-portal", "type": "SignInPortal",
+              "serviceEndpoint": "https://vtc.example/members/" },
+        ]});
+        let kept = additional_services(&record);
+        let kept: Vec<&str> = kept.iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(kept, ["#vtc-rest", "#sign-in-portal"]);
+        assert!(additional_services(&json!({})).is_empty());
+    }
 }

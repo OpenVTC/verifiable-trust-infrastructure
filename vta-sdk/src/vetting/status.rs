@@ -54,10 +54,13 @@ pub const BITSTRING_STATUS_LIST_ENTRY_TYPE: &str = "BitstringStatusListEntry";
 /// `type` the fetched list credential must carry.
 pub const BITSTRING_STATUS_LIST_CREDENTIAL_TYPE: &str = "BitstringStatusListCredential";
 
-/// The largest status list read, in bits (8 MiB decompressed). A W3C list is at
-/// least 131,072 bits; an index past this bound is refused before any fetch,
-/// and it also bounds how far a hostile GZIP stream is inflated.
-pub const MAX_STATUS_LIST_BITS: u64 = 1 << 26;
+/// The largest status list read, in bits (512 KiB decompressed, 32 times the
+/// W3C minimum of 131,072). An index past this bound is refused before any
+/// fetch, and it also bounds how far a GZIP stream is inflated and how much the
+/// decoder allocates, which is about one byte per bit read. W3C Bitstring
+/// Status List v1.0 sets no maximum (§1.1: the bitstring "can be made larger"),
+/// so a reader chooses its own.
+pub const MAX_STATUS_LIST_BITS: u64 = 1 << 22;
 /// Longest `encodedList` read, in characters.
 pub const MAX_ENCODED_LIST_CHARS: usize = 1 << 22;
 /// Most status entries read from one `credentialStatus`.
@@ -178,6 +181,7 @@ fn parse_entry(entry: &Value) -> Result<Option<Entry>, String> {
         .filter(|u| !u.is_empty() && u.chars().count() <= MAX_STATUS_LIST_URL_CHARS)
         .ok_or_else(|| "a status entry has no usable statusListCredential".to_string())?;
     let index = parse_index(obj.get("statusListIndex"))?;
+    check_status_size(obj.get("statusSize"))?;
     Ok(Some(Entry {
         url: url.to_string(),
         index,
@@ -202,6 +206,23 @@ fn parse_index(value: Option<&Value>) -> Result<usize, String> {
         return Err("statusListIndex is past the largest status list read".into());
     }
     usize::try_from(n).map_err(|_| "statusListIndex does not fit this platform".to_string())
+}
+
+/// W3C Bitstring Status List v1.0 §2.1: "If statusSize is not present as a
+/// property of the credentialStatus, then statusSize MUST be processed as 1",
+/// and "If present, statusSize MUST be an integer greater than zero." §1.3:
+/// "Conforming processors MAY choose to only support bitstring entry sizes of
+/// 1." Only 1 is read here; a wider entry is refused rather than read as one
+/// bit.
+fn check_status_size(value: Option<&Value>) -> Result<(), String> {
+    match value {
+        None => Ok(()),
+        Some(v) if v.as_u64() == Some(1) => Ok(()),
+        Some(v) if v.as_u64().is_some_and(|n| n > 1) => {
+            Err("statusSize is not supported: only 1-bit status entries are read".into())
+        }
+        Some(_) => Err("statusSize is not an integer greater than zero".into()),
+    }
 }
 
 fn has_type(value: Option<&Value>, wanted: &str) -> bool {
@@ -578,6 +599,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_entry_declaring_a_status_size_of_one_is_read() {
+        let community = secret(0xC0);
+        let list = signed_list(&community, &[1]).await;
+        let mut e = entry("1", "revocation");
+        e["statusSize"] = json!(1);
+        assert_eq!(
+            check(&e, &did(&community), list).await,
+            StatusCheck::Revoked
+        );
+    }
+
+    #[tokio::test]
     async fn each_list_is_fetched_once_and_a_fetch_failure_is_unknown() {
         let community = secret(0xC0);
         let list = signed_list(&community, &[]).await;
@@ -664,6 +697,21 @@ mod tests {
             {
                 let mut e = entry("1", "revocation");
                 e["statusListCredential"] = json!(7);
+                e
+            },
+            {
+                let mut e = entry("1", "revocation");
+                e["statusSize"] = json!(2);
+                e
+            },
+            {
+                let mut e = entry("1", "revocation");
+                e["statusSize"] = json!(u64::MAX);
+                e
+            },
+            {
+                let mut e = entry("1", "revocation");
+                e["statusSize"] = json!(0);
                 e
             },
             // Past the end of a 131,072-bit list.

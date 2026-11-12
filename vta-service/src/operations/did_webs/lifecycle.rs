@@ -16,6 +16,7 @@
 //!   [`super::fresh_key`].
 //! - **A deactivated identifier signs nothing more.**
 
+use affinidi_did_webs::key_roles::{KeyRole, KeyRoles, VerificationKey};
 use affinidi_did_webs::{
     Artifacts, Change, ControlledUpdate, DesignatedService, Kels, KeyAgreementKey,
     complete_rotation, designated_aliases, designated_key_agreement, designated_services,
@@ -29,8 +30,8 @@ use serde_json::{Value, json};
 use vta_sdk::keys::{KeyRecord, KeyStatus};
 
 use super::{
-    DIDCOMM_FRAGMENT, WebsDeps, WebsError, WebsHost, WebsRefusal, ed25519_qb64, ed25519_signer,
-    fresh_key,
+    DIDCOMM_FRAGMENT, WebsDeps, WebsError, WebsHost, WebsRefusal, ed25519_qb64, ed25519_raw,
+    ed25519_signer, fresh_key,
 };
 use crate::auth::AuthClaims;
 use crate::error::AppError;
@@ -523,6 +524,8 @@ fn desired_services(
         }
     }
     out.extend(services.additional.iter().cloned());
+    // In transport-preference order, as a create designates them.
+    super::sort_designated_services(&mut out);
     let mut ids = std::collections::BTreeSet::new();
     for s in &out {
         if !ids.insert(s.id.clone()) {
@@ -720,6 +723,236 @@ pub async fn update_did_webs<H: WebsHost>(
     })
 }
 
+/// What a role-key rotation replaced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RotateRoleKeysResult {
+    pub did: String,
+    /// The roles whose key was replaced (`attestation`, `operational`,
+    /// `messaging`).
+    pub rotated: Vec<String>,
+    pub attestation_key_id: String,
+    pub operational_key_id: String,
+    pub key_agreement_key_id: String,
+    pub sequence_number: u64,
+    pub version_id: String,
+    /// The DID is this VTA's own identity: the keys it authenticates,
+    /// attests and decrypts with have changed ids, and only a restart loads
+    /// them into every component that holds them (the bridge's signer, the
+    /// DIDComm profile, TSP). The caller restarts the VTA.
+    pub own_identity: bool,
+}
+
+/// Replace the keys bound to `roles` of a key-role did:webs (VTI-KEY-072,
+/// VTI-KEY-173): planned rotation of role keys, by a new key-role designation
+/// anchored in the key event log (`Change::KeyRoles`). Roles not named keep
+/// their key. The key event log's own keys are untouched — that is
+/// [`rotate_did_webs_keys`].
+///
+/// A replaced attestation or operational key is retired (its record revoked:
+/// it signs nothing more); a replaced messaging key stays held, to decrypt
+/// what was already sent to it, and is never designated again. New keys are
+/// minted on fresh paths: a role key is never one of another role, nor a key
+/// of the log (VTI-KEY-071), and the messaging key is the X25519 image of an
+/// Ed25519 key on its own path that is published nowhere (VTI-KEY-184).
+///
+/// Published before it is recorded (R2.1); the host's refusal leaves the
+/// record as it was.
+///
+/// # Errors
+/// `NotFound`; `Conflict` (`deactivated`, `versionConflict`); `Validation`
+/// for an identifier without key roles or an empty `roles`; the host's
+/// refusal.
+pub async fn rotate_did_webs_role_keys<H: WebsHost>(
+    deps: &WebsDeps<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    roles: &[KeyRole],
+    expected_version_id: Option<&str>,
+    host: &H,
+    channel: &str,
+) -> Result<RotateRoleKeysResult, WebsError> {
+    auth.require_admin()?;
+    if roles.is_empty() {
+        return Err(AppError::Validation("name at least one key role to rotate".into()).into());
+    }
+    let record = held(deps, auth, did).await?;
+    if record.deactivated {
+        return Err(deactivated_error(did));
+    }
+    let (mut record, _) = complete_staged(deps, host, record).await?;
+    if record.deactivated {
+        return Err(deactivated_error(did));
+    }
+    check_expected(&record, expected_version_id)?;
+    let (Some(attestation_id), Some(operational_id)) = (
+        record.attestation_key_id.clone(),
+        record.operational_key_id.clone(),
+    ) else {
+        return Err(AppError::Validation(format!(
+            "{did} is not a key-role identity: it has no role keys to rotate"
+        ))
+        .into());
+    };
+    let fragment = |id: &str| -> Result<String, AppError> {
+        id.split_once('#')
+            .map(|(_, f)| f.to_string())
+            .ok_or_else(|| AppError::Internal(format!("key id {id} has no fragment")))
+    };
+    let verification = |id: &str| -> Result<VerificationKey, AppError> {
+        VerificationKey::from_cesr(&fragment(id)?)
+            .map_err(|e| AppError::Internal(format!("role key {id}: {e}")))
+    };
+    let mut attestation = verification(&attestation_id)?;
+    let mut operational = verification(&operational_id)?;
+    let mut messaging = KeyAgreementKey::from_cesr(&fragment(&record.key_agreement_key_id)?)
+        .map_err(|e| AppError::Internal(format!("messaging key: {e}")))?;
+
+    let ctx = crate::contexts::get_context(deps.contexts_ks, &record.context_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("context not found: {}", record.context_id)))?;
+    let label = record.label.clone().unwrap_or_else(|| record.did.clone());
+    // (role, new key record id, path, key type, public multibase, label, seed)
+    let mut minted: Vec<(KeyRole, String, String, KeyType, String, String, u32)> = Vec::new();
+    for role in roles {
+        if minted.iter().any(|m| m.0 == *role) {
+            continue;
+        }
+        let (key, seed_id) = fresh_key(
+            deps,
+            &ctx.base_path,
+            &format!("{label} {} key", role.name()),
+        )
+        .await?;
+        match role {
+            KeyRole::Attestation | KeyRole::Operational => {
+                let vk = VerificationKey::Ed25519(ed25519_raw(&key.public_key)?);
+                let cesr = vk
+                    .to_cesr()
+                    .map_err(|e| AppError::Internal(format!("encode a role key: {e}")))?;
+                minted.push((
+                    *role,
+                    format!("{did}#{cesr}"),
+                    key.path.clone(),
+                    KeyType::Ed25519,
+                    key.public_key.clone(),
+                    key.label.clone(),
+                    seed_id,
+                ));
+                if *role == KeyRole::Attestation {
+                    attestation = vk;
+                } else {
+                    operational = vk;
+                }
+            }
+            KeyRole::Messaging => {
+                let ed = ed25519_raw(&key.public_key)?;
+                let x = affinidi_crypto::did_key::ed25519_pub_to_x25519_bytes(&ed)
+                    .map_err(|e| AppError::Internal(format!("X25519 image: {e}")))?;
+                let ka = KeyAgreementKey::X25519(x);
+                let cesr = ka
+                    .to_cesr()
+                    .map_err(|e| AppError::Internal(format!("{e}")))?;
+                minted.push((
+                    *role,
+                    format!("{did}#{cesr}"),
+                    key.path.clone(),
+                    KeyType::X25519,
+                    keys::encode_public_multibase(&KeyType::X25519, &x),
+                    key.label.clone(),
+                    seed_id,
+                ));
+                messaging = ka;
+            }
+            other => {
+                return Err(AppError::Validation(format!(
+                    "the `{}` role is not one a node's identity holds",
+                    other.name()
+                ))
+                .into());
+            }
+        }
+    }
+
+    let designation = KeyRoles::new()
+        .with_attestation(attestation)
+        .with_operational(operational)
+        .with_messaging(messaging);
+    let signer = signer_for(deps, auth, &record, &record.signing_key_id, channel).await?;
+    let updated = update_controlled(
+        ControlledUpdate::new(
+            record.did.clone(),
+            artifacts(&record.keri_cesr),
+            record.state.clone(),
+            Change::KeyRoles(designation),
+        ),
+        &[&signer as &dyn KeySigner],
+    )
+    .map_err(|e| AppError::Internal(format!("designate new role keys for {did}: {e}")))?;
+    drop(signer);
+    let (artifacts, state) = updated.into_parts();
+
+    // ── Publish, then commit (R2.1) ────────────────────────────────────
+    publish(host, &record, &artifacts.keri_cesr).await?;
+    let mut rotated = Vec::new();
+    for (role, id, path, key_type, public, key_label, seed_id) in minted {
+        keys::save_key_record(
+            deps.keys_ks,
+            &id,
+            &path,
+            key_type,
+            &public,
+            &key_label,
+            Some(&record.context_id),
+            Some(seed_id),
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+        let retired = match role {
+            KeyRole::Attestation => Some(record.attestation_key_id.replace(id)),
+            KeyRole::Operational => Some(record.operational_key_id.replace(id)),
+            _ => {
+                // The replaced messaging key stays held, for what was sent to it.
+                record.key_agreement_key_id = id;
+                None
+            }
+        };
+        if let Some(Some(old)) = retired
+            && let Some(mut old_record) = deps.keys_ks.get::<KeyRecord>(store_key(&old)).await?
+        {
+            old_record.status = KeyStatus::Revoked;
+            deps.keys_ks.insert(store_key(&old), &old_record).await?;
+        }
+        rotated.push(role.name().to_string());
+    }
+    record.keri_cesr = artifacts.keri_cesr;
+    record.state = state;
+    record.updated_at = Utc::now().to_rfc3339();
+    webs_store::put(deps.webs_ks, &record).await?;
+
+    vta_audit::record_best_effort(
+        deps.audit,
+        "did.rotate_roles.webs",
+        &auth.did,
+        Some(did),
+        "success",
+        Some(channel),
+        Some(&record.context_id),
+    )
+    .await;
+
+    Ok(RotateRoleKeysResult {
+        did: record.did.clone(),
+        rotated,
+        attestation_key_id: record.attestation_key_id.clone().unwrap_or_default(),
+        operational_key_id: record.operational_key_id.clone().unwrap_or_default(),
+        key_agreement_key_id: record.key_agreement_key_id.clone(),
+        sequence_number: record.state.sn,
+        version_id: version_id(&record.state),
+        own_identity: deps.config.vta_did.as_deref() == Some(did),
+    })
+}
+
 /// End `did`: a rotation committing to no next keys, then the slot removed
 /// (`vta/webs/dids/delete/0.1`). The record is kept, deactivated, with the
 /// final stream. Deleting a deactivated DID retries the slot's removal.
@@ -738,6 +971,15 @@ pub async fn delete_did_webs<H: WebsHost>(
 ) -> Result<DeleteDidWebsResult, WebsError> {
     // As `webvh/dids/delete`: an admin of the DID's context.
     auth.require_admin()?;
+    // Deactivating this VTA's own identity would leave it with no DID a peer
+    // can resolve and no key to recover with: a node's identity is retired by
+    // re-identifying it, never by a delete addressed to it.
+    if deps.config.vta_did.as_deref() == Some(did) {
+        return Err(WebsError::App(AppError::Forbidden(format!(
+            "`{did}` is this VTA's own DID; it cannot be deleted while it is. Set up the VTA \
+             under another DID first (`vta setup`), then delete this one"
+        ))));
+    }
     let record = held(deps, auth, did).await?;
     let newly_deactivated = !record.deactivated;
     let mut record = if record.deactivated {

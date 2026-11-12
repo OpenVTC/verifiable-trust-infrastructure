@@ -533,3 +533,103 @@ async fn a_step_up_ceremony_cannot_be_replayed() {
         "a replayed ceremony must not re-elevate"
     );
 }
+
+/// The JSON shape of a value: its keys and the kinds of their values, with
+/// every string, number and array length left out. A credential's
+/// `transports` is left out too: it is whatever the authenticator reported
+/// at registration, present or not, for real and stand-in credentials alike.
+fn shape(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .filter(|(k, _)| k.as_str() != "transports")
+                .map(|(k, v)| (k.clone(), shape(v)))
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.iter().take(1).map(shape).collect()),
+        Value::String(_) => json!("string"),
+        Value::Number(_) => json!("number"),
+        Value::Bool(_) => json!("bool"),
+        Value::Null => Value::Null,
+    }
+}
+
+async fn login_start_for(fix: &Fixture, subject: &str) -> (StatusCode, Value) {
+    request(
+        &fix.router,
+        "/v1/auth/passkey-login/start",
+        START_TASK,
+        None,
+        Some(json!({ "subject": subject })),
+    )
+    .await
+}
+
+/// A login that names a subject answers the same way whether or not that
+/// subject holds passkeys here: 200, the same response shape, and for an
+/// unenrolled subject a stand-in credential set that is stable across calls,
+/// so asking twice does not tell the two apart.
+#[tokio::test]
+async fn a_login_naming_a_subject_answers_alike_whether_or_not_it_is_enrolled() {
+    let (fix, enrolled_b) = build_fixture().await;
+    let stranger = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+    let (status, enrolled) = login_start_for(&fix, &enrolled_b).await;
+    assert_eq!(status, StatusCode::OK, "enrolled: {enrolled}");
+    let (status, unknown) = login_start_for(&fix, stranger).await;
+    assert_eq!(status, StatusCode::OK, "unenrolled: {unknown}");
+
+    assert_eq!(shape(&enrolled), shape(&unknown));
+    assert!(
+        !unknown["options"]["allowCredentials"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let (_, again) = login_start_for(&fix, stranger).await;
+    assert_eq!(
+        unknown["options"]["allowCredentials"], again["options"]["allowCredentials"],
+        "the stand-in set is the same on every call"
+    );
+    assert_ne!(
+        unknown["options"]["challenge"], again["options"]["challenge"],
+        "but every challenge is fresh"
+    );
+}
+
+/// The finish answers alike too: an assertion that does not satisfy the
+/// ceremony is refused with one status and one body, whether the ceremony
+/// was over an enrolled subject's credentials, over a stand-in set, or does
+/// not exist.
+#[tokio::test]
+async fn a_login_finish_refuses_alike_for_enrolled_unenrolled_and_unknown_ceremonies() {
+    let (mut fix, enrolled_b) = build_fixture().await;
+    let stranger = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+    // A genuine assertion by admin A, over a ceremony A started.
+    let (_, own) = login_start_for(&fix, &fix.admin_did.clone()).await;
+    let options: RequestChallengeResponse = wrap_options(&own["options"]);
+    let assertion = fix.authenticator.authenticate(&options, RP_ORIGIN);
+
+    let mut answers = Vec::new();
+    for auth_id in [
+        login_start_for(&fix, &enrolled_b).await.1["authId"].clone(),
+        login_start_for(&fix, stranger).await.1["authId"].clone(),
+        json!(Uuid::new_v4().to_string()),
+    ] {
+        answers.push(
+            request(
+                &fix.router,
+                "/v1/auth/passkey-login/finish",
+                FINISH_TASK,
+                None,
+                Some(json!({ "auth_id": auth_id, "credential": assertion })),
+            )
+            .await,
+        );
+    }
+    assert_eq!(answers[0].0, StatusCode::UNAUTHORIZED, "{:?}", answers[0].1);
+    assert_eq!(answers[0], answers[1], "enrolled vs stand-in");
+    assert_eq!(answers[0], answers[2], "enrolled vs no ceremony");
+}

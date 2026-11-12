@@ -145,6 +145,11 @@ where
 /// [`admin_signer`] resolves one, or any other signer holding a live ACL row,
 /// who may manage only their own sessions. A signer the community holds no
 /// entry for is refused, as the bearer session it would need was.
+///
+/// The fallback admits only a row that may act as a member: not a suspended
+/// one (a suspended subject may read the action list and nothing else,
+/// `vtc-action-list.md` §8.2, which [`admin_signer`] already answers), and not
+/// an `application` entry, which is never a membership (VTI-ACL-037).
 pub(super) async fn member_signer(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -160,11 +165,23 @@ pub(super) async fn member_signer(
         .await
         .map_err(|e| app_error_to_reject(doc, &e))?;
     match entry {
-        Some(entry) if !entry.is_expired(crate::auth::session::now_epoch()) => Ok(AuthClaims {
-            did: signer,
-            role: Role::Reader,
-            ..Default::default()
-        }),
+        // Refused with what holds it, as `admin_signer` refuses a suspended
+        // administrator, not as a stranger.
+        Some(crate::acl::VtcAclEntry {
+            suspension: Some(s),
+            ..
+        }) => Err(app_error_to_reject(doc, &s.refusal(&signer))),
+        Some(entry)
+            if !entry.is_expired(crate::auth::session::now_epoch())
+                && !entry.is_suspended()
+                && !entry.is_application() =>
+        {
+            Ok(AuthClaims {
+                did: signer,
+                role: Role::Reader,
+                ..Default::default()
+            })
+        }
         _ => Err(app_error_to_reject(
             doc,
             &AppError::Forbidden("the signer holds no entry in this community".into()),

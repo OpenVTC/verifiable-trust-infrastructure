@@ -379,6 +379,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── did:webs DIDs ───────────────────────────────────────────────────
     // Every create incepts a new AID: a retried one is a second DID.
     (trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_1, Keyed),
+    (trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_2, Keyed),
     (trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1, ReadOnly),
     (trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1, ReadOnly),
     // Each update and rotation appends events to the key event log; two append

@@ -485,9 +485,6 @@ impl KeyHolder {
                 PeerError::NoMatchingProtocol(m) => HolderError::Unavailable(format!(
                     "the community's VTA shares no transport with this community: {m}"
                 )),
-                PeerError::MethodNotDeclared(refusal) => HolderError::Unavailable(format!(
-                    "the community's VTA cannot be reached as this community: {refusal}"
-                )),
             })?;
         if reply.type_uri.slug() == "trust-task-error" {
             return Err(HolderError::Refused {

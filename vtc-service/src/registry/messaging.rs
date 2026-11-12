@@ -317,14 +317,6 @@ impl MessagingRegistryClient {
                 Vec::new(),
             )
         })?;
-        // VTI-KEY-008 / VTI-KEY-009: this VTC addresses the registry as its own
-        // DID. A did:webs VTC reaches only a registry that has declared
-        // did:webs, and otherwise sends nothing; the operator's remedy is the
-        // registry's declaration, so it is not retried.
-        if let Ok(own) = self.authority() {
-            vta_sdk::resolved_methods::require_declared(own, &self.registry_did, &doc)
-                .map_err(|refusal| (RegistryError::Permanent(refusal.to_string()), Vec::new()))?;
-        }
         let theirs = ServiceCapabilities::from_did_document(&doc);
         if let Ok(mut slot) = self.tsp_mediator.write() {
             slot.clone_from(&theirs.tsp);

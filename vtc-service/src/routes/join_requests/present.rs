@@ -606,6 +606,8 @@ fn parse_status_entry(entry: &JsonValue) -> Option<(String, usize, bool)> {
         .and_then(JsonValue::as_str)
     {
         let index = parse_status_index(entry.get("statusListIndex"))?;
+        // Only 1-bit entries are read (W3C Bitstring Status List §1.3).
+        crate::recognition::verify::check_status_size(entry.get("statusSize")).ok()?;
         let suspension =
             entry.get("statusPurpose").and_then(JsonValue::as_str) == Some("suspension");
         return Some((url.to_string(), index, suspension));
@@ -785,6 +787,18 @@ mod tests {
             None,
         );
         assert_eq!(c.status, CredentialStatus::Revoked);
+    }
+
+    #[tokio::test]
+    async fn a_multi_bit_status_entry_is_unknown_without_a_fetch() {
+        let mut entry = w3c_status("revocation");
+        entry["statusSize"] = json!(2);
+        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Ok(false))).await;
+        assert_eq!(status, CredentialStatus::Unknown);
+
+        entry["statusSize"] = json!(1);
+        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Ok(false))).await;
+        assert_eq!(status, CredentialStatus::Valid);
     }
 
     #[tokio::test]

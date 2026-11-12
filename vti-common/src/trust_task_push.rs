@@ -146,7 +146,6 @@
 //! The day a recipient advertises one, the seam is the two predicates below,
 //! which already take the window from one value rather than two constants.
 
-#[cfg(feature = "tsp")]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1362,12 +1361,23 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// Decides whether [`RestPushTransport`] may POST to a URL built from a
+/// recipient's advertised `TrustTaskHTTPS` endpoint. `Err` carries the reason.
+///
+/// The endpoint is written by whoever controls the recipient's DID document,
+/// so a node must not dial it from inside its own network unchecked. A VTA or
+/// VTC passes `vta_sdk::http::guard_peer_endpoint` under the same
+/// `EndpointPolicy` its HTTP client was built for; this crate takes it as a
+/// function so it does not carry the HTTP client stack itself.
+pub type RestEndpointGuard = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
 /// Sends a push over the HTTPS binding: `POST {base}/trust-tasks` with
 /// the signed document as the body (HTTPS binding 0.2 §2, §6.1). No bearer
 /// token — this node holds none for the recipient's server — so the
 /// document's own proof is what authenticates it (§2 item 2).
 pub struct RestPushTransport {
     http: reqwest::Client,
+    guard: RestEndpointGuard,
     pushes: KeyspaceHandle,
     // REST has no connection to lose: each send is its own request, and a
     // failed one is an `Err` from `send`. Held so the receiver never reads a
@@ -1378,11 +1388,16 @@ pub struct RestPushTransport {
 
 impl RestPushTransport {
     /// `http` fetches foreign URLs, so give it the node's foreign-fetch
-    /// profile (bounded timeouts, no redirects to private ranges).
-    pub fn new(pushes: KeyspaceHandle, http: reqwest::Client) -> Self {
+    /// profile (bounded timeouts, no redirects, a resolver that refuses
+    /// non-public answers). `guard` vets each URL before it is dialled: the
+    /// client's resolver never sees an IP-literal host, so the guard is what
+    /// keeps a recipient from pointing the node at a loopback or
+    /// private-network address. Build both from the same endpoint policy.
+    pub fn new(pushes: KeyspaceHandle, http: reqwest::Client, guard: RestEndpointGuard) -> Self {
         let (tx, rx) = watch::channel(ConnState::Connected);
         Self {
             http,
+            guard,
             pushes,
             _conn_tx: tx,
             conn: rx,
@@ -1402,6 +1417,12 @@ impl MessageTransport for RestPushTransport {
             MessagingError::Transport(format!("{dest} advertises no TrustTaskHTTPS endpoint"))
         })?;
         let url = format!("{}/trust-tasks", base.trim_end_matches('/'));
+        if let Err(reason) = (self.guard)(&url) {
+            warn!(dest, endpoint = %base, %reason, "not dialling a recipient's REST endpoint");
+            return Err(MessagingError::NoEndpoint(format!(
+                "{dest}: its TrustTaskHTTPS endpoint is not one this node will dial: {reason}"
+            )));
+        }
         let resp = self
             .http
             .post(&url)
@@ -1795,5 +1816,62 @@ mod tests {
     #[test]
     fn a_document_without_services_advertises_nothing() {
         assert!(!Reach::from_document(&json!({ "id": "did:key:z6Mk" })).advertises_anything());
+    }
+
+    /// The URL guard runs before anything is dialled: a refused endpoint is
+    /// reported as having no usable endpoint, not as a failed connection.
+    #[tokio::test]
+    async fn rest_push_refuses_an_endpoint_its_guard_refuses_before_dialling() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            crate::store::test_fixture::open_with_keyspaces(dir.path(), &["pushes"]).unwrap();
+        let ks = store.keyspace("pushes").unwrap();
+        let record = PushRecord {
+            id: "p1".into(),
+            recipient: "did:example:peer".into(),
+            document: serde_json::json!({ "type": "x" }),
+            reissues: 0,
+            remaining: Vec::new(),
+            current: Protocol::Rest,
+            attempt_key: String::new(),
+            attempt: 0,
+            peer_tsp_mediator: None,
+            // Port 9 (discard) on loopback: nothing should ever connect.
+            rest_base: Some("http://127.0.0.1:9".into()),
+            deadline_ms: u64::MAX,
+            queued_at_ms: 0,
+            outcome: None,
+        };
+        ks.insert(record_key(&record.id), &record).await.unwrap();
+
+        let refusing = RestPushTransport::new(
+            ks.clone(),
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+            Arc::new(|url: &str| Err(format!("{url} is loopback"))),
+        );
+        let err = refusing
+            .send("did:example:peer", b"p1".to_vec())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MessagingError::NoEndpoint(_)), "{err:?}");
+
+        // The same record with a guard that admits it is dialled (and fails to
+        // connect), so the refusal above came from the guard.
+        let admitting = RestPushTransport::new(
+            ks,
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+            Arc::new(|_: &str| Ok(())),
+        );
+        let err = admitting
+            .send("did:example:peer", b"p1".to_vec())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MessagingError::Transport(_)), "{err:?}");
     }
 }

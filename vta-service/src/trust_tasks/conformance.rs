@@ -5523,8 +5523,9 @@ fn table() -> Vec<(&'static str, Conformance)> {
     t
 }
 
-/// `vta/webs/dids/*/0.1` — the did:webs lifecycle.
+/// `vta/webs/dids/*/0.1` and `create/0.2` — the did:webs lifecycle.
 #[cfg(feature = "webs")]
+#[allow(deprecated)] // create/0.1 is superseded by 0.2, still served
 fn webs_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     use specs::vta::webs::dids as ws;
 
@@ -5574,6 +5575,32 @@ fn webs_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                     "serviceIds": ["#didcomm"], "createdAt": "2026-11-11T09:00:00Z"
                 }),
                 parses::<ws::create::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_CREATE_0_2,
+            (
+                json!({ "contextId": "personal", "serverId": "host-1", "didClass": "service",
+                  "path": "witnesses", "template": "ai-agent",
+                  "templateVars": { "MEDIATOR_DID": "did:web:mediator.example" } }),
+                parses::<ws::create::v0_2::Payload>,
+                validates::<ws::create::v0_2::Payload>,
+            ),
+            (
+                json!({
+                    "did": DID, "aid": AID, "contextId": "personal", "didClass": "service",
+                    "serverId": "host-1", "domain": "hosting.example", "slot": SLOT,
+                    "keriCesrUrl": format!("https://hosting.example/{SLOT}/keri.cesr"),
+                    "didJsonUrl": format!("https://hosting.example/{SLOT}/did.json"),
+                    "signingKeyId": format!("{DID}#{SIGNING}"), "signingKey": SIGNING,
+                    "nextKeyId": format!("{DID}#pre-rotation-0"),
+                    "keyAgreementKeyId": format!("{DID}#{KA}"), "keyAgreementKey": KA,
+                    "sequenceNumber": 1, "versionId": VERSION, "alsoKnownAs": [DID],
+                    "serviceIds": ["#tsp", "#vta-didcomm"], "template": "ai-agent",
+                    "templateScope": "builtin", "templateKind": "ai-agent",
+                    "createdAt": "2026-11-11T09:00:00Z"
+                }),
+                parses::<ws::create::v0_2::Response>,
             ),
         ),
         (

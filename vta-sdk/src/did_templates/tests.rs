@@ -1747,6 +1747,19 @@ fn every_builtin_still_declares_the_historical_key_pair() {
             continue;
         }
 
+        // `vtc-host` less its post-quantum slot: v2 because it is derived from
+        // `vtc-host`, and declaring exactly the historical pair.
+        if *name == "vtc-host-classical" {
+            assert_eq!(tpl.schema_version, 2);
+            assert_eq!(
+                slots.keys().map(String::as_str).collect::<Vec<_>>(),
+                [SLOT_KA, SLOT_SIGNING]
+            );
+            assert_eq!(slots[SLOT_SIGNING].algorithms, vec!["ed25519".to_string()]);
+            assert_eq!(slots[SLOT_KA].algorithms, vec!["x25519".to_string()]);
+            continue;
+        }
+
         if V2_BUILTINS.contains(name) {
             assert_eq!(
                 tpl.schema_version, 2,

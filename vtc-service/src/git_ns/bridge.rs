@@ -718,10 +718,6 @@ impl MessagingBridgeClient {
                     code: "noMatchingProtocol".into(),
                     message,
                 },
-                PeerError::MethodNotDeclared(refusal) => BridgeSendError::Rejected {
-                    code: vta_sdk::protocols::trust_task_reject_reasons::METHOD_NOT_DECLARED.into(),
-                    message: refusal.to_string(),
-                },
             })
     }
 }
