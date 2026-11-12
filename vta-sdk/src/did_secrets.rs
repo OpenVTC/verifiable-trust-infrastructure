@@ -75,11 +75,70 @@ impl DidSecretsBundle {
     /// `None` when the bundle carries no Ed25519 entry: X25519 is a key
     /// agreement key and signs nothing, and P-256 is not what `eddsa-jcs-2022`
     /// verifies.
+    ///
+    /// This is the bundle's **first** Ed25519 entry, for a caller that holds
+    /// the bundle but not the DID's document. A bundle built for a document
+    /// leads with the key the document lists for authentication
+    /// ([`Self::lead_with_trust_task_signing_key`]; every provisioned bundle
+    /// is, through `DidKeyMaterialV2::secrets_bundle`), so the first entry is
+    /// that key. A caller that holds the document asks
+    /// [`Self::trust_task_signing_key_for`] instead.
     #[must_use]
     pub fn trust_task_signing_key(&self) -> Option<&SecretEntry> {
         self.secrets
             .iter()
             .find(|e| matches!(e.key_type, KeyType::Ed25519))
+    }
+
+    /// The bundle's Trust Task signing key as `document` — the current DID
+    /// document of [`Self::did`] — assigns it: the key it lists for
+    /// authentication, by role (VTI-KEY-150, [`crate::node_keys`]: a key-role
+    /// document's `operational` key, otherwise `authentication[0]`).
+    ///
+    /// Not "the first Ed25519 key": a `did:webs` names every key by itself and
+    /// a VTA also holds its pre-rotated successors, so position says nothing
+    /// about role. `None` when the document lists no authentication key or the
+    /// bundle does not hold the one it lists as an Ed25519 key — never another
+    /// key in its place, which would sign a proof no verifier accepts.
+    #[must_use]
+    pub fn trust_task_signing_key_for(&self, document: &serde_json::Value) -> Option<&SecretEntry> {
+        let did = crate::did_scid::strip_src(&self.did);
+        let ids = crate::node_keys::NodeKeyIds::from_document(&did, document).ok()?;
+        // A document listing no `authentication` falls back to its signing key
+        // in `NodeKeyIds`; a Trust Task proof is an authentication proof, so
+        // only a key the document lists for it answers here.
+        let listed = document
+            .get("keyRoles")
+            .and_then(|r| r.get("operational"))
+            .is_some()
+            || document
+                .get("authentication")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|a| !a.is_empty());
+        if !listed {
+            return None;
+        }
+        self.secrets
+            .iter()
+            .find(|e| e.key_id == ids.authentication && matches!(e.key_type, KeyType::Ed25519))
+    }
+
+    /// Move the key [`Self::trust_task_signing_key_for`] picks to the front, so
+    /// [`Self::trust_task_signing_key`] answers it for a caller without the
+    /// document. `false`, and the order unchanged, when the bundle holds no
+    /// such key.
+    pub fn lead_with_trust_task_signing_key(&mut self, document: &serde_json::Value) -> bool {
+        let Some(key_id) = self
+            .trust_task_signing_key_for(document)
+            .map(|e| e.key_id.clone())
+        else {
+            return false;
+        };
+        if let Some(at) = self.secrets.iter().position(|e| e.key_id == key_id) {
+            let entry = self.secrets.remove(at);
+            self.secrets.insert(0, entry);
+        }
+        true
     }
 }
 
@@ -307,5 +366,108 @@ mod tests {
             Some(&format!("{KID_DID}#key-1 rotated")),
         );
         assert_eq!(kid, None);
+    }
+
+    // ── the Trust Task signing key, by role ─────────────────────────
+
+    const WEBS: &str = "did:webs:hosting.example:EAid";
+
+    fn entry(key_id: &str, key_type: KeyType) -> SecretEntry {
+        SecretEntry {
+            key_id: key_id.to_string(),
+            key_type,
+            private_key_multibase: "zPRIVATE".to_string(),
+        }
+    }
+
+    /// A did:webs context's keys as the VTA lists them: the pre-rotated
+    /// successor (an Ed25519 key under the DID, in no relationship) before
+    /// the key-state key.
+    fn webs_bundle() -> DidSecretsBundle {
+        DidSecretsBundle {
+            did: WEBS.to_string(),
+            secrets: vec![
+                entry(&format!("{WEBS}#pre-rotation-0"), KeyType::Ed25519),
+                entry(&format!("{WEBS}#CKa"), KeyType::X25519),
+                entry(&format!("{WEBS}#DSigning"), KeyType::Ed25519),
+            ],
+        }
+    }
+
+    fn webs_document() -> serde_json::Value {
+        serde_json::json!({
+            "id": WEBS,
+            "verificationMethod": [
+                { "id": "#DSigning", "type": "JsonWebKey" },
+                { "id": "#CKa", "type": "JsonWebKey" },
+            ],
+            "authentication": ["#DSigning"],
+            "assertionMethod": ["#DSigning"],
+            "keyAgreement": ["#CKa"],
+        })
+    }
+
+    /// The signing key is the one the document lists for authentication, not
+    /// the first Ed25519 key the bundle happens to hold.
+    #[test]
+    fn the_trust_task_signing_key_is_the_documents_authentication_key() {
+        let mut bundle = webs_bundle();
+        assert_eq!(
+            bundle.trust_task_signing_key().unwrap().key_id,
+            format!("{WEBS}#pre-rotation-0"),
+            "position alone picks the successor"
+        );
+        let want = format!("{WEBS}#DSigning");
+        assert_eq!(
+            bundle
+                .trust_task_signing_key_for(&webs_document())
+                .unwrap()
+                .key_id,
+            want
+        );
+        assert!(bundle.lead_with_trust_task_signing_key(&webs_document()));
+        assert_eq!(bundle.trust_task_signing_key().unwrap().key_id, want);
+        assert_eq!(bundle.secrets.len(), 3, "reordered, nothing dropped");
+    }
+
+    /// A document whose authentication key the bundle does not hold answers
+    /// none, and leaves the order alone — never another key in its place.
+    #[test]
+    fn no_authentication_key_held_is_none_not_a_substitute() {
+        let mut bundle = webs_bundle();
+        bundle.secrets.retain(|e| !e.key_id.ends_with("#DSigning"));
+        assert!(
+            bundle
+                .trust_task_signing_key_for(&webs_document())
+                .is_none()
+        );
+        assert!(!bundle.lead_with_trust_task_signing_key(&webs_document()));
+        assert!(bundle.secrets[0].key_id.ends_with("#pre-rotation-0"));
+
+        let mut no_auth = webs_document();
+        no_auth.as_object_mut().unwrap().remove("authentication");
+        assert!(webs_bundle().trust_task_signing_key_for(&no_auth).is_none());
+    }
+
+    /// A webvh bundle in the order every provisioning has written keeps it.
+    #[test]
+    fn a_webvh_bundle_keeps_its_order() {
+        let did = "did:webvh:QmScid:example.com";
+        let mut bundle = DidSecretsBundle {
+            did: did.to_string(),
+            secrets: vec![
+                entry(&format!("{did}#key-0"), KeyType::Ed25519),
+                entry(&format!("{did}#key-1"), KeyType::X25519),
+            ],
+        };
+        let doc = serde_json::json!({
+            "id": did,
+            "authentication": [format!("{did}#key-0")],
+            "assertionMethod": [format!("{did}#key-0")],
+            "keyAgreement": [format!("{did}#key-1")],
+        });
+        assert!(bundle.lead_with_trust_task_signing_key(&doc));
+        assert_eq!(bundle.secrets[0].key_id, format!("{did}#key-0"));
+        assert_eq!(bundle.secrets[1].key_id, format!("{did}#key-1"));
     }
 }

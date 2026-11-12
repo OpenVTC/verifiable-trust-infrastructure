@@ -158,6 +158,28 @@ pub(super) fn take_webvh_domain(
     Ok(Some(trimmed.to_string()))
 }
 
+/// Take `DID_METHOD=webs`: the integration's DID is a `did:webs` (level 1,
+/// class `service`, design note did-webs-in-the-vta §4, S7) rather than a
+/// `did:webvh` log. Any other value — `webvh`, `scid`, absent — is left for
+/// [`take_did_presentation`], which reads it as how a webvh log is presented.
+///
+/// A var, not a template's `methods`: the node templates (`dtg-witness`,
+/// `ballot-box`, …) describe one document shape that either method can carry,
+/// so the method is the operator's choice per provisioning, as `DID_METHOD`
+/// already is for `did:scid`. Removed from the map like the other transport
+/// metadata, so the renderer never sees it.
+pub(super) fn take_webs_method(template_vars: &mut BTreeMap<String, Value>) -> bool {
+    let is_webs = matches!(
+        template_vars.get("DID_METHOD"),
+        Some(Value::String(s))
+            if matches!(s.trim().to_ascii_lowercase().as_str(), "webs" | "did:webs")
+    );
+    if is_webs {
+        template_vars.remove("DID_METHOD");
+    }
+    is_webs
+}
+
 /// Optional `DID_METHOD` (`webvh` | `scid`) and `SCID_ALSO_KNOWN_AS`
 /// (`true` | `false`) vars: how the minted DID is presented and whether it lists
 /// its did:scid alias (VTI-VTA-036). Removed from the map like `WEBVH_DOMAIN` —
@@ -211,6 +233,23 @@ mod tests {
         assert!(v.contains_key("OTHER"));
         assert_eq!(take_did_presentation(&mut vars(&[])).unwrap(), (None, None));
         assert!(take_did_presentation(&mut vars(&[("DID_METHOD", json!("key"))])).is_err());
+    }
+
+    /// `DID_METHOD=webs` selects did:webs and is taken; every other value is
+    /// left for the webvh presentation reader.
+    #[test]
+    fn did_method_webs_is_taken_and_nothing_else_is() {
+        for webs in ["webs", " WEBS ", "did:webs"] {
+            let mut v = vars(&[("DID_METHOD", json!(webs))]);
+            assert!(take_webs_method(&mut v), "{webs}");
+            assert!(!v.contains_key("DID_METHOD"));
+        }
+        for other in [json!("webvh"), json!("scid"), json!(1)] {
+            let mut v = vars(&[("DID_METHOD", other.clone())]);
+            assert!(!take_webs_method(&mut v), "{other}");
+            assert_eq!(v["DID_METHOD"], other);
+        }
+        assert!(!take_webs_method(&mut vars(&[])));
     }
 
     fn vars(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {

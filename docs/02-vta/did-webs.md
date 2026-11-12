@@ -143,6 +143,45 @@ built-ins that carry it (`dtg-witness`, `did-host-*`, `room-host`,
 `ballot-box`) are representable; `vtc-host` is not, for its post-quantum
 second signing key, which a level-1 did:webs cannot hold.
 
+## Provisioning an integration as a did:webs
+
+A host service provisioned through [provision-integration](provision-integration.md)
+(`vti-witness`, `vti-voting-service`, any template-driven integration) can take
+a `did:webs` instead of a `did:webvh` with one more template variable,
+`DID_METHOD=webs`:
+
+```sh
+pnm bootstrap provision-request --template dtg-witness \
+  --var MEDIATOR_DID=did:webvh:…:mediator.example \
+  --var WEBVH_SERVER=host-1 --var WEBVH_PATH=witnesses --var DID_METHOD=webs
+```
+
+In the host services' setup files it is `did_method = "webs"` beside
+`webvh_server`. The DID is minted exactly as a `create/0.2` with
+`--class service` and `--template` would mint it — level 1, the same §9.2
+checks and refusals, gated by `webs_service_dids` above — and published at
+`WEBVH_SERVER`, on `WEBVH_DOMAIN`, under the slot path `WEBVH_PATH`. There is
+no serverless mode, so `URL` alone is refused, as are `.well-known` and
+`SCID_ALSO_KNOWN_AS`. No new member is added to `provision/integration`: the
+method is a template variable, as `DID_METHOD=scid` already was.
+
+The sealed bundle is the `TemplateBootstrap` every opener reads. Its keys are
+the key-state key (`authentication` and `assertionMethod`) and the designated
+X25519 key agreement key, each under the id the document gives it
+(`<did>#<CESR key>`); `config.did_document` is the document the stream
+derives; and in place of a `did.jsonl` it carries the stream itself as the
+output `webs_keri_cesr` (`ProvisionResult::webs_keri_cesr`). An opener built
+before that output existed refuses such a bundle by name (`unknown variant
+`webs_keri_cesr``); every other bundle is unchanged. The integration signs its
+Trust Tasks with the key its document lists for authentication
+(`DidSecretsBundle::trust_task_signing_key_for`, VTI-KEY-150), and the bundle
+it stores leads with that key. A context-secrets export of a `did:webs`
+(`build_did_secrets_bundle`, what room-host fetches) holds exactly the keys
+its document lists — never the pre-rotated successor — led the same way.
+
+A host service's `did:webs` is still used only toward peers that declare they
+resolve `did:webs` (VTI-KEY-008).
+
 ## Turning it on
 
 Creation is off by default (service DIDs have a switch of their own, above):

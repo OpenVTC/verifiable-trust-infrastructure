@@ -12,8 +12,7 @@ use std::{fs, path::Path};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
-use vta_sdk::sealed_transfer::DidKeyMaterialV2;
+use vta_sdk::did_secrets::DidSecretsBundle;
 use vta_sdk::trust_task_sign::HolderKey;
 use vti_common::seed_store::SeedStore;
 
@@ -134,22 +133,4 @@ pub async fn save_keys(store: &dyn SeedStore, identity: &DidSecretsBundle) -> an
         .set(&bytes)
         .await
         .map_err(|e| anyhow::anyhow!("write the identity's keys to the secret store: {e}"))
-}
-
-/// The working copy of the identity's keys from the sealed provisioning bundle's key material,
-/// each under the verification-method id the DID document publishes. Extra signing keys are
-/// carried too: dropping a key the VTA minted and published would be a silent divergence from
-/// the document.
-pub fn bundle_from_material(material: &DidKeyMaterialV2) -> DidSecretsBundle {
-    let entry = |key: &vta_sdk::sealed_transfer::SlotKeyPair| SecretEntry {
-        key_id: key.key_id.clone(),
-        key_type: key.key_type.clone(),
-        private_key_multibase: key.private_key_multibase.clone(),
-    };
-    let mut secrets = vec![entry(&material.signing_key), entry(&material.ka_key)];
-    secrets.extend(material.additional_signing_keys.iter().map(entry));
-    DidSecretsBundle {
-        did: material.did.clone(),
-        secrets,
-    }
 }
