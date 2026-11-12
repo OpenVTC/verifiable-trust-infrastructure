@@ -141,6 +141,7 @@ COPY vta-mcp/ vta-mcp/
 COPY vta-mobile-core/ vta-mobile-core/
 COPY vta-persona/ vta-persona/
 COPY vta-sdk/ vta-sdk/
+COPY vta-signing/ vta-signing/
 COPY vta-support/ vta-support/
 COPY vta-tee/ vta-tee/
 COPY vta-sweepers/ vta-sweepers/
