@@ -80,9 +80,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-resolver-cache-sdk"
-version = "0.8.51"
+version = "0.8.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "690eec2ca7cebdcab683a4daafa5f62b1df7c2095bc1af6bea78939b4e4af67e"
+checksum = "a20d41da71129b59739840ccf497a1a6ea9aa744af50542d17441ab8bcc8186d"
 dependencies = [
  "affinidi-did-common",
  "affinidi-did-resolver-traits",
@@ -131,9 +131,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-webs"
-version = "0.13.1"
+version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec2d7812bf7532492fa3a3fc3fb4bf719601dcd5c3a27fadc53f3cfbfc1945e6"
+checksum = "eb43cbaadbd39874aa24bc26a49e33b760f2717dea014c6f310540bc26d01110"
 dependencies = [
  "affinidi-cesr",
  "affinidi-crypto",
@@ -147,6 +147,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 

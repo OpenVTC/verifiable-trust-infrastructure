@@ -46,7 +46,7 @@ serde_json = "1"
 # the source book's rollback guard, matching the root workspace.
 # 0.8.51 + `did-webs`: every node resolves did:webs (VTI-KEY-003), and the
 # mediator DID this proxy resolves may be one — matching the root workspace.
-affinidi-did-resolver-cache-sdk = { version = "0.8.51", features = ["did-webs"] }
+affinidi-did-resolver-cache-sdk = { version = "0.8.52", features = ["did-webs"] }
 fjall = "3"
 # The inbound channel terminates HTTP/1.1 so it can replace the client's
 # `X-Forwarded-For` with the address it actually accepted the connection from
