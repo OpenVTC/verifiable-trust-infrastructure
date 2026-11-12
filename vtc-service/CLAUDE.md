@@ -190,6 +190,20 @@ When adding a flow, add it here and a line to the root index.
   Service changes are the VTA's (`pnm webs update` / `vta/webs/dids/update`).
   `apply` = `run_provision_quietly` + `persist_provisioned` (testable with a
   VTA's reply); `provision_ask` builds what is sent.
+- **Taking over a rotated did:webs key** (`vtc keys request` / `refresh`,
+  `keys_cli.rs`, `setup/refresh.rs`): `pnm webs rotate` replaces the key and
+  its id, so the stored bundle goes stale; boot then refuses
+  (`stale_signing_key`, VTI-KEY-042) unless the host is unreachable (warns).
+  The VTC keeps no VTA credential, so the keys come by the sealed hand-off
+  `vtc oid4vp` uses: `request` writes a `BootstrapRequest` (seed + nonce at
+  `<data_dir>/keys/refresh.request-key`, 0600), `pnm keys bundle <context>
+  --recipient` seals `vta/contexts/secrets` output to it, `refresh --bundle
+  --digest` opens it (digest pinned), resolves the DID afresh, and
+  `successor_bundle` keeps each key only if the document publishes it under
+  that id for its role. **What breaks it:** dropping the derivation root
+  (`carry_derivation_root_to` — the first signing key stays the root, or the
+  store becomes unreadable), or trusting the bundle's ids over the resolved
+  document's. Level-1 only; a key-role bundle is refused.
 - **Secrets**: `[secrets] backend = "vault"|"k8s"|"aws"|"gcp"|"azure"|`
   `"keyring"|"config"|"plaintext"` selects the store explicitly (validated,
   fail-closed); omit for legacy implicit resolution. All backends except

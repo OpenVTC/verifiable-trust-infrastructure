@@ -238,9 +238,21 @@ mode), and optionally `domain` and `path`
   back and stated again at the version it read, since the task replaces the
   whole set; another service is added by `vta/webs/dids/update` with
   `services.additional`. `pnm webs rotate <did>` changes the signing key and
-  with it the key's id, which the VTC's stored bundle then no longer holds:
-  a rotation of a did:webs VTC's key needs the VTC set up again from the VTA's
-  new bundle, and is not yet automated.
+  with it the key's id, which the VTC's stored bundle then no longer holds, so
+  the VTC refuses to boot until it has taken over the new keys. With the VTC
+  stopped:
+
+  ```sh
+  vtc keys request --out request.json                         # on the VTC host
+  pnm keys bundle <context> --recipient request.json > bundle.armor   # prints a digest
+  vtc keys refresh --bundle bundle.armor --digest <digest>    # on the VTC host
+  ```
+
+  `refresh` resolves the VTC's DID afresh and keeps each key only if the
+  document publishes it under that id; a bundle sealed before the rotation is
+  refused. The at-rest storage, install-token and audit keys keep deriving from
+  the VTC's first signing key, which the new bundle records as its derivation
+  root, so nothing encrypted is lost.
 
 ## Turning it on
 

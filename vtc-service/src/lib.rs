@@ -48,6 +48,7 @@ pub mod hooks;
 pub mod install;
 pub mod join;
 pub mod keys;
+pub mod keys_cli;
 pub mod member_portal;
 pub mod member_push;
 pub mod members;
