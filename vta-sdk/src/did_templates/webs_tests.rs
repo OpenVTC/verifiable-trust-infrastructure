@@ -315,6 +315,11 @@ fn the_builtins_as_section_9_2_reads_them_today() {
         ("room", None),
         ("dtg-witness", None),
         ("did-host-tsp", None),
+        ("vtc-host-classical", None),
+        (
+            "vtc-host",
+            Some((NotRepresentableReason::KeyAlgorithm, &["/keys/pq-signing"])),
+        ),
         (
             "swiyu-verifier",
             Some((
@@ -359,6 +364,59 @@ fn the_builtins_as_section_9_2_reads_them_today() {
             (got, want) => panic!("{name}: got {got:?}, want {want:?}"),
         }
     }
+}
+
+/// A did:webs VTC (VTI-KEY-001, level 1 per VTI-KEY-146): `vtc-host-classical`
+/// maps onto exactly the designations a VTC needs — every vtc-host service,
+/// ids reduced to fragments, the messaging transports when supplied — and
+/// `vtc-host` itself stays refused for its post-quantum slot, by the key rule,
+/// before anything renders.
+#[test]
+fn vti_key_001_a_did_webs_vtc_is_shaped_by_vtc_host_classical() {
+    let t = load_embedded("vtc-host-classical").unwrap();
+    let mut vars = TemplateVars::new();
+    for (k, v) in [
+        ("DID", DID),
+        ("SIGNING_KEY_MB", SIGNING_MB),
+        ("KA_KEY_MB", KA_MB),
+        ("URL", "https://vtc.example"),
+    ] {
+        vars.insert_string(k, v);
+    }
+    vars.insert(
+        crate::did_templates::TSP_SERVICE_VAR,
+        crate::did_templates::tsp_service("did:webvh:QmMediator:mediator.example").unwrap(),
+    );
+    vars.insert(
+        crate::did_templates::DIDCOMM_SERVICE_VAR,
+        crate::did_templates::didcomm_service("did:webvh:QmMediator:mediator.example").unwrap(),
+    );
+    let rendered = t.render(&vars).unwrap();
+    let d = map_webs_document(&t, &rendered, DID, &keys()).expect("representable");
+    let ids: Vec<&str> = d
+        .services
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "#tsp",
+            "#didcomm",
+            "#vtc-rest",
+            "#vtc-status-list",
+            "#trust-tasks",
+            "#sign-in-portal"
+        ]
+    );
+    assert_eq!(d.services[2]["serviceEndpoint"], "https://vtc.example/v1");
+    assert!(d.also_known_as.is_empty());
+
+    let full = load_embedded("vtc-host").unwrap();
+    let refused = check_key_shape(&full).expect_err("a second signing slot");
+    assert_eq!(refused.reason, NotRepresentableReason::KeyAlgorithm);
+    assert_eq!(refused.members, ["/keys/pq-signing"]);
+    assert!(refused.message.contains("did:webvh"), "{}", refused.message);
 }
 
 #[test]

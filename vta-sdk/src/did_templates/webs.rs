@@ -535,7 +535,16 @@ pub fn map_webs_document(
                         return None;
                     }
                     let id = o.get("id")?.as_str()?;
-                    let frag = id.strip_prefix(did).unwrap_or(id);
+                    // `{DID}#…` is this DID too: an entry a caller supplies
+                    // whole (`SERVICE_TSP`, `SERVICE_DIDCOMM`, built by
+                    // `tsp_service` / `didcomm_service`) keeps the placeholder,
+                    // because a whole-value substitution is not substituted
+                    // again — the did:webvh path relies on that, its library
+                    // filling `{DID}` once the SCID exists.
+                    let frag = id
+                        .strip_prefix(did)
+                        .or_else(|| id.strip_prefix("{DID}"))
+                        .unwrap_or(id);
                     (frag.starts_with('#') && frag.len() > 1).then(|| frag.to_string())
                 });
                 match fragment {
