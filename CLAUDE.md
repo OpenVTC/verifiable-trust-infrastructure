@@ -47,7 +47,8 @@ Generated (below the leaves; trust-tasks-rs only):
 
 Layer 0 (leaves):
   vti-common   (no internal deps)
-  vta-sdk      (no internal deps)
+  vta-signing  (no internal deps; the signing core, used by vta-sdk, vta-keys, vta-service)
+  vta-sdk      → vta-signing
   vti-secrets     → vti-common (+ vta-sdk under the `onboarding` feature)
 
 Layer 1 (VTA foundations):
@@ -60,7 +61,7 @@ Layer 1 (VTA foundations):
 
 Layer 2 (VTA subsystems):
   vta-support     → vta-config, vta-keyspaces, vta-sdk, vti-common
-  vta-keys        → vta-config, vta-keyspaces, vta-sdk, vti-common, vti-secrets
+  vta-keys        → vta-config, vta-keyspaces, vta-sdk, vta-signing, vti-common, vti-secrets
   vta-vault       → vta-keyspaces, vta-sdk, vti-common
   vta-external    → vta-keys, vta-keyspaces, vta-sdk, vti-common
   vta-webvh       → vta-keyspaces, vta-sdk, vti-common
@@ -75,7 +76,7 @@ Layer 3 (composed subsystems):
 Layer 4 (the spine + consumers):
   vta-cli-common  → vta-sdk, vti-common
   vta-service     → every vta-* subsystem above, + vti-common, vti-secrets,
-                    vta-sdk, vta-cli-common
+                    vta-sdk, vta-signing, vta-cli-common
   vtc-service     → vti-common, vti-secrets, vta-sdk
   pnm-cli         → vta-sdk, vta-cli-common
   cnm-cli         → vta-sdk, vta-cli-common
@@ -92,6 +93,7 @@ Layer 4 (the spine + consumers):
 | `vti-specs` | Facade: re-exports every family at its (deprecated) `trust_tasks_rs::specs` path and merges the four `schema_index` tables (`schema_for`, `spec_policy_for`, `error_codes_for`, `max_document_bytes_for`, `is_pinned`). `vta-sdk` re-exports it as `vta_sdk::specs` |
 | `vti-common` | Shared foundation: `host_session` (a host service identity's mediator session), JWT auth, ACL, `Store` (local fjall + vsock), `AppError`, config types, identifier validation, `secure_file`, telemetry sink, `SeedStore`, `guards` |
 | `vta-sdk` | Public SDK: types, REST + DIDComm client, `sealed_transfer`, `did_templates`, `provision_integration`, attestation verification, `protocol` (DIDComm protocol-management types) |
+| `vta-signing` | **The signing core**: Ed25519 / P-256 keys (`SigningSecret`, `PublicKey`, the `Signer` trait), the opaque-signing framing, and the bytes and artefacts of `keys/sign-jws` (JWS), `keys/sign-document` (`eddsa-jcs-2022`) and `keys/sign-sshsig`, each as `prepare_*` / `finish_*` / `sign_*` plus verification, the rules for which key may sign as which DID, and the specification's refusal codes. No async, I/O, storage or workspace dependency, so a service that signs with keys of its own (the agent gateway) depends on it without compiling the VTA. The VTA wraps its gates, custody, quota and audit *around* it (detail: `vta-signing/CLAUDE.md`) |
 | `vti-secrets` | Shared secret-store backends (AWS / GCP / Azure / Vault / Kubernetes / keyring / config-seed / TEE-KMS / plaintext) + the `create_seed_store(&secrets, &data_dir)` factory + `SecretsConfig`, all behind the same feature flags, shared by the VTA (`vta-keys::seed_store`) and the VTC (its own factory, `vtc-service::keys::seed_store`). Feature `onboarding`: `IntegrationOnboarding`, the ephemeral-`did:key` → ACL-grant → auto-rotate cold-start helper for external integrations |
 | `vta-keyspaces` | Keyspace-name registry — the `const` names every `store.keyspace(..)` call uses, plus the backup partition (`ALL` / `BACKED_UP` / `EXCLUDED_FROM_BACKUP`, pinned by a census test). Dependency-free leaf |
 | `vta-config` | `AppConfig` TOML shape + sub-configs (`PolicyConfig`; under `tee`, `TeeConfig` / `TeeKmsConfig` / `TeeMode`), composed over `vti-common`'s shared config types |
@@ -454,6 +456,15 @@ line here.
 ## Runtime guards to preserve
 
 These are load-bearing — know they exist before adjusting nearby code.
+
+- **Signatures are made by `vta-signing`.** Do not hand-roll Ed25519 or P-256
+  signing, a JWS signing input, an `eddsa-jcs-2022` hash or an SSHSIG statement
+  in an operation: build the bytes with `vta_signing` (`prepare_*`), sign
+  through the audited chokepoint (`sign_payload_recorded`), and finish with
+  `vta_signing` (`finish_*`). One implementation is what lets a signing fix
+  reach the VTA and every service that signs with its own keys. The seams not
+  yet moved (certificate requests, Trust Task and holder proofs, rooms, voting,
+  `did:webvh` updates) are listed in `vta-signing/README.md`.
 
 - **Never test `allowed_contexts.is_empty()`.** An empty context list on
   an ACL entry means *unrestricted* for `Role::Admin` and *authorized

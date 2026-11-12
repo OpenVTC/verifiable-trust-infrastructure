@@ -42,14 +42,14 @@ feature, so the default-feature reproduction the report printed never touched
 it. A dependency break of this shape is fixed upstream or by a raised floor,
 never by a change here.
 
-**27 of 37 crates publish.** The ten that do not — `vta-enclave`,
+**28 of 38 crates publish.** The ten that do not — `vta-enclave`,
 `vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`,
 `room-host`, `vti-rooms-wasm`, `vti-witness`, `vti-voting-service` — set `publish = false` in their
 own manifest, each with a comment saying why. (The count is the workspace's
 members plus `vti-fuzz`; the excluded `deploy/nitro/enclave-proxy` is a
 deployment helper, not counted.)
 
-The other 27 are `vta-sdk`, `vti-common`, `vti-secrets`, `vta-cli-common`,
+The other 28 are `vta-sdk`, `vta-signing`, `vti-common`, `vti-secrets`, `vta-cli-common`,
 `vtc-client`, `pnm-cli`, `cnm-cli`, `vtc-service` — plus `vta-service` and its
 closure (`vta-audit`, `vta-backup`, `vta-config`, `vta-keys`, `vta-keyspaces`,
 `vta-policy`, `vta-support`, `vta-sweepers`, `vta-tee`, `vta-vault`,

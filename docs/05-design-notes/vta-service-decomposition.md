@@ -44,6 +44,14 @@ the goal. The goals it stands in for:
 If a proposed extraction moves lines without advancing one of those three, it is
 not worth doing.
 
+`vta-signing` is the case that passes the third test for a consumer outside the
+VTA: a service that signs with keys of its own (the agent gateway) needs the
+signing core, not the server, and without the extraction its only way to reuse
+the VTA's signing code was to link `vta-service` and with it about 300 further
+crates, an MPL-2.0 licence exception and the VTA's HTTP, database and AWS stacks.
+It moves the code that builds and makes a signature, and leaves the gates, key
+custody, quota and audit around it where they are.
+
 ## The layering that emerged
 
 Dependencies flow strictly downward, as everywhere else in the workspace.
@@ -73,6 +81,7 @@ Layer 4  vta-service                                      (the spine)
 | `vta-backup` | 3,891 | Encrypted export/import (Argon2id + AES-256-GCM), compatibility check, two-phase descriptor flow, sealed bundle store. |
 | `vta-tee` | 3,970 | TEE bootstrap: attestation providers, KMS attest/decrypt, storage-key derivation, anti-rollback anchor, Mode-B carve-out. |
 | `vta-sweepers` | 449 | Background TTL sweepers for the core keyspaces. |
+| `vta-signing` | ~2,400 | The signing core: keys, the opaque-signing framing, and the bytes and artefacts of JWS, `eddsa-jcs-2022` and SSHSIG, with verification. A Layer 0 leaf with no workspace dependency. |
 
 ## Technique
 
