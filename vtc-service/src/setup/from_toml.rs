@@ -37,8 +37,8 @@ use vti_common::error::AppError;
 use crate::config::{MessagingConfig, SecretsConfig};
 
 use super::wizard::{
-    ProvisionTransport, SetupOutcome, Transport, WebvhTarget, WizardInputs, WizardPlan, apply,
-    normalize_registry_did, refuse_if_already_set_up,
+    IdentityMethod, ProvisionTransport, SetupOutcome, Transport, WebvhTarget, WizardInputs,
+    WizardPlan, apply, normalize_registry_did, refuse_if_already_set_up,
 };
 
 /// The `[messaging]` table: the mediator, plus which transports the
@@ -158,6 +158,14 @@ pub(crate) struct VtcWizardInputs {
     #[serde(default)]
     pub scid_also_known_as: Option<bool>,
 
+    /// The method of the community's own DID: `"webvh"` (the default) or
+    /// `"webs"`, a level-1 did:webs (alpha; VTI-KEY-001) published by the VTA
+    /// at `[webvh] server_id`, which is then required — a did:webs has no
+    /// serverless mode. Minted from `vtc-host-classical`: one signing key, no
+    /// post-quantum key.
+    #[serde(default)]
+    pub identity_method: IdentityMethod,
+
     /// Where the VTC's `did:webvh` is published. All fields optional; an
     /// empty `[webvh]` table (or omitting it) reproduces the serverless
     /// default — the VTC self-hosts its `did.jsonl` at `base_url` with a
@@ -253,6 +261,7 @@ pub(crate) fn parse_from_toml(
             provision_transport: inputs.provision_transport,
             did_method: inputs.did_method,
             scid_also_known_as: inputs.scid_also_known_as,
+            identity_method: inputs.identity_method,
         },
         webvh: inputs.webvh,
         secrets: inputs.secrets,
@@ -294,6 +303,39 @@ fn validate(inputs: &VtcWizardInputs) -> Result<(), AppError> {
 
     if inputs.context.trim().is_empty() {
         errors.push("context must not be empty".into());
+    }
+
+    // A did:webs is published by a did-hosting server, never self-hosted, at
+    // `did:webs:<domain>[:<path>]:<AID>`, and its key event log has no
+    // did:scid alias to list.
+    if inputs.identity_method == IdentityMethod::Webs {
+        if inputs
+            .webvh
+            .server_id
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+        {
+            errors.push(
+                "identity_method = \"webs\" needs [webvh] server_id: a did:webs VTC is \
+                 published by one of the VTA's did-hosting servers (built with did:webs \
+                 hosting); it has no serverless mode"
+                    .into(),
+            );
+        }
+        if inputs.webvh.path.as_deref().map(str::trim) == Some(".well-known") {
+            errors.push(
+                "[webvh] path \".well-known\" names a did:webvh root DID; a did:webs is \
+                 did:webs:<domain>[:<path>]:<AID>. Omit path, or give a slot path"
+                    .into(),
+            );
+        }
+        if inputs.scid_also_known_as.is_some() {
+            errors.push(
+                "scid_also_known_as applies to a did:webvh log; omit it with \
+                 identity_method = \"webs\""
+                    .into(),
+            );
+        }
     }
 
     if let Some(co_admin) = inputs.co_admin_did.as_deref() {
@@ -439,6 +481,38 @@ keyring_service = "vtc-test"
         assert!(inputs.messaging.is_none());
         assert!(inputs.webvh.server_id.is_none());
         assert_eq!(inputs.secrets.keyring_service, "vtc-test");
+    }
+
+    /// VTI-KEY-001: `identity_method = "webs"` asks for a did:webs VTC, which
+    /// needs a hosting server and takes no did:scid alias; omitted, the VTC is
+    /// a did:webvh, as before.
+    #[test]
+    fn vti_key_001_a_did_webs_vtc_needs_a_hosting_server() {
+        let base = minimal_toml("/srv/vtc/config.toml", "/tmp/key.json");
+        let inputs: VtcWizardInputs = toml::from_str(&base).unwrap();
+        assert_eq!(inputs.identity_method, IdentityMethod::Webvh);
+
+        let webs = format!("identity_method = \"webs\"\n{base}");
+        let inputs: VtcWizardInputs = toml::from_str(&webs).unwrap();
+        assert_eq!(inputs.identity_method, IdentityMethod::Webs);
+        let err = validate(&inputs).unwrap_err().to_string();
+        assert!(err.contains("server_id"), "{err}");
+
+        let hosted = format!(
+            "identity_method = \"webs\"\nscid_also_known_as = true\n{base}\n\
+             [webvh]\nserver_id = \"host-1\"\npath = \".well-known\"\n"
+        );
+        let inputs: VtcWizardInputs = toml::from_str(&hosted).unwrap();
+        let err = validate(&inputs).unwrap_err().to_string();
+        assert!(
+            err.contains(".well-known") && err.contains("scid_also_known_as"),
+            "{err}"
+        );
+
+        let ok = format!(
+            "identity_method = \"webs\"\n{base}\n[webvh]\nserver_id = \"host-1\"\npath = \"communities\"\n"
+        );
+        validate(&toml::from_str(&ok).unwrap()).expect("valid");
     }
 
     #[test]
