@@ -394,6 +394,18 @@ When adding a flow, add it here and a line to the root index.
     the context); the standard `e.p.msg.unauthorized` code is
     reserved for actual auth failures so the CLI doesn't print
     a misleading "Token may be expired" hint.
+- **did:webs integrations** (design note did-webs-in-the-vta §4, S7): the
+  template var `DID_METHOD=webs` routes the mint to
+  `operations::did_webs::create_did_webs` (level 1, class `service`, the
+  template, `[dids] webs_service_dids`) through
+  `provision_integration/webs.rs`, published at `WEBVH_SERVER` (required — no
+  serverless mode). The bundle stays `TemplateBootstrap`: keys under their
+  `<did>#<CESR key>` ids (the record ids, checked against the derived
+  document), and `TemplateOutput::WebsKeriCesr` in place of a `did.jsonl` —
+  emitted only for a did:webs, so webvh bundles are byte-identical and an old
+  opener is refused it by name. Never add a provision wire member for the
+  method; a spec change goes to dtgwg-trust-tasks-tf first. Tests inject the
+  host through `WebsHostSource` (`provision_integration_with`).
 - **Code**: `vta-service/src/operations/provision_integration.rs`,
   `vta-sdk/src/provision_integration/{http,didcomm}.rs`,
   `vta-service/src/routes/bootstrap.rs:provision_integration`,

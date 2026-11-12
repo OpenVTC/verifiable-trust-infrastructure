@@ -26,7 +26,7 @@ use vta_sdk::provision_client::{
 use vti_secrets::{SecretBackend, SecretsConfig};
 
 use crate::config::{DEFAULT_LISTEN, ServiceIdentity, VotingConfig};
-use crate::identity::{bundle_from_material, load_keys, save_keys};
+use crate::identity::{load_keys, save_keys};
 
 /// The VTA context the identity is provisioned into unless the operator names another.
 pub const DEFAULT_CONTEXT: &str = "voting";
@@ -110,6 +110,11 @@ pub struct SetupInputs {
     /// Serverless: the URL the operator will serve the DID log from.
     #[serde(default)]
     pub url: Option<String>,
+    /// The DID method: `webvh` (the default), `scid` (the same log, presented as `did:scid`),
+    /// or `webs` — a `did:webs` the VTA publishes at `webvh_server` (alpha; the VTA must allow
+    /// did:webs service DIDs, and a community must declare it resolves did:webs, VTI-KEY-008).
+    #[serde(default)]
+    pub did_method: Option<String>,
 }
 
 fn default_context() -> String {
@@ -160,16 +165,43 @@ impl SetupInputs {
                     .to_string(),
             );
         }
-        match (&self.webvh_server, &self.url) {
-            (None, None) => errors.push(
-                "name webvh_server (a registered DID-hosting server) or url (where you will \
-                 serve the DID log yourself): the VTA needs one to know where the log goes"
-                    .to_string(),
-            ),
-            (_, Some(url)) if !url.starts_with("https://") => {
-                errors.push(format!("url must start with https:// (got {url:?})"));
+        let webs = match self.did_method.as_deref() {
+            None | Some("webvh" | "scid") => false,
+            Some("webs") => true,
+            Some(other) => {
+                errors.push(format!(
+                    "did_method must be webvh, scid or webs (got {other:?})"
+                ));
+                false
             }
-            _ => {}
+        };
+        if webs {
+            if self.webvh_server.is_none() {
+                errors.push(
+                    "a did:webs is published by the VTA at a DID-hosting server; name \
+                     webvh_server"
+                        .to_string(),
+                );
+            }
+            if self.url.is_some() {
+                errors.push(
+                    "url is where a serverless did:webvh log is served; a did:webs has none, so \
+                     remove it"
+                        .to_string(),
+                );
+            }
+        } else {
+            match (&self.webvh_server, &self.url) {
+                (None, None) => errors.push(
+                    "name webvh_server (a registered DID-hosting server) or url (where you will \
+                     serve the DID log yourself): the VTA needs one to know where the log goes"
+                        .to_string(),
+                ),
+                (_, Some(url)) if !url.starts_with("https://") => {
+                    errors.push(format!("url must start with https:// (got {url:?})"));
+                }
+                _ => {}
+            }
         }
         if errors.is_empty() {
             Ok(())
@@ -203,6 +235,7 @@ impl SetupInputs {
             ("WEBVH_SERVER", &self.webvh_server),
             ("WEBVH_DOMAIN", &self.webvh_domain),
             ("WEBVH_PATH", &self.webvh_path),
+            ("DID_METHOD", &self.did_method),
         ] {
             if let Some(value) = value {
                 ask.integration_template_vars
@@ -259,13 +292,18 @@ pub async fn run_from_file(path: &Path) -> anyhow::Result<()> {
         inputs.vta_did
     );
     let result = provision(&inputs.vta_did, &setup_key, inputs.ask()).await?;
-    let (Some(did), Some(material)) = (result.integration_did(), result.integration_key()) else {
+    // Led by the key the document lists for authentication, which every answer is signed with
+    // (VTI-KEY-150).
+    let (Some(did), Some(bundle)) = (
+        result.integration_did(),
+        result.integration_secrets_bundle(),
+    ) else {
         anyhow::bail!("the VTA's bundle carries no integration DID or keys");
     };
     let did = did.to_string();
 
     // Keys first, then the configuration that names them.
-    save_keys(&*store, &bundle_from_material(material)).await?;
+    save_keys(&*store, &bundle).await?;
     if !store.set_persists_across_restart() {
         eprintln!(
             "warning: the configured secret store does not survive a restart; the identity's \
@@ -443,6 +481,26 @@ mod tests {
             ask.admin_template.is_none(),
             "no VTA credential reaches this host"
         );
+    }
+
+    /// `did_method = "webs"` passes `DID_METHOD=webs` through, needs a hosting server, and takes
+    /// no serverless `url` (a did:webs has no did.jsonl to serve).
+    #[test]
+    fn a_did_webs_ballot_box_names_its_server_and_no_url() {
+        let raw = SETUP.replace(
+            "url = \"https://votes.example.net/did\"",
+            "webvh_server = \"prod\"\n        did_method = \"webs\"",
+        );
+        let inputs = SetupInputs::from_toml_str(&raw).expect("parses");
+        assert_eq!(inputs.ask().integration_template_vars["DID_METHOD"], "webs");
+
+        let raw = SETUP.replace(
+            "url = \"https://votes.example.net/did\"",
+            "url = \"https://votes.example.net/did\"\n        did_method = \"webs\"",
+        );
+        let err = SetupInputs::from_toml_str(&raw).unwrap_err().to_string();
+        assert!(err.contains("name webvh_server"), "{err}");
+        assert!(err.contains("remove it"), "{err}");
     }
 
     #[test]

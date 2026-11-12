@@ -828,6 +828,7 @@ pub async fn run_keys_bundle(
         acl_ks: &state.acl_ks,
         #[cfg(feature = "webvh")]
         webvh_ks: &state.webvh_ks,
+        webs_ks: &state.webs_ks,
         seed_store: &state.seed_store,
     };
     let bundle = build_did_secrets_bundle(
@@ -1344,6 +1345,7 @@ pub async fn run_context_reprovision(
         acl_ks: &state.acl_ks,
         #[cfg(feature = "webvh")]
         webvh_ks: &state.webvh_ks,
+        webs_ks: &state.webs_ks,
         seed_store: &state.seed_store,
     };
 

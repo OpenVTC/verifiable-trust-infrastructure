@@ -236,6 +236,7 @@ pub(super) async fn handle_secrets(
         acl_ks: &state.acl_ks,
         #[cfg(feature = "webvh")]
         webvh_ks: &state.webvh_ks,
+        webs_ks: &state.webs_ks,
         seed_store: &state.seed_store,
     };
     let channel = super::keys::export_channel();

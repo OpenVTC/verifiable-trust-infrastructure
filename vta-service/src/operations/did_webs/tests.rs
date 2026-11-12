@@ -1460,6 +1460,7 @@ async fn a_did_webs_persona_sends_and_receives_didcomm_through_its_mediator() {
             acl_ks: &f.ts.acl_ks,
             #[cfg(feature = "webvh")]
             webvh_ks: &f.ts.webvh_ks,
+            webs_ks: &f.ts.webs_ks,
             seed_store: &seed_store,
         },
         &crate::test_support::super_admin_claims(),
@@ -1469,6 +1470,20 @@ async fn a_did_webs_persona_sends_and_receives_didcomm_through_its_mediator() {
     .await
     .expect("the persona's secrets");
     assert_eq!(bundle.did, c.did, "the context's DID is the persona");
+    // Exactly the keys the document lists, led by its authentication key: the
+    // pre-rotated successor stays with the VTA (it controls the next rotation),
+    // and is never what a reader of the first Ed25519 key signs with.
+    let ids: Vec<&str> = bundle.secrets.iter().map(|e| e.key_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![c.signing_key_id.as_str(), c.key_agreement_key_id.as_str()],
+        "{ids:?}"
+    );
+    assert!(!ids.contains(&c.next_key_id.as_str()));
+    assert_eq!(
+        bundle.trust_task_signing_key().map(|e| e.key_id.as_str()),
+        Some(c.signing_key_id.as_str())
+    );
     let persona_secrets: Vec<Secret> = bundle
         .secrets
         .iter()

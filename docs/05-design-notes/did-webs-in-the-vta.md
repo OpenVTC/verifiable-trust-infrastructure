@@ -156,7 +156,7 @@ fails with `methodNotDeclared` and sends nothing (VTI-KEY-009).
 | S4 | VTI | Node keys by role, for every method (decision 1). *Done (#2670).* |
 | S5 | VTI | `resolvedMethods` in node documents and templates; the declaration check and both refusals. *Done (below).* |
 | S6 | VTI | A did:webs VTA identity: setup (interactive and TOML), first boot through S3, the key-role designation, readiness, the self-DID preload, `didcomm_light`, runtime services through `update_did_webs`, rotation of its own DID. *Done (#2675 and the PRs after it), except the wire for rotating role keys, which belongs to the `vta/dids` family (trust-tasks-tf#993): the operation restarts the VTA to load keys whose ids changed, rather than swapping them live.* |
-| S7 | VTI | A did:webs VTC identity, and host services minted through provision-integration templates |
+| S7 | VTI | A did:webs VTC identity, and host services minted through provision-integration templates. *Host services done: `DID_METHOD=webs` provisions any level-1-representable template (`dtg-witness`, `ballot-box`, `room-host`, `did-host-*`) as a class-`service` did:webs; the bundle carries the stream as `TemplateOutput::WebsKeriCesr`; host services sign with the document's authentication key (`docs/02-vta/did-webs.md`, "Provisioning an integration"). The VTC identity remains.* |
 | S8 | VTI | TEE first boot (the enclave publishes to a host) |
 
 ### S5: where the declaration is made and checked
