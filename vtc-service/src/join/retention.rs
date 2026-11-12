@@ -78,6 +78,9 @@ impl RetentionSweeper {
     /// - step-up passkey invites and redemption/revocation ceremonies past
     ///   their life (`step_up_passkeys_ks`), the same storage bound for
     ///   `crate::step_up_passkey`. The credentials themselves are kept.
+    /// - sign-in, step-up, enrolment and revocation passkey ceremony state
+    ///   past its five-minute life (`passkey_ks`, `member_passkey_ks`), the
+    ///   same storage bound for `vti_common::auth::passkey::store`.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         join_requests_ks: KeyspaceHandle,
@@ -85,6 +88,8 @@ impl RetentionSweeper {
         accepted_ids_ks: KeyspaceHandle,
         step_up_marks_ks: KeyspaceHandle,
         step_up_passkeys_ks: KeyspaceHandle,
+        passkey_ks: KeyspaceHandle,
+        member_passkey_ks: KeyspaceHandle,
         backup_bundles_ks: KeyspaceHandle,
         backup_blob_dir: std::path::PathBuf,
         config: JoinRequestsConfig,
@@ -113,6 +118,7 @@ impl RetentionSweeper {
             }
             sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
             sweep_step_up_passkeys(&step_up_passkeys_ks).await;
+            sweep_passkey_ceremonies(&passkey_ks, &member_passkey_ks, now_secs()).await;
             loop {
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
@@ -134,6 +140,7 @@ impl RetentionSweeper {
                         }
                         sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
                         sweep_step_up_passkeys(&step_up_passkeys_ks).await;
+                        sweep_passkey_ceremonies(&passkey_ks, &member_passkey_ks, now_secs()).await;
                     }
                 }
             }
@@ -161,6 +168,47 @@ async fn sweep_step_up_passkeys(ks: &KeyspaceHandle) {
         ),
         Err(e) => warn!(error = %e, "step-up passkey sweep failed"),
     }
+}
+
+/// Drop lapsed passkey ceremony state (sign-in, step-up, enrolment and
+/// revocation challenges, and the pins beside them) from the console's and
+/// the member portal's passkey keyspaces. A storage bound: every take and
+/// read already treats a lapsed row as absent. Its own pass for the same
+/// reason as [`sweep_backup_bundles`].
+async fn sweep_passkey_ceremonies(
+    passkey_ks: &KeyspaceHandle,
+    member_passkey_ks: &KeyspaceHandle,
+    now: u64,
+) -> usize {
+    use vti_common::auth::passkey::store::sweep_expired_ceremonies;
+    let mut swept = 0;
+    for (ks, extra) in [
+        (
+            passkey_ks,
+            &[crate::routes::admin::passkeys::REVOKE_TARGET_PREFIX][..],
+        ),
+        (
+            member_passkey_ks,
+            &[crate::routes::member_portal::MEMBER_REG_PREFIX][..],
+        ),
+    ] {
+        match sweep_expired_ceremonies(ks, now, extra).await {
+            Ok(0) => {}
+            Ok(n) => {
+                swept += n;
+                info!(
+                    expired = n,
+                    "retention sweep purged lapsed passkey ceremony state"
+                )
+            }
+            Err(e) => warn!(error = %e, "passkey ceremony sweep failed"),
+        }
+    }
+    swept
+}
+
+fn now_secs() -> u64 {
+    Utc::now().timestamp().max(0) as u64
 }
 
 /// One full retention pass across all five stale-row kinds. Each sub-sweep is
@@ -429,5 +477,36 @@ mod tests {
         );
         // Old Failed sync job reaped.
         assert!(list_sync_jobs(&sync_ks).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_passkey_ceremony_sweep_covers_both_keyspaces_and_the_host_pins() {
+        use vti_common::auth::passkey::store::store_pending;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let console = store.keyspace("passkeys").unwrap();
+        let portal = store.keyspace("member_passkeys").unwrap();
+        let revoke_pin = format!("{}r1", crate::routes::admin::passkeys::REVOKE_TARGET_PREFIX);
+        let member_pin = format!("{}m1", crate::routes::member_portal::MEMBER_REG_PREFIX);
+        store_pending(&console, revoke_pin.clone(), &"did\ncred")
+            .await
+            .unwrap();
+        store_pending(&portal, member_pin.clone(), &("did", "uuid"))
+            .await
+            .unwrap();
+
+        // Live now: nothing goes.
+        assert_eq!(
+            sweep_passkey_ceremonies(&console, &portal, now_secs()).await,
+            0
+        );
+        // Long after their life: both go.
+        let later = now_secs() + 3_600;
+        assert_eq!(sweep_passkey_ceremonies(&console, &portal, later).await, 2);
+        assert!(console.get_raw(revoke_pin).await.unwrap().is_none());
+        assert!(portal.get_raw(member_pin).await.unwrap().is_none());
     }
 }

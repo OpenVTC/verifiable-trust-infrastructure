@@ -697,7 +697,11 @@ pub async fn passkey_login_start(
         };
         (user, Some(binding))
     } else if let Some(subject) = &req.subject {
-        (credentials_for(&state, subject).await?, None)
+        // Answered alike whether or not `subject` holds passkeys: an enrolled
+        // subject's own credentials, otherwise a stand-in set that is stable
+        // for that subject. Either way the caller gets a challenge of the same
+        // shape and a ceremony that only a registered authenticator can finish.
+        (login_credentials_for(&state, subject).await?, None)
     } else {
         (get_all_passkeys(&state.passkey_ks).await?, None)
     };
@@ -722,7 +726,10 @@ pub async fn passkey_login_start(
     if let Some(binding) = &binding {
         store_auth_step_up(&state.passkey_ks, &auth_id, binding).await?;
     }
-    store_auth_state(&state.passkey_ks, &auth_id, &auth_state).await?;
+    // A step-up counts against the session's subject; a login has no owner
+    // yet and counts against the shared anonymous bound.
+    let owner = binding.as_ref().map(|b| b.did.as_str());
+    store_auth_state(&state.passkey_ks, &auth_id, owner, &auth_state).await?;
 
     info!(
         auth_id = %auth_id,
@@ -798,9 +805,15 @@ pub async fn passkey_login_finish(
     // the operator a retry, not the ceremony.
     let session_key = session_key_from_ext(req.ext.as_ref())?;
 
-    let auth_state = take_auth_state(&state.passkey_ks, &req.auth_id)
-        .await?
-        .ok_or_else(|| AppError::Authentication("auth state not found or expired".into()))?;
+    // One answer for every failure before a registered credential is found
+    // (no ceremony, a lapsed one, an assertion that does not verify, a
+    // credential not registered), so a finish tells a caller no more than the
+    // start did about which subjects hold passkeys. The detail is logged.
+    let failed = || AppError::Authentication("passkey authentication failed".into());
+    let Some(auth_state) = take_auth_state(&state.passkey_ks, &req.auth_id).await? else {
+        warn!(auth_id = %req.auth_id, "passkey authentication: no live ceremony");
+        return Err(failed());
+    };
     // Consumed together with the ceremony state: a replayed `auth_id` finds
     // neither, so a step-up assertion cannot be spent twice.
     let step_up = take_auth_step_up(&state.passkey_ks, &req.auth_id).await?;
@@ -809,13 +822,16 @@ pub async fn passkey_login_finish(
         .finish_passkey_authentication(&req.credential, &auth_state)
         .map_err(|e| {
             warn!(auth_id = %req.auth_id, error = %e, "passkey authentication failed");
-            AppError::Authentication(format!("passkey authentication failed: {e}"))
+            failed()
         })?;
 
     let cred_id_hex = hex::encode(auth_result.cred_id());
     let mut user = get_passkey_user_by_cred(&state.passkey_ks, &cred_id_hex)
         .await?
-        .ok_or_else(|| AppError::Authentication("credential not registered".into()))?;
+        .ok_or_else(|| {
+            warn!(auth_id = %req.auth_id, "passkey authentication: credential not registered");
+            failed()
+        })?;
 
     // Persist credential-counter update (WebAuthn replay protection).
     for cred in &mut user.credentials {
@@ -988,11 +1004,9 @@ pub(crate) async fn mint_admin_cookie_session(
     })
 }
 
-/// One subject's registered credentials, for a challenge scoped to them.
-///
-/// Deliberately a `Forbidden`, not a `NotFound`: "this DID has no passkeys" and
-/// "this DID isn't known here" are the same answer to an unauthenticated
-/// caller, so a login `subject` probe learns nothing about who is enrolled.
+/// The authenticated session subject's own credentials, for a step-up
+/// challenge scoped to them. An unauthenticated login naming a subject goes
+/// through [`login_credentials_for`] instead, which never refuses.
 async fn credentials_for(
     state: &AppState,
     did: &str,
@@ -1002,6 +1016,128 @@ async fn credentials_for(
         .await?
         .map(|user| user.credentials)
         .ok_or_else(|| AppError::Forbidden("no passkeys registered for that subject".into()))
+}
+
+/// The credentials an unauthenticated login naming `did` is challenged
+/// over: the subject's own when it holds passkeys, otherwise a stand-in set
+/// ([`decoy_passkeys`]) derived from `did` under a key only this community
+/// holds.
+///
+/// The two are answered through the same path — one lookup, one
+/// `start_passkey_authentication`, one stored ceremony — so the response's
+/// shape, the stored state and the time taken do not say whether `did` is
+/// enrolled. The stand-in is the same on every call for one `did`, so asking
+/// twice does not tell them apart either. No authenticator holds a stand-in
+/// credential, so its ceremony fails at finish like any wrong assertion.
+async fn login_credentials_for(
+    state: &AppState,
+    did: &str,
+) -> Result<Vec<webauthn_rs::prelude::Passkey>, AppError> {
+    vti_common::identifier::validate_did("subject", did)?;
+    let own = vti_common::auth::passkey::store::get_passkey_user_by_did(&state.passkey_ks, did)
+        .await?
+        .map(|user| user.credentials)
+        .unwrap_or_default();
+    if !own.is_empty() {
+        return Ok(own);
+    }
+    let key = decoy_key(&state.passkey_ks).await?;
+    decoy_passkeys(&key, did)
+}
+
+/// Where the stand-in key lives in `passkey_ks`. Not a ceremony prefix, so
+/// no sweep touches it.
+const DECOY_KEY_ROW: &str = "pk_decoy_key";
+
+/// This community's key for stand-in credentials: 32 random bytes made on
+/// first use and kept, so a stand-in set survives restarts as a real one
+/// does. Stored like every other `passkey_ks` row (encrypted at rest when
+/// the store is).
+async fn decoy_key(ks: &KeyspaceHandle) -> Result<[u8; 32], AppError> {
+    use rand::RngExt;
+    let read = |bytes: Vec<u8>| {
+        <[u8; 32]>::try_from(bytes.as_slice())
+            .map_err(|_| AppError::Internal("stand-in credential key is malformed".into()))
+    };
+    if let Some(bytes) = ks.get_raw(DECOY_KEY_ROW).await? {
+        return read(bytes);
+    }
+    let mut fresh = [0u8; 32];
+    rand::rng().fill(&mut fresh);
+    // Two first uses racing: one write wins and both read it back.
+    ks.insert_raw_if_absent(DECOY_KEY_ROW, fresh.to_vec())
+        .await?;
+    match ks.get_raw(DECOY_KEY_ROW).await? {
+        Some(bytes) => read(bytes),
+        None => Err(AppError::Internal(
+            "stand-in credential key was not stored".into(),
+        )),
+    }
+}
+
+/// One or two stand-in credentials for `did`, every detail drawn from
+/// `HMAC-SHA256(key, did)`: how many, each id's length (16, 20, 32 or 64
+/// bytes, the lengths common authenticators use), the id bytes and the
+/// transports (none, or a set common authenticators report). The public key
+/// is never used: no assertion can verify.
+fn decoy_passkeys(
+    key: &[u8; 32],
+    did: &str,
+) -> Result<Vec<webauthn_rs::prelude::Passkey>, AppError> {
+    use base64::Engine as _;
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+
+    let prf = |label: &str| -> [u8; 32] {
+        let mut mac = <Hmac<Sha256>>::new_from_slice(key).expect("HMAC accepts any key size");
+        mac.update(b"vtc passkey stand-in v1\0");
+        mac.update(label.as_bytes());
+        mac.update(b"\0");
+        mac.update(did.as_bytes());
+        mac.finalize().into_bytes().into()
+    };
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let shape = prf("shape");
+    let count = 1 + usize::from(shape[0] & 1);
+    const LENGTHS: [usize; 4] = [16, 20, 32, 64];
+    // `None`: a client that reported no transports at registration.
+    const TRANSPORTS: [Option<&[&str]>; 5] = [
+        None,
+        Some(&["hybrid", "internal"]),
+        Some(&["internal"]),
+        Some(&["usb"]),
+        Some(&["nfc", "usb"]),
+    ];
+    (0..count)
+        .map(|i| {
+            let len = LENGTHS[usize::from(shape[1 + 2 * i]) % LENGTHS.len()];
+            let transports = TRANSPORTS[usize::from(shape[2 + 2 * i]) % TRANSPORTS.len()];
+            let mut id = prf(&format!("id-{i}-a")).to_vec();
+            id.extend_from_slice(&prf(&format!("id-{i}-b")));
+            id.truncate(len);
+            let x = prf(&format!("x-{i}"));
+            let passkey = serde_json::json!({
+                "cred": {
+                    "cred_id": b64(&id),
+                    "cred": {
+                        "type_": "EDDSA",
+                        "key": { "EC_OKP": { "curve": "ED25519", "x": b64(&x) } }
+                    },
+                    "counter": 0,
+                    "transports": transports,
+                    "user_verified": true,
+                    "backup_eligible": false,
+                    "backup_state": false,
+                    "registration_policy": "required",
+                    "extensions": {},
+                    "attestation": { "data": "None", "metadata": "None" },
+                    "attestation_format": "none"
+                }
+            });
+            serde_json::from_value(passkey)
+                .map_err(|e| AppError::Internal(format!("stand-in credential: {e}")))
+        })
+        .collect()
 }
 
 // ---------- passkey step-up ----------
@@ -2022,4 +2158,55 @@ pub(crate) async fn revoke_sessions_for_did(
         }
     }
     Ok(revoked)
+}
+
+#[cfg(test)]
+mod stand_in_credential_tests {
+    use super::*;
+
+    fn ids(passkeys: &[webauthn_rs::prelude::Passkey]) -> Vec<Vec<u8>> {
+        passkeys
+            .iter()
+            .map(|p| <_ as AsRef<[u8]>>::as_ref(p.cred_id()).to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn a_subject_always_gets_the_same_stand_in_set() {
+        let key = [7u8; 32];
+        let a = decoy_passkeys(&key, "did:key:z6MkA").unwrap();
+        let again = decoy_passkeys(&key, "did:key:z6MkA").unwrap();
+        assert_eq!(ids(&a), ids(&again));
+        assert!((1..=2).contains(&a.len()));
+        for id in ids(&a) {
+            assert!([16, 20, 32, 64].contains(&id.len()), "{}", id.len());
+        }
+        let b = decoy_passkeys(&key, "did:key:z6MkB").unwrap();
+        assert_ne!(ids(&a), ids(&b));
+        let other_key = decoy_passkeys(&[8u8; 32], "did:key:z6MkA").unwrap();
+        assert_ne!(
+            ids(&a),
+            ids(&other_key),
+            "only this community's key derives them"
+        );
+    }
+
+    #[test]
+    fn a_stand_in_set_starts_a_ceremony_like_a_real_one() {
+        let webauthn =
+            vti_common::auth::passkey::build_webauthn("https://vtc.example.com").unwrap();
+        let passkeys = decoy_passkeys(&[7u8; 32], "did:key:z6MkA").unwrap();
+        let (rcr, _state) = webauthn
+            .start_passkey_authentication(&passkeys)
+            .expect("webauthn-rs accepts the stand-in credentials");
+        let options = serde_json::to_value(&rcr.public_key).unwrap();
+        let allowed = options["allowCredentials"].as_array().unwrap();
+        assert_eq!(allowed.len(), passkeys.len());
+        for entry in allowed {
+            assert_eq!(entry["type"], "public-key");
+            assert!(entry["id"].is_string());
+            assert!(entry.get("transports").is_none_or(|t| t.is_array()));
+        }
+        assert_eq!(options["userVerification"], "required");
+    }
 }
