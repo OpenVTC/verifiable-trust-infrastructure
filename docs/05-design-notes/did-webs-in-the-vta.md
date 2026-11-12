@@ -110,7 +110,7 @@ hosting.
 
 ## 4. Service DIDs: a node's own identity as did:webs
 
-**Status:** decided 2026-11-11 by the maintainer; S1–S6 and S8 done, S7 to come.
+**Status:** decided 2026-11-11 by the maintainer; S1–S8 done (S7's VTC at level 1).
 The specification change was dtgwg-vti-spec#121 (refs #120), which admitted
 `did:webs` as an *optional* method usable only toward peers that declared it
 in `resolvedMethods` (VTI-KEY-008). dtgwg-vti-spec#123 replaces that:
@@ -159,7 +159,7 @@ its own identity method and still works with every other.
 | S4 | VTI | Node keys by role, for every method (decision 1). *Done (#2670).* |
 | S5 | VTI | `resolvedMethods` in node documents and templates; the declaration check and both refusals. *Done, then withdrawn with VTI-KEY-008 (below); the receiving refusal stays.* |
 | S6 | VTI | A did:webs VTA identity: setup (interactive and TOML), first boot through S3, the key-role designation, readiness, the self-DID preload, `didcomm_light`, runtime services through `update_did_webs`, rotation of its own DID. *Done (#2675 and the PRs after it), except the wire for rotating role keys, which belongs to the `vta/dids` family (trust-tasks-tf#993): the operation restarts the VTA to load keys whose ids changed, rather than swapping them live.* |
-| S7 | VTI | A did:webs VTC identity, and host services minted through provision-integration templates. *Host services done: `DID_METHOD=webs` provisions any level-1-representable template (`dtg-witness`, `ballot-box`, `room-host`, `did-host-*`) as a class-`service` did:webs; the bundle carries the stream as `TemplateOutput::WebsKeriCesr`; host services sign with the document's authentication key (`docs/02-vta/did-webs.md`, "Provisioning an integration"). The VTC identity remains.* |
+| S7 | VTI | A did:webs VTC identity, and host services minted through provision-integration templates. *Host services done: `DID_METHOD=webs` provisions any level-1-representable template (`dtg-witness`, `ballot-box`, `room-host`, `did-host-*`) as a class-`service` did:webs; the bundle carries the stream as `TemplateOutput::WebsKeriCesr`; host services sign with the document's authentication key (`docs/02-vta/did-webs.md`, "Provisioning an integration"). *The VTC identity: done at level 1 (VTI-KEY-146) — `vtc setup` (interactive and `identity_method = "webs"`) provisions `vtc-host-classical`, `vtc-host` less the post-quantum slot §9.2 refuses, with `DID_METHOD=webs`; the VTC stores its keys by the document's ids and signs by role; no `did.jsonl`; `pnm webs update --services` keeps the VTC's other designated services. Not done: a key-role (level 2+) VTC, which waits on `vta/dids/create` (key-roles plan step 0), and taking over a rotated key-state key without setting up again.* |
 | S8 | VTI | TEE first boot (the enclave publishes to a host). *Done: `[tee.kms.vta_did_webs]` and `vta-enclave`'s `webs` feature; first boot mints through `create_own_identity`, the create setup runs, and startup publishes as for S6; the enclave proxy allowlists the host and domain; a restore replacing another identity detaches did:webs slots too. Not in the fleet tenant overlay.* |
 
 ### S5: the declaration, withdrawn
