@@ -2,6 +2,78 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.37.0...vta-keyspaces-v0.38.0) — 2026-11-12
+
+
+### Added
+
+- **vta**: Update, rotate and delete did:webs DIDs, and act as one as a persona ([#2563](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2563))
+
+* feat(vta)!: update, rotate and delete did:webs DIDs, and act as one as a persona
+
+  Step 5 and 6 of docs/05-design-notes/did-webs-in-the-vta.md, operation layer
+  (the vta/webs/dids wire is trustoverip/dtgwg-trust-tasks-tf#1082):
+
+  - `update_did_webs`: replaces the designated services (`#didcomm` / `#tsp`
+    through the mediator, plus any others), the further aliases, or the key
+    agreement key (a freshly derived X25519 key, never the converted signing
+    key), without touching `k` or `n`. `noChange` when nothing differs,
+    `serviceIdConflict`, `versionConflict` on `expectedVersionId` (`<sn>:<said>`).
+  - `rotate_did_webs_keys`: the committed successor signs a rotation committing a
+    fresh successor; the event and the new successor's key record are staged in
+    the record before publishing, then committed (successor active under its VM
+    id, the replaced key revoked). A staged rotation is published again, never
+    replaced: the next rotation answers it with `resumed`, and every other write
+    completes it first.
+  - `delete_did_webs`: a rotation to no next keys (`nt 0`), committed, then the
+    host slot removed; the record is kept, deactivated, with the final stream. A
+    repeat publishes nothing and retries the slot removal. A deactivated DID
+    signs nothing more.
+  - Personas: `persona_key_for` and `own_document` answer for a did:webs this VTA
+    holds from its own stream (no resolution): the key state's signing key, as
+    the document lists it under assertionMethod and authentication, and only its
+    context's active Ed25519 record.
+
+  Keys a record names are re-derived through `key_custody::derive_record_key`;
+  the module's one raw seed access (`active_seed`) mints only fresh keys at paths
+  allocated under the DID's context base. Startup lists staged did:webs
+  rotations (finishing one needs its host). `WebsHost` gains `delete`.
+
+- **vta**: Create, get and list did:webs DIDs (operation layer; no wire yet) ([#2561](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2561))
+
+Step 4 of docs/05-design-notes/did-webs-in-the-vta.md, without the Trust Task
+  handlers: the vta/webs/dids/* family is being specified, and the handlers will
+  call these operations.
+
+  - `webs` keyspace (vta-keyspaces): in ALL and BACKED_UP (a restored VTA must
+    be able to continue the key event log); purged with its context
+    (context_delete_effect Purged, and the purge is real:
+    webs_store::purge_context, read on `contextId` alone so it runs without the
+    feature); Orphaned for a DID deletion until vta/webs/dids/delete exists.
+    `Keyspaces::webs` is not feature-gated, since a gated field changes the
+    struct for every crate that builds one once any crate enables it.
+  - `webs_store`: one WebsDidRecord per DID (the published keri.cesr, the
+    ControllerState, the signing, successor and key agreement key ids).
+  - `operations::did_webs::create_did_webs`: KeyMint and context gates; refused
+    unless `[dids] webs_enabled` (new, default false, VTA_DIDS_WEBS_ENABLED);
+    Ed25519 signing, X25519 key agreement and one pre-rotated successor derived
+    under the context's base as did:webvh's are; KERI v2 inception (kt 1, nt 1)
+    through affinidi-did-webs create_controlled; designated #didcomm and #tsp
+    through this VTA's mediator; published to the did-hosting server as
+    `method: "webs"` at slot `{path}/{AID}`, then (R2.1) key records and the
+    row. The DID is computed as the host builds it, and a host that answers
+    with another DID leaves nothing recorded. `get_did_webs` / `list_did_webs`.
+  - `WebvhHostClient::publish_webs` and a `WebsHost` seam the operation is
+    tested through.
+  - vta-service feature `webs` (default on, not in vta-enclave), with
+    affinidi-did-webs 0.12 (`create`), affinidi-keri 0.7, keri-core 0.7,
+    keri-crypto 0.7. `affinidi-keri` brings LMDB (heed) that the controller
+    path does not use; making it optional upstream is a follow-up.
+  - Census entries: one raw seed access in did_webs/mod.rs (fresh keys at
+    allocated paths), and two `mnemonic` slot paths that are not BIP-39.
+
+
+
 ## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.36.0...vta-keyspaces-v0.37.0) — 2026-11-10
 
 

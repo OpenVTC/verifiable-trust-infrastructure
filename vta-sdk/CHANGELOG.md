@@ -2,6 +2,498 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.88.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.87.0...vta-sdk-v0.88.0) — 2026-11-12
+
+
+### Added
+
+- **vtc**: A VTC can take a level-1 did:webs as its own DID ([#2698](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2698))
+
+* feat(vta-sdk): vtc-host-classical, the VTC template a level-1 did:webs can carry
+
+  A level-1 did:webs holds one key-state signing key, and CONVENTIONS.md 0.2
+  §9.2 refuses vtc-host's second (post-quantum) signing slot as keyAlgorithm and
+  forbids a VTA to drop what a template describes; the template keys block has no
+  optional slot (vta/did-templates/* 3.1). So a did:webs VTC (VTI-KEY-001) names a
+  template that does not ask for the key: vtc-host-classical, vtc-host less the
+  pq-signing slot, its verification method and its assertionMethod reference.
+  It is derived from vtc-host when loaded, not shipped as a second file, so the
+  two cannot drift (pinned by a test rendering both). The §9.2 check is
+  unchanged: vtc-host stays refused, every other refusal stands.
+
+  The §9.2 service rule reads a `{DID}#…` id as the DID's own fragment: a
+  service supplied whole as a variable (SERVICE_TSP, SERVICE_DIDCOMM) keeps the
+  placeholder, because a whole-value substitution is not substituted again, and
+  was refused under did:webs as "not a fragment".
+
+- **vta**: Provision an integration as a did:webs ([#2695](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2695))
+
+The template var DID_METHOD=webs routes provision-integration's mint to
+  create_did_webs: level 1, class `service` (VTI-KEY-192), shaped by the
+  template with every CONVENTIONS.md 0.2 §9.2 check and refusal, gated by
+  `[dids] webs_service_dids`, and published at WEBVH_SERVER (required: a
+  did:webs has no serverless mode) on WEBVH_DOMAIN under WEBVH_PATH. No wire
+  member is added to provision/integration/0.3: the method is a template var,
+  as DID_METHOD=scid already was. A build without `webs` refuses the selection
+  by name.
+
+  The bundle stays SealedPayloadV1::TemplateBootstrap. Its keys are the
+  key-state key and the designated X25519 key agreement key under the ids the
+  did:webs document gives them (<did>#<CESR key>), config.did_document is the
+  document the stream derives, and the stream itself rides a new
+  TemplateOutput::WebsKeriCesr in place of a did.jsonl. It is emitted only for
+  a did:webs, so every webvh/did:key/did:peer bundle is byte-identical; an
+  opener that predates the variant refuses such a bundle by name. TemplateOutput
+  becomes #[non_exhaustive] (breaking for vta-sdk Rust callers matching it
+  exhaustively).
+
+  Integration side: ProvisionResult(V2)::webs_keri_cesr,
+  ProvisionResultV2::integration_secrets_bundle and
+  DidKeyMaterialV2::secrets_bundle (the bundle a host service stores, led by
+  the key its document lists for authentication);
+  DidSecretsBundle::trust_task_signing_key_for picks that key by role
+  (VTI-KEY-150) rather than the first Ed25519. vti-witness and
+  vti-voting-service setup take `did_method = "webs"`, store keys by the
+  bundle's ids and write no did.jsonl.
+
+  build_did_secrets_bundle (what room-host fetches) now holds exactly the keys
+  a did:webs document lists, led by its authentication key: it used to include
+  the KERI pre-rotated successor (<did>#pre-rotation-<sn>), handing a service
+  the key that controls the identifier's next rotation. ExportDeps gains
+  `webs_ks` (breaking for vta-service).
+
+- **vta**: A did:webs template's resolvedMethods is ignored, not refused ([#2691](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2691))
+
+trustoverip/dtgwg-trust-tasks-tf#1170 (closing #1164) made a template's
+  resolvedMethods member ignored, as @context is, in vta/webs/_shared/0.2
+  §9.2: a did:webs node declares did:webs by using it, and the derivation
+  renders no declaration of further methods (VTI-KEY-008). The checker
+  follows, so VTI's node templates (dtg-witness, did-host-*, room-host,
+  ballot-box) are now usable with vta/webs/dids/create/0.2; vtc-host is
+  still refused, for its post-quantum second signing key.
+
+- **vta**: Serve vta/webs/dids/create/0.2 — DID classes, did:webs service DIDs, templates ([#2689](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2689))
+
+Pin vta/webs/dids/create/0.2 beside 0.1 (0.1 is now marked superseded
+  upstream and stays served) and serve it.
+
+  - Every 0.2 create states a DID class (relationship | persona | service,
+    VTI-KEY-190 – 193), which WebsDidRecord now keeps (`didClass`, serde
+    default; a 0.1 create records none and none is inferred). Setup records
+    this VTA's own did:webs identity as `service`.
+  - A level-1 did:webs service DID is enabled separately from creation by
+    the new `[dids] webs_service_dids` (default false,
+    VTA_DIDS_WEBS_SERVICE_DIDS), the name the specification's example uses;
+    off refuses `service` with serviceDidNotPermitted (CONVENTIONS 0.2 §1.1).
+  - didClassConflict (§1.2): a persona/relationship DID made primary of a
+    context whose primary is a service DID (this VTA's own DID, or a service
+    did:webs it created) — details.requiredClass "service"; a service DID
+    replacing a persona did:webs primary. The MAY rule is implemented too:
+    a template whose kind names only a node (mediator, dtg-witness,
+    push-gateway, trust-registry, vtc-host, room-host, ballot-box,
+    did-host-*) under a class other than service.
+  - DID templates (§9): template/templateContext/templateVars resolve
+    context → global → built-in (the webvh resolver), variables are checked
+    (templateVarsInvalid with missing/unknown), and the document is checked
+    against §9.2 by a new pure checker in vta-sdk
+    (`did_templates::webs::{check_key_shape, map_webs_document}`, returning
+    the first failing reason and the JSON Pointers it refused, or the
+    designations). The template is rendered and checked once with
+    placeholder keys before any key is derived, then again with the real
+    DID and keys after the inception: create_did_webs now computes the
+    inception (and so the AID and DID) before writing the designations, and
+    still publishes before recording anything (R2.1).
+  - `resolvedMethods`, carried by VTI's node built-ins, is refused as
+    documentMember as §9.2 is written (trustoverip/dtgwg-trust-tasks-tf#1164);
+    the fix, should the specification honour it, is one line in
+    DOCUMENT_MEMBERS, and a test pins today's behaviour. `ai-agent` and
+    `room` are representable today.
+  - SDK: TASK_VTA_WEBS_DIDS_CREATE_0_2, retry-safety Keyed,
+    VtaClient::create_did_webs_classed, fixes for the new codes.
+    pnm webs create gains --class (sends 0.2; without it, 0.1), --template,
+    --template-context and --var.
+
+  Specification choices (conservative readings):
+  1. 0.2 with didClass service and setPrimary on the context holding this
+     VTA's own DID: 0.2 declares no code for "a create cannot re-identify
+     this node", and its serviceDidNotPermitted now means only the switch,
+     so it is the framework's permissionDenied. 0.1 still answers
+     serviceDidNotPermitted.
+  2. A templateContext the caller may not act in is permissionDenied
+     (CONVENTIONS §8), not a silent fall-through to the global scope.
+  3. An unresolved placeholder is reported in templateVarsInvalid's
+     details.missing (the details schema has only missing and unknown).
+  4. #1164: the specification's own dtg-witness example is refused under
+     §9.2 as written.
+  5. Setup's own key-role identity is recorded as class service; the service
+     switch gates level-1 service DIDs only (key roles are not this family).
+  6. A context provisioned for a VTC, VTN or host service carries no marker,
+     so §1.2 item 1's second case is not refused (gap documented in
+     docs/02-vta/did-webs.md).
+
+  The designated aliases of a did:webs also carry its did:web twin and
+  did:keri form (affinidi-did-webs designates them, as for 0.1), beyond the
+  specification's example responses.
+
+  Also fixes two clippy findings on this stack (Option::replace in role-key
+  rotation, an item after a test module in webs_store).
+
+- **vta**: A VTA whose own DID is a key-role did:webs — setup, first-boot self-registration ([#2679](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2679))
+
+* feat(vta)!: create a key-role did:webs, and keep this VTA's own DID from being deleted
+
+  S6 slice 2 (docs/05-design-notes/did-webs-in-the-vta.md §4, decision 2):
+  a node's durable identity is a key-role identity (VTI-KEY-070,
+  VTI-KEY-173), so create can mint one.
+
+  - CreateDidWebsParams::key_roles: two more Ed25519 keys, each on its own
+    path, designated as the attestation and operational role keys, and the
+    independently derived X25519 key as the messaging key, through the
+    did:webs key-role extension; the key event log's own key is in no
+    relationship (VTI-KEY-071, VTI-KEY-184). Each role key's record is
+    named by the id its document gives it, so the VTA finds it by role.
+  - WebsDidRecord and CreateDidWebsResult carry the attestation and
+    operational key ids.
+  - delete refuses this VTA's own DID (permissionDenied): a node's identity
+    is retired by re-identifying it.
+
+  Off by default: personas and relationship DIDs are minted as before. The
+  wire does not expose it yet (vta/webs/dids/create/0.2's didClass, S7);
+  setup will (slice 3).
+
+  Breaking (vta-service): new fields on WebsDidRecord (serde-defaulted) and
+  CreateDidWebsResult.
+
+- **rooms**: A live watch while a conversation is open (rooms/watch 0.2, rooms/keys/watch 0.2) ([#2671](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2671))
+
+* feat(rooms)!: a room may turn off its watch signals' randomised delay (rooms/signal-delay/set 0.1, info 0.4, create 0.3, owner/register 0.3)
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#1084. A room's signal delay (randomised, the default, or none) is stored on the host's room record (absent = randomised, no migration) and applied by RoomWatches::fire from the room, never the watch request. Both hosts serve rooms/signal-delay/set/0.1 (admin, idempotent, audited), rooms/create/0.3 and rooms/info/0.4 beside create 0.2 and info 0.3. The VTA serves rooms/owner/register/0.3, passing recordRetention and signalDelay through to create 0.3 and refusing hostRefused on a host that does not take it. pnm rooms signal-delay show|set, pnm rooms owner register --chat; the VTC console shows the setting.
+
+- **vta**: A VTA authenticates with its authentication key, and can resolve itself as a did:webs ([#2675](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2675))
+
+S6 slice 1 (docs/05-design-notes/did-webs-in-the-vta.md §4): the plumbing
+  a did:webs VTA identity needs, with nothing changed for a did:webvh VTA,
+  whose authentication and signing key are both #key-0.
+
+  - SelfKeys gains the authentication key: a key-role identity's
+    operational key (VTI-KEY-072), which is the key every request,
+    response and DIDComm sender of this VTA proves with (proofPurpose
+    authentication). The VTA's resident key at boot, the offline CLI
+    bridge's signer, vta status's DIDComm profile and the operational-
+    secret fallback now load it; attestation artefacts (credentials, the
+    VtaAuthorization VC, room-owner registration) keep the signing
+    (attestation) key. load_vta_issuer_secret_from_store takes the SelfKey
+    to load.
+  - A did:webs VTA preloads its own document into the resolver from the key
+    event log it stores; readiness probes did:webs over the network and
+    names its keri.cesr URL.
+  - didcomm_light and url_from_did handle did:webs;
+    vta_sdk::resolved_methods::is_durable_identity is webvh, scid or an
+    optional durable method (did_scid::is_durable keeps meaning "has a
+    webvh log").
+
+  Breaking (vta-service): DIDCommBridge::signing_only and
+  preload_self_did_document take the webs keyspace;
+  load_vta_issuer_secret_from_store takes a SelfKey; SelfKeys has an
+  authentication field.
+
+- **vta-sdk**: ResolvedMethods declarations and the VTI-KEY-009 refusals ([#2672](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2672))
+
+* feat(vta-sdk): resolvedMethods declarations and the VTI-KEY-009 refusals
+
+  The VTI specification now admits did:webs as an optional, alpha method
+  for a node's durable identity (dtgwg-vti-spec#121). A node acts as an
+  identity of an optional method only toward a peer whose verified current
+  DID document declares it resolves that method, in a top-level
+  resolvedMethods member (VTI-KEY-008); otherwise it sends nothing and
+  fails with methodNotDeclared. A party that cannot rely on material
+  without resolving a method it does not resolve refuses it with
+  unsupportedDidMethod (VTI-KEY-009).
+
+  - vta_sdk::resolved_methods: the required methods, what this build
+    resolves and declares, the lenient reader of a peer's declaration,
+    require_declared (the sending-side rule) and declare (with the JSON-LD
+    term VTI-KEY-008 fixes).
+  - The VTA declares did:webs in every document it mints, and so do the
+    built-in templates for the nodes this workspace runs (vtc-host,
+    room-host, dtg-witness, ballot-box). Templates for software outside it
+    declare nothing.
+  - Receive side: a proof by a DID of a method this party does not resolve
+    is refused as DiProofError::UnsupportedDidMethod before any resolver is
+    asked, and answered proofInvalid with details.reason
+    unsupportedDidMethod and the method (the VTA, the shared Trust Task
+    spine, the VTC).
+  - Typed errors end to end: AppError::{MethodNotDeclared,
+    UnsupportedDidMethod}, VtaError::{MethodNotDeclared,
+    UnsupportedDidMethod}, read back from a Trust Task rejection and a REST
+    body. The spine's app_error_to_reject also gains the NoMatchingProtocol
+    arm it lacked (it answered internalError).
+
+  Not breaking: DiProofError, AppError and VtaError are non_exhaustive.
+  The documents the VTA mints and the four templates gain resolvedMethods
+  and a further @context entry, which a DID-document consumer ignores.
+
+  The sending-side check at the outbound seams follows separately; no
+  node's own identity can be did:webs yet.
+
+- **rooms**: A room may turn off its watch signals' randomised delay (rooms/signal-delay/set 0.1, info 0.4, create 0.3, owner/register 0.3) ([#2667](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2667))
+
+* feat(rooms)!: a room may turn off its watch signals' randomised delay (rooms/signal-delay/set 0.1, info 0.4, create 0.3, owner/register 0.3)
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#1084. A room's signal delay (randomised, the default, or none) is stored on the host's room record (absent = randomised, no migration) and applied by RoomWatches::fire from the room, never the watch request. Both hosts serve rooms/signal-delay/set/0.1 (admin, idempotent, audited), rooms/create/0.3 and rooms/info/0.4 beside create 0.2 and info 0.3. The VTA serves rooms/owner/register/0.3, passing recordRetention and signalDelay through to create 0.3 and refusing hostRefused on a host that does not take it. pnm rooms signal-delay show|set, pnm rooms owner register --chat; the VTC console shows the setting.
+
+- **rooms**: Open a conversation at its newest records (rooms/records/list 0.7, rooms/keys/browse 0.5) ([#2668](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2668))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#1088.
+
+  Pins rooms/records/list/0.7 and rooms/keys/browse/0.5 in vti-specs-rooms,
+  beside the versions already pinned.
+
+  Hosts (room-host and the VTC, through vti_rooms): rooms/records/list/0.7 is
+  served beside 0.5 and 0.6. `order: newestFirst` returns rows in descending
+  version, each cursor continuing downward; `sinceVersion` stays a lower bound,
+  tombstones and `lastPrune` are as oldest first, and the commitment, count and
+  head are over the whole room. A cursor is bound to its order (`v<N>` oldest
+  first, `n<N>` newest first) and refused with the declared `invalidCursor`
+  under the other (Order item 5). `vti_rooms::storage::list_records_page_in`
+  takes a `RecordOrder`; `list_records_page` is unchanged (oldest first).
+  Records are keyed by key, not version, so both orders sort the room in memory,
+  which is no more than every page already pays for its uncached whole-room
+  commitment; a version index belongs with a cached commitment.
+
+- **vta**: A member's room read marker, kept by their VTA and shared across their devices (rooms/keys/read-marker 0.1, keys/list 0.3) ([#2665](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2665))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#1086.
+
+  Pins rooms/keys/read-marker/set 0.1, rooms/keys/read-marker/moved 0.1 and
+  rooms/keys/list 0.3 (beside 0.2) in vti-specs-rooms. Only the three new
+  versions are added to the lock; the existing pins keep their digests.
+
+- **vta**: Serve vta/webs/dids/*/0.1; pnm webs; VtaClient did:webs methods; docs ([#2564](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2564))
+
+* feat(vta)!: did:webs operations refuse in the codes the tasks declare; setPrimary, additional services, admin gate
+
+  The did:webs operations return `WebsError`: a declared refusal (`WebsRefusal`:
+  methodDisabled, serverNotFound, hostDoesNotHostWebs, domainNotServed,
+  pathRefused, serviceDidNotPermitted, notFound, versionConflict, noChange,
+  serviceIdConflict, deactivated, publishRefused) or any other `AppError`, so the
+  Trust Task slice answers with the code the task declares instead of reading it
+  from a message. A host's refusal is sorted by the code the host sent.
+
+  Create resolves the domain before incepting (`WebsHost::resolve_domain`, which
+  refuses one the host does not serve), takes `setPrimary` (refused as
+  serviceDidNotPermitted on the context holding this VTA's own DID, VTI-KEY-001)
+  and further designated services. Update, rotate and delete require the admin
+  role, as their webvh counterparts do. `WebsDeps::from_app_state`; a borrowed
+  host is a `WebsHost`.
+
+- **vta**: Create, get and list did:webs DIDs (operation layer; no wire yet) ([#2561](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2561))
+
+Step 4 of docs/05-design-notes/did-webs-in-the-vta.md, without the Trust Task
+  handlers: the vta/webs/dids/* family is being specified, and the handlers will
+  call these operations.
+
+  - `webs` keyspace (vta-keyspaces): in ALL and BACKED_UP (a restored VTA must
+    be able to continue the key event log); purged with its context
+    (context_delete_effect Purged, and the purge is real:
+    webs_store::purge_context, read on `contextId` alone so it runs without the
+    feature); Orphaned for a DID deletion until vta/webs/dids/delete exists.
+    `Keyspaces::webs` is not feature-gated, since a gated field changes the
+    struct for every crate that builds one once any crate enables it.
+  - `webs_store`: one WebsDidRecord per DID (the published keri.cesr, the
+    ControllerState, the signing, successor and key agreement key ids).
+  - `operations::did_webs::create_did_webs`: KeyMint and context gates; refused
+    unless `[dids] webs_enabled` (new, default false, VTA_DIDS_WEBS_ENABLED);
+    Ed25519 signing, X25519 key agreement and one pre-rotated successor derived
+    under the context's base as did:webvh's are; KERI v2 inception (kt 1, nt 1)
+    through affinidi-did-webs create_controlled; designated #didcomm and #tsp
+    through this VTA's mediator; published to the did-hosting server as
+    `method: "webs"` at slot `{path}/{AID}`, then (R2.1) key records and the
+    row. The DID is computed as the host builds it, and a host that answers
+    with another DID leaves nothing recorded. `get_did_webs` / `list_did_webs`.
+  - `WebvhHostClient::publish_webs` and a `WebsHost` seam the operation is
+    tested through.
+  - vta-service feature `webs` (default on, not in vta-enclave), with
+    affinidi-did-webs 0.12 (`create`), affinidi-keri 0.7, keri-core 0.7,
+    keri-crypto 0.7. `affinidi-keri` brings LMDB (heed) that the controller
+    path does not use; making it optional upstream is a follow-up.
+  - Census entries: one raw seed access in did_webs/mod.rs (fresh keys at
+    allocated paths), and two `mnemonic` slot paths that are not BIP-39.
+
+
+
+### Changed
+
+- **vta,vtc**: A node finds its own keys by role in its own DID document ([#2670](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2670))
+
+A node addressed its own keys by fragment: `{did}#key-0` (signing),
+  `#key-1` (key agreement), `#sealed-transfer-0`. That numbering is what one
+  minting path gives a did:webvh, not a property of DIDs: a did:webs names each
+  key by itself, and a key-role identity by its role's key (VTI-KEY-150). The VTC
+  already read its ids from its document for messaging, yet registered its
+  secrets under `#key-0`/`#key-1`, so on any other method the two never met.
+
+  - `vta_sdk::node_keys::NodeKeyIds::from_document`: signing, authentication,
+    key agreement and sealed-transfer ids from a node's own document, by
+    `keyRoles` (attestation / operational / messaging) where the document has
+    them, else by relationship (and the `sealed-transfer-0` assertion method a
+    VTA's own did:webvh publishes). `conventional` is the did:webvh fallback.
+  - `vta_service::self_keys`: the VTA's keys, each a key record id and a
+    verification method, from its own document read from its own store (webvh
+    log, did:webs key event stream; never resolved). Used by `init_auth`,
+    `find_vta_key_paths`, the status trust-ping, the credential issuer key, the
+    provision-integration VC and sealed-transfer keys, the offline CLI signer,
+    and the VTA-as-room-owner key. `did:key` keeps its own shape.
+  - VTC: startup and the status trust-ping register the secrets under the ids
+    `vtc_key_ids` reads from the document (now through `node_keys`), and room
+    files take the key agreement id it lists (`VtaStorage::with_key_agreement_id`,
+    `#key-1` unless set).
+
+  Nothing a did:webvh peer sees changes: a VTA's own did:webvh document, as the
+  creation path renders it, gives exactly `#key-0`, `#key-1` and
+  `#sealed-transfer-0` (tested), and a node whose document it does not hold falls
+  back to them. A did:webs key-role document is read by role (tested).
+
+
+
+### Fixed
+
+- **vta**: A did:webs node acts toward any peer; withdraw the resolvedMethods gate (VTI-KEY-003, VTI-KEY-008) ([#2697](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2697))
+
+* fix(vta,vtc)!: a did:webs node acts toward any peer; withdraw the resolvedMethods gate (VTI-KEY-003, VTI-KEY-008)
+
+  Each party chooses its own identity method and still works with every
+  other: a did:webs client talks to a did:webvh service, and a did:webs
+  node reaches any peer. dtgwg-vti-spec#123 makes did:webs a required
+  method every node resolves, with the key-role designation extension
+  (VTI-KEY-003); a node never requires a peer to use a particular durable
+  method (VTI-KEY-001); VTI-KEY-008, the resolvedMethods declaration gate,
+  is withdrawn with its methodNotDeclared refusal; VTI-KEY-009 keeps only
+  the receiving side.
+
+- **vti-witness**: Bound witness sessions and the work one submission can cause ([#2682](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2682))
+
+* fix(vti-witness): bound witness sessions and the work one submission can cause
+
+  An identity that admits any opener (`allowed_parties` unset, the default)
+  refused new sessions once `max_open` were open, and a session stayed open for
+  its whole TTL. Openers with fresh DIDs could therefore hold every slot and keep
+  members out by reopening. A submission's presentation was verified credential
+  by credential, each resolving its issuer's DID, with no limit on how many
+  credentials it carried. A failed submission left the session open, so the same
+  session could be submitted to any number of times.
+
+  - Opening: besides the per-opener cap, at most `max_open_per_party` open
+    sessions may name one party as the counterparty. At `max_open`, an identity
+    with no allow-list closes its oldest open sessions to make room. One with an
+    allow-list still refuses (`witness/session:refused`, same message).
+  - Submitting: a presentation carries at most 8 credentials, refused before any
+    is resolved. Only credentials that could count are resolved and verified: the
+    submitter's relationship credential, or a membership credential from an
+    accepted community naming the holder. Any other credential is ignored, not
+    resolved. The independence check still covers every credential.
+  - After 3 submissions whose presentation does not verify, the session is
+    closed (`SessionRecord.failed_submits`, defaulted for stored rows).
+
+  Behaviour changes: a full open identity closes its oldest session rather than
+  refusing; a second session naming the same counterparty is refused at the
+  default per-party cap; a presentation with more than 8 credentials is
+  refused; an extra credential that could not count no longer fails the
+  presentation; a session closes after 3 failed submissions.
+
+- **vta-service**: Outbound Trust-Task REST sends dial only vetted peer endpoints, through the guarded client ([#2687](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2687))
+
+* fix(vta-service)!: outbound Trust-Task REST sends dial only vetted peer endpoints, through the guarded client
+
+  A REST send's URL comes from the recipient's DID document, which whoever
+  controls that DID writes, and the recipient of a room task is named by the
+  caller. `Outbound::send_rest` posted to it with the ordinary REST client
+  (timeouts and same-origin redirects only), so the endpoint could name a
+  loopback or private-network service, the reply was read with no size limit,
+  and a reply that was not JSON was copied into the error the caller saw. The
+  push transport (`vti_common::trust_task_push::RestPushTransport`) had the
+  foreign-fetch client but no URL check, and that client's resolver never sees
+  an IP-literal host.
+
+  - vta-sdk: `http::guard_peer_endpoint(url, policy)`. `https://` is decided by
+    `guard_foreign_url`. `http://` passes only for an exact loopback host, and
+    only with the private-endpoint opt-in. Userinfo is refused unechoed.
+  - vta-service: `send_rest` (now `send_rest_to`, taking the policy) checks the
+    URL with `guard_peer_endpoint` under `EndpointPolicy::process_default()` and
+    sends through `foreign_fetch_client_for` with the same policy (no proxy, no
+    redirects, a resolver that refuses non-public answers). The 30 s total
+    request budget is kept. The reply is read under a 4 MiB cap
+    (`read_body_capped`). A reply that is not JSON is reported by status, size
+    and parse position; its text goes to the debug log only.
+  - vti-common: `RestPushTransport::new` takes a `RestEndpointGuard`, run on each
+    URL before it is dialled; a refusal is `MessagingError::NoEndpoint`. The VTA
+    and VTC pass `guard_peer_endpoint` and build the client for the same policy.
+
+  Behaviour changes: loopback and private-network peers (room hosts, DID
+  hosting, push recipients) are reached only with `VTA_ALLOW_PRIVATE_ENDPOINTS=1`
+  (the data-rooms quickstart already sets it); a peer's redirect is no longer
+  followed; a reply over 4 MiB is refused; a non-JSON reply's body is no longer
+  in the error.
+
+- **status-list**: Bound every size read from a fetched Bitstring Status List ([#2674](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2674))
+
+* fix(status-list): bound every size read from a fetched Bitstring Status List
+
+  A fetched BitstringStatusListCredential is someone else's document, and
+  the VTC sized its decode from it: `credentialSubject.statusSize` was taken
+  as the list length, unbounded, and handed to the decoder, which allocates
+  in proportion. In W3C Bitstring Status List v1.0 `statusSize` is the bits
+  per entry, on the BitstringStatusListEntry (§2.1), not a list length — so
+  a list carrying the conformant `"statusSize": 1` was also read as a
+  one-entry list and refused for any index past 0.
+
+  vtc-service (`recognition::verify`, used by recognise, join presentation
+  and invitation checks):
+  - The bit is read by `read_status_bit`, which bounds everything before
+    decoding: the index (at most 4,194,304 entries, checked before the fetch
+    too), the `encodedList` length, and the decoded length, which is the
+    larger of `index + 1` and the spec minimum of 131,072 entries. Nothing
+    the list declares sizes a buffer.
+  - A list shorter than 131,072 entries, or than the index, is refused
+    (§3.2 steps 9 and 10).
+  - `statusSize` on an entry, or on a list, must be 1: the reader supports
+    only 1-bit entries, which §1.3 allows. Anything else is refused rather
+    than read as one bit.
+  - A multibase `u`-prefixed `encodedList` (§2.2) is now read.
+
+  The same reads elsewhere:
+  - vta-sdk `vetting::status`: `MAX_STATUS_LIST_BITS` is now 1 << 22 (was
+    1 << 26), since the decoder allocates about a byte per entry read; an
+    entry whose `statusSize` is not 1 reads as Unknown.
+  - vta-vault `status`: the resolver-supplied list size and `encodedList`
+    length are bounded before decoding, the index is checked against the
+    size first, and an entry whose `statusSize` is not 1 is refused.
+  - vti-vtn: `VtnClient::get_url` reads the body under a 2 MiB cap
+    (`MAX_FETCHED_BODY`) instead of buffering it whole; `StatusChecker`
+    refuses an index past the end of the list (it read as clear) and an
+    entry whose `statusSize` is not 1. `Bitstring::len_bits` is new.
+
+  Behaviour changes: entries declaring `statusSize` other than 1 are
+  refused (status Unknown / error) everywhere; in vtc-service a list
+  carrying `statusSize: 1` is now read in full, one carrying any other
+  value is refused, and a list longer than 131,072 entries is read past
+  that point (it used to be read only to the first 131,072); indexes past
+  4,194,304 are refused in vtc-service and vta-sdk; vti-vtn's checker
+  errors on an out-of-range index instead of reporting Valid.
+
+- **vta-sdk**: Did:webs is resolved over the network, though not a durable node identity ([#2560](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2560))
+
+`is_network_resolved` named did:web, did:webvh and did:scid:vh:1, so a
+  did:webs, whose key event log is fetched from its host, was treated as
+  resolvable offline: the host session never probed it. It is now network
+  resolved. `is_durable` is unchanged: VTI-KEY-001 does not name did:webs for a
+  node's durable identity.
+
+  Step 2 of docs/05-design-notes/did-webs-in-the-vta.md.
+
+
+
 ## [0.87.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.86.0...vta-sdk-v0.87.0) — 2026-11-10
 
 
