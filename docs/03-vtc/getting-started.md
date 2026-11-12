@@ -112,6 +112,11 @@ Press Enter in the VTC setup wizard. Now that the ephemeral key is
 authorised, the wizard authenticates to the VTA and asks **where the
 VTC DID should be published**:
 
+- **DID method** — `did:webvh` (the default) or `did:webs` (alpha): a
+  level-1 KERI identifier the VTA publishes at a hosting server, with one
+  signing key and no post-quantum key. A did:webs has no serverless
+  option, and no `did.jsonl` is written for it — see
+  [A VTC as a did:webs](../02-vta/did-webs.md#a-vtc-as-a-didwebs).
 - **did-hosting server** — pick a registered DID-hosting server from
   the VTA's live catalogue, or choose *serverless* to self-host the
   `did.jsonl` at the VTC base URL.
@@ -137,7 +142,8 @@ opens the sealed bundle, and writes:
 
 - `<data_dir>/did/<scid>.jsonl` — the `did:webvh` log entry the
   daemon serves at `GET /.well-known/did.jsonl` (the URL the VTC's
-  own DID resolves to).
+  own DID resolves to). Not for a did:webs, whose host serves its
+  `keri.cesr`.
 - `config.toml` — the VTC's runtime configuration.
 - The `VtcKeyBundle` to the configured secrets backend.
 

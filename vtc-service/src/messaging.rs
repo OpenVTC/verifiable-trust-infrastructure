@@ -117,8 +117,8 @@ pub struct VtcMessaging {
 /// the production `did:webvh` path is unchanged either way — a `did:webvh`
 /// document lists those exact ids, so resolution returns them anyway.
 ///
-/// A key-role identity (a `did:webs` VTC) passes `key_roles`, the ids its own
-/// key bundle gives its keys — the ids the VTA minted them under and published
+/// A `did:webs` VTC — level 1 or a key-role identity — passes `key_roles`, the
+/// ids its own key bundle gives its keys — the ids the VTA minted them under and published
 /// — and they are used without resolving: local state, not an answer the host
 /// serving the document could shape, and no fallback to `#key-0` / `#key-1`,
 /// which such a document does not have.

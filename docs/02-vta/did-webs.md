@@ -40,7 +40,10 @@ way, through the enclave's egress proxy, which allowlists the host and the
 domain from that setting (see the TEE architecture guide, *A did:webs
 identity*).
 
-A VTC or host service as a `did:webs` is the next step (the design note's S7).
+**A VTC** can be set up with a level-1 `did:webs` as its own DID (below,
+[A VTC as a did:webs](#a-vtc-as-a-didwebs)), and **a host service** provisioned
+through provision-integration can take one
+([Provisioning an integration](#provisioning-an-integration-as-a-didwebs)).
 
 ### What is in place for every node
 
@@ -144,9 +147,17 @@ and only then writes the designations and publishes.
 A template's `resolvedMethods` member is ignored, as its `@context` is
 (CONVENTIONS §9.2). No built-in carries it since VTI-KEY-008 was withdrawn,
 but an uploaded template written while it stood keeps working. The node
-built-ins `dtg-witness`, `did-host-*`, `room-host` and `ballot-box` are
-representable; `vtc-host` is not, for its post-quantum second signing key,
-which a level-1 did:webs cannot hold.
+built-ins `dtg-witness`, `did-host-*`, `room-host`, `ballot-box` and
+`vtc-host-classical` are representable; `vtc-host` is not, for its
+post-quantum second signing key, which a level-1 did:webs cannot hold
+(§9.2 refuses a second signing slot, `keyAlgorithm`, and forbids the VTA to
+drop what a template describes). `vtc-host-classical` is `vtc-host` without
+that slot, derived from it when loaded.
+
+A service entry supplied whole as a variable (`SERVICE_TSP`,
+`SERVICE_DIDCOMM`, built by `tsp_service` / `didcomm_service`) keeps its
+`{DID}#…` id, because a whole-value substitution is not substituted again; the
+§9.2 check reads `{DID}#tsp` as the DID's own `#tsp`.
 
 ## Provisioning an integration as a did:webs
 
@@ -186,6 +197,50 @@ its document lists — never the pre-rotated successor — led the same way.
 
 A host service's `did:webs` reaches every peer: every node resolves
 `did:webs` (VTI-KEY-003).
+
+## A VTC as a did:webs
+
+A VTC's own durable identity may be a `did:webs` (VTI-KEY-001), at key assurance
+level 1 (VTI-KEY-146; VTI-KEY-196's level 2 is a SHOULD, and a did:webvh VTC is
+level 1 too). `vtc setup` asks for the method — interactively, after the ACL
+grant, as the DID method of the community's own DID; in a setup TOML, as
+`identity_method = "webs"` with `[webvh] server_id` (required: no serverless
+mode), and optionally `domain` and `path`
+([non-interactive setup](../03-vtc/non-interactive-setup.md#a-didwebs-community)).
+
+- **Provisioning.** Setup provisions as it does a did:webvh VTC, through
+  provision-integration, naming `vtc-host-classical` with `DID_METHOD=webs`,
+  `WEBVH_SERVER`, `WEBVH_DOMAIN` and `WEBVH_PATH` — exactly a host service's
+  path above, so the VTA needs `webs_enabled` and `webs_service_dids`, and the
+  hosting server `method-webs`. The DID is `did:webs:<domain>[:<path>]:<AID>`.
+  A VTA that answers with any other DID is refused, naming those settings.
+- **No post-quantum key.** `vtc-host-classical` declares one signing key, so a
+  did:webs VTC's credentials carry a single `eddsa-jcs-2022` proof, as a
+  `vtc-host` VTC's do on a VTA that cannot mint ML-DSA. KERI's key state holds
+  one Ed25519 key here and the key-role designation registers no post-quantum
+  attestation key; a community that needs a post-quantum key is a did:webvh
+  until one of them can.
+- **Keys.** The VTC stores the key-state key and the designated key agreement
+  key under the ids the document gives them (`<did>#<CESR key>`), and signs
+  credentials, status lists, Trust Task requests and replies, and DIDComm and
+  TSP messages with them by role — never `#key-0`, which the document does not
+  have. Its other long-lived keys (storage, install token, audit) derive from
+  the bundle's derivation root as for any VTC.
+- **No log to serve.** There is no `did.jsonl`, and `cnm did-log install` has
+  no did:webs counterpart: the VTA published the `keri.cesr` stream at the
+  host, which serves it and derives `did.json` on every read. The VTC keeps no
+  copy (the bundle carries one, read only to check that it was minted);
+  `/.well-known/did.jsonl` answers 404 and the did-log register refuses, naming
+  the VTA.
+- **Changing it.** Only the VTA changes the document. `pnm webs update <did>
+  --services didcomm,tsp` sets the transports and keeps every other designated
+  service (`VTCRest`, `VTCStatusList`, `TrustTaskHTTPS`, `SignInPortal`), read
+  back and stated again at the version it read, since the task replaces the
+  whole set; another service is added by `vta/webs/dids/update` with
+  `services.additional`. `pnm webs rotate <did>` changes the signing key and
+  with it the key's id, which the VTC's stored bundle then no longer holds:
+  a rotation of a did:webs VTC's key needs the VTC set up again from the VTA's
+  new bundle, and is not yet automated.
 
 ## Turning it on
 

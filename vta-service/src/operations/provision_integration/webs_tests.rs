@@ -124,15 +124,25 @@ async fn provision(
 /// Provision `template` as a did:webs and check everything the integration
 /// receives, as the host services read it.
 async fn a_node_template_provisions_as_did_webs(template: &str, extra: &[(&str, &str)]) {
+    let mut v = vars(&[("MEDIATOR_DID", MEDIATOR)]);
+    v.extend(vars(extra));
+    a_template_provisions_as_did_webs(template, v).await;
+}
+
+/// As [`a_node_template_provisions_as_did_webs`], with the template's own
+/// variables given whole; returns the document the stream derives.
+async fn a_template_provisions_as_did_webs(
+    template: &str,
+    extra: BTreeMap<String, Value>,
+) -> Value {
     let (ts, deps) = webs_vta(true).await;
     let hosts = Hosts(RecordingHost::default());
     let mut v = vars(&[
-        ("MEDIATOR_DID", MEDIATOR),
         ("WEBVH_SERVER", "host-1"),
         ("WEBVH_PATH", "nodes"),
         ("DID_METHOD", "webs"),
     ]);
-    v.extend(vars(extra));
+    v.extend(extra);
     let output = provision(&deps, &hosts, template, v)
         .await
         .expect("provision_integration");
@@ -255,6 +265,59 @@ async fn a_node_template_provisions_as_did_webs(template: &str, extra: &[(&str, 
         Some(crate::webs_store::WebsDidClass::Service)
     );
     assert_eq!(record.template.map(|t| t.name).as_deref(), Some(template));
+    derived
+}
+
+/// S7: a VTC's own identity as a did:webs (VTI-KEY-001, level 1 per
+/// VTI-KEY-146), from `vtc-host-classical` — `vtc-host` without the
+/// post-quantum key a level-1 did:webs cannot hold — with the messaging
+/// transports the VTC setup supplies whole (`SERVICE_TSP`, `SERVICE_DIDCOMM`).
+#[tokio::test]
+async fn vti_key_001_a_vtc_host_provisions_as_a_did_webs() {
+    let mut v = vars(&[("URL", "https://vtc.example")]);
+    v.insert(
+        vta_sdk::did_templates::TSP_SERVICE_VAR.into(),
+        vta_sdk::did_templates::tsp_service(MEDIATOR).unwrap(),
+    );
+    v.insert(
+        vta_sdk::did_templates::DIDCOMM_SERVICE_VAR.into(),
+        vta_sdk::did_templates::didcomm_service(MEDIATOR).unwrap(),
+    );
+    let doc = a_template_provisions_as_did_webs("vtc-host-classical", v).await;
+    let did = doc["id"].as_str().unwrap();
+    let types: Vec<&str> = doc["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|s| match &s["type"] {
+            Value::String(t) => vec![t.as_str()],
+            Value::Array(ts) => ts.iter().filter_map(Value::as_str).collect(),
+            _ => vec![],
+        })
+        .collect();
+    for want in [
+        "TSPTransport",
+        "DIDCommMessaging",
+        "VTCRest",
+        "VTCStatusList",
+        "TrustTaskHTTPS",
+        "SignInPortal",
+    ] {
+        assert!(types.contains(&want), "{want} designated: {doc}");
+    }
+    assert_eq!(
+        doc["assertionMethod"].as_array().map(Vec::len),
+        Some(1),
+        "one signing key: {doc}"
+    );
+    assert!(
+        doc["service"].as_array().unwrap().iter().any(|s| s["id"]
+            .as_str()
+            .is_some_and(|i| i.ends_with("#vtc-status-list"))
+            && s["serviceEndpoint"] == "https://vtc.example/v1/status-lists"),
+        "{doc}"
+    );
+    assert!(did.starts_with("did:webs:"), "{did}");
 }
 
 /// S7: a `dtg-witness` integration as a did:webs.
@@ -328,7 +391,8 @@ async fn a_did_webs_integration_needs_a_hosting_server() {
 }
 
 /// A template did:webs cannot represent (`vtc-host`: a post-quantum key) is
-/// refused by the §9.2 check, before a key is derived.
+/// refused by the §9.2 check, before a key is derived. A did:webs VTC names
+/// `vtc-host-classical` instead (above).
 #[tokio::test]
 async fn a_template_did_webs_cannot_represent_is_refused() {
     let (ts, deps) = webs_vta(true).await;

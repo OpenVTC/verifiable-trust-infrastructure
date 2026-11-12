@@ -179,6 +179,17 @@ When adding a flow, add it here and a line to the root index.
      self-grant), same as mediator / did-hosting.
   3. `vtc setup --from <toml>` — load the now-authorised key
      (`setup_key_file`) and provision end-to-end (no TTY).
+- **A did:webs VTC** (VTI-KEY-001, level 1): `identity_method = "webs"` (TOML)
+  or the interactive method prompt. Provisions `vtc-host-classical` (`vtc-host`
+  less the `pq-signing` slot CONVENTIONS §9.2 refuses) with `DID_METHOD=webs`
+  at `[webvh] server_id` (required — no serverless did:webs); writes no
+  `did.jsonl` and checks the bundle carries the `keri.cesr` stream and a
+  did:webs DID. The bundle keeps the document's own key ids; a bundle without
+  key roles whose ids are not `#key-0`/`#key-1` answers `key_role_ids` with
+  them, so `LocalSigner`, DIDComm and `vtc status` sign as the document says.
+  Service changes are the VTA's (`pnm webs update` / `vta/webs/dids/update`).
+  `apply` = `run_provision_quietly` + `persist_provisioned` (testable with a
+  VTA's reply); `provision_ask` builds what is sent.
 - **Secrets**: `[secrets] backend = "vault"|"k8s"|"aws"|"gcp"|"azure"|`
   `"keyring"|"config"|"plaintext"` selects the store explicitly (validated,
   fail-closed); omit for legacy implicit resolution. All backends except

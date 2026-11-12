@@ -105,6 +105,28 @@ Phase 2 prints a terse, scrape-friendly block (`vtc_did=…`, `admin_did=…`,
 `install_url=…`, `claim_code=…`, `single_admin_mode=…`); it never prints the
 admin private key.
 
+### A did:webs community
+
+`identity_method = "webs"` makes the community's own DID a level-1 `did:webs`
+(alpha; VTI-KEY-001) instead of a `did:webvh`. The VTA publishes it at a
+did-hosting server, so `[webvh] server_id` is required — there is no
+serverless did:webs — and `path` may not be `.well-known`;
+`scid_also_known_as` does not apply. `did_method` still decides how the DIDs
+the community mints later are presented.
+
+```toml
+identity_method = "webs"
+
+[webvh]
+server_id = "host-1"        # a server built with did:webs hosting (method-webs)
+path      = "communities"   # → did:webs:<domain>:communities:<AID>
+```
+
+The VTA must allow did:webs service DIDs (`[dids] webs_enabled` and
+`webs_service_dids`). The DID is minted from `vtc-host-classical`, so it has
+one signing key and no post-quantum key, and no `did.jsonl` is written: see
+[A VTC as a did:webs](../02-vta/did-webs.md#a-vtc-as-a-didwebs).
+
 ### A second administrator at install
 
 `co_admin_did = "<did>"` in the setup TOML names a second administrator: the

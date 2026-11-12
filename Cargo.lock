@@ -2944,6 +2944,7 @@ name = "cnm-cli"
 version = "0.53.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "dialoguer",

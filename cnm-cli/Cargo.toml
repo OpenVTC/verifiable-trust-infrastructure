@@ -49,6 +49,8 @@ pgp = { workspace = true }
 chrono = { workspace = true }
 # A fresh identifier for each sealed storage credential (`storage.rs`).
 uuid = { workspace = true }
+# `storage.rs`: a did:webs community publishes its key as a JWK (`x`, base64url).
+base64 = { workspace = true }
 # `cnm git link`: the authorisation URL is parsed before it is printed.
 url = { workspace = true }
 ratatui = { workspace = true }

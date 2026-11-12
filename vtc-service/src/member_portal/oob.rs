@@ -200,11 +200,18 @@ pub fn check_sign_in_portal(
         .map(str::to_string)
         .collect();
     let fix = sign_in_portal_service(vtc_did, public_url);
+    // A did:webs is changed only by the VTA that holds it, and nothing of it
+    // is served here.
+    let how = if vtc_did.starts_with("did:webs:") {
+        "a `vta/webs/dids/update` at the VTA that holds it, stating the whole service set"
+    } else {
+        "a VTA-side `dids edit`, then `cnm did-log install` if this VTC serves its own \
+         did.jsonl"
+    };
     match found.first() {
         None => Err(format!(
             "no `SignInPortal` service; wallets will refuse sign-in links from this \
-             community. Publish {fix} in the VTC DID document (a VTA-side `dids edit`, \
-             then `cnm did-log install` if this VTC serves its own did.jsonl)"
+             community. Publish {fix} in the VTC DID document ({how})"
         )),
         Some(ep) if origin_of(ep) != origin_of(&want) => Err(format!(
             "`SignInPortal` points at {ep}, whose origin is not this portal's ({want}); \

@@ -371,8 +371,19 @@ impl VtcKeyBundle {
     /// [`vta_sdk::node_keys::NodeKeyIds::from_document`] reads from a key-role
     /// document (the attestation key signs and seals, the operational key
     /// authenticates, the messaging key agrees).
+    ///
+    /// A **level-1 `did:webs`** (VTI-KEY-146) has no key roles but names its
+    /// keys by themselves (`<did>#<CESR key>` for the one signing key, in both
+    /// `authentication` and `assertionMethod`, and the designated key
+    /// agreement key under its own id), so a bundle whose ids are not the
+    /// conventional `#key-0` / `#key-1` answers with them too, as
+    /// [`vta_sdk::node_keys::NodeKeyIds::from_document`] reads such a
+    /// document: signing and authentication the one key, no sealed-transfer
+    /// key.
     pub fn key_role_ids(&self, vtc_did: &str) -> Option<vta_sdk::node_keys::NodeKeyIds> {
-        let authentication = self.authentication_key.as_ref()?;
+        let Some(authentication) = self.authentication_key.as_ref() else {
+            return self.level_one_ids(vtc_did);
+        };
         let signing = method_under(vtc_did, &self.ed25519_key_id);
         // `NodeKeyIds` is non-exhaustive: start from a value and set every field.
         let mut ids = vta_sdk::node_keys::NodeKeyIds::conventional(vtc_did);
@@ -380,6 +391,27 @@ impl VtcKeyBundle {
         ids.key_agreement = Some(method_under(vtc_did, &self.x25519_key_id));
         ids.sealed_transfer = Some(signing.clone());
         ids.signing = signing;
+        Some(ids)
+    }
+}
+
+impl VtcKeyBundle {
+    /// The ids of a bundle without key roles whose keys are not at `#key-0` /
+    /// `#key-1` (a level-1 `did:webs`); `None` for the conventional ids.
+    fn level_one_ids(&self, vtc_did: &str) -> Option<vta_sdk::node_keys::NodeKeyIds> {
+        let conventional = vta_sdk::node_keys::NodeKeyIds::conventional(vtc_did);
+        let signing = method_under(vtc_did, &self.ed25519_key_id);
+        let key_agreement = method_under(vtc_did, &self.x25519_key_id);
+        if signing == conventional.signing
+            && Some(key_agreement.as_str()) == conventional.key_agreement.as_deref()
+        {
+            return None;
+        }
+        let mut ids = conventional;
+        ids.authentication = signing.clone();
+        ids.signing = signing;
+        ids.key_agreement = Some(key_agreement);
+        ids.sealed_transfer = None;
         Some(ids)
     }
 }
@@ -1289,5 +1321,209 @@ mod key_role_tests {
             .err()
             .expect("refused");
         assert!(err.contains("does not match"), "{err}");
+    }
+}
+
+/// A VTC whose own DID is a **level-1** did:webs (VTI-KEY-001, VTI-KEY-146), as
+/// provision-integration mints one from `vtc-host-classical` with
+/// `DID_METHOD=webs`: one key-state signing key named by itself, a designated
+/// X25519 key agreement key, no key roles and no `#key-0`.
+#[cfg(test)]
+pub(crate) mod level_one_tests {
+    use super::*;
+    use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+    use base64::Engine as _;
+    use vta_sdk::node_keys::NodeKeyIds;
+
+    pub(crate) const SIGNING: [u8; 32] = [0x41; 32];
+    pub(crate) const KA: [u8; 32] = [0x42; 32];
+
+    /// The level-1 did:webs and the document its stream derives.
+    pub(crate) fn level_one_vtc() -> (String, serde_json::Value) {
+        let (did, document, _) = level_one_vtc_with_stream();
+        (did, document)
+    }
+
+    /// As [`level_one_vtc`], with the `keri.cesr` stream.
+    pub(crate) fn level_one_vtc_with_stream() -> (String, serde_json::Value, String) {
+        use affinidi_did_webs::{CreateConfig, DidWebs, KeyAgreementKey, create_controlled};
+        use affinidi_keri::controller::{Inception, KeySigner, NextKey};
+        use affinidi_keri_core::threshold::Threshold;
+        use affinidi_keri_crypto::Signer;
+
+        let controller = Signer::new("A", SIGNING.to_vec()).unwrap();
+        let next = Signer::new("A", vec![0x43; 32]).unwrap();
+        let x25519 =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(KA)).to_bytes();
+        let config = CreateConfig::builder("vtc.example")
+            .controlled(Inception::new(
+                vec![controller.public_key().unwrap()],
+                Threshold::Simple(1),
+                vec![NextKey::PublicKey(next.public_key().unwrap())],
+                Threshold::Simple(1),
+            ))
+            .key_agreement(KeyAgreementKey::X25519(x25519))
+            .build();
+        let created = create_controlled(config, &[&controller as &dyn KeySigner]).unwrap();
+        let did = created.did().to_string();
+        let document = serde_json::to_value(
+            affinidi_did_webs::resolve_from_artifacts(
+                &DidWebs::parse(&did).unwrap(),
+                &created.artifacts().keri_cesr,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let stream = String::from_utf8(created.artifacts().keri_cesr.to_vec()).unwrap();
+        (did, document, stream)
+    }
+
+    /// The bundle the wizard stores from the VTA's: each key under the id the
+    /// document gives it (`from_did_key_material_v2` copies the bundle's ids).
+    fn level_one_bundle(did: &str, document: &serde_json::Value) -> VtcKeyBundle {
+        let ids = NodeKeyIds::from_document(did, document).unwrap();
+        let mut bundle = bundle_from_raw(did, &SIGNING, &KA);
+        bundle.ed25519_key_id = ids.signing.clone();
+        bundle.x25519_key_id = ids.key_agreement.clone().unwrap();
+        bundle
+    }
+
+    /// The Ed25519 public key `document` publishes under `id`.
+    fn published_key(document: &serde_json::Value, id: &str) -> [u8; 32] {
+        let vm = document["verificationMethod"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|vm| {
+                let vm_id = vm["id"].as_str().unwrap_or_default();
+                vm_id == id || id.ends_with(vm_id)
+            })
+            .unwrap_or_else(|| panic!("{id} not in {document}"));
+        let x = vm["publicKeyJwk"]["x"].as_str().expect("a JWK");
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(x)
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_level_one_bundle_names_its_keys_as_its_document_does() {
+        let (did, document) = level_one_vtc();
+        let bundle = level_one_bundle(&did, &document);
+        assert!(!bundle.has_key_roles());
+        let from_document = NodeKeyIds::from_document(&did, &document).unwrap();
+        assert_eq!(bundle.key_role_ids(&did), Some(from_document.clone()));
+        assert_eq!(from_document.signing, from_document.authentication);
+        assert!(
+            !from_document.signing.ends_with("#key-0"),
+            "{from_document:?}"
+        );
+
+        let own = own_key_material(&did, &bundle.to_secret_store_bytes().unwrap()).unwrap();
+        assert!(
+            own.authentication.is_none(),
+            "one key authenticates and signs"
+        );
+        assert_eq!(own.key_role_ids, Some(from_document));
+        assert_eq!(*own.derivation_root, SIGNING);
+    }
+
+    /// A credential a did:webs VTC issues, and a Trust Task it signs, each carry
+    /// one eddsa proof naming the key-state key, and verify under the key the
+    /// resolved document publishes there.
+    #[tokio::test]
+    async fn vti_key_001_a_did_webs_vtcs_credentials_and_trust_tasks_verify_against_its_document() {
+        let (did, document) = level_one_vtc();
+        let ids = NodeKeyIds::from_document(&did, &document).unwrap();
+        let own = own_key_material(
+            &did,
+            &level_one_bundle(&did, &document)
+                .to_secret_store_bytes()
+                .unwrap(),
+        )
+        .unwrap();
+        let signer = crate::credentials::LocalSigner::for_own_keys(did.clone(), &own);
+        assert_eq!(signer.assertion_method_id(), ids.signing);
+        assert_eq!(signer.authentication_method_id(), ids.signing);
+        assert_eq!(signer.key_count(), 1, "no post-quantum key");
+
+        let verify = |doc: &serde_json::Value| {
+            assert!(doc["proof"].is_object(), "one proof, not a set: {doc}");
+            let proof: DataIntegrityProof = serde_json::from_value(doc["proof"].clone()).unwrap();
+            let public = published_key(&document, &proof.verification_method);
+            let mut unsigned = doc.clone();
+            unsigned.as_object_mut().unwrap().remove("proof");
+            proof
+                .verify_with_public_key(&unsigned, &public, VerifyOptions::new())
+                .expect("verifies under the document's key");
+        };
+
+        let mut vc = serde_json::json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "id": "urn:uuid:webs-l1-vtc-probe",
+            "type": ["VerifiableCredential"],
+            "issuer": did,
+            "credentialSubject": { "id": "did:key:z6MkHolder" },
+        });
+        signer.sign_doc(&mut vc).await.unwrap();
+        assert_eq!(vc["proof"]["verificationMethod"], ids.signing.as_str());
+        assert_eq!(vc["proof"]["proofPurpose"], "assertionMethod");
+        verify(&vc);
+
+        let task = vti_common::capability_client::build_document(
+            &did,
+            "did:web:registry.example",
+            "https://trusttasks.org/spec/registry/record/put/0.3",
+            serde_json::json!({}),
+        );
+        let mut task = serde_json::to_value(&task).unwrap();
+        signer.sign_operational_doc(&mut task).await.unwrap();
+        assert_eq!(task["proof"]["verificationMethod"], ids.signing.as_str());
+        assert_eq!(task["proof"]["proofPurpose"], "authentication");
+        verify(&task);
+
+        // A Trust Task reply, signed as the spine signs every response, and
+        // verified the way a peer does: the proof's method resolved in the
+        // VTC's did:webs document.
+        let mut reply = serde_json::json!({
+            "type": "https://trusttasks.org/spec/registry/record/put/0.3#response",
+            "issuer": did,
+            "recipient": "did:web:registry.example",
+            "threadId": "urn:uuid:probe",
+            "payload": {},
+        });
+        vti_trust_task_server::ResponseSigner::sign_response_document(&signer, &mut reply)
+            .await
+            .unwrap();
+        assert_eq!(reply["proof"]["verificationMethod"], ids.signing.as_str());
+        verify(&reply);
+        let mut resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .unwrap();
+        resolver
+            .add_did_document(&did, serde_json::from_value(document.clone()).unwrap())
+            .await;
+        let signed_by = vta_sdk::trust_task_proof::verify_trust_task_proof_value(
+            &reply,
+            &vta_sdk::trust_task_proof::TrustTaskVmResolver::new(resolver),
+        )
+        .await
+        .expect("the reply verifies against the resolved did:webs document");
+        assert_eq!(signed_by, did);
+
+        // An attested response (sign-in step replies) is an assertion: the
+        // same one key, under assertionMethod.
+        let mut attested = serde_json::json!({ "type": "urn:example:attested", "payload": {} });
+        signer.sign_attested_response(&mut attested).await.unwrap();
+        assert_eq!(
+            attested["proof"]["verificationMethod"],
+            ids.signing.as_str()
+        );
+        assert_eq!(attested["proof"]["proofPurpose"], "assertionMethod");
+        verify(&attested);
     }
 }

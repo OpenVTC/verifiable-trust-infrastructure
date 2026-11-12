@@ -171,10 +171,12 @@ pub fn warning_text(vtc_did: &str, missing: &[MissingService], serves_own_log: b
              so wallets will refuse its sign-in codes (\"This code can't be used\").\n{reasons}\n\
              The document needs, in its `service` array:\n{entries}\n\
              This VTC's DID is a did:webs: the VTA that holds it publishes the document to its \
-             host, and nothing is served from here. `pnm webs update {vtc_did} --services …` at \
-             that VTA designates only DIDComm and TSP today, so these entries cannot yet be added \
-             to a did:webs document (docs/05-design-notes/did-webs-in-the-vta.md, S7). Passkey \
-             and other sign-in options keep working."
+             host, and nothing is served from here. `vtc setup` designates these from \
+             `vtc-host-classical` when it mints the DID, so a document without them was minted \
+             from another template. Add them at that VTA with `vta/webs/dids/update`, stating \
+             the whole service set (`services.additional`); `pnm webs update {vtc_did} \
+             --services …` keeps the services already designated but adds none \
+             (docs/02-vta/did-webs.md). Passkey and other sign-in options keep working."
         );
     }
     let install = if serves_own_log {

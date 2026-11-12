@@ -290,8 +290,21 @@ pub struct UpdateArgs {
 
 pub async fn cmd_webs_update(client: &VtaClient, args: UpdateArgs) -> CmdResult {
     let mut v = json!({ "did": args.did });
+    let mut expected_version = args.expected_version;
     if let Some((mediator, tsp)) = args.services {
-        v["services"] = json!({ "mediator": mediator, "tsp": tsp });
+        // `services` replaces the whole set in force (`vta/webs/dids/update`),
+        // and `--services` names only the transports. Every other designated
+        // service — a VTC's `VTCRest`, `VTCStatusList`, `TrustTaskHTTPS` and
+        // `SignInPortal`, a host service's own endpoints — is read back and
+        // stated again, against the version it was read at, so changing a
+        // transport never withdraws them.
+        let (additional, version) = designated_beyond_transports(client, &args.did).await?;
+        if !additional.is_empty() {
+            v["services"] = json!({ "mediator": mediator, "tsp": tsp, "additional": additional });
+            expected_version.get_or_insert(version);
+        } else {
+            v["services"] = json!({ "mediator": mediator, "tsp": tsp });
+        }
     }
     if args.rotate_key_agreement {
         v["rotateKeyAgreementKey"] = json!(true);
@@ -299,7 +312,7 @@ pub async fn cmd_webs_update(client: &VtaClient, args: UpdateArgs) -> CmdResult 
     if let Some(aliases) = args.also_known_as {
         v["alsoKnownAs"] = json!(aliases);
     }
-    if let Some(e) = args.expected_version {
+    if let Some(e) = expected_version {
         v["expectedVersionId"] = json!(e);
     }
     let req: dids::update::v0_1::Payload = payload("update", v)?;
@@ -322,6 +335,37 @@ pub async fn cmd_webs_update(client: &VtaClient, args: UpdateArgs) -> CmdResult 
     println!("  Key agreement:  {}", r.key_agreement_key_id);
     println!("  Services:       {}", r.service_ids.join(", "));
     Ok(())
+}
+
+/// The services `did` designates other than `#didcomm` and `#tsp`, and the
+/// version they were read at.
+async fn designated_beyond_transports(
+    client: &VtaClient,
+    did: &str,
+) -> Result<(Vec<Value>, String), Box<dyn std::error::Error>> {
+    let req: dids::get::v0_1::Payload =
+        payload("get", json!({ "did": did, "includeKeriCesr": false }))?;
+    let record = serde_json::to_value(&client.get_did_webs(&req).await?.record)?;
+    let version = record["versionId"]
+        .as_str()
+        .ok_or("the did:webs record carries no versionId")?
+        .to_string();
+    Ok((additional_services(&record), version))
+}
+
+/// A record's designated services other than the two `--services` names.
+fn additional_services(record: &Value) -> Vec<Value> {
+    record["services"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| {
+            let id = s["id"].as_str().unwrap_or_default();
+            let fragment = id.rsplit_once('#').map_or(id, |(_, f)| f);
+            fragment != "didcomm" && fragment != "tsp"
+        })
+        .cloned()
+        .collect()
 }
 
 pub async fn cmd_webs_rotate(
@@ -383,4 +427,26 @@ pub async fn cmd_webs_delete(
         println!("  Run the same delete again to retry the removal.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A did:webs VTC's own endpoints survive a transport change: only
+    /// `#didcomm` and `#tsp` are the flag's to set.
+    #[test]
+    fn a_transport_change_keeps_every_other_designated_service() {
+        let record = json!({ "services": [
+            { "id": "#didcomm", "type": "DIDCommMessaging", "serviceEndpoint": "did:x" },
+            { "id": "#tsp", "type": "TSPTransport", "serviceEndpoint": "did:x" },
+            { "id": "#vtc-rest", "type": "VTCRest", "serviceEndpoint": "https://vtc.example/v1" },
+            { "id": "#sign-in-portal", "type": "SignInPortal",
+              "serviceEndpoint": "https://vtc.example/members/" },
+        ]});
+        let kept = additional_services(&record);
+        let kept: Vec<&str> = kept.iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(kept, ["#vtc-rest", "#sign-in-portal"]);
+        assert!(additional_services(&json!({})).is_empty());
+    }
 }
