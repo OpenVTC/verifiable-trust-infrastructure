@@ -36,8 +36,11 @@ pub fn opaque_signing_input(payload: &[u8]) -> Vec<u8> {
 /// over a document the principal never saw. Authorizing *which key* signs
 /// bounds the blast radius to that key; it says nothing about what the bytes
 /// will be taken to mean.
+///
+/// Deliberately exhaustive: a domain a signer does not know must not be signed
+/// in, so every `match` has to weigh a new one rather than default it. The
+/// workspace's `non_exhaustive_census` holds it to that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum SigningDomain {
     /// The bytes are defined by a specification this signer implements — a
     /// data-integrity proof input, a task envelope — and that specification
@@ -74,30 +77,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_opaque_payload_is_not_signed_as_presented() {
+        let payload = b"{\"alg\":\"none\"}";
+        assert_ne!(
+            SigningDomain::Opaque.signing_input(payload).as_ref(),
+            payload,
+            "an opaque payload is framed before signing, or the signature over it \
+             verifies as whatever the payload happens to be"
+        );
+    }
+
+    #[test]
+    fn protocol_defined_bytes_are_signed_as_presented() {
+        let payload = b"canonicalised proof input";
+        assert_eq!(
+            SigningDomain::ProtocolDefined
+                .signing_input(payload)
+                .as_ref(),
+            payload,
+            "framing these would produce a proof a conforming verifier rejects"
+        );
+    }
+
+    /// The point of the exercise: a signature obtained from the opaque
+    /// operation must not verify as a document in another domain, and vice
+    /// versa.
+    #[test]
+    fn the_two_domains_never_agree_on_the_bytes() {
+        for payload in [
+            b"".as_slice(),
+            b"x".as_slice(),
+            OPAQUE_SIGNING_DOMAIN_V1, // a payload that starts like the tag
+        ] {
+            assert_ne!(
+                SigningDomain::Opaque.signing_input(payload),
+                SigningDomain::ProtocolDefined.signing_input(payload),
+            );
+        }
+    }
+
+    /// The framing is unambiguous however the payload begins: the tag carries
+    /// no NUL, so the first NUL is always the separator.
+    #[test]
+    fn the_framing_cannot_be_forged_by_a_chosen_payload() {
+        assert!(
+            !OPAQUE_SIGNING_DOMAIN_V1.contains(&0x00),
+            "a NUL in the tag would make the separator ambiguous"
+        );
+
+        // A caller who prefixes the tag themselves does not thereby produce
+        // the same signing input as the framing does.
+        let mut impersonating = OPAQUE_SIGNING_DOMAIN_V1.to_vec();
+        impersonating.push(0x00);
+        impersonating.extend_from_slice(b"payload");
+
+        assert_ne!(
+            SigningDomain::Opaque.signing_input(&impersonating),
+            SigningDomain::Opaque.signing_input(b"payload"),
+            "framing is applied once by the VTA, not something a caller can pre-apply"
+        );
+    }
+
+    #[test]
+    fn a_verifier_can_reconstruct_what_was_signed() {
+        let payload = b"an assertion";
+        assert_eq!(
+            opaque_signing_input(payload),
+            SigningDomain::Opaque.signing_input(payload).into_owned(),
+        );
+    }
+
+    #[test]
     fn an_opaque_payload_is_framed_under_the_tag_and_a_nul() {
         assert_eq!(
             opaque_signing_input(b"payload"),
             b"vti.vta.opaque-signing.v1\0payload".to_vec()
-        );
-    }
-
-    #[test]
-    fn the_tag_carries_no_nul_so_framing_is_unambiguous() {
-        assert!(!OPAQUE_SIGNING_DOMAIN_V1.contains(&0));
-        assert_ne!(opaque_signing_input(b"\0x"), opaque_signing_input(b"x"));
-    }
-
-    #[test]
-    fn a_protocol_defined_payload_is_signed_as_presented_and_an_opaque_one_framed() {
-        assert_eq!(
-            SigningDomain::ProtocolDefined
-                .signing_input(b"as is")
-                .as_ref(),
-            b"as is"
-        );
-        assert_eq!(
-            SigningDomain::Opaque.signing_input(b"x").as_ref(),
-            opaque_signing_input(b"x").as_slice()
         );
     }
 }

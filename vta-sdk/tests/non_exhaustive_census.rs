@@ -95,9 +95,14 @@ const DELIBERATELY_EXHAUSTIVE: &[(&str, &str, &str)] = &[
         "which ACL entries touch a context (#770): a filter that guesses a direction answers the wrong question",
     ),
     (
-        "vta-sdk/src/protocols/key_management/sign.rs",
+        "vta-signing/src/framing.rs",
         "SigningDomain",
         "signing-domain separation; a domain a signer does not know must not be signed in",
+    ),
+    (
+        "vta-signing/src/refusal.rs",
+        "FormatRefusal",
+        "the specification's refusal codes: a service that maps each to a wire code must fail to compile when one is added unmapped",
     ),
     (
         "vta-sdk/src/session.rs",
