@@ -19,7 +19,6 @@
 
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::audit::{AuditEvent, BoardChangedData};
 use vti_common::error::AppError;
@@ -318,29 +317,20 @@ async fn own_entry(state: &AppState, who: &Who) -> Result<String, AppError> {
 
 // ── paging: an offset bound to the caller and the question ──
 
-fn cursor_mac(binding: &str, offset: usize) -> String {
-    let mut h = Sha256::new();
-    h.update(b"vtc/boards/cursor/v1\0");
-    for part in [binding, &offset.to_string()] {
-        h.update((part.len() as u64).to_be_bytes());
-        h.update(part.as_bytes());
-    }
-    hex::encode(&h.finalize()[..12])
+/// The family name board cursors are tagged under ([`super::offset_cursor`]).
+const CURSOR_FAMILY: &str = "vtc/boards";
+
+fn cursor_for(key: &[u8; 32], binding: &str, offset: usize) -> String {
+    super::offset_cursor::mint(key, CURSOR_FAMILY, binding, offset)
 }
 
-fn cursor_for(binding: &str, offset: usize) -> String {
-    format!("{offset}.{}", cursor_mac(binding, offset))
-}
-
-fn offset_of(payload: &Value, binding: &str) -> Result<usize, ()> {
+/// The offset `payload`'s cursor names (0 with none). `Err` for a cursor this
+/// community did not mint for this caller and question.
+fn offset_of(key: &[u8; 32], payload: &Value, binding: &str) -> Result<usize, ()> {
     let Some(c) = str_of(payload, "cursor") else {
         return Ok(0);
     };
-    let (n, mac) = c.split_once('.').ok_or(())?;
-    let offset: usize = n.parse().map_err(|_| ())?;
-    (cursor_mac(binding, offset) == mac)
-        .then_some(offset)
-        .ok_or(())
+    super::offset_cursor::read(key, CURSOR_FAMILY, binding, c).ok_or(())
 }
 
 fn limit_of(payload: &Value) -> usize {
@@ -1071,7 +1061,11 @@ async fn handle_list(
             .then(a.board_id.cmp(&b.board_id))
     });
     let binding = format!("list|{}|{status:?}|{include_archived}", who.did);
-    let Ok(start) = offset_of(p, &binding) else {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let Ok(start) = offset_of(&key, p, &binding) else {
         return declared(
             &doc,
             LIST_ERR_CURSOR_INVALID,
@@ -1079,8 +1073,8 @@ async fn handle_list(
         );
     };
     let limit = limit_of(p);
-    let start = start.min(all.len());
-    let page = &all[start..(start + limit).min(all.len())];
+    let (start, end) = super::offset_cursor::window(start, limit, all.len());
+    let page = &all[start..end];
     let mut items = Vec::with_capacity(page.len());
     for b in page {
         match boards::board_wire(state, b, &who).await {
@@ -1090,7 +1084,7 @@ async fn handle_list(
     }
     let mut body = json!({ "boards": items });
     if start + page.len() < all.len() {
-        body["nextCursor"] = json!(cursor_for(&binding, start + page.len()));
+        body["nextCursor"] = json!(cursor_for(&key, &binding, start + page.len()));
     }
     success_response(&doc, body)
 }
@@ -1155,7 +1149,11 @@ async fn handle_show(
             .then(a.0.idea_id.cmp(&b.0.idea_id))
     });
     let binding = format!("show|{}|{}|{states:?}|{topic:?}", who.did, board.board_id);
-    let Ok(start) = offset_of(p, &binding) else {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let Ok(start) = offset_of(&key, p, &binding) else {
         return declared(
             &doc,
             SHOW_ERR_CURSOR_INVALID,
@@ -1163,8 +1161,8 @@ async fn handle_show(
         );
     };
     let limit = limit_of(p);
-    let start = start.min(ideas.len());
-    let page = &ideas[start..(start + limit).min(ideas.len())];
+    let (start, end) = super::offset_cursor::window(start, limit, ideas.len());
+    let page = &ideas[start..end];
     let notes = match notes_readable_on(state, &who, &board).await {
         Ok(n) => n,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -1190,7 +1188,7 @@ async fn handle_show(
     };
     let mut body = json!({ "board": board_wire, "ideas": items });
     if start + page.len() < ideas.len() {
-        body["nextCursor"] = json!(cursor_for(&binding, start + page.len()));
+        body["nextCursor"] = json!(cursor_for(&key, &binding, start + page.len()));
     }
     success_response(&doc, body)
 }
@@ -2102,7 +2100,11 @@ async fn handle_notes_list(
         "notes|{}|{}|{idea_id:?}|{scope_all}",
         who.did, board.board_id
     );
-    let Ok(start) = offset_of(p, &binding) else {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let Ok(start) = offset_of(&key, p, &binding) else {
         return declared(
             &doc,
             NOTES_LIST_ERR_CURSOR_INVALID,
@@ -2110,8 +2112,8 @@ async fn handle_notes_list(
         );
     };
     let limit = limit_of(p);
-    let start = start.min(notes.len());
-    let page = &notes[start..(start + limit).min(notes.len())];
+    let (start, end) = super::offset_cursor::window(start, limit, notes.len());
+    let page = &notes[start..end];
     let authors = match Authors::for_viewer(state, &who).await {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -2122,7 +2124,7 @@ async fn handle_notes_list(
     }
     let mut body = json!({ "notes": items });
     if start + page.len() < notes.len() {
-        body["nextCursor"] = json!(cursor_for(&binding, start + page.len()));
+        body["nextCursor"] = json!(cursor_for(&key, &binding, start + page.len()));
     }
     success_response(&doc, body)
 }

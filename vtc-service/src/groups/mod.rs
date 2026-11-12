@@ -532,7 +532,11 @@ impl Standing {
         let active_member = crate::member_portal::active::active_member(state, did)
             .await?
             .is_some();
-        let administrator = entry.as_ref().is_some_and(|e| e.is_administrator());
+        // A suspended administrator may read the action list and nothing else
+        // (`vtc-action-list.md` §8.2), so it reads groups as nobody does.
+        let administrator = entry
+            .as_ref()
+            .is_some_and(|e| e.is_administrator() && !e.is_suspended());
         let manages_all = entry
             .as_ref()
             .is_some_and(|e| e.can(Capability::GroupsManage, None));
