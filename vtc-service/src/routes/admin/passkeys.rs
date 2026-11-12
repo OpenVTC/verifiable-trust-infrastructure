@@ -42,8 +42,9 @@ use tracing::info;
 use uuid::Uuid;
 use vti_common::audit::{AdminPasskeyData, AuditEvent, AuditWriter};
 use vti_common::auth::passkey::store::{
-    get_passkey_user_by_did, store_auth_state, store_credential_mapping, store_passkey_user,
-    store_registration_state, take_auth_state, take_registration_state,
+    get_passkey_user_by_did, get_pending, store_auth_state, store_credential_mapping,
+    store_passkey_user, store_pending, store_registration_state, take_auth_state,
+    take_registration_state,
 };
 use vti_common::error::AppError;
 use vti_specs::auth::passkey::{
@@ -211,9 +212,13 @@ pub struct RevokeFinishResponse {
 // Storage key helpers
 // ---------------------------------------------------------------------------
 
-fn revoke_target_key(revocation_id: &str) -> Vec<u8> {
-    format!("revoke_target:{revocation_id}").into_bytes()
+fn revoke_target_key(revocation_id: &str) -> String {
+    format!("{REVOKE_TARGET_PREFIX}{revocation_id}")
 }
+
+/// Prefix of the rows pinning a revocation's producer and target. They
+/// expire with the ceremony and the retention sweep removes lapsed ones.
+pub(crate) const REVOKE_TARGET_PREFIX: &str = "revoke_target:";
 
 // ---------------------------------------------------------------------------
 // list
@@ -288,8 +293,8 @@ pub(crate) async fn register_start(
         start_passkey_registration(webauthn, user_uuid, did, did, Some(exclude))?;
 
     let registration_id = Uuid::new_v4().to_string();
-    store_registration_state(&state.passkey_ks, &registration_id, &reg_state).await?;
-    store_auth_state(&state.passkey_ks, &registration_id, &uv_state).await?;
+    store_registration_state(&state.passkey_ks, &registration_id, Some(did), &reg_state).await?;
+    store_auth_state(&state.passkey_ks, &registration_id, Some(did), &uv_state).await?;
 
     info!(%did, %registration_id, "passkey register ceremony started");
 
@@ -469,18 +474,18 @@ pub(crate) async fn revoke_start(
         .map_err(|e| AppError::Internal(format!("webauthn UV start failed: {e}")))?;
 
     let revocation_id = Uuid::new_v4().to_string();
-    store_auth_state(&state.passkey_ks, &revocation_id, &uv_state).await?;
+    store_auth_state(&state.passkey_ks, &revocation_id, Some(did), &uv_state).await?;
     // Pin the producer and the target credential to the revocation id so
     // finish can refuse another producer's handle (0.2 step 2) and verify
     // the operator didn't substitute a different credential after seeing
     // the UV challenge.
-    state
-        .passkey_ks
-        .insert_raw(
-            revoke_target_key(&revocation_id),
-            format!("{did}\n{credential_id}").into_bytes(),
-        )
-        .await?;
+    // Lapses with the ceremony it pins (`store_pending`).
+    store_pending(
+        &state.passkey_ks,
+        revoke_target_key(&revocation_id),
+        &format!("{did}\n{credential_id}"),
+    )
+    .await?;
 
     info!(%did, %revocation_id, "passkey revoke ceremony started");
 
@@ -523,13 +528,9 @@ pub(crate) async fn revoke_finish(
     // The pinned producer and target, read before anything is consumed: a
     // handle bound to another producer is `revocationNotFound` (0.2 step 2)
     // and stays intact for the producer it belongs to.
-    let target_bytes = state
-        .passkey_ks
-        .get_raw(revoke_target_key(revocation_id))
+    let pinned: String = get_pending(&state.passkey_ks, revoke_target_key(revocation_id))
         .await?
         .ok_or_else(not_found)?;
-    let pinned = String::from_utf8(target_bytes)
-        .map_err(|_| AppError::Internal("revocation target malformed".into()))?;
     let Some((pinned_did, target_cred_id)) = pinned.split_once('\n') else {
         return Err(not_found());
     };
@@ -647,11 +648,11 @@ pub(crate) async fn owns_revocation(
     state: &AppState,
     revocation_id: &str,
 ) -> Result<bool, AppError> {
-    Ok(state
-        .passkey_ks
-        .get_raw(revoke_target_key(revocation_id))
-        .await?
-        .is_some())
+    Ok(
+        get_pending::<String>(&state.passkey_ks, revoke_target_key(revocation_id))
+            .await?
+            .is_some(),
+    )
 }
 
 fn require_webauthn(state: &AppState) -> Result<&Webauthn, AppError> {

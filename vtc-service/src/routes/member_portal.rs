@@ -27,9 +27,9 @@ use uuid::Uuid;
 use vta_sdk::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
 use vti_common::audit::{AuditEvent, MemberPasskeyData};
 use vti_common::auth::passkey::store::{
-    PasskeyUser, get_all_passkeys, get_passkey_user_by_cred, get_passkey_user_by_did,
-    store_auth_state, store_credential_mapping, store_passkey_user, store_registration_state,
-    take_auth_state, take_registration_state,
+    PasskeyUser, get_all_passkeys, get_passkey_user_by_cred, get_passkey_user_by_did, get_pending,
+    store_auth_state, store_credential_mapping, store_passkey_user, store_pending,
+    store_registration_state, take_auth_state, take_registration_state,
 };
 use vti_common::auth::session::{
     Session, SessionState, delete_session, now_epoch, store_refresh_index, store_session,
@@ -48,6 +48,11 @@ const REFRESH_TASK_URI: &str = "https://trusttasks.org/spec/auth/refresh/0.2";
 /// Labels a member gives a passkey are display text, not data: capped so the
 /// row stays small.
 const PASSKEY_LABEL_MAX: usize = 64;
+
+/// Prefix of the rows pinning a portal passkey registration to the member
+/// and user handle that started it. They expire with the ceremony and the
+/// retention sweep removes lapsed ones.
+pub(crate) const MEMBER_REG_PREFIX: &str = "member_reg:";
 
 // ── SIOPv2 sign-in (deprecated) ─────────────────────────────────────────────
 //
@@ -489,16 +494,21 @@ pub async fn register_start(
         webauthn, user_uuid, &auth.did, &auth.did, exclude,
     )?;
     let registration_id = Uuid::new_v4().to_string();
-    store_registration_state(&state.member_passkey_ks, &registration_id, &reg_state).await?;
+    store_registration_state(
+        &state.member_passkey_ks,
+        &registration_id,
+        Some(&auth.did),
+        &reg_state,
+    )
+    .await?;
     // Pin the ceremony to its subject and user handle so finish cannot be
     // completed by another member's session.
-    state
-        .member_passkey_ks
-        .insert(
-            format!("member_reg:{registration_id}"),
-            &(auth.did.clone(), user_uuid),
-        )
-        .await?;
+    store_pending(
+        &state.member_passkey_ks,
+        format!("{MEMBER_REG_PREFIX}{registration_id}"),
+        &(auth.did.clone(), user_uuid),
+    )
+    .await?;
     Ok(Json(RegisterStartResponse {
         registration_id,
         options: options.public_key,
@@ -527,8 +537,9 @@ pub async fn register_finish(
         .map(|l| l.trim().chars().take(PASSKEY_LABEL_MAX).collect::<String>())
         .filter(|l| !l.is_empty());
 
-    let pin_key = format!("member_reg:{}", req.registration_id);
-    let pinned: Option<(String, Uuid)> = state.member_passkey_ks.get(pin_key.clone()).await?;
+    let pin_key = format!("{MEMBER_REG_PREFIX}{}", req.registration_id);
+    let pinned: Option<(String, Uuid)> =
+        get_pending(&state.member_passkey_ks, pin_key.clone()).await?;
     let Some((pinned_did, user_uuid)) = pinned else {
         return Err(AppError::Unauthorized("no registration in progress".into()));
     };
@@ -630,7 +641,7 @@ pub async fn passkey_login_start(
         .start_passkey_authentication(&passkeys)
         .map_err(|e| AppError::Internal(format!("webauthn auth start failed: {e}")))?;
     let auth_id = Uuid::new_v4().to_string();
-    store_auth_state(&state.member_passkey_ks, &auth_id, &auth_state).await?;
+    store_auth_state(&state.member_passkey_ks, &auth_id, None, &auth_state).await?;
     Ok(Json(PasskeyLoginStartResponse {
         auth_id,
         options: rcr.public_key,

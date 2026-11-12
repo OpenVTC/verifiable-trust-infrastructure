@@ -352,7 +352,8 @@ pub(crate) async fn claim_start(
         .insert(assertion_challenge_key(&jti), &challenge_b64)
         .await?;
 
-    store_registration_state(&state.passkey_ks, &jti.to_string(), &reg_state).await?;
+    let owner = jti.to_string();
+    store_registration_state(&state.passkey_ks, &owner, Some(&owner), &reg_state).await?;
     store_registration_user(&state.passkey_ks, &jti.to_string(), &jti).await?;
 
     info!(jti = %jti, "passkey install claim started");
@@ -445,7 +446,8 @@ pub(crate) async fn claim_finish(
     let passkey = match webauthn.finish_passkey_registration(&req.webauthn_response, &reg_state) {
         Ok(p) => p,
         Err(WebauthnError::CredentialAlteredAlgFromRequest) => {
-            store_registration_state(&state.passkey_ks, &jti.to_string(), &reg_state).await?;
+            let owner = jti.to_string();
+            store_registration_state(&state.passkey_ks, &owner, Some(&owner), &reg_state).await?;
             return Err(declared(
                 FINISH_ERR_UNSUPPORTED_ALGORITHM,
                 "the passkey's key is neither EdDSA over Ed25519 nor ES256 over P-256, so no \
@@ -465,7 +467,8 @@ pub(crate) async fn claim_finish(
     let admin_did = match crate::webauthn::passkey_did_key(&passkey) {
         Ok(did) => did,
         Err(PasskeyDidError::UnsupportedAlgorithm) => {
-            store_registration_state(&state.passkey_ks, &jti.to_string(), &reg_state).await?;
+            let owner = jti.to_string();
+            store_registration_state(&state.passkey_ks, &owner, Some(&owner), &reg_state).await?;
             return Err(declared(
                 FINISH_ERR_UNSUPPORTED_ALGORITHM,
                 "the passkey's key is neither EdDSA over Ed25519 nor ES256 over P-256, so no \
