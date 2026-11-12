@@ -17,7 +17,6 @@ use std::collections::BTreeSet;
 use base64::Engine as _;
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::BadgeChangedData;
 use vti_common::error::AppError;
@@ -526,29 +525,16 @@ async fn projected_fields(
 
 // ── paging: an offset bound to the caller and the question ──
 
-fn cursor_mac(binding: &str, offset: usize) -> String {
-    let mut h = Sha256::new();
-    h.update(b"vtc/badges/cursor/v1\0");
-    for part in [binding, &offset.to_string()] {
-        h.update((part.len() as u64).to_be_bytes());
-        h.update(part.as_bytes());
-    }
-    hex::encode(&h.finalize()[..12])
-}
+/// The family name badge cursors are tagged under ([`super::offset_cursor`]).
+const CURSOR_FAMILY: &str = "vtc/badges";
 
-fn cursor_for(binding: &str, offset: usize) -> String {
-    format!("{offset}.{}", cursor_mac(binding, offset))
-}
-
-fn offset_of(payload: &Value, binding: &str) -> Result<usize, ()> {
+/// The offset `payload`'s cursor names (0 with none). `Err` for a cursor this
+/// community did not mint for this caller and question.
+fn offset_of(key: &[u8; 32], payload: &Value, binding: &str) -> Result<usize, ()> {
     let Some(c) = str_of(payload, "cursor") else {
         return Ok(0);
     };
-    let (n, mac) = c.split_once('.').ok_or(())?;
-    let offset: usize = n.parse().map_err(|_| ())?;
-    (cursor_mac(binding, offset) == mac)
-        .then_some(offset)
-        .ok_or(())
+    super::offset_cursor::read(key, CURSOR_FAMILY, binding, c).ok_or(())
 }
 
 fn limit_of(payload: &Value) -> usize {
@@ -559,16 +545,20 @@ fn limit_of(payload: &Value) -> usize {
         .clamp(1, 200)
 }
 
-/// One page of `items`, and the cursor to the next, where there is one.
+/// One page of `items`, and the cursor to the next, where there is one. An
+/// offset past the end (the list shrank since the cursor was made) is an
+/// empty last page.
 fn page<T: Clone>(
     items: &[T],
     offset: usize,
     limit: usize,
+    key: &[u8; 32],
     binding: &str,
 ) -> (Vec<T>, Option<String>) {
-    let end = (offset + limit).min(items.len());
-    let next = (end < items.len()).then(|| cursor_for(binding, end));
-    (items[offset.min(items.len())..end].to_vec(), next)
+    let (start, end) = super::offset_cursor::window(offset, limit, items.len());
+    let next =
+        (end < items.len()).then(|| super::offset_cursor::mint(key, CURSOR_FAMILY, binding, end));
+    (items[start..end].to_vec(), next)
 }
 
 // ── what the caller may see ──
@@ -1841,7 +1831,11 @@ async fn handle_list(
         view.who.did,
         kind.map_or("", BadgeKind::as_str)
     );
-    let offset = match offset_of(&p, &binding) {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
         Ok(o) => o,
         Err(()) => {
             return declared(
@@ -1851,7 +1845,7 @@ async fn handle_list(
             );
         }
     };
-    let (items, next) = page(&chosen, offset, limit_of(&p), &binding);
+    let (items, next) = page(&chosen, offset, limit_of(&p), &key, &binding);
     let mut out = Vec::with_capacity(items.len());
     for b in &items {
         let wire = match view.badge_wire(state, b).await {
@@ -2902,7 +2896,11 @@ async fn handle_claims_list(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
     let binding = format!("badges/claims/list|{}|{}", view.who.did, badge.badge_id);
-    let offset = match offset_of(&p, &binding) {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
         Ok(o) => o,
         Err(()) => {
             return declared(
@@ -2912,7 +2910,7 @@ async fn handle_claims_list(
             );
         }
     };
-    let (items, next) = page(&all, offset, limit_of(&p), &binding);
+    let (items, next) = page(&all, offset, limit_of(&p), &key, &binding);
     let mut body = json!({ "items": items.iter().map(|c| c.wire()).collect::<Vec<_>>() });
     if let Some(n) = next {
         body["nextCursor"] = json!(n);
@@ -3131,7 +3129,11 @@ async fn handle_awards_list(
         state_filter.map_or("", AwardState::as_str),
         entry_filter.unwrap_or("")
     );
-    let offset = match offset_of(&p, &binding) {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
         Ok(o) => o,
         Err(()) => {
             return declared(
@@ -3141,7 +3143,7 @@ async fn handle_awards_list(
             );
         }
     };
-    let (items, next) = page(&all, offset, limit_of(&p), &binding);
+    let (items, next) = page(&all, offset, limit_of(&p), &key, &binding);
     let viewer = match crate::directory::read::viewer(state, &view.who.did).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -3219,7 +3221,11 @@ async fn handle_holders_list(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
     let binding = format!("badges/holders/list|{}|{}", view.who.did, badge.badge_id);
-    let offset = match offset_of(&p, &binding) {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
         Ok(o) => o,
         Err(()) => {
             return declared(
@@ -3230,7 +3236,7 @@ async fn handle_holders_list(
         }
     };
     let total = holders.len();
-    let (items, next) = page(&holders, offset, limit_of(&p), &binding);
+    let (items, next) = page(&holders, offset, limit_of(&p), &key, &binding);
     let viewer = match crate::directory::read::viewer(state, &view.who.did).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -4031,7 +4037,11 @@ async fn handle_kudos_list(
         badge_filter.as_deref().unwrap_or(""),
         state_filter.map_or("", AwardState::as_str)
     );
-    let offset = match offset_of(&p, &binding) {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
         Ok(o) => o,
         Err(()) => {
             return declared(
@@ -4041,7 +4051,7 @@ async fn handle_kudos_list(
             );
         }
     };
-    let (items, next) = page(&items, offset, limit_of(&p), &binding);
+    let (items, next) = page(&items, offset, limit_of(&p), &key, &binding);
     let viewer = match crate::directory::read::viewer(state, &view.who.did).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, &e),

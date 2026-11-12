@@ -212,6 +212,26 @@ impl Actor {
     fn can(&self, cap: crate::acl::Capability) -> bool {
         self.entry.can(cap, None)
     }
+
+    /// Whether the actor may read what the community shows its members and
+    /// administrators: an administrator not suspended, or an active member
+    /// ([`crate::member_portal::active::active_member`]). Never an
+    /// `application` entry, which is not a membership (VTI-ACL-037), and never
+    /// a suspended one, which may read the action list and nothing else
+    /// (`vtc-action-list.md` §8.2).
+    pub(super) async fn may_read_as_member(&self, state: &AppState) -> Result<bool, AppError> {
+        if self.entry.is_suspended() {
+            return Ok(false);
+        }
+        if self.entry.is_administrator() {
+            return Ok(true);
+        }
+        Ok(
+            crate::member_portal::active::active_member(state, &self.did)
+                .await?
+                .is_some(),
+        )
+    }
 }
 
 pub(super) async fn acting_party(
@@ -469,18 +489,34 @@ fn not_permitted(doc: &TrustTask<Value>) -> TrustTaskOutcome {
 
 /// `vtc/relationships/list/0.3` — one member's edges, paged.
 ///
-/// Readable by any current member or administrator, the parties the
+/// Readable by any active member or administrator, the parties the
 /// specification's *Consent/purpose* names ("members and administrators can
-/// see the attestations the community holds"). A signer with no current row
-/// is refused before the subject is resolved, so this cannot be used to learn
+/// see the attestations the community holds"). A signer with no current row,
+/// an `application` entry (not a membership, VTI-ACL-037) and a suspended entry
+/// are refused before the subject is resolved, so this cannot be used to learn
 /// who is a member.
 async fn handle_relationships_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = acting_party(state, ctx, &doc).await {
-        return reject;
+    let actor = match acting_party(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    match actor.may_read_as_member(state).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return reject_with(
+                &doc,
+                RejectReason::PermissionDenied {
+                    reason: "relationships are read by this community's active members and \
+                             administrators"
+                        .into(),
+                },
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
     }
     let body: rel_list::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,

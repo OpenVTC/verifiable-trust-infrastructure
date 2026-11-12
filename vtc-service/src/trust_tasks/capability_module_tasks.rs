@@ -137,6 +137,16 @@ async fn handle_list(
         Ok(a) => a,
         Err(reject) => return reject,
     };
+    // A suspended entry may read the action list and nothing else
+    // (`vtc-action-list.md` §8.2).
+    if actor.entry.is_suspended() {
+        return reject_with(
+            &doc,
+            RejectReason::PermissionDenied {
+                reason: "a suspended entry may read only the action list".into(),
+            },
+        );
+    }
     if actor.entry.role == VtcRole::Application && !actor.entry.admin.is_administrator() {
         return reject_with(
             &doc,

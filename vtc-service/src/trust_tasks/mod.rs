@@ -167,6 +167,8 @@ pub(crate) mod group_tasks;
 // The community's boards (`vtc/boards/*`, VTI-BRD-*): ideas, notes, and each accepted idea's
 // election through `crate::elections`.
 pub(crate) mod board_tasks;
+/// Keyed offset cursors shared by the badge, board and election lists.
+pub(crate) mod offset_cursor;
 // Member badges (`vtc/badges/*`, VTI-BDG-*): badges backed by badge groups, awards accepted by
 // their holders, kudos between members, through `crate::badges`.
 pub(crate) mod badge_tasks;

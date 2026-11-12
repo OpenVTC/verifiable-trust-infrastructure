@@ -524,25 +524,22 @@ async fn handle_create(
 /// The default and largest page.
 const DEFAULT_LIMIT: usize = 20;
 
+/// The family name election cursors are tagged under ([`super::offset_cursor`]).
+const CURSOR_FAMILY: &str = "vtc/elections/list";
+
+/// What a cursor is bound to: the caller and the filter (list item 4).
+fn cursor_binding(caller: &str, filter: Option<&str>) -> String {
+    let filter = filter.unwrap_or("");
+    format!("{}|{caller}|{filter}", caller.len())
+}
+
 /// A cursor names an offset, bound to the caller and the filter (list item 4).
-fn cursor_for(caller: &str, filter: Option<&str>, offset: usize) -> String {
-    format!("{offset}.{}", cursor_mac(caller, filter, offset))
+fn cursor_for(key: &[u8; 32], caller: &str, filter: Option<&str>, offset: usize) -> String {
+    super::offset_cursor::mint(key, CURSOR_FAMILY, &cursor_binding(caller, filter), offset)
 }
 
-fn cursor_mac(caller: &str, filter: Option<&str>, offset: usize) -> String {
-    let mut h = Sha256::new();
-    h.update(b"vtc/elections/list/cursor/v1\0");
-    for part in [caller, filter.unwrap_or(""), &offset.to_string()] {
-        h.update((part.len() as u64).to_be_bytes());
-        h.update(part.as_bytes());
-    }
-    hex::encode(&h.finalize()[..12])
-}
-
-fn offset_of(cursor: &str, caller: &str, filter: Option<&str>) -> Option<usize> {
-    let (n, mac) = cursor.split_once('.')?;
-    let offset: usize = n.parse().ok()?;
-    (cursor_mac(caller, filter, offset) == mac).then_some(offset)
+fn offset_of(key: &[u8; 32], cursor: &str, caller: &str, filter: Option<&str>) -> Option<usize> {
+    super::offset_cursor::read(key, CURSOR_FAMILY, &cursor_binding(caller, filter), cursor)
 }
 
 /// `vtc/elections/list/0.5` (items 1 – 6), and 0.3, whose payload is the same. Both list an
@@ -572,9 +569,13 @@ async fn handle_list(
     let limit = doc.payload["limit"].as_u64().map_or(DEFAULT_LIMIT, |l| {
         usize::try_from(l).unwrap_or(DEFAULT_LIMIT)
     });
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
     let offset = match doc.payload["cursor"].as_str() {
         None => 0,
-        Some(c) => match offset_of(c, &who, filter) {
+        Some(c) => match offset_of(&key, c, &who, filter) {
             Some(o) => o,
             None => {
                 return reject_with(
@@ -629,8 +630,9 @@ async fn handle_list(
         items.push(item);
     }
     let mut body = json!({ "elections": items });
-    if offset + limit < seen.len() {
-        body["nextCursor"] = json!(cursor_for(&who, filter, offset + limit));
+    let next = offset.saturating_add(limit);
+    if next < seen.len() {
+        body["nextCursor"] = json!(cursor_for(&key, &who, filter, next));
     }
     success_response(&doc, body)
 }

@@ -1289,7 +1289,13 @@ async fn handle_join_query(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = as_admin::<join_query::Payload>(state, ctx, &doc).await {
+    // A write, not a read: it queues a credential query the community signs to
+    // a DID the caller names. So it asks the capability that decides join
+    // requests, not merely an administrative role.
+    if let Err(reject) =
+        as_capable::<join_query::Payload>(state, ctx, &doc, crate::acl::Capability::JoinDecide)
+            .await
+    {
         return reject;
     }
     let body: crate::routes::join_requests::present::SendQueryRequest =
