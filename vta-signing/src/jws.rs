@@ -5,13 +5,19 @@
 //! payload), writes `alg` from the key, and refuses the header members it never
 //! signs. The caller's JSON is therefore not byte-for-byte what is signed: the
 //! returned token is the artefact, and it is used as it is.
+//!
+//! A JWS is made in two phases so a signer that wraps the signature in its own
+//! gates (the VTA's access control, key custody and audit) and one that holds
+//! the key (a service signing with its own) build the same bytes:
+//! [`prepare_jws`], then the signature however the key is held, then
+//! [`finish_jws`]. [`sign_jws`] is the three in one call.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use serde_json::{Map, Value};
 
 use crate::canonical::{canonicalize, check_i_json};
-use crate::{FormatRefusal, SigningSecret};
+use crate::{Algorithm, FormatRefusal, PublicKey, SignError, Signer, VerifyError};
 
 /// Header members a producer may not send: the custodian sets `alg` itself, and
 /// signs no `crit`, `b64`, `jwk`, `jku` or `x5u` (the specification's
@@ -132,41 +138,116 @@ pub fn jws_signing_input(
     ))
 }
 
-/// The compact JWS of `signing_input` signed with `signature`.
-pub fn compact(signing_input: &str, signature: &[u8]) -> String {
-    format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature))
+/// The signing input of a JWS and the algorithm it names: what is signed, before
+/// it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JwsSigningInput {
+    text: String,
+    algorithm: Algorithm,
 }
 
-/// A compact JWS signed by `secret`: the header is checked, `alg` comes from
-/// the key, the signing input is built here, and the result is the token.
+impl JwsSigningInput {
+    /// The bytes to sign.
+    pub fn bytes(&self) -> &[u8] {
+        self.text.as_bytes()
+    }
+
+    /// The algorithm the header names, which the signature must be made with.
+    pub fn algorithm(&self) -> Algorithm {
+        self.algorithm
+    }
+}
+
+/// Check the header and build the signing input for a JWS signed with
+/// `algorithm`. Nothing is signed; a refusal here means nothing ever will be.
+pub fn prepare_jws(
+    algorithm: Algorithm,
+    header: &Map<String, Value>,
+    payload: JwsPayload<'_>,
+    x5c_leaf_is_signer: impl FnOnce(&[u8]) -> Result<bool, String>,
+) -> Result<JwsSigningInput, FormatRefusal> {
+    check_jws_header(header, x5c_leaf_is_signer)?;
+    Ok(JwsSigningInput {
+        text: jws_signing_input(algorithm.jose_name(), header, payload)?,
+        algorithm,
+    })
+}
+
+/// The compact JWS of `input` signed with `signature`.
+pub fn finish_jws(input: &JwsSigningInput, signature: &[u8]) -> String {
+    format!("{}.{}", input.text, URL_SAFE_NO_PAD.encode(signature))
+}
+
+/// A compact JWS signed by `signer`: the header is checked, `alg` comes from the
+/// key, the signing input is built here, and the result is the token.
 ///
 /// `x5c_leaf_is_signer` is as for [`check_jws_header`]; pass [`refuse_x5c`] to
 /// accept no certificate chain.
 pub fn sign_jws(
-    secret: &SigningSecret,
+    signer: &dyn Signer,
     header: &Map<String, Value>,
     payload: JwsPayload<'_>,
     x5c_leaf_is_signer: impl FnOnce(&[u8]) -> Result<bool, String>,
-) -> Result<String, FormatRefusal> {
-    check_jws_header(header, x5c_leaf_is_signer)?;
-    let input = jws_signing_input(secret.algorithm().jose_name(), header, payload)?;
-    Ok(compact(&input, &secret.sign(input.as_bytes())))
+) -> Result<String, SignError> {
+    let input = prepare_jws(signer.algorithm(), header, payload, x5c_leaf_is_signer)?;
+    let signature = signer.sign(input.bytes())?;
+    Ok(finish_jws(&input, &signature))
+}
+
+/// A JWS that verified: its protected header and its payload bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerifiedJws {
+    pub header: Map<String, Value>,
+    pub payload: Vec<u8>,
+}
+
+/// Verify a compact JWS against `key`: three segments, a protected header whose
+/// `alg` is the key's, and a signature over the first two.
+pub fn verify_jws(compact: &str, key: &PublicKey) -> Result<VerifiedJws, VerifyError> {
+    let malformed = |m: &str| VerifyError::Malformed(m.to_string());
+    let mut parts = compact.split('.');
+    let (Some(header_b64), Some(payload_b64), Some(signature_b64), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(malformed("a compact JWS has three segments"));
+    };
+    let decode = |segment: &str| {
+        URL_SAFE_NO_PAD
+            .decode(segment)
+            .map_err(|_| malformed("a segment is not base64url"))
+    };
+    let header: Map<String, Value> = serde_json::from_slice(&decode(header_b64)?)
+        .map_err(|_| malformed("the protected header is not a JSON object"))?;
+    let alg = header
+        .get("alg")
+        .and_then(Value::as_str)
+        .ok_or_else(|| malformed("the protected header has no alg"))?;
+    if Algorithm::from_jose_name(alg) != Some(key.algorithm()) {
+        return Err(VerifyError::Algorithm {
+            expected: key.algorithm(),
+            got: alg.to_string(),
+        });
+    }
+    key.verify(
+        format!("{header_b64}.{payload_b64}").as_bytes(),
+        &decode(signature_b64)?,
+    )?;
+    Ok(VerifiedJws {
+        header,
+        payload: decode(payload_b64)?,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use ed25519_dalek::Verifier as _;
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::SigningSecret;
 
     fn object(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
-    }
-
-    fn no_x5c() -> impl FnOnce(&[u8]) -> Result<bool, String> {
-        refuse_x5c
     }
 
     /// The specification's own example: its header and payload segments, and
@@ -208,7 +289,7 @@ mod tests {
         for member in FORBIDDEN_HEADER_MEMBERS {
             let header = object(json!({ *member: "x" }));
             assert_eq!(
-                check_jws_header(&header, no_x5c()),
+                check_jws_header(&header, refuse_x5c),
                 Err(FormatRefusal::HeaderMemberForbidden((*member).to_string()))
             );
         }
@@ -222,7 +303,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    check_jws_header(&object(header.clone()), no_x5c()),
+                    check_jws_header(&object(header.clone()), refuse_x5c),
                     Err(FormatRefusal::InvalidArgument(_))
                 ),
                 "{header}"
@@ -231,7 +312,7 @@ mod tests {
         assert_eq!(
             check_jws_header(
                 &object(json!({ "typ": "jwt", "profile_version": "x" })),
-                no_x5c()
+                refuse_x5c
             ),
             Ok(())
         );
@@ -297,53 +378,89 @@ mod tests {
     }
 
     #[test]
-    fn an_ed25519_token_verifies_under_the_keys_public_half() {
+    fn a_token_signs_and_verifies_for_both_key_types() {
+        for secret in [
+            SigningSecret::ed25519([3; 32]),
+            SigningSecret::p256_from_slice(&[5; 32]).unwrap(),
+        ] {
+            let header = object(json!({ "typ": "at+jwt", "kid": "key-1" }));
+            let payload = object(json!({ "sub": "agent", "n": 1 }));
+
+            let jws = sign_jws(&secret, &header, JwsPayload::Json(&payload), refuse_x5c).unwrap();
+
+            let verified = verify_jws(&jws, &secret.public_key()).unwrap();
+            assert_eq!(
+                Value::Object(verified.header),
+                json!({ "alg": secret.algorithm().jose_name(), "kid": "key-1", "typ": "at+jwt" })
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&verified.payload).unwrap(),
+                json!({ "n": 1, "sub": "agent" })
+            );
+        }
+    }
+
+    #[test]
+    fn making_the_signature_yourself_gives_the_same_token_as_signing_in_one_call() {
         let secret = SigningSecret::ed25519([3; 32]);
-        let header = object(json!({ "typ": "at+jwt", "kid": "key-1" }));
-        let payload = object(json!({ "sub": "agent", "n": 1 }));
+        let header = object(json!({ "typ": "JWT" }));
+        let payload = object(json!({ "a": 1 }));
 
-        let jws = sign_jws(&secret, &header, JwsPayload::Json(&payload), no_x5c()).unwrap();
+        let input = prepare_jws(
+            secret.algorithm(),
+            &header,
+            JwsPayload::Json(&payload),
+            refuse_x5c,
+        )
+        .unwrap();
+        let in_phases = finish_jws(&input, &secret.sign_message(input.bytes()));
 
-        let parts: Vec<&str> = jws.split('.').collect();
-        assert_eq!(parts.len(), 3);
-        let protected: Value =
-            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0]).unwrap()).unwrap();
+        assert_eq!(input.algorithm(), Algorithm::EdDsa);
         assert_eq!(
-            protected,
-            json!({ "alg": "EdDSA", "kid": "key-1", "typ": "at+jwt" })
-        );
-        let public: [u8; 32] = secret.public_key().try_into().unwrap();
-        let signature =
-            ed25519_dalek::Signature::from_slice(&URL_SAFE_NO_PAD.decode(parts[2]).unwrap())
-                .unwrap();
-        assert!(
-            ed25519_dalek::VerifyingKey::from_bytes(&public)
-                .unwrap()
-                .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &signature)
-                .is_ok()
+            in_phases,
+            sign_jws(&secret, &header, JwsPayload::Json(&payload), refuse_x5c).unwrap()
         );
     }
 
     #[test]
-    fn a_p256_token_names_es256_and_verifies() {
-        let secret = SigningSecret::p256_from_slice(&[5; 32]).unwrap();
-        let header = object(json!({ "kid": "k" }));
-        let payload = object(json!({ "a": 1 }));
+    fn a_token_does_not_verify_under_another_key_algorithm_or_after_tampering() {
+        let secret = SigningSecret::ed25519([3; 32]);
+        let jws = sign_jws(
+            &secret,
+            &Map::new(),
+            JwsPayload::Base64Url("QQ"),
+            refuse_x5c,
+        )
+        .unwrap();
 
-        let jws = sign_jws(&secret, &header, JwsPayload::Json(&payload), no_x5c()).unwrap();
-
-        let parts: Vec<&str> = jws.split('.').collect();
-        let protected: Value =
-            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0]).unwrap()).unwrap();
-        assert_eq!(protected["alg"], "ES256");
-        let verifying = p256::ecdsa::VerifyingKey::from_sec1_bytes(&secret.public_key()).unwrap();
-        let signature =
-            p256::ecdsa::Signature::from_slice(&URL_SAFE_NO_PAD.decode(parts[2]).unwrap()).unwrap();
-        assert!(
-            verifying
-                .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &signature)
-                .is_ok()
+        assert_eq!(
+            verify_jws(&jws, &SigningSecret::ed25519([4; 32]).public_key()),
+            Err(VerifyError::Signature)
         );
+        assert!(matches!(
+            verify_jws(
+                &jws,
+                &SigningSecret::p256_from_slice(&[5; 32])
+                    .unwrap()
+                    .public_key()
+            ),
+            Err(VerifyError::Algorithm { .. })
+        ));
+        let mut parts: Vec<String> = jws.split('.').map(str::to_string).collect();
+        parts[1] = URL_SAFE_NO_PAD.encode("changed");
+        assert_eq!(
+            verify_jws(&parts.join("."), &secret.public_key()),
+            Err(VerifyError::Signature)
+        );
+        for bad in ["a.b", "a.b.c.d", "!.!.!"] {
+            assert!(
+                matches!(
+                    verify_jws(bad, &secret.public_key()),
+                    Err(VerifyError::Malformed(_))
+                ),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -352,8 +469,10 @@ mod tests {
         let header = object(json!({ "alg": "none" }));
 
         assert_eq!(
-            sign_jws(&secret, &header, JwsPayload::Base64Url("QQ"), no_x5c()),
-            Err(FormatRefusal::HeaderMemberForbidden("alg".to_string()))
+            sign_jws(&secret, &header, JwsPayload::Base64Url("QQ"), refuse_x5c),
+            Err(SignError::Format(FormatRefusal::HeaderMemberForbidden(
+                "alg".to_string()
+            )))
         );
     }
 }
