@@ -68,7 +68,8 @@ setup = ["webvh", "dep:tempfile"]
 # Creating, hosting and acting as did:webs persona, relationship and
 # integration DIDs (docs/05-design-notes/did-webs-in-the-vta.md). Alpha, and
 # off at runtime unless `[dids] webs_enabled`. Hosting goes through the
-# did-hosting client, so it needs `webvh`. Not in the enclave's feature list.
+# did-hosting client, so it needs `webvh`. The enclave opts in with its own
+# `webs` feature (a TEE VTA's own did:webs, `[tee.kms] vta_did_webs`).
 webs = ["webvh", "dep:affinidi-did-webs", "dep:affinidi-keri", "dep:affinidi-keri-core", "dep:affinidi-keri-crypto"]
 # BBS+ (`bbs-2023`) credential support in the vault — pulls in the BLS12-381
 # curve (`affinidi-bbs`) + the `bbs-2023` Data-Integrity cryptosuite. Off by

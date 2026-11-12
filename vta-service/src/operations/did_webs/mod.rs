@@ -436,6 +436,36 @@ pub async fn create_did_webs<H: WebsHost>(
 ) -> Result<CreateDidWebsResult, WebsError> {
     crate::operations::did_webvh::ensure_may_mint(deps.acl_ks, auth).await?;
     auth.require_context(&params.context_id)?;
+    mint(deps, Minter::Caller(auth), params, host, channel).await
+}
+
+/// On whose authority a `did:webs` is minted.
+enum Minter<'a> {
+    /// A caller [`create_did_webs`] has checked for `KeyMint` and the context.
+    Caller(&'a AuthClaims),
+    /// The node itself, minting its own identity before any principal exists
+    /// ([`own_identity::create_own_identity`]). Named in the audit row by
+    /// `actor`; never a template's caller.
+    FirstBoot { actor: &'a str },
+}
+
+impl Minter<'_> {
+    fn actor(&self) -> &str {
+        match self {
+            Self::Caller(auth) => &auth.did,
+            Self::FirstBoot { actor } => actor,
+        }
+    }
+}
+
+/// [`create_did_webs`] past its caller's gates.
+async fn mint<H: WebsHost>(
+    deps: &WebsDeps<'_>,
+    minter: Minter<'_>,
+    params: CreateDidWebsParams,
+    host: &H,
+    channel: &str,
+) -> Result<CreateDidWebsResult, WebsError> {
     if !deps.config.dids.webs_enabled {
         return Err(WebsError::refused(
             WebsRefusal::MethodDisabled,
@@ -481,7 +511,15 @@ pub async fn create_did_webs<H: WebsHost>(
 
     // ── The template, checked before anything is derived (§9.1, §9.2) ──
     let template = match &params.template {
-        Some(request) => Some(plan_template(deps, auth, &params, &ctx, request).await?),
+        Some(request) => match &minter {
+            Minter::Caller(auth) => Some(plan_template(deps, auth, &params, &ctx, request).await?),
+            Minter::FirstBoot { .. } => {
+                return Err(AppError::Internal(
+                    "a node's own identity is not shaped from a DID template".into(),
+                )
+                .into());
+            }
+        },
         None => None,
     };
 
@@ -789,7 +827,7 @@ pub async fn create_did_webs<H: WebsHost>(
     vta_audit::record_best_effort(
         deps.audit,
         "did.create.webs",
-        &auth.did,
+        minter.actor(),
         Some(&did),
         "success",
         Some(channel),
@@ -1071,6 +1109,12 @@ pub(super) fn refuse_service_context(
 
 mod error;
 pub use error::{WebsError, WebsRefusal};
+
+mod own_identity;
+pub use own_identity::{
+    DEFAULT_OWN_IDENTITY_SERVER_ID, OWN_IDENTITY_CONTEXT, OwnWebsIdentity, create_own_identity,
+    own_identity_in_progress,
+};
 
 mod template;
 use template::{ambient_vars, check_primary_class, plan_template, render_and_map, rendered_keys};

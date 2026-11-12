@@ -224,10 +224,17 @@ async fn host_for<'a>(
     let server = crate::webvh_store::get_server(&state.webvh_ks, server_id)
         .await?
         .ok_or_else(|| {
-            WebsError::refused(
-                WebsRefusal::ServerNotFound,
-                format!("hosting server not found: {server_id}"),
-            )
+            // A restore that replaced another identity detaches every hosted
+            // did:webs by clearing its server (`vta_backup::restore`): its
+            // slot was registered by the source VTA.
+            let message = if server_id.is_empty() {
+                "this did:webs was detached from its hosting server by a restore that replaced \
+                 another VTA's identity; nothing is published for it from here"
+                    .to_string()
+            } else {
+                format!("hosting server not found: {server_id}")
+            };
+            WebsError::refused(WebsRefusal::ServerNotFound, message)
         })?;
     let vta_did = state.config.read().await.vta_did.clone().ok_or_else(|| {
         AppError::Validation(

@@ -124,6 +124,16 @@ When adding a flow, add it here and a line to the root index.
   credentials (`SelfKeys`). Never let first boot fall back to another
   identifier (VTI-KEY-009), and never treat `published: false` on any record
   but `vta_did`'s as normal.
+- **A did:webs TEE VTA** (`[tee.kms.vta_did_webs]`, `vta-enclave` feature
+  `webs`, S8): `tee_webs::maybe_generate_webs_vta_did` runs after
+  `did_autogen` (which restores a stored identity and refuses a template
+  beside it) and mints through `operations::did_webs::create_own_identity` —
+  the one create setup's `create_webs` also calls, on first-boot authority
+  (no claims; it refuses once the VTA has an identity, and no transport
+  reaches it). It persists `tee:vta_did`; the webs row is the record; a boot
+  that died before that adopts what it minted (`own_identity_in_progress`).
+  Startup publishes it as above. The enclave proxy allowlists the host and
+  domain from the same setting. Not overlay-settable.
 
 ### Mediator connection (readiness gate + reconnect)
 - **What**: How the VTA establishes and *keeps* its outbound mediator DIDComm

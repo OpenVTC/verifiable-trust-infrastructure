@@ -25,6 +25,10 @@ didcomm = ["vta-service/didcomm"]
 # TSP transport pass-through. On by default, as it is for `vta-service`.
 tsp = ["vta-service/tsp"]
 webvh = ["vta-service/webvh"]
+# A did:webs as the VTA's own identity (`[tee.kms] vta_did_webs`, alpha). Off by
+# default, so an image built without it is unchanged; with it, first boot can
+# mint and publish a key-role did:webs (design note did-webs-in-the-vta §4, S8).
+webs = ["vta-service/webs"]
 vsock-store = ["vta-service/vsock-store"]
 vsock-log = ["dep:tokio-vsock"]
 # Fleet (`BAKE_CONFIG=false`) build: fetch + apply the allowlisted tenant-config

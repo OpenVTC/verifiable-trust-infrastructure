@@ -31,6 +31,13 @@ designation, after which the VTA restarts to load them. It cannot be deleted
 while it is the VTA's DID, and `create --set-primary` on its context is still
 refused: re-identifying the VTA is setup's job.
 
+**A TEE VTA** asks for one with `[tee.kms.vta_did_webs]` (server DID, domain,
+optional path) in an enclave image built with the `webs` feature: first boot
+mints the same key-role identity inside the enclave and publishes it the same
+way, through the enclave's egress proxy, which allowlists the host and the
+domain from that setting (see the TEE architecture guide, *A did:webs
+identity*).
+
 A VTC or host service as a `did:webs` is the next step (the design note's S7).
 
 ### What is in place for every node

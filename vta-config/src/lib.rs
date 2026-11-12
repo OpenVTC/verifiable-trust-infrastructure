@@ -965,6 +965,19 @@ pub struct TeeKmsConfig {
     /// Ignored if `vta_did` is already set in config or the store.
     #[serde(default)]
     pub vta_did_template: Option<String>,
+    /// Mint a key-role `did:webs` as this VTA's identity on first boot instead
+    /// of a `did:webvh` (alpha; VTI-KEY-001, design note did-webs-in-the-vta
+    /// §4, S8). The enclave derives the identity from its bootstrapped seed —
+    /// the same create `vta setup`'s `create_webs` runs — records it
+    /// unpublished, and registers it at its host on its own authority before
+    /// messaging starts. Needs `[dids] webs_enabled = true` and an enclave
+    /// built with the `webs` feature; exclusive with `vta_did_template`.
+    ///
+    /// Absent (the default) leaves first boot as it was. Ignored, like the
+    /// template, once the store holds an identity or config sets `vta_did`.
+    /// Not overlay-settable: a fleet tenant overlay cannot ask for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vta_did_webs: Option<TeeWebsIdentityConfig>,
     /// Context ID used for the auto-bootstrapped admin (default: "default").
     ///
     /// On first boot, the VTA auto-creates this context and grants the
@@ -1068,6 +1081,33 @@ pub struct TeeKmsConfig {
     /// is no channel for the parent to set it.
     #[serde(default)]
     pub allow_unanchored: bool,
+}
+
+/// The `did:webs` a TEE VTA mints as its identity on first boot
+/// ([`TeeKmsConfig::vta_did_webs`]): the same inputs as `vta setup`'s
+/// `vta_did` kind `create_webs`. The DID is
+/// `did:webs:{domain}[:{path}]:{AID}`.
+#[cfg(feature = "tee")]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TeeWebsIdentityConfig {
+    /// The did-hosting server's DID (`did:webvh:…`). Its operator must allow
+    /// self-registration on `domain` (`[[hosting.webs_self_register]]`), and
+    /// its DID document must declare `resolvedMethods: ["webs"]`
+    /// (VTI-KEY-008). The enclave's egress must reach its Trust-Task HTTPS
+    /// endpoint.
+    pub server_did: String,
+    /// The domain the host serves the DID on, e.g. `did.example.com`
+    /// (`host:port` for a non-default port).
+    pub domain: String,
+    /// Slot path before the AID, `/`-separated (`nodes`); absent puts it at
+    /// the top of the domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The id the VTA registers the server under. Default `vta-host`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
 }
 
 /// External anti-rollback anchor configuration (P0.2b counter + P0.2c writer).
