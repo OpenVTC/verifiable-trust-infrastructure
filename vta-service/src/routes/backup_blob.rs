@@ -20,12 +20,16 @@
 //! hashed so a leaked DB doesn't leak usable credentials. Justified
 //! at length in the design doc §"Auth model".
 
+use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -35,6 +39,77 @@ use crate::server::AppState;
 /// Header name carrying the bundle's bearer token. Matched
 /// case-insensitively by axum's header machinery.
 const TOKEN_HEADER: &str = "x-backup-token";
+
+/// Uploads the VTA reads at once, across every bundle. An upload is read
+/// into memory (at most its bundle's declared size, itself at most
+/// [`super::BACKUP_BLOB_BODY_SIZE`]), so this bounds what concurrent
+/// uploads can hold. Restores are rare, operator-driven events; two is
+/// room for a retry overlapping a stalled attempt.
+pub(super) const MAX_CONCURRENT_UPLOADS: usize = 2;
+
+/// Longest wait for the next chunk of an upload body. A client that
+/// stops sending is dropped after this, rather than holding an upload
+/// slot until the router-wide request timeout.
+const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The uploads in progress, one per bundle and at most
+/// [`MAX_CONCURRENT_UPLOADS`] in all. Built once per router and carried
+/// to the handler as an extension.
+///
+/// The mutex guards only the in-memory set; it is never held across an
+/// await (R1.3). A slot is claimed after the token check and released
+/// when its [`UploadSlot`] drops, whichever way the handler returns.
+#[derive(Clone, Debug)]
+pub(super) struct UploadSlots {
+    in_flight: Arc<Mutex<HashSet<Uuid>>>,
+    max: usize,
+}
+
+impl UploadSlots {
+    pub(super) fn new(max: usize) -> Self {
+        Self {
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
+            max,
+        }
+    }
+
+    fn claim(&self, bundle_id: Uuid) -> Result<UploadSlot, AppError> {
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if in_flight.contains(&bundle_id) {
+            return Err(AppError::Conflict(format!(
+                "an upload for bundle {bundle_id} is already in progress"
+            )));
+        }
+        if in_flight.len() >= self.max {
+            return Err(AppError::ResourceExhausted(
+                "too many backup uploads in progress; retry shortly".into(),
+            ));
+        }
+        in_flight.insert(bundle_id);
+        Ok(UploadSlot {
+            slots: self.in_flight.clone(),
+            bundle_id,
+        })
+    }
+}
+
+/// One claimed upload slot; dropping it frees the slot.
+struct UploadSlot {
+    slots: Arc<Mutex<HashSet<Uuid>>>,
+    bundle_id: Uuid,
+}
+
+impl Drop for UploadSlot {
+    fn drop(&mut self) {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.bundle_id);
+    }
+}
 
 /// `GET /backup/blob/{bundle_id}` — download the encrypted bytes of
 /// an export bundle. Thin transport adapter over
@@ -92,13 +167,22 @@ pub async fn get_blob(
 
 /// `POST /backup/blob/{bundle_id}` — upload encrypted bytes for an
 /// import bundle. Thin transport adapter over
-/// [`operations::backup::blob::write_import_blob`]: parse the path +
-/// token header, read the (body-capped) upload, delegate the
-/// size/SHA-verify + stage-to-disk state machine.
+/// [`operations::backup::blob::admit_import_upload`] and
+/// [`operations::backup::blob::stage_import_blob`].
+///
+/// Order: parse the path and token header, check the bundle, token,
+/// state and expiry (no body read yet), check a declared
+/// `Content-Length` against the bundle's expected size, claim an upload
+/// slot, then read the body, refusing it as soon as it passes the
+/// expected size. A request that fails any check before the read never
+/// has its body read.
 ///
 /// Failure modes mirror GET, plus:
-/// - Body size doesn't match `expected_size_bytes` → 400
+/// - Body size (declared or actual) doesn't match `expected_size_bytes` → 400
 /// - Body SHA-256 doesn't match `expected_sha256` → 400
+/// - Another upload for this bundle is in progress → 409
+/// - Too many uploads in progress across bundles → 503
+/// - The client stops sending for 30 s → 408
 /// - I/O error writing to disk → 500
 #[utoipa::path(
     post, path = "/backup/blob/{bundle_id}", tag = "backup",
@@ -113,11 +197,15 @@ pub async fn get_blob(
         (status = 401, description = "Missing or malformed x-backup-token header"),
         (status = 403, description = "Token does not match"),
         (status = 404, description = "Bundle not found"),
+        (status = 408, description = "The upload body stalled"),
+        (status = 409, description = "Upload already accepted, or another upload for this bundle is in progress"),
         (status = 410, description = "Bundle expired or aborted"),
+        (status = 503, description = "Too many uploads in progress"),
     ),
 )]
 pub async fn post_blob(
     State(state): State<AppState>,
+    Extension(slots): Extension<UploadSlots>,
     Path(bundle_id_str): Path<String>,
     headers: HeaderMap,
     body: Body,
@@ -125,24 +213,89 @@ pub async fn post_blob(
     let bundle_id = parse_bundle_id(&bundle_id_str)?;
     let token = extract_token(&headers)?;
 
-    // Cap applies at this read; the router-level
-    // `DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE)` mirrors it, and
-    // the cap is enforced HERE so exceeding it surfaces as a 400 with a
-    // clear message rather than axum's 413.
-    let bytes = axum::body::to_bytes(body, super::BACKUP_BLOB_BODY_SIZE)
-        .await
-        .map_err(|e| AppError::Validation(format!("read upload body: {e}")))?;
+    // Authorise before reading a byte of the body.
+    let admitted = blob::admit_import_upload(&state.backup_bundles_ks, bundle_id, &token).await?;
 
-    blob::write_import_blob(
+    let expected = usize::try_from(admitted.expected_size_bytes())
+        .ok()
+        .filter(|n| *n <= super::BACKUP_BLOB_BODY_SIZE)
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "bundle {bundle_id} expects {} bytes, over the {} byte upload limit",
+                admitted.expected_size_bytes(),
+                super::BACKUP_BLOB_BODY_SIZE
+            ))
+        })?;
+    if let Some(declared) = declared_length(&headers)?
+        && declared != admitted.expected_size_bytes()
+    {
+        return Err(AppError::Validation(format!(
+            "upload size mismatch for bundle {bundle_id}: expected {expected} bytes, \
+             Content-Length says {declared}"
+        )));
+    }
+
+    let _slot = slots.claim(bundle_id)?;
+    let bytes = read_body_capped(body, bundle_id, expected, UPLOAD_IDLE_TIMEOUT).await?;
+
+    blob::stage_import_blob(
         &state.backup_bundles_ks,
         &state.backup_blob_dir,
-        bundle_id,
-        &token,
+        admitted,
         &bytes,
     )
     .await?;
 
     Ok((StatusCode::ACCEPTED, "").into_response())
+}
+
+/// Read an upload body of at most `limit` bytes, refusing it as soon as
+/// it passes `limit` and dropping a client that sends nothing for
+/// `idle_timeout` ([`UPLOAD_IDLE_TIMEOUT`] in service).
+async fn read_body_capped(
+    body: Body,
+    bundle_id: Uuid,
+    limit: usize,
+    idle_timeout: Duration,
+) -> Result<Vec<u8>, AppError> {
+    let mut stream = body.into_data_stream();
+    // Grow as bytes arrive; never reserve a declared size up front.
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    loop {
+        let next = tokio::time::timeout(idle_timeout, stream.next())
+            .await
+            .map_err(|_| AppError::ServiceError {
+                status: StatusCode::REQUEST_TIMEOUT,
+                message: format!("upload for bundle {bundle_id} stalled"),
+            })?;
+        match next {
+            None => return Ok(bytes),
+            Some(Err(e)) => {
+                return Err(AppError::Validation(format!("read upload body: {e}")));
+            }
+            Some(Ok(chunk)) => {
+                if chunk.len() > limit - bytes.len() {
+                    return Err(AppError::Validation(format!(
+                        "upload size mismatch for bundle {bundle_id}: \
+                         body is longer than the expected {limit} bytes"
+                    )));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+        }
+    }
+}
+
+/// The request's `Content-Length`, if it sent one.
+fn declared_length(headers: &HeaderMap) -> Result<Option<u64>, AppError> {
+    let Some(raw) = headers.get(axum::http::header::CONTENT_LENGTH) else {
+        return Ok(None);
+    };
+    raw.to_str()
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Some)
+        .ok_or_else(|| AppError::Validation("malformed Content-Length header".into()))
 }
 
 // ─── Transport helpers ─────────────────────────────────────────────────
@@ -488,5 +641,158 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    /// A request body that records whether the server ever polled it,
+    /// and yields `chunk` repeatedly without end.
+    fn watched_endless_body(
+        chunk: &'static [u8],
+    ) -> (Body, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let polled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = polled.clone();
+        let stream = futures_util::stream::repeat_with(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(chunk))
+        });
+        (Body::from_stream(stream), polled)
+    }
+
+    async fn post_with(app: axum::Router, bundle_id: Uuid, token: &str, body: Body) -> StatusCode {
+        let req = Request::builder()
+            .uri(format!("/backup/blob/{bundle_id}"))
+            .method("POST")
+            .header("x-forwarded-for", "192.0.2.1")
+            .header(TOKEN_HEADER, token)
+            .body(body)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), app.oneshot(req))
+            .await
+            .expect("handler answers without reading an endless body")
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn post_blob_wrong_token_refused_before_the_body_is_read() {
+        let (app, ctx) = crate::test_support::build_test_app().await;
+        let (bundle_id, _token, _) = seed_import_pending(&ctx, b"data").await;
+        let (body, polled) = watched_endless_body(&[0u8; 4096]);
+        let status = post_with(app, bundle_id, "not-the-token", body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn post_blob_unknown_bundle_refused_before_the_body_is_read() {
+        let (app, _ctx) = crate::test_support::build_test_app().await;
+        let (body, polled) = watched_endless_body(&[0u8; 4096]);
+        let status = post_with(app, Uuid::new_v4(), "any-token", body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn post_blob_stops_reading_once_past_the_expected_size() {
+        let (app, ctx) = crate::test_support::build_test_app().await;
+        let (bundle_id, token, _) = seed_import_pending(&ctx, &[1u8; 10_000]).await;
+        let (body, polled) = watched_endless_body(&[1u8; 4096]);
+        let status = post_with(app, bundle_id, &token, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // 10 000 bytes is two 4 KiB chunks and part of a third.
+        assert!(polled.load(std::sync::atomic::Ordering::SeqCst) <= 4);
+
+        // The refusal leaves the bundle pending, so a correct retry works.
+        let record = backup_bundle_store::get_bundle(&ctx.backup_bundles_ks, &bundle_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.state, BundleState::ImportPending);
+    }
+
+    #[tokio::test]
+    async fn post_blob_refuses_a_mismatched_content_length_before_reading() {
+        let (app, ctx) = crate::test_support::build_test_app().await;
+        let (bundle_id, token, _) = seed_import_pending(&ctx, b"twelve bytes").await;
+        let (body, polled) = watched_endless_body(&[0u8; 4096]);
+        let req = Request::builder()
+            .uri(format!("/backup/blob/{bundle_id}"))
+            .method("POST")
+            .header("x-forwarded-for", "192.0.2.1")
+            .header(TOKEN_HEADER, &token)
+            .header("content-length", "104857600")
+            .body(body)
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(polled.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn read_body_capped_drops_a_stalled_upload() {
+        let body = Body::from_stream(futures_util::stream::pending::<
+            Result<axum::body::Bytes, std::io::Error>,
+        >());
+        let err = read_body_capped(
+            body,
+            Uuid::new_v4(),
+            1024,
+            std::time::Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::ServiceError { status, .. } if status == StatusCode::REQUEST_TIMEOUT),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn upload_slots_allow_one_upload_per_bundle_and_a_bounded_total() {
+        let slots = UploadSlots::new(2);
+        let a = Uuid::new_v4();
+        let first = slots.claim(a).expect("first upload for a bundle");
+        assert!(matches!(slots.claim(a), Err(AppError::Conflict(_))));
+        let _second = slots.claim(Uuid::new_v4()).expect("second bundle");
+        assert!(matches!(
+            slots.claim(Uuid::new_v4()),
+            Err(AppError::ResourceExhausted(_))
+        ));
+        drop(first);
+        let _again = slots.claim(a).expect("slot released on drop");
+    }
+
+    #[tokio::test]
+    async fn staging_rechecks_the_bundle_after_the_body_is_read() {
+        let (_app, ctx) = crate::test_support::build_test_app().await;
+        let bytes = b"import-bytes".to_vec();
+        let (bundle_id, token, _) = seed_import_pending(&ctx, &bytes).await;
+        let admitted = blob::admit_import_upload(&ctx.backup_bundles_ks, bundle_id, &token)
+            .await
+            .expect("admitted");
+
+        // The bundle is aborted while the body is in flight.
+        let mut record = backup_bundle_store::get_bundle(&ctx.backup_bundles_ks, &bundle_id)
+            .await
+            .unwrap()
+            .unwrap();
+        record.state = BundleState::Aborted;
+        backup_bundle_store::store_bundle(&ctx.backup_bundles_ks, &record)
+            .await
+            .unwrap();
+
+        let err = blob::stage_import_blob(
+            &ctx.backup_bundles_ks,
+            &ctx.backup_blob_dir,
+            admitted,
+            &bytes,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::Gone(_)), "{err:?}");
+        assert!(
+            !ctx.backup_blob_dir
+                .join(format!("{bundle_id}.vtabak"))
+                .exists()
+        );
     }
 }

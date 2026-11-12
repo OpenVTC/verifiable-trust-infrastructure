@@ -98,10 +98,9 @@ const UNAUTH_BODY_SIZE: usize = 64 * 1024;
 /// make this config-driven, but baking the conservative ceiling in
 /// avoids an operator footgun (set-to-10-GB).
 ///
-/// `pub(super)` so the blob route handler can pass it to
-/// `axum::body::to_bytes` — the per-handler cap is the canonical
-/// source of truth; the router-level layer is disabled (see
-/// `backup_blob_router` construction below).
+/// `pub(super)` so the blob upload handler can refuse a bundle whose
+/// declared size is over it. The handler reads at most the bundle's own
+/// declared size, so this is the ceiling, not the usual cap.
 pub(super) const BACKUP_BLOB_BODY_SIZE: usize = 100 * 1024 * 1024;
 
 /// Global per-request timeout. The REST surface runs on a current-thread
@@ -409,16 +408,21 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // NOT `disable()`. The global `MAX_BODY_SIZE` (1 MB) is too small for
     // backups (10s of MB), but `disable()` meant any future handler added
     // to this branch silently inherited an *unlimited* body. The layer is
-    // a branch backstop at the same value the handler already enforces via
-    // `axum::body::to_bytes` (both at `BACKUP_BLOB_BODY_SIZE`, so they
-    // agree — no ambiguous override).
+    // a branch backstop at the ceiling the upload handler also enforces.
+    //
+    // The upload handler checks the bundle and token before it reads the
+    // body, then reads at most the bundle's declared size, with an idle
+    // timeout and a small cap on uploads in progress (`UploadSlots`).
     //
     // Rate-limited like the unauth branch: the token gate is real, but
-    // without throttling an attacker replaying/guessing bundle_ids gets
-    // free 100 MB disk-write attempts and free SHA-256 over 100 MB bodies.
+    // without throttling a client guessing bundle_ids gets free token
+    // checks.
     let backup_blob_router = OpenApiRouter::new()
         .routes(routes!(backup_blob::get_blob, backup_blob::post_blob))
-        .layer(DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE));
+        .layer(DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE))
+        .layer(axum::Extension(backup_blob::UploadSlots::new(
+            backup_blob::MAX_CONCURRENT_UPLOADS,
+        )));
     let backup_blob_router =
         rate_limit::apply(backup_blob_router, Limiter::BackupBlob, &extractor, &quotas);
     let router = router.merge(backup_blob_router);
