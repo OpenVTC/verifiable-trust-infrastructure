@@ -34,9 +34,9 @@ vti-common = { path = "../vti-common", version = "0.64" }
 rand = { workspace = true }
 vta-sdk = { path = "../vta-sdk", version = "0.88" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.38" }
-vta-keys = { path = "../vta-keys", version = "0.41" }
+vta-keys = { path = "../vta-keys", version = "0.42" }
 vta-config = { path = "../vta-config", version = "0.41", features = ["tee"] }
-vta-support = { path = "../vta-support", version = "0.38" }
+vta-support = { path = "../vta-support", version = "0.39" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

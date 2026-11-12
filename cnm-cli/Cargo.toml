@@ -1,7 +1,7 @@
 [package]
 name = "cnm-cli"
 description = "CLI Tool for Verified Trust Agents operating in Verified Trust Communities"
-version = "0.53.1"
+version = "0.54.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -39,10 +39,10 @@ vtc-client = { path = "../vtc-client", version = "0.43", features = ["tsp"] }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.12" }
+vti-specs = { path = "../vti-specs", version = "0.13" }
 # `cnm elections manifest check`: the manifest rules the community itself runs on create
 # (`rules::check_new_manifest`), offline, rather than a copy that could drift from them.
-vti-voting = { path = "../vti-voting", version = "0.16" }
+vti-voting = { path = "../vti-voting", version = "0.17" }
 # `cnm vetting bootstrap-pgp`: parse an OpenPGP keyring, verify third-party
 # certifications and cleartext-signed link statements.
 pgp = { workspace = true }

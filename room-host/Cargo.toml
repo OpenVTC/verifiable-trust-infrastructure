@@ -50,7 +50,7 @@ async-trait = "0.1"
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.12" }
+vti-specs = { path = "../vti-specs", version = "0.13" }
 trust-tasks-https = { workspace = true }
 uuid = { workspace = true }
 # Room-file chunks travel base64url in their Trust Task documents.
@@ -74,7 +74,7 @@ affinidi-messaging-core = { workspace = true, optional = true }
 # host's identity is a private key; it belongs behind the same `[secrets]`
 # config and the same backends the VTA and VTC take, not in a file this crate
 # invented. See `didcomm::HostIdentity`.
-vti-secrets = { path = "../vti-secrets", version = "0.36", optional = true }
+vti-secrets = { path = "../vti-secrets", version = "0.37", optional = true }
 # The session store behind `onboarding` — which backend is an operator's choice,
 # exactly as `[secrets]` is.
 vta-sdk = { path = "../vta-sdk", version = "0.88", optional = true }
