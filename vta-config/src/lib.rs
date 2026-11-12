@@ -1093,10 +1093,8 @@ pub struct TeeKmsConfig {
 #[non_exhaustive]
 pub struct TeeWebsIdentityConfig {
     /// The did-hosting server's DID (`did:webvh:…`). Its operator must allow
-    /// self-registration on `domain` (`[[hosting.webs_self_register]]`), and
-    /// its DID document must declare `resolvedMethods: ["webs"]`
-    /// (VTI-KEY-008). The enclave's egress must reach its Trust-Task HTTPS
-    /// endpoint.
+    /// self-registration on `domain` (`[[hosting.webs_self_register]]`). The
+    /// enclave's egress must reach its Trust-Task HTTPS endpoint.
     pub server_did: String,
     /// The domain the host serves the DID on, e.g. `did.example.com`
     /// (`host:port` for a non-default port).

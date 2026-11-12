@@ -17,11 +17,9 @@
   "document": {
     "@context": [
       "https://www.w3.org/ns/did/v1",
-      "https://www.w3.org/ns/cid/v1",
-      { "resolvedMethods": { "@id": "https://w3id.org/vti#resolvedMethods", "@type": "@json" } }
+      "https://www.w3.org/ns/cid/v1"
     ],
     "id": "{DID}",
-    "resolvedMethods": ["webs"],
     "verificationMethod": [
       {
         "id": "{DID}#key-0",

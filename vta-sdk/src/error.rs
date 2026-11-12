@@ -224,22 +224,6 @@ pub enum VtaError {
         theirs: Vec<crate::protocol::matching::Protocol>,
     },
 
-    /// An identity of an optional method (`did:webs`) would have acted toward
-    /// a peer whose DID document does not declare that it resolves the method
-    /// (`resolvedMethods`, VTI-KEY-008), so nothing was sent (VTI-KEY-009).
-    /// Raised locally by [`crate::resolved_methods::require_declared`], or
-    /// returned by a VTA that refused on the client's behalf (`details.reason`
-    /// `methodNotDeclared`). The fix is the peer's declaration, or a
-    /// required-method identity for this exchange — never a silent fallback.
-    #[error(
-        "{counterparty_did} has not declared that it resolves did:{method} \
-         (resolvedMethods, VTI-KEY-008); nothing was sent"
-    )]
-    MethodNotDeclared {
-        method: String,
-        counterparty_did: String,
-    },
-
     /// The peer refused the document because relying on it needs an
     /// identifier of a method the peer does not resolve (VTI-KEY-009,
     /// `details.reason` `unsupportedDidMethod`).
@@ -449,9 +433,9 @@ impl VtaError {
         })
     }
 
-    /// [`Self::MethodNotDeclared`] or [`Self::UnsupportedDidMethod`] from a
-    /// rejection's `details` (or a REST error body) whose `reason` (or
-    /// `error`) is the VTI-KEY-009 discriminator. `None` for any other, or
+    /// [`Self::UnsupportedDidMethod`] from a rejection's `details` (or a REST
+    /// error body) whose `reason` (or `error`) is the VTI-KEY-009
+    /// discriminator. `None` for any other, or
     /// when `method` is absent.
     pub fn method_refusal_from(fields: &serde_json::Value) -> Option<Self> {
         use crate::protocols::trust_task_reject_reasons as r;
@@ -460,18 +444,7 @@ impl VtaError {
             .or_else(|| fields.get("error"))
             .and_then(|v| v.as_str())?;
         let method = fields.get("method")?.as_str()?.to_string();
-        match marker {
-            r::METHOD_NOT_DECLARED => Some(Self::MethodNotDeclared {
-                method,
-                counterparty_did: fields
-                    .get("counterpartyDid")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            }),
-            r::UNSUPPORTED_DID_METHOD => Some(Self::UnsupportedDidMethod { method }),
-            _ => None,
-        }
+        (marker == r::UNSUPPORTED_DID_METHOD).then_some(Self::UnsupportedDidMethod { method })
     }
 
     /// True for a TSP request that timed out waiting for its reply — the
@@ -506,7 +479,7 @@ impl VtaError {
         {
             return e;
         }
-        // The VTI-KEY-009 refusals carry their discriminator and method in the
+        // The VTI-KEY-009 refusal carries its discriminator and method in the
         // body whatever the status.
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body)
             && let Some(e) = Self::method_refusal_from(&parsed)
@@ -859,12 +832,6 @@ impl VtaError {
                 "The two parties share no transport protocol. Enable a common \
                  transport (TSP, DIDComm, or REST) on both sides — compare each \
                  DID document's advertised `service` entries and add the missing one.",
-            ),
-            Self::MethodNotDeclared { .. } => Some(
-                "This identity's DID method (did:webs) is optional, and the peer has not \
-                 declared it resolves it. Ask the peer to list the method in its DID \
-                 document's `resolvedMethods`, or use a did:webvh or did:scid identity \
-                 toward it.",
             ),
             Self::UnsupportedDidMethod { .. } => Some(
                 "The peer cannot resolve this identity's DID method. Use a did:webvh, \

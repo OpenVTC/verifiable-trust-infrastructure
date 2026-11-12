@@ -3486,8 +3486,7 @@ async fn publish_own_webs_identity(state: &AppState) {
             server = %server.did,
             error = %e,
             "could not publish this VTA's did:webs; the host must allow self-registration on \
-             its domain (`[[hosting.webs_self_register]]`) and declare `resolvedMethods: \
-             [\"webs\"]` in its DID document. Retried at the next boot"
+             its domain (`[[hosting.webs_self_register]]`). Retried at the next boot"
         ),
     }
 }

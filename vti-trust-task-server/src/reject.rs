@@ -46,8 +46,8 @@ pub fn parse_payload<T: serde::de::DeserializeOwned>(
 ///   [`vta_sdk::protocols::trust_task_reject_reasons`] so a client recovers
 ///   the typed variant
 /// - `ApprovalRequired` → `taskFailed` with its code as `details.reason`
-/// - `NoMatchingProtocol` / `MethodNotDeclared` → `taskFailed`, discriminated
-///   (`no_matching_protocol` / `methodNotDeclared`) with what each names
+/// - `NoMatchingProtocol` → `taskFailed`, discriminated
+///   (`no_matching_protocol`) with what it names
 /// - `UnsupportedDidMethod` → `proofInvalid`, `details.reason`
 ///   `unsupportedDidMethod` and the `method` (VTI-KEY-009)
 /// - everything else → `internalError`, with the cause logged and **not** sent
@@ -88,16 +88,6 @@ pub fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> TrustTaskOu
                 "counterpartyDid": refusal.peer,
                 "ours": refusal.ours,
                 "theirs": refusal.theirs,
-            })),
-        },
-        // VTI-KEY-009, sending side: this service sent nothing because the
-        // peer has not declared the method of the identity that would act.
-        AppError::MethodNotDeclared(refusal) => RejectReason::TaskFailed {
-            reason: message,
-            details: Some(serde_json::json!({
-                "reason": reasons::METHOD_NOT_DECLARED,
-                "method": refusal.method,
-                "counterpartyDid": refusal.peer,
             })),
         },
         // VTI-KEY-009, receiving side: the proof needs a method this service
@@ -460,14 +450,6 @@ mod tests {
                 }
                 .into(),
                 reasons::NO_MATCHING_PROTOCOL,
-            ),
-            (
-                vta_sdk::resolved_methods::MethodNotDeclared {
-                    method: "webs".into(),
-                    peer: "did:webvh:Qm:peer.example".into(),
-                }
-                .into(),
-                reasons::METHOD_NOT_DECLARED,
             ),
             (
                 AppError::UnsupportedDidMethod {

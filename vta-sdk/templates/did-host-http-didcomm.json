@@ -12,7 +12,6 @@
     "MEDIATOR_DID"
   ],
   "optionalVars": {
-    "RESOLVED_METHODS": [],
     "SERVICE_SIGN_IN_PORTAL": null,
     "ACCEPT": [
       "didcomm/v2"
@@ -28,11 +27,9 @@
     "@context": [
       "https://www.w3.org/ns/did/v1",
       "https://www.w3.org/ns/cid/v1",
-      "https://w3id.org/security/multikey/v1",
-      { "resolvedMethods": { "@id": "https://w3id.org/vti#resolvedMethods", "@type": "@json" } }
+      "https://w3id.org/security/multikey/v1"
     ],
     "id": "{DID}",
-    "resolvedMethods": "{RESOLVED_METHODS}",
     "verificationMethod": [
       {
         "id": "{DID}#key-0",

@@ -111,11 +111,14 @@ hosting.
 ## 4. Service DIDs: a node's own identity as did:webs
 
 **Status:** decided 2026-11-11 by the maintainer; S1–S6 and S8 done, S7 to come.
-The specification change is dtgwg-vti-spec#121 (refs #120), merged: `did:webs` becomes
-an *optional*, alpha method for a node's durable identity (VTI-KEY-001);
-`did:webvh` stays the default; a node uses a `did:webs` identity only toward a
-peer that has declared it resolves `did:webs` (VTI-KEY-008), and otherwise
-fails with `methodNotDeclared` and sends nothing (VTI-KEY-009).
+The specification change was dtgwg-vti-spec#121 (refs #120), which admitted
+`did:webs` as an *optional* method usable only toward peers that declared it
+in `resolvedMethods` (VTI-KEY-008). dtgwg-vti-spec#123 replaces that:
+`did:webs` is a *required* method every node resolves, with the key-role
+designation extension (VTI-KEY-003); a node never requires a peer to use a
+particular durable method (VTI-KEY-001); VTI-KEY-008 and `methodNotDeclared`
+are withdrawn; VTI-KEY-009 keeps only the receiving side. Each party chooses
+its own identity method and still works with every other.
 
 ### Decisions
 
@@ -140,11 +143,11 @@ fails with `methodNotDeclared` and sends nothing (VTI-KEY-009).
    `did:webs` whose request is signed by the key the submitted KEL's inception
    names — the KEL proves control — on a domain whose operator allows
    self-registration. No interim identity, no manual step.
-4. **Peers declare in their DID document.** `resolvedMethods` (VTI-KEY-008), a
-   top-level member read from a peer's verified current document, the way
-   protocols are matched today (`vta_sdk::protocol::matching`). A webvh node
-   lists it in its own document; a party that addressed the node under its
-   `did:webs` has shown it resolves it.
+4. **~~Peers declare in their DID document.~~ Withdrawn.** The
+   `resolvedMethods` declaration (VTI-KEY-008) is gone with dtgwg-vti-spec#123:
+   every node resolves `did:webs` (VTI-KEY-003), so there is nothing to
+   declare and a `did:webs` node acts toward any peer as a `did:webvh` node
+   does.
 
 ### Order of work
 
@@ -154,42 +157,30 @@ fails with `methodNotDeclared` and sends nothing (VTI-KEY-009).
 | S2 | dtgwg-trust-tasks-tf | `vta/webs/dids/create/0.2`: templates, and service identities. *Done (trust-tasks-tf#1159); pinned and served in VTI.* |
 | S3 | affinidi-webvh-service | Self-certifying `did/register/0.1` for `did:webs`. *Done (webvh-service#411).* |
 | S4 | VTI | Node keys by role, for every method (decision 1). *Done (#2670).* |
-| S5 | VTI | `resolvedMethods` in node documents and templates; the declaration check and both refusals. *Done (below).* |
+| S5 | VTI | `resolvedMethods` in node documents and templates; the declaration check and both refusals. *Done, then withdrawn with VTI-KEY-008 (below); the receiving refusal stays.* |
 | S6 | VTI | A did:webs VTA identity: setup (interactive and TOML), first boot through S3, the key-role designation, readiness, the self-DID preload, `didcomm_light`, runtime services through `update_did_webs`, rotation of its own DID. *Done (#2675 and the PRs after it), except the wire for rotating role keys, which belongs to the `vta/dids` family (trust-tasks-tf#993): the operation restarts the VTA to load keys whose ids changed, rather than swapping them live.* |
 | S7 | VTI | A did:webs VTC identity, and host services minted through provision-integration templates. *Host services done: `DID_METHOD=webs` provisions any level-1-representable template (`dtg-witness`, `ballot-box`, `room-host`, `did-host-*`) as a class-`service` did:webs; the bundle carries the stream as `TemplateOutput::WebsKeriCesr`; host services sign with the document's authentication key (`docs/02-vta/did-webs.md`, "Provisioning an integration"). The VTC identity remains.* |
 | S8 | VTI | TEE first boot (the enclave publishes to a host). *Done: `[tee.kms.vta_did_webs]` and `vta-enclave`'s `webs` feature; first boot mints through `create_own_identity`, the create setup runs, and startup publishes as for S6; the enclave proxy allowlists the host and domain; a restore replacing another identity detaches did:webs slots too. Not in the fleet tenant overlay.* |
 
-### S5: where the declaration is made and checked
+### S5: the declaration, withdrawn
 
-The rule and the declaration are `vta_sdk::resolved_methods`: the required
-methods, what this build resolves (`RESOLVED_HERE`) and declares
-(`OPTIONAL_METHODS_DECLARED`, `["webs"]`), the lenient reader of a peer's
-`resolvedMethods`, `require_declared`, and `declare` (with the JSON-LD term).
+S5 added a `resolvedMethods` declaration to every document the VTA minted and
+to the node templates, and a check before every send a `did:webs` node made as
+its own DID (`methodNotDeclared`). dtgwg-vti-spec#123 withdrew VTI-KEY-008 and
+made `did:webs` required (VTI-KEY-003), so both are removed: no document or
+built-in template declares anything, and `Outbound::send`, the VTC's
+`PeerTasks::select` and trust-registry selection, and room-host's watch
+signals act toward any peer. An uploaded template that still carries
+`resolvedMethods` is accepted and the member ignored (CONVENTIONS §9.2).
 
-- **Declared** in every document the VTA mints
-  (`build_did_document_inner`), and in the built-in templates for the nodes
-  this workspace runs: `vtc-host`, `room-host`, `dtg-witness`, `ballot-box`.
-  Templates for software outside the workspace (mediator, trust registry, push
-  gateway) declare nothing; what they resolve is not ours to say.
-- **Checked** where a node initiates as its own DID and has already resolved
-  the peer's document to choose a transport: the VTA's `Outbound::send`
-  (when the VTA's DID is the issuer or the TSP/DIDComm sender — a persona
-  issuing over HTTPS is not the VTA's durable identity); the VTC's
-  `PeerTasks::select` (its VTA, git bridge, ballot boxes, watch addresses) and
-  its trust-registry selection; room-host's watch signals.
-- **Not checked, by the rule's own exception**: the Trust-Task push engine
-  (`vti_common::trust_task_push`). Every push goes to a party in a
-  relationship that addressed the node under its identity — an enrolled
-  approver device, a holder that asked for a credential, a joined member — and
-  a member's `did:key` carries no document to declare in.
-- **To check when a node can be did:webs (S6, S7)**: the sends that do not go
-  through a resolving seam — the VTA's push-gateway allowlist and wake
-  (`trust_tasks/device.rs`, `step_up.rs`, straight to the DIDComm bridge),
-  the VTC's hook writer (`send_trust_task_didcomm`) and VTN requests
-  (`vti-vtn` `send_request_to`, HTTPS to a configured URL), and mediator
-  login.
+What remains of `vta_sdk::resolved_methods` is the method table: the required
+methods (`webvh`, `scid`, `webs`, `key`), what this build resolves
+(`RESOLVED_HERE`), and `is_durable_identity`. Every resolver the workspace
+builds has `did-webs` on, the enclave proxy's included.
+
 - **Refused on receipt**: a proof whose signer is of a method this build does
   not resolve is `DiProofError::UnsupportedDidMethod`, before any resolver is
   asked, answered `proofInvalid` with `details.reason` `unsupportedDidMethod`
-  and the `method` (VTA, the Trust-Task spine, VTC). Both refusals read back
-  into typed `VtaError` variants.
+  and the `method` (VTA, the Trust-Task spine, VTC), and read back as
+  `VtaError::UnsupportedDidMethod` (VTI-KEY-009). It never fires for
+  `did:webs`, which every node resolves.

@@ -13,19 +13,21 @@ the `vta/webs/dids/*/0.1` Trust Task family, and `vta/webs/dids/create/0.2`
 
 ## A node's identity
 
-The VTI specification admits `did:webs` as an **optional**, alpha method for
-the durable identity of a VTA, a VTC or a host service (VTI-KEY-001,
-VTI-KEY-003). `did:webvh` stays the default. A node whose identity is a
-`did:webs` acts as it only toward a peer whose DID document declares that it
-resolves `did:webs`, and otherwise sends nothing (VTI-KEY-008, VTI-KEY-009).
+The VTI specification makes `did:webs` a **required** method, at alpha
+maturity: every node resolves it, with the key-role designation extension
+(VTI-KEY-003), and any node may take it as its durable identity (VTI-KEY-001).
+A node never requires a peer to use a particular method, so a `did:webs` node
+acts toward any peer exactly as a `did:webvh` one does, and a peer whose
+identity is a `did:webvh` talks to it the same way. There is nothing to
+declare: the `resolvedMethods` declaration and the check on it (VTI-KEY-008)
+are withdrawn.
 
 **A VTA** can be set up with a `did:webs` as its own DID: `vta setup`, VTA DID
 kind `create_webs` (see [non-interactive setup](non-interactive-setup.md)). It
 is a key-role identity — distinct attestation, operational and messaging keys
 (VTI-KEY-173) — minted offline and registered at its host on its own
 authority at first boot, which the host must allow
-(`[[hosting.webs_self_register]]`) and whose DID document must declare
-`resolvedMethods: ["webs"]`. Its runtime services (`pnm services …`) are
+(`[[hosting.webs_self_register]]`). Its runtime services (`pnm services …`) are
 designations, published as for any did:webs; its role keys rotate by a new
 designation, after which the VTA restarts to load them. It cannot be deleted
 while it is the VTA's DID, and `create --set-primary` on its context is still
@@ -42,17 +44,12 @@ A VTC or host service as a `did:webs` is the next step (the design note's S7).
 
 ### What is in place for every node
 
-- **Declaration.** Every DID document this VTA mints carries
-  `"resolvedMethods": ["webs"]`, with the JSON-LD term in `@context`, and so
-  do the built-in `vtc-host`, `room-host`, `dtg-witness` and `ballot-box`
-  templates; the `did-host-*` templates take it as `RESOLVED_METHODS`. A peer
-  whose identity is a `did:webs` may act toward any of them. An existing DID
-  gains the member when its document is next rebuilt.
-- **The sending check.** A node acting as its own DID — the VTA through its
-  outbound sender, the VTC toward its VTA, git bridge, ballot boxes and trust
-  registry, room-host toward a watch address — refuses to send when that DID
-  is of an optional method and the peer has not declared it:
-  `methodNotDeclared`, naming the method and the peer.
+- **Resolution.** Every resolver the workspace builds resolves `did:webs`
+  (`affinidi-did-resolver-cache-sdk`'s `did-webs` feature, on for the whole
+  workspace and for the enclave proxy).
+- **No declaration.** No DID document this VTA mints and no built-in template
+  carries `resolvedMethods` any more. A document or an uploaded template that
+  still does is not refused for it; nothing reads it.
 - **The receiving refusal.** A Trust Task signed by a DID of a method this VTA
   does not resolve is refused `proofInvalid`, with `details.reason`
   `unsupportedDidMethod` and the `method`, not as an unexplained proof
@@ -145,10 +142,11 @@ The VTA computes the inception first, because the AID is its digest and
 and only then writes the designations and publishes.
 
 A template's `resolvedMethods` member is ignored, as its `@context` is
-(CONVENTIONS §9.2): a did:webs node declares did:webs by using it. So the node
-built-ins that carry it (`dtg-witness`, `did-host-*`, `room-host`,
-`ballot-box`) are representable; `vtc-host` is not, for its post-quantum
-second signing key, which a level-1 did:webs cannot hold.
+(CONVENTIONS §9.2). No built-in carries it since VTI-KEY-008 was withdrawn,
+but an uploaded template written while it stood keeps working. The node
+built-ins `dtg-witness`, `did-host-*`, `room-host` and `ballot-box` are
+representable; `vtc-host` is not, for its post-quantum second signing key,
+which a level-1 did:webs cannot hold.
 
 ## Provisioning an integration as a did:webs
 
@@ -186,8 +184,8 @@ it stores leads with that key. A context-secrets export of a `did:webs`
 (`build_did_secrets_bundle`, what room-host fetches) holds exactly the keys
 its document lists — never the pre-rotated successor — led the same way.
 
-A host service's `did:webs` is still used only toward peers that declare they
-resolve `did:webs` (VTI-KEY-008).
+A host service's `did:webs` reaches every peer: every node resolves
+`did:webs` (VTI-KEY-003).
 
 ## Turning it on
 

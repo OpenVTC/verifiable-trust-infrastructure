@@ -649,19 +649,8 @@ pub struct Outbound<'a> {
     /// an advertised `TrustTaskHTTPS` endpoint wins, and TSP and DIDComm still
     /// come first.
     https_base: Option<String>,
-    /// Where this VTA's own durable DID is read from at send time, for the
-    /// VTI-KEY-008 declaration check ([`Self::own_did`]).
-    node: NodeDid<'a>,
     /// Which peer endpoints a REST send may dial ([`send_rest_to`]).
     endpoint_policy: vta_sdk::http::EndpointPolicy,
-}
-
-/// Where an [`Outbound`] learns the VTA's own durable DID: the live config
-/// (a DID set up or rotated after construction is what is current), or one
-/// its caller already holds.
-enum NodeDid<'a> {
-    Config(&'a tokio::sync::RwLock<crate::config::AppConfig>),
-    Known(String),
 }
 
 impl<'a> Outbound<'a> {
@@ -697,14 +686,10 @@ impl<'a> Outbound<'a> {
     /// so silently removed TSP from selection for every webvh call. The name is
     /// the difference: a caller now has to pass *something* for TSP, and
     /// passing `None` is visible at the call site.
-    ///
-    /// `node_did` is this VTA's own durable DID, which the VTI-KEY-008
-    /// declaration check holds every send it acts in to.
     pub fn from_parts(
         resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
         #[cfg(feature = "didcomm")] bridge: &'a DIDCommBridge,
         #[cfg(feature = "tsp")] tsp: Option<TspSender>,
-        node_did: String,
     ) -> Self {
         Self {
             resolver,
@@ -713,7 +698,6 @@ impl<'a> Outbound<'a> {
             #[cfg(feature = "didcomm")]
             bridge,
             https_base: None,
-            node: NodeDid::Known(node_did),
             endpoint_policy: vta_sdk::http::EndpointPolicy::process_default(),
         }
     }
@@ -739,74 +723,9 @@ impl<'a> Outbound<'a> {
             #[cfg(feature = "didcomm")]
             bridge: state.didcomm_bridge.as_ref(),
             https_base: None,
-            node: NodeDid::Config(&state.config),
             endpoint_policy: state.endpoint_policy,
         }
     }
-
-    /// This VTA's own durable DID as it is now: the configured one, or the
-    /// one the caller gave. `None` before setup.
-    async fn own_did(&self) -> Option<String> {
-        match &self.node {
-            NodeDid::Config(config) => config.read().await.vta_did.clone(),
-            NodeDid::Known(did) => Some(did.clone()),
-        }
-    }
-
-    /// [`may_act_toward`] with this VTA's own DID as it is now.
-    async fn require_declared(
-        &self,
-        recipient: &str,
-        peer_doc: &Value,
-        issuer: Option<&str>,
-        protocol: Protocol,
-    ) -> Result<(), AppError> {
-        may_act_toward(
-            self.own_did().await.as_deref(),
-            recipient,
-            peer_doc,
-            issuer,
-            protocol,
-        )
-    }
-}
-
-/// VTI-KEY-008 / VTI-KEY-009: refuse, before anything is sent, a send in which
-/// this VTA acts as its own durable identity `own` — as the document's
-/// `issuer`, or as the TSP or DIDComm sender, which authenticate this agent as
-/// that DID — when that identity is of an optional method (`did:webs`) and
-/// `peer_doc`, the peer's verified current document, does not declare it.
-/// Nothing falls back to another identifier.
-///
-/// A persona or relationship DID as `issuer`, over HTTPS, is not this VTA's
-/// durable identity (VTI-KEY-001) and is not held to this. Neither is a reply:
-/// a party that addressed this VTA under its identity has shown it resolves
-/// it, and replies are not sent through [`Outbound::send`].
-fn may_act_toward(
-    own: Option<&str>,
-    recipient: &str,
-    peer_doc: &Value,
-    issuer: Option<&str>,
-    protocol: Protocol,
-) -> Result<(), AppError> {
-    let Some(own) = own else {
-        return Ok(());
-    };
-    let bare = |did: &str| did.split(['#', '?']).next().unwrap_or(did).to_string();
-    let acts = matches!(protocol, Protocol::Tsp | Protocol::Didcomm)
-        || issuer.is_some_and(|i| bare(i) == bare(own));
-    if !acts {
-        return Ok(());
-    }
-    vta_sdk::resolved_methods::require_declared(own, recipient, peer_doc).map_err(|refusal| {
-        tracing::warn!(
-            peer = %refusal.peer,
-            method = %refusal.method,
-            "not sending: the peer has not declared it resolves this VTA's DID method \
-             (VTI-KEY-008)"
-        );
-        AppError::from(refusal)
-    })
 }
 
 /// The largest reply [`send_rest_to`] reads from a peer. A reply carries at
@@ -1135,8 +1054,6 @@ impl Outbound<'_> {
                 }
                 (e, _) => e,
             })?;
-        self.require_declared(recipient, &doc_value, issuer, protocol)
-            .await?;
 
         let reply = match protocol {
             Protocol::Rest => self.send_rest(recipient, &endpoint, &document).await?,
@@ -1828,54 +1745,62 @@ mod tests {
     const PERSONA: &str = "did:example:persona";
 
     const WEBS_VTA: &str = "did:webs:vta.example:nodes:EAbc";
-    const PEER: &str = "did:webvh:Qm1:peer.example";
 
-    /// VTI-KEY-008 / VTI-KEY-009: a did:webs VTA does not act toward a peer
-    /// that has not declared did:webs — over a messaging transport, which
-    /// authenticates it as its DID, or as the issuer over HTTPS — and the
-    /// refusal is the typed one; a declaring peer is reached.
-    #[test]
-    fn vti_key_008_a_did_webs_vta_acts_only_toward_a_declaring_peer() {
-        let silent = serde_json::json!({ "id": PEER });
-        let declaring = serde_json::json!({ "id": PEER, "resolvedMethods": ["webs"] });
-        for (issuer, protocol) in [
-            (None, Protocol::Didcomm),
-            (Some(PERSONA), Protocol::Tsp),
-            (Some(WEBS_VTA), Protocol::Rest),
-        ] {
-            match may_act_toward(Some(WEBS_VTA), PEER, &silent, issuer, protocol) {
-                Err(AppError::MethodNotDeclared(r)) => {
-                    assert_eq!(r.method, "webs");
-                    assert_eq!(r.peer, PEER);
-                }
-                other => {
-                    panic!("{issuer:?} over {protocol:?}: expected the refusal, got {other:?}")
-                }
-            }
-            may_act_toward(Some(WEBS_VTA), PEER, &declaring, issuer, protocol)
-                .expect("a declaring peer is reached");
-        }
+    /// A `did:peer:2` peer advertising one Trust-Task HTTPS endpoint, and no
+    /// `resolvedMethods` — resolved offline, so the whole send runs.
+    fn rest_peer(endpoint: &str) -> String {
+        use base64::Engine as _;
+        let service = serde_json::json!({ "t": "TrustTaskHTTPS", "s": endpoint });
+        format!(
+            "did:peer:2.Vz6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK.S{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(service.to_string())
+        )
     }
 
-    /// What the rule does not cover: a persona issuing over HTTPS (not this
-    /// VTA's durable identity acting), a did:webvh VTA, and a VTA with no DID
-    /// yet.
-    #[test]
-    fn vti_key_008_only_an_optional_durable_identity_needs_the_declaration() {
-        let silent = serde_json::json!({ "id": PEER });
-        may_act_toward(Some(WEBS_VTA), PEER, &silent, Some(PERSONA), Protocol::Rest)
-            .expect("a persona over HTTPS is not the VTA acting");
-        for protocol in [Protocol::Didcomm, Protocol::Tsp, Protocol::Rest] {
-            may_act_toward(
-                Some("did:webvh:Qm1:vta.example"),
-                PEER,
-                &silent,
-                None,
-                protocol,
-            )
-            .expect("a required method needs no declaration");
-            may_act_toward(None, PEER, &silent, None, protocol).expect("no DID yet");
-        }
+    /// VTI-KEY-003 / VTI-KEY-001, and VTI-KEY-008 withdrawn: every node
+    /// resolves did:webs, so a did:webs VTA acts toward a peer whose document
+    /// declares nothing (no `resolvedMethods`) exactly as a did:webvh VTA
+    /// does — the document is sent and the reply returned.
+    #[tokio::test]
+    async fn vti_key_003_a_did_webs_vta_sends_to_a_peer_that_declares_nothing() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let reply = serde_json::json!({ "type": "urn:example:reply", "payload": {} });
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&reply))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let peer = rest_peer(&server.uri());
+        let resolver = test_resolver().await;
+        let peer_doc = serde_json::to_value(resolver.resolve(&peer).await.unwrap().doc).unwrap();
+        assert!(peer_doc.get("resolvedMethods").is_none(), "{peer_doc}");
+
+        #[cfg(feature = "didcomm")]
+        let bridge = DIDCommBridge::placeholder();
+        let mut outbound = Outbound::from_parts(
+            &resolver,
+            #[cfg(feature = "didcomm")]
+            &bridge,
+            #[cfg(feature = "tsp")]
+            None,
+        );
+        outbound.endpoint_policy = vta_sdk::http::EndpointPolicy::private_allowed();
+        let document = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000003",
+            "type": "urn:example:request",
+            "issuer": WEBS_VTA,
+            "recipient": peer,
+            "payload": {},
+        });
+        let got = outbound
+            .send(&peer, document, ReplyTrust::TransportAuthenticated)
+            .await
+            .expect("a did:webs VTA reaches a peer that declares nothing");
+        assert_eq!(got, reply);
+        server.verify().await;
     }
 
     /// Every messaging transport this build compiles, wired as this VTA.

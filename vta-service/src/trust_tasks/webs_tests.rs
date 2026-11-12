@@ -793,11 +793,10 @@ async fn a_context_template_resolves_in_its_scope() {
     assert_eq!(created["alsoKnownAs"], json!(aliases));
 }
 
-/// CONVENTIONS.md 0.2 §9.2: a node template's `resolvedMethods` is ignored
-/// (trustoverip/dtgwg-trust-tasks-tf#1170), so the specification's own example
-/// — a witness from `dtg-witness` — is created, with the template's services.
+/// The specification's own example — a witness from `dtg-witness` — is
+/// created as a did:webs service DID, with the template's services.
 #[tokio::test]
-async fn a_node_template_carrying_resolved_methods_is_representable() {
+async fn a_node_template_is_representable() {
     let rig = Rig::new().await;
     rig.state.config.write().await.dids.webs_service_dids = true;
     let created = ok(&rig

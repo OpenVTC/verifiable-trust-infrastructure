@@ -124,6 +124,11 @@ When adding a flow, add it here and a line to the root index.
   credentials (`SelfKeys`). Never let first boot fall back to another
   identifier (VTI-KEY-009), and never treat `published: false` on any record
   but `vta_did`'s as normal.
+  It acts toward any peer exactly as a did:webvh VTA does: every node resolves
+  did:webs (VTI-KEY-003) and none requires a peer's method (VTI-KEY-001). The
+  `resolvedMethods` declaration and its send-side gate (VTI-KEY-008) are
+  withdrawn — don't reintroduce a per-peer method check; the only method
+  refusal is the receiving `unsupportedDidMethod` (VTI-KEY-009).
 - **A did:webs TEE VTA** (`[tee.kms.vta_did_webs]`, `vta-enclave` feature
   `webs`, S8): `tee_webs::maybe_generate_webs_vta_did` runs after
   `did_autogen` (which restores a stored identity and refuses a template

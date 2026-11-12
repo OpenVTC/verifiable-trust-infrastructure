@@ -83,8 +83,9 @@ pub fn is_durable(did: &str) -> bool {
 /// `did:web`, `did:webvh`, a `did:scid:vh:1` whose log is a `did:webvh` log, or
 /// a `did:webs`, whose key event log is fetched from its host.
 ///
-/// Not [`is_durable`]: `did:webs` is resolved from a host but is not named for
-/// a node's durable identity (VTI-KEY-001).
+/// Not [`is_durable`], which means "has a `did:webvh` log": a `did:webs` is
+/// resolved from a host without one (a node's durable identity of any method
+/// is [`crate::resolved_methods::is_durable_identity`]).
 pub fn is_network_resolved(did: &str) -> bool {
     did.starts_with("did:web:") || did.starts_with("did:webs:") || is_durable(did)
 }
