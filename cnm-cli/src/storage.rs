@@ -170,27 +170,54 @@ fn print_config(item: &Value) {
 }
 
 /// The X25519 key the community opens what is sealed to it with: the derivation of
-/// the Ed25519 key its own DID document lists (`#key-0` first).
+/// the Ed25519 signing key its own DID document lists — by role (VTI-KEY-150), so
+/// `#key-0` on a did:webvh and the key-state (or attestation) key, published as a
+/// JWK under its own id, on a did:webs.
 async fn community_x25519(did: &str) -> CliResult<[u8; 32]> {
     let resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let resolved = resolver.resolve(did).await?;
     let doc = serde_json::to_value(&resolved.doc)?;
-    let methods = doc["verificationMethod"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let ed25519 = |m: &Value| {
-        m["publicKeyMultibase"]
-            .as_str()
-            .and_then(|mb| vta_sdk::did_key::decode_ed25519_public_key_multibase(mb).ok())
-    };
-    let key = methods
-        .iter()
-        .find(|m| m["id"].as_str().is_some_and(|i| i.ends_with("#key-0")))
-        .and_then(ed25519)
-        .or_else(|| methods.iter().find_map(ed25519))
-        .ok_or_else(|| format!("{did}'s DID document lists no Ed25519 key to seal to"))?;
+    let key = community_ed25519(did, &doc)?;
     vta_sdk::didcomm_light::ed25519_pub_to_x25519_pub(&key)
+}
+
+/// The Ed25519 public key of the signing key `doc`, the community's own
+/// document, lists.
+fn community_ed25519(did: &str, doc: &Value) -> CliResult<[u8; 32]> {
+    let signing = vta_sdk::node_keys::NodeKeyIds::from_document(did, doc)
+        .map_err(|e| format!("{did}: {e}"))?
+        .signing;
+    let fragment = vta_sdk::node_keys::fragment(&signing);
+    let method = doc["verificationMethod"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|m| {
+            let id = m["id"].as_str().unwrap_or_default();
+            id == signing || (id.starts_with('#') && Some(&id[1..]) == fragment)
+        })
+        .ok_or_else(|| {
+            format!("{did}'s DID document does not publish its signing key {signing}")
+        })?;
+    let from_multibase = method["publicKeyMultibase"]
+        .as_str()
+        .and_then(|mb| vta_sdk::did_key::decode_ed25519_public_key_multibase(mb).ok());
+    let from_jwk = || {
+        use base64::Engine as _;
+        let jwk = &method["publicKeyJwk"];
+        (jwk["kty"] == "OKP" && jwk["crv"] == "Ed25519")
+            .then(|| jwk["x"].as_str())
+            .flatten()
+            .and_then(|x| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(x)
+                    .ok()
+            })
+            .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+    };
+    from_multibase.or_else(from_jwk).ok_or_else(|| {
+        format!("{did}'s signing key {signing} is not an Ed25519 key to seal to").into()
+    })
 }
 
 /// The `SealedStorageCredential` for `config` of `kind` from the operator's file: read
@@ -315,6 +342,38 @@ async fn run_task(
 
 #[cfg(test)]
 mod tests {
+
+    /// A did:webs community publishes its signing key as a JWK under its own id;
+    /// a did:webvh one as multibase at `#key-0`. Both are found by role.
+    #[test]
+    fn vti_key_150_the_community_key_is_found_by_role_in_either_shape() {
+        use base64::Engine as _;
+        let key = [7u8; 32];
+        let public = ed25519_dalek::SigningKey::from_bytes(&key)
+            .verifying_key()
+            .to_bytes();
+        let did = "did:webs:vtc.example:EAid";
+        let id = format!("{did}#DKey");
+        let webs = serde_json::json!({
+            "id": did,
+            "verificationMethod": [{ "id": id, "type": "JsonWebKey", "publicKeyJwk": {
+                "kty": "OKP", "crv": "Ed25519",
+                "x": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public) } }],
+            "authentication": [id], "assertionMethod": [id],
+        });
+        assert_eq!(community_ed25519(did, &webs).unwrap(), public);
+
+        let did = "did:webvh:QmScid:vtc.example";
+        let mb = vta_sdk::did_key::ed25519_multibase_pubkey(&public);
+        let webvh = serde_json::json!({
+            "id": did,
+            "verificationMethod": [{ "id": format!("{did}#key-0"), "type": "Multikey",
+                                     "publicKeyMultibase": mb }],
+            "assertionMethod": [format!("{did}#key-0")],
+        });
+        assert_eq!(community_ed25519(did, &webvh).unwrap(), public);
+    }
+
     use super::*;
 
     #[test]
