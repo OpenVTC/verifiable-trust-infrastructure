@@ -105,6 +105,19 @@ key_arn = "REPLACE_WITH_KMS_KEY_ARN"
 # Ignored if vta_did is set (either in this file or in the encrypted store).
 # vta_did_template = "did:webvh:{SCID}:example.com:vta"
 
+# Alpha alternative to the template: a key-role did:webs as the VTA's identity
+# (did:webs:{domain}[:{path}]:{AID}). Needs an image built with the `webs`
+# feature (VTA_ENABLE_WEBS=true for build-vta.sh) and [dids] webs_enabled = true;
+# exclusive with vta_did_template. First boot mints it in the enclave and
+# registers it at the host, which must allow self-registration on the domain
+# and declare resolvedMethods ["webs"]. The enclave proxy allowlists the host
+# and the domain from this table. Baked only — not in the tenant overlay.
+#
+# [tee.kms.vta_did_webs]
+# server_did = "did:webvh:QmHostScid:hosting.example.com"
+# domain = "did.example.com"
+# path = "nodes"
+
 
 # ── REQUIRED: DIDComm mediator ──────────────────────────────────────────────
 #

@@ -341,6 +341,7 @@ These values are set in `config.toml` before building the EIF:
 |-------|----------|------|---------|
 | `tee.kms.key_arn` | Yes | Always | KMS key ARN for secret encryption/decryption |
 | `tee.kms.vta_did_template` | Recommended | Always | Template for auto-generating the VTA's did:webvh identity on first boot. Eliminates the manual DID creation / rebuild cycle. |
+| `tee.kms.vta_did_webs` | No (alpha) | Instead of the template | A key-role `did:webs` minted on first boot and registered at its host (`server_did`, `domain`, optional `path`). Needs an image built with the `webs` feature (`VTA_ENABLE_WEBS=true`) and `[dids] webs_enabled = true`. See `docs/02-vta/tee-architecture.md`, *A did:webs identity*. |
 | `public_url` | Only for REST | Profiles B, C | External HTTPS URL where the VTA is reachable. Used in DID documents for the TEE attestation service endpoint. **Not needed for DIDComm-only (Profile A)** — all communication goes through the mediator. |
 | `messaging.mediator_did` | Only for DIDComm | Profiles A, B | DIDComm mediator DID. The mediator URL is always `ws://127.0.0.1:4443` inside the enclave (vsock-proxied). |
 | `vta_name` | No | Optional | Human-readable name for the VTA |

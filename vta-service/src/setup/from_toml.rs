@@ -2168,12 +2168,13 @@ async fn create_simple_webvh_did(
 
 /// The id setup registers a did:webs VTA's hosting server under.
 #[cfg(feature = "webs")]
-const DEFAULT_WEBS_SERVER_ID: &str = "vta-host";
+use crate::operations::did_webs::DEFAULT_OWN_IDENTITY_SERVER_ID as DEFAULT_WEBS_SERVER_ID;
 
-/// Mint this VTA's own did:webs at setup: register its hosting server, then
-/// create a key-role identity in the `vta` context, its primary DID, recorded
-/// unpublished — the first boot registers it at the host on its own
-/// authority (`operations::did_webs::publish_own_identity`).
+/// Mint this VTA's own did:webs at setup (`operations::did_webs::
+/// create_own_identity`): register its hosting server, then create a key-role
+/// identity in the `vta` context, its primary DID, recorded unpublished — the
+/// first boot registers it at the host on its own authority
+/// (`operations::did_webs::publish_own_identity`).
 #[cfg(feature = "webs")]
 #[allow(clippy::too_many_arguments)]
 async fn create_vta_did_webs(
@@ -2191,22 +2192,7 @@ async fn create_vta_did_webs(
     seed_store: &dyn SeedStore,
     config: &AppConfig,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    use crate::operations::did_webs::{
-        CreateDidWebsParams, NoHost, WebsDeps, create_did_webs, designated_service_from_json,
-    };
-
-    let now = chrono::Utc::now();
-    crate::webvh_store::store_server(
-        webvh_ks,
-        &vta_sdk::webvh::WebvhServerRecord {
-            id: server_id.to_string(),
-            did: server_did.to_string(),
-            label: Some("this VTA's did:webs host".into()),
-            created_at: now,
-            updated_at: now,
-        },
-    )
-    .await?;
+    use crate::operations::did_webs::{OwnWebsIdentity, WebsDeps, create_own_identity};
 
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let deps = WebsDeps {
@@ -2221,24 +2207,13 @@ async fn create_vta_did_webs(
         config,
         did_resolver: &did_resolver,
     };
-    let mut params = CreateDidWebsParams::new("vta", server_id);
-    params.path = path.map(str::to_string);
-    params.domain = Some(domain.to_string());
-    params.label = Some("VTA".into());
-    params.add_mediator_service = add_mediator_service;
-    // `build_vta_additional_services` supplies `#tsp` and the REST entry.
-    params.add_tsp_service = Some(false);
-    params.additional_services = additional_services
-        .iter()
-        .map(designated_service_from_json)
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("{e}"))?;
-    params.set_primary = true;
-    params.key_roles = true;
-    params.defer_publish = true;
-    // This VTA's own durable identity (VTI-KEY-192).
-    params.did_class = Some(crate::webs_store::WebsDidClass::Service);
-    let created = create_did_webs(&deps, &cli_super_admin(), params, &NoHost, "setup")
+    // The same create a TEE VTA's first boot runs (`tee_webs`).
+    let mut spec = OwnWebsIdentity::new(server_did, domain, "cli:setup");
+    spec.server_id = server_id.to_string();
+    spec.path = path.map(str::to_string);
+    spec.additional_services = additional_services;
+    spec.add_mediator_service = add_mediator_service;
+    let created = create_own_identity(&deps, spec, "setup")
         .await
         .map_err(|e| format!("{e}"))?;
     eprintln!("  Created DID: {} (published at first boot)", created.did);

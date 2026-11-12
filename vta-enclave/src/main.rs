@@ -386,6 +386,29 @@ async fn main() {
         tracing::warn!("VTA DID auto-generation failed (non-Nitro — continuing): {e}");
     }
 
+    // ── Mint a did:webs identity on first boot (`[tee.kms] vta_did_webs`) ──
+    // After the reconciliation above, which restores an established identity
+    // and refuses a template beside it. The identity is published at its host
+    // by `server::run`, before messaging starts. Fail-closed like the step
+    // above: a VTA that asked for a did:webs never boots as another identifier
+    // (VTI-KEY-009).
+    if let Err(e) = vta_service::tee_webs::maybe_generate_webs_vta_did(
+        &mut config,
+        &*seed_store,
+        &store,
+        storage_encryption_key,
+    )
+    .await
+    {
+        if on_nitro {
+            tracing::error!(
+                "FATAL: VTA did:webs identity could not be minted: {e}. Refusing to boot."
+            );
+            std::process::exit(1);
+        }
+        tracing::warn!("VTA did:webs identity could not be minted (non-Nitro — continuing): {e}");
+    }
+
     // ── Backfill the serverless did:webvh identity into the webvh keyspace ──
     // Auto-gen persists the DID + did.jsonl only under the KEYS/BOOTSTRAP
     // keyspaces; `list_services`, the self-DID resolver preload, and

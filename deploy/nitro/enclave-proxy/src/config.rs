@@ -28,6 +28,10 @@ pub struct ProxyConfig {
     pub vsock_storage_port: u32,
     /// Directory for the persistent key-value store (on parent EBS).
     pub storage_data_dir: PathBuf,
+    /// A did:webs VTA identity's host and domain (`[tee.kms] vta_did_webs`):
+    /// first boot registers the identity at its host over the host's
+    /// Trust-Task HTTPS endpoint, so both must be reachable.
+    pub webs_identity: Option<WebsIdentity>,
     /// Proxies whose connections to this listener are themselves trusted —
     /// the same `[server] trust_xff_cidrs` the enclave VTA reads. When the
     /// TCP peer is in this list, its `X-Forwarded-For` is a claim made by a
@@ -65,6 +69,18 @@ struct TeeConfig {
 #[derive(Debug, Deserialize)]
 struct KmsConfig {
     region: Option<String>,
+    vta_did_webs: Option<WebsIdentity>,
+}
+
+/// `[tee.kms] vta_did_webs` — only the fields the allowlist needs. Mirrors
+/// `vta_config::TeeWebsIdentityConfig`; this crate links no workspace code, so
+/// it repeats the two names.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct WebsIdentity {
+    /// The did-hosting server's DID.
+    pub server_did: String,
+    /// The domain the DID is served on (`host` or `host:port`).
+    pub domain: String,
 }
 
 impl ProxyConfig {
@@ -135,6 +151,12 @@ impl ProxyConfig {
             }
         }
 
+        let webs_identity = vta_config
+            .tee
+            .as_ref()
+            .and_then(|t| t.kms.as_ref())
+            .and_then(|k| k.vta_did_webs.clone());
+
         let trusted_upstream_cidrs = vta_config
             .server
             .map(|s| s.trust_xff_cidrs)
@@ -163,6 +185,7 @@ impl ProxyConfig {
             allowlist_hosts,
             vsock_storage_port: cli.vsock_storage,
             storage_data_dir: cli.storage_data_dir.clone(),
+            webs_identity,
             trusted_upstream_cidrs,
         }
     }
@@ -196,10 +219,24 @@ impl ProxyConfig {
         // The enclave's TDK resolves the mediator DID via HTTPS, so
         // the hosting server must be in the allowlist.
         if let Some(ref did) = self.mediator_did
-            && let Some(host) = extract_host_from_did(did)
+            && let Some((host, port)) = extract_host_from_did(did)
         {
             tracing::info!(did = %did, host = %host, "auto-allowlisting DID host from mediator DID");
-            hosts.push((host, 443));
+            hosts.push((host, port));
+        }
+
+        // A did:webs identity is registered at its host at first boot, over
+        // the host's Trust-Task HTTPS endpoint, and resolved from its domain.
+        // The host's endpoint is taken to be on its own DID's host; one served
+        // elsewhere goes in ALLOWLIST_HOSTS.
+        if let Some(ref webs) = self.webs_identity {
+            if let Some((host, port)) = extract_host_from_did(&webs.server_did) {
+                tracing::info!(did = %webs.server_did, host = %host, "auto-allowlisting the did:webs identity's hosting server");
+                hosts.push((host, port));
+            }
+            let (host, port) = parse_host_port(&webs.domain);
+            tracing::info!(domain = %webs.domain, "auto-allowlisting the did:webs identity's domain");
+            hosts.push((host, port));
         }
 
         hosts.extend(self.allowlist_hosts.clone());
@@ -207,30 +244,34 @@ impl ProxyConfig {
     }
 }
 
-/// Extract the hosting server hostname from a DID.
+/// Extract the hosting server's host and port from a DID: the host segment,
+/// whose port, if any, is percent-encoded (`%3A`), as every web-based method
+/// spells it; 443 without one.
 ///
-/// Supports did:web and did:webvh:
-///   did:web:example.com → example.com
-///   did:webvh:SCID:example.com:path → example.com
-fn extract_host_from_did(did: &str) -> Option<String> {
-    if let Some(rest) = did.strip_prefix("did:web:") {
-        Some(
-            rest.split('%')
-                .next()
-                .unwrap_or(rest)
-                .split(':')
-                .next()
-                .unwrap_or(rest)
-                .to_string(),
-        )
+/// Supports did:web, did:webvh and did:webs:
+///   did:web:example.com → (example.com, 443)
+///   did:webvh:SCID:example.com%3A8080:path → (example.com, 8080)
+///   did:webs:example.com:nodes:AID → (example.com, 443)
+fn extract_host_from_did(did: &str) -> Option<(String, u16)> {
+    let segment = if let Some(rest) = did.strip_prefix("did:web:") {
+        rest.split(':').next()
     } else if let Some(rest) = did.strip_prefix("did:webvh:") {
         // did:webvh:SCID:host:path — skip SCID (first segment)
-        rest.split(':')
-            .nth(1)
-            .map(|segment| segment.split('%').next().unwrap_or(segment).to_string())
+        rest.split(':').nth(1)
+    } else if let Some(rest) = did.strip_prefix("did:webs:") {
+        // did:webs:host[:path…]:AID — the host leads, the AID ends it.
+        rest.split(':').next().filter(|_| rest.contains(':'))
     } else {
         None
-    }
+    }?;
+    let (host, port) = match segment
+        .split_once("%3A")
+        .or_else(|| segment.split_once("%3a"))
+    {
+        Some((host, port)) => (host, port.parse().ok()?),
+        None => (segment, 443),
+    };
+    (!host.is_empty()).then(|| (host.to_string(), port))
 }
 
 fn parse_host_port(s: &str) -> (String, u16) {
@@ -264,8 +305,88 @@ mod tests {
             allowlist_hosts: Vec::new(),
             vsock_storage_port: 5500,
             storage_data_dir: PathBuf::from("/tmp/vta-store"),
+            webs_identity: None,
             trusted_upstream_cidrs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn host_from_web_and_webvh_dids() {
+        assert_eq!(
+            extract_host_from_did("did:web:example.com"),
+            Some(("example.com".into(), 443))
+        );
+        assert_eq!(
+            extract_host_from_did("did:webvh:QmScid:example.com:vta"),
+            Some(("example.com".into(), 443))
+        );
+        assert_eq!(
+            extract_host_from_did("did:webvh:QmScid:example.com%3A8080:vta"),
+            Some(("example.com".into(), 8080))
+        );
+        assert_eq!(extract_host_from_did("did:key:z6Mk"), None);
+    }
+
+    #[test]
+    fn host_from_webs_dids() {
+        let aid = "EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4";
+        assert_eq!(
+            extract_host_from_did(&format!("did:webs:did.example.com:{aid}")),
+            Some(("did.example.com".into(), 443))
+        );
+        assert_eq!(
+            extract_host_from_did(&format!("did:webs:did.example.com%3A8443:{aid}")),
+            Some(("did.example.com".into(), 8443))
+        );
+        assert_eq!(
+            extract_host_from_did(&format!("did:webs:did.example.com%3A8443:nodes:eu:{aid}")),
+            Some(("did.example.com".into(), 8443))
+        );
+        // A host with no AID after it is not a did:webs.
+        assert_eq!(extract_host_from_did("did:webs:did.example.com"), None);
+        // Nor is a port that is not one.
+        assert_eq!(
+            extract_host_from_did(&format!("did:webs:did.example.com%3Ahttps:{aid}")),
+            None
+        );
+    }
+
+    /// `[tee.kms] vta_did_webs` admits the identity's host and domain: the
+    /// enclave registers the DID there at first boot.
+    #[test]
+    fn webs_identity_allowlists_its_host_and_domain() {
+        let dir = std::env::temp_dir().join(format!(
+            "enclave-proxy-config-test-webs-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[tee.kms]\nregion = \"eu-west-1\"\nkey_arn = \"arn\"\n\
+             [tee.kms.vta_did_webs]\nserver_did = \"did:webvh:QmScid:hosting.example.com\"\n\
+             domain = \"did.example.com:8443\"\npath = \"nodes\"\n",
+        )
+        .unwrap();
+
+        let cli = crate::Cli::parse_from(["enclave-proxy"]);
+        let config = ProxyConfig::load(&config_path, &cli);
+        let allow = config.build_allowlist();
+        assert!(
+            allow.contains(&("hosting.example.com".to_string(), 443)),
+            "{allow:?}"
+        );
+        assert!(
+            allow.contains(&("did.example.com".to_string(), 8443)),
+            "{allow:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn no_webs_identity_adds_nothing() {
+        let allow = proxy_config("us-east-1").build_allowlist();
+        assert_eq!(allow.len(), 2, "{allow:?}");
     }
 
     #[test]

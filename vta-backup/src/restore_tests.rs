@@ -836,3 +836,94 @@ async fn replacing_an_identity_detaches_hosted_dids() {
     assert_eq!(restored.server_id, "serverless");
     assert!(restored.mnemonic.is_empty());
 }
+
+/// A did:webs slot is detached too when a restore replaces a different
+/// identity — into an enclave, whose own identity is the did:webs: the record
+/// keeps its slot (the DID names it) and loses only its server, so nothing is
+/// published from here to the source's host. The enclave's identity row names
+/// the restored DID.
+#[tokio::test]
+async fn replacing_an_identity_detaches_hosted_webs_dids() {
+    const WEBS_DID: &str = "did:webs:did.example.com%3A8443:nodes:EAbcAid";
+    let source = open_test_store().await;
+    let record = serde_json::json!({
+        "did": WEBS_DID,
+        "aid": "EAbcAid",
+        "contextId": "vta",
+        "serverId": "vta-host",
+        "mnemonic": "nodes/EAbcAid",
+        "domain": "did.example.com:8443",
+        "published": true,
+        "createdAt": "2026-11-12T00:00:00Z",
+        "updatedAt": "2026-11-12T00:00:00Z",
+    });
+    target_for(&source, BackupEnvironment::Tee, &SOURCE_SEED)
+        .keyspace(vta_keyspaces::WEBS)
+        .unwrap()
+        .insert(format!("did:{WEBS_DID}"), &record)
+        .await
+        .unwrap();
+    let mut config = test_app_config(source.data_dir.clone());
+    config.vta_did = Some(WEBS_DID.into());
+    let payload = export_from(&source, BackupEnvironment::Tee, &config).await;
+
+    // The same identity keeps its attachment…
+    let same = open_test_store().await;
+    let (after, _, applied) = restore_into(
+        &same,
+        BackupEnvironment::Tee,
+        clone_payload(&payload),
+        Some(WEBS_DID),
+        false,
+    )
+    .await;
+    assert!(applied.provenance.hosted_dids_detached.is_empty());
+    let kept: serde_json::Value = after
+        .keyspace(vta_keyspaces::WEBS)
+        .unwrap()
+        .get(format!("did:{WEBS_DID}"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept["serverId"], "vta-host");
+
+    // …and another one is detached.
+    let target = open_test_store().await;
+    let (after, config, applied) = restore_into(
+        &target,
+        BackupEnvironment::Tee,
+        payload,
+        Some("did:webvh:scid:fresh.example"),
+        true,
+    )
+    .await;
+    assert_eq!(
+        applied.provenance.hosted_dids_detached,
+        vec![WEBS_DID.to_string()]
+    );
+    let detached: serde_json::Value = after
+        .keyspace(vta_keyspaces::WEBS)
+        .unwrap()
+        .get(format!("did:{WEBS_DID}"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detached["serverId"], "");
+    assert_eq!(
+        detached["mnemonic"], "nodes/EAbcAid",
+        "the slot is the DID's"
+    );
+    let mut rest = detached.clone();
+    rest["serverId"] = record["serverId"].clone();
+    assert_eq!(rest, record, "only the server is cleared");
+    assert_eq!(
+        get(
+            &after.keyspace(vta_keyspaces::KEYS).unwrap(),
+            restore::TEE_VTA_DID_KEY
+        )
+        .await
+        .as_deref(),
+        Some(WEBS_DID.as_bytes())
+    );
+    assert_eq!(config.vta_did.as_deref(), Some(WEBS_DID));
+}

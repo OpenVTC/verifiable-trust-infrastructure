@@ -536,7 +536,14 @@ maybe_generate_vta_did()        [only if vta_did_template is set]
         └─ idempotent; makes the self-DID resolvable by GET /services,
            the resolver preload, and GET /.well-known/did.jsonl
   ↓
+maybe_generate_webs_vta_did()   [only if vta_did_webs is set; `webs` feature]
+  ├─ First boot: mint a key-role did:webs from the enclave seed (the create
+  │   `vta setup` runs), recorded unpublished in the WEBS keyspace
+  └─ Persist the DID under the KEYS keyspace (`tee:vta_did`)
+  ↓
 Start REST/DIDComm/Storage threads (normal flow)
+  └─ A did:webs not yet published is registered at its host, on its own
+     authority, before messaging starts (`publish_own_webs_identity`)
 ```
 
 In non-TEE mode, the startup sequence is unchanged — `bootstrap_secrets_from_kms()`
@@ -580,6 +587,48 @@ and both are load-bearing for a fresh enclave to accept traffic:
   self-DID into the resolver cache immediately before running, rather than assuming
   it is still cached from preload.
 
+
+### A did:webs identity (alpha)
+
+Instead of a template, a TEE VTA can ask for a key-role `did:webs` as its own
+DID (VTI-KEY-001; design note `did-webs-in-the-vta.md` §4, S8):
+
+```toml
+[dids]
+webs_enabled = true
+
+[tee.kms.vta_did_webs]
+server_did = "did:webvh:QmHostScid:hosting.example.com"  # the did-hosting server
+domain = "did.example.com"                           # `host:port` for another port
+path = "nodes"                                       # optional slot path
+# server_id = "vta-host"                             # optional
+```
+
+The enclave image must be built with `vta-enclave`'s `webs` feature, and the
+setting is exclusive with `vta_did_template`; asking for it in an image
+without the feature, with did:webs off, or beside a template refuses to boot
+on Nitro rather than come up as another identifier (VTI-KEY-009). It is not
+in the fleet tenant overlay: it must be baked.
+
+First boot mints the identity inside the enclave from the bootstrapped seed —
+`operations::did_webs::create_own_identity`, the create `vta setup`'s
+`create_webs` runs — and persists the DID as `tee:vta_did`, after which every
+boot restores it from the store like any other enclave identity. A boot that
+died between the mint and that write adopts the identity it minted. The
+`webs` keyspace row is the record; there is no `did.jsonl`, so nothing is
+written to `tee:did_log` and `GET /attestation/did-log` has nothing to serve.
+The anti-rollback anchor and the attestation reports key on the DID string,
+whatever its method.
+
+Publication is the non-TEE path unchanged: at startup, before messaging,
+`publish_own_webs_identity` registers the key event log at its host by a
+self-certifying `did/register/0.1` over the host's Trust-Task HTTPS endpoint,
+until the host has it. The host must allow self-registration on the domain
+(`[[hosting.webs_self_register]]`) and declare `resolvedMethods: ["webs"]`.
+The enclave proxy reads the same `[tee.kms.vta_did_webs]` and allowlists the
+host (from `server_did`) and `domain`; a host whose Trust-Task endpoint is on
+another host needs it in `ALLOWLIST_HOSTS`. The VTA still has no inbound
+surface: this is egress only.
 
 ## Secret Lifecycle Summary
 
