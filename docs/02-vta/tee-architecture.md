@@ -624,7 +624,7 @@ Publication is the non-TEE path unchanged: at startup, before messaging,
 `publish_own_webs_identity` registers the key event log at its host by a
 self-certifying `did/register/0.1` over the host's Trust-Task HTTPS endpoint,
 until the host has it. The host must allow self-registration on the domain
-(`[[hosting.webs_self_register]]`) and declare `resolvedMethods: ["webs"]`.
+(`[[hosting.webs_self_register]]`).
 The enclave proxy reads the same `[tee.kms.vta_did_webs]` and allowlists the
 host (from `server_did`) and `domain`; a host whose Trust-Task endpoint is on
 another host needs it in `ALLOWLIST_HOSTS`. The VTA still has no inbound

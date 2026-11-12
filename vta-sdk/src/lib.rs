@@ -140,8 +140,7 @@ pub mod node_keys;
 /// and every relay around it.
 #[cfg(feature = "proof-verify")]
 pub mod notifications;
-/// Which identifier methods a party resolves, and acting as an identity of an
-/// optional one (VTI-KEY-003, VTI-KEY-008, VTI-KEY-009).
+/// Which identifier methods a party resolves (VTI-KEY-003, VTI-KEY-009).
 pub mod resolved_methods;
 /// Reading an IETF Token Status List for a credential, signed by its issuer.
 #[cfg(feature = "proof-verify")]

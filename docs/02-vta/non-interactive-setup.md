@@ -248,11 +248,9 @@ secret_key  = "seed"       # optional; default "seed"
 server it names; nothing is sent until the first boot, which registers the
 identifier at its host on its own authority (the key event log is the proof).
 That needs the host's operator to allow it on `domain`
-(`[[hosting.webs_self_register]]`, under `path` when they list prefixes), and
-the host's DID document to declare `resolvedMethods: ["webs"]` (a host minted
-from a `did-host-*` template sets it with `RESOLVED_METHODS`). A did:webs VTA
-reaches only peers that declare `did:webs` (VTI-KEY-008); see
-[did:webs DIDs](did-webs.md).
+(`[[hosting.webs_self_register]]`, under `path` when they list prefixes).
+Every node resolves `did:webs` (VTI-KEY-003), so a did:webs VTA reaches any
+peer; see [did:webs DIDs](did-webs.md).
 
 `create_webvh` writes the DID's `did.jsonl` to
 `<data_dir>/did-logs/<label>-did.jsonl` for re-publishing or audit.

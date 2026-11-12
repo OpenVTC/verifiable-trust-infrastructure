@@ -31,17 +31,12 @@ pub enum LinkError {
     Unavailable(String),
     /// No transport in common: it changes only when one side advertises another.
     NoMatchingProtocol(String),
-    /// The ballot box has not declared it resolves this community's DID
-    /// method (VTI-KEY-008): it changes only when it does.
-    MethodNotDeclared(String),
 }
 
 impl std::fmt::Display for LinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unavailable(m) | Self::NoMatchingProtocol(m) | Self::MethodNotDeclared(m) => {
-                f.write_str(m)
-            }
+            Self::Unavailable(m) | Self::NoMatchingProtocol(m) => f.write_str(m),
         }
     }
 }
@@ -79,9 +74,6 @@ impl BallotBoxChannel for BallotBoxLink {
             .map_err(|e| match e {
                 PeerError::Transient(m) => LinkError::Unavailable(m),
                 PeerError::NoMatchingProtocol(m) => LinkError::NoMatchingProtocol(m),
-                PeerError::MethodNotDeclared(refusal) => {
-                    LinkError::MethodNotDeclared(refusal.to_string())
-                }
             })?;
         let document = serde_json::to_value(&reply).unwrap_or(Value::Null);
         Ok(classify(

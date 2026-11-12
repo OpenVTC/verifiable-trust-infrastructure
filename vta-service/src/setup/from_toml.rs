@@ -744,10 +744,8 @@ pub enum VtaDidInput {
     ///
     /// Setup is offline, so it only mints: the first boot registers the
     /// identifier at its host on its own authority, which the host's operator
-    /// must allow for `domain` (`[[hosting.webs_self_register]]`), and the
-    /// host's DID document must declare `resolvedMethods: ["webs"]`
-    /// (VTI-KEY-008). Peers that do not declare `did:webs` cannot be reached
-    /// as this identity.
+    /// must allow for `domain` (`[[hosting.webs_self_register]]`). Every node
+    /// resolves did:webs (VTI-KEY-003), so this identity reaches any peer.
     CreateWebs {
         /// The did-hosting server's DID (`did:webvh:…`).
         server_did: String,

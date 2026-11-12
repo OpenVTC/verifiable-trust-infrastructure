@@ -112,7 +112,7 @@ pub struct SetupInputs {
     pub url: Option<String>,
     /// The DID method: `webvh` (the default), `scid` (the same log, presented as `did:scid`),
     /// or `webs` — a `did:webs` the VTA publishes at `webvh_server` (alpha; the VTA must allow
-    /// did:webs service DIDs, and a community must declare it resolves did:webs, VTI-KEY-008).
+    /// did:webs service DIDs; every community resolves did:webs, VTI-KEY-003).
     #[serde(default)]
     pub did_method: Option<String>,
 }

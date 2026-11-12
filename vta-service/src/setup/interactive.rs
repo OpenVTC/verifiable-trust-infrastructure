@@ -990,8 +990,7 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
             eprintln!();
             eprintln!(
                 "  \x1b[2mdid:webs is alpha. The host's operator must allow self-registration on\n  \
-                 the domain ([[hosting.webs_self_register]]) and its DID document must declare\n  \
-                 resolvedMethods: [\"webs\"]. Only peers that declare did:webs can be reached.\x1b[0m"
+                 the domain ([[hosting.webs_self_register]]).\x1b[0m"
             );
             let server_did = p.text("did-hosting server DID", None, false, None)?;
             let domain = p.text("Domain the host serves it on", None, false, None)?;

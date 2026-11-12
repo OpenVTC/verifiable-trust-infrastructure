@@ -130,8 +130,8 @@ pub struct SetupWitness {
     pub url: Option<String>,
     /// The DID method: `webvh` (the default), `scid` (the same log,
     /// presented as `did:scid`), or `webs` — a `did:webs` the VTA publishes at
-    /// `webvh_server` (alpha; the VTA must allow did:webs service DIDs, and a
-    /// peer must declare it resolves did:webs, VTI-KEY-008).
+    /// `webvh_server` (alpha; the VTA must allow did:webs service DIDs; every
+    /// peer resolves did:webs, VTI-KEY-003).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did_method: Option<String>,
 }

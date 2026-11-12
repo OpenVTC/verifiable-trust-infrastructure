@@ -2602,7 +2602,7 @@ impl VtaClient {
                         return Some(e);
                     }
                 }
-                r::METHOD_NOT_DECLARED | r::UNSUPPORTED_DID_METHOD => {
+                r::UNSUPPORTED_DID_METHOD => {
                     if let Some(e) = payload
                         .get("details")
                         .and_then(VtaError::method_refusal_from)

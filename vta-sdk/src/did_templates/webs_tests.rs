@@ -97,6 +97,23 @@ fn a_representable_template_maps_onto_its_designations() {
     );
 }
 
+/// An operator-uploaded template written while VTI-KEY-008 stood still
+/// carries `resolvedMethods` (and its `@context` term). The declaration is
+/// withdrawn, but such a template keeps working: the member is ignored, not
+/// refused (CONVENTIONS.md 0.2 §9.2).
+#[test]
+fn vti_key_008_withdrawn_an_old_template_carrying_resolved_methods_still_works() {
+    let mut t = representable();
+    t["document"]["resolvedMethods"] = json!(["webs"]);
+    t["document"]["@context"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "resolvedMethods": {
+            "@id": "https://w3id.org/vti#resolvedMethods", "@type": "@json"
+        } }));
+    assert_eq!(check(&t), check(&representable()));
+}
+
 #[test]
 fn a_verification_method_may_publish_its_key_as_a_jwk() {
     let mut t = representable();
@@ -289,9 +306,8 @@ fn two_services_with_one_id_are_a_service_id_conflict() {
     );
 }
 
-/// What the built-ins are. A node template's top-level `resolvedMethods` is
-/// ignored (CONVENTIONS.md 0.2 §9.2, trustoverip/dtgwg-trust-tasks-tf#1170),
-/// so the node templates are representable unless something else refuses them.
+/// What the built-ins are: the node templates are representable unless
+/// something other than their document members refuses them.
 #[test]
 fn the_builtins_as_section_9_2_reads_them_today() {
     let cases: &[(&str, Option<(NotRepresentableReason, &[&str])>)] = &[

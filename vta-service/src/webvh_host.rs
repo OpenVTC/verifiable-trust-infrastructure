@@ -290,7 +290,6 @@ impl<'a> WebvhHostClient<'a> {
             self.bridge,
             #[cfg(feature = "tsp")]
             self.tsp.clone(),
-            self.issuer.clone(),
         )
         .with_https_base(self.https_base.clone())
         .send(

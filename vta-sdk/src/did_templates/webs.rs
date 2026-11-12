@@ -34,9 +34,10 @@ pub const MAX_DESIGNATED_SERVICES: usize = 32;
 /// `resolvedMethods`) ignores. Anything else is `documentMember`.
 ///
 /// `resolvedMethods` is ignored, not refused (CONVENTIONS.md 0.2 §9.2,
-/// trustoverip/dtgwg-trust-tasks-tf#1170): a did:webs node declares did:webs
-/// by using it, and the derivation renders no declaration of further methods
-/// (VTI-KEY-008), so a node template written for any method carries it.
+/// trustoverip/dtgwg-trust-tasks-tf#1170). The declaration it carried was
+/// withdrawn with VTI-KEY-008 (every node resolves did:webs, VTI-KEY-003),
+/// and no built-in carries it any more, but an operator-uploaded template
+/// written while it stood still does, so it keeps working.
 const DOCUMENT_MEMBERS: &[&str] = &[
     "@context",
     "resolvedMethods",
