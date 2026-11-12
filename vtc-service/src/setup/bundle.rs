@@ -427,7 +427,7 @@ fn method_under(did: &str, key_id: &str) -> String {
 const ED25519_PRIV_CODEC: [u8; 2] = [0x80, 0x26];
 const X25519_PRIV_CODEC: [u8; 2] = [0x82, 0x26];
 
-fn decode_private_multibase(
+pub(crate) fn decode_private_multibase(
     mb: &str,
     expected_codec: [u8; 2],
 ) -> Result<Zeroizing<[u8; 32]>, AppError> {
@@ -516,7 +516,7 @@ pub fn bundle_from_raw(
     }
 }
 
-fn encode_public_multibase(bytes: &[u8; 32], codec: [u8; 2]) -> String {
+pub(crate) fn encode_public_multibase(bytes: &[u8; 32], codec: [u8; 2]) -> String {
     let mut buf = Vec::with_capacity(2 + 32);
     buf.extend_from_slice(&codec);
     buf.extend_from_slice(bytes);
@@ -1346,6 +1346,19 @@ pub(crate) mod level_one_tests {
 
     /// As [`level_one_vtc`], with the `keri.cesr` stream.
     pub(crate) fn level_one_vtc_with_stream() -> (String, serde_json::Value, String) {
+        let (did, document, artifacts, _) = level_one_vtc_controlled();
+        let stream = String::from_utf8(artifacts.keri_cesr).unwrap();
+        (did, document, stream)
+    }
+
+    /// As [`level_one_vtc`], with the artifacts and the controller state its
+    /// VTA keeps, for a test that continues the log.
+    pub(crate) fn level_one_vtc_controlled() -> (
+        String,
+        serde_json::Value,
+        affinidi_did_webs::Artifacts,
+        affinidi_keri::controller::ControllerState,
+    ) {
         use affinidi_did_webs::{CreateConfig, DidWebs, KeyAgreementKey, create_controlled};
         use affinidi_keri::controller::{Inception, KeySigner, NextKey};
         use affinidi_keri_core::threshold::Threshold;
@@ -1375,8 +1388,8 @@ pub(crate) mod level_one_tests {
             .unwrap(),
         )
         .unwrap();
-        let stream = String::from_utf8(created.artifacts().keri_cesr.to_vec()).unwrap();
-        (did, document, stream)
+        let (artifacts, state) = created.into_parts();
+        (did, document, artifacts, state)
     }
 
     /// The bundle the wizard stores from the VTA's: each key under the id the

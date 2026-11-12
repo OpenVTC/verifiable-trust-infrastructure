@@ -124,6 +124,17 @@ enum Commands {
         #[command(subcommand)]
         command: Oid4vpCommands,
     },
+    /// This VTC's own keys (offline — run on a **stopped** daemon).
+    ///
+    /// When the VTA rotates a did:webs VTC's key (`pnm webs rotate`), the VTC
+    /// takes over the new keys by a sealed hand-off: `request` writes a
+    /// request, `pnm keys bundle <context> --recipient <request>` seals the
+    /// keys to it, `refresh` checks them against the VTC's resolved document
+    /// and stores them.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommands,
+    },
     /// The admin console's files (offline).
     ///
     /// To customise the console's look and feel, export it to a directory,
@@ -148,6 +159,28 @@ enum AdminUiCommands {
         /// console; serve it with `admin_ui.members_dir`.
         #[arg(long)]
         members: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommands {
+    /// Write a sealed-transfer request for this VTC's current keys, and keep
+    /// its private half here until `refresh`.
+    Request {
+        /// Write the request here instead of to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Open the bundle `pnm keys bundle <context>` sealed to the request,
+    /// check its keys against this VTC's resolved did:webs document, and
+    /// store them in place of the keys the VTA rotated out.
+    Refresh {
+        /// The armored bundle file.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// The digest `pnm keys bundle` printed, carried here separately.
+        #[arg(long)]
+        digest: String,
     },
 }
 
@@ -563,6 +596,19 @@ async fn main() {
                 }
                 SyncJobCommands::Discard { job_id } => {
                     sync_jobs_cli::run_discard(cli.config, job_id).await
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Keys { command }) => {
+            use vtc_service::keys_cli;
+            let result = match command {
+                KeysCommands::Request { out } => keys_cli::run_request(cli.config, out).await,
+                KeysCommands::Refresh { bundle, digest } => {
+                    keys_cli::run_refresh(cli.config, bundle, digest).await
                 }
             };
             if let Err(e) = result {

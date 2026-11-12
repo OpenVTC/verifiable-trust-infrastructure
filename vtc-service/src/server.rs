@@ -2630,6 +2630,29 @@ async fn init_auth(
             }
         };
 
+    // A did:webs VTC whose VTA rotated its key (`pnm webs rotate`) holds a key
+    // its document no longer lists, and a verifier refuses what that key signs
+    // (VTI-KEY-042): refuse to boot, naming `vtc keys request` / `refresh`. An
+    // unreachable host proves nothing, so it only warns.
+    if vtc_did.starts_with("did:webs:")
+        && let Ok(bundle) = crate::setup::bundle::VtcKeyBundle::from_secret_store_bytes(&stored)
+    {
+        match did_resolver.resolve(&vtc_did).await {
+            Ok(resolved) => {
+                if let Ok(document) = serde_json::to_value(&resolved.doc)
+                    && let Some(why) = crate::setup::refresh::stale_signing_key(&bundle, &document)
+                {
+                    return Err(AppError::Config(why));
+                }
+            }
+            Err(e) => warn!(
+                %vtc_did,
+                error = %e,
+                "could not resolve the VTC's did:webs to check its keys are current"
+            ),
+        }
+    }
+
     // 2. Secrets resolver with VTC's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
 
