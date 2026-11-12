@@ -2,6 +2,87 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.9.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vta-v0.8.0...vti-specs-vta-v0.9.0) — 2026-11-12
+
+
+### Added
+
+- **vta**: Serve vta/webs/dids/create/0.2 — DID classes, did:webs service DIDs, templates ([#2689](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2689))
+
+Pin vta/webs/dids/create/0.2 beside 0.1 (0.1 is now marked superseded
+  upstream and stays served) and serve it.
+
+  - Every 0.2 create states a DID class (relationship | persona | service,
+    VTI-KEY-190 – 193), which WebsDidRecord now keeps (`didClass`, serde
+    default; a 0.1 create records none and none is inferred). Setup records
+    this VTA's own did:webs identity as `service`.
+  - A level-1 did:webs service DID is enabled separately from creation by
+    the new `[dids] webs_service_dids` (default false,
+    VTA_DIDS_WEBS_SERVICE_DIDS), the name the specification's example uses;
+    off refuses `service` with serviceDidNotPermitted (CONVENTIONS 0.2 §1.1).
+  - didClassConflict (§1.2): a persona/relationship DID made primary of a
+    context whose primary is a service DID (this VTA's own DID, or a service
+    did:webs it created) — details.requiredClass "service"; a service DID
+    replacing a persona did:webs primary. The MAY rule is implemented too:
+    a template whose kind names only a node (mediator, dtg-witness,
+    push-gateway, trust-registry, vtc-host, room-host, ballot-box,
+    did-host-*) under a class other than service.
+  - DID templates (§9): template/templateContext/templateVars resolve
+    context → global → built-in (the webvh resolver), variables are checked
+    (templateVarsInvalid with missing/unknown), and the document is checked
+    against §9.2 by a new pure checker in vta-sdk
+    (`did_templates::webs::{check_key_shape, map_webs_document}`, returning
+    the first failing reason and the JSON Pointers it refused, or the
+    designations). The template is rendered and checked once with
+    placeholder keys before any key is derived, then again with the real
+    DID and keys after the inception: create_did_webs now computes the
+    inception (and so the AID and DID) before writing the designations, and
+    still publishes before recording anything (R2.1).
+  - `resolvedMethods`, carried by VTI's node built-ins, is refused as
+    documentMember as §9.2 is written (trustoverip/dtgwg-trust-tasks-tf#1164);
+    the fix, should the specification honour it, is one line in
+    DOCUMENT_MEMBERS, and a test pins today's behaviour. `ai-agent` and
+    `room` are representable today.
+  - SDK: TASK_VTA_WEBS_DIDS_CREATE_0_2, retry-safety Keyed,
+    VtaClient::create_did_webs_classed, fixes for the new codes.
+    pnm webs create gains --class (sends 0.2; without it, 0.1), --template,
+    --template-context and --var.
+
+  Specification choices (conservative readings):
+  1. 0.2 with didClass service and setPrimary on the context holding this
+     VTA's own DID: 0.2 declares no code for "a create cannot re-identify
+     this node", and its serviceDidNotPermitted now means only the switch,
+     so it is the framework's permissionDenied. 0.1 still answers
+     serviceDidNotPermitted.
+  2. A templateContext the caller may not act in is permissionDenied
+     (CONVENTIONS §8), not a silent fall-through to the global scope.
+  3. An unresolved placeholder is reported in templateVarsInvalid's
+     details.missing (the details schema has only missing and unknown).
+  4. #1164: the specification's own dtg-witness example is refused under
+     §9.2 as written.
+  5. Setup's own key-role identity is recorded as class service; the service
+     switch gates level-1 service DIDs only (key roles are not this family).
+  6. A context provisioned for a VTC, VTN or host service carries no marker,
+     so §1.2 item 1's second case is not refused (gap documented in
+     docs/02-vta/did-webs.md).
+
+  The designated aliases of a did:webs also carry its did:web twin and
+  did:keri form (affinidi-did-webs designates them, as for 0.1), beyond the
+  specification's example responses.
+
+  Also fixes two clippy findings on this stack (Option::replace in role-key
+  rotation, an item after a test module in webs_store).
+
+- **vti-specs-vta**: Pin vta/webs/dids/{create,get,list,update,rotate-keys,delete}/0.1 ([#2562](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2562))
+
+The level-1 did:webs family (trustoverip/dtgwg-trust-tasks-tf#1082), so the VTA
+  can serve it: generated payload and response types under
+  vti_specs::vta::webs::dids::*. Nothing serves or sends them yet; the handlers
+  land with the operation layer (docs/05-design-notes/did-webs-in-the-vta.md,
+  step 4 wiring).
+
+
+
 ## [0.8.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vta-v0.7.0...vti-specs-vta-v0.8.0) — 2026-11-10
 
 

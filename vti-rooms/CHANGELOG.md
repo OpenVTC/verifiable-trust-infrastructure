@@ -2,6 +2,44 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.34.0...vti-rooms-v0.35.0) — 2026-11-12
+
+
+### Added
+
+- **rooms**: A live watch while a conversation is open (rooms/watch 0.2, rooms/keys/watch 0.2) ([#2671](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2671))
+
+* feat(rooms)!: a room may turn off its watch signals' randomised delay (rooms/signal-delay/set 0.1, info 0.4, create 0.3, owner/register 0.3)
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#1084. A room's signal delay (randomised, the default, or none) is stored on the host's room record (absent = randomised, no migration) and applied by RoomWatches::fire from the room, never the watch request. Both hosts serve rooms/signal-delay/set/0.1 (admin, idempotent, audited), rooms/create/0.3 and rooms/info/0.4 beside create 0.2 and info 0.3. The VTA serves rooms/owner/register/0.3, passing recordRetention and signalDelay through to create 0.3 and refusing hostRefused on a host that does not take it. pnm rooms signal-delay show|set, pnm rooms owner register --chat; the VTC console shows the setting.
+
+- **rooms**: A room may turn off its watch signals' randomised delay (rooms/signal-delay/set 0.1, info 0.4, create 0.3, owner/register 0.3) ([#2667](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2667))
+
+* feat(rooms)!: a room may turn off its watch signals' randomised delay (rooms/signal-delay/set 0.1, info 0.4, create 0.3, owner/register 0.3)
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#1084. A room's signal delay (randomised, the default, or none) is stored on the host's room record (absent = randomised, no migration) and applied by RoomWatches::fire from the room, never the watch request. Both hosts serve rooms/signal-delay/set/0.1 (admin, idempotent, audited), rooms/create/0.3 and rooms/info/0.4 beside create 0.2 and info 0.3. The VTA serves rooms/owner/register/0.3, passing recordRetention and signalDelay through to create 0.3 and refusing hostRefused on a host that does not take it. pnm rooms signal-delay show|set, pnm rooms owner register --chat; the VTC console shows the setting.
+
+- **rooms**: Open a conversation at its newest records (rooms/records/list 0.7, rooms/keys/browse 0.5) ([#2668](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2668))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#1088.
+
+  Pins rooms/records/list/0.7 and rooms/keys/browse/0.5 in vti-specs-rooms,
+  beside the versions already pinned.
+
+  Hosts (room-host and the VTC, through vti_rooms): rooms/records/list/0.7 is
+  served beside 0.5 and 0.6. `order: newestFirst` returns rows in descending
+  version, each cursor continuing downward; `sinceVersion` stays a lower bound,
+  tombstones and `lastPrune` are as oldest first, and the commitment, count and
+  head are over the whole room. A cursor is bound to its order (`v<N>` oldest
+  first, `n<N>` newest first) and refused with the declared `invalidCursor`
+  under the other (Order item 5). `vti_rooms::storage::list_records_page_in`
+  takes a `RecordOrder`; `list_records_page` is unchanged (oldest first).
+  Records are keyed by key, not version, so both orders sort the room in memory,
+  which is no more than every page already pays for its uncached whole-room
+  commitment; a version index belongs with a cached commitment.
+
+
+
 ## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.33.0...vti-rooms-v0.34.0) — 2026-11-10
 
 

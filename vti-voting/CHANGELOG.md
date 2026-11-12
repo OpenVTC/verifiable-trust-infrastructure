@@ -2,6 +2,33 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.16.0...vti-voting-v0.16.1) — 2026-11-12
+
+
+### Fixed
+
+- **voting-service**: Resolve a signer on the HTTPS door only where the box knows it ([#2676](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2676))
+
+The HTTPS binding proves no sender, and verifying a request's proof resolves
+  the DID its verification method names. Only casts were held to a did:key, so
+  a signed read or trustee step could name any DID and have the box fetch it,
+  per request.
+
+  - The proof's verification method must be the issuer's before anything is
+    resolved (it was compared after verifying).
+  - A did:key or did:peer signer resolves with no I/O, on any binding.
+  - Any other signer is resolved on the HTTPS door only when `[communities]
+    allowed` names it, or the election the request names, held here, lists it
+    as its community, an auditor or a trustee. Otherwise `permissionDenied`,
+    before any fetch. TSP and DIDComm are unchanged: the transport proved the
+    sender, which must be the issuer.
+  - A community's or a trustee's request (register, close, cancel, trustee
+    steps, authorize) is refused `expired` once older than the VTI acceptance
+    window (VTI-OPS-024: ten minutes plus a minute's skew). Casts keep their
+    current rule.
+
+
+
 ## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.9.0...vti-voting-v0.16.0) — 2026-11-04
 
 

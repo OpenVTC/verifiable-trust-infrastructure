@@ -2,6 +2,59 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.39.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.39.0...vta-vault-v0.39.1) — 2026-11-12
+
+
+### Fixed
+
+- **status-list**: Bound every size read from a fetched Bitstring Status List ([#2674](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2674))
+
+* fix(status-list): bound every size read from a fetched Bitstring Status List
+
+  A fetched BitstringStatusListCredential is someone else's document, and
+  the VTC sized its decode from it: `credentialSubject.statusSize` was taken
+  as the list length, unbounded, and handed to the decoder, which allocates
+  in proportion. In W3C Bitstring Status List v1.0 `statusSize` is the bits
+  per entry, on the BitstringStatusListEntry (§2.1), not a list length — so
+  a list carrying the conformant `"statusSize": 1` was also read as a
+  one-entry list and refused for any index past 0.
+
+  vtc-service (`recognition::verify`, used by recognise, join presentation
+  and invitation checks):
+  - The bit is read by `read_status_bit`, which bounds everything before
+    decoding: the index (at most 4,194,304 entries, checked before the fetch
+    too), the `encodedList` length, and the decoded length, which is the
+    larger of `index + 1` and the spec minimum of 131,072 entries. Nothing
+    the list declares sizes a buffer.
+  - A list shorter than 131,072 entries, or than the index, is refused
+    (§3.2 steps 9 and 10).
+  - `statusSize` on an entry, or on a list, must be 1: the reader supports
+    only 1-bit entries, which §1.3 allows. Anything else is refused rather
+    than read as one bit.
+  - A multibase `u`-prefixed `encodedList` (§2.2) is now read.
+
+  The same reads elsewhere:
+  - vta-sdk `vetting::status`: `MAX_STATUS_LIST_BITS` is now 1 << 22 (was
+    1 << 26), since the decoder allocates about a byte per entry read; an
+    entry whose `statusSize` is not 1 reads as Unknown.
+  - vta-vault `status`: the resolver-supplied list size and `encodedList`
+    length are bounded before decoding, the index is checked against the
+    size first, and an entry whose `statusSize` is not 1 is refused.
+  - vti-vtn: `VtnClient::get_url` reads the body under a 2 MiB cap
+    (`MAX_FETCHED_BODY`) instead of buffering it whole; `StatusChecker`
+    refuses an index past the end of the list (it read as clear) and an
+    entry whose `statusSize` is not 1. `Bitstring::len_bits` is new.
+
+  Behaviour changes: entries declaring `statusSize` other than 1 are
+  refused (status Unknown / error) everywhere; in vtc-service a list
+  carrying `statusSize: 1` is now read in full, one carrying any other
+  value is refused, and a list longer than 131,072 entries is read past
+  that point (it used to be read only to the first 131,072); indexes past
+  4,194,304 are refused in vtc-service and vta-sdk; vti-vtn's checker
+  errors on an out-of-range index instead of reporting Valid.
+
+
+
 ## [0.39.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.38.0...vta-vault-v0.39.0) — 2026-11-10
 
 
