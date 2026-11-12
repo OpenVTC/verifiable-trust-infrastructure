@@ -1943,24 +1943,14 @@ async fn sign_payload_recorded(
             )
             .await?;
 
-            let sig = match (algorithm, &record.key_type) {
+            let secret = match (algorithm, &record.key_type) {
                 (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
-                    let signing_key = ed25519_dalek::SigningKey::from_bytes(
-                        secret_bytes
-                            .as_slice()
-                            .try_into()
-                            .map_err(|_| AppError::Internal("invalid Ed25519 key length".into()))?,
-                    );
-                    use ed25519_dalek::Signer;
-                    signing_key.sign(payload).to_bytes().to_vec()
+                    vta_signing::SigningSecret::ed25519_from_slice(&secret_bytes)
+                        .map_err(|e| AppError::Internal(format!("invalid Ed25519 key: {e}")))
                 }
                 (SignAlgorithm::ES256, KeyType::P256) => {
-                    let secret_key = p256::SecretKey::from_slice(&secret_bytes)
-                        .map_err(|e| AppError::Internal(format!("invalid P-256 key: {e}")))?;
-                    let signing_key = p256::ecdsa::SigningKey::from(&secret_key);
-                    use p256::ecdsa::signature::Signer;
-                    let sig: p256::ecdsa::Signature = signing_key.sign(payload);
-                    sig.to_bytes().to_vec()
+                    vta_signing::SigningSecret::p256_from_slice(&secret_bytes)
+                        .map_err(|e| AppError::Internal(format!("invalid P-256 key: {e}")))
                 }
                 _ => {
                     secret_bytes.zeroize();
@@ -1971,7 +1961,7 @@ async fn sign_payload_recorded(
                 }
             };
             secret_bytes.zeroize();
-            sig
+            secret?.sign_message(payload)
         }
         // Through key custody: a record whose path lies outside its context's
         // base is refused before anything is signed (`vta_keys::custody` rule 6).
@@ -1999,16 +1989,15 @@ async fn sign_payload_recorded(
             match record.key_type {
                 KeyType::P256 => {
                     let p256_secret = key.p256_secret()?;
-                    let signing_key = p256::ecdsa::SigningKey::from(&p256_secret.secret_key);
-                    use p256::ecdsa::signature::Signer;
-                    let sig: p256::ecdsa::Signature = signing_key.sign(payload);
-                    sig.to_bytes().to_vec()
+                    vta_signing::SigningSecret::p256_from_slice(
+                        p256_secret.secret_key.to_bytes().as_slice(),
+                    )
+                    .map_err(|e| AppError::Internal(format!("invalid P-256 key: {e}")))?
+                    .sign_message(payload)
                 }
                 _ => {
                     let bytes = key.ed25519_signing_key_bytes()?;
-                    let signing_key = ed25519_dalek::SigningKey::from_bytes(&bytes);
-                    use ed25519_dalek::Signer;
-                    signing_key.sign(payload).to_bytes().to_vec()
+                    vta_signing::SigningSecret::ed25519(*bytes).sign_message(payload)
                 }
             }
         }
@@ -2303,8 +2292,12 @@ pub async fn sign_jws(
     )
     .await?;
     let (_, algorithm, public) = protocol_signing_key(keys_ks, auth, key_id).await?;
-    super::sign_formats::check_jws_header(header, &public)?;
-    let input = super::sign_formats::jws_signing_input(public.alg(), header, payload)?;
+    let input = vta_signing::jws::prepare_jws(
+        core_algorithm(&algorithm)?,
+        header,
+        payload,
+        super::sign_formats::x5c_leaf_is_key(&public),
+    )?;
 
     let typ = header
         .get("typ")
@@ -2313,7 +2306,7 @@ pub async fn sign_jws(
     let detail = format!(
         "alg={} typ={typ} sha256={}",
         public.alg(),
-        hex::encode(Sha256::digest(input.as_bytes()))
+        hex::encode(Sha256::digest(input.bytes()))
     );
     let signed = sign_payload_recorded(
         keys_ks,
@@ -2325,7 +2318,7 @@ pub async fn sign_jws(
         audit,
         auth,
         key_id,
-        input.as_bytes(),
+        input.bytes(),
         &algorithm,
         SigningDomain::ProtocolDefined,
         channel,
@@ -2335,7 +2328,24 @@ pub async fn sign_jws(
         },
     )
     .await?;
-    Ok((format!("{input}.{}", signed.signature), public.alg()))
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&signed.signature)
+        .map_err(|e| AppError::Internal(format!("signature encoding: {e}")))?;
+    Ok((
+        vta_signing::jws::finish_jws(&input, &signature),
+        public.alg(),
+    ))
+}
+
+/// The signing core's name for the algorithm a key signs with.
+fn core_algorithm(algorithm: &SignAlgorithm) -> Result<vta_signing::Algorithm, AppError> {
+    match algorithm {
+        SignAlgorithm::EdDSA => Ok(vta_signing::Algorithm::EdDsa),
+        SignAlgorithm::ES256 => Ok(vta_signing::Algorithm::Es256),
+        other => Err(AppError::Internal(format!(
+            "no signing core algorithm for {other}"
+        ))),
+    }
 }
 
 /// `keys/sign-csr/0.1`: a PKCS#10 certificate signing request (PEM) for a key
@@ -2478,10 +2488,7 @@ pub async fn sign_document(
     domain: Option<&str>,
     channel: &str,
 ) -> Result<SignedDocument, ProtocolSignRefusal> {
-    use super::sign_formats::{
-        FormatRefusal, did_key_methods, document_proof_config, document_signer,
-        eddsa_jcs_2022_hash_data, signer_methods,
-    };
+    use super::sign_formats::{FormatRefusal, did_key_methods, document_signer, signer_methods};
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
 
@@ -2571,8 +2578,10 @@ pub async fn sign_document(
 
     // Item 11: the proof is built here, and these 64 bytes are all that is
     // signed.
-    let config = document_proof_config(document, &method.id, purpose, &created, challenge, domain);
-    let hash_data = eddsa_jcs_2022_hash_data(document, &config).map_err(AppError::Internal)?;
+    let input = vta_signing::di::prepare_document(
+        document, &method.id, purpose, &created, challenge, domain,
+    )?;
+    let hash_data = input.bytes();
     let detail = format!(
         "signer={signer} vm={} purpose={purpose} id={} type={} sha256={}",
         method.id,
@@ -2596,7 +2605,7 @@ pub async fn sign_document(
         audit,
         auth,
         key_id,
-        &hash_data,
+        hash_data,
         &SignAlgorithm::EdDSA,
         SigningDomain::ProtocolDefined,
         channel,
@@ -2611,13 +2620,10 @@ pub async fn sign_document(
         .map_err(|e| AppError::Internal(format!("signature encoding: {e}")))?;
 
     // Item 12.
-    let mut proof = config;
-    proof["proofValue"] = multibase::encode(multibase::Base::Base58Btc, signature).into();
-    let mut secured = document.clone();
-    secured["proof"] = proof.clone();
+    let secured = vta_signing::di::finish_document(&input, &signature);
     Ok(SignedDocument {
-        document: secured,
-        proof,
+        document: secured.document,
+        proof: secured.proof,
         signer_did: signer,
     })
 }
@@ -2674,12 +2680,13 @@ pub async fn derive_and_sign(
         )));
     }
 
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_bytes);
-    let public_key =
-        encode_public_multibase(&KeyType::Ed25519, signing_key.verifying_key().as_bytes());
+    let signing_key = vta_signing::SigningSecret::ed25519(*signing_bytes);
+    let public_key = encode_public_multibase(
+        &KeyType::Ed25519,
+        vta_signing::Signer::public_key(&signing_key).as_bytes(),
+    );
 
-    use ed25519_dalek::Signer;
-    let signature_bytes = signing_key.sign(payload).to_bytes().to_vec();
+    let signature_bytes = signing_key.sign_message(payload);
     let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signature_bytes);
 
     info!(

@@ -185,6 +185,8 @@ vta-support = { path = "../vta-support", version = "0.36" }
 # Key management (seed store, BIP-32 derivation, wrapping), extracted and
 # re-exported as `crate::keys`. Backend features chain to `vta-keys/*`.
 vta-keys = { path = "../vta-keys", version = "0.39" }
+# The bytes a JWS or an eddsa-jcs-2022 proof signs, and the signature itself.
+vta-signing = { path = "../vta-signing", version = "0.1" }
 # Holder credential vault (storage/query/receive/present/status), extracted to
 # its own crate and re-exported as `crate::vault`. Feature edges: this crate's
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.

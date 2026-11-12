@@ -178,14 +178,12 @@ pub async fn sign(
     let (key_type, mut secret) = load_for_signing(internal_ks, key_id).await?;
 
     let result = match key_type {
-        KeyType::Ed25519 => ed25519_dalek::SigningKey::try_from(secret.as_slice())
+        KeyType::Ed25519 => vta_signing::SigningSecret::ed25519_from_slice(&secret)
             .map_err(|e| AppError::Internal(format!("internal Ed25519 key: {e}")))
-            .map(|k| {
-                use ed25519_dalek::Signer;
-                k.sign(payload).to_bytes().to_vec()
-            }),
-        KeyType::P256 => affinidi_crypto::p256::sign(&secret, payload)
-            .map_err(|e| AppError::Internal(format!("internal P-256 sign: {e}"))),
+            .map(|k| k.sign_message(payload)),
+        KeyType::P256 => vta_signing::SigningSecret::p256_from_slice(&secret)
+            .map_err(|e| AppError::Internal(format!("internal P-256 key: {e}")))
+            .map(|k| k.sign_message(payload)),
         KeyType::X25519 => Err(AppError::Internal(
             "an X25519 internal key should never have been stored".into(),
         )),
@@ -223,6 +221,43 @@ pub async fn exists(internal_ks: &KeyspaceHandle, key_id: &str) -> Result<bool, 
 mod tests {
     use super::*;
     use vti_common::config::StoreConfig;
+
+    /// An internal P-256 key signed through `affinidi_crypto` before the signing
+    /// core took over. ES256 is deterministic (RFC 6979), so the two must make
+    /// the same 64 bytes for any key and message.
+    #[test]
+    fn the_signing_core_makes_the_signature_affinidi_crypto_made_for_p256() {
+        for (scalar, message) in [
+            ([1u8; 32], b"".as_slice()),
+            ([0x42; 32], b"a message".as_slice()),
+            ([0x7f; 32], &[0xAB; 1000][..]),
+        ] {
+            let reference = affinidi_crypto::p256::sign(&scalar, message).unwrap();
+            let core = vta_signing::SigningSecret::p256_from_slice(&scalar).unwrap();
+
+            assert_eq!(core.sign_message(message), reference);
+        }
+    }
+
+    #[test]
+    fn the_signing_core_makes_the_signature_ed25519_dalek_made() {
+        use ed25519_dalek::Signer as _;
+        for (seed, message) in [
+            ([1u8; 32], b"".as_slice()),
+            ([0x42; 32], b"a message".as_slice()),
+        ] {
+            let reference = ed25519_dalek::SigningKey::try_from(seed.as_slice())
+                .unwrap()
+                .sign(message)
+                .to_bytes()
+                .to_vec();
+
+            assert_eq!(
+                vta_signing::SigningSecret::ed25519(seed).sign_message(message),
+                reference
+            );
+        }
+    }
     use vti_common::store::Store;
 
     fn fresh() -> (tempfile::TempDir, Store, KeyspaceHandle) {
