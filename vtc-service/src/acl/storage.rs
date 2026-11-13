@@ -234,6 +234,16 @@ pub async fn list_suspensions(
     Ok(out)
 }
 
+/// Resolve entries read raw from the keyspace as [`get_acl_entry`] resolves
+/// one: each custom role's stored definition, and any suspension held on it.
+pub(crate) async fn resolve_entries(
+    ks: &KeyspaceHandle,
+    entries: &mut [VtcAclEntry],
+) -> Result<(), AppError> {
+    super::roles::resolve_all(ks, entries).await?;
+    apply_suspensions(ks, entries).await
+}
+
 async fn apply_suspensions(
     ks: &KeyspaceHandle,
     entries: &mut [VtcAclEntry],
@@ -248,17 +258,164 @@ async fn apply_suspensions(
     Ok(())
 }
 
-/// Store (create or overwrite) an ACL entry.
+// ---------- the authority index ----------
+
+/// `acladmin:<did>` — the entries that hold any authority beyond membership:
+/// an administrative role or any act / approve scope
+/// ([`super::AdminAuthority`]), a resource grant or a group grant. Every
+/// question of the form "who may decide / approve / acknowledge / manage …"
+/// is answered from these entries alone, so it reads them through this index
+/// instead of decoding the whole ACL, which holds one row per member (#2602).
 ///
-/// The entry and its holder-index row are one store batch, so a crash can no
-/// longer leave an entry holding resource grants that the holder index does
-/// not name (the boot-time rebuild was the only thing that healed it).
-pub async fn store_acl_entry(ks: &KeyspaceHandle, entry: &VtcAclEntry) -> Result<(), AppError> {
-    let mut batch = Batch::new();
-    batch.insert(acl_key(&entry.did), entry)?;
+/// The rule is on the **stored** fields only ([`holds_authority`]), never on
+/// anything resolved at read time (a custom role's definition, a suspension),
+/// so a write of the entry alone decides its row. Every writer of an entry
+/// writes the row in the same store batch as the entry ([`store_acl_entry`],
+/// [`delete_acl_entry`], [`move_acl_entry`]), and boot and a restore rebuild
+/// it ([`rebuild_authority_index`]) for rows written before it existed.
+///
+/// A superset is harmless — a reader re-checks [`holds_authority`] on the
+/// entry it reads, and a DID with no entry contributes nothing. A subset is
+/// not: an administrator missing here would be left out of an approver count
+/// (VTI-APV-009), so nothing may write an entry without its row.
+const AUTHORITY_PREFIX: &str = "acladmin:";
+
+fn authority_key(did: &str) -> String {
+    format!("{AUTHORITY_PREFIX}{did}")
+}
+
+/// Whether `entry`, as stored, holds any authority beyond membership — the
+/// rule for its `acladmin:` row. Deliberately wide: an administrative role of
+/// any kind, any act or approve scope written beside none, any resource
+/// grant, any group grant. What each confers is the reader's to decide.
+pub fn holds_authority(entry: &VtcAclEntry) -> bool {
+    use super::capability::{CapabilityScope, VtcActScope};
+    let a = &entry.admin;
+    a.admin_role.is_some()
+        || a.act != VtcActScope::None
+        || a.capabilities != CapabilityScope::None
+        || a.approve != VtcActScope::None
+        || a.approve_capabilities != CapabilityScope::None
+        || !entry.resource_grants.is_empty()
+        || !entry.group_grants.is_empty()
+}
+
+/// Put `entry`'s index rows (authority and git grant holder) into `batch`
+/// beside the entry itself.
+fn index_rows(batch: &mut Batch, entry: &VtcAclEntry) {
+    if holds_authority(entry) {
+        batch.insert_raw(authority_key(&entry.did), b"1".to_vec());
+    } else {
+        batch.remove(authority_key(&entry.did));
+    }
     if !entry.resource_grants.is_empty() {
         batch.insert_raw(super::resource_grant::holder_key(&entry.did), b"1".to_vec());
     }
+}
+
+/// Every entry that holds authority beyond membership ([`holds_authority`]),
+/// read through the `acladmin:` index and resolved as [`list_acl_entries`]
+/// resolves them (custom role ceilings, suspensions).
+///
+/// The answer for every caller that keeps only administrators, approvers or
+/// grant holders out of [`list_acl_entries`]: the same entries, at a cost in
+/// the number of authority holders rather than the number of members.
+pub async fn list_authority_entries(ks: &KeyspaceHandle) -> Result<Vec<VtcAclEntry>, AppError> {
+    let mut entries = Vec::new();
+    for key in ks.prefix_keys(AUTHORITY_PREFIX.as_bytes().to_vec()).await? {
+        let did = String::from_utf8_lossy(&key[AUTHORITY_PREFIX.len()..]).into_owned();
+        let Some(raw) = ks.get_raw(acl_key(&did).into_bytes()).await? else {
+            continue;
+        };
+        match decode(&raw) {
+            Ok(entry) if holds_authority(&entry) => entries.push(entry),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(%did, error = %err, "skipping unparseable acl entry"),
+        }
+    }
+    super::roles::resolve_all(ks, &mut entries).await?;
+    apply_suspensions(ks, &mut entries).await?;
+    Ok(entries)
+}
+
+/// Rebuild the `acladmin:` index from every entry — at boot and after a
+/// restore, so rows written before the index existed, or restored without it,
+/// are indexed before anything is authorized from it. Removes rows naming a
+/// DID that no longer holds authority. Returns how many entries are indexed.
+pub async fn rebuild_authority_index(ks: &KeyspaceHandle) -> Result<usize, AppError> {
+    let holders: std::collections::BTreeSet<String> = iter(ks)
+        .await?
+        .into_iter()
+        .filter(holds_authority)
+        .map(|e| e.did)
+        .collect();
+    let mut batch = Batch::new();
+    for key in ks.prefix_keys(AUTHORITY_PREFIX.as_bytes().to_vec()).await? {
+        let did = String::from_utf8_lossy(&key[AUTHORITY_PREFIX.len()..]).into_owned();
+        if !holders.contains(&did) {
+            batch.remove(key);
+        }
+    }
+    for did in &holders {
+        batch.insert_raw(authority_key(did), b"1".to_vec());
+    }
+    if !batch.is_empty() {
+        ks.apply_batch(batch).await?;
+    }
+    Ok(holders.len())
+}
+
+/// Move `old_did`'s entry to `successor.did` (a key rotation) with its index
+/// rows, as one conditional store batch: applied only while `old_did`'s row is
+/// present — and, with `expected`, still exactly those bytes — and
+/// `successor.did` has no entry. The authority and grant-holder rows move with
+/// the entry, so a rotated administrator is never missing from either index.
+pub async fn move_acl_entry(
+    ks: &KeyspaceHandle,
+    old_did: &str,
+    expected: Option<Vec<u8>>,
+    successor: &VtcAclEntry,
+) -> Result<vti_common::store::MoveOutcome, AppError> {
+    use vti_common::store::{BatchOutcome, MoveOutcome};
+    let old_key = acl_key(old_did);
+    let new_key = acl_key(&successor.did);
+    let mut batch = Batch::new();
+    // Check 0: the source is there.
+    batch.require_present(old_key.clone());
+    // Check 1 (with `expected`): it is unchanged.
+    let changed_check = expected.is_some();
+    if let Some(expected) = expected {
+        batch.require_unchanged(old_key.clone(), expected);
+    }
+    // The last check: the target is free.
+    let target_check = if changed_check { 2 } else { 1 };
+    batch.require_absent(new_key.clone());
+    batch.insert(new_key, successor)?;
+    batch.remove(old_key);
+    batch.remove(authority_key(old_did));
+    batch.remove(super::resource_grant::holder_key(old_did));
+    index_rows(&mut batch, successor);
+    let outcome = match ks.apply_batch(batch).await? {
+        BatchOutcome::Applied => MoveOutcome::Moved,
+        BatchOutcome::Refused { check: 0 } => MoveOutcome::SourceMissing,
+        BatchOutcome::Refused { check } if check == target_check => MoveOutcome::TargetExists,
+        BatchOutcome::Refused { .. } => MoveOutcome::SourceChanged,
+    };
+    if outcome == MoveOutcome::Moved {
+        crate::admin_events::notify_authority();
+    }
+    Ok(outcome)
+}
+
+/// Store (create or overwrite) an ACL entry.
+///
+/// The entry and its index rows — the git grant-holder index and the
+/// authority index ([`list_authority_entries`]) — are one store batch, so a
+/// crash can never leave an entry its index rows disagree with.
+pub async fn store_acl_entry(ks: &KeyspaceHandle, entry: &VtcAclEntry) -> Result<(), AppError> {
+    let mut batch = Batch::new();
+    batch.insert(acl_key(&entry.did), entry)?;
+    index_rows(&mut batch, entry);
     ks.apply_batch(batch).await?;
     // Authority moved: open console streams re-check their callers' readable
     // topics before their next byte (`crate::admin_events`).
@@ -316,6 +473,7 @@ pub async fn delete_acl_entry(ks: &KeyspaceHandle, did: &str) -> Result<(), AppE
             }
         }
         batch.remove(super::resource_grant::holder_key(did));
+        batch.remove(authority_key(did));
         if ks.apply_batch(batch).await?.is_applied() {
             crate::admin_events::notify_authority();
             return Ok(());
@@ -340,23 +498,27 @@ pub async fn list_acl_entries(ks: &KeyspaceHandle) -> Result<Vec<VtcAclEntry>, A
 /// Paginated list. Signs the cursor under `audit_key` so it can't
 /// be forged across communities.
 ///
-/// Phase-1 implementation walks the full keyspace and slices
-/// in-memory. The hot-path keyspace size is bounded by the
-/// community's member count; for the Phase-1 communities (target
-/// 10k–100k members) this is fine. A streaming
-/// `prefix_iter_raw_after(key)` helper that lets fjall do the
-/// slicing lands in Phase 3 once registry-scale communities
-/// surface.
+/// Seeks to the cursor and reads one row past the page (to know whether
+/// another follows), so a page costs its own size whatever the ACL holds —
+/// not a scan and sort of every entry, which made walking the whole list
+/// quadratic in the member count (#2601). The cursor is the same one
+/// `paginate` issues (the last key returned), so a cursor from before this
+/// change resumes where it left off.
 pub async fn list_acl_entries_paginated(
     ks: &KeyspaceHandle,
     audit_key: &AuditKey,
     cursor: Option<&Cursor>,
     limit: usize,
 ) -> Result<Paginated<VtcAclEntry>, AppError> {
-    let mut pairs = ks.prefix_iter_raw(b"acl:".to_vec()).await?;
-    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let snapshot_id: u64 = pairs.len() as u64;
-    let mut page = paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)?;
+    let limit = limit.clamp(1, vti_common::pagination::MAX_LIMIT);
+    let mut opts = vti_common::store::ScanOpts::new(b"acl:".to_vec(), limit + 1);
+    if let Some(c) = cursor {
+        opts = opts.after(c.last_key.clone());
+    }
+    let pairs = ks.scan_raw(opts).await?;
+    // The page as `paginate` cuts it from the rows read; with no cursor of its
+    // own (the seek already applied it) it ends where the rows run out.
+    let mut page = paginate(pairs, None, limit, &audit_key.key, 0, decode)?;
     super::roles::resolve_all(ks, &mut page.items).await?;
     apply_suspensions(ks, &mut page.items).await?;
     Ok(page)
@@ -731,5 +893,155 @@ mod tests {
             resolve_auth_role(&ks, "did:key:zStale").await,
             Err(AppError::Forbidden(_))
         ));
+    }
+
+    fn admin(did: &str) -> VtcAclEntry {
+        VtcAclEntry {
+            admin: AdminAuthority::community_admin(),
+            ..entry(did, VtcRole::Admin)
+        }
+    }
+
+    async fn indexed(ks: &KeyspaceHandle) -> Vec<String> {
+        let mut dids: Vec<String> = list_authority_entries(ks)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.did)
+            .collect();
+        dids.sort();
+        dids
+    }
+
+    /// What the index answers is what filtering the whole ACL answers.
+    async fn agrees_with_a_full_scan(ks: &KeyspaceHandle) {
+        let mut full: Vec<String> = list_acl_entries(ks)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(holds_authority)
+            .map(|e| e.did)
+            .collect();
+        full.sort();
+        assert_eq!(indexed(ks).await, full);
+    }
+
+    /// #2602: the authority index is written in the entry's own batch, so it
+    /// follows every write — a grant, a demotion, a removal.
+    #[tokio::test]
+    async fn the_authority_index_follows_every_write() {
+        let (ks, _dir) = temp_ks().await;
+        store_acl_entry(&ks, &admin("did:key:zAdmin"))
+            .await
+            .unwrap();
+        store_acl_entry(&ks, &entry("did:key:zMember", VtcRole::Member))
+            .await
+            .unwrap();
+        assert_eq!(indexed(&ks).await, vec!["did:key:zAdmin".to_string()]);
+        agrees_with_a_full_scan(&ks).await;
+
+        // Promoted, then demoted: in, then out.
+        store_acl_entry(&ks, &admin("did:key:zMember"))
+            .await
+            .unwrap();
+        agrees_with_a_full_scan(&ks).await;
+        store_acl_entry(&ks, &entry("did:key:zMember", VtcRole::Member))
+            .await
+            .unwrap();
+        assert_eq!(indexed(&ks).await, vec!["did:key:zAdmin".to_string()]);
+
+        // A member holding a resource grant decides what it covers.
+        store_acl_entry(&ks, &entry_with_grant("did:key:zHolder"))
+            .await
+            .unwrap();
+        agrees_with_a_full_scan(&ks).await;
+
+        delete_acl_entry(&ks, "did:key:zAdmin").await.unwrap();
+        assert_eq!(indexed(&ks).await, vec!["did:key:zHolder".to_string()]);
+        assert!(
+            ks.get_raw(authority_key("did:key:zAdmin").into_bytes())
+                .await
+                .unwrap()
+                .is_none(),
+            "a removed entry's index row goes in the same batch"
+        );
+    }
+
+    /// #2602: a rotation moves the index row with the entry, one journal
+    /// record, and refuses as `move_if_unchanged` did.
+    #[tokio::test]
+    async fn a_moved_entry_keeps_its_index_row() {
+        use vti_common::store::MoveOutcome;
+        let (ks, _dir) = temp_ks().await;
+        store_acl_entry(&ks, &admin("did:key:zOld")).await.unwrap();
+        let expected = ks
+            .get_raw(acl_key("did:key:zOld").into_bytes())
+            .await
+            .unwrap();
+        let successor = admin("did:key:zNew");
+
+        // A stale `expected` changes nothing.
+        assert_eq!(
+            move_acl_entry(&ks, "did:key:zOld", Some(b"{}".to_vec()), &successor)
+                .await
+                .unwrap(),
+            MoveOutcome::SourceChanged
+        );
+        let before = ks.journal_seqno().unwrap();
+        assert_eq!(
+            move_acl_entry(&ks, "did:key:zOld", expected, &successor)
+                .await
+                .unwrap(),
+            MoveOutcome::Moved
+        );
+        assert_eq!(ks.journal_seqno().unwrap(), before + 1, "one batch");
+        assert_eq!(indexed(&ks).await, vec!["did:key:zNew".to_string()]);
+        agrees_with_a_full_scan(&ks).await;
+
+        assert_eq!(
+            move_acl_entry(&ks, "did:key:zOld", None, &successor)
+                .await
+                .unwrap(),
+            MoveOutcome::SourceMissing
+        );
+        store_acl_entry(&ks, &admin("did:key:zThird"))
+            .await
+            .unwrap();
+        assert_eq!(
+            move_acl_entry(&ks, "did:key:zNew", None, &admin("did:key:zThird"))
+                .await
+                .unwrap(),
+            MoveOutcome::TargetExists
+        );
+    }
+
+    /// #2602: entries written before the index existed (raw rows, as an older
+    /// version or a restore wrote them) are indexed by the boot rebuild, and a
+    /// row naming a DID that holds nothing is dropped.
+    #[tokio::test]
+    async fn the_rebuild_backfills_rows_written_without_the_index() {
+        let (ks, _dir) = temp_ks().await;
+        for e in [
+            admin("did:key:zA"),
+            admin("did:key:zB"),
+            entry("did:key:zM", VtcRole::Member),
+        ] {
+            ks.insert(acl_key(&e.did), &e).await.unwrap();
+        }
+        ks.insert_raw(authority_key("did:key:zM").into_bytes(), b"1".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(rebuild_authority_index(&ks).await.unwrap(), 2);
+        assert_eq!(
+            indexed(&ks).await,
+            vec!["did:key:zA".to_string(), "did:key:zB".to_string()]
+        );
+        assert!(
+            ks.get_raw(authority_key("did:key:zM").into_bytes())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        agrees_with_a_full_scan(&ks).await;
     }
 }

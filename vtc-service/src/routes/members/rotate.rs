@@ -419,22 +419,26 @@ pub(crate) async fn rotate_inner(
             ))
         })?;
     acl.did = body.new_did.clone();
-    let acl_moved = state
-        .acl_ks
-        .swap(
-            format!("acl:{}", body.old_did).into_bytes(),
-            format!("acl:{}", body.new_did).into_bytes(),
-            &acl,
-        )
-        .await?;
-    if !acl_moved {
+    // One batch with the entry's authority and grant-holder index rows, so a
+    // rotated administrator is never missing from them (#2602).
+    match crate::acl::move_acl_entry(&state.acl_ks, &body.old_did, None, &acl).await? {
+        vti_common::store::MoveOutcome::Moved => {}
+        vti_common::store::MoveOutcome::SourceMissing => {
+            return Err(AppError::Conflict(format!(
+                "ACL row for {} was removed mid-rotation",
+                body.old_did
+            ))
+            .into());
+        }
         // Pre-existence was checked at step 6, so this only fires
         // on a TOCTOU race. Treat as conflict — operator retries.
-        return Err(AppError::Conflict(format!(
-            "ACL row for newDid {} was created mid-rotation",
-            body.new_did
-        ))
-        .into());
+        _ => {
+            return Err(AppError::Conflict(format!(
+                "ACL row for newDid {} was created mid-rotation",
+                body.new_did
+            ))
+            .into());
+        }
     }
 
     // 8. Move the Member row. Same swap discipline. Skipped when no
