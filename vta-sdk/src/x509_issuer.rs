@@ -356,7 +356,7 @@ fn check_authority(
         )));
     }
     if let Ok(Some(nc)) = ca.name_constraints() {
-        check_name_constraints(&nc.value, leaf)
+        check_name_constraints(nc.value, leaf)
             .map_err(|m| refused(format!("{what} ({subject}): {m}")))?;
     }
     Ok(())

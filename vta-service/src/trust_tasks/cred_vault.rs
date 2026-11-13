@@ -1257,13 +1257,14 @@ mod receive_body_wire_tests {
         .expect("camelCase parses");
         assert_eq!(ok.credential_base64.as_deref(), Some("AAAA"));
 
-        let wrong: ReceiveBody = serde_json::from_value(json!({
+        // A snake_case member is not the wire contract, and is refused rather
+        // than silently dropped (#2621).
+        let wrong = serde_json::from_value::<ReceiveBody>(json!({
             "credential_base64": "AAAA",
             "format": "mso_mdoc"
-        }))
-        .expect("unknown fields are ignored today");
+        }));
         assert!(
-            wrong.credential_base64.is_none(),
+            wrong.is_err(),
             "snake_case must not bind — the wire contract is camelCase"
         );
     }
