@@ -21,6 +21,7 @@ mod cli;
 mod commands;
 mod config;
 mod exit;
+mod rooms_profile;
 mod setup;
 
 use vta_sdk::client::VtaClient;
@@ -31,7 +32,6 @@ use crate::cli::{
     Cli, Commands, DidcommCommands, ServicesCommands, VtaCommands, install_force_exit_handler,
     is_online_template_cmd, print_banner, requires_auth, retired_mediator_redirect,
 };
-use clap::Parser;
 
 /// Exit code for a command that returned an error — shared with `cnm`
 /// ([`vta_cli_common::exit::exit_code_for`]).
@@ -77,7 +77,9 @@ async fn main() {
         std::process::exit(exit::CONFIG);
     }
 
-    let cli = Cli::parse();
+    // `rooms` commands take their room, host and signing key from the ones
+    // `pnm rooms use` / `owner register` / `offers accept` remembered (#2590).
+    let cli = rooms_profile::parse_cli();
 
     // Completions need nothing else: no profile, no keyring, no banner.
     if let Commands::Completions { shell } = &cli.command {
@@ -176,6 +178,29 @@ async fn main() {
     // `command` back to the post-auth dispatch below for the
     // authenticated path.
     let needs_auth = requires_auth(&command);
+    // `pnm rooms use` edits a local file: no VTA, no session.
+    if let Commands::Rooms {
+        command:
+            cli::RoomCommands::Use {
+                room,
+                host,
+                host_did,
+                signing_key,
+                forget,
+            },
+    } = command
+    {
+        let entry = rooms_profile::RoomEntry {
+            host,
+            host_did,
+            signing_key,
+        };
+        if let Err(e) = rooms_profile::cmd_use(room, entry, forget) {
+            vta_cli_common::render::print_cli_error(e.as_ref());
+            std::process::exit(exit_code_for(e.as_ref()));
+        }
+        return;
+    }
     match command {
         Commands::Setup {
             command: setup_cmd,
@@ -451,6 +476,7 @@ mod tests {
     use crate::cli::{
         AclCommands, AuthCommands, ConfigCommands, ContextCommands, KeyCommands, SetupCommands,
     };
+    use clap::Parser;
 
     // ── requires_auth ──────────────────────────────────────────────
 

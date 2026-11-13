@@ -89,6 +89,17 @@ pub(crate) async fn run(
                     tombstone_days,
                     record_days,
                 } => {
+                    // Remembered before the call: what the operator typed is
+                    // what later commands should default to, whatever the
+                    // host answers (#2590).
+                    crate::rooms_profile::remember(
+                        &room_id,
+                        crate::rooms_profile::RoomEntry {
+                            host_did: Some(host_did.clone()),
+                            ..Default::default()
+                        },
+                        true,
+                    );
                     custody::cmd_rooms_owner_register(
                         client,
                         &room_id,
@@ -290,7 +301,7 @@ pub(crate) async fn run(
                     member,
                     key_package,
                 } => {
-                    rooms::cmd_rooms_offers_accept(
+                    let accepted = rooms::cmd_rooms_offers_accept(
                         client,
                         rooms::OfferTarget {
                             vtc_url: &vtc,
@@ -300,7 +311,21 @@ pub(crate) async fn run(
                         &room_id,
                         key_package.as_deref(),
                     )
-                    .await
+                    .await;
+                    // A community's room is hosted by the community itself
+                    // (#2590).
+                    if accepted.is_ok() {
+                        crate::rooms_profile::remember(
+                            &room_id,
+                            crate::rooms_profile::RoomEntry {
+                                host: Some(vtc.clone()),
+                                host_did: Some(vtc_did.clone()),
+                                signing_key: None,
+                            },
+                            true,
+                        );
+                    }
+                    accepted
                 }
                 RoomOffersCommands::Renew {
                     room_id,
@@ -424,8 +449,14 @@ pub(crate) async fn run(
                 invitation,
                 welcome,
             } => {
-                return custody::cmd_rooms_keys_welcome(client, &room_id, &invitation, &welcome)
-                    .await;
+                let joined =
+                    custody::cmd_rooms_keys_welcome(client, &room_id, &invitation, &welcome).await;
+                if joined.is_ok() {
+                    // The room just joined is the one the next command means
+                    // (#2590); its host is learned from `rooms use`.
+                    crate::rooms_profile::remember(&room_id, Default::default(), true);
+                }
+                return joined;
             }
             RoomKeysCommands::Commit {
                 room_id,
@@ -495,6 +526,7 @@ pub(crate) async fn run(
     };
 
     match command {
+        RoomCommands::Use { .. } => unreachable!("`rooms use` is handled before authenticating"),
         RoomCommands::File { command } => match command {
             RoomFileCommands::Put {
                 path,

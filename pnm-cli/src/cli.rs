@@ -785,6 +785,30 @@ pub(crate) enum GrantRole {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum RoomCommands {
+    /// Remember a room's host, host DID and signing key, and make it the room
+    /// every `pnm rooms …` command means when it names none (#2590).
+    ///
+    /// Stored values become defaults: a flag on the command line still wins,
+    /// and `--help` shows the default in force. `owner register`, `offers
+    /// accept` and `keys welcome` remember what they learn on their own. With
+    /// no room, lists what is remembered (`*` marks the default).
+    Use {
+        /// The room's DID.
+        room: Option<String>,
+        /// Base URL of the host storing the room.
+        #[arg(long, requires = "room")]
+        host: Option<String>,
+        /// The host's DID.
+        #[arg(long, requires = "room")]
+        host_did: Option<String>,
+        /// The room's signing key id (for an owner's verbs).
+        #[arg(long = "signing-key", requires = "room")]
+        signing_key: Option<String>,
+        /// Forget the room instead.
+        #[arg(long, requires = "room", conflicts_with_all = ["host", "host_did", "signing_key"])]
+        forget: bool,
+    },
+
     /// List the room's records. Metadata only — never bodies.
     List {
         /// The room's DID.
@@ -861,10 +885,13 @@ pub(crate) enum RoomCommands {
     Get {
         /// Record key.
         key: String,
+        /// The room's DID.
         #[arg(long = "room")]
         room_id: String,
+        /// Base URL of the host storing the room.
         #[arg(long)]
         host: String,
+        /// The host's DID: the recipient the request names.
         #[arg(long)]
         host_did: Option<String>,
     },
@@ -1065,10 +1092,13 @@ pub(crate) enum RoomCommands {
     /// Prints what becomes unreadable and asks before sending; without a
     /// terminal it refuses unless `--yes` is given.
     Prune {
+        /// The room's DID.
         #[arg(long = "room")]
         room_id: String,
+        /// Base URL of the host storing the room.
         #[arg(long)]
         host: String,
+        /// The host's DID: the recipient the request names.
         #[arg(long)]
         host_did: Option<String>,
         /// Drop every rung below this epoch. Must be below the room's current
@@ -1191,14 +1221,18 @@ pub(crate) enum RoomCommands {
         /// it for a VTC.
         #[arg(long)]
         host_did: Option<String>,
-        /// `open`, `attributed` or `private`. Fixed for the life of the room.
-        #[arg(long, default_value = "open")]
+        /// Fixed for the life of the room.
+        #[arg(long, default_value = "open", value_parser = ROOM_VISIBILITY)]
         visibility: String,
         /// How long the host holds the room after it lapses. Default 90 days.
         #[arg(long)]
         retention_days: Option<u32>,
     },
 }
+
+/// A room's visibility: what `rooms create` / `rooms owner register` accept,
+/// so a typo is refused here rather than by the host (#2590).
+const ROOM_VISIBILITY: [&str; 3] = ["open", "attributed", "private"];
 
 /// External accounts (`external/*/0.1`).
 #[derive(Subcommand)]
@@ -1382,8 +1416,8 @@ pub(crate) enum RoomOwnerCommands {
         /// registration. A DID your VTA holds, not your CLI's key.
         #[arg(long)]
         owner: String,
-        /// `open`, `attributed` or `private`. Fixed for the life of the room.
-        #[arg(long)]
+        /// Fixed for the life of the room.
+        #[arg(long, value_parser = ROOM_VISIBILITY)]
         visibility: String,
         /// How long the host holds the room after it lapses (the host's default
         /// when absent, 90 days on a VTC or `room-host`).
@@ -1391,7 +1425,7 @@ pub(crate) enum RoomOwnerCommands {
         retention_days: Option<u64>,
         /// `chained` (history stays readable across membership changes) or
         /// `fromJoin`. Immutable; absent takes the host's default for good.
-        #[arg(long)]
+        #[arg(long, value_parser = ["chained", "fromJoin"])]
         retention_policy: Option<String>,
         /// A room used as a conversation: no wait before its watch signals
         /// (`--signal-delay none`), retracted messages' tombstones kept 7 days and
@@ -1424,11 +1458,13 @@ pub(crate) enum RoomOwnerCommands {
         #[arg(long = "room")]
         room_id: String,
         /// The room's signing key id, as printed when its DID was minted.
+        /// `pnm rooms use <room> --signing-key <id>` remembers it.
         #[arg(long = "signing-key")]
         signing_key: String,
         /// The joiner's persona DID — a DID their VTA holds for them, not their
-        /// CLI's key.
-        #[arg(long)]
+        /// CLI's key. `--member`, as `group-add` names the same person;
+        /// `--subject` is the older name (#2590).
+        #[arg(long = "member", visible_alias = "subject")]
         subject: String,
         /// When the invitation expires, RFC 3339 (`2027-01-01T00:00:00Z`).
         #[arg(long, conflicts_with = "valid_for")]
@@ -1529,6 +1565,7 @@ pub(crate) enum RoomOwnerCommands {
     /// writes the Welcome to `--out` for you to deliver to the member's key
     /// holder (`rooms/keys/welcome`) — never through the host.
     GroupAdd {
+        /// The room's DID.
         #[arg(long = "room")]
         room_id: String,
         /// The room host's DID: where the epoch advances.
@@ -1968,10 +2005,13 @@ pub(crate) enum RoomRecordsCommands {
     /// asks before removing anything. Without a terminal it refuses unless
     /// `--yes` is given.
     Prune {
+        /// The room's DID.
         #[arg(long = "room")]
         room_id: String,
+        /// Base URL of the host storing the room.
         #[arg(long)]
         host: String,
+        /// The host's DID: the recipient the request names.
         #[arg(long)]
         host_did: Option<String>,
         /// What to remove: `retracted` (tombstones older than the retention's
@@ -5314,6 +5354,9 @@ pub(crate) fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Vta { .. }
             | Commands::Bootstrap { .. }
             | Commands::Completions { .. }
+            | Commands::Rooms {
+                command: RoomCommands::Use { .. }
+            }
     )
 }
 

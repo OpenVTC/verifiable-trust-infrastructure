@@ -674,9 +674,9 @@ pub async fn cmd_acl_delete(
     // What is about to go, so the confirmation is about a thing, not a string.
     let entry = client.get_acl(did).await?;
     eprintln!(
-        "ACL entry {did}: role {}, {}{}",
+        "ACL entry {did}: role {}, contexts [{}]{}",
         entry.role,
-        format!("contexts [{}]", entry.allowed_contexts.join(", ")),
+        entry.allowed_contexts.join(", "),
         entry
             .label
             .as_deref()
