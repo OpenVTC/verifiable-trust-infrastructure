@@ -1419,6 +1419,7 @@ async fn gather_inputs(
 /// Entry point for `vta setup`. Gathers inputs interactively, then runs the
 /// shared engine.
 pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), DynErr> {
+    require_terminal(std::io::IsTerminal::is_terminal(&std::io::stdin()))?;
     eprintln!("Welcome to the VTA setup wizard.\n");
     let prompter = DialoguerPrompter;
     let Some(inputs) = gather_inputs(&prompter, config_path).await? else {
@@ -1433,10 +1434,40 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), DynErr
     .await
 }
 
+/// Refuse the interactive wizard without a terminal on stdin, naming the
+/// unattended path (#2593).
+///
+/// Without this, `vta setup` in a Dockerfile, a systemd unit or CI dies at its
+/// first prompt with a terminal I/O error that says nothing about
+/// `vta setup --from`, which exists for exactly that.
+fn require_terminal(stdin_is_terminal: bool) -> Result<(), DynErr> {
+    if stdin_is_terminal {
+        return Ok(());
+    }
+    Err(
+        "`vta setup` is interactive and stdin is not a terminal. For unattended setup run: \
+         `vta setup --from <setup.toml>` (see docs/02-vta/non-interactive-setup.md)."
+            .into(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    /// #2593: without a terminal the wizard refuses before its first prompt
+    /// and names `vta setup --from`.
+    #[test]
+    fn without_a_terminal_the_wizard_names_the_unattended_setup() {
+        assert!(require_terminal(true).is_ok());
+        let message = require_terminal(false).unwrap_err().to_string();
+        assert!(message.contains("vta setup --from"), "{message}");
+        assert!(
+            message.contains("docs/02-vta/non-interactive-setup.md"),
+            "{message}"
+        );
+    }
     use std::collections::VecDeque;
 
     /// A single scripted answer, consumed in prompt-call order.
