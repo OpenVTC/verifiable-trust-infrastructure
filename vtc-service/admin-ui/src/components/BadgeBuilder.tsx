@@ -29,6 +29,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { useModal } from "./useModal";
 import "./BadgeBuilder.css";
 
 /** The colours offered: each carries white at 4.5:1 or better. */
@@ -192,19 +193,9 @@ function IconBrowser({
   const titleId = useId();
   const [query, setQuery] = useState(initialQuery);
   const searchRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const opener = returnTo ?? (document.activeElement as HTMLElement | null);
-    searchRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      if (opener?.isConnected) opener.focus();
-    };
-  }, [onClose, returnTo]);
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  // The shared modal contract (`useModal`, #2610): Tab stays in the dialog.
+  const dismiss = useModal(surfaceRef, onClose, { initialFocus: searchRef, returnTo });
 
   const found = set ? findIcons(set, query, Number.POSITIVE_INFINITY) : null;
   const status = query.trim()
@@ -218,10 +209,16 @@ function IconBrowser({
     <div
       className="badge-builder-scrim"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) dismiss();
       }}
     >
-      <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="badge-builder-browse">
+      <div
+        ref={surfaceRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="badge-builder-browse"
+      >
         <div className="badge-builder-browse-head">
           <h3 id={titleId}>All icons</h3>
           <button type="button" className="badge-builder-close" aria-label="Close" onClick={onClose}>

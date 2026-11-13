@@ -2275,3 +2275,53 @@ textarea {
 .bw-upload[hidden] {
   display: none;
 }
+
+/* A confirmation before an act that is hard to undo (#2607): the console's
+   `ConfirmDialog` drawn with the portal's buttons (`look="portal"`). Inside a
+   protected surface, whose root carries the body's `.vtc-signin`. */
+.vtc-signin .confirm-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 0.45);
+}
+.vtc-signin .confirm-dialog {
+  width: min(28rem, 100%);
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-3);
+  padding: 1.35rem;
+  display: grid;
+  gap: 0.75rem;
+}
+.vtc-signin .confirm-dialog h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.vtc-signin .confirm-dialog p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.vtc-signin .confirm-dialog .form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.vtc-signin .btn-danger {
+  background: var(--bg-elev);
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  color: var(--danger);
+}
+.vtc-signin .btn-danger:not(:disabled):hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}

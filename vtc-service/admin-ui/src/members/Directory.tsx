@@ -62,6 +62,7 @@ import {
   type EntryMark,
   type Marks,
 } from "./wallet-marks";
+import { formatDate } from "@/lib/format";
 
 /** The wallet's directory channel (`window.vtaWallet.directory`), where the
  *  member's wallet offers one: it publishes the card after showing the member
@@ -437,7 +438,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
               <Pills fields={f} connected={entry.data.entry.connected} />
               {text(f.joinedAt) && (
                 <p className="muted profile-since">
-                  Member since {new Date(text(f.joinedAt)).toLocaleDateString()}
+                  Member since {formatDate(text(f.joinedAt))}
                 </p>
               )}
             </div>

@@ -46,6 +46,7 @@ import {
 import { gestureFromConfirm, GestureDeclinedError, parkedOf } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import type { NetworkMembership, NetworkPreviewResponse } from "@/lib/wire-types";
+import { messageOf } from "@/lib/messages";
 
 const STATE_CHIP: Record<NetworkMembership["state"], string> = {
   acknowledged: "chip success",
@@ -56,8 +57,7 @@ const STATE_CHIP: Record<NetworkMembership["state"], string> = {
 /** A refusal as the page shows it: what it means, then the VTC's own words. */
 function refusalText(err: unknown): string {
   const meaning = networkRefusal(err);
-  const message = (err as { message?: unknown } | null)?.message;
-  const said = typeof message === "string" && message ? message : String(err);
+  const said = messageOf(err);
   return meaning ? `${meaning} (${said})` : said;
 }
 

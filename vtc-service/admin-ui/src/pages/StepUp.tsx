@@ -43,13 +43,10 @@ import {
 } from "@/lib/bound-step-up";
 import { useViewerDid } from "@/lib/viewer";
 import { Protected } from "@/components/Protected";
+import { messageOf } from "@/lib/messages";
 
 function message(err: unknown): string {
-  if (err && typeof err === "object" && "message" in err) {
-    const m = (err as { message: unknown }).message;
-    if (typeof m === "string" && m) return m;
-  }
-  return String(err);
+  return messageOf(err);
 }
 
 function StepUpPageSurface() {

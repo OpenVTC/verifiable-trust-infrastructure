@@ -72,7 +72,7 @@ function describe(err: unknown, method: Method): Phase {
       message: "This community didn't accept that sign-in.",
       hint:
         method === "passkey"
-          ? "Passkeys work once you have added one after signing in with your VTA. " +
+          ? "Passkeys work once you have added one after signing in with your wallet. " +
             NOT_A_MEMBER_HINT
           : NOT_A_MEMBER_HINT,
       ...(err instanceof PresentedDidError ? { presentedDid: err.presentedDid } : {}),
@@ -89,13 +89,16 @@ export function isJoinIntent(search: string = window.location.search): boolean {
 export function SignIn({
   communityName,
   signedInAs,
+  sessionEnded,
 }: {
   communityName?: string | null;
   /** The join page only: the member this browser is already signed in as. */
   signedInAs?: string;
+  /** The member was signed in on this page and the session ended (#2612). */
+  sessionEnded?: boolean;
 }) {
   if (isJoinIntent()) return <Join communityName={communityName} signedInAs={signedInAs} />;
-  return <SignInMember communityName={communityName} />;
+  return <SignInMember communityName={communityName} sessionEnded={sessionEnded} />;
 }
 
 function Join({
@@ -158,7 +161,13 @@ function Join({
   );
 }
 
-function SignInMember({ communityName }: { communityName?: string | null }) {
+function SignInMember({
+  communityName,
+  sessionEnded,
+}: {
+  communityName?: string | null;
+  sessionEnded?: boolean;
+}) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const qc = useQueryClient();
   const [choices, setChoices] = useState<VtaIdentity[] | null>(null);
@@ -216,7 +225,13 @@ function SignInMember({ communityName }: { communityName?: string | null }) {
         </>
       }
       after={
-        phase.kind === "error" && (
+        phase.kind !== "error" ? (
+          sessionEnded && (
+            <p className="alert alert-info" role="status">
+              Your session ended. Sign in again to continue.
+            </p>
+          )
+        ) : (
           <Protected>
             <div className="alert" role="alert">
               <p className="alert-title">{phase.message}</p>

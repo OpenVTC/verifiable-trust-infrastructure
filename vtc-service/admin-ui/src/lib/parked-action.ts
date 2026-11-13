@@ -18,6 +18,8 @@
 // success, so it is never shown as one: `toast.pushFromError` and
 // `<ErrorOrParked>` render it as a success notice linking to the action.
 
+import { formatDateTime } from "@/lib/format";
+
 /** The `type` of the VTC's reply to a parked act. */
 export const NEXT_STEP_TYPE = "https://trusttasks.org/spec/trust-task-next-step/0.1";
 
@@ -122,7 +124,7 @@ function parkedSentence(f: {
     k !== undefined && n !== undefined
       ? ` — ${k} of ${n} unrestricted administrator(s) must approve`
       : "";
-  const when = f.expiresAt ? ` before ${new Date(f.expiresAt).toLocaleString()}` : "";
+  const when = f.expiresAt ? ` before ${formatDateTime(f.expiresAt)}` : "";
   return `Sent for approval${who}${when}.`;
 }
 
@@ -130,7 +132,7 @@ function parkedSentence(f: {
 export function coolingOffSentence(until: string): string {
   return (
     `Nobody else can consent to this, so no approval is asked for: it lands by itself ` +
-    `after a cooling-off, at ${new Date(until).toLocaleString()}, unless you cancel it.`
+    `after a cooling-off, at ${formatDateTime(until)}, unless you cancel it.`
   );
 }
 

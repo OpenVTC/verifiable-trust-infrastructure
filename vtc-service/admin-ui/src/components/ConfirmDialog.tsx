@@ -1,12 +1,13 @@
 // Modal confirmation dialog. Replaces `window.confirm` across every
 // plugin's destructive-action path. Hand-rolled (no Radix dep) but
-// honours the same a11y contract:
+// honours the same a11y contract (`useModal`, shared by every dialog):
 //
 // - Focus trap inside the dialog while open.
 // - Escape closes (treated as cancel).
 // - Click on the scrim closes.
 // - Auto-focus the cancel button on open so a misclick on Enter
 //   doesn't fire the destructive action.
+// - Focus returns to the control that opened the dialog.
 // - aria-modal + role="dialog" + aria-labelledby tying the heading
 //   to the dialog.
 //
@@ -32,13 +33,14 @@ import {
   ReactNode,
   useCallback,
   useContext,
-  useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import { Protected, activeElementOf } from "@/components/Protected";
+import { Protected } from "@/components/Protected";
+import { useModal } from "@/components/useModal";
 
 export interface ConfirmOptions {
   title: string;
@@ -57,7 +59,25 @@ interface ConfirmCtx {
 
 const Ctx = createContext<ConfirmCtx | null>(null);
 
-export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
+/**
+ * Which stylesheet the dialog is drawn with: the console's (`components.css`)
+ * or the member portal's (`members.css`, `signin.css`), whose buttons are
+ * `.btn`s. The portal bundle imports this component, not the console shell.
+ */
+export type ConfirmLook = "console" | "portal";
+
+const BUTTONS: Record<ConfirmLook, { cancel: string; confirm: string; destructive: string }> = {
+  console: { cancel: "secondary", confirm: "primary", destructive: "secondary destructive" },
+  portal: { cancel: "btn btn-secondary", confirm: "btn btn-primary", destructive: "btn btn-danger" },
+};
+
+export function ConfirmDialogProvider({
+  children,
+  look = "console",
+}: {
+  children: ReactNode;
+  look?: ConfirmLook;
+}) {
   const [pending, setPending] = useState<
     (ConfirmOptions & { resolve: Resolver }) | null
   >(null);
@@ -89,7 +109,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
         // A destructive confirmation is drawn out of the theme's reach
         // (`vtc/community/theme/show/0.1`, client item 2).
         <Protected ground="none">
-          <Dialog options={pending} onClose={close} />
+          <Dialog options={pending} onClose={close} look={look} />
         </Protected>
       )}
     </Ctx.Provider>
@@ -107,55 +127,26 @@ export function useConfirm(): (options: ConfirmOptions) => Promise<boolean> {
 function Dialog({
   options,
   onClose,
+  look,
 }: {
   options: ConfirmOptions;
   onClose: (ok: boolean) => void;
+  look: ConfirmLook;
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
 
-  // Auto-focus the safer (cancel) button so an Enter keypress
-  // doesn't fire the destructive action by accident.
-  useEffect(() => {
-    cancelRef.current?.focus();
-  }, []);
-
-  // Escape closes; treat as cancel. Trap Tab inside the dialog so
-  // focus never escapes back to the underlying page while modal.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose(false);
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const surface = surfaceRef.current;
-      if (!surface) return;
-      const tabbable = surface.querySelectorAll<HTMLElement>(
-        "button:not([disabled]), [tabindex]:not([tabindex='-1'])",
-      );
-      const first = tabbable[0];
-      const last = tabbable[tabbable.length - 1];
-      if (!first || !last) return;
-      const active = activeElementOf(surface);
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
+  // The shared modal contract (`useModal`): focus starts on the safer
+  // (cancel) button so an Enter keypress doesn't fire the destructive
+  // action by accident, Tab stays inside, Escape cancels, and focus goes
+  // back to the control that opened the dialog when it closes (#2610).
+  const dismiss = useModal(surfaceRef, () => onClose(false), { initialFocus: cancelRef });
 
   const confirmLabel = options.confirmLabel ?? "Confirm";
   const cancelLabel = options.cancelLabel ?? "Cancel";
+  const buttons = BUTTONS[look];
 
   return (
     <div
@@ -165,23 +156,23 @@ function Dialog({
         // a click that bubbled up from inside the surface (e.g.
         // text-selection mouse-up that ends outside) shouldn't
         // close.
-        if (e.target === e.currentTarget) onClose(false);
+        if (e.target === e.currentTarget) dismiss();
       }}
     >
       <div
         ref={surfaceRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="confirm-dialog-title"
+        aria-labelledby={titleId}
         className="confirm-dialog"
       >
-        <h3 id="confirm-dialog-title">{options.title}</h3>
+        <h3 id={titleId}>{options.title}</h3>
         {options.message && <p>{options.message}</p>}
         <div className="form-actions">
           <button
             ref={cancelRef}
             type="button"
-            className="secondary"
+            className={buttons.cancel}
             onClick={() => onClose(false)}
           >
             {cancelLabel}
@@ -189,9 +180,7 @@ function Dialog({
           <button
             ref={confirmRef}
             type="button"
-            className={
-              options.destructive ? "secondary destructive" : "primary"
-            }
+            className={options.destructive ? buttons.destructive : buttons.confirm}
             onClick={() => onClose(true)}
           >
             {confirmLabel}

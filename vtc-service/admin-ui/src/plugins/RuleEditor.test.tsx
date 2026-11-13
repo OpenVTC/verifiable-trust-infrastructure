@@ -52,6 +52,21 @@ describe("RuleEditor authoring a vetter-eligibility policy", () => {
     ).toBeTruthy();
   });
 
+  it("names its controls, and removes a condition with a button a keyboard reaches (#2611)", () => {
+    editor();
+    expect(screen.getByLabelText("Name of route 1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove route 1" })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Condition"), {
+      target: { value: "tenure_at_least" },
+    });
+    fireEvent.change(screen.getByLabelText("days"), { target: { value: "180" } });
+    fireEvent.click(screen.getByRole("button", { name: "+ condition" }));
+    const remove = screen.getByRole("button", { name: /^Remove condition: .*180$/ });
+    expect(remove.tagName).toBe("BUTTON");
+    fireEvent.click(remove);
+    expect(screen.queryByText("has been a member for at least 180 days")).toBeNull();
+  });
+
   it("makes a value the daemon matches exactly a choice, not free text", () => {
     editor();
     fireEvent.change(screen.getByLabelText("Condition"), {

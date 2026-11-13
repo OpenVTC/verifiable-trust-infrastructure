@@ -750,6 +750,26 @@ textarea.prose {
 
 /* ── Tables ──────────────────────────────────────────────────── */
 
+/* Every `DataTable` sits in one (#2616). At the shell's breakpoint and below
+ * (720px, `tokens.css`), a table wider than the screen scrolls sideways in
+ * place: the page area, and the page header with it, stay put. Above it the
+ * wrapper does nothing, so the page area is still the scroller the sticky
+ * header sticks to — an `overflow-x` box is a scroller on both axes and
+ * would catch it. */
+.data-table-wrap {
+  min-width: 0;
+}
+@media (max-width: 720px) {
+  .data-table-wrap {
+    overflow-x: auto;
+  }
+  /* A row's buttons stack rather than widen the action column. */
+  .data-table .row-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;

@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
 
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Protected } from "@/components/Protected";
 import { PluginContext } from "@/lib/plugin-context";
 import type { PluginManifest } from "@/plugin-api";
@@ -24,6 +26,18 @@ import type { PluginManifest } from "@/plugin-api";
  * extension), that's an additive change to `plugin-api.ts`.
  */
 export function PluginHost({ plugin }: { plugin: PluginManifest }) {
+  const { pathname } = useLocation();
+  // A render-time throw in one screen draws an error card in its place; the
+  // top bar and the sidebar survive (#2605). Keyed by plugin so another
+  // screen starts clean, reset by the route so navigating within it recovers.
+  return (
+    <ErrorBoundary key={plugin.id} resetKey={pathname} what="This screen">
+      <PluginBody plugin={plugin} />
+    </ErrorBoundary>
+  );
+}
+
+function PluginBody({ plugin }: { plugin: PluginManifest }) {
   if (plugin.reactComponent) {
     const Component = plugin.reactComponent;
     // Built-ins read which plugin they are (the page header's breadcrumb,

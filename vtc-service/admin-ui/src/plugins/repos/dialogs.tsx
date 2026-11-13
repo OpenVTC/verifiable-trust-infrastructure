@@ -23,7 +23,7 @@ import { Protected } from "@/components/Protected";
 import { useSingleAdminMode } from "@/lib/action-badge";
 import { useNameBook } from "@/lib/names";
 import { useViewerDid } from "@/lib/viewer";
-import { shortenDid } from "@/lib/format";
+import { formatDateTime, shortenDid } from "@/lib/format";
 import type {
   GitNsDriftItem,
   GitNsRight,
@@ -1060,7 +1060,7 @@ export function RatifyDialog({
       <p>
         <b>{subjectName ?? shortenDid(subject)}</b>{" "}
         <code className="gitns-party-did">{subject}</code> gave themselves this right on{" "}
-        {new Date(breakGlassAt).toLocaleString()}, saying:
+        {formatDateTime(breakGlassAt)}, saying:
       </p>
       <blockquote className="gitns-justification">{justification}</blockquote>
       <p className="muted">

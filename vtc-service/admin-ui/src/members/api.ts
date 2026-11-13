@@ -73,6 +73,16 @@ export function renewSession(): Promise<boolean> {
   return renewing;
 }
 
+/**
+ * Dispatched on `window` when a member route answers 401 after the one
+ * renewal, or 403: the session may have ended (expired, revoked, the member
+ * suspended or removed). The portal re-reads `/v1/member/me` and, if the
+ * session is gone, shows sign-in with a note — rather than every page failing
+ * one by one under a top bar that still shows the member signed in (#2612).
+ * Not sent for `/v1/member/me` itself, which is that re-read.
+ */
+export const MEMBER_SESSION_EVENT = "vtc-member-session-check";
+
 /** Call a member route. A 401 renews the session once and retries. */
 export async function memberFetch<T>(
   path: string,
@@ -81,6 +91,9 @@ export async function memberFetch<T>(
   let res = await send(path, init);
   if (res.status === 401 && (await renewSession())) {
     res = await send(path, init);
+  }
+  if ((res.status === 401 || res.status === 403) && path !== "/v1/member/me") {
+    window.dispatchEvent(new Event(MEMBER_SESSION_EVENT));
   }
   if (!res.ok) throw new MemberApiError(await errorMessage(res), res.status);
   if (res.status === 204) return undefined as T;

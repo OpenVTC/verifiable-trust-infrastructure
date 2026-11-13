@@ -238,28 +238,37 @@ function RouteCard({
         <span className="rule-pri">{index + 1}</span>
         <input
           className="rule-name"
+          aria-label={`Name of route ${index + 1}`}
           value={route.name}
           onChange={(e) => onChange({ name: e.target.value })}
         />
+        {/* Named for assistive technology, not by a hover title alone (#2611). */}
         <div className="rule-tools">
           <button
             type="button"
             disabled={index === 0}
             onClick={() => onMove(-1)}
             title="Move up"
+            aria-label={`Move route ${index + 1} up`}
           >
-            ↑
+            <span aria-hidden="true">↑</span>
           </button>
           <button
             type="button"
             disabled={index === count - 1}
             onClick={() => onMove(1)}
             title="Move down"
+            aria-label={`Move route ${index + 1} down`}
           >
-            ↓
+            <span aria-hidden="true">↓</span>
           </button>
-          <button type="button" onClick={onRemove} title="Remove route">
-            ×
+          <button
+            type="button"
+            onClick={onRemove}
+            title="Remove route"
+            aria-label={`Remove route ${index + 1}`}
+          >
+            <span aria-hidden="true">×</span>
           </button>
         </div>
       </div>
@@ -281,9 +290,17 @@ function RouteCard({
                   {arg ? <b> {arg}</b> : null}
                 </>
               )}
-              <span className="rule-x" onClick={() => removeCond(i)}>
-                ×
-              </span>
+              {/* A button, so a keyboard reaches it: the only way to remove
+                  a condition (#2611). */}
+              <button
+                type="button"
+                className="rule-x"
+                onClick={() => removeCond(i)}
+                aria-label={`Remove condition: ${def?.label ?? condId(c)}${arg ? ` ${arg}` : ""}`}
+                title="Remove condition"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
             </span>
           );
         })}
@@ -356,6 +373,7 @@ function RouteCard({
         {effField && (
           <input
             className="rule-arg"
+            aria-label={`Effect ${effField.label}`}
             placeholder={effField.placeholder}
             value={effValue}
             onChange={(e) => setEffValue(e.target.value)}

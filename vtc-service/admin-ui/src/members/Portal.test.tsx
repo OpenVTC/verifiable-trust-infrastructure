@@ -2,6 +2,7 @@
 // that its client never sends the console's credentials.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -32,9 +33,9 @@ const json = (status: number, body: unknown) =>
 function renderPortal() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={qc}>
+    <QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">
       <Portal />
-    </QueryClientProvider>,
+    </ConfirmDialogProvider></QueryClientProvider>,
   );
 }
 
@@ -349,7 +350,7 @@ describe("member portal", () => {
 
   it.each([
     [["did", "oob", "uv"], "Your wallet"],
-    [["did"], "Your VTA (SIOPv2)"],
+    [["did"], "Your VTA"],
     [["passkey"], "Passkey"],
   ])("names how the member signed in (amr %j)", async (amr, label) => {
     stubFetch((url) => {
@@ -360,6 +361,28 @@ describe("member portal", () => {
     renderPortal();
     await screen.findByRole("heading", { name: /welcome back/i });
     expect(screen.getByText("Signed in with").nextElementSibling?.textContent).toBe(label);
+  });
+
+  it("notices a session that ended while signed in, and says so on sign-in (#2612)", async () => {
+    let ended = false;
+    stubFetch((url) => {
+      if (url === "/v1/member/me") return ended ? json(401, {}) : json(200, ME);
+      if (url === "/v1/member/passkeys") return ended ? json(401, {}) : json(200, []);
+      if (url === "/v1/member/auth/refresh") return json(401, {});
+      return json(404, {});
+    });
+    renderPortal();
+    await screen.findByRole("heading", { name: /welcome back/i });
+    await waitFor(() => expect(screen.getByText(/no passkeys yet/i)).toBeTruthy());
+
+    // The session ends (expired, revoked); the next member read is refused.
+    ended = true;
+    await import("./api").then((api) =>
+      api.memberFetch("/v1/member/passkeys").catch(() => undefined),
+    );
+
+    expect(await screen.findByText("Your session ended. Sign in again to continue.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /sign out/i })).toBeNull();
   });
 
   it("treats a 403 (no longer an active member) as signed out", async () => {

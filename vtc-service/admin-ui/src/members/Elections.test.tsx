@@ -4,6 +4,7 @@
 // told whether one was cast.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -89,7 +90,7 @@ function withWallet(over: Record<string, unknown> = {}) {
 
 function renderWith(node: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">{node}</ConfirmDialogProvider></QueryClientProvider>);
 }
 
 afterEach(() => {

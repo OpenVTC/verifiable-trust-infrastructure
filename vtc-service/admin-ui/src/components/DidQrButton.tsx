@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { QrCode, X } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { useModal } from "@/components/useModal";
 
 export function DidQrButton({ did, label = "Show DID as QR code" }: { did: string; label?: string }) {
   const [open, setOpen] = useState(false);
@@ -51,27 +52,24 @@ function DidQrDialog({ did, onClose }: { did: string; onClose: () => void }) {
     };
   }, [did]);
 
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    closeRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      if (opener?.isConnected) opener.focus();
-    };
-  }, [onClose]);
+  // The shared modal contract (`useModal`, #2610).
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const dismiss = useModal(surfaceRef, onClose, { initialFocus: closeRef });
 
   return (
     <div
       className="confirm-scrim"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) dismiss();
       }}
     >
-      <div role="dialog" aria-modal="true" aria-label="DID QR code" className="confirm-dialog did-qr-dialog">
+      <div
+        ref={surfaceRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="DID QR code"
+        className="confirm-dialog did-qr-dialog"
+      >
         <div className="did-qr-head">
           <h3>DID</h3>
           <button

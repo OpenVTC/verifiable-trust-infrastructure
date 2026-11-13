@@ -29,6 +29,7 @@ import {
   type RoleDefinition,
 } from "@/lib/roles";
 import { gestureFromConfirm } from "@/lib/signed-act";
+import { parkedOf } from "@/lib/parked-action";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
 
@@ -238,7 +239,10 @@ function DefineRoleForm({ onDone }: { onDone: () => void }) {
     },
     onError: (err) => {
       toast.pushFromError(err, "Define failed");
-      onDone();
+      // Parked for approval, the form's work is done. Any other failure (a
+      // declined passkey prompt, a name in use, a 429) keeps the form and
+      // what was entered, to correct and send again (#2609).
+      if (parkedOf(err)) onDone();
     },
   });
 

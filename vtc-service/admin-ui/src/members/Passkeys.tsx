@@ -5,8 +5,10 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Plus, Trash2 } from "lucide-react";
 
+import { useConfirm } from "@/components/ConfirmDialog";
 import { memberFetch, type MemberPasskey } from "./api";
 import { addPasskey, passkeysSupported } from "./auth";
+import { formatDate } from "@/lib/format";
 
 function shortId(id: string): string {
   return id.length > 16 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id;
@@ -14,6 +16,7 @@ function shortId(id: string): string {
 
 export function Passkeys({ canManage }: { canManage: boolean }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const [label, setLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -57,12 +60,26 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
         <h2 id="passkeys-heading">Passkeys</h2>
       </div>
       <p className="muted">
-        Sign in to this portal on this device without your VTA. A portal
+        Sign in to this portal on this device without your wallet. A portal
         passkey works here only — never in the operator console.
       </p>
 
       {list.isPending ? (
         <p className="muted">Loading…</p>
+      ) : list.isError ? (
+        // A failed read is not "no passkeys" (#2607).
+        <div className="alert" role="alert">
+          <p className="alert-title">Your passkeys couldn't be loaded.</p>
+          <p>{list.error instanceof Error ? list.error.message : String(list.error)}</p>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => void list.refetch()}
+            disabled={list.isFetching}
+          >
+            Try again
+          </button>
+        </div>
       ) : passkeys.length === 0 ? (
         <p className="empty">No passkeys yet.</p>
       ) : (
@@ -73,7 +90,7 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
                 <strong>{p.label || "Passkey"}</strong>
                 <span className="muted">
                   {" "}
-                  · added {new Date(p.registeredAt).toLocaleDateString()} ·{" "}
+                  · added {formatDate(p.registeredAt)} ·{" "}
                   <code>{shortId(p.credentialId)}</code>
                 </span>
               </div>
@@ -81,7 +98,18 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
-                  onClick={() => remove.mutate(p.credentialId)}
+                  onClick={async () => {
+                    // Re-adding one takes a wallet sign-in, which this device
+                    // may not have: confirm first (#2607).
+                    const ok = await confirm({
+                      title: `Remove ${p.label ? `“${p.label}”` : "this passkey"}?`,
+                      message:
+                        "You will no longer be able to sign in with it. Adding a passkey again takes a sign-in with your wallet.",
+                      confirmLabel: "Remove",
+                      destructive: true,
+                    });
+                    if (ok) remove.mutate(p.credentialId);
+                  }}
                   disabled={remove.isPending}
                   aria-label={`Remove ${p.label || "passkey"}`}
                 >
@@ -124,7 +152,7 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
       ) : (
         <p className="muted">
           You signed in with a passkey. To add or remove passkeys, sign out and
-          sign in with your VTA.
+          sign in with your wallet.
         </p>
       )}
 

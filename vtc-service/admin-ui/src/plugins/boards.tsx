@@ -10,7 +10,7 @@
 // (VTI-BRD-041). Nothing here ever shows who took a ticket or voted (VTI-BRD-033).
 
 import { useMemo, useState } from "react";
-import { Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, EyeOff, GitMerge, Pencil, Plus, RotateCcw, SquareKanban, Trash2, X } from "lucide-react";
 
@@ -52,6 +52,7 @@ import { listGroups } from "@/lib/groups";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
+import { formatDateTime } from "@/lib/format";
 
 export function Boards() {
   return (
@@ -64,10 +65,8 @@ export function Boards() {
   );
 }
 
-function when(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
+/** A deadline, with its zone (#2613). */
+const when = formatDateTime;
 
 function phaseWords(b: Board, now = Date.now()): string {
   if (b.status !== "open") return b.status === "closed" ? "Closed" : "Archived";
@@ -134,7 +133,11 @@ function BoardsList() {
             return (
               <tr key={b.boardId} className="clickable" onClick={() => navigate(encodeURIComponent(b.boardId))}>
                 <td>
-                  <strong>{b.title}</strong>
+                  {/* A link, so a keyboard or screen reader reaches the board;
+                      the row click stays as a convenience (#2611). */}
+                  <Link to={encodeURIComponent(b.boardId)} onClick={(e) => e.stopPropagation()}>
+                    <strong>{b.title}</strong>
+                  </Link>
                   {b.audience.kind === "group" && <div className="muted">One group's members</div>}
                 </td>
                 <td>{phaseWords(b)}</td>
@@ -732,6 +735,7 @@ function BoardDetail() {
     onError: (err) => toast.pushFromError(err, "The board was not changed"),
   });
 
+  const confirm = useConfirm();
   const ideas = useMemo(
     () =>
       [...(shown.data?.ideas ?? [])].sort(
@@ -750,6 +754,28 @@ function BoardDetail() {
   }
   const board = shown.data.board;
   const titleOf = (ideaId?: string) => ideas.find((i) => i.ideaId === ideaId)?.title;
+  // Ending voting with final counts is the least reversible thing a
+  // facilitator does: say what it does in a dialog, not only in a hover title
+  // that touch and keyboard users never see (#2608).
+  const changeStatus = async (s: "closed" | "archived") => {
+    const ok = await confirm(
+      s === "closed"
+        ? {
+            title: `Close ${board.title} and end voting?`,
+            message:
+              "New ideas and notes stop. Elections open for voting close early with their counts final; those not yet open are cancelled.",
+            confirmLabel: "Close and end voting",
+            destructive: true,
+          }
+        : {
+            title: `Archive ${board.title}?`,
+            message: "An archived board takes no change at all, and members no longer see it.",
+            confirmLabel: "Archive",
+            destructive: true,
+          },
+    );
+    if (ok) status.mutate(s);
+  };
 
   return (
     <>
@@ -770,14 +796,14 @@ function BoardDetail() {
                   type="button"
                   className="secondary"
                   title="Stops new ideas and notes, and ends the voting: elections open for voting close early with their counts final; those not yet open are cancelled."
-                  onClick={() => status.mutate("closed")}
+                  onClick={() => void changeStatus("closed")}
                   disabled={status.isPending}
                 >
                   Close and end voting
                 </button>
               )}
               {board.status === "closed" && (
-                <button type="button" className="secondary" onClick={() => status.mutate("archived")} disabled={status.isPending}>
+                <button type="button" className="secondary" onClick={() => void changeStatus("archived")} disabled={status.isPending}>
                   Archive
                 </button>
               )}

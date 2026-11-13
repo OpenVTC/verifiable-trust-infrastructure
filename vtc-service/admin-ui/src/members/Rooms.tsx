@@ -35,10 +35,8 @@ import {
   type TransferProgress,
   type WalletRooms,
 } from "./wallet-rooms";
-
-function shortDid(did: string): string {
-  return did.length > 40 ? `${did.slice(0, 22)}…${did.slice(-10)}` : did;
-}
+import { formatDate, formatDateTime, shortenDid } from "@/lib/format";
+import { messageOf } from "@/lib/messages";
 
 /**
  * Who wrote something, short enough for a list row: "you", a `did:webvh`'s last path
@@ -51,13 +49,11 @@ export function authorName(did: string, me?: string): string {
     const last = did.slice(did.lastIndexOf(":") + 1);
     if (last && !last.startsWith("Qm")) return decodeURIComponent(last);
   }
-  return shortDid(did);
+  return shortenDid(did);
 }
 
-function when(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-}
+/** A moment, with its zone (#2613). */
+const when = formatDateTime;
 
 /** Keep `--topbar-h` at the sticky top bar's height, so a sticky pane sits below it. */
 function useTopbarHeight() {
@@ -72,9 +68,7 @@ function useTopbarHeight() {
   }, []);
 }
 
-function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+const errorText = messageOf;
 
 /** A room's address in the portal. */
 export function roomHref(roomId: string): string {
@@ -229,12 +223,12 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
           {waiting.map((o) => (
             <li key={`${o.roomId}|${o.member}`}>
               <span>
-                {o.label ? <strong className="wrap">{o.label}</strong> : <code className="wrap">{shortDid(o.roomId)}</code>}
+                {o.label ? <strong className="wrap">{o.label}</strong> : <code className="wrap">{shortenDid(o.roomId)}</code>}
               </span>
               {offerDescription(o) && <span className="muted wrap">{offerDescription(o)}</span>}
               <span className="muted small">
-                {o.visibility} · {o.actions.join(", ")} · until {new Date(o.validUntil).toLocaleDateString()}
-                {o.member === member ? " · as you" : ` · as ${shortDid(o.member)}`}
+                {o.visibility} · {o.actions.join(", ")} · until {formatDate(o.validUntil)}
+                {o.member === member ? " · as you" : ` · as ${shortenDid(o.member)}`}
                 {o.state === "unfinished" ? " · accepted, not finished — finish it here" : ""}
               </span>
               <div className="actions">
@@ -260,14 +254,14 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
           {settled.map((o) => (
             <li key={`${o.roomId}|${o.member}`}>
               <span>
-                {o.label ? <strong className="wrap">{o.label}</strong> : <code className="wrap">{shortDid(o.roomId)}</code>}
+                {o.label ? <strong className="wrap">{o.label}</strong> : <code className="wrap">{shortenDid(o.roomId)}</code>}
               </span>
               <span className="muted small">
-                {o.visibility} · {o.member === member ? "as you" : `as ${shortDid(o.member)}`} ·{" "}
+                {o.visibility} · {o.member === member ? "as you" : `as ${shortenDid(o.member)}`} ·{" "}
                 {o.state === "joined"
                   ? "joined"
                   : o.state === "removed"
-                    ? `removed${o.removedAt ? ` ${new Date(o.removedAt).toLocaleDateString()}` : ""}`
+                    ? `removed${o.removedAt ? ` ${formatDate(o.removedAt)}` : ""}`
                     : o.state === "suspended"
                       ? "closed for now"
                       : "needs re-admission"}
@@ -301,7 +295,7 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
       {done && !doneListed && (
         <div className="alert alert-info" role="status">
           <p className="alert-title">
-            {done.result.joined ? "Joined" : "Accepted"} {done.offer.label || shortDid(done.offer.roomId)}
+            {done.result.joined ? "Joined" : "Accepted"} {done.offer.label || shortenDid(done.offer.roomId)}
           </p>
           {done.result.joined && openHere(done.offer.roomId)}
         </div>
@@ -388,7 +382,7 @@ function RoomList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: s
               const name = roomName(list.data?.find((s) => s.roomId === r.roomId));
               return (
                 <li key={r.roomId}>
-                  {name ? <b>{name}</b> : <code className="wrap">{shortDid(r.roomId)}</code>}: {hint ?? r.reason}
+                  {name ? <b>{name}</b> : <code className="wrap">{shortenDid(r.roomId)}</code>}: {hint ?? r.reason}
                   {hint && <span className="muted small"> ({r.reason})</span>}
                 </li>
               );
@@ -432,18 +426,18 @@ function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
   return (
     <li>
       <a href={roomHref(room.roomId)} className="room-link">
-        {name ? <span className="room-name">{name}</span> : <code className="wrap">{shortDid(room.roomId)}</code>}
+        {name ? <span className="room-name">{name}</span> : <code className="wrap">{shortenDid(room.roomId)}</code>}
       </a>
       {name && (
         <code className="wrap muted small" title={room.roomId}>
-          {shortDid(room.roomId)}
+          {shortenDid(room.roomId)}
         </code>
       )}
       <span className="muted small">
         {holding(room)}
-        {room.member ? (room.member === me ? " · as you" : ` · as ${shortDid(room.member)}`) : ""}
+        {room.member ? (room.member === me ? " · as you" : ` · as ${shortenDid(room.member)}`) : ""}
         {" · shared until "}
-        {new Date(room.expiresAt).toLocaleDateString()}
+        {formatDate(room.expiresAt)}
         {roomStateWords(room) ? ` · ${roomStateWords(room)!.label}` : ""}
       </span>
     </li>
@@ -466,7 +460,7 @@ export function RoomPage({ hostDid, roomId }: { hostDid: string; roomId: string 
         {wallet ? (
           <RoomHeading wallet={wallet} hostDid={hostDid} roomId={roomId} />
         ) : (
-          <h1 className="wrap room-title">{shortDid(roomId)}</h1>
+          <h1 className="wrap room-title">{shortenDid(roomId)}</h1>
         )}
       </section>
       {wallet ? <Room wallet={wallet} hostDid={hostDid} roomId={roomId} /> : <NoWallet />}
@@ -481,7 +475,7 @@ function RoomHeading({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid
     queryFn: async () => (await wallet.list({ hostDid })).rooms,
   });
   const name = roomName(list.data?.find((r) => r.roomId === roomId));
-  if (!name) return <h1 className="wrap room-title">{shortDid(roomId)}</h1>;
+  if (!name) return <h1 className="wrap room-title">{shortenDid(roomId)}</h1>;
   return (
     <>
       <h1 className="wrap">{name}</h1>
@@ -852,7 +846,7 @@ function RecordBody({
         <div>
           <dt>Version</dt>
           <dd>
-            {rec.version} · {new Date(rec.updatedAt).toLocaleString()}
+            {rec.version} · {formatDateTime(rec.updatedAt)}
           </dd>
         </div>
       </dl>

@@ -13,6 +13,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GitBranch, KeyRound, Link2, Unlink } from "lucide-react";
 
+import { useConfirm } from "@/components/ConfirmDialog";
 import { DirectoryError } from "./directory-api";
 import {
   governedOf,
@@ -28,15 +29,12 @@ import {
   type WalletLinkStarted,
 } from "./git-api";
 import { Crumbs } from "./member-card";
+import { formatDate, formatDateTime, shortenDid } from "@/lib/format";
 
 const POLL_MS = 5000;
 
-function shortDid(did: string): string {
-  return did.length > 34 ? `${did.slice(0, 20)}…${did.slice(-8)}` : did;
-}
-
 function Who({ did, me }: { did: string; me: string }) {
-  return did === me ? <strong>you</strong> : <code title={did}>{shortDid(did)}</code>;
+  return did === me ? <strong>you</strong> : <code title={did}>{shortenDid(did)}</code>;
 }
 
 function Resource({ resource }: { resource: string }) {
@@ -50,7 +48,7 @@ function Resource({ resource }: { resource: string }) {
 }
 
 function day(iso: string): string {
-  return new Date(iso).toLocaleDateString();
+  return formatDate(iso);
 }
 
 function RightPills({ rights }: { rights: MemberRight[] }) {
@@ -220,6 +218,7 @@ function ForgeAccounts({
   forges: string[];
 }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const wallet = walletGit();
   const [pending, setPending] = useState<Pending | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -290,7 +289,7 @@ function ForgeAccounts({
       {pending && (
         <p className="alert alert-info" role="status">
           Finish linking on {pending.forge} in your wallet&rsquo;s window, before{" "}
-          {new Date(pending.expiresAt).toLocaleTimeString()}.
+          {formatDateTime(pending.expiresAt)}.
           {status.isError ? ` ${(status.error as Error).message}` : " Waiting for the forge…"}
         </p>
       )}
@@ -306,7 +305,16 @@ function ForgeAccounts({
                 type="button"
                 className="btn btn-ghost btn-sm"
                 disabled={unlink.isPending}
-                onClick={() => unlink.mutate(a)}
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: `Unlink ${a.account.login} on ${a.account.forge}?`,
+                    message:
+                      "The community stops giving this account the forge roles your rights call for. Linking it again takes your wallet and the forge's authorisation.",
+                    confirmLabel: "Unlink",
+                    destructive: true,
+                  });
+                  if (ok) unlink.mutate(a);
+                }}
               >
                 <Unlink size={14} aria-hidden="true" /> Unlink
               </button>

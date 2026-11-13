@@ -48,7 +48,7 @@ import {
   type CommunityRoomsSetting,
   type VtaAccess,
 } from "@/lib/community-rooms-api";
-import { formatIso, shorten } from "@/lib/format";
+import { formatDate, formatIso, shorten } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { fetchStorageConfigs } from "@/lib/storage-api";
 import { useToast } from "@/lib/toast";
@@ -319,7 +319,7 @@ function CommunityRoomsTable({
             <AuthorityExpiry until={r.ownerAuthorityValidUntil} />
             <RenewalFailing renewal={renewal[r.room.roomId]} />
           </td>
-          <td>{new Date(r.room.createdAt).toLocaleDateString()}</td>
+          <td>{formatDate(r.room.createdAt)}</td>
         </tr>
       ))}
     </DataTable>

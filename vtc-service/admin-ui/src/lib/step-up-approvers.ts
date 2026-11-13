@@ -31,6 +31,7 @@ import type { SignedTrustTaskDocument } from "./console-key";
 import { base58btcEncode, jcsCanonicalize, sha256 } from "./jcs";
 import { GestureDeclinedError, postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 import { attestApproverWithWallet, signWithWallet, walletApproverDid } from "./wallet";
+import { messageOf } from "@/lib/messages";
 
 export const APPROVER_LIST_TASK = "https://trusttasks.org/spec/auth/step-up/approver/list/0.1";
 export const APPROVER_REVOKE_TASK = "https://trusttasks.org/spec/auth/step-up/approver/revoke/0.1";
@@ -319,9 +320,5 @@ export function approverErrorMessage(err: unknown): string {
     const left = e?.details?.attemptsRemaining;
     return typeof left === "number" ? `${text} ${left} attempt${left === 1 ? "" : "s"} left.` : text;
   }
-  if (err && typeof err === "object" && "message" in err) {
-    const m = (err as { message: unknown }).message;
-    if (typeof m === "string" && m) return m;
-  }
-  return String(err);
+  return messageOf(err);
 }

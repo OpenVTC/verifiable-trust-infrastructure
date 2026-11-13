@@ -65,6 +65,7 @@ import type {
   CommunityRoomUpdatePayload,
   CommunityRoomUpdateResponse,
 } from "./wire-types";
+import { messageOf } from "@/lib/messages";
 
 export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4";
 export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.4";
@@ -876,5 +877,5 @@ export function vtaFixFor(err: unknown, access: VtaAccess | undefined): VtaFix |
 
 /** A refusal's own message. */
 export function refusalMessage(err: unknown): string {
-  return (err as { message?: string } | null)?.message ?? String(err);
+  return messageOf(err);
 }

@@ -251,48 +251,25 @@
 .cer-field .field-hint {
   grid-column: 1;
 }
-.cer-field select,
-.cer-field .cer-toggle {
+.cer-field select {
   grid-column: 2;
   grid-row: 1 / span 2;
+}
+/* A toggle input is the shared `Switch`, its label and hint on the left and
+   the track on the right like every other row. */
+.cer-field-switch {
+  display: block;
+}
+.cer-field-switch .switch {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
 }
 .cer-field select {
   width: auto;
   min-width: 150px;
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-}
-
-/* On/off switch for a toggle input. */
-.cer-toggle {
-  position: relative;
-  width: 42px;
-  height: 23px;
-  padding: 0;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-subtle);
-  cursor: pointer;
-  transition: all var(--motion-fast);
-  flex: none;
-}
-.cer-toggle[aria-checked="true"] {
-  border-color: var(--brand);
-  background: var(--brand-tint-strong);
-}
-.cer-toggle-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 17px;
-  height: 17px;
-  border-radius: 50%;
-  background: var(--text-faint);
-  transition: all var(--motion-fast);
-}
-.cer-toggle[aria-checked="true"] .cer-toggle-knob {
-  left: 21px;
-  background: var(--brand);
 }
 
 /* Run button + verdict */
@@ -835,16 +812,22 @@
   padding: 2px 0;
 }
 .rule-name:focus {
-  outline: none;
   border-bottom-color: var(--brand);
+}
+/* The design note's ring (§7), which the borderless field had switched off
+   (#2611); `:focus-visible` in base.css draws it. */
+.rule-name:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 .rule-tools {
   display: flex;
   gap: 2px;
 }
+/* 24px: the WCAG 2.2 minimum target (2.5.8). */
 .rule-tools button {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: transparent;
@@ -893,11 +876,22 @@
   font-weight: 500;
 }
 .rule-x {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
   opacity: 0.5;
   font-weight: 600;
 }
-.rule-x:hover {
+.rule-x:hover,
+.rule-x:focus-visible {
   opacity: 1;
 }
 .rule-add-cond select,

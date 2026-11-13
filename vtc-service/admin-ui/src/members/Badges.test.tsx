@@ -3,7 +3,8 @@
 // Every read and write goes through this browser's portal key (`send`, mocked per task).
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const send = vi.fn();
@@ -112,7 +113,7 @@ function sent(type: string): unknown[] {
 
 function renderPage(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">{ui}</ConfirmDialogProvider></QueryClientProvider>);
 }
 
 const BASE = {
@@ -145,6 +146,12 @@ describe("the portal's badges page", () => {
     answer({ ...BASE, [MINE_LIST_TASK]: mine(), [MINE_DECLINE_TASK]: { award: { state: "declined" } } });
     renderPage(<BadgesPage />);
     fireEvent.click(await screen.findByRole("button", { name: /Decline/ }));
+    // Declining is confirmed first (#2607); backing out sends nothing.
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(sent(MINE_DECLINE_TASK)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: /Decline/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Decline" }));
     await waitFor(() => expect(sent(MINE_DECLINE_TASK)).toEqual([{ awardId: "awd_W5k2N8xRb3Qz7TpLAAAAAA" }]));
     expect(await screen.findByText(/Declined. Nobody is told/)).toBeTruthy();
   });

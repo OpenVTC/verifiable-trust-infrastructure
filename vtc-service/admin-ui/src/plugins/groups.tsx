@@ -11,7 +11,7 @@
 // shown with their directory name and picture.
 
 import { useState } from "react";
-import { Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DoorOpen, KeyRound, Plus, Trash2, UserMinus, UserPlus, Users } from "lucide-react";
 
@@ -56,6 +56,7 @@ import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
 import type { Group } from "@/lib/wire-types";
+import { formatDate } from "@/lib/format";
 
 const GROUPS_KEY = ["groups", "list"] as const;
 
@@ -143,7 +144,11 @@ function GroupsList() {
             >
               <td>
                 <div className="group-name-cell">
-                  <strong>{group.name}</strong>
+                  {/* A link, so a keyboard or screen reader reaches the group;
+                      the row click stays as a convenience (#2611). */}
+                  <Link to={encodeURIComponent(group.groupId)} onClick={(e) => e.stopPropagation()}>
+                    <strong>{group.name}</strong>
+                  </Link>
                   {group.description && <span className="muted">{group.description}</span>}
                 </div>
               </td>
@@ -397,7 +402,7 @@ function GroupSummary({ group }: { group: Group }) {
           <dt>Credentials</dt>
           <dd>
             {group.issuesCredentials
-              ? `Each member holds one${group.credentialAuthorityValidUntil ? `; the group may issue them until ${new Date(group.credentialAuthorityValidUntil).toLocaleDateString()}` : ""}`
+              ? `Each member holds one${group.credentialAuthorityValidUntil ? `; the group may issue them until ${formatDate(group.credentialAuthorityValidUntil)}` : ""}`
               : "None"}
           </dd>
         </div>
@@ -564,11 +569,11 @@ function GroupMembers({ group, manages }: { group: Group; manages: boolean }) {
               </td>
               <td>
                 {m.source === "added" ? "Added" : m.source === "joined" ? "Joined" : "By request"}{" "}
-                <span className="muted">{new Date(m.since).toLocaleDateString()}</span>
+                <span className="muted">{formatDate(m.since)}</span>
               </td>
               <td>
                 {m.credentialValidUntil ? (
-                  new Date(m.credentialValidUntil).toLocaleDateString()
+                  formatDate(m.credentialValidUntil)
                 ) : (
                   <span className="muted">—</span>
                 )}

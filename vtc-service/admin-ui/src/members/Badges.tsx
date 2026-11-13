@@ -36,8 +36,9 @@ import {
 } from "lucide-react";
 
 import { BadgeBuilder } from "@/components/BadgeBuilder";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { Protected } from "@/components/Protected";
-import { shortenDid } from "@/lib/format";
+import { formatDate, shortenDid } from "@/lib/format";
 
 import {
   acceptOffer,
@@ -279,6 +280,7 @@ function Offers({ offers }: { offers: Offer[] }) {
 
 function OffersSurface({ offers }: { offers: Offer[] }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const [note, setNote] = useState<string | null>(null);
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ["badges"] });
@@ -340,7 +342,15 @@ function OffersSurface({ offers }: { offers: Offer[] }) {
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
-                  onClick={() => decline.mutate(award.awardId)}
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: `Decline ${badge.name}?`,
+                      message: "Nobody is told. You can hold it only if it is offered to you again.",
+                      confirmLabel: "Decline",
+                      destructive: true,
+                    });
+                    if (ok) decline.mutate(award.awardId);
+                  }}
                   disabled={decline.isPending || accept.isPending}
                 >
                   <X size={14} aria-hidden="true" /> Decline
@@ -588,7 +598,7 @@ export function BadgePage({ badgeId }: { badgeId: string }) {
               <dt>Credential</dt>
               <dd>{REGIME[q.data.credentialRegime] ?? q.data.credentialRegime}</dd>
               <dt>Created</dt>
-              <dd>{new Date(badge.createdAt).toLocaleDateString(undefined, { dateStyle: "long" })}</dd>
+              <dd>{formatDate(badge.createdAt)}</dd>
             </dl>
             {badge.criteria && (
               <div className="bw-criteria">
@@ -678,7 +688,7 @@ function ShareOutside({ badgeId, awards }: { badgeId: string; awards: MyAward[] 
         {awards.map((a) => (
           <li key={a.awardId} className="bw-share-item">
             <span className="bw-share-when">
-              Awarded {a.decidedAt ? new Date(a.decidedAt).toLocaleDateString(undefined, { dateStyle: "medium" }) : ""}
+              Awarded {a.decidedAt ? formatDate(a.decidedAt) : ""}
               {a.note && <span className="bw-offer-note"> &ldquo;{a.note}&rdquo;</span>}
             </span>
             {a.shared ? (
@@ -760,6 +770,7 @@ function OwnerNames({ entryIds }: { entryIds: string[] }) {
 /** Asking a community badge's owners for it: a request to join its badge group. */
 function AskForBadge({ badge, groupId, myState }: { badge: Badge; groupId: string; myState: string }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [note, setNote] = useState<string | null>(null);
@@ -797,7 +808,20 @@ function AskForBadge({ badge, groupId, myState }: { badge: Badge; groupId: strin
       {myState === "requested" ? (
         <>
           <p className="muted">You&rsquo;ve asked for this badge. Its owners decide.</p>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => withdraw.mutate()} disabled={withdraw.isPending}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={async () => {
+              const ok = await confirm({
+                title: "Withdraw your request?",
+                message: "Its owners no longer see it. You can ask again later.",
+                confirmLabel: "Withdraw",
+                destructive: true,
+              });
+              if (ok) withdraw.mutate();
+            }}
+            disabled={withdraw.isPending}
+          >
             Withdraw my request
           </button>
         </>
