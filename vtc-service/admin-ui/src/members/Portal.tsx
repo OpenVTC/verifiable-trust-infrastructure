@@ -26,6 +26,7 @@ import { forgetMemberSessionKey } from "@/lib/console-key";
 import { forgetSessionKey } from "./oob";
 import { SignIn, isJoinIntent } from "./SignIn";
 import { CommunityTopbar, fetchCommunityProfile } from "../signin/SignInLayout";
+import { shortenDid } from "@/lib/format";
 
 async function fetchMe(): Promise<MemberMe | null> {
   try {
@@ -105,10 +106,6 @@ function useRoute(): Route {
   return route;
 }
 
-function shortDid(did: string): string {
-  return did.length > 34 ? `${did.slice(0, 20)}…${did.slice(-8)}` : did;
-}
-
 export function Portal() {
   const qc = useQueryClient();
   const route = useRoute();
@@ -165,7 +162,7 @@ export function Portal() {
       <CommunityTopbar communityName={communityName} logoUrl={logoUrl} tag="Members">
         {me.data && (
           <div className="topbar-user">
-            <code title={me.data.did}>{shortDid(me.data.did)}</code>
+            <code title={me.data.did}>{shortenDid(me.data.did)}</code>
             <button type="button" className="btn btn-ghost btn-sm" onClick={signOut}>
               <LogOut size={14} aria-hidden="true" /> Sign out
             </button>

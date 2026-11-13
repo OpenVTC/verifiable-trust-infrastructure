@@ -49,7 +49,7 @@ import { MemberAvatar, nameOf, text } from "./member-card";
 import { Passkeys } from "./Passkeys";
 import { walletElections } from "./wallet-elections";
 import { walletRooms } from "./wallet-rooms";
-import { formatDate } from "@/lib/format";
+import { formatDate, shortenDid } from "@/lib/format";
 
 const STALE = 30_000;
 
@@ -282,7 +282,7 @@ function DidChip({ did }: { did: string }) {
   };
   return (
     <span className="ph-did">
-      <code title={did}>{did}</code>
+      <code title={did}>{shortenDid(did)}</code>
       <button type="button" className="btn btn-ghost btn-sm" onClick={copy} aria-label="Copy your DID">
         {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
       </button>

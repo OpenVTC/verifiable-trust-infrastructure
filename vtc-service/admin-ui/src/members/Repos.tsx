@@ -29,16 +29,12 @@ import {
   type WalletLinkStarted,
 } from "./git-api";
 import { Crumbs } from "./member-card";
-import { formatDate, formatDateTime } from "@/lib/format";
+import { formatDate, formatDateTime, shortenDid } from "@/lib/format";
 
 const POLL_MS = 5000;
 
-function shortDid(did: string): string {
-  return did.length > 34 ? `${did.slice(0, 20)}…${did.slice(-8)}` : did;
-}
-
 function Who({ did, me }: { did: string; me: string }) {
-  return did === me ? <strong>you</strong> : <code title={did}>{shortDid(did)}</code>;
+  return did === me ? <strong>you</strong> : <code title={did}>{shortenDid(did)}</code>;
 }
 
 function Resource({ resource }: { resource: string }) {

@@ -22,7 +22,7 @@ import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
-import { formatIso, shorten as shortId } from "@/lib/format";
+import { formatIso, shorten as shortId, shortenDid } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { NamedDid } from "@/components/NamedDid";
 import { useToast } from "@/lib/toast";
@@ -107,7 +107,7 @@ export function Sessions() {
   const revokeMany = useMutation({
     mutationFn: revokeAllForDid,
     onSuccess: (_, did) => {
-      toast.push("success", `Revoked every session for ${did}`);
+      toast.push("success", `Revoked every session for ${shortenDid(did)}`);
       void qc.invalidateQueries({ queryKey: ["sessions"] });
       void qc.invalidateQueries({ queryKey: ["whoami"] });
     },
@@ -305,7 +305,7 @@ export function Sessions() {
                               : `Revoke session ${shortId(s.id)}?`,
                             message: isMine
                               ? "You'll be signed out of this tab."
-                              : `${s.subject} loses this session immediately.`,
+                              : <><NamedDid book={nameBook} did={s.subject} /> loses this session immediately.</>,
                             confirmLabel: "Revoke",
                             destructive: true,
                           });
@@ -323,7 +323,7 @@ export function Sessions() {
                           title={`Revoke all ${sameDidCount} sessions for ${s.subject}`}
                           onClick={async () => {
                             const ok = await confirm({
-                              title: `Revoke all sessions for ${s.subject}?`,
+                              title: `Revoke all sessions for ${shortenDid(s.subject)}?`,
                               message: `${sameDidCount} active sessions will be terminated immediately.`,
                               confirmLabel: "Revoke all",
                               destructive: true,

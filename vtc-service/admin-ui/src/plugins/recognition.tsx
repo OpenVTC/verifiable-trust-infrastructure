@@ -140,7 +140,7 @@ export function Recognition() {
     onSuccess: (_r, v) => {
       toast.push(
         "success",
-        `Discarded. The registry's record for ${v.did.slice(0, 24)}… is unchanged.`,
+        `Discarded. The registry's record for ${shortenDid(v.did)} is unchanged.`,
       );
       invalidate();
     },

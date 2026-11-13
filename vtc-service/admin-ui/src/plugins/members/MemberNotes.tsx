@@ -24,7 +24,7 @@ import {
   showEntryByDid,
 } from "@/lib/directory";
 import { gestureFromConfirm } from "@/lib/signed-act";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, shortenDid } from "@/lib/format";
 
 export function MemberNotesCard({ did }: { did: string }) {
   const qc = useQueryClient();
@@ -91,7 +91,7 @@ export function MemberNotesCard({ did }: { did: string }) {
           {items.map((n) => (
             <li key={n.noteId} className={n.redactedBy ? "note note-redacted" : "note"}>
               <div className="note-meta muted">
-                {formatDateTime(n.createdAt)} · <code title={n.author}>{n.author.slice(0, 28)}…</code>
+                {formatDateTime(n.createdAt)} · <code title={n.author}>{shortenDid(n.author)}</code>
                 {n.followUp && <> · follow up by {n.followUp}</>}
               </div>
               {n.redacts ? (
