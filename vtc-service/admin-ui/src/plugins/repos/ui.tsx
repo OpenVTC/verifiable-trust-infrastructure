@@ -37,6 +37,7 @@ import {
 } from "./model";
 import { Protected } from "@/components/Protected";
 import { useModal } from "@/components/useModal";
+import { formatDate } from "@/lib/format";
 
 /** Where the plugin is mounted (`src/plugins/index.ts`). */
 export const REPOS_PATH = "/repos";
@@ -167,9 +168,7 @@ export function refusalHint(err: unknown, singleAdmin = false): string | null {
 }
 
 export function formatDay(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
+  return iso ? formatDate(iso) : "—";
 }
 
 /** The code of a signed read's refusal, where the answer was a

@@ -29,6 +29,7 @@
 // Rust renderer) are run here, in the VTC and in `cnm`, so the three agree.
 
 import { base58btcDecode, base58btcEncode, jcsCanonicalize } from "./jcs";
+import { formatDateTime } from "@/lib/format";
 
 const SPEC = "https://trusttasks.org/spec";
 
@@ -479,8 +480,7 @@ export function formatValue(
       return value.join(", ");
     case "datetime": {
       if (typeof value !== "string") return null;
-      const t = Date.parse(value);
-      return Number.isNaN(t) ? value : new Date(t).toLocaleString();
+      return formatDateTime(value);
     }
     case "duration":
       if (typeof value !== "string" && typeof value !== "number") return null;

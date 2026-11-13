@@ -35,6 +35,7 @@ import {
   type TransferProgress,
   type WalletRooms,
 } from "./wallet-rooms";
+import { formatDate, formatDateTime } from "@/lib/format";
 
 function shortDid(did: string): string {
   return did.length > 40 ? `${did.slice(0, 22)}…${did.slice(-10)}` : did;
@@ -54,10 +55,8 @@ export function authorName(did: string, me?: string): string {
   return shortDid(did);
 }
 
-function when(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-}
+/** A moment, with its zone (#2613). */
+const when = formatDateTime;
 
 /** Keep `--topbar-h` at the sticky top bar's height, so a sticky pane sits below it. */
 function useTopbarHeight() {
@@ -233,7 +232,7 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
               </span>
               {offerDescription(o) && <span className="muted wrap">{offerDescription(o)}</span>}
               <span className="muted small">
-                {o.visibility} · {o.actions.join(", ")} · until {new Date(o.validUntil).toLocaleDateString()}
+                {o.visibility} · {o.actions.join(", ")} · until {formatDate(o.validUntil)}
                 {o.member === member ? " · as you" : ` · as ${shortDid(o.member)}`}
                 {o.state === "unfinished" ? " · accepted, not finished — finish it here" : ""}
               </span>
@@ -267,7 +266,7 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
                 {o.state === "joined"
                   ? "joined"
                   : o.state === "removed"
-                    ? `removed${o.removedAt ? ` ${new Date(o.removedAt).toLocaleDateString()}` : ""}`
+                    ? `removed${o.removedAt ? ` ${formatDate(o.removedAt)}` : ""}`
                     : o.state === "suspended"
                       ? "closed for now"
                       : "needs re-admission"}
@@ -443,7 +442,7 @@ function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
         {holding(room)}
         {room.member ? (room.member === me ? " · as you" : ` · as ${shortDid(room.member)}`) : ""}
         {" · shared until "}
-        {new Date(room.expiresAt).toLocaleDateString()}
+        {formatDate(room.expiresAt)}
         {roomStateWords(room) ? ` · ${roomStateWords(room)!.label}` : ""}
       </span>
     </li>
@@ -852,7 +851,7 @@ function RecordBody({
         <div>
           <dt>Version</dt>
           <dd>
-            {rec.version} · {new Date(rec.updatedAt).toLocaleString()}
+            {rec.version} · {formatDateTime(rec.updatedAt)}
           </dd>
         </div>
       </dl>

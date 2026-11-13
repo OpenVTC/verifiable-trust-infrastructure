@@ -8,6 +8,7 @@ import { KeyRound, Plus, Trash2 } from "lucide-react";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { memberFetch, type MemberPasskey } from "./api";
 import { addPasskey, passkeysSupported } from "./auth";
+import { formatDate } from "@/lib/format";
 
 function shortId(id: string): string {
   return id.length > 16 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id;
@@ -89,7 +90,7 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
                 <strong>{p.label || "Passkey"}</strong>
                 <span className="muted">
                   {" "}
-                  · added {new Date(p.registeredAt).toLocaleDateString()} ·{" "}
+                  · added {formatDate(p.registeredAt)} ·{" "}
                   <code>{shortId(p.credentialId)}</code>
                 </span>
               </div>

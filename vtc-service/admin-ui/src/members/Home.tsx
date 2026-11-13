@@ -49,6 +49,7 @@ import { MemberAvatar, nameOf, text } from "./member-card";
 import { Passkeys } from "./Passkeys";
 import { walletElections } from "./wallet-elections";
 import { walletRooms } from "./wallet-rooms";
+import { formatDate } from "@/lib/format";
 
 const STALE = 30_000;
 
@@ -141,7 +142,7 @@ export function Home({ me }: { me: MemberMe }) {
           </div>
           <div>
             <dt>Member since</dt>
-            <dd>{new Date(me.joinedAt).toLocaleDateString(undefined, { dateStyle: "medium" })}</dd>
+            <dd>{formatDate(me.joinedAt)}</dd>
           </div>
           <div>
             <dt>Signed in with</dt>

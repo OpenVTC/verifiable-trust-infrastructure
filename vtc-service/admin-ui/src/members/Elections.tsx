@@ -38,11 +38,10 @@ import {
   type PageNotifiedElection,
   type WalletElections,
 } from "./wallet-elections";
+import { formatDateTime } from "@/lib/format";
 
-function when(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
+/** A voting deadline, with its zone (#2613). */
+const when = formatDateTime;
 
 export function electionHref(electionId: string): string {
   return `#/elections/${encodeURIComponent(electionId)}`;

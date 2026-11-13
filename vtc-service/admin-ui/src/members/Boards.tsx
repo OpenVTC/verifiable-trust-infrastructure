@@ -55,14 +55,18 @@ import { DirectoryError } from "./directory-api";
 import { electionHref } from "./Elections";
 import { Crumbs } from "./member-card";
 import { declinedInWallet, walletElections } from "./wallet-elections";
+import { formatDate, formatDateTime, parseTime } from "@/lib/format";
 
 export function boardHref(boardId: string): string {
   return `#/boards/${encodeURIComponent(boardId)}`;
 }
 
-function when(iso: string, opts: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" }): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, opts);
+/** A deadline, with its zone (`formatDateTime`, #2613); `opts` only for a
+ *  schedule slot's own short form. */
+function when(iso: string, opts?: Intl.DateTimeFormatOptions): string {
+  if (!opts) return formatDateTime(iso);
+  const d = parseTime(iso);
+  return d ? d.toLocaleString(undefined, opts) : iso;
 }
 
 function problem(e: unknown): string {
@@ -594,7 +598,7 @@ function IdeaPanel({
             </h2>
             <p className="muted bd-pre">{idea.description}</p>
             <p className="small muted">
-              Proposed by {authorName(idea.proposer)} on {when(idea.proposedAt, { dateStyle: "medium" })}
+              Proposed by {authorName(idea.proposer)} on {formatDate(idea.proposedAt)}
             </p>
           </div>
 

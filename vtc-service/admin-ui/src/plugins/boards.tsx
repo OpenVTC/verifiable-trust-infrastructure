@@ -52,6 +52,7 @@ import { listGroups } from "@/lib/groups";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
+import { formatDateTime } from "@/lib/format";
 
 export function Boards() {
   return (
@@ -64,10 +65,8 @@ export function Boards() {
   );
 }
 
-function when(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
+/** A deadline, with its zone (#2613). */
+const when = formatDateTime;
 
 function phaseWords(b: Board, now = Date.now()): string {
   if (b.status !== "open") return b.status === "closed" ? "Closed" : "Archived";

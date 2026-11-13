@@ -29,6 +29,7 @@ import {
   type WalletLinkStarted,
 } from "./git-api";
 import { Crumbs } from "./member-card";
+import { formatDate, formatDateTime } from "@/lib/format";
 
 const POLL_MS = 5000;
 
@@ -51,7 +52,7 @@ function Resource({ resource }: { resource: string }) {
 }
 
 function day(iso: string): string {
-  return new Date(iso).toLocaleDateString();
+  return formatDate(iso);
 }
 
 function RightPills({ rights }: { rights: MemberRight[] }) {
@@ -292,7 +293,7 @@ function ForgeAccounts({
       {pending && (
         <p className="alert alert-info" role="status">
           Finish linking on {pending.forge} in your wallet&rsquo;s window, before{" "}
-          {new Date(pending.expiresAt).toLocaleTimeString()}.
+          {formatDateTime(pending.expiresAt)}.
           {status.isError ? ` ${(status.error as Error).message}` : " Waiting for the forge…"}
         </p>
       )}

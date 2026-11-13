@@ -13,6 +13,7 @@ import type { DirectoryCardBlobRef } from "@/lib/wire-types";
 
 import { getImage } from "./directory-api";
 import { pictureUrl } from "./picture";
+import { formatDate } from "@/lib/format";
 
 /** `v` as plain text: a list joined, an object (a picture) nothing. */
 export function text(v: unknown): string {
@@ -55,7 +56,7 @@ export function verifiedOf(v: unknown): VerifiedValue | null {
  *  value the member typed. */
 export function Verified({ value }: { value: VerifiedValue }) {
   const shown = typeof value.value === "boolean" ? (value.value ? "Yes" : "No") : String(value.value);
-  const until = value.validUntil ? `, until ${new Date(value.validUntil).toLocaleDateString()}` : "";
+  const until = value.validUntil ? `, until ${formatDate(value.validUntil)}` : "";
   return (
     <span className="verified-value">
       {shown}{" "}

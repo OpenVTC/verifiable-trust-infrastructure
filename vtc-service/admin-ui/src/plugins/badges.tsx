@@ -24,7 +24,7 @@ import { DataTable } from "@/components/DataTable";
 import { DidText } from "@/components/DidText";
 import { EmptyState } from "@/components/EmptyState";
 import { byFace, EntryName, faceLabel, faceMatches, useEntryFaces } from "@/components/EntryName";
-import { shortenDid } from "@/lib/format";
+import { formatDate, shortenDid } from "@/lib/format";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
 import {
@@ -82,7 +82,7 @@ function kindLabel(b: Badge): string {
 }
 
 function when(iso: string | undefined): string {
-  return iso ? new Date(iso).toLocaleDateString() : "—";
+  return iso ? formatDate(iso) : "—";
 }
 
 export function Badges() {

@@ -38,7 +38,7 @@ import {
 import { BadgeBuilder } from "@/components/BadgeBuilder";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Protected } from "@/components/Protected";
-import { shortenDid } from "@/lib/format";
+import { formatDate, shortenDid } from "@/lib/format";
 
 import {
   acceptOffer,
@@ -598,7 +598,7 @@ export function BadgePage({ badgeId }: { badgeId: string }) {
               <dt>Credential</dt>
               <dd>{REGIME[q.data.credentialRegime] ?? q.data.credentialRegime}</dd>
               <dt>Created</dt>
-              <dd>{new Date(badge.createdAt).toLocaleDateString(undefined, { dateStyle: "long" })}</dd>
+              <dd>{formatDate(badge.createdAt)}</dd>
             </dl>
             {badge.criteria && (
               <div className="bw-criteria">
@@ -688,7 +688,7 @@ function ShareOutside({ badgeId, awards }: { badgeId: string; awards: MyAward[] 
         {awards.map((a) => (
           <li key={a.awardId} className="bw-share-item">
             <span className="bw-share-when">
-              Awarded {a.decidedAt ? new Date(a.decidedAt).toLocaleDateString(undefined, { dateStyle: "medium" }) : ""}
+              Awarded {a.decidedAt ? formatDate(a.decidedAt) : ""}
               {a.note && <span className="bw-offer-note"> &ldquo;{a.note}&rdquo;</span>}
             </span>
             {a.shared ? (

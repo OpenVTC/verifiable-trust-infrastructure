@@ -12,6 +12,7 @@ import { ShieldCheck } from "lucide-react";
 
 import { badgeHref, getBadgeImage, type Badge } from "./badges-api";
 import { pictureUrl } from "./picture";
+import { formatDate } from "@/lib/format";
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
@@ -50,7 +51,7 @@ export function BadgeArt({ badge, width = 120 }: { badge: Badge; width?: number 
 
 /** A date as a wall shows it: "8 Nov 2026". */
 function onDay(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
+  return formatDate(iso);
 }
 
 /**
@@ -137,5 +138,5 @@ export function ago(iso: string | undefined): string {
     return h <= 0 ? "just now" : `${h} hour${h === 1 ? "" : "s"} ago`;
   }
   if (d < 30) return `${d} day${d === 1 ? "" : "s"} ago`;
-  return new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
+  return formatDate(iso);
 }
