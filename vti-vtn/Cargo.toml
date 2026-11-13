@@ -14,7 +14,9 @@ readme = "README.md"
 default = []
 # Talking to a network over HTTPS: `vtn/*` Trust Tasks addressed to the expected
 # network DID, and resolving a credential's Bitstring Status List.
-client = ["dep:reqwest", "dep:tokio"]
+# The status-list fetch goes through `vta_sdk::http`'s hardened client and
+# address guards (#2662).
+client = ["dep:reqwest", "dep:tokio", "dep:vta-sdk", "vta-sdk/http"]
 # Resolving a signer's DID (`did:webvh` over the network) and checking its key is authorised
 # for the proof's purpose: `resolve::VmKeyResolver`, what a client verifies answers with.
 resolve = ["dep:vta-sdk", "dep:affinidi-did-resolver-cache-sdk"]

@@ -108,7 +108,13 @@ agent-names = [
   # `fill_book` resolves through `resolver::shared_did_resolver`.
   "dep:tokio",
 ]
+# `vta_sdk::http` alone: the hardened foreign-fetch client, the public-address
+# guards and the capped body reader, without the rest of `client` (the TDK,
+# DIDComm). For a crate that fetches attacker-named URLs and nothing else of
+# this SDK's client — `vti-vtn`'s status-list checker (#2662).
+http = ["dep:reqwest", "dep:tokio"]
 client = [
+  "http",
   # A client verifies the responses it receives; see `trust_task_proof`.
   "proof-verify",
   "dep:reqwest",
