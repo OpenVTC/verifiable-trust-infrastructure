@@ -1743,7 +1743,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # From the repository root: the job's default working directory is the
+      # proxy's. rust-toolchain.toml still applies down there (rustup looks up
+      # the tree for it), so the proxy builds with the pinned compiler too.
       - name: Install the Rust toolchain
+        working-directory: .
         run: bash scripts/install-rust-toolchain.sh
 
       # Its own workspace and lockfile, so its own cache root. Registry only:
