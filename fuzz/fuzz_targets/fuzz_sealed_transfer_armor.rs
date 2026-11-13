@@ -31,6 +31,11 @@ fuzz_target!(|data: &[u8]| {
             None,
             PinnedOnlyPolicy::CallerHasIndependentTrustAnchor,
         );
-        let _ = open_bundle_with_policy(&recipient, bundle, Some("sha256:00"), PinnedOnlyPolicy::RequireOobDigest);
+        let _ = open_bundle_with_policy(
+            &recipient,
+            bundle,
+            Some("sha256:00"),
+            PinnedOnlyPolicy::RequireOobDigest,
+        );
     }
 });

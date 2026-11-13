@@ -30,8 +30,10 @@ serde_json = "1"
 vta-sdk = { path = "../vta-sdk", features = ["attest-verify", "sealed-transfer", "provision-integration"] }
 # The credential-exchange parsers (SD-JWT-VC presentation, OID4VP `vp_token`,
 # OID4VCI key-binding proof) are vtc-service library functions and exist
-# nowhere else. No default features: no admin-UI npm build, no keyring, no TSP.
-vtc-service = { path = "../vtc-service", default-features = false }
+# nowhere else. Its default features less `admin-ui` (no npm build) and
+# `keyring`: vtc-service does not build with no features at all today
+# (`url`, `website` and the TSP sealing are used outside their gates).
+vtc-service = { path = "../vtc-service", default-features = false, features = ["setup", "website", "tsp"] }
 
 [[bin]]
 name = "fuzz_nitro_quote"
