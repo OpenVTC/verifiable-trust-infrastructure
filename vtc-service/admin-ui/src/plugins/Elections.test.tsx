@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Elections } from "@/plugins/elections";
 import {
   ELECTIONS_BALLOT_BOXES_LIST_TASK,
+  ELECTIONS_CANCEL_TASK,
   ELECTIONS_CERTIFY_TASK,
+  ELECTIONS_CLOSE_TASK,
   ELECTIONS_CREATE_TASK,
   ELECTIONS_LIST_TASK,
   ELECTIONS_SHOW_TASK,
@@ -245,6 +247,27 @@ describe("Elections", () => {
       electionId: "agm-2027",
       auditAttestations: [],
     });
+  });
+
+  it("asks before closing early or cancelling, and backing out is no refusal (#2608)", async () => {
+    const requests = mockFetch(
+      routes([taskRoute(ELECTIONS_SHOW_TASK, shown("voting", { manifest: { ...manifest, allowEarlyClose: true } }))]),
+    );
+    renderWithProviders(<Elections />, { route: "/elections/agm-2027", path: "/elections/*" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close early" }));
+    expect(await screen.findByText(/counts are final/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: "Wrong roll" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel the election" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Keep it" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sentPayloads(requests, ELECTIONS_CLOSE_TASK)).toHaveLength(0);
+    expect(sentPayloads(requests, ELECTIONS_CANCEL_TASK)).toHaveLength(0);
+    expect(screen.queryByText("Not cancelled")).toBeNull();
+    expect(screen.queryByText("Not closed")).toBeNull();
   });
 
   it("shows a certified result in the members' words, and says why written answers are held back", async () => {

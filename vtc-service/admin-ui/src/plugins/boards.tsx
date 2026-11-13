@@ -732,6 +732,7 @@ function BoardDetail() {
     onError: (err) => toast.pushFromError(err, "The board was not changed"),
   });
 
+  const confirm = useConfirm();
   const ideas = useMemo(
     () =>
       [...(shown.data?.ideas ?? [])].sort(
@@ -750,6 +751,28 @@ function BoardDetail() {
   }
   const board = shown.data.board;
   const titleOf = (ideaId?: string) => ideas.find((i) => i.ideaId === ideaId)?.title;
+  // Ending voting with final counts is the least reversible thing a
+  // facilitator does: say what it does in a dialog, not only in a hover title
+  // that touch and keyboard users never see (#2608).
+  const changeStatus = async (s: "closed" | "archived") => {
+    const ok = await confirm(
+      s === "closed"
+        ? {
+            title: `Close ${board.title} and end voting?`,
+            message:
+              "New ideas and notes stop. Elections open for voting close early with their counts final; those not yet open are cancelled.",
+            confirmLabel: "Close and end voting",
+            destructive: true,
+          }
+        : {
+            title: `Archive ${board.title}?`,
+            message: "An archived board takes no change at all, and members no longer see it.",
+            confirmLabel: "Archive",
+            destructive: true,
+          },
+    );
+    if (ok) status.mutate(s);
+  };
 
   return (
     <>
@@ -770,14 +793,14 @@ function BoardDetail() {
                   type="button"
                   className="secondary"
                   title="Stops new ideas and notes, and ends the voting: elections open for voting close early with their counts final; those not yet open are cancelled."
-                  onClick={() => status.mutate("closed")}
+                  onClick={() => void changeStatus("closed")}
                   disabled={status.isPending}
                 >
                   Close and end voting
                 </button>
               )}
               {board.status === "closed" && (
-                <button type="button" className="secondary" onClick={() => status.mutate("archived")} disabled={status.isPending}>
+                <button type="button" className="secondary" onClick={() => void changeStatus("archived")} disabled={status.isPending}>
                   Archive
                 </button>
               )}

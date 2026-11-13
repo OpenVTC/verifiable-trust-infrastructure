@@ -32,7 +32,8 @@ import { InfoTip } from "@/components/InfoTip";
 import { fetchAllRegistryRecords } from "@/plugins/recognition/records";
 import { pendingFoot, skipMessage } from "@/plugins/recognition/pending";
 import { TrustRecords } from "@/plugins/recognition/TrustRecords";
-import { formatIso } from "@/lib/format";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { formatIso, shortenDid } from "@/lib/format";
 
 /** Protocol names as the specs write them, not as the wire encodes them. */
 function protocolName(protocol: string): string {
@@ -730,6 +731,7 @@ function FailedJobRow({
   onRetry: () => void;
   onDiscard: () => void;
 }) {
+  const confirm = useConfirm();
   const gaveUp = job.lastAttemptedAt ?? job.createdAt;
   return (
     <tr>
@@ -781,18 +783,19 @@ function FailedJobRow({
           type="button"
           className="destructive sm"
           disabled={busy}
-          onClick={() => {
-            if (
-              window.confirm(
-                `Discard the queued ${job.kind} for ${job.memberDid}?\n\n` +
-                  `This deletes the community's record that the change never ` +
-                  `reached the registry. The registry itself is not touched, so ` +
-                  `for a failed publish the member stays unpublished — ` +
-                  `permanently, and with nothing left to show it.`,
-              )
-            ) {
-              onDiscard();
-            }
+          onClick={async () => {
+            // The shared dialog, not `window.confirm` (#2608).
+            const ok = await confirm({
+              title: `Discard the queued ${kindName(job.kind).toLowerCase()} for ${shortenDid(job.memberDid)}?`,
+              message:
+                "This deletes the community's record that the change never " +
+                "reached the registry. The registry itself is not touched, so " +
+                "for a failed publish the member stays unpublished — " +
+                "permanently, and with nothing left to show it.",
+              confirmLabel: "Discard",
+              destructive: true,
+            });
+            if (ok) onDiscard();
           }}
         >
           Discard
