@@ -51,18 +51,13 @@
 //!   tags along — the auth extractor prefers the bearer token too.
 //! - **No `vtc_admin_session` cookie** — not a cookie session, so not
 //!   forgeable (see above). This subsumes the unauthenticated
-//!   bootstrap flows (`/auth/*`, `/install/claim/*`, `/auth/recognise*`,
-//!   passkey login) and the public CLI/wallet join surface
-//!   (`/join-requests`, `…/{id}/accept`, `…/{id}/status`), none of
-//!   which carry a session cookie.
-//! - **[`CSRF_EXEMPT_PATHS`] + the join holder suffixes** — an
-//!   explicit belt-and-braces list for the known unauthenticated
-//!   bootstrap + public-form endpoints, kept so they pass even on the
-//!   off chance a request reaches them carrying a stale session
-//!   cookie (e.g. a re-login while an old cookie lingers). The
-//!   holder-facing `…/{id}/accept` / `…/{id}/status` POSTs are
-//!   suffix-matched; the admin `decide` endpoint on the
-//!   same mount is deliberately left to the cookie-session gate.
+//!   bootstrap flows (the wallet `…/auth/*` routes, passkey login),
+//!   none of which carry a session cookie.
+//! - **[`CSRF_EXEMPT_PATHS`]** — an explicit belt-and-braces list for
+//!   the known unauthenticated bootstrap endpoints, kept so they pass
+//!   even on the off chance a request reaches them carrying a stale
+//!   session cookie (e.g. a re-login while an old cookie lingers).
+//!   Every entry is a live route (#2661).
 
 use axum::body::Body;
 use axum::extract::Request;
@@ -76,17 +71,29 @@ use subtle::ConstantTimeEq;
 // auth extractor reads to authenticate a cookie session. If a new
 // auth cookie is ever added there, the CSRF gate must learn about it
 // too — keep them pinned to the same symbol so the coupling is loud.
-use vti_common::auth::extractor::{ADMIN_REFRESH_COOKIE, ADMIN_SESSION_COOKIE};
+use vti_common::auth::extractor::{
+    ADMIN_REFRESH_COOKIE, ADMIN_SESSION_COOKIE, LEGACY_ADMIN_REFRESH_COOKIE,
+    LEGACY_ADMIN_SESSION_COOKIE,
+};
+
+/// The console's CSRF double-submit cookie. `__Host-`-prefixed (#2661) — it is
+/// `Path=/`, `Secure` and carries no `Domain` — so a sibling subdomain cannot
+/// plant a value of its own choosing.
+pub const ADMIN_CSRF_COOKIE: &str = "__Host-csrf";
+
+/// The name [`ADMIN_CSRF_COOKIE`] had before its `__Host-` prefix: read,
+/// after the prefixed name, for one release; never written, only cleared.
+pub const LEGACY_ADMIN_CSRF_COOKIE: &str = "csrf";
 
 /// Paths exempt from CSRF: unauth bootstrapping flows + the public
 /// form-post target. Each is documented in the module-level
-/// rationale.
-const CSRF_EXEMPT_PATHS: &[&str] = &[
-    "/v1/join-requests",
-    "/v1/auth/challenge",
-    "/v1/auth/",
-    // VTA-wallet header-exempt auth surface (unauthenticated bootstrap,
-    // same rationale as `/v1/auth/*` above — no session cookie yet).
+/// rationale. Every one is a live route — `every_csrf_exemption_names_a_live_route`
+/// (in `tests/it/cookie_session.rs`) holds that, so an exemption cannot outlive
+/// the route it was written for and quietly cover whatever is mounted there
+/// next (#2661).
+pub const CSRF_EXEMPT_PATHS: &[&str] = &[
+    // VTA-wallet header-exempt auth surface (unauthenticated bootstrap —
+    // no session cookie yet).
     "/v1/wallet/auth/challenge",
     "/v1/wallet/auth/",
     // The member portal's wallet aliases, for the same reason.
@@ -105,44 +112,40 @@ const CSRF_EXEMPT_PATHS: &[&str] = &[
     // SDK/CLI refresh carries no session cookie, so `has_session_cookie`
     // below lets it through unenforced. Only the browser path, which
     // already sends `X-CSRF-Token` on every mutation, is now gated.
-    "/v1/install/claim/start",
-    "/v1/install/claim/finish",
-    // First-admin finalisation — unauthenticated (the setup-session JWT in
-    // the body is the credential), driven by the install page + CNM CLI.
-    "/v1/admin/bootstrap",
+    //
+    // `/v1/join-requests` (and its holder `…/{id}/accept`, `…/{id}/status`
+    // suffixes), `/v1/auth/challenge`, `/v1/auth/`,
+    // `/v1/install/claim/{start,finish}` and `/v1/admin/bootstrap` were
+    // exempt too; their routes are gone (each is a Trust Task on
+    // `/v1/trust-tasks` now), so the exemptions went with them (#2661).
 ];
 
-/// True when the request carries an `Authorization: Bearer …` header.
-/// Such requests are structurally CSRF-immune (a browser never
-/// auto-attaches `Authorization` the way it replays cookies), so they
-/// skip the cookie/origin checks entirely — see the module rationale.
+/// Routes that read their credential from a cookie **whatever else the
+/// request carries**: the cookie refresh and sign-out of both applications.
+/// A bearer header does not stand in for the cookie there — the handler reads
+/// the cookie regardless — so it must not skip the CSRF check either (#2661).
+pub const COOKIE_READING_PATHS: &[&str] = &[
+    "/v1/auth/refresh",
+    "/v1/auth/sign-out",
+    "/v1/member/auth/refresh",
+    "/v1/member/sign-out",
+];
+
+/// True when the request carries an `Authorization: Bearer …` header **the
+/// extractors read** ([`vti_common::auth::extractor::bearer_token`]). Such a
+/// request authenticates by that header, which a browser never attaches on its
+/// own, so it is structurally CSRF-immune — see the module rationale. A
+/// header the extractors would not read (leading whitespace, an empty
+/// token) does not count: the request would authenticate by
+/// its cookie, so it is gated like any cookie request (#2661).
 fn has_bearer_auth(headers: &HeaderMap) -> bool {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        // RFC 7235 auth-scheme is case-insensitive; tolerate leading
-        // whitespace. `get(..7)` keeps the slice on a char boundary so
-        // a multibyte value can't panic.
-        .and_then(|v| v.trim_start().get(..7))
-        .map(|scheme| scheme.eq_ignore_ascii_case("bearer "))
-        .unwrap_or(false)
+    vti_common::auth::extractor::bearer_token(headers).is_some_and(|t| !t.trim().is_empty())
 }
 
-/// True when `path` is exempt from CSRF enforcement: the static
-/// bootstrapping flows in [`CSRF_EXEMPT_PATHS`] plus the parametrised
-/// public holder endpoints on the join surface
-/// (`/v1/join-requests/{id}/accept`, `…/{id}/status`), which can't be
-/// exact-matched. Suffix-matching `/accept` / `/status` under the
-/// join-requests prefix deliberately leaves the admin `decide`
-/// endpoint on the same mount gated.
+/// True when `path` is exempt from CSRF enforcement: the bootstrapping
+/// flows in [`CSRF_EXEMPT_PATHS`].
 fn is_csrf_exempt(path: &str) -> bool {
-    if CSRF_EXEMPT_PATHS.contains(&path) {
-        return true;
-    }
-    if let Some(rest) = path.strip_prefix("/v1/join-requests/") {
-        return rest.ends_with("/accept") || rest.ends_with("/status");
-    }
-    false
+    CSRF_EXEMPT_PATHS.contains(&path)
 }
 
 /// True when the request carries either admin cookie — the credentials
@@ -166,6 +169,21 @@ fn has_session_cookie(headers: &HeaderMap, jar: &CookieJar) -> bool {
         .any(|(name, _)| jar.session.contains(&name))
 }
 
+/// The request's CSRF cookie value for `jar`: the prefixed name first, then
+/// the name before the prefix.
+fn csrf_cookie_value<'a>(headers: &'a HeaderMap, jar: &CookieJar) -> Option<&'a str> {
+    jar.csrf.iter().find_map(|wanted| {
+        headers
+            .get_all(axum::http::header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|s| s.split(';'))
+            .map(|s| s.trim())
+            .filter_map(|kv| kv.split_once('='))
+            .find_map(|(k, v)| (k == *wanted).then_some(v))
+    })
+}
+
 /// The cookies that authenticate a request on a given path, and the CSRF
 /// cookie that pairs with them.
 ///
@@ -176,14 +194,24 @@ fn has_session_cookie(headers: &HeaderMap, jar: &CookieJar) -> bool {
 /// other's. Under `/v1/member/` only the member cookies authenticate anything —
 /// the member routes never read the console's — so they are the ones a forged
 /// request could ride, and the member CSRF value is the one to match.
+///
+/// Each name is listed with the one it had before its `__Host-` prefix, which
+/// is still read for one release (#2661) and so is still a credential a forged
+/// request could ride.
 struct CookieJar {
     session: &'static [&'static str],
-    csrf: &'static str,
+    /// The CSRF cookie's names, the one to prefer first.
+    csrf: &'static [&'static str],
 }
 
 const ADMIN_JAR: CookieJar = CookieJar {
-    session: &[ADMIN_SESSION_COOKIE, ADMIN_REFRESH_COOKIE],
-    csrf: "csrf",
+    session: &[
+        ADMIN_SESSION_COOKIE,
+        ADMIN_REFRESH_COOKIE,
+        LEGACY_ADMIN_SESSION_COOKIE,
+        LEGACY_ADMIN_REFRESH_COOKIE,
+    ],
+    csrf: &[ADMIN_CSRF_COOKIE, LEGACY_ADMIN_CSRF_COOKIE],
 };
 
 const MEMBER_JAR: CookieJar = CookieJar {
@@ -191,7 +219,10 @@ const MEMBER_JAR: CookieJar = CookieJar {
         crate::member_portal::MEMBER_SESSION_COOKIE,
         crate::member_portal::MEMBER_REFRESH_COOKIE,
     ],
-    csrf: crate::member_portal::MEMBER_CSRF_COOKIE,
+    csrf: &[
+        crate::member_portal::MEMBER_CSRF_COOKIE,
+        crate::member_portal::LEGACY_MEMBER_CSRF_COOKIE,
+    ],
 };
 
 fn jar_for(path: &str) -> &'static CookieJar {
@@ -213,18 +244,19 @@ pub async fn enforce(request: Request, next: Next) -> Response<Body> {
         _ => return next.run(request).await,
     }
 
+    let path = request.uri().path();
+
     // Bearer gate — programmatic clients authenticating with an
     // `Authorization: Bearer` token are structurally CSRF-immune.
     // Checked first so a bearer call passes even if a stale session
-    // cookie tags along (the auth extractor prefers bearer too).
-    if has_bearer_auth(request.headers()) {
+    // cookie tags along (the auth extractor prefers bearer too) — except on
+    // the routes that read their cookie whatever the request carries.
+    if has_bearer_auth(request.headers()) && !COOKIE_READING_PATHS.contains(&path) {
         return next.run(request).await;
     }
 
-    let path = request.uri().path();
-
     // Path gate — explicit belt-and-braces exemption for the known
-    // unauth bootstrap flows + public join surface.
+    // unauth bootstrap flows.
     if is_csrf_exempt(path) {
         return next.run(request).await;
     }
@@ -250,15 +282,7 @@ pub async fn enforce(request: Request, next: Next) -> Response<Body> {
     }
 
     // Check 2 — double-submit cookie + matching header.
-    let cookie_token = request
-        .headers()
-        .get_all(axum::http::header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|s| s.split(';'))
-        .map(|s| s.trim())
-        .filter_map(|kv| kv.split_once('='))
-        .find_map(|(k, v)| (k == jar.csrf).then_some(v));
+    let cookie_token = csrf_cookie_value(request.headers(), jar);
     let header_token = request
         .headers()
         .get("x-csrf-token")
@@ -308,11 +332,7 @@ mod tests {
     fn app() -> Router {
         Router::new()
             .route("/v1/members", post(ok).get(ok))
-            .route("/v1/join-requests", post(ok))
-            .route("/v1/join-requests/{id}/accept", post(ok))
-            .route("/v1/join-requests/{id}/status", post(ok))
-            .route("/v1/join-requests/{id}/decide", post(ok))
-            .route("/v1/auth/challenge", post(ok))
+            .route("/v1/wallet/auth/challenge", post(ok))
             .route("/v1/member/passkeys/register/start", post(ok))
             .layer(axum::middleware::from_fn(enforce))
     }
@@ -429,27 +449,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_join_request_post_bypasses() {
-        let resp = app()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/join-requests")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
     async fn auth_challenge_post_bypasses() {
         let resp = app()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/auth/challenge")
+                    .uri("/v1/wallet/auth/challenge")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -504,56 +509,6 @@ mod tests {
                     .method("POST")
                     .uri("/v1/members")
                     .header("authorization", "Basic dXNlcjpwYXNz")
-                    .header("cookie", SESSION_COOKIE)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn holder_accept_post_bypasses() {
-        let resp = app()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/join-requests/req-123/accept")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn holder_status_post_bypasses() {
-        let resp = app()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/join-requests/req-123/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn admin_decide_on_join_mount_stays_gated() {
-        // `decide` shares the join-requests mount but is an admin
-        // action — a cookie-session POST with no token must 403 (only
-        // the holder `accept`/`status` suffixes are exempt, and only a
-        // cookie session is gated at all).
-        let resp = app()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/join-requests/req-123/decide")
                     .header("cookie", SESSION_COOKIE)
                     .body(Body::empty())
                     .unwrap(),
@@ -621,8 +576,132 @@ mod tests {
 
     #[test]
     fn member_paths_use_the_member_jar_and_nothing_else_does() {
-        assert_eq!(jar_for("/v1/member/me").csrf, "vtc_member_csrf");
-        assert_eq!(jar_for("/v1/members").csrf, "csrf");
-        assert_eq!(jar_for("/v1/auth/refresh").csrf, "csrf");
+        assert_eq!(jar_for("/v1/member/me").csrf[0], "__Host-vtc_member_csrf");
+        assert_eq!(jar_for("/v1/members").csrf[0], "__Host-csrf");
+        assert_eq!(jar_for("/v1/auth/refresh").csrf[0], "__Host-csrf");
+    }
+}
+
+/// #2661: the bearer skip agrees with the extractors, the cookie-reading
+/// routes are gated whatever else a request carries, and the `__Host-` names
+/// are what the gate pairs.
+#[cfg(test)]
+mod issue_2661_tests {
+    use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::routing::post;
+    use tower::ServiceExt;
+
+    async fn ok() -> &'static str {
+        "ok"
+    }
+
+    fn app() -> Router {
+        Router::new()
+            .route("/v1/members", post(ok))
+            .route("/v1/auth/refresh", post(ok))
+            .route("/v1/member/sign-out", post(ok))
+            .layer(axum::middleware::from_fn(enforce))
+    }
+
+    async fn status(uri: &str, headers: &[(&str, &str)]) -> StatusCode {
+        let mut req = Request::builder().method("POST").uri(uri);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        app()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// A header the extractor would not read leaves the request
+    /// authenticating by its cookie, so it opens no skip.
+    #[tokio::test]
+    async fn a_bearer_the_extractor_ignores_does_not_skip_the_gate() {
+        let cookie = ("cookie", "__Host-vtc_admin_session=jwt");
+        for auth in [" Bearer eyJ.a.b", "Bearer ", "Bearer    "] {
+            assert_eq!(
+                status("/v1/members", &[("authorization", auth), cookie]).await,
+                StatusCode::FORBIDDEN,
+                "{auth:?}"
+            );
+        }
+        assert_eq!(
+            status(
+                "/v1/members",
+                &[("authorization", "Bearer eyJ.a.b"), cookie]
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+
+    /// Refresh and sign-out read their cookie whatever the request carries, so a
+    /// bearer does not exempt them.
+    #[tokio::test]
+    async fn cookie_reading_routes_are_gated_despite_a_bearer() {
+        let bearer = ("authorization", "Bearer eyJ.a.b");
+        assert_eq!(
+            status(
+                "/v1/auth/refresh",
+                &[bearer, ("cookie", "__Host-vtc_admin_refresh=r")]
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(
+                "/v1/member/sign-out",
+                &[bearer, ("cookie", "vtc_member_session=s")]
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        // With no cookie there is nothing to forge.
+        assert_eq!(status("/v1/auth/refresh", &[bearer]).await, StatusCode::OK);
+    }
+
+    /// The double-submit pairs the prefixed names, and still the names before
+    /// the prefix for a browser signed in before the rename.
+    #[tokio::test]
+    async fn the_prefixed_and_legacy_csrf_cookies_both_pair() {
+        for cookie in [
+            "__Host-vtc_admin_session=jwt; __Host-csrf=t1",
+            "vtc_admin_session=jwt; csrf=t1",
+            "vtc_admin_session=jwt; __Host-csrf=t1; csrf=other",
+        ] {
+            assert_eq!(
+                status("/v1/members", &[("cookie", cookie), ("x-csrf-token", "t1")]).await,
+                StatusCode::OK,
+                "{cookie}"
+            );
+        }
+        assert_eq!(
+            status(
+                "/v1/members",
+                &[
+                    ("cookie", "__Host-vtc_admin_session=jwt; __Host-csrf=t1"),
+                    ("x-csrf-token", "t2")
+                ]
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        // The member portal's CSRF cookie, prefixed.
+        assert_eq!(
+            status(
+                "/v1/member/sign-out",
+                &[
+                    ("cookie", "vtc_member_session=s; __Host-vtc_member_csrf=m1"),
+                    ("x-csrf-token", "m1")
+                ]
+            )
+            .await,
+            StatusCode::OK
+        );
     }
 }

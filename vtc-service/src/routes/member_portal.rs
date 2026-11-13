@@ -38,8 +38,8 @@ use vti_specs::auth::refresh::v0_2 as refresh_spec;
 
 use crate::error::AppError;
 use crate::member_portal::{
-    MEMBER_CSRF_COOKIE, MEMBER_REFRESH_COOKIE, MEMBER_SESSION_COOKIE, MemberAuth,
-    MemberAuthBackend, cookies, require_active_member,
+    MEMBER_REFRESH_COOKIE, MEMBER_SESSION_COOKIE, MemberAuth, MemberAuthBackend, cookies,
+    require_active_member,
 };
 use crate::server::AppState;
 
@@ -307,7 +307,7 @@ pub async fn cookie_refresh(
         set.push(cookies::refresh_cookie(rt, refresh_ttl));
     }
     // Same CSRF value, longer life — the portal already mirrors it.
-    if let Some(csrf) = cookies::cookie_value(&headers, MEMBER_CSRF_COOKIE) {
+    if let Some(csrf) = cookies::csrf_value(&headers) {
         set.push(cookies::csrf_cookie(&csrf, refresh_ttl));
     }
     let mut response = Json(MemberSessionResponse {

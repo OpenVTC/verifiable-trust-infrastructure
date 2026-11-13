@@ -1330,7 +1330,51 @@ fn build_session_cookie(access_token: &str, max_age: u64) -> String {
 /// `document.cookie` and mirror its value into the
 /// `X-CSRF-Token` header on every mutating request.
 fn build_csrf_cookie(csrf: &str, max_age: u64) -> String {
-    format!("csrf={csrf}; Path=/; Max-Age={max_age}; SameSite=Strict; Secure")
+    format!(
+        "{name}={csrf}; Path=/; Max-Age={max_age}; SameSite=Strict; Secure",
+        name = crate::routing::csrf::ADMIN_CSRF_COOKIE,
+    )
+}
+
+/// The console's three cookies under the names they had before their
+/// `__Host-` prefix (#2661), expired. Still read for one release, so whatever
+/// ends or replaces a session clears them too: a browser must not keep a
+/// credential under the old name after it signed out, or after a refresh
+/// rotated the token that name carried.
+fn legacy_cookie_clears() -> [String; 3] {
+    use vti_common::auth::extractor::{LEGACY_ADMIN_REFRESH_COOKIE, LEGACY_ADMIN_SESSION_COOKIE};
+    [
+        format!(
+            "{LEGACY_ADMIN_SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict; Secure; HttpOnly"
+        ),
+        format!(
+            "{LEGACY_ADMIN_REFRESH_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict; Secure; HttpOnly"
+        ),
+        format!(
+            "{name}=; Path=/; Max-Age=0; SameSite=Strict; Secure",
+            name = crate::routing::csrf::LEGACY_ADMIN_CSRF_COOKIE,
+        ),
+    ]
+}
+
+/// The console's CSRF value: the `__Host-` cookie, else the one under the name
+/// before the prefix.
+fn admin_csrf_value(headers: &HeaderMap) -> Option<String> {
+    cookie_value(headers, crate::routing::csrf::ADMIN_CSRF_COOKIE)
+        .or_else(|| cookie_value(headers, crate::routing::csrf::LEGACY_ADMIN_CSRF_COOKIE))
+}
+
+/// Whether the request carries any console cookie under its name before the
+/// `__Host-` prefix.
+fn carries_legacy_cookie(headers: &HeaderMap) -> bool {
+    use vti_common::auth::extractor::{LEGACY_ADMIN_REFRESH_COOKIE, LEGACY_ADMIN_SESSION_COOKIE};
+    [
+        LEGACY_ADMIN_SESSION_COOKIE,
+        LEGACY_ADMIN_REFRESH_COOKIE,
+        crate::routing::csrf::LEGACY_ADMIN_CSRF_COOKIE,
+    ]
+    .iter()
+    .any(|name| cookie_value(headers, name).is_some())
 }
 
 /// Build the refresh cookie carrying the opaque refresh token.
@@ -1386,6 +1430,21 @@ mod cookie_format_tests {
         );
         assert!(c.contains("Secure"), "got {c}");
         assert!(c.contains("SameSite=Strict"), "got {c}");
+    }
+
+    /// #2661: every console cookie is `__Host-`-prefixed, which a browser
+    /// accepts only with `Secure`, `Path=/` and no `Domain`.
+    #[test]
+    fn issue_2661_console_cookies_hold_the_host_prefix_rules() {
+        for c in [
+            build_session_cookie("t", 1),
+            build_refresh_cookie("r", 1),
+            build_csrf_cookie("c", 1),
+        ] {
+            assert!(c.starts_with("__Host-"), "got {c}");
+            assert!(c.contains("Path=/;") && c.contains("Secure"), "got {c}");
+            assert!(!c.contains("Domain"), "got {c}");
+        }
     }
 
     #[test]
@@ -1445,7 +1504,7 @@ pub async fn refresh(
     //
     // This is the only path that answers with `Set-Cookie`, because it is
     // the only one whose caller keeps its credentials in cookies.
-    if let Some(token) = cookie_value(&headers, ADMIN_REFRESH_COOKIE) {
+    if let Some(token) = vti_common::auth::extractor::admin_refresh_cookie(&headers) {
         let backend = crate::auth::VtcAuthBackend::from_state(&state).await?;
         let resp = vti_common::auth::handlers::handle_refresh(
             &backend,
@@ -1555,13 +1614,21 @@ async fn reissue_session_cookies(
         .map(|t| build_refresh_cookie(t, refresh_ttl));
     // Same value, longer life. A missing csrf cookie means the caller is
     // not the console (it always has one), so there is nothing to extend.
-    let csrf_cookie =
-        cookie_value(request_headers, "csrf").map(|v| build_csrf_cookie(&v, refresh_ttl));
+    let csrf_cookie = admin_csrf_value(request_headers).map(|v| build_csrf_cookie(&v, refresh_ttl));
+    // A console signed in before the `__Host-` rename moves to the new names
+    // here; the old ones are expired, so the rotated-out refresh token is not
+    // left behind under its old name.
+    let legacy_clears = carries_legacy_cookie(request_headers)
+        .then(legacy_cookie_clears)
+        .into_iter()
+        .flatten()
+        .map(Some);
 
     let mut response = Json(resp).into_response();
     let headers = response.headers_mut();
     for cookie in [Some(session_cookie), refresh_cookie, csrf_cookie]
         .into_iter()
+        .chain(legacy_clears)
         .flatten()
     {
         headers.append(
@@ -1825,7 +1892,7 @@ pub async fn sign_out(
     let sessions = state.sessions_ks.clone();
     let ending = match auth {
         Ok(auth) => Some((auth.did, auth.session_id)),
-        Err(_) => match cookie_value(&headers, ADMIN_REFRESH_COOKIE) {
+        Err(_) => match vti_common::auth::extractor::admin_refresh_cookie(&headers) {
             Some(token) => session_by_current_refresh(&sessions, &token)
                 .await
                 .unwrap_or_else(|e| {
@@ -1874,7 +1941,10 @@ pub async fn sign_out(
         "{name}=; Path=/; Max-Age=0; SameSite=Strict; Secure; HttpOnly",
         name = vti_common::auth::extractor::ADMIN_SESSION_COOKIE,
     );
-    let csrf_clear = "csrf=; Path=/; Max-Age=0; SameSite=Strict; Secure".to_string();
+    let csrf_clear = format!(
+        "{name}=; Path=/; Max-Age=0; SameSite=Strict; Secure",
+        name = crate::routing::csrf::ADMIN_CSRF_COOKIE,
+    );
     // The refresh cookie outlives the session cookie, so leaving it behind
     // would leave a signed-out browser holding a credential that still
     // mints access tokens — sign-out that does not sign you out.
@@ -1897,6 +1967,14 @@ pub async fn sign_out(
         HeaderValue::try_from(csrf_clear)
             .map_err(|e| AppError::Internal(format!("invalid csrf cookie: {e}")))?,
     );
+    // The same three under their names before the `__Host-` prefix (#2661).
+    for clear in legacy_cookie_clears() {
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::try_from(clear)
+                .map_err(|e| AppError::Internal(format!("invalid cookie: {e}")))?,
+        );
+    }
     Ok(response)
 }
 

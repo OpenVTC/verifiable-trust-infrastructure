@@ -638,7 +638,7 @@ terminal.
 
 Operators wanting a different UX serve their own console from a
 directory (below). The console cannot be hosted on another origin: it
-reads the `csrf` cookie, calls the API by relative URL, and passkeys
+reads the `__Host-csrf` cookie, calls the API by relative URL, and passkeys
 are bound to the VTC's own origin. The former `admin_ui.mode =
 "external"` and `external_origin`, which never served anything, are
 refused at config load.
@@ -730,14 +730,14 @@ running build against the audit record.
 graph LR
     cli[cnm-cli] -->|Authorization: Bearer| api["/v1/*"]
     dc[DIDComm bridge] -->|authcrypt| api
-    spa[Admin SPA<br/>browser] -->|Cookie: vtc_admin_session<br/>+ X-CSRF-Token| api
+    spa[Admin SPA<br/>browser] -->|Cookie: __Host-vtc_admin_session<br/>+ X-CSRF-Token| api
 ```
 
 Three concurrent auth paths:
 
 - **Bearer JWT** — `Authorization: Bearer <jwt>`. Used by
   `cnm-cli`, DIDComm bridges, programmatic clients.
-- **Cookie session** — `Cookie: vtc_admin_session=<jwt>`. Used by
+- **Cookie session** — `Cookie: __Host-vtc_admin_session=<jwt>`. Used by
   the admin SPA. Scoped `Path=/` (the API lives at `/v1`, not under
   `/admin`, so the SPA→API call needs the cookie there — an earlier
   `Path=/admin` design was reverted). HttpOnly keeps JS from reading
@@ -747,13 +747,36 @@ Three concurrent auth paths:
   {credentials})` and ride it. The posture that *does* isolate is a
   dedicated website host (see [Routing modes](#routing-modes)); a
   filesystem website now requires one.
-- **CSRF double-submit** — `csrf=<random>` cookie (JS-readable) +
+- **CSRF double-submit** — `__Host-csrf=<random>` cookie (JS-readable) +
   `X-CSRF-Token` header. Required on every mutating call from the
-  cookie session. Bearer-only callers don't carry CSRF.
+  cookie session. Bearer-only callers don't carry CSRF — a bearer the
+  extractor reads, that is: a malformed `Authorization` header leaves the
+  request authenticating by its cookie, and is gated like one. The cookie
+  refresh and sign-out routes (`/v1/auth/refresh`, `/v1/auth/sign-out` and
+  the portal's `/v1/member/auth/refresh`, `/v1/member/sign-out`) read their
+  cookie whatever else the request carries, so a bearer never exempts them.
 
 Both flow through the same `AuthClaims` extractor in `vti-common`,
 which tries bearer first then falls back to cookie. Bearer wins
 when both are present.
+
+The console's cookies, and the portal's CSRF cookie, carry the
+[`__Host-` prefix](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-4.1.3.2):
+a browser accepts them only `Secure`, `Path=/` and without a `Domain`, so a
+sibling subdomain can neither plant nor overwrite them. The names before the
+prefix (`vtc_admin_session`, `vtc_admin_refresh`, `csrf`, `vtc_member_csrf`)
+are still read for one release, so an upgrade signs nobody out; a refresh or
+sign-out expires them. The portal's session and refresh cookies keep their
+names: they are scoped to `Path=/v1/member`, which `__Host-` does not allow.
+
+### HTTPS and HSTS
+
+When `public_url` is `https`, every response carries
+`Strict-Transport-Security: max-age=63072000; includeSubDomains`. The daemon
+decides from `public_url`, not from the request: behind a TLS-terminating
+proxy the request it receives is plain HTTP and names no scheme. With an
+`http` (or no) `public_url` it sends none, so a local deployment leaves no
+upgrade state in a browser.
 
 ### Admin login
 

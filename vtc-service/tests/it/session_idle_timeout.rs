@@ -373,13 +373,22 @@ async fn a_cookie_refresh_reissues_every_cookie() {
     );
     let csrf = cookies
         .iter()
-        .find(|c| c.starts_with("csrf="))
+        .find(|c| c.starts_with("__Host-csrf="))
         .expect("csrf cookie re-sent to extend its Max-Age");
     assert!(
-        csrf.starts_with("csrf=tok;"),
+        csrf.starts_with("__Host-csrf=tok;"),
         "the csrf value must survive: the SPA has already mirrored it into \
          its header state, and a new one mid-flight 403s every mutation \
          issued before it re-reads document.cookie — got {csrf}"
+    );
+    // The request carried the CSRF cookie under its name before the
+    // `__Host-` prefix (#2661): the refresh moves it to the new name and
+    // expires the old one.
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c.starts_with("csrf=;") && c.contains("Max-Age=0")),
+        "the legacy csrf cookie is expired: {cookies:?}"
     );
 }
 
@@ -531,7 +540,7 @@ async fn sign_out_after_the_session_cookie_lapsed_ends_the_session() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let cleared = cleared_cookies(&resp);
-    for name in [ADMIN_SESSION_COOKIE, ADMIN_REFRESH_COOKIE, "csrf"] {
+    for name in [ADMIN_SESSION_COOKIE, ADMIN_REFRESH_COOKIE, "__Host-csrf"] {
         let c = cleared
             .iter()
             .find(|c| c.starts_with(&format!("{name}=")))

@@ -49,14 +49,12 @@ impl MemberAuth {
 }
 
 /// Pull the member token: `Authorization: Bearer` first, then the portal
-/// cookie. Never the console's cookie.
+/// cookie. Never the console's cookie. The bearer is read by the rule the
+/// console's extractor and the CSRF gate use
+/// ([`vti_common::auth::extractor::bearer_token`]), so the gate never lets a
+/// header through that this then ignores in favour of the cookie (#2661).
 fn presented_token(parts: &Parts) -> Option<(String, bool)> {
-    let bearer = parts
-        .headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|t| (t.trim().to_string(), false));
+    let bearer = vti_common::auth::extractor::bearer_token(&parts.headers).map(|t| (t, false));
     bearer.or_else(|| {
         crate::member_portal::cookies::cookie_value(&parts.headers, MEMBER_SESSION_COOKIE)
             .map(|t| (t, true))

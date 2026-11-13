@@ -368,9 +368,9 @@ async fn admin_session_bridges_bearer_to_cookie_and_authenticates() {
     // console's access-token extractor.
     let session_cookie = set_cookies
         .iter()
-        .find(|c| c.starts_with("vtc_admin_session="))
+        .find(|c| c.starts_with("__Host-vtc_admin_session="))
         .expect("vtc_admin_session cookie set");
-    assert!(set_cookies.iter().any(|c| c.starts_with("csrf=")));
+    assert!(set_cookies.iter().any(|c| c.starts_with("__Host-csrf=")));
     let cookie_pair = session_cookie.split(';').next().unwrap().to_string();
     let (status, body) =
         crate::common::session_probe::probe(&fix._vtc, &[("cookie", cookie_pair)]).await;
@@ -521,7 +521,9 @@ async fn admin_session_accepts_a_console_key_its_subject_enrolled() {
     let (status, cookies, reply) = admin_session_signed_by(&fix, &console, &bearer).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert!(
-        cookies.iter().any(|c| c.starts_with("vtc_admin_session=")),
+        cookies
+            .iter()
+            .any(|c| c.starts_with("__Host-vtc_admin_session=")),
         "{cookies:?}"
     );
 

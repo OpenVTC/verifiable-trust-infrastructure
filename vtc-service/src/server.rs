@@ -2316,12 +2316,21 @@ fn run_rest_thread(
         let website_state = build_website_state(&state.config).await;
 
         let trust_xff_cidrs = state.config.read().await.server.trust_xff_cidrs.clone();
+        // HSTS from the declared public origin (#2661): the request itself
+        // cannot say whether the browser reached us over TLS.
+        let hsts = axum::middleware::from_fn_with_state(
+            crate::routing::security_headers::HstsPolicy::from_public_url(
+                state.config.read().await.public_url.as_deref(),
+            ),
+            crate::routing::security_headers::strict_transport_security,
+        );
         // `TimeoutLayer` is the outermost layer so the whole-request budget
         // (P0.10) covers every inner middleware + the handler.
         #[cfg(feature = "website")]
         let app = routes::router_with_xff(&routing, website_state, &trust_xff_cidrs)
             .with_state(state)
             .layer(host_layer)
+            .layer(hsts)
             .layer(cors_layer)
             .layer(TraceLayer::new_for_http())
             .layer(TimeoutLayer::with_status_code(
@@ -2332,6 +2341,7 @@ fn run_rest_thread(
         let app = routes::router_with_xff(&routing, &trust_xff_cidrs)
             .with_state(state)
             .layer(host_layer)
+            .layer(hsts)
             .layer(cors_layer)
             .layer(TraceLayer::new_for_http())
             .layer(TimeoutLayer::with_status_code(

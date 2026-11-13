@@ -124,7 +124,11 @@ function csrfTokenFromCookie(): string | null {
   // The CSRF cookie is set by login (`/v1/auth/passkey-login/finish`
   // or the signed `vtc/auth/admin-session/0.2`). HttpOnly is **not** set on this
   // cookie precisely so JS can read it.
-  const match = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+  // `__Host-csrf` since the cookies took the `__Host-` prefix; `csrf` is the
+  // name before it, still read for one release.
+  const match =
+    document.cookie.match(/(?:^|;\s*)__Host-csrf=([^;]+)/) ??
+    document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
   return match?.[1] ?? null;
 }
 
