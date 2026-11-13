@@ -2,6 +2,7 @@
 // that its client never sends the console's credentials.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -32,9 +33,9 @@ const json = (status: number, body: unknown) =>
 function renderPortal() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={qc}>
+    <QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">
       <Portal />
-    </QueryClientProvider>,
+    </ConfirmDialogProvider></QueryClientProvider>,
   );
 }
 

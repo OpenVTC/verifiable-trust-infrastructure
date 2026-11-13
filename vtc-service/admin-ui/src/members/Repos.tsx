@@ -13,6 +13,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GitBranch, KeyRound, Link2, Unlink } from "lucide-react";
 
+import { useConfirm } from "@/components/ConfirmDialog";
 import { DirectoryError } from "./directory-api";
 import {
   governedOf,
@@ -220,6 +221,7 @@ function ForgeAccounts({
   forges: string[];
 }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const wallet = walletGit();
   const [pending, setPending] = useState<Pending | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -306,7 +308,16 @@ function ForgeAccounts({
                 type="button"
                 className="btn btn-ghost btn-sm"
                 disabled={unlink.isPending}
-                onClick={() => unlink.mutate(a)}
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: `Unlink ${a.account.login} on ${a.account.forge}?`,
+                    message:
+                      "The community stops giving this account the forge roles your rights call for. Linking it again takes your wallet and the forge's authorisation.",
+                    confirmLabel: "Unlink",
+                    destructive: true,
+                  });
+                  if (ok) unlink.mutate(a);
+                }}
               >
                 <Unlink size={14} aria-hidden="true" /> Unlink
               </button>

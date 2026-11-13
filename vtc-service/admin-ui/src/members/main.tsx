@@ -8,6 +8,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ThemePreviewBar } from "@/components/ThemePreviewBar";
 import { applyStoredCommunityTheme } from "@/lib/community-theme";
@@ -65,8 +66,11 @@ createRoot(root).render(
     {/* The last resort: each signed-in page has its own boundary (`Portal`). */}
     <ErrorBoundary what="The member portal" variant="alert">
       <QueryClientProvider client={queryClient}>
-        {isThemePreview() && <ThemePreviewBar controls={<PreviewViewSwitch />} />}
-        <Portal />
+        {/* Confirmations before a member's hard-to-undo acts (#2607). */}
+        <ConfirmDialogProvider look="portal">
+          {isThemePreview() && <ThemePreviewBar controls={<PreviewViewSwitch />} />}
+          <Portal />
+        </ConfirmDialogProvider>
       </QueryClientProvider>
     </ErrorBoundary>
   </StrictMode>,

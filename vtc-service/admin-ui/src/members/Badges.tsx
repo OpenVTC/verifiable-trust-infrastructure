@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 
 import { BadgeBuilder } from "@/components/BadgeBuilder";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { Protected } from "@/components/Protected";
 import { shortenDid } from "@/lib/format";
 
@@ -279,6 +280,7 @@ function Offers({ offers }: { offers: Offer[] }) {
 
 function OffersSurface({ offers }: { offers: Offer[] }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const [note, setNote] = useState<string | null>(null);
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ["badges"] });
@@ -340,7 +342,15 @@ function OffersSurface({ offers }: { offers: Offer[] }) {
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
-                  onClick={() => decline.mutate(award.awardId)}
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: `Decline ${badge.name}?`,
+                      message: "Nobody is told. You can hold it only if it is offered to you again.",
+                      confirmLabel: "Decline",
+                      destructive: true,
+                    });
+                    if (ok) decline.mutate(award.awardId);
+                  }}
                   disabled={decline.isPending || accept.isPending}
                 >
                   <X size={14} aria-hidden="true" /> Decline
@@ -760,6 +770,7 @@ function OwnerNames({ entryIds }: { entryIds: string[] }) {
 /** Asking a community badge's owners for it: a request to join its badge group. */
 function AskForBadge({ badge, groupId, myState }: { badge: Badge; groupId: string; myState: string }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [note, setNote] = useState<string | null>(null);
@@ -797,7 +808,20 @@ function AskForBadge({ badge, groupId, myState }: { badge: Badge; groupId: strin
       {myState === "requested" ? (
         <>
           <p className="muted">You&rsquo;ve asked for this badge. Its owners decide.</p>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => withdraw.mutate()} disabled={withdraw.isPending}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={async () => {
+              const ok = await confirm({
+                title: "Withdraw your request?",
+                message: "Its owners no longer see it. You can ask again later.",
+                confirmLabel: "Withdraw",
+                destructive: true,
+              });
+              if (ok) withdraw.mutate();
+            }}
+            disabled={withdraw.isPending}
+          >
             Withdraw my request
           </button>
         </>

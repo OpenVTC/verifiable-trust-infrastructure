@@ -33,6 +33,7 @@ import {
   ReactNode,
   useCallback,
   useContext,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -58,7 +59,25 @@ interface ConfirmCtx {
 
 const Ctx = createContext<ConfirmCtx | null>(null);
 
-export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
+/**
+ * Which stylesheet the dialog is drawn with: the console's (`components.css`)
+ * or the member portal's (`members.css`, `signin.css`), whose buttons are
+ * `.btn`s. The portal bundle imports this component, not the console shell.
+ */
+export type ConfirmLook = "console" | "portal";
+
+const BUTTONS: Record<ConfirmLook, { cancel: string; confirm: string; destructive: string }> = {
+  console: { cancel: "secondary", confirm: "primary", destructive: "secondary destructive" },
+  portal: { cancel: "btn btn-secondary", confirm: "btn btn-primary", destructive: "btn btn-danger" },
+};
+
+export function ConfirmDialogProvider({
+  children,
+  look = "console",
+}: {
+  children: ReactNode;
+  look?: ConfirmLook;
+}) {
   const [pending, setPending] = useState<
     (ConfirmOptions & { resolve: Resolver }) | null
   >(null);
@@ -90,7 +109,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
         // A destructive confirmation is drawn out of the theme's reach
         // (`vtc/community/theme/show/0.1`, client item 2).
         <Protected ground="none">
-          <Dialog options={pending} onClose={close} />
+          <Dialog options={pending} onClose={close} look={look} />
         </Protected>
       )}
     </Ctx.Provider>
@@ -108,13 +127,16 @@ export function useConfirm(): (options: ConfirmOptions) => Promise<boolean> {
 function Dialog({
   options,
   onClose,
+  look,
 }: {
   options: ConfirmOptions;
   onClose: (ok: boolean) => void;
+  look: ConfirmLook;
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
 
   // The shared modal contract (`useModal`): focus starts on the safer
   // (cancel) button so an Enter keypress doesn't fire the destructive
@@ -124,6 +146,7 @@ function Dialog({
 
   const confirmLabel = options.confirmLabel ?? "Confirm";
   const cancelLabel = options.cancelLabel ?? "Cancel";
+  const buttons = BUTTONS[look];
 
   return (
     <div
@@ -140,16 +163,16 @@ function Dialog({
         ref={surfaceRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="confirm-dialog-title"
+        aria-labelledby={titleId}
         className="confirm-dialog"
       >
-        <h3 id="confirm-dialog-title">{options.title}</h3>
+        <h3 id={titleId}>{options.title}</h3>
         {options.message && <p>{options.message}</p>}
         <div className="form-actions">
           <button
             ref={cancelRef}
             type="button"
-            className="secondary"
+            className={buttons.cancel}
             onClick={() => onClose(false)}
           >
             {cancelLabel}
@@ -157,9 +180,7 @@ function Dialog({
           <button
             ref={confirmRef}
             type="button"
-            className={
-              options.destructive ? "secondary destructive" : "primary"
-            }
+            className={options.destructive ? buttons.destructive : buttons.confirm}
             onClick={() => onClose(true)}
           >
             {confirmLabel}

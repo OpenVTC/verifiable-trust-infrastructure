@@ -12,6 +12,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogIn, LogOut, Users } from "lucide-react";
 
+import { useConfirm } from "@/components/ConfirmDialog";
 import type { Group } from "@/lib/wire-types";
 
 import { DirectoryError } from "./directory-api";
@@ -135,6 +136,7 @@ export function GroupsPage() {
 
 export function GroupPage({ groupId }: { groupId: string }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const [message, setMessage] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const q = useQuery({
@@ -230,7 +232,21 @@ export function GroupPage({ groupId }: { groupId: string }) {
               <button
                 type="button"
                 className="btn btn-ghost"
-                onClick={() => leave.mutate()}
+                onClick={async () => {
+                  // Coming back may take a request its managers decide (#2607).
+                  const ok =
+                    mine === "pending" ||
+                    (await confirm({
+                      title: `Leave ${group.name}?`,
+                      message:
+                        group.joinPolicy === "open"
+                          ? "You can join again at any time."
+                          : "To come back you will have to ask again, or be invited.",
+                      confirmLabel: "Leave the group",
+                      destructive: true,
+                    }));
+                  if (ok) leave.mutate();
+                }}
                 disabled={leave.isPending}
               >
                 <LogOut size={16} aria-hidden="true" /> Leave this group

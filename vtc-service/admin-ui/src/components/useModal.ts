@@ -13,6 +13,9 @@ import { useEffect, useRef, type RefObject } from "react";
 
 import { activeElementOf } from "@/components/Protected";
 
+/** The open modals, the most recently opened last. */
+const OPEN: symbol[] = [];
+
 const TABBABLE =
   "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary, [tabindex]:not([tabindex='-1'])";
 
@@ -68,7 +71,12 @@ export function useModal(
     const opener = returnRef.current ?? deepActiveElement();
     const surface = surfaceRef.current;
     (initialRef.current?.current ?? surface?.querySelector<HTMLElement>("select, input, textarea, button"))?.focus();
+    // A confirmation opened from a dialog sits on top of it: only the top one
+    // answers the keyboard, so Escape closes one dialog, not both.
+    const self = Symbol("modal");
+    OPEN.push(self);
     const onKey = (e: KeyboardEvent) => {
+      if (OPEN[OPEN.length - 1] !== self) return;
       if (e.key === "Escape") {
         e.preventDefault();
         if (!lockedRef.current) closeRef.current();
@@ -92,6 +100,8 @@ export function useModal(
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
+      const at = OPEN.lastIndexOf(self);
+      if (at >= 0) OPEN.splice(at, 1);
       if (opener && opener.isConnected) opener.focus();
     };
   }, [surfaceRef]);

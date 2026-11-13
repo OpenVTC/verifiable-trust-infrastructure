@@ -49,6 +49,7 @@ import {
   type Idea,
   type Note,
 } from "./boards-api";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { useModal } from "@/components/useModal";
 import { DirectoryError } from "./directory-api";
 import { electionHref } from "./Elections";
@@ -570,6 +571,7 @@ function IdeaPanel({
     onSettled: refreshTickets,
   });
   const withdraw = useMutation({ mutationFn: () => withdrawIdea(idea.ideaId), onSuccess: onChanged });
+  const confirm = useConfirm();
   const failure = [ticket.error, vote.error, withdraw.error].find((x) => x && !declinedInWallet(x));
   const lead = leadingShare(idea);
   const q = board.template.questions[0];
@@ -604,7 +606,20 @@ function IdeaPanel({
 
           {idea.state === "proposed" && idea.proposer.you && (
             <div className="actions">
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => withdraw.mutate()} disabled={withdraw.isPending}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: "Withdraw your idea?",
+                    message: "It leaves the board for good; to put it forward again, propose it anew.",
+                    confirmLabel: "Withdraw",
+                    destructive: true,
+                  });
+                  if (ok) withdraw.mutate();
+                }}
+                disabled={withdraw.isPending}
+              >
                 Withdraw your idea
               </button>
             </div>
@@ -759,6 +774,7 @@ function Results({ counts, labels }: { counts?: Record<string, number>; labels?:
 
 function NoteSlip({ note, onWithdrawn, tilt }: { note: Note; onWithdrawn?: () => void; tilt?: number }) {
   const withdraw = useMutation({ mutationFn: () => withdrawNote(note.noteId), onSuccess: onWithdrawn });
+  const confirm = useConfirm();
   const gone = note.state !== "visible";
   return (
     <div className={gone ? "bd-slip bd-slip-gone" : "bd-slip"} style={tilt ? { ["--tilt" as string]: `${tilt}deg` } : undefined}>
@@ -774,7 +790,20 @@ function NoteSlip({ note, onWithdrawn, tilt }: { note: Note; onWithdrawn?: () =>
       <div className="bd-by">
         <span>{authorName(note.author)}</span>
         {note.author.you && note.state !== "withdrawn" && (
-          <button type="button" className="bd-link small" onClick={() => withdraw.mutate()} disabled={withdraw.isPending}>
+          <button
+            type="button"
+            className="bd-link small"
+            onClick={async () => {
+              const ok = await confirm({
+                title: "Withdraw your note?",
+                message: "Its text is taken off the board; the thread shows that a note was withdrawn.",
+                confirmLabel: "Withdraw",
+                destructive: true,
+              });
+              if (ok) withdraw.mutate();
+            }}
+            disabled={withdraw.isPending}
+          >
             Withdraw
           </button>
         )}
