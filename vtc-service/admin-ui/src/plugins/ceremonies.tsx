@@ -31,6 +31,7 @@ import { ParkedNotice } from "@/components/ParkedNotice";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
+import { Switch } from "@/components/Switch";
 import { Tabs, type TabItem } from "@/components/Tabs";
 import {
   type PolicyRow,
@@ -997,6 +998,7 @@ function UploadPolicyForm({
         rows={10}
         spellCheck={false}
         className="cer-rego-input"
+        aria-label="Rego policy source"
         placeholder={`package ${pkgFor(purpose)}\n\nimport rego.v1\n\ndefault decision := {"effect": "deny", "with": {"code": "no-matching-route"}}`}
         value={source}
         onChange={(e) => setSource(e.target.value)}
@@ -1058,21 +1060,26 @@ function SimFields({
     <>
       {fields
         .filter((f) => evalShowWhen(f.showWhen, values))
-        .map((f) => (
+        .map((f) =>
+          f.type === "toggle" ? (
+            // The shared `Switch` (a native checkbox with role="switch"),
+            // not a second switch widget (#2611).
+            <div className="cer-field cer-field-switch" key={f.key}>
+              <Switch
+                labelFirst
+                label={f.label}
+                description={f.hint}
+                checked={values[f.key] === true}
+                onChange={(e) => onChange({ ...values, [f.key]: e.target.checked })}
+              />
+            </div>
+          ) : (
           <Field
             className="cer-field"
             key={f.key}
             label={f.label}
             hint={f.hint}
           >
-            {f.type === "toggle" ? (
-              <Toggle
-                on={values[f.key] === true}
-                onClick={() =>
-                  onChange({ ...values, [f.key]: values[f.key] !== true })
-                }
-              />
-            ) : (
               <select
                 className="input"
                 value={String(values[f.key] ?? "")}
@@ -1086,9 +1093,9 @@ function SimFields({
                   </option>
                 ))}
               </select>
-            )}
           </Field>
-        ))}
+          ),
+        )}
     </>
   );
 }
@@ -1258,6 +1265,7 @@ function RawFactsEditor({
       </p>
       <textarea
         className="cer-rego-input"
+        aria-label="Facts sent to the policy, as JSON"
         rows={14}
         spellCheck={false}
         value={value}
@@ -1276,20 +1284,6 @@ function RawFactsEditor({
         </button>
       </div>
     </div>
-  );
-}
-
-function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      onClick={onClick}
-      className="cer-toggle"
-    >
-      <span className="cer-toggle-knob" />
-    </button>
   );
 }
 

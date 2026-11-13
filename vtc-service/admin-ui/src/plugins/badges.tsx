@@ -188,7 +188,11 @@ function BadgesList() {
                 <div className="badge-name-cell">
                   <BadgePicture badgeId={badge.badgeId} image={badge.image} name={badge.name} size={44} />
                   <div>
-                    <strong>{badge.name}</strong>
+                    {/* A link, so a keyboard or screen reader reaches the
+                        badge; the row click stays as a convenience (#2611). */}
+                    <Link to={encodeURIComponent(badge.badgeId)} onClick={(e) => e.stopPropagation()}>
+                      <strong>{badge.name}</strong>
+                    </Link>
                     <span className="muted">{badge.description}</span>
                   </div>
                 </div>

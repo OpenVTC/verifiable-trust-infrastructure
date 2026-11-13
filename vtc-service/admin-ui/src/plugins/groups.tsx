@@ -11,7 +11,7 @@
 // shown with their directory name and picture.
 
 import { useState } from "react";
-import { Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DoorOpen, KeyRound, Plus, Trash2, UserMinus, UserPlus, Users } from "lucide-react";
 
@@ -143,7 +143,11 @@ function GroupsList() {
             >
               <td>
                 <div className="group-name-cell">
-                  <strong>{group.name}</strong>
+                  {/* A link, so a keyboard or screen reader reaches the group;
+                      the row click stays as a convenience (#2611). */}
+                  <Link to={encodeURIComponent(group.groupId)} onClick={(e) => e.stopPropagation()}>
+                    <strong>{group.name}</strong>
+                  </Link>
                   {group.description && <span className="muted">{group.description}</span>}
                 </div>
               </td>

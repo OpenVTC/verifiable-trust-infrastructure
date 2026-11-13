@@ -10,7 +10,7 @@
 // (VTI-BRD-041). Nothing here ever shows who took a ticket or voted (VTI-BRD-033).
 
 import { useMemo, useState } from "react";
-import { Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, EyeOff, GitMerge, Pencil, Plus, RotateCcw, SquareKanban, Trash2, X } from "lucide-react";
 
@@ -134,7 +134,11 @@ function BoardsList() {
             return (
               <tr key={b.boardId} className="clickable" onClick={() => navigate(encodeURIComponent(b.boardId))}>
                 <td>
-                  <strong>{b.title}</strong>
+                  {/* A link, so a keyboard or screen reader reaches the board;
+                      the row click stays as a convenience (#2611). */}
+                  <Link to={encodeURIComponent(b.boardId)} onClick={(e) => e.stopPropagation()}>
+                    <strong>{b.title}</strong>
+                  </Link>
                   {b.audience.kind === "group" && <div className="muted">One group's members</div>}
                 </td>
                 <td>{phaseWords(b)}</td>
