@@ -1044,7 +1044,7 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rcgen = { version = "0.14", default-features = false }
 object_store = { version = "0.14", default-features = false }
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
-webauthn-rs-proto = "0.5"
+webauthn-rs-proto = "0.6"
 affinidi-rate-limit = "0.1.4"
 # Pinned to the patch every DIDComm decrypt path in the workspace was built
 # against (ECDH-ES+A256KW + A256CBC-HS512 JWEs from `vta-sdk`'s light client).
