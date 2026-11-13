@@ -7319,8 +7319,10 @@ mod vti_08_stack {
     /// regression needed, so a return of it still fails here. 512 KiB fitted only a caller
     /// with no ACL entry, which no running VTA has: with the super admin's entry stored,
     /// the spine's gates read it, and a debug build of the whole workspace needs about
-    /// 600 KiB.
-    const STACK_KIB: usize = 768;
+    /// 600 KiB with the Rust of late 2026. The pinned 1.95 (rust-toolchain.toml) lays
+    /// debug frames out larger: on x86_64 it needs 768 – 896 KiB, which overflowed the
+    /// 768 this was. 960 leaves it room and stays under the 1 MiB a regression needs.
+    const STACK_KIB: usize = 960;
 
     /// A stack overflow aborts the process rather than failing a test, so the
     /// work runs in a child copy of this test binary and the parent reads its
