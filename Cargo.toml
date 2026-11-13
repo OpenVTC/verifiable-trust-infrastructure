@@ -849,6 +849,8 @@ dialoguer = "0.12"
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
+# Shell completions for pnm / cnm (`completions <shell>`). Same 4.6 line as clap.
+clap_complete = "4.6"
 
 # Terminal UI
 ratatui = "0.30"

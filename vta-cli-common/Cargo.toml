@@ -52,6 +52,11 @@ ed25519-dalek = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The CLIs' TOML profiles (`config_file`): a corrupt one is fatal, a save is atomic.
+toml = { workspace = true }
+# `completions <shell>` for both CLIs (`startup::print_completions`).
+clap = { workspace = true }
+clap_complete = { workspace = true }
 # Wipes an external account secret read at the terminal (`pnm external secret-set`).
 zeroize = { workspace = true }
 multibase = { workspace = true }

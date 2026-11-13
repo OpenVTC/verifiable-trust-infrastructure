@@ -28,7 +28,11 @@ fn parse_secrets_file(text: &str) -> anyhow::Result<(SecretsFile, Vec<String>)> 
 use room_host::{FilesConfig, open_state_with_files, router_with_origins};
 
 #[derive(Parser, Debug)]
-#[command(name = "room-host", about = "Store and serve data-room records")]
+#[command(
+    name = "room-host",
+    version,
+    about = "Store and serve data-room records"
+)]
 struct Args {
     /// Where the record store lives.
     #[arg(long, default_value = "./room-host-data")]

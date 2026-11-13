@@ -23,8 +23,6 @@ mod config;
 mod exit;
 mod setup;
 
-use std::io::IsTerminal;
-
 use vta_sdk::client::VtaClient;
 
 use vta_cli_common::render::{DIM, RESET};
@@ -35,25 +33,9 @@ use crate::cli::{
 };
 use clap::Parser;
 
-/// Exit code for a command that returned an error.
-///
-/// Every dispatch arm funnels here, so this is the single place that
-/// decides. The SDK's error is already typed, so the variant picks the
-/// code — a call site does not have to know one.
-///
-/// `Forbidden` stays `FAILURE` on purpose: the caller is who they say
-/// they are and the operation ran, it was refused. That is not the same
-/// signal as "your credential is no good", and a script retrying on
-/// `AUTH` must not retry on it.
-fn exit_code_for(err: &(dyn std::error::Error + 'static)) -> i32 {
-    use vta_sdk::error::VtaError;
-    match err.downcast_ref::<VtaError>() {
-        Some(VtaError::NotFound(_)) => exit::NOT_FOUND,
-        Some(VtaError::Validation(_)) => exit::CONFIG,
-        Some(VtaError::Auth(_)) => exit::AUTH,
-        _ => exit::FAILURE,
-    }
-}
+/// Exit code for a command that returned an error — shared with `cnm`
+/// ([`vta_cli_common::exit::exit_code_for`]).
+use vta_cli_common::exit::exit_code_for;
 
 /// This process's log output; see the `tracing_subscriber` setup in `main`.
 pub(crate) static LOGS: std::sync::LazyLock<affinidi_messaging_mediator_tui::LogCapture> =
@@ -97,6 +79,12 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // Completions need nothing else: no profile, no keyring, no banner.
+    if let Commands::Completions { shell } = &cli.command {
+        vta_cli_common::startup::print_completions::<Cli>(*shell, "pnm");
+        return;
+    }
+
     // DID-advertised VTA endpoints are public-only unless the operator opts in.
     vta_sdk::http::set_allow_private_endpoints(cli.allow_private_endpoints);
 
@@ -107,26 +95,10 @@ async fn main() {
     vta_cli_common::render::set_full_display(cli.full_display);
     vta_cli_common::display::set_resolve_agent_names(cli.resolve_agent_names);
 
-    // Format follows the destination. A terminal gets the table; anything
-    // else — a pipe, a file, a CI log — gets JSON, because the only reason
-    // to redirect this output is to have something read it. `--json`
-    // forces JSON even on a terminal.
-    let stdout_is_tty = std::io::stdout().is_terminal();
-    if cli.json || !stdout_is_tty {
-        vta_cli_common::render::set_output_format(vta_cli_common::render::OutputFormat::Json);
-    }
-
-    // Colour is for a terminal only, and NO_COLOR (<https://no-color.org>)
-    // turns it off even on one. Gated on stdout because that is where the
-    // rendered tables go.
-    vta_cli_common::render::set_color(stdout_is_tty && std::env::var_os("NO_COLOR").is_none());
-
-    vta_cli_common::render::set_bin_name("pnm");
-
-    // The banner is for a person at a terminal. It goes to stderr, so it
-    // is gated on stderr — redirecting stdout alone (`pnm … > out.json`)
-    // still shows it, which is what an operator running that expects.
-    if std::io::stderr().is_terminal() {
+    // Format, colour, the binary name in hints and the banner gate — the
+    // same rules as `cnm` (`vta_cli_common::startup`, #2587).
+    vta_cli_common::startup::init_output("pnm", cli.json);
+    if vta_cli_common::startup::banner_wanted() {
         print_banner();
     }
 
@@ -154,11 +126,15 @@ async fn main() {
     vta_sdk::keyring_init::install_default_store_or_exit("pnm");
 
     // Load PNM config
+    //
+    // A profile that exists but does not parse stops here (#2582). Carrying on
+    // with an empty one would report every VTA as "not configured" and point
+    // at `pnm setup`, which would then overwrite the file.
     let mut pnm_config = match config::load_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: could not load config: {e}");
-            config::PnmConfig::default()
+            eprintln!("Error: {e}");
+            std::process::exit(exit::CONFIG);
         }
     };
 
@@ -333,6 +309,7 @@ async fn main() {
     // ── Post-auth dispatch ────────────────────────────────────────
     let result = match command {
         Commands::Setup { .. } => unreachable!("Setup handled in pre-auth dispatch"),
+        Commands::Completions { .. } => unreachable!("Completions handled before start-up"),
         Commands::Bootstrap { command } => commands::bootstrap::run_authed(&client, command).await,
         Commands::DidTemplates { command } => {
             commands::did_templates::run_online(&client, command).await

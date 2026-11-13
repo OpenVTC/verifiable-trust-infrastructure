@@ -23,6 +23,7 @@ mod vtc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{community_keyring_key, resolve_community};
+use vta_cli_common::exit;
 use vta_sdk::client::VtaClient;
 
 use vta_cli_common::commands::{
@@ -32,7 +33,10 @@ use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW, print_section
 
 #[derive(Parser)]
 #[command(
-    name = "cnm-cli",
+    name = "cnm",
+    version,
+    // `--version` only: `-V` is `--verbose` in both CLIs (#2587, #2592).
+    disable_version_flag = true,
     about = "CLI for VTC Verifiable Trust Agents (community-admin scope)",
     long_about = "Community Network Manager — community-admin-scoped CLI for the VTA.\n\
                   \n\
@@ -48,7 +52,13 @@ use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW, print_section
                     a community admin needs to provision application identities."
 )]
 struct Cli {
-    /// Base URL of the VTA service (overrides config).
+    /// Print version
+    #[arg(long, action = clap::ArgAction::Version)]
+    version: Option<bool>,
+
+    /// Base URL of the VTA service (overrides config). A top-level flag: put it
+    /// before the subcommand (`--url` is also a subcommand argument on
+    /// several commands, so it cannot be global).
     ///
     /// For the commands that talk to the community's VTC instead — `vetting`,
     /// `audit`, `backup`, `did-log` — this is the VTC's API base, including
@@ -69,8 +79,9 @@ struct Cli {
     #[arg(short = 'c', long, global = true)]
     community: Option<String>,
 
-    /// Enable verbose debug output (can also set RUST_LOG=debug)
-    #[arg(short, long, global = true)]
+    /// Enable verbose debug output (can also set RUST_LOG=debug). `-V` is
+    /// accepted too, as in `pnm` (where `-v` is `--vta`).
+    #[arg(short, long, short_alias = 'V', global = true)]
     verbose: bool,
 
     /// Show full identifiers (DIDs, key ids, template names, …) in
@@ -88,8 +99,8 @@ struct Cli {
     #[arg(long, global = true)]
     resolve_agent_names: bool,
 
-    /// Emit list output as JSON instead of a human-readable table.
-    /// Use this for automation: `cnm acl list --json | jq …`.
+    /// Emit output as JSON instead of a human-readable table. Automatic when
+    /// stdout is not a terminal: `cnm acl list | jq …`.
     #[arg(long, global = true)]
     json: bool,
 
@@ -348,6 +359,15 @@ enum Commands {
     DidTemplates {
         #[command(subcommand)]
         command: DidTemplateCommands,
+    },
+    /// Print a shell completion script (#2592).
+    ///
+    ///   cnm completions bash > ~/.local/share/bash-completion/completions/cnm
+    ///   cnm completions zsh  > "${fpath[1]}/_cnm"
+    ///   cnm completions fish > ~/.config/fish/completions/cnm.fish
+    Completions {
+        /// The shell to generate for.
+        shell: clap_complete::Shell,
     },
 }
 
@@ -1012,11 +1032,12 @@ enum KeyCommands {
 }
 
 fn print_banner() {
-    let green = "\x1b[32m";
-    let magenta = "\x1b[35m";
-    let yellow = "\x1b[33m";
-    let dim = "\x1b[2m";
-    let reset = "\x1b[0m";
+    use vta_cli_common::startup::banner_color;
+    let green = banner_color("\x1b[32m");
+    let magenta = banner_color("\x1b[35m");
+    let yellow = banner_color("\x1b[33m");
+    let dim = banner_color("\x1b[2m");
+    let reset = banner_color("\x1b[0m");
 
     eprintln!(
         r#"
@@ -1112,6 +1133,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Members { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
+            | Commands::Completions { .. }
     )
 }
 
@@ -1252,7 +1274,7 @@ fn install_force_exit_handler() {
             }
             if SHUTDOWN_REQUESTED.swap(true, Ordering::SeqCst) {
                 eprintln!("\nForcing exit.");
-                std::process::exit(130);
+                std::process::exit(exit::INTERRUPTED);
             }
             eprintln!("\nShutting down — press Ctrl-C again to force exit.");
         }
@@ -1270,6 +1292,12 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // Completions need nothing else: no profile, no keyring, no banner.
+    if let Commands::Completions { shell } = &cli.command {
+        vta_cli_common::startup::print_completions::<Cli>(*shell, "cnm");
+        return;
+    }
+
     // DID-advertised VTA endpoints are public-only unless the operator opts in.
     vta_sdk::http::set_allow_private_endpoints(cli.allow_private_endpoints);
 
@@ -1277,10 +1305,10 @@ async fn main() {
     // commands from vta-cli-common pick it up.
     vta_cli_common::render::set_full_display(cli.full_display);
     vta_cli_common::display::set_resolve_agent_names(cli.resolve_agent_names);
-    if cli.json {
-        vta_cli_common::render::set_output_format(vta_cli_common::render::OutputFormat::Json);
-    }
-    vta_cli_common::render::set_bin_name("cnm");
+    // Format, colour and the binary name in hints — the same rules as `pnm`
+    // (`vta_cli_common::startup`, #2587): JSON off a terminal, no colour off
+    // one or under NO_COLOR.
+    vta_cli_common::startup::init_output("cnm", cli.json);
 
     // Initialize tracing: --verbose sets cnm_cli=debug, or respect RUST_LOG
     let filter = if cli.verbose {
@@ -1301,14 +1329,21 @@ async fn main() {
     #[cfg(feature = "keyring")]
     vta_sdk::keyring_init::install_default_store_or_exit("cnm");
 
-    print_banner();
+    // The banner is for a person at a terminal; it goes to stderr, so it is
+    // gated on stderr (#2587).
+    if vta_cli_common::startup::banner_wanted() {
+        print_banner();
+    }
 
-    // Load CNM config (multi-community)
+    // Load CNM config (multi-community). A profile that exists but does not
+    // parse stops here (#2582): carrying on with an empty one would report
+    // every community as "not configured" and point at `cnm setup`, which
+    // would then overwrite the file.
     let cnm_config = match config::load_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: could not load config: {e}");
-            config::CnmConfig::default()
+            eprintln!("Error: {e}");
+            std::process::exit(exit::CONFIG);
         }
     };
 
@@ -1346,7 +1381,7 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
-                    std::process::exit(1);
+                    std::process::exit(exit::CONFIG);
                 }
             }
         } else if matches!(cli.command, Commands::Health) {
@@ -1373,10 +1408,8 @@ async fn main() {
                             eprintln!(
                                 "Either configure a community with `cnm setup`, or provide a URL:"
                             );
-                            // `--url` is a top-level flag (cli::Cli::url) so it must
-                            // appear BEFORE the subcommand or clap rejects the parse.
                             eprintln!("  cnm --url http://localhost:8100 health");
-                            std::process::exit(1);
+                            std::process::exit(exit::CONFIG);
                         }
                     };
                     (url, String::new())
@@ -1411,7 +1444,7 @@ async fn main() {
                             cnm auth login --credential-bundle <bundle.armored> --expect-digest <sha256>\n  \
                          2. Re-run setup: cnm setup"
             );
-            std::process::exit(1);
+            std::process::exit(exit::FAILURE);
         }
 
         // A community added for its VTC alone holds an identity with no VTA
@@ -1427,14 +1460,11 @@ async fn main() {
                  A community's VTA is recorded when the community is added or continued:\n  \
                  cnm community add <name> --vta-did <did>   (or `continue … --vta-did <did>`)"
             );
-            std::process::exit(1);
+            std::process::exit(exit::CONFIG);
         }
         match auth::connect(url_override.as_deref(), cli.transport.into(), &keyring_key).await {
             Ok(c) => c,
-            Err(e) => {
-                vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(1);
-            }
+            Err(e) => exit::fail(e.as_ref()),
         }
     } else {
         VtaClient::new(&url)
@@ -1549,7 +1579,7 @@ async fn main() {
                         Ok(v) => Some(v),
                         Err(e) => {
                             eprintln!("Error: --admin-expires: {e}");
-                            std::process::exit(1);
+                            std::process::exit(exit::USAGE);
                         }
                     },
                     None => None,
@@ -1870,6 +1900,7 @@ async fn main() {
                 no_verify_digest,
             } => bootstrap_open(&bundle, expect_digest.as_deref(), no_verify_digest),
         },
+        Commands::Completions { .. } => unreachable!("Completions handled before start-up"),
         Commands::DidTemplates { command } => match command {
             DidTemplateCommands::Validate { file } => did_templates::cmd_validate(file),
             DidTemplateCommands::Init { kind } => did_templates::cmd_init(kind),
@@ -1949,8 +1980,9 @@ async fn main() {
     client.shutdown().await;
 
     if let Err(e) = result {
-        vta_cli_common::render::print_cli_error(e.as_ref());
-        std::process::exit(1);
+        // The same codes as `pnm` (#2587): 3 not found, 4 config/validation,
+        // 5 auth, 1 anything else.
+        exit::fail(e.as_ref());
     }
 }
 

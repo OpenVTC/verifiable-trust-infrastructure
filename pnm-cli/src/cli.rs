@@ -40,11 +40,21 @@ impl From<TransportOpt> for vta_sdk::session::TransportChoice {
 
 #[derive(Parser)]
 #[command(
-    name = "pnm-cli",
+    name = "pnm",
+    version,
+    // `-V` has meant `--verbose` here since before `--version` existed, so
+    // the version answers to the long flag only (#2592).
+    disable_version_flag = true,
     about = "CLI for managing a personal Verifiable Trust Agent"
 )]
 pub(crate) struct Cli {
-    /// Base URL of the VTA service (overrides config)
+    /// Print version
+    #[arg(long, action = clap::ArgAction::Version)]
+    pub(crate) version: Option<bool>,
+
+    /// Base URL of the VTA service (overrides config). A top-level flag: put it
+    /// before the subcommand (`--url` is also a subcommand argument on
+    /// several commands, so it cannot be global).
     #[arg(long, env = "VTA_URL")]
     pub(crate) url: Option<String>,
 
@@ -72,8 +82,8 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) resolve_agent_names: bool,
 
-    /// Emit list output as JSON instead of a human-readable table.
-    /// Use this for automation: `pnm acl list --json | jq …`.
+    /// Emit output as JSON instead of a human-readable table. Automatic when
+    /// stdout is not a terminal: `pnm acl get <did> | jq .role`.
     #[arg(long, global = true)]
     pub(crate) json: bool,
 
@@ -420,6 +430,15 @@ pub(crate) enum Commands {
     Messaging {
         #[command(subcommand)]
         command: MessagingCommands,
+    },
+    /// Print a shell completion script (#2592).
+    ///
+    ///   pnm completions bash > ~/.local/share/bash-completion/completions/pnm
+    ///   pnm completions zsh  > "${fpath[1]}/_pnm"
+    ///   pnm completions fish > ~/.config/fish/completions/pnm.fish
+    Completions {
+        /// The shell to generate for.
+        shell: clap_complete::Shell,
     },
 }
 
@@ -5185,6 +5204,7 @@ pub(crate) fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Setup { .. }
             | Commands::Vta { .. }
             | Commands::Bootstrap { .. }
+            | Commands::Completions { .. }
     )
 }
 
@@ -5238,12 +5258,14 @@ where
 /// `NO_COLOR` is set; the block glyphs are text, not escapes, so the logo
 /// still reads.
 pub(crate) fn print_banner() {
-    let color = std::env::var_os("NO_COLOR").is_none();
-    let (cyan, magenta, yellow, dim, reset) = if color {
-        ("\x1b[36m", "\x1b[35m", "\x1b[33m", "\x1b[2m", "\x1b[0m")
-    } else {
-        ("", "", "", "", "")
-    };
+    use vta_cli_common::startup::banner_color;
+    let (cyan, magenta, yellow, dim, reset) = (
+        banner_color("\x1b[36m"),
+        banner_color("\x1b[35m"),
+        banner_color("\x1b[33m"),
+        banner_color("\x1b[2m"),
+        banner_color("\x1b[0m"),
+    );
 
     eprintln!(
         r#"
