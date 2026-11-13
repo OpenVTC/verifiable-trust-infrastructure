@@ -516,11 +516,8 @@ impl PersonaStore {
         // not a reason to disclose.
         match self.rederive(&attribute.provenance).await? {
             None => {}
-            Some(crate::Derived::Value(v)) => {
-                if attribute.value.is_some() {
-                    attribute.value = Some(v);
-                }
-            }
+            // Replaced only where a value is shown; a withheld one stays `None`.
+            Some(crate::Derived::Value(v)) => attribute.value = attribute.value.take().map(|_| v),
             Some(crate::Derived::Stale(reason)) => {
                 attribute.value = None;
                 attribute.stale = Some(true);
@@ -585,11 +582,8 @@ impl PersonaStore {
             // disclose.
             match self.rederive(&a.provenance).await? {
                 None => {}
-                Some(crate::Derived::Value(v)) => {
-                    if a.value.is_some() {
-                        a.value = Some(v);
-                    }
-                }
+                // Replaced only where a value is shown; a withheld one stays `None`.
+                Some(crate::Derived::Value(v)) => a.value = a.value.take().map(|_| v),
                 Some(crate::Derived::Stale(reason)) => {
                     a.value = None;
                     a.stale = Some(true);

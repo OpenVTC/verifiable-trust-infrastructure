@@ -675,11 +675,10 @@ mod cors_tests {
         let stale: Vec<&str> = REST_EXCEPTIONS
             .iter()
             .filter(|(m, p, _)| {
-                !spec
-                    .paths
+                spec.paths
                     .paths
                     .get(*p)
-                    .is_some_and(|item| op_for(item, m).is_some())
+                    .is_none_or(|item| op_for(item, m).is_none())
             })
             .map(|(_, p, _)| *p)
             .collect();

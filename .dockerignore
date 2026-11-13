@@ -13,3 +13,7 @@ docs/
 signing/
 .deploy-nitro/
 *.txt
+# The images build with the Rust in their own `FROM rust:<version>` line, which
+# scripts/check-toolchain-pins.sh keeps equal to this file's pin. Inside the
+# image the file would only make rustup fetch the components it lists.
+rust-toolchain.toml

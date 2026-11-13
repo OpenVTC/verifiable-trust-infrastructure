@@ -1,7 +1,7 @@
 name: Feature combos setup
 description: >
   The shared preamble of every `Feature combos (<group>)` job in ci.yml:
-  system packages, the stable toolchain, and the build cache. The job checks the repository out first (this file lives in it).
+  system packages, the pinned toolchain (rust-toolchain.toml), and the build cache. The job checks the repository out first (this file lives in it).
 
 # One copy instead of five. When `Feature combos` was split into parallel
 # groups, each group needed the same three steps, and five hand-kept copies of
@@ -28,9 +28,7 @@ runs:
     # so there is no immutable ref to pin).
     - name: Install the Rust toolchain
       shell: bash
-      run: |
-        rustup toolchain install stable --profile minimal --no-self-update
-        rustup default stable
+      run: bash scripts/install-rust-toolchain.sh
 
     # mold + compiled third-party crates, keyed per calling job: each group
     # builds its own feature sets, so they never share one (#891).
