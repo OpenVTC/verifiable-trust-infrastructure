@@ -14,6 +14,7 @@ import { ElectionPage, ElectionsPage } from "./Elections";
 import { BadgePage, BadgesPage, MakeBadgePage } from "./Badges";
 import { BoardPage, BoardsPage } from "./Boards";
 import { RoomPage, RoomsPage } from "./Rooms";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { forgetMemberSessionKey } from "@/lib/console-key";
 import { forgetSessionKey } from "./oob";
 import { SignIn, isJoinIntent } from "./SignIn";
@@ -103,6 +104,7 @@ function shortDid(did: string): string {
 
 export function Portal() {
   const qc = useQueryClient();
+  const route = useRoute();
   const me = useQuery({ queryKey: ["member-me"], queryFn: fetchMe });
   const profile = useQuery({
     queryKey: ["community-profile"],
@@ -157,7 +159,11 @@ export function Portal() {
         // separate identity starts here, and only the wallet can offer it.
         <SignIn communityName={communityName} signedInAs={me.data?.did} />
       ) : (
-        <SignedIn me={me.data} />
+        // A render-time throw on one page draws an alert in its place under a
+        // top bar that still works; moving to another page clears it (#2605).
+        <ErrorBoundary resetKey={route} variant="alert">
+          <SignedIn me={me.data} route={route} />
+        </ErrorBoundary>
       )}
     </>
   );
@@ -166,8 +172,7 @@ export function Portal() {
 /** A signed-in member's pages. The room and repository pages need the
  *  community's DID: the member's wallet holds them to the portal that DID's
  *  document names. */
-function SignedIn({ me }: { me: MemberMe }) {
-  const route = useRoute();
+function SignedIn({ me, route }: { me: MemberMe; route: Route }) {
   const walletPage =
     route.page === "rooms" ||
     route.page === "room" ||
