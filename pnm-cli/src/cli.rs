@@ -1321,13 +1321,17 @@ pub(crate) enum ExternalCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Delete an archived account for good; its id is never reused.
+    /// Delete an archived account for good; its id is never reused. Asks
+    /// first on a terminal; without one needs `--yes`.
     Delete {
         id: String,
         #[arg(long = "context", value_name = "ID")]
         context: String,
         #[arg(long)]
         reason: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Ask for a credential as a bound consumer. Printed still sealed.
     Issue {
@@ -2718,7 +2722,8 @@ pub(crate) enum DidTemplateCommands {
         context: Option<String>,
     },
 
-    /// Delete a stored template.
+    /// Delete a stored template. Asks first on a terminal; without one
+    /// needs `--yes`.
     Delete {
         /// Template name.
         name: String,
@@ -2726,6 +2731,9 @@ pub(crate) enum DidTemplateCommands {
         /// of the global one.
         #[arg(long)]
         context: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Export a stored template to stdout as a portable JSON file.
@@ -2777,6 +2785,12 @@ pub(crate) enum BackupCommands {
         /// Replace the output file if it already exists.
         #[arg(long)]
         force: bool,
+        /// Read the backup password from this file, or `-` for stdin. Without
+        /// it, PNM_BACKUP_PASSWORD is read, then the terminal is asked (no echo).
+        /// With none of them and no terminal, the command fails rather than
+        /// wait: a scheduled backup names one (#2585).
+        #[arg(long, value_name = "PATH|-")]
+        password_file: Option<std::path::PathBuf>,
     },
     /// Import VTA state from an encrypted backup file.
     ///
@@ -2793,6 +2807,16 @@ pub(crate) enum BackupCommands {
         /// a DID of its own. Without it a backup of another DID is refused.
         #[arg(long)]
         replace_identity: bool,
+        /// Read the backup password from this file, or `-` for stdin. Without
+        /// it, PNM_BACKUP_PASSWORD is read, then the terminal is asked (no echo).
+        /// With none of them and no terminal, the command fails rather than
+        /// wait: a scheduled backup names one (#2585).
+        #[arg(long, value_name = "PATH|-")]
+        password_file: Option<std::path::PathBuf>,
+        /// Replace the VTA's data without asking (needed when there is no
+        /// terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -2904,6 +2928,9 @@ pub(crate) enum WebvhCommands {
     DeleteServer {
         /// Server identifier to delete
         id: String,
+        /// Go ahead without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Create a WebVH DID
     CreateDid {
@@ -3025,8 +3052,9 @@ pub(crate) enum WebvhCommands {
         #[arg(long)]
         label: Option<String>,
         /// Skip the final "Publish?" confirmation prompt. Useful
-        /// for scripted runs.
-        #[arg(long)]
+        /// for scripted runs. `--yes`, as on every
+        /// other command; `--no-confirm` is still accepted (#2591).
+        #[arg(long = "yes", short = 'y', alias = "no-confirm")]
         no_confirm: bool,
     },
     /// List or remove the did:scid alias of an existing DID
@@ -3055,8 +3083,9 @@ pub(crate) enum WebvhCommands {
         /// Audit label for this update.
         #[arg(long)]
         label: Option<String>,
-        /// Skip the "Publish?" confirmation prompt.
-        #[arg(long)]
+        /// Skip the "Publish?" confirmation prompt. `--yes`, as on every
+        /// other command; `--no-confirm` is still accepted (#2591).
+        #[arg(long = "yes", short = 'y', alias = "no-confirm")]
         no_confirm: bool,
     },
     /// Register an existing serverless WebVH DID with a webvh hosting server.
@@ -3136,6 +3165,9 @@ pub(crate) enum WebvhCommands {
     DeleteDid {
         /// The DID to delete
         did: String,
+        /// Go ahead without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Rename this DID's key records to the verification-method ids its
     /// published document carries.
@@ -3232,12 +3264,16 @@ pub(crate) enum DidMgmtAgentNameCommands {
     ///
     /// Not a delete of anything this DID keeps: once released, the name can be
     /// claimed by any DID on the hosting domain. To stop a name resolving while
-    /// keeping it reserved to this DID, use `disable` instead.
+    /// keeping it reserved to this DID, use `disable` instead. Asks first on
+    /// a terminal; without one needs `--yes`.
     Remove {
         #[arg(long)]
         did: String,
         #[arg(long)]
         name: String,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Park a name: stop it resolving, keep it reserved to this DID.
     Disable {
@@ -3304,6 +3340,9 @@ pub(crate) enum DidMgmtServerCommands {
     Delete {
         /// Server identifier to delete.
         id: String,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -3429,8 +3468,9 @@ pub(crate) enum DidMgmtDidCommands {
         /// Audit label for this update.
         #[arg(long)]
         label: Option<String>,
-        /// Skip the final "Publish?" confirmation prompt.
-        #[arg(long)]
+        /// Skip the final "Publish?" confirmation prompt. `--yes`, as on every
+        /// other command; `--no-confirm` is still accepted (#2591).
+        #[arg(long = "yes", short = 'y', alias = "no-confirm")]
         no_confirm: bool,
     },
     /// List or remove the did:scid alias of an existing DID
@@ -3459,8 +3499,9 @@ pub(crate) enum DidMgmtDidCommands {
         /// Audit label for this update.
         #[arg(long)]
         label: Option<String>,
-        /// Skip the "Publish?" confirmation prompt.
-        #[arg(long)]
+        /// Skip the "Publish?" confirmation prompt. `--yes`, as on every
+        /// other command; `--no-confirm` is still accepted (#2591).
+        #[arg(long = "yes", short = 'y', alias = "no-confirm")]
         no_confirm: bool,
     },
     /// Register an existing serverless DID with a registered
@@ -3502,10 +3543,13 @@ pub(crate) enum DidMgmtDidCommands {
         /// The DID to look up.
         did: String,
     },
-    /// Delete a DID.
+    /// Delete a DID. Asks first on a terminal; without one needs `--yes`.
     Delete {
         /// The DID to delete.
         did: String,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Rename this DID's key records to the verification-method ids its
     /// published document carries.
@@ -3581,7 +3625,9 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 DidMgmtServerCommands::Update { id, label } => {
                     WebvhCommands::UpdateServer { id, label }
                 }
-                DidMgmtServerCommands::Delete { id } => WebvhCommands::DeleteServer { id },
+                DidMgmtServerCommands::Delete { id, yes } => {
+                    WebvhCommands::DeleteServer { id, yes }
+                }
             },
             // Intercepted in `main.rs` before this bridge is reached — agent
             // names are a new surface and deliberately have no legacy
@@ -3682,7 +3728,7 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     WebvhCommands::ListDids { context, server }
                 }
                 DidMgmtDidCommands::Get { did } => WebvhCommands::GetDid { did },
-                DidMgmtDidCommands::Delete { did } => WebvhCommands::DeleteDid { did },
+                DidMgmtDidCommands::Delete { did, yes } => WebvhCommands::DeleteDid { did, yes },
                 DidMgmtDidCommands::RealignKeys { did, dry_run } => {
                     WebvhCommands::RealignDidKeys { did, dry_run }
                 }
@@ -4228,6 +4274,7 @@ pub(crate) enum AclCommands {
         direction: Option<String>,
     },
     /// Get an ACL entry by DID
+    #[command(visible_alias = "show")]
     Get {
         /// DID to look up
         did: String,
@@ -4239,10 +4286,15 @@ pub(crate) enum AclCommands {
     /// change-role`, which carries the compare-and-swap `pnm acl update`
     /// refuses to do without. For its context list and everything else, use
     /// `pnm acl update`. To revoke access use `pnm acl delete`.
+    #[command(visible_alias = "grant")]
     Create {
-        /// DID to grant access to
-        #[arg(long)]
-        did: String,
+        /// DID to grant access to. Positional, as on `get`, `update` and
+        /// `delete` (#2591); `--did <DID>` is still accepted.
+        #[arg(required_unless_present = "did_flag")]
+        did: Option<String>,
+        /// The DID, as a flag (the older spelling).
+        #[arg(long = "did", value_name = "DID", conflicts_with = "did", hide = true)]
+        did_flag: Option<String>,
         /// Role: admin, initiator, application, or reader
         #[arg(long)]
         role: String,
@@ -4322,9 +4374,13 @@ pub(crate) enum AclCommands {
     /// moved them since you looked, the change is refused rather than
     /// silently overwriting theirs — re-read with `pnm acl get` and retry.
     ChangeRole {
-        /// DID of the entry whose role is changing
-        #[arg(long)]
-        did: String,
+        /// DID of the entry whose role is changing. Positional, as on `get`,
+        /// `update` and `delete` (#2591); `--did <DID>` is still accepted.
+        #[arg(required_unless_present = "did_flag")]
+        did: Option<String>,
+        /// The DID, as a flag (the older spelling).
+        #[arg(long = "did", value_name = "DID", conflicts_with = "did", hide = true)]
+        did_flag: Option<String>,
         /// The role the subject currently holds
         #[arg(long = "from")]
         from_role: String,
@@ -4425,11 +4481,24 @@ pub(crate) enum AclCommands {
         /// Set the purposes to `any` (never `modelTraining`).
         #[arg(long)]
         purposes_any: bool,
+        /// Optional rationale, recorded in the audit log (`acl/update/0.3`
+        /// `reason`).
+        #[arg(long)]
+        reason: Option<String>,
     },
-    /// Delete an ACL entry
+    /// Delete an ACL entry. Irreversible: asks first on a terminal, and
+    /// without one needs `--yes`.
+    #[command(visible_alias = "revoke")]
     Delete {
         /// DID of the entry to delete
         did: String,
+        /// Optional rationale, recorded in the audit log (`acl/revoke/0.3`
+        /// `reason`).
+        #[arg(long)]
+        reason: Option<String>,
+        /// Delete without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -4641,6 +4710,9 @@ pub(crate) enum DeviceCommands {
         /// How aggressively to wipe: cache, cache-and-keys, or full.
         #[arg(long, default_value = "cache-and-keys")]
         scope: String,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Record a device's push WakeHandle and return the trigger allowlist.
     SetWake {
@@ -4745,6 +4817,9 @@ pub(crate) enum VaultCommands {
         /// Rationale recorded in the audit trail.
         #[arg(long)]
         reason: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Create/update an entry. `VaultWrite`. `--entry-file` carries the entry
     /// fields (`contextId`, `targets`, `label`, `secretKind`, …);
@@ -4862,6 +4937,9 @@ pub(crate) enum CredVaultCommands {
         /// Rationale recorded in the audit trail.
         #[arg(long)]
         reason: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -4959,8 +5037,14 @@ pub(crate) enum KeyCommands {
         /// BIP-32 derivation path (auto-derived from context if omitted)
         #[arg(long)]
         derivation_path: Option<String>,
-        /// BIP-39 mnemonic phrase
-        #[arg(long)]
+        /// Read a BIP-39 mnemonic phrase from this file, or `-` for stdin
+        /// (asked without echo on a terminal). Never on the command line,
+        /// where shell history and `ps` keep it (#2584).
+        #[arg(long, value_name = "PATH|-")]
+        mnemonic_file: Option<std::path::PathBuf>,
+        /// Deprecated: puts the phrase on the command line. Use
+        /// `--mnemonic-file`.
+        #[arg(long, hide = true, conflicts_with = "mnemonic_file")]
         mnemonic: Option<String>,
         /// Human-readable label
         #[arg(long)]
@@ -5010,10 +5094,18 @@ pub(crate) enum KeyCommands {
         #[arg(long)]
         secret: bool,
     },
-    /// Revoke (invalidate) a key
+    /// Revoke (invalidate) a key. Irreversible: asks first on a terminal,
+    /// and without one needs `--yes`.
     Revoke {
         /// Key ID
         key_id: String,
+        /// Optional rationale, recorded in the audit log (`keys/revoke/0.1`
+        /// `reason`).
+        #[arg(long)]
+        reason: Option<String>,
+        /// Revoke without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Set whether a key's private half may ever be released.
     ///
@@ -5157,11 +5249,20 @@ pub(crate) enum KeyCommands {
     },
     /// List seed generations
     Seeds,
-    /// Rotate to a new seed generation
+    /// Rotate to a new seed generation. Asks first on a terminal, and
+    /// without one needs `--yes`.
     RotateSeed {
-        /// BIP-39 mnemonic phrase for the new seed (random if omitted)
-        #[arg(long)]
+        /// Read the BIP-39 mnemonic for the new seed from this file, or `-`
+        /// for stdin (asked without echo on a terminal). Random if omitted.
+        #[arg(long, value_name = "PATH|-")]
+        mnemonic_file: Option<std::path::PathBuf>,
+        /// Deprecated: puts the phrase on the command line. Use
+        /// `--mnemonic-file`.
+        #[arg(long, hide = true, conflicts_with = "mnemonic_file")]
         mnemonic: Option<String>,
+        /// Rotate without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -6525,7 +6626,7 @@ mod removal_verb_tests {
             let Commands::DidMgmt {
                 command:
                     DidMgmtCommands::Servers {
-                        command: DidMgmtServerCommands::Delete { id },
+                        command: DidMgmtServerCommands::Delete { id, .. },
                     },
             } = cli.command
             else {
@@ -6781,13 +6882,19 @@ pub(crate) enum WebsCommands {
     /// Rotate to the committed successor key
     Rotate {
         did: String,
-        #[arg(long)]
+        /// Refuse unless the DID's current version is this one.
+        #[arg(long = "expected-version", alias = "expect-version")]
         expect_version: Option<String>,
     },
-    /// Deactivate the DID for good and remove its slot from the host
+    /// Deactivate the DID for good and remove its slot from the host. Asks
+    /// first on a terminal; without one needs `--yes`.
     Delete {
         did: String,
-        #[arg(long)]
+        /// Refuse unless the DID's current version is this one.
+        #[arg(long = "expected-version", alias = "expect-version")]
         expect_version: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }

@@ -442,6 +442,9 @@ enum DidTemplateCommands {
         /// TARGET SCOPE: operate on this context's stored template.
         #[arg(long)]
         context: Option<String>,
+        /// Delete without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Export a stored template to stdout as a portable JSON file.
@@ -505,6 +508,12 @@ enum BackupCommands {
         /// Replace the output file if it already exists.
         #[arg(long)]
         force: bool,
+        /// Read the backup password from this file, or `-` for stdin. Without
+        /// it, CNM_BACKUP_PASSWORD is read, then the terminal is asked (no echo).
+        /// With none of them and no terminal, the command fails rather than
+        /// wait: a scheduled backup names one (#2585).
+        #[arg(long, value_name = "PATH|-")]
+        password_file: Option<std::path::PathBuf>,
     },
     /// Import the community's state from an encrypted backup file.
     Import {
@@ -513,6 +522,16 @@ enum BackupCommands {
         /// Preview only — show row counts without applying.
         #[arg(long)]
         preview: bool,
+        /// Read the backup password from this file, or `-` for stdin. Without
+        /// it, CNM_BACKUP_PASSWORD is read, then the terminal is asked (no echo).
+        /// With none of them and no terminal, the command fails rather than
+        /// wait: a scheduled backup names one (#2585).
+        #[arg(long, value_name = "PATH|-")]
+        password_file: Option<std::path::PathBuf>,
+        /// Replace the VTA's data without asking (needed when there is no
+        /// terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -853,16 +872,22 @@ enum AclCommands {
         #[arg(long, requires = "context")]
         direction: Option<String>,
     },
-    /// Get an ACL entry by DID
+    /// Get an ACL entry by DID (`show`, as on `cnm access`)
+    #[command(visible_alias = "show")]
     Get {
         /// DID to look up
         did: String,
     },
-    /// Create an ACL entry
+    /// Create an ACL entry (`grant`, as on `cnm access`)
+    #[command(visible_alias = "grant")]
     Create {
-        /// DID to grant access to
-        #[arg(long)]
-        did: String,
+        /// DID to grant access to. Positional, as on `get`, `update` and
+        /// `delete` (#2591); `--did <DID>` is still accepted.
+        #[arg(required_unless_present = "did_flag")]
+        did: Option<String>,
+        /// The DID, as a flag (the older spelling).
+        #[arg(long = "did", value_name = "DID", conflicts_with = "did", hide = true)]
+        did_flag: Option<String>,
         /// Role: admin, initiator, application, or reader
         #[arg(long)]
         role: String,
@@ -909,11 +934,22 @@ enum AclCommands {
         /// increase — the subject may again use every key in its contexts).
         #[arg(long)]
         allowed_keys_unrestricted: bool,
+        /// Optional rationale, recorded in the audit log.
+        #[arg(long)]
+        reason: Option<String>,
     },
-    /// Delete an ACL entry
+    /// Delete an ACL entry (`revoke`, as on `cnm access`). Irreversible: asks
+    /// first on a terminal, and without one needs `--yes`.
+    #[command(visible_alias = "revoke")]
     Delete {
         /// DID of the entry to delete
         did: String,
+        /// Optional rationale, recorded in the audit log.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Delete without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -955,8 +991,14 @@ enum KeyCommands {
         /// BIP-32 derivation path (auto-derived from context if omitted)
         #[arg(long)]
         derivation_path: Option<String>,
-        /// BIP-39 mnemonic phrase
-        #[arg(long)]
+        /// Read a BIP-39 mnemonic phrase from this file, or `-` for stdin
+        /// (asked without echo on a terminal). Never on the command line,
+        /// where shell history and `ps` keep it (#2584).
+        #[arg(long, value_name = "PATH|-")]
+        mnemonic_file: Option<std::path::PathBuf>,
+        /// Deprecated: puts the phrase on the command line. Use
+        /// `--mnemonic-file`.
+        #[arg(long, hide = true, conflicts_with = "mnemonic_file")]
         mnemonic: Option<String>,
         /// Human-readable label
         #[arg(long)]
@@ -985,10 +1027,17 @@ enum KeyCommands {
         #[arg(long)]
         secret: bool,
     },
-    /// Revoke (invalidate) a key
+    /// Revoke (invalidate) a key. Irreversible: asks first on a terminal,
+    /// and without one needs `--yes`.
     Revoke {
         /// Key ID
         key_id: String,
+        /// Optional rationale, recorded in the audit log.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Revoke without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Rename a key
     Rename {
@@ -1023,11 +1072,20 @@ enum KeyCommands {
     },
     /// List seed generations
     Seeds,
-    /// Rotate to a new seed generation
+    /// Rotate to a new seed generation. Asks first on a terminal, and
+    /// without one needs `--yes`.
     RotateSeed {
-        /// BIP-39 mnemonic phrase for the new seed (random if omitted)
-        #[arg(long)]
+        /// Read the BIP-39 mnemonic for the new seed from this file, or `-`
+        /// for stdin (asked without echo on a terminal). Random if omitted.
+        #[arg(long, value_name = "PATH|-")]
+        mnemonic_file: Option<std::path::PathBuf>,
+        /// Deprecated: puts the phrase on the command line. Use
+        /// `--mnemonic-file`.
+        #[arg(long, hide = true, conflicts_with = "mnemonic_file")]
         mnemonic: Option<String>,
+        /// Rotate without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -1669,6 +1727,7 @@ async fn main() {
             AclCommands::Get { did } => acl::cmd_acl_get(&client, &did).await,
             AclCommands::Create {
                 did,
+                did_flag,
                 role,
                 label,
                 contexts,
@@ -1683,7 +1742,8 @@ async fn main() {
                     // cnm does not expose the per-entry step-up or approve flags.
                     acl::cmd_acl_create(
                         &client,
-                        did,
+                        // clap requires one of the two.
+                        did.or(did_flag).unwrap_or_default(),
                         role,
                         label,
                         contexts,
@@ -1711,6 +1771,7 @@ async fn main() {
                 contexts,
                 allowed_keys,
                 allowed_keys_unrestricted,
+                reason,
             } => {
                 // cnm exposes no approve-scope flags; pass `None` so the
                 // scope is left unchanged rather than silently cleared.
@@ -1731,10 +1792,13 @@ async fn main() {
                     None,
                     // Purposes are left unchanged.
                     None,
+                    reason.as_deref(),
                 )
                 .await
             }
-            AclCommands::Delete { did } => acl::cmd_acl_delete(&client, &did).await,
+            AclCommands::Delete { did, reason, yes } => {
+                acl::cmd_acl_delete(&client, &did, reason.as_deref(), yes).await
+            }
         },
         Commands::AuthCredential { command } => match command {
             AuthCredentialCommands::Create {
@@ -1765,9 +1829,33 @@ async fn main() {
                         include_audit,
                         output,
                         force,
-                    } => backup::cmd_export(&key, &target, include_audit, output, force).await,
-                    BackupCommands::Import { file, preview } => {
-                        backup::cmd_import(&key, &target, file, preview).await
+                        password_file,
+                    } => {
+                        backup::cmd_export(
+                            &key,
+                            &target,
+                            include_audit,
+                            output,
+                            force,
+                            password_file.as_deref(),
+                        )
+                        .await
+                    }
+                    BackupCommands::Import {
+                        file,
+                        preview,
+                        password_file,
+                        yes,
+                    } => {
+                        backup::cmd_import(
+                            &key,
+                            &target,
+                            file,
+                            preview,
+                            password_file.as_deref(),
+                            yes,
+                        )
+                        .await
                     }
                 },
                 Err(e) => Err(e),
@@ -1928,8 +2016,15 @@ async fn main() {
                 file,
                 context,
             } => did_templates::cmd_update(&client, &name, context.as_deref(), file).await,
-            DidTemplateCommands::Delete { name, context } => {
-                did_templates::cmd_delete(&client, &name, context.as_deref()).await
+            DidTemplateCommands::Delete { name, context, yes } => {
+                match vta_cli_common::confirm::confirm_or_cancel(
+                    &format!("delete the stored template `{name}`"),
+                    yes,
+                ) {
+                    Ok(true) => did_templates::cmd_delete(&client, &name, context.as_deref()).await,
+                    Ok(false) => Ok(()),
+                    Err(e) => Err(e),
+                }
             }
             DidTemplateCommands::Export { name, context } => {
                 did_templates::cmd_export(&client, &name, context.as_deref()).await
@@ -1944,28 +2039,36 @@ async fn main() {
             KeyCommands::Create {
                 key_type,
                 derivation_path,
+                mnemonic_file,
                 mnemonic,
                 label,
                 context_id,
                 internal,
                 yes,
-            } => {
-                keys::cmd_key_create(
-                    &client,
-                    &key_type,
-                    derivation_path,
-                    mnemonic,
-                    label,
-                    context_id,
-                    internal,
-                    yes,
-                )
-                .await
-            }
+            } => match keys::read_mnemonic(mnemonic_file.as_deref(), mnemonic) {
+                Err(e) => Err(e),
+                Ok(mnemonic) => {
+                    keys::cmd_key_create(
+                        &client,
+                        &key_type,
+                        derivation_path,
+                        mnemonic.map(|m| m.to_string()),
+                        label,
+                        context_id,
+                        internal,
+                        yes,
+                    )
+                    .await
+                }
+            },
             KeyCommands::Get { key_id, secret } => {
                 keys::cmd_key_get(&client, &key_id, secret).await
             }
-            KeyCommands::Revoke { key_id } => keys::cmd_key_revoke(&client, &key_id).await,
+            KeyCommands::Revoke {
+                key_id,
+                reason,
+                yes,
+            } => keys::cmd_key_revoke(&client, &key_id, reason.as_deref(), yes).await,
             KeyCommands::Rename { key_id, new_key_id } => {
                 keys::cmd_key_rename(&client, &key_id, &new_key_id).await
             }
@@ -1979,7 +2082,14 @@ async fn main() {
                 keys::cmd_key_secrets(&client, key_ids, context).await
             }
             KeyCommands::Seeds => keys::cmd_seeds_list(&client).await,
-            KeyCommands::RotateSeed { mnemonic } => keys::cmd_seeds_rotate(&client, mnemonic).await,
+            KeyCommands::RotateSeed {
+                mnemonic_file,
+                mnemonic,
+                yes,
+            } => match keys::read_mnemonic(mnemonic_file.as_deref(), mnemonic) {
+                Ok(mnemonic) => keys::cmd_seeds_rotate(&client, mnemonic, yes).await,
+                Err(e) => Err(e),
+            },
         },
     };
 
@@ -2585,6 +2695,96 @@ fn print_community_local_only_notice(name: &str, client_did: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
+    /// Every command a shared hint tells a cnm operator to run parses here
+    /// (root CLAUDE.md, "Operator errors should suggest the fix"): the
+    /// per-binary Auth / Forbidden / Network hints (#2586), `--yes` on every
+    /// command `confirm` refuses without it (#2583), the secret-file flags
+    /// (#2584, #2585), the verb aliases shared with `cnm access` (#2591) and
+    /// the version / completion surface (#2592).
+    #[test]
+    fn remediation_commands_in_shared_hints_parse() {
+        use clap::Parser;
+        let commands: &[&[&str]] = &[
+            // vta-cli-common/src/render.rs
+            &["cnm", "setup"],
+            &[
+                "cnm",
+                "auth",
+                "login",
+                "--credential-bundle",
+                "b.armored",
+                "--expect-digest",
+                "00",
+            ],
+            &["cnm", "community", "list"],
+            &["cnm", "--url", "http://localhost:8100", "health"],
+            &["cnm", "acl", "get", "did:key:z6Mk"],
+            // vta-cli-common/src/commands/did_templates.rs
+            &["cnm", "did-templates", "init", "ai-agent"],
+            &["cnm", "did-templates", "create", "--file", "tpl.json"],
+            &[
+                "cnm",
+                "did-templates",
+                "create",
+                "--context",
+                "c",
+                "--file",
+                "tpl.json",
+            ],
+            // vta-cli-common/src/sealed_consumer.rs
+            &["cnm", "bootstrap", "open", "--bundle", "b.armored"],
+            // vta-cli-common/src/confirm.rs
+            &["cnm", "acl", "delete", "did:key:z6Mk", "--yes"],
+            &[
+                "cnm",
+                "acl",
+                "revoke",
+                "did:key:z6Mk",
+                "--reason",
+                "r",
+                "-y",
+            ],
+            &["cnm", "acl", "show", "did:key:z6Mk"],
+            &["cnm", "acl", "grant", "did:key:z6Mk", "--role", "reader"],
+            &[
+                "cnm",
+                "acl",
+                "create",
+                "--did",
+                "did:key:z6Mk",
+                "--role",
+                "reader",
+            ],
+            &["cnm", "keys", "revoke", "k1", "--yes"],
+            &[
+                "cnm",
+                "keys",
+                "rotate-seed",
+                "--yes",
+                "--mnemonic-file",
+                "-",
+            ],
+            &["cnm", "did-templates", "delete", "t", "--yes"],
+            &["cnm", "backup", "export", "--password-file", "-"],
+            &[
+                "cnm",
+                "backup",
+                "import",
+                "f",
+                "--password-file",
+                "p",
+                "--yes",
+            ],
+            &["cnm", "completions", "zsh"],
+            &["cnm", "-V", "community", "list"],
+        ];
+        for argv in commands {
+            if let Err(e) = super::Cli::try_parse_from(*argv) {
+                panic!("`{}` does not parse: {e}", argv.join(" "));
+            }
+        }
+    }
+
     /// The shared 429 renderer prints `cnm config update --rate-limit-… <N>`;
     /// cnm must accept exactly those flags.
     #[test]
@@ -2728,7 +2928,9 @@ mod tests {
         assert!(!requires_auth(&Commands::Backup {
             command: BackupCommands::Import {
                 file: "x.vtcbak".into(),
-                preview: true
+                preview: true,
+                password_file: None,
+                yes: false,
             }
         }));
     }

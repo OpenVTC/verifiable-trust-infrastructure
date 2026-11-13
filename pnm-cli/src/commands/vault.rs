@@ -50,7 +50,16 @@ pub(crate) async fn run(
             id,
             expected_version,
             reason,
-        } => v::cmd_vault_purge(client, id, expected_version, reason).await,
+            yes,
+        } => {
+            if !vta_cli_common::confirm::confirm_or_cancel(
+                &format!("purge vault entry {id} permanently"),
+                yes,
+            )? {
+                return Ok(());
+            }
+            v::cmd_vault_purge(client, id, expected_version, reason).await
+        }
         VaultCommands::Upsert {
             entry_file,
             secret_file,

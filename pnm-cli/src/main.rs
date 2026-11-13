@@ -495,6 +495,54 @@ mod tests {
     #[test]
     fn remediation_commands_in_error_and_help_strings_parse() {
         let commands: &[&[&str]] = &[
+            // vta-cli-common/src/render.rs (Auth, Forbidden, Network hints; #2586)
+            &["pnm", "setup"],
+            &["pnm", "acl", "get", "did:key:z6Mk"],
+            &["pnm", "vta", "info"],
+            // vta-cli-common/src/config_file.rs is a shell `mv`, not pnm.
+            // vta-cli-common/src/confirm.rs: "run the same command again with
+            // --yes" — every destructive command takes it (#2583).
+            &["pnm", "acl", "delete", "did:key:z6Mk", "--yes"],
+            &["pnm", "keys", "revoke", "k1", "--yes"],
+            &["pnm", "keys", "rotate-seed", "--yes"],
+            &[
+                "pnm",
+                "did-mgmt",
+                "dids",
+                "delete",
+                "did:webvh:x:h",
+                "--yes",
+            ],
+            &["pnm", "did-mgmt", "servers", "delete", "host-1", "--yes"],
+            &["pnm", "did-templates", "delete", "t", "--yes"],
+            &["pnm", "webs", "delete", "did:webs:h:x", "--yes"],
+            &["pnm", "vault", "purge", "e1", "--yes"],
+            &["pnm", "cred-vault", "purge", "c1", "--yes"],
+            &["pnm", "device", "wipe", "d1", "--reason", "lost", "--yes"],
+            &[
+                "pnm",
+                "did-mgmt",
+                "agent-names",
+                "remove",
+                "--did",
+                "did:webvh:x:h",
+                "--name",
+                "n",
+                "--yes",
+            ],
+            &["pnm", "external", "delete", "a1", "--context", "c", "--yes"],
+            // vta-cli-common/src/secret_input.rs (#2584, #2585)
+            &["pnm", "keys", "rotate-seed", "--mnemonic-file", "-"],
+            &["pnm", "backup", "export", "--password-file", "-"],
+            &[
+                "pnm",
+                "backup",
+                "import",
+                "f",
+                "--password-file",
+                "p",
+                "--yes",
+            ],
             // vta-sdk/src/client/webs.rs (`serverNotFound`, `domainNotServed`)
             &["pnm", "did-mgmt", "servers", "list"],
             &[

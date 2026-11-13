@@ -391,11 +391,38 @@ pub async fn cmd_key_set_exportability(
     Ok(())
 }
 
+/// A mnemonic from `--mnemonic-file <path|->`, or the deprecated
+/// `--mnemonic <phrase>` with a warning (#2584). `None` when neither is given.
+pub fn read_mnemonic(
+    file: Option<&std::path::Path>,
+    argv: Option<String>,
+) -> Result<Option<zeroize::Zeroizing<String>>, Box<dyn std::error::Error>> {
+    crate::secret_input::read_optional_secret(
+        file,
+        argv,
+        "--mnemonic",
+        "--mnemonic-file",
+        "BIP-39 mnemonic",
+        "a mnemonic was asked for",
+    )
+}
+
+/// `keys revoke <key-id>`: confirm, then revoke with the operator's `reason`
+/// (#2583). A revoked key cannot be brought back.
 pub async fn cmd_key_revoke(
     client: &VtaClient,
     key_id: &str,
+    reason: Option<&str>,
+    yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = client.invalidate_key(key_id).await?;
+    if !crate::confirm::confirm_or_cancel(&format!("revoke key {key_id}"), yes)? {
+        return Ok(());
+    }
+    let resp = client.invalidate_key_with_reason(key_id, reason).await?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
     println!("Key revoked:");
     println!("  Key ID:     {}", resp.key_id);
     println!("  Status:     {}", resp.status);
@@ -576,9 +603,23 @@ pub async fn cmd_seeds_list(client: &VtaClient) -> Result<(), Box<dyn std::error
 
 pub async fn cmd_seeds_rotate(
     client: &VtaClient,
-    mnemonic: Option<String>,
+    mnemonic: Option<zeroize::Zeroizing<String>>,
+    yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = client.rotate_seed(mnemonic).await?;
+    if !crate::confirm::confirm_or_cancel(
+        "retire the active seed and derive every new key from a new one",
+        yes,
+    )? {
+        return Ok(());
+    }
+    let resp = client
+        .rotate_seed(mnemonic.as_ref().map(|m| m.to_string()))
+        .await?;
+    drop(mnemonic);
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
 
     println!("Seed rotated successfully.");
     println!("  Previous seed ID: {} (retired)", resp.previous_seed_id);

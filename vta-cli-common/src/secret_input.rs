@@ -37,7 +37,11 @@ pub struct SecretSource<'a> {
 pub fn read_secret(
     src: &SecretSource<'_>,
 ) -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
-    let secret = if let Some(path) = src.file {
+    let stdin_dash = src.file == Some(Path::new("-"));
+    let secret = if stdin_dash && std::io::stdin().is_terminal() {
+        // `-` at a terminal: ask without echo rather than read a visible line.
+        prompt(src)?
+    } else if let Some(path) = src.file {
         let raw = if path == Path::new("-") {
             let mut s = Zeroizing::new(String::new());
             std::io::stdin().read_to_string(&mut s)?;
@@ -56,11 +60,7 @@ pub fn read_secret(
     {
         Zeroizing::new(v)
     } else if std::io::stdin().is_terminal() {
-        let mut p = dialoguer::Password::new().with_prompt(src.prompt);
-        if src.confirm {
-            p = p.with_confirmation("Confirm", "the two entries do not match");
-        }
-        Zeroizing::new(p.interact()?)
+        prompt(src)?
     } else {
         return Err(missing_message(src).into());
     };
@@ -68,6 +68,65 @@ pub fn read_secret(
         return Err(format!("{}: the value given is empty", src.needs).into());
     }
     Ok(secret)
+}
+
+fn prompt(src: &SecretSource<'_>) -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
+    let mut p = dialoguer::Password::new().with_prompt(src.prompt);
+    if src.confirm {
+        p = p.with_confirmation("Confirm", "the two entries do not match");
+    }
+    Ok(Zeroizing::new(p.interact()?))
+}
+
+/// An optional secret that only a file flag supplies: `None` without the
+/// flag (the command then does without, e.g. a random seed), the secret read
+/// from the file — or, for `-`, from stdin, asked without echo on a terminal
+/// — with it. `argv` is the deprecated command-line value: still honoured for
+/// one release, with [`warn_argv_secret`].
+pub fn read_optional_secret(
+    file: Option<&Path>,
+    argv: Option<String>,
+    argv_flag: &str,
+    file_flag: &str,
+    prompt: &str,
+    needs: &str,
+) -> Result<Option<Zeroizing<String>>, Box<dyn std::error::Error>> {
+    if let Some(v) = argv {
+        warn_argv_secret(argv_flag, &format!("{file_flag} <path|->"));
+        return Ok(Some(Zeroizing::new(v)));
+    }
+    let Some(file) = file else {
+        return Ok(None);
+    };
+    read_secret(&SecretSource {
+        file: Some(file),
+        env: None,
+        prompt,
+        confirm: false,
+        needs,
+        file_flag,
+    })
+    .map(Some)
+}
+
+/// The backup password (#2585): `--password-file <path|->`, then `env`
+/// (`PNM_BACKUP_PASSWORD` / `CNM_BACKUP_PASSWORD`), then a no-echo prompt —
+/// asked twice when `confirm` (an export choosing a new password). With none
+/// and no terminal, an error naming the flag, so a cron job fails clearly.
+pub fn backup_password(
+    file: Option<&Path>,
+    env: &str,
+    confirm: bool,
+    min_len: usize,
+) -> Result<Zeroizing<String>, Box<dyn std::error::Error>> {
+    read_secret(&SecretSource {
+        file,
+        env: Some(env),
+        prompt: &format!("Backup password (min {min_len} chars)"),
+        confirm,
+        needs: "backup needs a password",
+        file_flag: "--password-file",
+    })
 }
 
 fn missing_message(src: &SecretSource<'_>) -> String {

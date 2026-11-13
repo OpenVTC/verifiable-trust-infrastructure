@@ -556,6 +556,7 @@ pub async fn cmd_acl_update(
     allowed_keys: Option<Option<Vec<String>>>,
     capabilities: Option<Vec<String>>,
     purposes: Option<vta_sdk::acl::PurposeScope>,
+    reason: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Role transitions moved to `acl change-role`, which carries the
     // compare-and-swap that makes a concurrent edit an error instead of a
@@ -589,7 +590,7 @@ pub async fn cmd_acl_update(
         capabilities: capabilities.clone(),
         purposes: purposes.clone(),
     };
-    let entry = client.update_acl(did, req).await?;
+    let entry = client.update_acl_with_reason(did, req, reason).await?;
     println!("ACL entry updated:");
     println!("  DID:      {}", entry.did);
     println!(
@@ -656,12 +657,42 @@ pub async fn cmd_acl_update(
     Ok(())
 }
 
+/// `acl delete <did>`: show the entry, confirm, delete with the operator's
+/// `reason` (#2583). Deleting the entry this session authenticates as locks
+/// the operator out, so that case is said in so many words before asking.
 pub async fn cmd_acl_delete(
     client: &VtaClient,
     did: &str,
+    reason: Option<&str>,
+    yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    client.delete_acl(did).await?;
-    println!("ACL entry deleted: {did}");
+    // What is about to go, so the confirmation is about a thing, not a string.
+    let entry = client.get_acl(did).await?;
+    eprintln!(
+        "ACL entry {did}: role {}, {}{}",
+        entry.role,
+        format!("contexts [{}]", entry.allowed_contexts.join(", ")),
+        entry
+            .label
+            .as_deref()
+            .map(|l| format!(", label \"{l}\""))
+            .unwrap_or_default()
+    );
+    if crate::render::session_did() == Some(did) {
+        eprintln!(
+            "warning: {did} is the identity this session is signed in as. Deleting it ends \
+             your own access to this VTA."
+        );
+    }
+    if !crate::confirm::confirm_or_cancel(&format!("delete the ACL entry for {did}"), yes)? {
+        return Ok(());
+    }
+    client.delete_acl_with_reason(did, reason).await?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&serde_json::json!({ "ok": true, "deleted": did }))?;
+    } else {
+        println!("ACL entry deleted: {did}");
+    }
     Ok(())
 }
 
