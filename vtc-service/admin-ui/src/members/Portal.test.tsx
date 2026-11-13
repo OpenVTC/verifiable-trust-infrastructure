@@ -363,6 +363,28 @@ describe("member portal", () => {
     expect(screen.getByText("Signed in with").nextElementSibling?.textContent).toBe(label);
   });
 
+  it("notices a session that ended while signed in, and says so on sign-in (#2612)", async () => {
+    let ended = false;
+    stubFetch((url) => {
+      if (url === "/v1/member/me") return ended ? json(401, {}) : json(200, ME);
+      if (url === "/v1/member/passkeys") return ended ? json(401, {}) : json(200, []);
+      if (url === "/v1/member/auth/refresh") return json(401, {});
+      return json(404, {});
+    });
+    renderPortal();
+    await screen.findByRole("heading", { name: /welcome back/i });
+    await waitFor(() => expect(screen.getByText(/no passkeys yet/i)).toBeTruthy());
+
+    // The session ends (expired, revoked); the next member read is refused.
+    ended = true;
+    await import("./api").then((api) =>
+      api.memberFetch("/v1/member/passkeys").catch(() => undefined),
+    );
+
+    expect(await screen.findByText("Your session ended. Sign in again to continue.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /sign out/i })).toBeNull();
+  });
+
   it("treats a 403 (no longer an active member) as signed out", async () => {
     stubFetch((url) =>
       url === "/v1/member/me" ? json(403, { message: "not an active member" }) : json(401, {}),

@@ -5,7 +5,14 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogOut } from "lucide-react";
 
-import { MemberApiError, memberFetch, postMember, vtcDid, type MemberMe } from "./api";
+import {
+  MEMBER_SESSION_EVENT,
+  MemberApiError,
+  memberFetch,
+  postMember,
+  vtcDid,
+  type MemberMe,
+} from "./api";
 import { DirectoryPage, EntryPage, MyCardPage } from "./Directory";
 import { GroupPage, GroupsPage } from "./Groups";
 import { Home } from "./Home";
@@ -124,6 +131,29 @@ export function Portal() {
     }
   };
 
+  // A member route refused this session (#2612): re-read who is signed in. If
+  // the session is gone, `fetchMe` answers null and sign-in shows, saying why.
+  // Only while signed in, so a refusal on the sign-in page reads nothing.
+  const [sessionEnded, setSessionEnded] = useState(false);
+  const signedIn = Boolean(me.data);
+  useEffect(() => {
+    if (!signedIn) return;
+    const recheck = () => {
+      void (async () => {
+        await qc.invalidateQueries({ queryKey: ["member-me"] });
+        if (!qc.getQueryData(["member-me"])) {
+          setSessionEnded(true);
+          qc.removeQueries({ queryKey: ["member-passkeys"] });
+        }
+      })();
+    };
+    window.addEventListener(MEMBER_SESSION_EVENT, recheck);
+    return () => window.removeEventListener(MEMBER_SESSION_EVENT, recheck);
+  }, [signedIn, qc]);
+  useEffect(() => {
+    if (signedIn) setSessionEnded(false);
+  }, [signedIn]);
+
   const communityName = me.data?.community.name ?? profile.data?.name;
   const logoUrl = me.data?.community.logoUrl ?? profile.data?.logoUrl;
 
@@ -157,7 +187,7 @@ export function Portal() {
       ) : !me.data || isJoinIntent() ? (
         // The join page shows even to a signed-in member: joining again with a
         // separate identity starts here, and only the wallet can offer it.
-        <SignIn communityName={communityName} signedInAs={me.data?.did} />
+        <SignIn communityName={communityName} signedInAs={me.data?.did} sessionEnded={sessionEnded} />
       ) : (
         // A render-time throw on one page draws an alert in its place under a
         // top bar that still works; moving to another page clears it (#2605).
