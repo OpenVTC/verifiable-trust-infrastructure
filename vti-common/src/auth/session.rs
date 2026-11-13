@@ -581,10 +581,18 @@ pub async fn resolve_did_session(
     // and the creation only while there is still no row (two first messages
     // racing must not overwrite each other's — or a just-elevated — session).
     for _ in 0..SESSION_WRITE_ATTEMPTS {
+        // `last_seen` is written at the same granularity as REST's
+        // `touch_last_seen` (#2625): it only feeds the idle TTL, measured in
+        // hours, and writing it per message cost a store write (a vsock round
+        // trip in an enclave) serialised on this keyspace's write lock. A lapsed
+        // elevation is always written, so the downgrade persists at once.
         if let Some(session) = update_session_with(sessions, did, |s| {
-            s.last_seen = now;
-            s.downgrade_lapsed_elevation(now);
-            true
+            let lapsed = s.downgrade_lapsed_elevation(now);
+            let stale = now >= s.last_seen.saturating_add(LAST_SEEN_GRANULARITY_SECS);
+            if lapsed || stale {
+                s.last_seen = s.last_seen.max(now);
+            }
+            lapsed || stale
         })
         .await?
         {
@@ -1844,6 +1852,44 @@ mod tests {
         let stored = get_session(&ks, did).await.unwrap().unwrap();
         assert_eq!(stored.acr, "aal1");
         assert_eq!(stored.acr_expires_at, None);
+    }
+
+    /// #2625: a message inside `LAST_SEEN_GRANULARITY_SECS` of the last write
+    /// leaves the row as it is (no store write); one at or past it advances
+    /// `last_seen`; a lapsed elevation is persisted whatever the granularity.
+    #[tokio::test]
+    async fn resolve_did_session_writes_last_seen_at_the_rest_granularity() {
+        let (ks, _dir) = temp_sessions_ks();
+        let did = "did:key:zResolveGranular";
+        let now = now_epoch();
+        resolve_did_session(&ks, did, now).await.unwrap();
+        let raw_before = ks.get_raw(session_key(did)).await.unwrap().unwrap();
+
+        let seen = resolve_did_session(&ks, did, now + LAST_SEEN_GRANULARITY_SECS - 1)
+            .await
+            .unwrap();
+        assert_eq!(seen.last_seen, now, "inside the granularity: not advanced");
+        let raw_after = ks.get_raw(session_key(did)).await.unwrap().unwrap();
+        assert_eq!(raw_before, raw_after, "inside the granularity: no write");
+
+        let later = now + LAST_SEEN_GRANULARITY_SECS;
+        let seen = resolve_did_session(&ks, did, later).await.unwrap();
+        assert_eq!(seen.last_seen, later);
+        assert_eq!(
+            get_session(&ks, did).await.unwrap().unwrap().last_seen,
+            later
+        );
+
+        // A lapsed elevation is written even one second after the last touch.
+        let mut s = get_session(&ks, did).await.unwrap().unwrap();
+        s.acr = "aal2".into();
+        s.acr_expires_at = Some(later + 1);
+        update_session(&ks, &s).await.unwrap();
+        let seen = resolve_did_session(&ks, did, later + 1).await.unwrap();
+        assert_eq!(seen.acr, "aal1");
+        let stored = get_session(&ks, did).await.unwrap().unwrap();
+        assert_eq!(stored.acr, "aal1");
+        assert_eq!(stored.last_seen, later + 1);
     }
 
     #[tokio::test]
