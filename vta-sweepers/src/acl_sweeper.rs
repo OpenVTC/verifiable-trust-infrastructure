@@ -45,8 +45,8 @@ pub async fn sweep_expired(
     let now = now_epoch();
     let mut pruned = 0usize;
 
-    let rows = acl_ks.prefix_iter_raw("acl:").await?;
-    for (key, value) in rows {
+    let mut rows = crate::rows::rows(acl_ks, "acl:");
+    while let Some((key, value)) = rows.next().await? {
         let entry: AclEntry = match serde_json::from_slice(&value) {
             Ok(e) => e,
             Err(e) => {
