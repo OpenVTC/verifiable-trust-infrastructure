@@ -1423,7 +1423,7 @@ pub(crate) async fn bind_received_to_sender(
 enum SpineInput<'a> {
     Bytes(&'a [u8]),
     #[cfg(any(feature = "didcomm", feature = "tsp"))]
-    Verified(received::VerifiedDocument),
+    Verified(Box<received::VerifiedDocument>),
 }
 
 pub(crate) async fn dispatch_trust_task_core(
@@ -1444,7 +1444,13 @@ pub(crate) async fn dispatch_verified_core(
     verified: received::VerifiedDocument,
     confidentiality: transport::TransportConfidentiality,
 ) -> TrustTaskOutcome {
-    dispatch_spine(state, auth, SpineInput::Verified(verified), confidentiality).await
+    dispatch_spine(
+        state,
+        auth,
+        SpineInput::Verified(Box::new(verified)),
+        confidentiality,
+    )
+    .await
 }
 
 async fn dispatch_spine(
