@@ -4,10 +4,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::boxes::Boxes;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use tokio::sync::watch;
 use tracing::{info, warn};
-use vti_voting::service::BallotBox;
 
 use crate::config::VotingConfig;
 use crate::dispatch::AppState;
@@ -75,7 +75,7 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
     let journal = Arc::new(FileJournal::open(&config.data_dir.join("journal"))?);
     let restored = journal.load()?;
     let elections = restored.len();
-    let ballot_box = BallotBox::restore(&identity.did, journal, restored)
+    let ballot_boxes = Boxes::restore(&identity.did, journal, restored)
         .map_err(|f| anyhow::anyhow!("restoring the journal: {} ({})", f.reason, f.local))?;
 
     if !config.communities.allow_any && config.communities.allowed.is_empty() {
@@ -85,7 +85,7 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
         );
     }
     let mut state = AppState::new(
-        ballot_box,
+        ballot_boxes,
         identity,
         vti_common::auth::TrustTaskVmResolver::new(did_resolver.clone()),
         config.communities.clone(),

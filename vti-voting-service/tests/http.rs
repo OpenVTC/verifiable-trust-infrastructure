@@ -17,11 +17,11 @@ use vti_voting::{
     rand::{SeedableRng, rngs::StdRng},
     registrar::Registrar,
     rules::{digest_multibase, manifest_digest},
-    service::BallotBox,
     voter::Voter,
 };
 use vti_voting_service::{
-    AppState, config::CommunitiesConfig, identity::Identity, journal::FileJournal, router,
+    AppState, boxes::Boxes, config::CommunitiesConfig, identity::Identity, journal::FileJournal,
+    router,
 };
 
 fn state(dir: &std::path::Path) -> Arc<AppState> {
@@ -32,7 +32,7 @@ fn state_serving(dir: &std::path::Path, communities: CommunitiesConfig) -> Arc<A
     let identity = Identity::load_or_mint(dir).unwrap();
     let journal = Arc::new(FileJournal::open(&dir.join("journal")).unwrap());
     let restored = journal.load().unwrap();
-    let bb = BallotBox::restore(&identity.did, journal, restored).unwrap();
+    let bb = Boxes::restore(&identity.did, journal, restored).unwrap();
     Arc::new(AppState::new(
         bb,
         identity,
@@ -135,6 +135,84 @@ async fn only_a_served_community_registers_and_within_its_quota() {
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{answer}");
     assert_eq!(answer["payload"]["code"], "unavailable");
+}
+
+/// Each election is its own box under its own lock (#2604): one held — as a cast holds it
+/// across its journal write — holds up no other election's tasks, and a restart rebuilds each
+/// into a box of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_election_held_holds_up_no_other() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let community = Identity::from_seed(&[0x3a; 32]).unwrap();
+    let svc = state(&dir);
+    let box_did = svc.identity.did.clone();
+    for id in ["agm", "egm"] {
+        let (status, answer) = send(
+            &svc,
+            doc(
+                "election/register",
+                &box_did,
+                Some(&community),
+                registration(&community, &box_did, id),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+    }
+
+    let held = svc.ballot_boxes.get(&community.did, "agm").unwrap();
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let _guard = held.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    });
+    locked_rx.recv().unwrap();
+
+    let show = |id: &'static str| {
+        let svc = svc.clone();
+        let community = community.did.clone();
+        let box_did = box_did.clone();
+        async move {
+            send(
+                &svc,
+                doc(
+                    "election/show",
+                    &box_did,
+                    None,
+                    json!({ "community": community, "electionId": id }),
+                )
+                .await,
+            )
+            .await
+        }
+    };
+    let (status, answer) = tokio::time::timeout(std::time::Duration::from_secs(5), show("egm"))
+        .await
+        .expect("another election's show waited on a held one");
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    // The held election's own task waits for it, and is answered once it is let go.
+    let waiting = tokio::spawn(show("agm"));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !waiting.is_finished(),
+        "a task waits for its election's lock"
+    );
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    let (status, answer) = waiting.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    // A restart holds both, each its own.
+    drop(svc);
+    let svc = state(&dir);
+    let (a, b) = (
+        svc.ballot_boxes.get(&community.did, "agm").unwrap(),
+        svc.ballot_boxes.get(&community.did, "egm").unwrap(),
+    );
+    assert!(!Arc::ptr_eq(&a, &b));
 }
 
 /// The box serves `voting/election/{register,show}` at 0.3 and 0.2 and `voting/board/read` at

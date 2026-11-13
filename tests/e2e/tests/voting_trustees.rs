@@ -40,7 +40,7 @@ use vti_voting::{
     rand::{SeedableRng, rngs::StdRng},
     registrar::Registrar,
     rules::{digest_multibase, manifest_digest},
-    service::{BallotBox, Caller},
+    service::Caller,
     trustees::Threshold,
     voter::{Voter, encrypted_form},
     wire,
@@ -133,7 +133,7 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
     )
     .unwrap();
     let box_state = Arc::new(AppState::new(
-        BallotBox::new(&box_did),
+        vti_voting_service::boxes::Boxes::new(&box_did),
         Identity {
             did: box_did.clone(),
             key: vta_sdk::trust_task_sign::HolderKey::new(
@@ -186,7 +186,8 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
     let sel = json!({ "community": community.did, "electionId": ELECTION });
     let status_now = |at| {
         box_state
-            .ballot_box
+            .ballot_boxes
+            .for_task(&community.did, ELECTION)
             .lock()
             .unwrap()
             .trustees_status(Caller::Did(&community.did), &sel, at)
@@ -221,7 +222,8 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
     }
     // Every step is on the board as its trustee's own signed request.
     let steps = box_state
-        .ballot_box
+        .ballot_boxes
+        .for_task(&community.did, ELECTION)
         .lock()
         .unwrap()
         .board_read(
@@ -293,7 +295,8 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
     // The community reads the closed board, computes the targets itself and authorizes them
     // (CONVENTIONS §9.7).
     let entries: Vec<Value> = box_state
-        .ballot_box
+        .ballot_boxes
+        .for_task(&community.did, ELECTION)
         .lock()
         .unwrap()
         .board_read(
@@ -351,7 +354,8 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         .unwrap_or_else(|e| panic!("decrypt, {did}: {e}"));
     }
     let result = box_state
-        .ballot_box
+        .ballot_boxes
+        .for_task(&community.did, ELECTION)
         .lock()
         .unwrap()
         .result(Caller::Did(&community.did), &sel, Utc::now())
