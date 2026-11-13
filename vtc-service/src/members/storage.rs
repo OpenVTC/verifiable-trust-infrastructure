@@ -17,7 +17,9 @@ pub const MEMBER_EXTENSIONS_MAX_BYTES: usize = 16 * 1024;
 /// `Tombstone` in Phase 1.
 pub const DEFAULT_DEPARTURE_PREFERENCE: Disposition = Disposition::PolicyDefault;
 
-const PREFIX: &[u8] = b"members:";
+/// Every member row lives at `members:<did>`.
+pub const MEMBERS_PREFIX: &[u8] = b"members:";
+const PREFIX: &[u8] = MEMBERS_PREFIX;
 
 fn member_key(did: &str) -> Vec<u8> {
     let mut k = PREFIX.to_vec();

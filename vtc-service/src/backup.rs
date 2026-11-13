@@ -422,6 +422,22 @@ pub async fn import_backup(
     if let Err(e) = crate::acl::resource_grant::rebuild_holder_index(&state.acl_ks).await {
         tracing::warn!(error = %e, "backup import: the git grant-holder index could not be rebuilt; boot rebuilds it");
     }
+    // The audit index describes the log this process had; the next read
+    // rebuilds it against the restored one.
+    if let Err(e) = crate::audit_index::reset(&state.audit_index_ks).await {
+        return Err(TaskError::App(AppError::Internal(format!(
+            "backup import: the audit index could not be cleared: {e}"
+        ))));
+    }
+    // The restored rows' secondary indexes: a backup taken before an index
+    // existed carries none of its rows. Boot rebuilds both too.
+    if let Err(e) = crate::acl::rebuild_authority_index(&state.acl_ks).await {
+        tracing::warn!(error = %e, "backup import: the ACL authority index could not be rebuilt; boot rebuilds it");
+    }
+    if let Err(e) = crate::relationships::storage::rebuild_hash_index(&state.relationships_ks).await
+    {
+        tracing::warn!(error = %e, "backup import: the relationship digest index could not be rebuilt; boot rebuilds it");
+    }
     // A backup taken before #2382 holds its room rows in the earlier key layout. Boot
     // runs the same migration, so a failure here is logged and finished there.
     if let Err(e) = crate::rooms::migrate_room_keys(state, "backup import").await {
