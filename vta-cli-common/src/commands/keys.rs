@@ -65,7 +65,7 @@ pub async fn cmd_key_create(
         eprintln!("     • Its material is generated from the system CSPRNG and is NOT");
         eprintln!("       derived from your BIP-39 seed. Your 24-word mnemonic will NOT");
         eprintln!("       recover it.");
-        eprintln!("     • It is excluded from `pnm backup export`. A restored VTA will");
+        eprintln!("     • It is excluded from the VTA's backup. A restored VTA will");
         eprintln!("       NOT have it.");
         eprintln!("     • It can never be exported — not by you, not by an admin, not");
         eprintln!("       under internal authority. The VTA will only sign with it.");
@@ -613,9 +613,10 @@ pub async fn cmd_key_bundle_one(
     let secret = client.get_key_secret(key_id).await?;
     if secret.key_type != KeyType::P256 {
         return Err(format!(
-            "key {key_id} is {}; `pnm keys bundle-key` seals a P-256 key that no DID publishes. \
-             For a DID's keys run `pnm keys bundle <context>`",
-            secret.key_type
+            "key {key_id} is {}; `{bin} keys bundle-key` seals a P-256 key that no DID publishes. \
+             For a DID's keys run `{bin} keys bundle <context>`",
+            secret.key_type,
+            bin = crate::render::bin_name()
         )
         .into());
     }

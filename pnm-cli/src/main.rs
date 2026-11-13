@@ -280,7 +280,13 @@ async fn main() {
         )
         .await
         {
-            Ok(c) => c,
+            Ok(c) => {
+                // A Forbidden hint names this DID's ACL entry (#2586).
+                if let Some(s) = auth::loaded_session(&keyring_key) {
+                    vta_cli_common::render::set_session_did(&s.client_did);
+                }
+                c
+            }
             Err(e) => {
                 vta_cli_common::render::print_cli_error(e.as_ref());
                 std::process::exit(exit_code_for(e.as_ref()));

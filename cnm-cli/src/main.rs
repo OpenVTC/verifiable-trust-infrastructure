@@ -1463,7 +1463,13 @@ async fn main() {
             std::process::exit(exit::CONFIG);
         }
         match auth::connect(url_override.as_deref(), cli.transport.into(), &keyring_key).await {
-            Ok(c) => c,
+            Ok(c) => {
+                // A Forbidden hint names this DID's ACL entry (#2586).
+                if let Some(s) = auth::loaded_session(&keyring_key) {
+                    vta_cli_common::render::set_session_did(&s.client_did);
+                }
+                c
+            }
             Err(e) => exit::fail(e.as_ref()),
         }
     } else {
