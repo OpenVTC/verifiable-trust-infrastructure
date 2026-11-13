@@ -4,13 +4,15 @@
 //
 // The confirm button stays disabled until what was typed matches; the VTC
 // checks it again, and then asks for a passkey gesture bound to the immediate
-// removal. Same a11y contract as `ConfirmDialog`: modal, Escape and the scrim
-// cancel, focus starts in the input.
+// removal. Same a11y contract as `ConfirmDialog` (`useModal`): modal, Tab
+// trapped, Escape and the scrim cancel, focus starts in the input and returns
+// to the opener.
 
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, useRef, useState } from "react";
 
 import { Field } from "@/components/Field";
 import { Protected } from "@/components/Protected";
+import { useModal } from "@/components/useModal";
 
 export interface TypedConfirmProps {
   title: string;
@@ -28,31 +30,26 @@ export interface TypedConfirmProps {
 function TypedConfirmDialogSurface(props: TypedConfirmProps) {
   const [typed, setTyped] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const ok = props.matches(typed);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        props.onCancel();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [props]);
+  // The shared modal contract (#2610): focus starts in the input, Tab stays
+  // inside — the page behind holds the very controls this dialog guards —
+  // Escape and the scrim cancel unless a send is in flight, and focus goes
+  // back to the opener on close.
+  const dismiss = useModal(surfaceRef, props.onCancel, {
+    locked: props.busy,
+    initialFocus: inputRef,
+  });
 
   return (
     <div
       className="confirm-scrim"
       onClick={(e) => {
-        if (e.target === e.currentTarget) props.onCancel();
+        if (e.target === e.currentTarget) dismiss();
       }}
     >
       <div
+        ref={surfaceRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="typed-confirm-title"

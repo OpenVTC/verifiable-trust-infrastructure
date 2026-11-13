@@ -1,12 +1,13 @@
 // Modal confirmation dialog. Replaces `window.confirm` across every
 // plugin's destructive-action path. Hand-rolled (no Radix dep) but
-// honours the same a11y contract:
+// honours the same a11y contract (`useModal`, shared by every dialog):
 //
 // - Focus trap inside the dialog while open.
 // - Escape closes (treated as cancel).
 // - Click on the scrim closes.
 // - Auto-focus the cancel button on open so a misclick on Enter
 //   doesn't fire the destructive action.
+// - Focus returns to the control that opened the dialog.
 // - aria-modal + role="dialog" + aria-labelledby tying the heading
 //   to the dialog.
 //
@@ -32,13 +33,13 @@ import {
   ReactNode,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import { Protected, activeElementOf } from "@/components/Protected";
+import { Protected } from "@/components/Protected";
+import { useModal } from "@/components/useModal";
 
 export interface ConfirmOptions {
   title: string;
@@ -115,44 +116,11 @@ function Dialog({
   const confirmRef = useRef<HTMLButtonElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
 
-  // Auto-focus the safer (cancel) button so an Enter keypress
-  // doesn't fire the destructive action by accident.
-  useEffect(() => {
-    cancelRef.current?.focus();
-  }, []);
-
-  // Escape closes; treat as cancel. Trap Tab inside the dialog so
-  // focus never escapes back to the underlying page while modal.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose(false);
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const surface = surfaceRef.current;
-      if (!surface) return;
-      const tabbable = surface.querySelectorAll<HTMLElement>(
-        "button:not([disabled]), [tabindex]:not([tabindex='-1'])",
-      );
-      const first = tabbable[0];
-      const last = tabbable[tabbable.length - 1];
-      if (!first || !last) return;
-      const active = activeElementOf(surface);
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
+  // The shared modal contract (`useModal`): focus starts on the safer
+  // (cancel) button so an Enter keypress doesn't fire the destructive
+  // action by accident, Tab stays inside, Escape cancels, and focus goes
+  // back to the control that opened the dialog when it closes (#2610).
+  const dismiss = useModal(surfaceRef, () => onClose(false), { initialFocus: cancelRef });
 
   const confirmLabel = options.confirmLabel ?? "Confirm";
   const cancelLabel = options.cancelLabel ?? "Cancel";
@@ -165,7 +133,7 @@ function Dialog({
         // a click that bubbled up from inside the surface (e.g.
         // text-selection mouse-up that ends outside) shouldn't
         // close.
-        if (e.target === e.currentTarget) onClose(false);
+        if (e.target === e.currentTarget) dismiss();
       }}
     >
       <div

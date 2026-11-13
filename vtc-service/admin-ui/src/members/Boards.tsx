@@ -9,7 +9,7 @@
 // The board never says whether you took a ticket or voted (VTI-BRD-033); "ticket held" on a card
 // is your wallet's answer, read in this browser.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CalendarDays,
@@ -49,6 +49,7 @@ import {
   type Idea,
   type Note,
 } from "./boards-api";
+import { useModal } from "@/components/useModal";
 import { DirectoryError } from "./directory-api";
 import { electionHref } from "./Elections";
 import { Crumbs } from "./member-card";
@@ -548,13 +549,11 @@ function IdeaPanel({
   const qc = useQueryClient();
   const votingFrom = notYetVoting(idea, board);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
   const [after, setAfter] = useState<string | null>(null);
-  useEffect(() => {
-    closeRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // The shared modal contract (`useModal`, #2610): Tab stays in the drawer and
+  // focus goes back to the idea that opened it.
+  const dismiss = useModal(drawerRef, onClose, { initialFocus: closeRef });
 
   const wallet = walletElections();
   const who = member ? { member } : {};
@@ -577,8 +576,8 @@ function IdeaPanel({
 
   return (
     <>
-      <div className="bd-scrim" onClick={onClose} aria-hidden="true" />
-      <aside className="bd-drawer" role="dialog" aria-modal="true" aria-labelledby="idea-title">
+      <div className="bd-scrim" onClick={dismiss} aria-hidden="true" />
+      <aside ref={drawerRef} className="bd-drawer" role="dialog" aria-modal="true" aria-labelledby="idea-title">
         <div className="bd-drawer-head">
           <StatePill idea={idea} votingFrom={votingFrom} />
           <span className="bd-fmt">{[idea.format, idea.topic].filter(Boolean).join(" · ")}</span>
@@ -958,12 +957,7 @@ function ProposeDialog({ board, onClose, onDone }: { board: Board; onClose: () =
   const [format, setFormat] = useState(board.formats?.[0] ?? "");
   const [topic, setTopic] = useState(board.topics?.[0] ?? "");
   const titleRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    titleRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const propose = useMutation({
     mutationFn: () =>
       proposeIdea(board.boardId, {
@@ -977,9 +971,12 @@ function ProposeDialog({ board, onClose, onDone }: { board: Board; onClose: () =
       onClose();
     },
   });
+  // The shared modal contract (`useModal`, #2610); Escape does nothing while
+  // the proposal is being sent.
+  useModal(surfaceRef, onClose, { locked: propose.isPending, initialFocus: titleRef });
   const q = board.template.questions[0];
   return (
-    <div className="bd-modal" role="dialog" aria-modal="true" aria-labelledby="propose-heading">
+    <div ref={surfaceRef} className="bd-modal" role="dialog" aria-modal="true" aria-labelledby="propose-heading">
       <form
         className="bd-sheet"
         onSubmit={(e) => {
