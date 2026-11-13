@@ -1224,6 +1224,14 @@ pub async fn claim_start_v0_3(
         // at it must not be free). Answered alike, so the count is no oracle.
         let wrong = count_wrong_install_code(state, &jti).await?;
         if wrong >= MAX_WRONG_CODES {
+            // A voided invitation is withdrawn like a revoked one: the entry
+            // it wrote, unclaimed, goes with it (#2660).
+            crate::routes::admin::invites::withdraw_invite_grant(
+                state,
+                "vtc/install/claim/start",
+                &jti,
+            )
+            .await?;
             store.delete_token(&jti).await?;
             state
                 .step_up_approvers_ks
@@ -1391,6 +1399,11 @@ pub async fn claim_finish_v0_3(
         .await
         .map_err(|e| refused(codes::INVALID_TOKEN, e.to_string()))?;
     ks.remove(claim_key(claim_id)).await?;
+    // The entry the invitation wrote expires with it until claimed (#2660);
+    // the claim makes it the administrator's own. After the token is spent, so
+    // a crash between leaves an entry that lapses rather than a permanent one
+    // whose token is still open.
+    crate::routes::admin::invites::confirm_invite_grant(state, &claim.admin_did).await?;
     let session_expires =
         now_epoch().saturating_add(crate::install::INSTALL_SESSION_DEFAULT_TTL_SECS);
     let pending = PendingInstallBinding {

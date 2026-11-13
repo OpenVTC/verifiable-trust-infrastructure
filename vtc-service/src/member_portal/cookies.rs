@@ -4,7 +4,10 @@
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue};
 
-use super::{MEMBER_COOKIE_PATH, MEMBER_CSRF_COOKIE, MEMBER_REFRESH_COOKIE, MEMBER_SESSION_COOKIE};
+use super::{
+    LEGACY_MEMBER_CSRF_COOKIE, MEMBER_COOKIE_PATH, MEMBER_CSRF_COOKIE, MEMBER_REFRESH_COOKIE,
+    MEMBER_SESSION_COOKIE,
+};
 use crate::error::AppError;
 
 pub fn session_cookie(access_token: &str, max_age: u64) -> String {
@@ -25,13 +28,22 @@ pub fn csrf_cookie(csrf: &str, max_age: u64) -> String {
     format!("{MEMBER_CSRF_COOKIE}={csrf}; Path=/; Max-Age={max_age}; SameSite=Strict; Secure")
 }
 
-/// The three cookies, expired — what sign-out sends.
-pub fn cleared() -> [String; 3] {
+/// The three cookies, expired — what sign-out sends — and the CSRF cookie
+/// under its name before the `__Host-` prefix.
+pub fn cleared() -> [String; 4] {
     [
         session_cookie("", 0),
         refresh_cookie("", 0),
         csrf_cookie("", 0),
+        format!("{LEGACY_MEMBER_CSRF_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict; Secure"),
     ]
+}
+
+/// The portal's CSRF value: [`MEMBER_CSRF_COOKIE`], else the
+/// [`LEGACY_MEMBER_CSRF_COOKIE`] a portal signed in before the rename holds.
+pub fn csrf_value(headers: &HeaderMap) -> Option<String> {
+    cookie_value(headers, MEMBER_CSRF_COOKIE)
+        .or_else(|| cookie_value(headers, LEGACY_MEMBER_CSRF_COOKIE))
 }
 
 /// A fresh random CSRF value.
@@ -88,7 +100,9 @@ mod tests {
     #[test]
     fn csrf_cookie_is_readable_and_not_the_consoles() {
         let c = csrf_cookie("x", 60);
-        assert!(c.starts_with("vtc_member_csrf=x;"));
+        assert!(c.starts_with("__Host-vtc_member_csrf=x;"));
+        // `__Host-` holds only with `Path=/`, `Secure` and no `Domain`.
+        assert!(c.contains("Path=/;") && c.contains("Secure") && !c.contains("Domain"));
         assert!(!c.contains("HttpOnly"));
     }
 }

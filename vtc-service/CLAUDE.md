@@ -217,7 +217,9 @@ When adding a flow, add it here and a line to the root index.
   `--did` mint passkey invitations (token names no DID; the authority is
   recorded on the row, `install::InvitedAuthority`, and `finish` writes the
   entry when the community already has an administrator); `--did` mints a
-  wallet one. The console and `vtc/admin/invites/create/0.2` mint either kind
+  wallet one, whose entry (written at mint, create 0.2 item 3) expires with the
+  invitation until claim/finish 0.3 makes it permanent, and goes with a revoke
+  (`install::InviteGrant`, #2660). The console and `vtc/admin/invites/create/0.2` mint either kind
   (`did` absent = passkey); a passkey invitation always takes the gesture and
   consent an unrestricted grant takes, since nobody authorises it at the
   claim. `co_admin_did` adds a second;
@@ -550,7 +552,7 @@ When adding a flow, add it here and a line to the root index.
   `member_sessions` / `member_passkeys`, never `sessions` / `passkey`: that is
   what stops a member-who-is-also-an-admin from redeeming a portal refresh
   token, or a portal passkey, at the console. Portal cookies are
-  `Path=/v1/member` (`vtc_member_csrf` is `Path=/`), and the CSRF gate pairs
+  `Path=/v1/member` (`__Host-vtc_member_csrf` is `Path=/`), and the CSRF gate pairs
   them by path. Adding or removing a portal passkey requires a wallet-proven
   session (`amr` contains `did`). The bundle imports no console shell, plugins
   or API client. The console's login page uses the same `auth/oob/*` flow

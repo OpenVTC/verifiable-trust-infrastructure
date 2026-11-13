@@ -9,7 +9,9 @@
 import { guardPreviewRequest, isThemePreview } from "@/lib/theme-preview";
 import { previewMemberResponse } from "./preview";
 
-const CSRF_COOKIE = "vtc_member_csrf";
+// `__Host-`-prefixed so a sibling subdomain cannot plant it; the name before
+// the prefix is still read for one release, for a portal signed in before it.
+const CSRF_COOKIES = ["__Host-vtc_member_csrf", "vtc_member_csrf"];
 
 export class MemberApiError extends Error {
   constructor(
@@ -23,10 +25,13 @@ export class MemberApiError extends Error {
 
 export function memberCsrfToken(): string | null {
   if (typeof document === "undefined") return null;
-  const m = document.cookie.match(
-    new RegExp(`(?:^|;\\s*)${CSRF_COOKIE}=([^;]+)`),
-  );
-  return m && m[1] ? decodeURIComponent(m[1]) : null;
+  for (const name of CSRF_COOKIES) {
+    const m = document.cookie.match(
+      new RegExp(`(?:^|;\\s*)${name}=([^;]+)`),
+    );
+    if (m && m[1]) return decodeURIComponent(m[1]);
+  }
+  return null;
 }
 
 export async function errorMessage(res: Response): Promise<string> {

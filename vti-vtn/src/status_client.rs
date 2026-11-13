@@ -23,7 +23,15 @@ pub enum CredentialState {
 /// this long to be seen here.
 pub const DEFAULT_CACHE_TTL: Duration = Duration::minutes(5);
 
+/// The most status lists the cache holds. Its keys are URLs credentials name, so
+/// without a bound anyone presenting credentials could grow it without limit
+/// (#2662). Past it, lapsed entries go first, then the oldest.
+pub const MAX_CACHED_LISTS: usize = 1024;
+
 /// Resolves `credentialStatus`. Clone-cheap; the cache is shared.
+///
+/// Status lists are fetched with [`VtnClient::get_url`], which treats the URL
+/// as the credential's presenter's — public `https` only by default.
 #[derive(Clone)]
 pub struct StatusChecker {
     client: VtnClient,
@@ -129,11 +137,30 @@ impl StatusChecker {
         }
         let bits = Bitstring::decode(subject["encodedList"].as_str().unwrap_or_default())
             .map_err(|e| ClientError::Unexpected(format!("status list {url}: {e}")))?;
-        self.cache
-            .lock()
-            .await
-            .insert(url.to_string(), (now, issuer.to_string(), bits.clone()));
+        let mut cache = self.cache.lock().await;
+        if cache.len() >= MAX_CACHED_LISTS && !cache.contains_key(url) {
+            make_room(&mut cache, now, self.ttl);
+        }
+        cache.insert(url.to_string(), (now, issuer.to_string(), bits.clone()));
         Ok(bits)
+    }
+}
+
+/// Free at least one slot in a full cache: every lapsed entry, or else the
+/// oldest.
+fn make_room(
+    cache: &mut HashMap<String, (DateTime<Utc>, String, Bitstring)>,
+    now: DateTime<Utc>,
+    ttl: Duration,
+) {
+    cache.retain(|_, (at, _, _)| now - *at < ttl);
+    if cache.len() >= MAX_CACHED_LISTS
+        && let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, (at, _, _))| *at)
+            .map(|(k, _)| k.clone())
+    {
+        cache.remove(&oldest);
     }
 }
 
@@ -199,8 +226,11 @@ mod tests {
         let signed = issuer.sign_document(unsigned).await.unwrap();
         let base = serve_json(signed).await;
         let url = format!("{base}/list");
-        let checker =
-            StatusChecker::new(Arc::new(LocalDidKeyResolver)).with_cache_ttl(Duration::zero());
+        let checker = StatusChecker::with_client(
+            VtnClient::new("").allow_private_endpoints(true),
+            Arc::new(LocalDidKeyResolver),
+        )
+        .with_cache_ttl(Duration::zero());
 
         let credential = |index: usize| {
             json!({
@@ -232,6 +262,36 @@ mod tests {
                 "{index}: {got:?}"
             );
         }
+    }
+
+    /// #2662: the cache never holds more than [`MAX_CACHED_LISTS`] lists.
+    #[test]
+    fn the_cache_is_bounded() {
+        let now = Utc::now();
+        let ttl = Duration::hours(2);
+        let mut cache = HashMap::new();
+        for i in 0..MAX_CACHED_LISTS {
+            let at = now - Duration::seconds(i as i64);
+            cache.insert(format!("u{i}"), (at, "did:x".into(), Bitstring::default()));
+        }
+        make_room(&mut cache, now, ttl);
+        assert_eq!(cache.len(), MAX_CACHED_LISTS - 1);
+        assert!(
+            !cache.contains_key(&format!("u{}", MAX_CACHED_LISTS - 1)),
+            "oldest goes"
+        );
+        // Lapsed entries go before anything live.
+        cache.insert(
+            "old".into(),
+            (
+                now - Duration::hours(3),
+                "did:x".into(),
+                Bitstring::default(),
+            ),
+        );
+        make_room(&mut cache, now, ttl);
+        assert!(!cache.contains_key("old"));
+        assert_eq!(cache.len(), MAX_CACHED_LISTS - 1);
     }
 
     #[test]

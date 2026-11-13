@@ -30,7 +30,7 @@ pub mod state_machine;
 pub mod token;
 
 pub use state_machine::{
-    InstallTokenState, InstallTokenStore, InvitedAuthority, PendingBreakGlassAcl,
+    InstallTokenState, InstallTokenStore, InviteGrant, InvitedAuthority, PendingBreakGlassAcl,
     PendingEmergencyBootstrap, StartClaimOutcome,
 };
 pub use token::{
@@ -54,6 +54,37 @@ pub static INSTALL_TOKEN_LOCK: Mutex<()> = Mutex::const_new(());
 // migrate.
 #[doc(hidden)]
 pub use INSTALL_TOKEN_LOCK as INSTALL_CARVEOUT_LOCK;
+
+/// Write a **wallet** invitation's administrator entry (create 0.2 item 3) as
+/// a provisional entry: expiring with invitation `jti` at `invite_expires` (or
+/// at `floor`, an earlier open invitation's expiry, when that is later), and
+/// recorded as an [`InviteGrant`] so its claim makes it permanent and its
+/// revocation removes it (#2660). Used by `vtc/admin/invites/create/0.2` and
+/// the offline `vtc admin invite --did`.
+pub async fn write_invite_entry(
+    acl_ks: &vti_common::store::KeyspaceHandle,
+    install_store: &InstallTokenStore,
+    jti: &uuid::Uuid,
+    mut entry: crate::acl::VtcAclEntry,
+    invite_expires: chrono::DateTime<chrono::Utc>,
+    floor: Option<u64>,
+) -> Result<(), vti_common::error::AppError> {
+    let expires_at = (invite_expires.timestamp().max(0) as u64).max(floor.unwrap_or(0));
+    entry.expires_at = Some(expires_at);
+    // The record first: a crash before the entry leaves a record matching
+    // nothing, never an entry no revocation can find.
+    install_store
+        .record_invite_grant(
+            jti,
+            &InviteGrant {
+                did: entry.did.clone(),
+                created_at: entry.created_at,
+                expires_at,
+            },
+        )
+        .await?;
+    crate::acl::store_acl_entry(acl_ks, &entry).await
+}
 
 /// Queue the audit of an ACL write an offline command just made — the
 /// break-glass — for the daemon to record on its next boot.

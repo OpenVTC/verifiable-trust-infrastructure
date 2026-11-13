@@ -165,7 +165,7 @@ pub mod display_name;
 // Pins rustls to the aws-lc-rs backend; every binary calls this at startup.
 #[cfg(feature = "crypto-provider")]
 pub mod crypto_init;
-#[cfg(feature = "client")]
+#[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "keyring")]
 pub mod keyring_init;

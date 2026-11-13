@@ -60,7 +60,7 @@ async fn require_cap(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ReceiveBody {
     /// The credential to store — a Data-Integrity W3C VC (object form, with its
     /// own `proof`).
@@ -92,6 +92,11 @@ pub(super) struct ReceiveBody {
     /// stores it unscoped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) context_id: Option<String>,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    pub(super) ext: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -581,12 +586,17 @@ pub(super) async fn handle_present(
 /// lifted into the audit row's `detail` by the dispatch spine; `force` is
 /// honoured only by `delete` (skip the grace window → immediate hard delete).
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct CredLifecycleBody {
     pub(super) id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[allow(dead_code)] // read generically by the spine for the audit `detail`
     pub(super) reason: Option<String>,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    pub(super) ext: Option<Value>,
 }
 
 /// `delete`'s body — the one lifecycle verb with a forced form.
@@ -607,6 +617,11 @@ pub(super) struct CredDeleteBody {
     /// Erase immediately rather than tombstoning. Irrecoverable.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) force: bool,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    pub(super) ext: Option<Value>,
 }
 
 /// Post-transition view for archive / unarchive / delete / restore.
@@ -1242,13 +1257,14 @@ mod receive_body_wire_tests {
         .expect("camelCase parses");
         assert_eq!(ok.credential_base64.as_deref(), Some("AAAA"));
 
-        let wrong: ReceiveBody = serde_json::from_value(json!({
+        // A snake_case member is not the wire contract, and is refused rather
+        // than silently dropped (#2621).
+        let wrong = serde_json::from_value::<ReceiveBody>(json!({
             "credential_base64": "AAAA",
             "format": "mso_mdoc"
-        }))
-        .expect("unknown fields are ignored today");
+        }));
         assert!(
-            wrong.credential_base64.is_none(),
+            wrong.is_err(),
             "snake_case must not bind — the wire contract is camelCase"
         );
     }
@@ -1553,5 +1569,28 @@ mod present_tests {
 
         let out = handle_present(&state, &app, present_doc(&id, &["employer"])).await;
         assert_eq!(code(&out), "permissionDenied");
+    }
+}
+
+/// #2621: the hand-written bodies refuse what their schema does not define,
+/// and read everything it does.
+#[cfg(test)]
+mod issue_2621_tests {
+    use super::super::helpers::assert_reads_exactly_the_schema_members as check;
+    use super::*;
+    use vta_sdk::trust_tasks as t;
+
+    #[test]
+    fn credential_bodies_read_exactly_their_schema_members() {
+        check::<ReceiveBody>(t::TASK_VAULT_CREDENTIALS_RECEIVE_0_1);
+        check::<CredDeleteBody>(t::TASK_VAULT_CREDENTIALS_DELETE_0_1);
+        for uri in [
+            t::TASK_VAULT_CREDENTIALS_ARCHIVE_0_1,
+            t::TASK_VAULT_CREDENTIALS_UNARCHIVE_0_1,
+            t::TASK_VAULT_CREDENTIALS_RESTORE_0_1,
+            t::TASK_VAULT_CREDENTIALS_PURGE_0_1,
+        ] {
+            check::<CredLifecycleBody>(uri);
+        }
     }
 }

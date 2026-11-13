@@ -644,6 +644,68 @@ impl std::fmt::Debug for VaultSecret {
     }
 }
 
+/// The secret material is overwritten when the value is dropped (#2619), so a
+/// released or proxied password, key, token or TOTP seed does not linger in
+/// freed heap for a core dump or an enclave's memory to give up. Only the
+/// fields that hold a secret are cleared; a `String` the value was *cloned*
+/// into is the cloner's to clear.
+impl Drop for VaultSecret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        match self {
+            Self::Password {
+                password,
+                secure_notes,
+                ..
+            } => {
+                password.zeroize();
+                secure_notes.zeroize();
+            }
+            Self::Passkey {
+                private_key,
+                secure_notes,
+                ..
+            } => {
+                private_key.zeroize();
+                secure_notes.zeroize();
+            }
+            Self::OauthTokens {
+                refresh_token,
+                access_token,
+                secure_notes,
+                ..
+            } => {
+                refresh_token.zeroize();
+                access_token.zeroize();
+                secure_notes.zeroize();
+            }
+            Self::DidSelfIssued { secure_notes, .. } | Self::DidcommPeer { secure_notes, .. } => {
+                secure_notes.zeroize();
+            }
+            Self::BearerToken {
+                token,
+                secure_notes,
+                ..
+            } => {
+                token.zeroize();
+                secure_notes.zeroize();
+            }
+            Self::SshKey {
+                private_key,
+                passphrase,
+                secure_notes,
+                ..
+            } => {
+                private_key.zeroize();
+                passphrase.zeroize();
+                secure_notes.zeroize();
+            }
+            // Each `CustomField` (and a password's `TotpSeed`) clears itself.
+            Self::Custom { secure_notes, .. } => secure_notes.zeroize(),
+        }
+    }
+}
+
 impl VaultSecret {
     /// Returns the [`SecretKind`] that matches this variant. The metadata
     /// view's `secret_kind` field MUST equal this on every persisted
@@ -683,6 +745,13 @@ pub struct TotpSeed {
     pub digits: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub period: Option<u16>,
+}
+
+/// The shared secret is overwritten on drop (#2619).
+impl Drop for TotpSeed {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.secret);
+    }
 }
 
 /// Written by hand so the TOTP shared secret never reaches a log: a derived `Debug` would print it.
@@ -811,6 +880,14 @@ impl std::fmt::Debug for CustomField {
     }
 }
 
+/// The value is overwritten on drop, for the reason its `Debug` redacts it
+/// (#2619).
+impl Drop for CustomField {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -909,7 +986,10 @@ pub async fn purge_context(vault: &KeyspaceHandle, context_id: &str) -> Result<u
 /// Cleartext session material returned by vault/proxy-login/0.1 — the
 /// VTA performs the login at the third party, captures the resulting
 /// session credentials, and ships them in this shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Its `Debug` redacts every cookie, header and storage value (#2619), and
+/// each of those is overwritten when dropped.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionBlob {
     /// Maintainer-assigned opaque id for this session — used by future
@@ -964,7 +1044,24 @@ pub enum RefreshHint {
     BeforeExpiry,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for SessionBlob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionBlob")
+            .field("session_id", &self.session_id)
+            .field("expires_at", &self.expires_at)
+            .field("cookies", &self.cookies)
+            .field("headers", &self.headers)
+            .field("local_storage", &self.local_storage)
+            .field("session_storage", &self.session_storage)
+            .field("bind_origin", &self.bind_origin)
+            .field("refresh_hint", &self.refresh_hint)
+            .finish()
+    }
+}
+
+/// One session cookie. Its `value` is a live session credential: redacted by
+/// `Debug`, overwritten on drop (#2619).
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CookieJarEntry {
     pub name: String,
@@ -988,16 +1085,72 @@ pub enum SameSite {
     None,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for CookieJarEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CookieJarEntry")
+            .field("name", &self.name)
+            .field("value", &"<redacted>")
+            .field("domain", &self.domain)
+            .field("path", &self.path)
+            .field("expires", &self.expires)
+            .field("secure", &self.secure)
+            .field("http_only", &self.http_only)
+            .field("same_site", &self.same_site)
+            .finish()
+    }
+}
+
+impl Drop for CookieJarEntry {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+
+/// One request header (typically `Authorization: Bearer …`). Its `value` is a
+/// credential: redacted by `Debug`, overwritten on drop (#2619).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RequestHeader {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for RequestHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestHeader")
+            .field("name", &self.name)
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for RequestHeader {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+
+/// One `localStorage` / `sessionStorage` entry — where an SPA keeps its
+/// session token. Its `value` is redacted by `Debug` and overwritten on drop
+/// (#2619).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StorageEntry {
     pub key: String,
     pub value: String,
+}
+
+impl std::fmt::Debug for StorageEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageEntry")
+            .field("key", &self.key)
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for StorageEntry {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
 }
 
 /// List vault entries matching `filter`, ordered by `last_used_at`

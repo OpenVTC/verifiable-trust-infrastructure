@@ -115,58 +115,49 @@ impl From<&ConsentSubject> for WireSubject {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RequestPayload {
-    subject: WireSubject,
-    scope: ConsentScope,
-    challenge: String,
-    /// Operator-facing label for the approval prompt ("Signal group 'Family'").
-    /// The bridge sends it precisely because `conversationRef` is an opaque
-    /// handle by design — without this the approver is asked to decide about
-    /// `sig-1a2b3c4d`.
-    #[serde(default)]
-    display_hint: Option<String>,
-    /// Multibase multihash over the JCS canonicalization of the held first
-    /// message. The VTA never sees the message, so it cannot check the digest;
-    /// carrying it is the whole job — it binds the prompt the approver answered
-    /// to concrete content, for the bridge to check and the audit trail to keep.
-    #[serde(default)]
-    first_message_digest: Option<String>,
-    #[serde(default)]
-    context_hint: Option<String>,
+// The request payloads are the generated `vti_specs::consent::*` types (#2567):
+// every one of these tasks is pinned, so its payload is read as the
+// specification defines it — `deny_unknown_fields` included (#2621) — and
+// converted to the store's types here.
+use vti_specs::consent::{
+    approver_list::v1_0 as approver_list, approver_set::v1_0 as approver_set,
+    decision::v1_0 as decision, list::v1_1 as list, request::v1_0 as request,
+    revoke::v1_0 as revoke,
+};
+
+/// A generated subject's members as the store's [`ConsentSubject`]. Each
+/// `consent/*` module generates its own subject type; they agree member for
+/// member, and the closed `kind` enum is read by its wire value.
+fn consent_subject(
+    platform: &str,
+    conversation_ref: &str,
+    kind: &dyn std::fmt::Display,
+    agent: &str,
+) -> Result<ConsentSubject, AppError> {
+    Ok(ConsentSubject {
+        platform: platform.to_string(),
+        conversation_ref: conversation_ref.to_string(),
+        kind: from_wire(kind, "subject.kind")?,
+        agent: agent.to_string(),
+    })
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DecisionPayload {
-    subject: WireSubject,
-    effect: ConsentEffect,
-    #[serde(default)]
-    scope: Option<ConsentScope>,
-    #[serde(default)]
-    challenge: Option<String>,
-    #[serde(default)]
-    expires_at: Option<String>,
+/// A generated enum as the store's enum of the same wire values (`scope`,
+/// `effect`, `route`, `kind`): both serialize to the one string the
+/// specification names.
+fn from_wire<T: serde::de::DeserializeOwned>(
+    value: &dyn std::fmt::Display,
+    what: &str,
+) -> Result<T, AppError> {
+    serde_json::from_value(Value::String(value.to_string()))
+        .map_err(|e| AppError::Validation(format!("{what}: {e}")))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RevokePayload {
-    subject: WireSubject,
-    #[serde(default)]
-    reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ListPayload {
-    #[serde(default)]
-    agent: Option<String>,
-    #[serde(default)]
-    platform: Option<String>,
-    #[serde(default)]
-    subject: Option<WireSubject>,
+/// [`consent_subject`] over any `consent/*` module's generated subject.
+macro_rules! subject_of {
+    ($s:expr) => {
+        consent_subject(&$s.platform, &$s.conversation_ref, &$s.kind, &$s.agent)
+    };
 }
 
 #[derive(Serialize)]
@@ -200,27 +191,6 @@ struct ListResponse {
 }
 
 // Approver registry (Track A) wire shapes.
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ApproverSetPayload {
-    platform: String,
-    context: String,
-    approver: String,
-    #[serde(default)]
-    route: Option<ConsentRoute>,
-    #[serde(default)]
-    route_hint: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ApproverListPayload {
-    #[serde(default)]
-    platform: Option<String>,
-    #[serde(default)]
-    context: Option<String>,
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -264,12 +234,6 @@ fn epoch_to_rfc3339(secs: u64) -> String {
         .to_rfc3339()
 }
 
-fn rfc3339_to_epoch(s: &str) -> Option<u64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.timestamp().max(0) as u64)
-}
-
 impl From<ConsentGrant> for WireGrant {
     fn from(g: ConsentGrant) -> Self {
         WireGrant {
@@ -297,11 +261,17 @@ pub(super) async fn handle_request(
     if let Err(e) = auth.require_write() {
         return app_error_to_reject(&doc, e);
     }
-    let payload: RequestPayload = match parse_payload(&doc) {
+    let payload: request::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    let subject: ConsentSubject = payload.subject.into();
+    let (subject, scope) = match subject_of!(payload.subject)
+        .and_then(|s| Ok((s, from_wire::<ConsentScope>(&payload.scope, "scope")?)))
+    {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    let challenge: String = payload.challenge.to_string();
     let now = now_epoch();
 
     // Already decided (allow or deny, not expired) → don't re-prompt.
@@ -364,13 +334,13 @@ pub(super) async fn handle_request(
 
     // Snapshot the prompt subject (camelCase) before `subject` is moved.
     let wire_subject = serde_json::to_value(WireSubject::from(&subject)).unwrap_or_default();
-    let display_hint = payload.display_hint.clone();
-    let first_message_digest = payload.first_message_digest.clone();
+    let display_hint = payload.display_hint.as_ref().map(|h| h.to_string());
+    let first_message_digest = payload.first_message_digest.as_ref().map(|d| d.to_string());
 
     let pending = new_pending_consent(
         subject,
-        payload.scope,
-        payload.challenge.clone(),
+        scope,
+        challenge.clone(),
         auth.did.clone(),
         context,
         PENDING_TTL_SECS,
@@ -387,8 +357,8 @@ pub(super) async fn handle_request(
             state,
             &binding.approver,
             wire_subject,
-            payload.scope,
-            &payload.challenge,
+            scope,
+            &challenge,
             display_hint.as_deref(),
             first_message_digest.as_deref(),
         )
@@ -399,7 +369,7 @@ pub(super) async fn handle_request(
         &doc,
         AckResponse {
             status: "accepted",
-            request_id: Some(payload.challenge),
+            request_id: Some(challenge),
             grant_id: None,
         },
     )
@@ -551,16 +521,27 @@ pub(super) async fn handle_decision(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let payload: DecisionPayload = match parse_payload(&doc) {
+    let payload: decision::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    let subject: ConsentSubject = payload.subject.into();
+    let converted = subject_of!(payload.subject).and_then(|s| {
+        let effect: ConsentEffect = from_wire(&payload.effect, "effect")?;
+        let scope: Option<ConsentScope> = match &payload.scope {
+            Some(sc) => Some(from_wire(sc, "scope")?),
+            None => None,
+        };
+        Ok((s, effect, scope))
+    });
+    let (subject, effect, requested_scope) = match converted {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     let now = now_epoch();
 
     // Resolve + consume the pending request this decision answers (when echoed).
     let (evidence, scope_default, context) = if let Some(challenge) = &payload.challenge {
-        match consume_pending_consent(&state.consent_ks, challenge, now).await {
+        match consume_pending_consent(&state.consent_ks, challenge.as_str(), now).await {
             Ok(ConsumeConsent::Found(p)) => {
                 if p.subject != subject {
                     return app_error_to_reject(
@@ -649,10 +630,9 @@ pub(super) async fn handle_decision(
         ("did-signed", None, None)
     };
 
-    let scope = match payload.effect {
+    let scope = match effect {
         ConsentEffect::Allow => Some(
-            payload
-                .scope
+            requested_scope
                 .or(scope_default)
                 .unwrap_or(ConsentScope::Converse),
         ),
@@ -660,11 +640,11 @@ pub(super) async fn handle_decision(
     };
     let grant = ConsentGrant {
         subject,
-        effect: payload.effect,
+        effect,
         scope,
         granted_by: auth.did.clone(),
         granted_at: now,
-        expires_at: payload.expires_at.as_deref().and_then(rfc3339_to_epoch),
+        expires_at: payload.expires_at.map(|at| at.timestamp().max(0) as u64),
         evidence: evidence.to_string(),
         // The context of the request this answers, so withdrawal can be scoped
         // to it (VTI-CTX-001/002).
@@ -693,12 +673,14 @@ pub(super) async fn handle_revoke(
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let payload: RevokePayload = match parse_payload(&doc) {
+    let payload: revoke::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    let _ = &payload.reason;
-    let subject: ConsentSubject = payload.subject.into();
+    let subject = match subject_of!(payload.subject) {
+        Ok(s) => s,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     // No grant → `notFound` as a *status*, not a reject. The published response
     // schema declares the value ("`revoked` = the grant was deleted.
     // `notFound` = no grant existed for the subject."), so a conforming
@@ -789,23 +771,33 @@ pub(super) async fn handle_list(
     if let Err(e) = auth.require_read() {
         return app_error_to_reject(&doc, e);
     }
-    let payload: ListPayload = match parse_payload(&doc) {
+    let payload: list::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    let subject_filter: Option<ConsentSubject> = payload.subject.map(Into::into);
+    let subject_filter: Option<ConsentSubject> =
+        match payload.subject.as_ref().map(|s| subject_of!(s)) {
+            Some(Ok(s)) => Some(s),
+            Some(Err(e)) => return app_error_to_reject(&doc, e),
+            None => None,
+        };
     let grants = match list_consent_grants(&state.consent_ks).await {
         Ok(g) => g,
         Err(e) => return app_error_to_reject(&doc, e),
     };
     let wire: Vec<WireGrant> = grants
         .into_iter()
-        .filter(|g| payload.agent.as_ref().is_none_or(|a| &g.subject.agent == a))
+        .filter(|g| {
+            payload
+                .agent
+                .as_ref()
+                .is_none_or(|a| g.subject.agent == a.as_str())
+        })
         .filter(|g| {
             payload
                 .platform
                 .as_ref()
-                .is_none_or(|p| &g.subject.platform == p)
+                .is_none_or(|p| g.subject.platform == p.as_str())
         })
         .filter(|g| subject_filter.as_ref().is_none_or(|s| &g.subject == s))
         .map(WireGrant::from)
@@ -820,9 +812,14 @@ pub(super) async fn handle_approver_set(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let payload: ApproverSetPayload = match parse_payload(&doc) {
+    let payload: approver_set::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
+    };
+    let route: Option<ConsentRoute> = match payload.route.as_ref().map(|r| from_wire(r, "route")) {
+        Some(Ok(r)) => Some(r),
+        Some(Err(e)) => return app_error_to_reject(&doc, e),
+        None => None,
     };
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
@@ -831,10 +828,10 @@ pub(super) async fn handle_approver_set(
         return app_error_to_reject(&doc, e);
     }
     let binding = ApproverBinding {
-        platform: payload.platform,
-        context: payload.context,
-        approver: payload.approver,
-        route: payload.route,
+        platform: payload.platform.to_string(),
+        context: payload.context.to_string(),
+        approver: payload.approver.to_string(),
+        route,
         route_hint: payload.route_hint,
     };
     let audit_detail = format!(
@@ -879,7 +876,7 @@ pub(super) async fn handle_approver_list(
     if let Err(e) = auth.require_read() {
         return app_error_to_reject(&doc, e);
     }
-    let payload: ApproverListPayload = match parse_payload(&doc) {
+    let payload: approver_list::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -889,8 +886,18 @@ pub(super) async fn handle_approver_list(
     };
     let approvers: Vec<WireApprover> = all
         .into_iter()
-        .filter(|b| payload.platform.as_ref().is_none_or(|p| &b.platform == p))
-        .filter(|b| payload.context.as_ref().is_none_or(|c| &b.context == c))
+        .filter(|b| {
+            payload
+                .platform
+                .as_ref()
+                .is_none_or(|p| b.platform == p.as_str())
+        })
+        .filter(|b| {
+            payload
+                .context
+                .as_ref()
+                .is_none_or(|c| b.context == c.as_str())
+        })
         .map(WireApprover::from)
         .collect();
     success_response(&doc, ApproverListResponse { approvers })
@@ -922,9 +929,34 @@ mod tests {
             "displayHint": "Signal DM",
             "contextHint": "ctx",
         });
-        let p: RequestPayload = serde_json::from_value(v).unwrap();
-        assert_eq!(p.scope, ConsentScope::Converse);
+        let p: request::Payload = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            from_wire::<ConsentScope>(&p.scope, "scope").unwrap(),
+            ConsentScope::Converse
+        );
         assert_eq!(p.context_hint.as_deref(), Some("ctx"));
+        assert_eq!(subject_of!(p.subject).unwrap().kind, ConsentKind::Dm);
+    }
+
+    /// #2621: a member the specification does not define is refused, not
+    /// dropped — a mis-cased `contextHint` would otherwise vanish silently.
+    #[test]
+    fn issue_2621_consent_payloads_refuse_unknown_members() {
+        let subject = serde_json::json!({"platform":"signal","conversationRef":"sig-1","kind":"dm","agent":"did:key:zA"});
+        let request = serde_json::json!({
+            "subject": subject, "scope": "converse", "challenge": "Q29uc2VudENoYWxsZW5nZQ",
+            "context_hint": "ctx",
+        });
+        assert!(serde_json::from_value::<request::Payload>(request).is_err());
+        let revoke = serde_json::json!({ "subject": subject, "scope": "converse" });
+        assert!(serde_json::from_value::<revoke::Payload>(revoke).is_err());
+        let set = serde_json::json!({
+            "platform": "signal", "context": "ctx", "approver": "did:web:op", "route_hint": "x",
+        });
+        assert!(serde_json::from_value::<approver_set::Payload>(set).is_err());
+        // `ext` is the framework's extension point, and is accepted.
+        let list = serde_json::json!({ "ext": { "org.example": {} } });
+        assert!(serde_json::from_value::<list::Payload>(list).is_ok());
     }
 
     #[test]
@@ -956,8 +988,7 @@ mod tests {
     #[test]
     fn epoch_rfc3339_round_trips() {
         let s = epoch_to_rfc3339(1_700_000_000);
-        assert_eq!(rfc3339_to_epoch(&s), Some(1_700_000_000));
-        assert_eq!(rfc3339_to_epoch("not-a-date"), None);
+        assert!(s.starts_with("2023-11-14T22:13:20"), "{s}");
     }
 
     #[test]
@@ -969,8 +1000,11 @@ mod tests {
             "route": "bridge-relay",
             "routeHint": "sig-0a1b",
         });
-        let p: ApproverSetPayload = serde_json::from_value(v).unwrap();
-        assert_eq!(p.route, Some(ConsentRoute::BridgeRelay));
+        let p: approver_set::Payload = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            from_wire::<ConsentRoute>(p.route.as_ref().unwrap(), "route").unwrap(),
+            ConsentRoute::BridgeRelay
+        );
         assert_eq!(p.route_hint.as_deref(), Some("sig-0a1b"));
     }
 

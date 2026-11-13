@@ -55,7 +55,7 @@ enum VaultListStatusFilter {
 /// `payload.schema.json` of the spec (enum values arrive kebab-cased by the
 /// `wire_v0_2` edge transform); field names are camelCase to match the wire.
 #[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VaultListBody {
     context_id: Option<String>,
     target_origin_prefix: Option<String>,
@@ -76,6 +76,11 @@ struct VaultListBody {
     /// The previous page's `nextCursor`.
     #[serde(default)]
     cursor: Option<String>,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    ext: Option<Value>,
 }
 
 /// Response body for `vault/list/0.4`. Wraps the entries the
@@ -92,9 +97,14 @@ struct VaultListResponseBody {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VaultGetBody {
     id: String,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    ext: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,7 +130,7 @@ struct VaultGetResponseBody {
 ///   from "clear" (field listed here). Only safe-to-clear fields are
 ///   listable; `contextId`, `targets`, `label`, `secretKind` are not.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VaultUpsertBody {
     id: Option<String>,
     expected_version: Option<u32>,
@@ -140,6 +150,11 @@ struct VaultUpsertBody {
     sealed_secret: Option<SealedEnvelope>,
     #[serde(default)]
     clear_fields: Vec<ClearableField>,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    ext: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -218,7 +233,7 @@ enum ClearableField {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VaultDeleteBody {
     id: String,
     expected_version: Option<u32>,
@@ -235,6 +250,11 @@ struct VaultDeleteBody {
     /// `graceUntil`.
     #[serde(default)]
     force: bool,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    ext: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -254,7 +274,7 @@ struct VaultDeleteResponseBody {
 /// single entry by id, honours optimistic concurrency, and carries an
 /// optional `reason` the dispatch spine lifts into the audit row's `detail`.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VaultLifecycleBody {
     id: String,
     #[serde(default)]
@@ -262,6 +282,11 @@ struct VaultLifecycleBody {
     #[serde(default)]
     #[allow(dead_code)] // read generically by the spine for the audit `detail`
     reason: Option<String>,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    ext: Option<Value>,
 }
 
 /// Response for `vault/archive`, `vault/unarchive`, and `vault/restore` — the
@@ -290,7 +315,7 @@ struct VaultPurgeResponseBody {
 /// consulted by the policy engine in M3; M2A.3's policy is "allow if
 /// FillRelease capability".
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VaultReleaseBody {
     entry_id: String,
     #[serde(default)]
@@ -305,6 +330,16 @@ struct VaultReleaseBody {
     // don't `deny_unknown_fields`.)
     #[serde(default)]
     ttl_seconds_hint: Option<u32>,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    ext: Option<Value>,
+    /// Declared by the schema; step-up is decided by the pre-dispatch policy
+    /// gate from the session's ACR (P0.13), so it is accepted and not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    step_up_proof: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -338,7 +373,7 @@ enum SealedEnvelopeWire {
 /// threading the RP's `/auth/challenge` value through so the resulting
 /// id_token passes the RP's nonce check.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VaultProxyLoginBody {
     entry_id: String,
     /// Optional target the wallet is asking the VTA to log in *against*.
@@ -369,6 +404,16 @@ struct VaultProxyLoginBody {
     nonce: Option<String>,
     #[serde(default)]
     ttl_seconds_hint: Option<u32>,
+    /// The framework's extension point (every payload schema declares it):
+    /// accepted, not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    ext: Option<Value>,
+    /// Declared by the schema; step-up is decided by the pre-dispatch policy
+    /// gate from the session's ACR (P0.13), so it is accepted and not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    step_up_proof: Option<Value>,
 }
 
 /// Schema-level ceiling for `nonce` per `vault/proxy-login/0.1`. The
@@ -1802,7 +1847,7 @@ pub(super) async fn handle_proxy_login(
 /// consumed (M3 policy engine will read consumerContext; step-up gating
 /// across sign-trust-task lands as a follow-up to the proxy-login wiring).
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VaultSignTrustTaskBody {
     entry_id: String,
     unsigned_envelope: Value,
@@ -1815,6 +1860,11 @@ struct VaultSignTrustTaskBody {
     /// UV approval — with an `auth/oob/grant` envelope.
     #[serde(default)]
     ext: Option<Value>,
+    /// Declared by the schema; step-up is decided by the pre-dispatch policy
+    /// gate from the session's ACR (P0.13), so it is accepted and not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    step_up_proof: Option<Value>,
 }
 
 /// Response body for `vault/sign-trust-task/0.1`. Same `unsigned_envelope`
@@ -2517,5 +2567,35 @@ mod remote_approval_tests {
         assert!(summary.contains("https://portal.vtc.example"), "{summary}");
         assert!(summary.contains("Chromium on Linux"), "{summary}");
         assert!(summary.starts_with("Sign in"), "{summary}");
+    }
+}
+
+/// #2621: the hand-written bodies refuse what their schema does not define,
+/// and read everything it does.
+#[cfg(test)]
+mod issue_2621_tests {
+    use super::super::helpers::assert_reads_exactly_the_schema_members as check;
+    use super::*;
+    use vta_sdk::trust_tasks as t;
+
+    #[test]
+    fn vault_bodies_read_exactly_their_schema_members() {
+        check::<VaultListBody>(t::TASK_VAULT_LIST_0_4);
+        check::<VaultGetBody>(t::TASK_VAULT_GET_0_3);
+        check::<VaultUpsertBody>(t::TASK_VAULT_UPSERT_0_4);
+        check::<VaultDeleteBody>(t::TASK_VAULT_DELETE_0_1);
+        check::<VaultReleaseBody>(t::TASK_VAULT_RELEASE_0_2);
+        check::<VaultProxyLoginBody>(t::TASK_VAULT_PROXY_LOGIN_0_2);
+        check::<VaultSignTrustTaskBody>(t::TASK_VAULT_SIGN_TRUST_TASK_0_2);
+    }
+
+    /// `vault/{archive,unarchive,restore,purge}/0.1` are not pinned, so no
+    /// schema gate stands in front of them: the type's refusal is the only one.
+    #[test]
+    fn the_unpinned_lifecycle_body_refuses_a_mis_cased_member() {
+        let ok = serde_json::json!({ "id": "e1", "expectedVersion": 2, "reason": "r" });
+        assert!(serde_json::from_value::<VaultLifecycleBody>(ok).is_ok());
+        let mis_cased = serde_json::json!({ "id": "e1", "expected_version": 2 });
+        assert!(serde_json::from_value::<VaultLifecycleBody>(mis_cased).is_err());
     }
 }

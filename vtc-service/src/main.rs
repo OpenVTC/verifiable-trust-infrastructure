@@ -838,7 +838,7 @@ async fn run_invite_cli(
     ttl_seconds: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use chrono::{Duration as ChronoDuration, Utc};
-    use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+    use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry};
     use vtc_service::auth::session::now_epoch;
     use vtc_service::install::{
         InstallTokenSigner, InstallTokenStore, InvitedAuthority, mint_install_token,
@@ -948,7 +948,11 @@ async fn run_invite_cli(
         Some(admin_did) => {
             // A wallet invitation. Ensure the ACL entry exists with Admin role:
             // the post-login flow gates on it.
+            //
+            // The entry expires with the invitation until it is claimed
+            // (#2660): the claim makes it permanent, a revocation removes it.
             let acl_already_present = get_acl_entry(&acl_ks, admin_did).await?.is_some();
+            let minted = mint_install_token(&signer, &vtc_did, admin_did, ttl_seconds)?;
             if !acl_already_present {
                 let entry = VtcAclEntry {
                     did: admin_did.to_string(),
@@ -968,7 +972,15 @@ async fn run_invite_cli(
                     label_set_by_subject: false,
                     suspension: None,
                 };
-                store_acl_entry(&acl_ks, &entry).await?;
+                vtc_service::install::write_invite_entry(
+                    &acl_ks,
+                    &install_store,
+                    &minted.jti,
+                    entry.clone(),
+                    exp,
+                    None,
+                )
+                .await?;
                 // An unrestricted admin made offline, without the consent the
                 // daemon requires (VTI-APV-014) — audited as the break-glass on
                 // the next boot.
@@ -982,7 +994,6 @@ async fn run_invite_cli(
                 )
                 .await?;
             }
-            let minted = mint_install_token(&signer, &vtc_did, admin_did, ttl_seconds)?;
             install_store
                 .record_issued(
                     &minted.jti,
@@ -996,7 +1007,7 @@ async fn run_invite_cli(
             acl_line = if acl_already_present {
                 "pre-existing (left untouched)".to_string()
             } else {
-                "created (role=admin)".to_string()
+                "created (role=admin), expiring with the invitation until it is claimed".to_string()
             };
             minted
         }

@@ -341,3 +341,90 @@ async fn the_admin_session_task_answers_with_the_invalid_token_code_its_spec_dec
         assert!(cookies.is_empty(), "{why}: no cookie on refusal");
     }
 }
+
+// ─── #2661: the CSRF gate's path lists name live routes ─────────
+
+/// A `POST` to `path` with no credential: the status the assembled router
+/// answers. A route that is not mounted answers `404`, or `405` where the
+/// website's `GET` wildcard catches the path.
+async fn post_status(router: &axum::Router, path: &str) -> StatusCode {
+    let req = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    router.clone().oneshot(req).await.expect("request").status()
+}
+
+fn is_unrouted(status: StatusCode) -> bool {
+    status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED
+}
+
+/// Every CSRF exemption, and every route the gate treats as reading its
+/// cookie, is a route the router serves: an exemption outliving its route
+/// would quietly cover whatever is mounted at that path next.
+#[tokio::test]
+async fn every_csrf_exemption_names_a_live_route() {
+    let fix = build_fixture().await;
+    for path in vtc_service::routing::csrf::CSRF_EXEMPT_PATHS
+        .iter()
+        .chain(vtc_service::routing::csrf::COOKIE_READING_PATHS)
+    {
+        let status = post_status(&fix.router, path).await;
+        assert!(
+            !is_unrouted(status),
+            "{path} is not a live route ({status})"
+        );
+    }
+    // The check can tell: an exemption removed with its route is unrouted.
+    for gone in [
+        "/v1/auth/challenge",
+        "/v1/install/claim/start",
+        "/v1/admin/bootstrap",
+        "/v1/join-requests",
+        "/v1/join-requests/req-1/accept",
+        "/v1/join-requests/req-1/status",
+    ] {
+        let status = post_status(&fix.router, gone).await;
+        assert!(is_unrouted(status), "{gone} answered {status}");
+    }
+}
+
+/// A malformed `Authorization` header — one the extractor does not read —
+/// opens no CSRF skip for the cookie session beside it.
+#[tokio::test]
+async fn issue_2661_a_bearer_the_extractor_ignores_leaves_the_cookie_gated() {
+    let fix = build_fixture().await;
+    let jwt = mint_session(&fix, "VTC").await;
+    let (status, body) = request(
+        &fix.router,
+        sign_out(&[
+            ("Authorization", format!(" Bearer {jwt}")),
+            ("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}")),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.contains("CsrfFailed"), "{body}");
+}
+
+/// A console signed in before the `__Host-` rename still authenticates with
+/// the cookie name it holds.
+#[tokio::test]
+async fn issue_2661_the_legacy_admin_cookie_still_authenticates() {
+    let fix = build_fixture().await;
+    let jwt = mint_session(&fix, "VTC").await;
+    let (status, body) = probe(
+        &fix._vtc,
+        &[(
+            "Cookie",
+            format!(
+                "{}={jwt}",
+                vti_common::auth::extractor::LEGACY_ADMIN_SESSION_COOKIE
+            ),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

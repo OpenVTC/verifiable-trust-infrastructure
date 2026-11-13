@@ -1221,9 +1221,12 @@ fn cookie_value<'a>(r: &'a Reply, name: &str) -> Option<&'a str> {
 /// Whether the console's access-token extractor admits `token` as its cookie
 /// (`common::session_probe`).
 async fn console_admits_cookie(f: &Fixture, token: &str) -> StatusCode {
-    crate::common::session_probe::probe(&f.vtc, &[("cookie", format!("vtc_admin_session={token}"))])
-        .await
-        .0
+    crate::common::session_probe::probe(
+        &f.vtc,
+        &[("cookie", format!("__Host-vtc_admin_session={token}"))],
+    )
+    .await
+    .0
 }
 
 /// `auth/whoami/0.1` signed by `key`: the status and reply.
@@ -1311,12 +1314,12 @@ async fn an_admin_request_by_an_administrator_opens_a_console_session() {
     let session = done
         .cookies
         .iter()
-        .find(|c| c.starts_with("vtc_admin_session="))
+        .find(|c| c.starts_with("__Host-vtc_admin_session="))
         .expect("admin session cookie");
     for flag in ["Path=/;", "SameSite=Strict", "Secure", "HttpOnly"] {
         assert!(session.contains(flag), "{flag} in {session}");
     }
-    assert!(cookie_value(&done, "csrf").is_some(), "csrf cookie");
+    assert!(cookie_value(&done, "__Host-csrf").is_some(), "csrf cookie");
     assert!(
         done.cookies
             .iter()
@@ -1327,7 +1330,7 @@ async fn an_admin_request_by_an_administrator_opens_a_console_session() {
     assert_eq!(record(&f, &id).await.state, OobState::Consumed);
 
     // It opens the console (audience `VTC`) and not the portal.
-    let token = cookie_value(&done, "vtc_admin_session").unwrap();
+    let token = cookie_value(&done, "__Host-vtc_admin_session").unwrap();
     assert_eq!(console_admits_cookie(&f, token).await, StatusCode::OK);
     // `K_b` is bound to the session it redeemed: it signs `whoami` for it.
     let (status, who) = signed_whoami(&f, &b.key).await;
@@ -1437,9 +1440,9 @@ async fn a_member_request_by_an_administrator_gives_a_member_session_only() {
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);
     assert!(done.body["payload"].get("ext").is_none());
     let token = cookie_value(&done, "vtc_member_session").expect("member session");
-    assert!(cookie_value(&done, "vtc_admin_session").is_none());
+    assert!(cookie_value(&done, "__Host-vtc_admin_session").is_none());
     assert!(
-        cookie_value(&done, "csrf").is_none(),
+        cookie_value(&done, "__Host-csrf").is_none(),
         "the console's csrf is not set"
     );
     // The member token does not open the console (T19).
@@ -1889,7 +1892,7 @@ async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() 
         for name in [
             "vtc_member_session",
             "vtc_member_refresh",
-            "vtc_member_csrf",
+            "__Host-vtc_member_csrf",
         ] {
             assert!(
                 before + max_age(&r.cookies, name) <= not_after,
@@ -1979,7 +1982,7 @@ async fn a_console_session_is_bounded_by_the_grants_not_after() {
         let before = now_epoch();
         let r = admin_refresh(&f, &refresh).await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-        for name in ["vtc_admin_session", refresh_cookie, "csrf"] {
+        for name in ["__Host-vtc_admin_session", refresh_cookie, "__Host-csrf"] {
             assert!(
                 before + max_age(&r.cookies, name) <= not_after,
                 "{name} outlives the grant: {:?}",
@@ -1997,7 +2000,7 @@ async fn a_console_session_is_bounded_by_the_grants_not_after() {
     end_session(&f.vtc.state.sessions_ks, &admin.did).await;
     let r = admin_refresh(&f, &refresh).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{}", r.body);
-    assert!(cookie_in(&r.cookies, "vtc_admin_session").is_none());
+    assert!(cookie_in(&r.cookies, "__Host-vtc_admin_session").is_none());
 }
 
 #[tokio::test]
@@ -2016,7 +2019,7 @@ async fn a_console_refresh_near_the_end_is_clamped_to_it() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     assert!(r.body["tokens"]["expiresIn"].as_u64().unwrap() <= 30);
     assert!(r.body["tokens"]["refreshExpiresIn"].as_u64().unwrap() <= 30);
-    assert!(max_age(&r.cookies, "vtc_admin_session") <= 30);
+    assert!(max_age(&r.cookies, "__Host-vtc_admin_session") <= 30);
 }
 
 /// A member session stored before sessions had an absolute end has no

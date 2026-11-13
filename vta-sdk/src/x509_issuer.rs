@@ -11,6 +11,27 @@
 //! `dNSName` equal to its host) — SD-JWT VC's binding of a certificate to the
 //! issuer it speaks for.
 //!
+//! The path is validated as RFC 5280 §6 requires of the parts it delegates to
+//! a CA, every certification authority on it — the anchor it ends at included
+//! (#2618):
+//!
+//! - **`pathLenConstraint`**: no more CA certificates below a CA than it
+//!   allows.
+//! - **`keyUsage`**: a CA that states its key usage must allow `keyCertSign`.
+//! - **`nameConstraints`**: the leaf's `dNSName` and `URI` names (which bind
+//!   `iss`) must lie inside every CA's permitted subtrees and outside its
+//!   excluded ones. A `dNSName` constraint is applied to a `URI`'s host too, so
+//!   a sub-CA constrained by DNS name cannot certify an issuer URL outside it.
+//!   A constraint of a form not evaluated here (`directoryName`, `iPAddress`,
+//!   `rfc822Name`, …) that could apply to the leaf refuses the chain.
+//! - **Critical extensions**: one not processed here refuses the certificate,
+//!   and so does any extension that does not parse — a check that cannot be
+//!   read is a check that failed.
+//! - **Signatures**: SHA-1 signatures are refused.
+//!
+//! Revocation (CRL, OCSP) is not checked: an anchor's PKI withdraws a
+//! certificate here only by expiry, or by the operator removing the anchor.
+//!
 //! A verifier with no anchors trusts no certificate-named issuer, as a
 //! verifier with no DID resolver trusts no DID it cannot resolve.
 
@@ -155,6 +176,7 @@ pub fn x5c_issuer(
     let at = ASN1Time::from_timestamp(now_unix).map_err(|e| refused(format!("clock: {e}")))?;
 
     for (i, cert) in chain.iter().enumerate() {
+        check_extensions(cert, &format!("`x5c` certificate {}", i + 1))?;
         if !cert.validity().is_valid_at(at) {
             return Err(refused(format!(
                 "`x5c` certificate {} ({}) is not valid now",
@@ -172,9 +194,7 @@ pub fn x5c_issuer(
     }
     for (i, pair) in chain.windows(2).enumerate() {
         let (child, parent) = (&pair[0], &pair[1]);
-        if child.issuer() != parent.subject()
-            || child.verify_signature(Some(parent.public_key())).is_err()
-        {
+        if child.issuer() != parent.subject() || !issued_by(child, parent) {
             return Err(refused(format!(
                 "`x5c` certificate {} is not issued by certificate {}",
                 i + 1,
@@ -187,9 +207,7 @@ pub fn x5c_issuer(
     let last_index = chain.len() - 1;
     let last = &chain[last_index];
     let signing_anchor = anchor_certs.iter().find(|a| {
-        a.validity().is_valid_at(at)
-            && last.issuer() == a.subject()
-            && last.verify_signature(Some(a.public_key())).is_ok()
+        a.validity().is_valid_at(at) && last.issuer() == a.subject() && issued_by(last, a)
     });
     let anchored = anchors.certs.iter().any(|a| *a == ders[last_index]) || signing_anchor.is_some();
     if !anchored {
@@ -202,12 +220,31 @@ pub fn x5c_issuer(
     if is_ca(leaf) && chain.len() > 1 {
         return Err(refused("the `x5c` leaf is a CA certificate"));
     }
-    if let Ok(Some(usage)) = leaf.key_usage()
-        && !usage.value.digital_signature()
-    {
-        return Err(refused(
-            "the `x5c` leaf's key usage does not allow digitalSignature",
-        ));
+    match leaf.key_usage() {
+        Ok(Some(usage)) if !usage.value.digital_signature() => {
+            return Err(refused(
+                "the `x5c` leaf's key usage does not allow digitalSignature",
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => return Err(refused(format!("the `x5c` leaf's key usage: {e}"))),
+    }
+
+    // What each certification authority on the path delegates (RFC 5280 §6):
+    // the chain's CAs, where `cas_below` is how many CA certificates sit
+    // between it and the leaf, then the anchor the chain ends at when it is
+    // not carried in it.
+    if let Some(anchor) = signing_anchor {
+        check_extensions(anchor, "the trust anchor")?;
+    }
+    let authorities = chain
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(i, c)| (c, i - 1, format!("`x5c` certificate {}", i + 1)))
+        .chain(signing_anchor.map(|a| (a, chain.len() - 1, "the trust anchor".to_string())));
+    for (ca, cas_below, what) in authorities {
+        check_authority(ca, cas_below, leaf, &what)?;
     }
     if !leaf_names_issuer(leaf, iss) {
         return Err(refused(format!(
@@ -239,6 +276,194 @@ pub fn x5c_issuer(
 
 fn is_ca(cert: &X509Certificate) -> bool {
     matches!(cert.basic_constraints(), Ok(Some(bc)) if bc.value.ca)
+}
+
+/// `sha1WithRSAEncryption` and its OIW alias: `x509-parser` verifies these
+/// (down to 1024-bit keys) for legacy use; a credential issuer's path does not
+/// get to rest on them.
+const SHA1_SIGNATURES: &[&str] = &["1.2.840.113549.1.1.5", "1.3.14.3.2.29"];
+
+/// Whether `parent`'s key signed `child`, by an algorithm accepted here.
+fn issued_by(child: &X509Certificate, parent: &X509Certificate) -> bool {
+    let algorithm = child.signature_algorithm.algorithm.to_id_string();
+    !SHA1_SIGNATURES.contains(&algorithm.as_str())
+        && child.verify_signature(Some(parent.public_key())).is_ok()
+}
+
+/// Extensions this module processes, and so may be critical (RFC 5280
+/// §4.2: a certificate with a critical extension the verifier does not
+/// recognise or cannot process must be rejected).
+const PROCESSED_EXTENSIONS: &[&str] = &[
+    "2.5.29.14", // subjectKeyIdentifier
+    "2.5.29.15", // keyUsage
+    "2.5.29.17", // subjectAltName
+    "2.5.29.19", // basicConstraints
+    "2.5.29.30", // nameConstraints
+    "2.5.29.35", // authorityKeyIdentifier
+    "2.5.29.37", // extKeyUsage — no purpose is asked of the leaf here
+];
+
+/// Refuse a certificate carrying an extension that does not parse, one this
+/// module relies on twice over, or a critical one it does not process.
+fn check_extensions(cert: &X509Certificate, what: &str) -> Result<(), JwsError> {
+    for ext in cert.extensions() {
+        let oid = ext.oid.to_id_string();
+        if let ParsedExtension::ParseError { error } = ext.parsed_extension() {
+            return Err(refused(format!(
+                "{what} ({}): extension {oid} does not parse: {error}",
+                cert.subject()
+            )));
+        }
+        if ext.critical && !PROCESSED_EXTENSIONS.contains(&oid.as_str()) {
+            return Err(refused(format!(
+                "{what} ({}) carries critical extension {oid}, which is not processed here",
+                cert.subject()
+            )));
+        }
+    }
+    // Each errs on a duplicated extension.
+    let unreadable = |e: X509Error| refused(format!("{what} ({}): {e}", cert.subject()));
+    cert.basic_constraints().map_err(unreadable)?;
+    cert.key_usage().map_err(unreadable)?;
+    cert.name_constraints().map_err(unreadable)?;
+    cert.subject_alternative_name().map_err(unreadable)?;
+    cert.extended_key_usage().map_err(unreadable)?;
+    Ok(())
+}
+
+/// What a certification authority delegates, held against the path below it:
+/// `cas_below` CA certificates between it and `leaf`.
+fn check_authority(
+    ca: &X509Certificate,
+    cas_below: usize,
+    leaf: &X509Certificate,
+    what: &str,
+) -> Result<(), JwsError> {
+    let subject = ca.subject();
+    if let Ok(Some(bc)) = ca.basic_constraints()
+        && let Some(max) = bc.value.path_len_constraint
+        && cas_below > max as usize
+    {
+        return Err(refused(format!(
+            "{what} ({subject}) allows {max} CA certificate(s) below it, and the chain has              {cas_below}"
+        )));
+    }
+    if let Ok(Some(usage)) = ca.key_usage()
+        && !usage.value.key_cert_sign()
+    {
+        return Err(refused(format!(
+            "{what} ({subject}) certifies another certificate, but its key usage does not              allow keyCertSign"
+        )));
+    }
+    if let Ok(Some(nc)) = ca.name_constraints() {
+        check_name_constraints(nc.value, leaf)
+            .map_err(|m| refused(format!("{what} ({subject}): {m}")))?;
+    }
+    Ok(())
+}
+
+/// The leaf against one CA's `nameConstraints` (RFC 5280 §4.2.1.10).
+fn check_name_constraints(nc: &NameConstraints, leaf: &X509Certificate) -> Result<(), String> {
+    let permitted = nc.permitted_subtrees.as_deref().unwrap_or_default();
+    let excluded = nc.excluded_subtrees.as_deref().unwrap_or_default();
+    let all = || permitted.iter().chain(excluded);
+    // A subject name is always present; a constraint on it is not evaluated.
+    if all().any(|t| matches!(t.base, GeneralName::DirectoryName(_))) {
+        return Err("directoryName name constraints are not evaluated here".into());
+    }
+    let sans = leaf
+        .subject_alternative_name()
+        .map_err(|e| format!("the leaf's subject alternative name: {e}"))?
+        .map(|san| san.value.general_names.clone())
+        .unwrap_or_default();
+    for name in &sans {
+        match name {
+            GeneralName::DNSName(dns) => {
+                // `dNSName` subtrees, against a DNS name.
+                check_subtrees(permitted, excluded, dns, |base| match base {
+                    GeneralName::DNSName(c) => Some(dns_within(dns, c)),
+                    _ => None,
+                })?;
+            }
+            GeneralName::URI(uri) => {
+                let host = url::Url::parse(uri)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_string))
+                    .ok_or_else(|| format!("the leaf's URI name {uri} names no host"))?;
+                // `uniformResourceIdentifier` subtrees by their rule, and
+                // `dNSName` subtrees against the host as well.
+                check_subtrees(permitted, excluded, uri, |base| match base {
+                    GeneralName::URI(c) => Some(uri_host_within(&host, c)),
+                    _ => None,
+                })?;
+                check_subtrees(permitted, excluded, uri, |base| match base {
+                    GeneralName::DNSName(c) => Some(dns_within(&host, c)),
+                    _ => None,
+                })?;
+            }
+            other => {
+                // A name of another form, under a constraint of that form,
+                // is one this cannot evaluate.
+                let same_form = |t: &&GeneralSubtree| {
+                    std::mem::discriminant(&t.base) == std::mem::discriminant(other)
+                };
+                if all().any(|t| same_form(&t)) {
+                    return Err(format!(
+                        "a name constraint applies to the leaf's name {other:?}, of a form                          not evaluated here"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One name against the subtrees `within` reads (it answers `None` for a
+/// subtree of another form): inside a permitted one of its form when there are
+/// any, and inside no excluded one.
+fn check_subtrees(
+    permitted: &[GeneralSubtree],
+    excluded: &[GeneralSubtree],
+    name: &str,
+    within: impl Fn(&GeneralName) -> Option<bool>,
+) -> Result<(), String> {
+    let mut of_form = permitted.iter().filter_map(|t| within(&t.base)).peekable();
+    if of_form.peek().is_some() && !of_form.any(|inside| inside) {
+        return Err(format!(
+            "the leaf's name {name} is outside the permitted names"
+        ));
+    }
+    if excluded.iter().any(|t| within(&t.base) == Some(true)) {
+        return Err(format!("the leaf's name {name} is an excluded name"));
+    }
+    Ok(())
+}
+
+/// RFC 5280 §4.2.1.10 `dNSName`: the constraint itself, or the constraint with
+/// labels added on the left. A leading `.` admits subdomains only; an empty
+/// constraint admits every name.
+fn dns_within(name: &str, constraint: &str) -> bool {
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    let constraint = constraint.trim_end_matches('.').to_ascii_lowercase();
+    if constraint.is_empty() {
+        return true;
+    }
+    if constraint.starts_with('.') {
+        return name.ends_with(&constraint);
+    }
+    name == constraint || name.ends_with(&format!(".{constraint}"))
+}
+
+/// RFC 5280 §4.2.1.10 `uniformResourceIdentifier`: a constraint without a
+/// leading `.` is a host, matched exactly; with one, every host below it.
+fn uri_host_within(host: &str, constraint: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let constraint = constraint.trim_end_matches('.').to_ascii_lowercase();
+    if constraint.starts_with('.') {
+        host.ends_with(&constraint)
+    } else {
+        host == constraint
+    }
 }
 
 /// SD-JWT VC's binding of an `x5c` leaf to `iss`: an `https` issuer named by a
@@ -346,7 +571,7 @@ pub(crate) mod test_chain {
     pub struct Ca {
         pub pem: String,
         pub der: Vec<u8>,
-        issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
+        pub issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
     }
 
     pub fn ca(name: &str) -> Ca {
@@ -563,6 +788,225 @@ mod tests {
         assert!(
             x5c_issuer_key(&serde_json::json!({ "x5c": ["***"] }), ISS, &anchors, now()).is_err()
         );
+    }
+
+    // ── #2618: what a CA delegates ─────────────────────────────────────────
+
+    /// A CA under `parent` (self-signed when `None`) shaped by `shape`.
+    fn ca_with(
+        parent: Option<&Ca>,
+        name: &str,
+        shape: impl FnOnce(&mut rcgen::CertificateParams),
+    ) -> Ca {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, name);
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.use_authority_key_identifier_extension = parent.is_some();
+        shape(&mut params);
+        let cert = match parent {
+            Some(p) => params.signed_by(&key, &p.issuer).unwrap(),
+            None => params.self_signed(&key).unwrap(),
+        };
+        Ca {
+            pem: cert.pem(),
+            der: cert.der().to_vec(),
+            issuer: rcgen::Issuer::new(params, key),
+        }
+    }
+
+    fn anchors_of(ca: &Ca) -> X509TrustAnchors {
+        X509TrustAnchors::from_pem(ca.pem.as_bytes()).unwrap()
+    }
+
+    fn dns_subtrees(names: &[&str]) -> Vec<rcgen::GeneralSubtree> {
+        names
+            .iter()
+            .map(|n| rcgen::GeneralSubtree::DnsName((*n).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn issue_2618_a_constrained_sub_ca_cannot_certify_a_name_outside_its_subtree() {
+        let root = ca("Test root");
+        let sub = ca_with(Some(&root), "Constrained sub-CA", |p| {
+            p.name_constraints = Some(rcgen::NameConstraints {
+                permitted_subtrees: dns_subtrees(&["pid.example.org"]),
+                excluded_subtrees: dns_subtrees(&["bad.pid.example.org"]),
+            });
+        });
+        let anchors = anchors_of(&root);
+
+        // Inside: the host itself, and a name below it.
+        let (ok, _) = leaf(&sub, &["pid.example.org"], false);
+        x5c_issuer_key(&header(&[&ok, &sub.der]), ISS, &anchors, now()).unwrap();
+        let (deeper, _) = leaf(&sub, &["a.pid.example.org"], false);
+        x5c_issuer_key(
+            &header(&[&deeper, &sub.der]),
+            "https://a.pid.example.org/i",
+            &anchors,
+            now(),
+        )
+        .unwrap();
+
+        // Outside the permitted subtree, by DNS name and by URI host.
+        let (evil, _) = leaf(&sub, &["evil.example.com"], false);
+        let err = x5c_issuer_key(
+            &header(&[&evil, &sub.der]),
+            "https://evil.example.com",
+            &anchors,
+            now(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("outside the permitted"), "{err}");
+        let (evil_uri, _) = leaf(&sub, &["https://evil.example.com/issuer"], false);
+        let err = x5c_issuer_key(
+            &header(&[&evil_uri, &sub.der]),
+            "https://evil.example.com/issuer",
+            &anchors,
+            now(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("outside the permitted"), "{err}");
+
+        // Inside the permitted subtree but excluded.
+        let (excluded, _) = leaf(&sub, &["bad.pid.example.org"], false);
+        let err = x5c_issuer_key(
+            &header(&[&excluded, &sub.der]),
+            "https://bad.pid.example.org",
+            &anchors,
+            now(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("excluded"), "{err}");
+    }
+
+    #[test]
+    fn issue_2618_an_anchors_own_name_constraints_hold() {
+        let root = ca_with(None, "Constrained root", |p| {
+            p.name_constraints = Some(rcgen::NameConstraints {
+                permitted_subtrees: dns_subtrees(&["example.net"]),
+                excluded_subtrees: Vec::new(),
+            });
+        });
+        let (leaf_der, _) = leaf(&root, &["pid.example.org"], false);
+        let err =
+            x5c_issuer_key(&header(&[&leaf_der]), ISS, &anchors_of(&root), now()).unwrap_err();
+        assert!(err.to_string().contains("the trust anchor"), "{err}");
+    }
+
+    #[test]
+    fn issue_2618_a_path_longer_than_a_cas_path_length_is_refused() {
+        let root = ca_with(None, "Root, pathLen 0", |p| {
+            p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Constrained(0));
+        });
+        let anchors = anchors_of(&root);
+        // Directly under the root: no CA below it.
+        let (direct, _) = leaf(&root, &["pid.example.org"], false);
+        x5c_issuer_key(&header(&[&direct]), ISS, &anchors, now()).unwrap();
+        // One intermediate below a pathLen 0 root.
+        let mid = intermediate(&root, "Intermediate");
+        let (under_mid, _) = leaf(&mid, &["pid.example.org"], false);
+        let err =
+            x5c_issuer_key(&header(&[&under_mid, &mid.der]), ISS, &anchors, now()).unwrap_err();
+        assert!(err.to_string().contains("allows 0 CA"), "{err}");
+
+        // And within the chain itself: a pathLen 0 intermediate over another.
+        let root = ca("Root");
+        let mid0 = ca_with(Some(&root), "pathLen 0", |p| {
+            p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Constrained(0));
+        });
+        let below = intermediate(&mid0, "Below a pathLen 0 CA");
+        let (l, _) = leaf(&below, &["pid.example.org"], false);
+        let err = x5c_issuer_key(
+            &header(&[&l, &below.der, &mid0.der]),
+            ISS,
+            &anchors_of(&root),
+            now(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("allows 0 CA"), "{err}");
+    }
+
+    #[test]
+    fn issue_2618_a_ca_whose_key_usage_lacks_key_cert_sign_is_refused() {
+        let root = ca("Root");
+        let mid = ca_with(Some(&root), "No keyCertSign", |p| {
+            p.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+        });
+        let (l, _) = leaf(&mid, &["pid.example.org"], false);
+        let err =
+            x5c_issuer_key(&header(&[&l, &mid.der]), ISS, &anchors_of(&root), now()).unwrap_err();
+        assert!(err.to_string().contains("keyCertSign"), "{err}");
+
+        let mid = ca_with(Some(&root), "With keyCertSign", |p| {
+            p.key_usages = vec![
+                rcgen::KeyUsagePurpose::KeyCertSign,
+                rcgen::KeyUsagePurpose::CrlSign,
+            ];
+        });
+        let (l, _) = leaf(&mid, &["pid.example.org"], false);
+        x5c_issuer_key(&header(&[&l, &mid.der]), ISS, &anchors_of(&root), now()).unwrap();
+    }
+
+    #[test]
+    fn issue_2618_an_unprocessed_critical_extension_is_refused() {
+        let root = ca("Root");
+        let mid = ca_with(Some(&root), "Critical unknown", |p| {
+            let mut ext = rcgen::CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 99999, 1],
+                vec![0x05, 0x00],
+            );
+            ext.set_criticality(true);
+            p.custom_extensions.push(ext);
+        });
+        let (l, _) = leaf(&mid, &["pid.example.org"], false);
+        let err =
+            x5c_issuer_key(&header(&[&l, &mid.der]), ISS, &anchors_of(&root), now()).unwrap_err();
+        assert!(err.to_string().contains("critical extension"), "{err}");
+
+        // The same extension, not critical, is ignorable.
+        let mid = ca_with(Some(&root), "Non-critical unknown", |p| {
+            p.custom_extensions
+                .push(rcgen::CustomExtension::from_oid_content(
+                    &[1, 3, 6, 1, 4, 1, 99999, 1],
+                    vec![0x05, 0x00],
+                ));
+        });
+        let (l, _) = leaf(&mid, &["pid.example.org"], false);
+        x5c_issuer_key(&header(&[&l, &mid.der]), ISS, &anchors_of(&root), now()).unwrap();
+    }
+
+    #[test]
+    fn issue_2618_an_extension_that_does_not_parse_is_refused() {
+        let root = ca("Root");
+        // A keyUsage whose content is not a BIT STRING.
+        let mid = ca_with(Some(&root), "Broken keyUsage", |p| {
+            p.custom_extensions
+                .push(rcgen::CustomExtension::from_oid_content(
+                    &[2, 5, 29, 15],
+                    vec![0x05, 0x00],
+                ));
+        });
+        let (l, _) = leaf(&mid, &["pid.example.org"], false);
+        let err =
+            x5c_issuer_key(&header(&[&l, &mid.der]), ISS, &anchors_of(&root), now()).unwrap_err();
+        assert!(err.to_string().contains("does not parse"), "{err}");
+    }
+
+    #[test]
+    fn dns_and_uri_constraint_matching() {
+        assert!(dns_within("example.org", "example.org"));
+        assert!(dns_within("a.b.example.org", "example.org"));
+        assert!(!dns_within("badexample.org", "example.org"));
+        assert!(dns_within("a.example.org", ".example.org"));
+        assert!(!dns_within("example.org", ".example.org"));
+        assert!(dns_within("Anything.Test", ""));
+        assert!(uri_host_within("pid.example.org", "pid.example.org"));
+        assert!(!uri_host_within("a.pid.example.org", "pid.example.org"));
+        assert!(uri_host_within("a.pid.example.org", ".pid.example.org"));
     }
 
     #[test]
