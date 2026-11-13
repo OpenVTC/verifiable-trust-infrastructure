@@ -19,7 +19,7 @@ path = "src/main.rs"
 vti-voting = { path = "../vti-voting" }
 # `host_session`: the service identity's mediator session, TSP and DIDComm on it.
 vti-common = { path = "../vti-common", version = "0.64", features = ["host-session"] }
-async-trait = "0.1"
+async-trait = { workspace = true }
 # As vti-witness: `provision-client` for the VTA-provisioned identity
 # (`run_phase1_init`, the `ballot-box` template), `tsp` for the binding
 # envelope, `didcomm` for `did_key::secrets_from_bundle`, and (through
@@ -45,10 +45,13 @@ uuid = { workspace = true }
 multibase = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
-anyhow = "1"
+anyhow = { workspace = true }
 toml = { workspace = true }
 serde_ignored = { workspace = true }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
+
+[lints]
+workspace = true

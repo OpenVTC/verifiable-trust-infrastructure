@@ -470,7 +470,7 @@ async fn drive_one(
     // issued is already withdrawn at its host and none is ever restored, so the removal is
     // recorded without asking the VTA (`vtc/rooms/community/remove/0.1`).
     let closed_for_good = room.status.state.withdrew_everyone_for_good();
-    if !closed_for_good && !(withdrawn && room.visibility == "private") {
+    if !(closed_for_good || (withdrawn && room.visibility == "private")) {
         if *vta_down {
             return Ok(());
         }

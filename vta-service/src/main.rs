@@ -2555,7 +2555,7 @@ async fn main() {
                     );
                     // SAFETY: single-threaded at this point in main() — no other thread
                     // is reading environment variables concurrently.
-                    #[allow(unused_unsafe)]
+                    #[allow(unused_unsafe, unsafe_code)]
                     unsafe {
                         std::env::remove_var("VTA_AUTH_JWT_SIGNING_KEY")
                     };

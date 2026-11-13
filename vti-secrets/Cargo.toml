@@ -20,7 +20,6 @@ keyring = ["dep:keyring-core"]
 aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config", "dep:aws-smithy-types"]
 gcp-secrets = [
   "dep:google-cloud-secretmanager-v1",
-  "dep:google-cloud-auth",
   "dep:bytes",
 ]
 # `futures-util` drains the azure-core pager in `discovery::list_azure_secrets`.
@@ -59,7 +58,7 @@ hex = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 # Wipes the cached master seed on eviction / drop (P0.7).
-zeroize = { version = "1" }
+zeroize = { workspace = true }
 
 # Onboarding feature: the SDK session/auth state machine + local did:key mint.
 vta-sdk = { path = "../vta-sdk", version = "0.88", features = [
@@ -75,7 +74,7 @@ rand = { workspace = true }
 # (AES-256-GCM, Argon2id), plus HKDF-SHA256 to derive the file key from a
 # systemd-creds or TPM key-encryption key.
 aes-gcm = { workspace = true }
-argon2 = "0.6.0"
+argon2 = { workspace = true }
 hkdf = { workspace = true }
 sha2 = { workspace = true }
 
@@ -93,11 +92,7 @@ aws-sdk-secretsmanager = { version = "1", default-features = false, features = [
   "default-https-client",
   "rt-tokio",
 ], optional = true }
-aws-config = { version = "1", default-features = false, features = [
-  "behavior-version-latest",
-  "default-https-client",
-  "rt-tokio",
-], optional = true }
+aws-config = { workspace = true, optional = true }
 # Not called from this crate: a version bound on a transitive dependency, which
 # Cargo only honours from a crate that declares it. The whole reason is in the
 # workspace manifest beside the requirement — in short, `aws-smithy-types` 1.7.0
@@ -106,13 +101,12 @@ aws-config = { version = "1", default-features = false, features = [
 aws-smithy-types = { workspace = true, optional = true }
 # GCP Secret Manager backend (gcp-secrets feature).
 google-cloud-secretmanager-v1 = { version = "1", optional = true }
-google-cloud-auth = { version = "1", optional = true }
 bytes = { version = "1", optional = true }
 # Azure Key Vault backend (azure-secrets feature).
 azure_security_keyvault_secrets = { workspace = true, optional = true }
 azure_identity = { workspace = true, optional = true }
 # Drains the azure-core pager in `discovery::list_azure_secrets`.
-futures-util = { version = "0.3", optional = true }
+futures-util = { workspace = true, optional = true }
 # HashiCorp Vault client (vault-secrets feature). KV v2 + Kubernetes /
 # token / AppRole auth methods. `rustls` is vaultrs's default TLS backend,
 # matching the rest of the workspace.
@@ -129,7 +123,7 @@ keyring-core = { workspace = true, optional = true }
 tss-esapi = { version = "7.7.0", default-features = false, optional = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 # `test-util` gives the seed-cache tests a paused clock, so TTL expiry is
 # asserted deterministically instead of by sleeping.
 tokio = { workspace = true, features = ["test-util"] }
@@ -137,3 +131,8 @@ toml = { workspace = true }
 
 [lints]
 workspace = true
+
+# Not called from this crate: `aws-smithy-types` is a resolver bound (see its
+# entry above and the workspace manifest).
+[package.metadata.cargo-machete]
+ignored = ["aws-smithy-types"]

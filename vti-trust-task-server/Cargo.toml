@@ -11,7 +11,7 @@ publish.workspace = true
 readme = "README.md"
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
@@ -32,12 +32,12 @@ vta-sdk = { path = "../vta-sdk", version = "0.88", default-features = false, fea
 vti-common = { path = "../vti-common", version = "0.64" }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
 vta-sdk = { path = "../vta-sdk", version = "0.88", default-features = false, features = [
   "proof-verify",
   "client",

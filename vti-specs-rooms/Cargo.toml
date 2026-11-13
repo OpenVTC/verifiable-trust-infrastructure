@@ -31,3 +31,9 @@ trust-tasks-build = { workspace = true }
 
 [lints]
 workspace = true
+
+# cargo-machete reads `src/` only. Both are used where it does not look:
+# `trust-tasks-build` by `build.rs`, and `trust-tasks-rs` by the code it
+# generates into `OUT_DIR`.
+[package.metadata.cargo-machete]
+ignored = ["trust-tasks-build", "trust-tasks-rs"]

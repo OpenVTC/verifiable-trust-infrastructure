@@ -64,7 +64,7 @@ jobs:
   # ── The job graph: three tiers ───────────────────────────────────────────
   #
   #   tier 0  Format, lockfile self-pins, lockfile resolves, cargo-deny,
-  #           authorization-context types, `affects`: seconds to a minute
+  #           authorization-context types, scripts and workflows, `affects`: seconds to a minute
   #           each, little or no compile. Every tier-1 job `needs` all of them.
   #   tier 1  Clippy, Test (workspace), Test (VTC), Test (VTC, vetting-pcs),
   #           Test (VTC admin UI), Mobile build (ios-device / ios-simulator / android).
@@ -98,7 +98,7 @@ jobs:
   # never the default. See the `affects` job for why.
   test:
     name: Test (workspace)
-    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, tooling-lint, affects]
     if: needs.affects.outputs.vta_tests != 'false'
     runs-on: ubuntu-latest
     # ~13 minutes on a warm cache, 25-31 cold. At 30, a third of the runs on
@@ -130,9 +130,7 @@ jobs:
         run: bash scripts/install-build-deps.sh
 
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
       # mold + compiled third-party crates; see the action for why this
       # is safe where the old `target/` cache (#1133) was not.
@@ -145,9 +143,17 @@ jobs:
       - name: Disk after cache restore
         run: df -h /
 
-      # nextest's own installer: the official prebuilt binary, not a cache.
+      # A pinned, checksum-verified release through the same pinned action as
+      # cargo-semver-checks and cargo-ndk (#2649). It used to be `curl
+      # get.nexte.st/latest | tar`: the one floating, unverified binary in the
+      # pipeline, running in the jobs that execute the whole suite, and free to
+      # change test-runner behaviour between two runs of one commit. Move the
+      # version deliberately; install-action knows the versions its own
+      # release lists, so bump the action first when a newer one is wanted.
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-nextest@0.9.150
 
       # nextest runs every test binary's tests in one pool, one process per
       # test, so the runner's cores stay busy across binaries instead of one
@@ -162,7 +168,7 @@ jobs:
 
   test-vtc:
     name: Test (VTC)
-    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, tooling-lint, affects]
     if: needs.affects.outputs.vtc_tests != 'false'
     runs-on: ubuntu-latest
     # Measured over the 34 runs before this change: 11-16 min end to end
@@ -207,9 +213,7 @@ jobs:
         run: bash scripts/install-build-deps.sh
 
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
       - uses: ./.github/actions/rust-cache
         with:
@@ -223,9 +227,17 @@ jobs:
       - name: Disk after cache restore
         run: df -h /
 
-      # nextest's own installer: the official prebuilt binary, not a cache.
+      # A pinned, checksum-verified release through the same pinned action as
+      # cargo-semver-checks and cargo-ndk (#2649). It used to be `curl
+      # get.nexte.st/latest | tar`: the one floating, unverified binary in the
+      # pipeline, running in the jobs that execute the whole suite, and free to
+      # change test-runner behaviour between two runs of one commit. Move the
+      # version deliberately; install-action knows the versions its own
+      # release lists, so bump the action first when a newer one is wanted.
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-nextest@0.9.150
 
       # One process per test: vtc-service's tests serialise on process-global
       # locks under `cargo test`, which kept its two big binaries under one
@@ -293,10 +305,10 @@ jobs:
     # special network or registry allowance.
     #
     # Its own job, not a step of Test (VTC): it rebuilds vtc-service under
-    # another feature set and reruns the suite — ~17 minutes that used to run
-    # after Test (VTC)'s own ~19 instead of beside them.
+    # another feature set, ~17 minutes that used to run after Test (VTC)'s own
+    # ~19 instead of beside them. Which tests it reruns: see the step.
     name: Test (VTC, vetting-pcs)
-    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, tooling-lint, affects]
     if: needs.affects.outputs.vtc_tests != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -309,25 +321,54 @@ jobs:
         run: bash scripts/install-build-deps.sh
 
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update \
-            --component clippy
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
       - uses: ./.github/actions/rust-cache
         with:
           cache-directories: ~/.npm
 
+      # A pinned, checksum-verified release through the same pinned action as
+      # cargo-semver-checks and cargo-ndk (#2649). It used to be `curl
+      # get.nexte.st/latest | tar`: the one floating, unverified binary in the
+      # pipeline, running in the jobs that execute the whole suite, and free to
+      # change test-runner behaviour between two runs of one commit. Move the
+      # version deliberately; install-action knows the versions its own
+      # release lists, so bump the action first when a newer one is wanted.
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-nextest@0.9.150
 
       # `voting` (community elections) implies `vetting-pcs`: both run on the PCS
       # stack, so one rebuild covers both.
+      #
+      # On a pull request this job runs the tests the features can change, not
+      # the whole suite a second time (#2650). Measured on 2026-11-13: of 3,769
+      # tests under `vetting-pcs,voting`, 3,667 are the default build's, and 102
+      # exist only with the features (election_tasks 22, board_tasks 21,
+      # hidden_vetting_tasks 18, vetting::pcs* 27, join_requests::manifest 5,
+      # the rest in elections:: and notifications::election). The features are
+      # not purely additive, though: `cfg(not(feature = ...))` arms and
+      # `cfg!(feature = ...)` assertions sit in board_tasks, conformance,
+      # vm_resolver, vetting, join_requests and trust_task_manifest, and gated
+      # code in the census, retention, notifications and routing. The filter
+      # names all of those (468 tests, every feature-only one among them), and
+      # the full suite still runs on every push to main, nightly and release/**,
+      # so main keeps full coverage. Widen FEATURE_TESTS when gating spreads to
+      # another module.
       - name: hidden vetting and elections (vetting-pcs, voting)
+        env:
+          FULL: ${{ github.event_name != 'pull_request' }}
+          FEATURE_TESTS: "test(/election|board|vetting|pcs|voting|join|trust_task_manifest|conformance|vm_resolver|discovery|census|error_code|retention|notification/)"
         run: |
           cargo clippy -p vtc-service --features vetting-pcs,voting --all-targets -- -D warnings
-          cargo nextest run --profile ci -p vtc-service --features vetting-pcs,voting --no-fail-fast
-          cargo test -p vtc-service --features vetting-pcs,voting --doc --no-fail-fast
+          if [ "$FULL" = true ]; then
+            cargo nextest run --profile ci -p vtc-service --features vetting-pcs,voting --no-fail-fast
+            cargo test -p vtc-service --features vetting-pcs,voting --doc --no-fail-fast
+          else
+            cargo nextest run --profile ci -p vtc-service --features vetting-pcs,voting --no-fail-fast \
+              -E "$FEATURE_TESTS"
+          fi
 
   test-vtc-admin-ui:
     # The admin console's own checks. `cargo build -p vtc-service` runs
@@ -342,7 +383,7 @@ jobs:
     # console's own scripts. Gated on the VTC closure, which is where
     # `vtc-service/admin-ui/` belongs.
     name: Test (VTC admin UI)
-    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, tooling-lint, affects]
     if: needs.affects.outputs.vtc_tests != 'false'
     runs-on: ubuntu-latest
     # ~2 min in practice (`npm ci` plus a ~20 s suite); a vitest run that
@@ -404,7 +445,7 @@ jobs:
 
   clippy:
     name: Clippy
-    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, tooling-lint, affects]
     # Prose-only and other non-build changes compile nothing (ci-affects.sh --any).
     if: needs.affects.outputs.rust != 'false'
     runs-on: ubuntu-latest
@@ -415,42 +456,7 @@ jobs:
           persist-credentials: false
 
       - name: Install system dependencies
-        run: |
-          # `apt-get update` is the operation that hangs here — three runs
-          # stalled on it, and once each attempt was bounded the timings showed
-          # every failure landing on the 90s `update` ceiling, never on the
-          # install. The mirror is unresponsive; retrying it harder does not
-          # help.
-          #
-          # So don't run it unless it is actually needed. The runner image ships
-          # a usable package index, and pkg-config is already present on
-          # ubuntu-24.04, so the fast path is to check what is missing and
-          # install straight from the shipped index. Refreshing the index is the
-          # fallback, still bounded and retried, for the case where the package
-          # genuinely is not in it.
-          pkgs=""
-          for p in libdbus-1-dev pkg-config; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
+        run: bash scripts/install-build-deps.sh
 
       # The toolchain comes from the runner image's rustup rather than from
       # dtolnay/rust-toolchain. That action publishes no release tags: every ref
@@ -461,13 +467,12 @@ jobs:
       # Every Check, Test, Clippy and *publish* job in between ran whatever that
       # branch happened to point at, unreviewed.
       #
-      # rustup ships on every hosted runner, so the lines below are the whole of
-      # what the action was doing here.
+      # rustup ships on every hosted runner, so the script below is the whole
+      # of what the action was doing here. Which compiler is `rust-toolchain.toml`'s
+      # pin, not "stable" (#2658): `-D warnings` under a floating stable let a
+      # new Rust release's lints turn main red with no code change.
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update \
-            --component clippy
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
       # mold + compiled third-party crates; see the action for why this
       # is safe where the old `target/` cache (#1133) was not.
@@ -494,10 +499,7 @@ jobs:
           persist-credentials: false
 
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update \
-            --component rustfmt
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
       - run: cargo fmt --all -- --check
 
@@ -532,42 +534,7 @@ jobs:
           df -h /
 
       - name: Install system dependencies
-        run: |
-          # `apt-get update` is the operation that hangs here — three runs
-          # stalled on it, and once each attempt was bounded the timings showed
-          # every failure landing on the 90s `update` ceiling, never on the
-          # install. The mirror is unresponsive; retrying it harder does not
-          # help.
-          #
-          # So don't run it unless it is actually needed. The runner image ships
-          # a usable package index, and pkg-config is already present on
-          # ubuntu-24.04, so the fast path is to check what is missing and
-          # install straight from the shipped index. Refreshing the index is the
-          # fallback, still bounded and retried, for the case where the package
-          # genuinely is not in it.
-          pkgs=""
-          for p in libdbus-1-dev pkg-config; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
+        run: bash scripts/install-build-deps.sh
 
       - name: Read MSRV from Cargo.toml
         id: msrv
@@ -576,12 +543,17 @@ jobs:
           echo "msrv=$msrv" >> "$GITHUB_OUTPUT"
           echo "Workspace MSRV: $msrv"
 
+      # RUSTUP_TOOLCHAIN, not `rustup default`: rust-toolchain.toml takes
+      # precedence over the default, so `rustup default "$MSRV"` would leave
+      # this job building with the pin. The two are equal today; the first
+      # toolchain bump would have made this job check the wrong compiler while
+      # still reporting "MSRV".
       - name: Install the MSRV toolchain
         env:
           MSRV: ${{ steps.msrv.outputs.msrv }}
         run: |
           rustup toolchain install "$MSRV" --profile minimal --no-self-update
-          rustup default "$MSRV"
+          echo "RUSTUP_TOOLCHAIN=$MSRV" >> "$GITHUB_ENV"
 
       # Registry only: on a pull request this job runs only when a manifest,
       # the lockfile or the toolchain changes, so a compiled MSRV tree would
@@ -596,6 +568,35 @@ jobs:
       - run: cargo check --workspace --locked
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
+
+  manifest-hygiene:
+    # Tier 0 in cost (it reads manifests and sources and compiles nothing),
+    # though not yet in tier 1's `needs`. Two whole-tree
+    # manifest properties nothing else notices (#2656, #2658):
+    #   - a declared dependency no source file uses (cargo-machete). For a
+    #     published crate it is in every consumer's graph too. A deliberate one
+    #     (a version floor, a feature switch) is listed under the crate's
+    #     `[package.metadata.cargo-machete] ignored`, with its reason.
+    #   - a member that does not inherit `[workspace.lints]`, or restates it
+    #     with more than `unsafe_code` changed. See the script header.
+    name: manifest hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # `--with-metadata` runs `cargo metadata`: the pinned toolchain, like
+      # every other job (rust-toolchain.toml).
+      - name: Install the Rust toolchain
+        run: bash scripts/install-rust-toolchain.sh
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-machete
+      - name: No unused dependencies
+        run: cargo machete --with-metadata
+      - name: Every member inherits the workspace lints
+        run: python3 scripts/check-workspace-lints.py
 
   deny:
     # cargo-deny enforces the advisory ignores documented in `deny.toml`
@@ -639,6 +640,19 @@ jobs:
           manifest-path: deploy/nitro/enclave-proxy/Cargo.toml
           arguments: --all-features --config deny.toml
           command: check advisories bans sources licenses
+
+      # The fuzz harness (#2645), also its own workspace, for the same reason as
+      # the step above. It keeps no lockfile; fuzz.yml builds it from the root
+      # Cargo.lock, so the scan starts from that too. Advisories and sources
+      # only: its graph is the workspace's plus libfuzzer-sys, so licences and
+      # duplicates are the root scan's answer already.
+      - name: Resolve the fuzz harness from the root lockfile
+        run: cp Cargo.lock fuzz/Cargo.lock
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: fuzz/Cargo.toml
+          arguments: --all-features --config deny.toml
+          command: check advisories sources
 
   semver-checks:
     # Compare each published crate's public API against the version on
@@ -689,10 +703,15 @@ jobs:
       - uses: ./.github/actions/add-swap
       - name: Install system dependencies
         run: bash scripts/install-build-deps.sh libtss2-dev
-      - name: Install the Rust toolchain
+      # Stable, deliberately, not rust-toolchain.toml's pin: cargo-semver-checks
+      # (installed below at its latest release) reads rustdoc JSON, whose format
+      # changes with every Rust release, and supports a window of recent
+      # formats rather than whatever the pin is. RUSTUP_TOOLCHAIN overrides the
+      # toolchain file for every later step.
+      - name: Install the Rust toolchain (stable, for cargo-semver-checks)
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
           tool: cargo-semver-checks
@@ -766,10 +785,15 @@ jobs:
       - uses: ./.github/actions/add-swap
       - name: Install system dependencies
         run: bash scripts/install-build-deps.sh libtss2-dev
-      - name: Install the Rust toolchain
+      # Stable, deliberately, not rust-toolchain.toml's pin: cargo-semver-checks
+      # (installed below at its latest release) reads rustdoc JSON, whose format
+      # changes with every Rust release, and supports a window of recent
+      # formats rather than whatever the pin is. RUSTUP_TOOLCHAIN overrides the
+      # toolchain file for every later step.
+      - name: Install the Rust toolchain (stable, for cargo-semver-checks)
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
           tool: cargo-semver-checks
@@ -856,6 +880,11 @@ jobs:
           if [ -z "$PUSH_TOKEN" ]; then
             echo "::warning::RELEASE_PLZ_TOKEN is not set; apply the fix named above by hand"
             exit 0
+          fi
+          # A bad token says so by name instead of failing the fetch below (#2646).
+          if ! err=$(GH_TOKEN=$PUSH_TOKEN gh api "repos/$REPO" --jq .full_name 2>&1 >/dev/null); then
+            echo "::error::RELEASE_PLZ_TOKEN is invalid or cannot see $REPO (expired, revoked or rotated?): $err"
+            exit 1
           fi
           crates=()
           while IFS= read -r c; do
@@ -991,6 +1020,59 @@ jobs:
       - name: Cache pruner self-test
         run: python3 scripts/prune-superseded-caches.py --self-test
 
+  tooling-lint:
+    # The CI's own code (#2659): ~4,700 lines of shell, Python and workflow
+    # YAML that decide which jobs a pull request skips (ci-affects.sh) and what
+    # versions a release writes (cut-release.py, fix-release-bump-sizes.py …),
+    # none of it linted or tested before this job. A regression there is not a
+    # red run: it is a green one that tested nothing, or a bad release.
+    #
+    # Tier 0: no compile, well under a minute.
+    name: scripts and workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every tracked shell script, at warning level and above, following
+      # `source` lines from each script's own directory. The runner image ships
+      # shellcheck. Info-level findings (SC2086 on deliberate word splitting,
+      # for one) are not failures.
+      - name: shellcheck
+        run: |
+          shellcheck --version | head -2
+          git ls-files -z -- '*.sh' | xargs -0 shellcheck -x -P SCRIPTDIR -S warning
+
+      # Workflow syntax, expressions, `needs` / outputs references, and every
+      # `run:` block through shellcheck. A versioned release, verified against
+      # its published checksum before it runs (the same rule as #2649).
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          f="actionlint_${VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$f" "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/$f"
+          echo "$SHA256  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+      - name: Python scripts compile
+        run: python3 -m py_compile scripts/*.py
+
+      # deploy-common.sh's own regression tests ("exit 0 = all passed"), which
+      # nothing ran.
+      - name: deploy/nitro/deploy-common.test.sh
+        run: bash deploy/nitro/deploy-common.test.sh
+
+      # rust-toolchain.toml at or above the MSRV, and the Dockerfiles' Rust
+      # image named inline (where Dependabot can see it) and on the same version.
+      - name: Toolchain pins agree
+        run: bash scripts/check-toolchain-pins.sh
+
   lockfile-resolves:
     # The sibling of the job above, and the same misattribution failure it
     # describes — arrived at from the other direction. There, Cargo.lock pins a
@@ -1032,9 +1114,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
       - name: Cargo.lock satisfies every workspace manifest
         run: |
           if cargo metadata --locked --format-version 1 > /dev/null; then
@@ -1372,6 +1452,27 @@ jobs:
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
 
+      # The binary join-didcomm-soak.yml builds and loops, built here with the
+      # same command so the soak cannot rot again unnoticed: it was dispatched
+      # after a test consolidation and failed at "Build the test binary" on a
+      # target that no longer existed (#2644). The two steps above already
+      # compiled this target, so this costs a no-op build; the name check
+      # catches the test itself being renamed or moved.
+      - name: join_didcomm soak target still builds
+        run: |
+          cargo test -p vtc-service --features transport-harness --test it --no-run
+          bin=$(cargo test -p vtc-service --features transport-harness --test it --no-run \
+                  --message-format=json 2>/dev/null \
+                | jq -r 'select(.executable != null and (.target.name == "it")) | .executable' | tail -1)
+          test="join_didcomm::didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery"
+          if ! "$bin" --list --exact "$test" | grep -q "^$test: test$"; then
+            echo "::error::$test is gone from the \`it\` target; update .github/workflows/join-didcomm-soak.yml"
+            exit 1
+          fi
+          echo "soak target and test present"
+        env:
+          VTC_SKIP_ADMIN_UI_BUILD: "1"
+
   features-all:
     # The *maximal* combination, split out of `Feature combos`.
     #
@@ -1412,35 +1513,10 @@ jobs:
       # the one job that builds it, so the TPM backend is compiled on Linux in
       # the real workspace graph here and nowhere else.
       - name: Install system dependencies
-        run: |
-          pkgs=""
-          for p in libdbus-1-dev pkg-config libtss2-dev; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev, pkg-config and libtss2-dev already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
+        run: bash scripts/install-build-deps.sh libtss2-dev
 
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
       # mold + compiled third-party crates; see the action for why this
       # is safe where the old `target/` cache (#1133) was not.
@@ -1510,9 +1586,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
+      # The answers below are only as good as ci-affects.sh, so it is held to
+      # its table first (#2659): a wrong answer here skips real coverage, or
+      # builds everything, and neither fails anything on its own.
+      - name: ci-affects.sh table tests
+        run: bash scripts/ci-affects.test.sh
       # `--own`, not the closure: a change to vta-sdk's *source* cannot break the
       # phone link or the bindings, and dependency or toolchain moves reach the
       # job through the global files, which always run it. See ci-closure.py.
@@ -1615,47 +1694,10 @@ jobs:
           persist-credentials: false
 
       - name: Install system dependencies
-        run: |
-          # `apt-get update` is the operation that hangs here — three runs
-          # stalled on it, and once each attempt was bounded the timings showed
-          # every failure landing on the 90s `update` ceiling, never on the
-          # install. The mirror is unresponsive; retrying it harder does not
-          # help.
-          #
-          # So don't run it unless it is actually needed. The runner image ships
-          # a usable package index, and pkg-config is already present on
-          # ubuntu-24.04, so the fast path is to check what is missing and
-          # install straight from the shipped index. Refreshing the index is the
-          # fallback, still bounded and retried, for the case where the package
-          # genuinely is not in it.
-          pkgs=""
-          for p in libdbus-1-dev pkg-config; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
+        run: bash scripts/install-build-deps.sh
 
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
       # mold + compiled third-party crates; see the action for why this
       # is safe where the old `target/` cache (#1133) was not.
@@ -1705,10 +1747,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # From the repository root: the job's default working directory is the
+      # proxy's. rust-toolchain.toml still applies down there (rustup looks up
+      # the tree for it), so the proxy builds with the pinned compiler too.
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        working-directory: .
+        run: bash scripts/install-rust-toolchain.sh
 
       # Its own workspace and lockfile, so its own cache root. Registry only:
       # it runs on a pull request only when its own directory changes, and its
@@ -1777,7 +1821,7 @@ jobs:
     # Clippy's minutes to the whole run. It still waits for tier 0, so a
     # formatting slip or a stale lockfile does not start it.
     name: Mobile build (${{ matrix.leg }})
-    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, tooling-lint, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.mobile != 'false' }}
     strategy:
       fail-fast: false
@@ -1820,9 +1864,7 @@ jobs:
       - name: Install the Rust toolchain
         env:
           TARGETS: ${{ matrix.targets }}
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update --target "$TARGETS"
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh --target "$TARGETS"
 
       - if: matrix.platform == 'android'
         uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1

@@ -404,7 +404,7 @@ pub async fn bind_to_request(
         let Some(mut session) = get(ks, id).await? else {
             continue;
         };
-        if session.request_id.is_some() || !session.held_until.is_some_and(|t| now < t) {
+        if session.request_id.is_some() || session.held_until.is_none_or(|t| now >= t) {
             continue;
         }
         session.request_id = Some(request_id);

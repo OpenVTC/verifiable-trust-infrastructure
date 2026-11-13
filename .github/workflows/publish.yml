@@ -102,51 +102,30 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The token release-plz tags and creates GitHub Releases with, checked
+      # before anything else runs (#2646). On 2026-11-10 an invalid
+      # RELEASE_PLZ_TOKEN surfaced only as `gh: Bad credentials (HTTP 401)` in
+      # the third publishing attempt, five runs in a row. A GitHub App token
+      # (vars.RELEASE_APP_ID) lives an hour, so each publishing pass below
+      # mints its own; the GITHUB_TOKEN fallback keeps the old behaviour when
+      # neither is configured.
+      - name: Release token
+        id: token
+        uses: ./.github/actions/release-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install system dependencies
-        run: |
-          # `apt-get update` is the operation that hangs here — three runs
-          # stalled on it, and once each attempt was bounded the timings showed
-          # every failure landing on the 90s `update` ceiling, never on the
-          # install. The mirror is unresponsive; retrying it harder does not
-          # help.
-          #
-          # So don't run it unless it is actually needed. The runner image ships
-          # a usable package index, and pkg-config is already present on
-          # ubuntu-24.04, so the fast path is to check what is missing and
-          # install straight from the shipped index. Refreshing the index is the
-          # fallback, still bounded and retried, for the case where the package
-          # genuinely is not in it.
-          pkgs=""
-          for p in libdbus-1-dev pkg-config; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
+        run: bash scripts/install-build-deps.sh
 
       # rustup from the runner image, not dtolnay/rust-toolchain: that action
       # offers only branch refs, so there is nothing immutable to pin. See the
       # longer note in ci.yml.
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
       # `cargo publish` verify-builds each new crate's whole dependency tree
       # from scratch, and the first publish of `vti-voting` (2026-10-22) killed
@@ -258,9 +237,19 @@ jobs:
           # The Actions token cannot create tag refs here: on 2026-10-01 every
           # tag for the #1861 release failed with 403 "Resource not accessible
           # by integration" after its crate published, so each pass published
-          # one crate and stopped. The PR job below already prefers this PAT.
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          # one crate and stopped. Hence the release token, not GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Release token (attempt 2)
+        id: token2
+        if: inputs.package == '' && steps.release1.outcome == 'failure'
+        uses: ./.github/actions/release-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Re-authenticate to crates.io (attempt 2)
         if: inputs.package == '' && steps.release1.outcome == 'failure'
@@ -275,12 +264,19 @@ jobs:
         with:
           command: release
         env:
-          # The Actions token cannot create tag refs here: on 2026-10-01 every
-          # tag for the #1861 release failed with 403 "Resource not accessible
-          # by integration" after its crate published, so each pass published
-          # one crate and stopped. The PR job below already prefers this PAT.
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          # See pass 1; this pass's own token, freshly minted.
+          GITHUB_TOKEN: ${{ steps.token2.outputs.token }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth2.outputs.token }}
+
+      - name: Release token (attempt 3)
+        id: token3
+        if: inputs.package == '' && steps.release2.outcome == 'failure'
+        uses: ./.github/actions/release-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Re-authenticate to crates.io (attempt 3)
         if: inputs.package == '' && steps.release2.outcome == 'failure'
@@ -294,11 +290,8 @@ jobs:
         with:
           command: release
         env:
-          # The Actions token cannot create tag refs here: on 2026-10-01 every
-          # tag for the #1861 release failed with 403 "Resource not accessible
-          # by integration" after its crate published, so each pass published
-          # one crate and stopped. The PR job below already prefers this PAT.
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          # See pass 1; this pass's own token, freshly minted.
+          GITHUB_TOKEN: ${{ steps.token3.outputs.token }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth3.outputs.token }}
 
       # On a release branch, once its crates are out: tag the named release
@@ -314,7 +307,9 @@ jobs:
       - name: Tag the named release
         if: success() && startsWith(github.ref, 'refs/heads/release/') && inputs.package == ''
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          # The newest token minted: an App token from pass 1 may be past its
+          # hour after two more passes.
+          GH_TOKEN: ${{ steps.token3.outputs.token || steps.token2.outputs.token || steps.token.outputs.token }}
         run: |
           set -euo pipefail
           rel=$(cat RELEASE)
@@ -402,52 +397,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Checked first (#2646); see the release job. The GITHUB_TOKEN fallback
+      # is the degraded mode described at "Run release-plz" below.
+      - name: Release token
+        id: token
+        uses: ./.github/actions/release-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install system dependencies
-        run: |
-          # `apt-get update` is the operation that hangs here — three runs
-          # stalled on it, and once each attempt was bounded the timings showed
-          # every failure landing on the 90s `update` ceiling, never on the
-          # install. The mirror is unresponsive; retrying it harder does not
-          # help.
-          #
-          # So don't run it unless it is actually needed. The runner image ships
-          # a usable package index, and pkg-config is already present on
-          # ubuntu-24.04, so the fast path is to check what is missing and
-          # install straight from the shipped index. Refreshing the index is the
-          # fallback, still bounded and retried, for the case where the package
-          # genuinely is not in it.
-          #
-          # No libtss2-dev any more: it was for the rustdoc builds of
-          # release-plz's semver check (vti-secrets' `tpm` feature, #1820),
-          # which this job no longer runs.
-          pkgs=""
-          for p in libdbus-1-dev pkg-config; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
+        run: bash scripts/install-build-deps.sh
 
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
       # No cargo-semver-checks, swap, or one-at-a-time gate here any more.
       # They existed for release-plz's own semver check (exit-143 runner
@@ -470,16 +435,19 @@ jobs:
           #
           # THE FALLBACK SHIPS A RELEASE NOBODY TESTED. GitHub suppresses
           # workflow runs for events authored by GITHUB_TOKEN, so with the
-          # default token the Release PR opens with no CI on it. Only DCO is a
-          # required check here, so it would still be *mergeable* — which is
-          # the dangerous part: the one commit that publishes to crates.io
-          # would be the one commit CI never built. The repo has hit the same
+          # default token the Release PR opens with no CI on it. With only DCO
+          # required it was still *mergeable* — the one commit that publishes
+          # to crates.io would be the one commit CI never built. Now that
+          # Format, Clippy and the other cheap gates are required (#2647) it
+          # waits on checks that never start, which is safer but just as stuck. The repo has hit the same
           # suppression before, on the self-pin refresh PR (#706/#711/#714/#720).
           #
-          # Set RELEASE_PLZ_TOKEN to a PAT (contents + pull-requests write) or
-          # a GitHub App token. Until then, close-and-reopen the Release PR to
-          # trigger CI before merging it.
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          # Configure the release GitHub App (vars.RELEASE_APP_ID +
+          # secrets.RELEASE_APP_PRIVATE_KEY) or RELEASE_PLZ_TOKEN, a PAT with
+          # contents + pull-requests write; .github/actions/release-token
+          # picks. Until then, close-and-reopen the Release PR to trigger CI
+          # before merging it.
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
 
       # Raise any crate the Release PR proposes inside a release branch's
       # compatibility line (releases/*.toml) — and anything else the release
@@ -491,13 +459,13 @@ jobs:
       # every rewrite, keeps the Release PR valid without anyone touching it.
       # `fix-release-bump-sizes.py` is a no-op when every guard already passes.
       #
-      # Pushed with RELEASE_PLZ_TOKEN so the push re-runs CI on the PR (a push
+      # Pushed with the release token so the push re-runs CI on the PR (a push
       # with GITHUB_TOKEN would not). Branch rules allow version edits on a
       # `release-plz-*` head; the commit is `chore(release)`, which the
       # changelog skips.
       - name: Keep the Release PR's versions valid
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail

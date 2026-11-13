@@ -728,12 +728,12 @@ mod tests {
         let mut armored = armor::encode(&bundle);
         // Flip one base64 character somewhere in the middle of the body.
         let body_offset = armored.find("\n\n").unwrap() + 2;
-        let bytes = unsafe { armored.as_bytes_mut() };
-        bytes[body_offset] = if bytes[body_offset] == b'A' {
-            b'B'
+        let flipped = if armored.as_bytes()[body_offset] == b'A' {
+            "B"
         } else {
-            b'A'
+            "A"
         };
+        armored.replace_range(body_offset..body_offset + 1, flipped);
         let err = armor::decode(&armored).unwrap_err();
         assert!(
             matches!(err, SealedTransferError::Crc24Mismatch { .. }),
@@ -800,9 +800,13 @@ mod tests {
         let err = roundtrip_with_armor_mutation(|s| {
             let line = s.find("Bundle-Id: ").expect("Bundle-Id present");
             let hex_start = line + "Bundle-Id: ".len();
-            let bytes = unsafe { s.as_bytes_mut() };
             // Flip one hex nibble. Valid hex → parser accepts → AEAD rejects.
-            bytes[hex_start] = if bytes[hex_start] == b'0' { b'1' } else { b'0' };
+            let flipped = if s.as_bytes()[hex_start] == b'0' {
+                "1"
+            } else {
+                "0"
+            };
+            s.replace_range(hex_start..hex_start + 1, flipped);
         })
         .await;
         // Could be Hpke (AEAD AAD mismatch) or Armor (less likely path).
@@ -820,11 +824,11 @@ mod tests {
         // only one block) or chunk-mismatch on reassembly.
         let err = roundtrip_with_armor_mutation(|s| {
             let line = s.find("Chunk: 1/1").expect("Chunk: 1/1 present");
-            let bytes = unsafe { s.as_bytes_mut() };
             // Rewrite "Chunk: 1/1" → "Chunk: 1/9" (claim 9 total chunks
             // when only 1 was sealed). AAD includes total_chunks → AEAD
             // open fails on the AAD mismatch.
-            bytes[line + "Chunk: 1/".len()] = b'9';
+            let at = line + "Chunk: 1/".len();
+            s.replace_range(at..at + 1, "9");
         })
         .await;
         assert!(

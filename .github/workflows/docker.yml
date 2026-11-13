@@ -11,7 +11,13 @@ name: Docker
 # takes tens of minutes, and the container-specific risks are all
 # manifest/toolchain-shaped. Ordinary source changes are already covered by the
 # `Clippy` / `Test` jobs in ci.yml, which compile the same crates.
+#
+# Two more triggers, for the reproducibility check only (see its job): weekly,
+# and by hand.
 on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
   push:
     branches: [main, nightly]
     # Duplicated below rather than shared via a YAML anchor: the Actions
@@ -25,6 +31,7 @@ on:
       - "Cargo.lock"
       - ".github/workflows/docker.yml"
       - ".github/actions/add-swap/**"
+      - ".github/actions/docker-image/**"
   pull_request:
     branches: [main]
     paths:
@@ -36,20 +43,51 @@ on:
       - "Cargo.lock"
       - ".github/workflows/docker.yml"
       - ".github/actions/add-swap/**"
+      - ".github/actions/docker-image/**"
 
-# Read-only: both images are built with `push: false` and this workflow logs
-# in to no registry, so reading the tree is all it needs. Without a block it
-# inherits the repository default, which is write-all.
+# Read-only by default. The one exception is `image-main`, which writes the
+# BuildKit registry cache and is given `packages: write` for that alone.
 permissions:
   contents: read
+
+# ── Build cache (#2652) ────────────────────────────────────────────────────
+#
+# A BuildKit REGISTRY cache on ghcr, one image per Dockerfile:
+#
+#   ghcr.io/openvtc/vti-buildcache:vta        (Dockerfile)
+#   ghcr.io/openvtc/vti-buildcache:vta-nitro  (Dockerfile.nitro)
+#
+# `mode=max`, so every stage's layers are kept, the cargo-chef `cook` layer (the
+# compiled dependency tree, the expensive part) among them. A build whose
+# recipe.json is unchanged — a version bump, a source-only manifest edit —
+# restores it and compiles only the workspace.
+#
+# Not the Actions cache (`type=gha` / actions/cache). That allowance is 25 GB
+# for the whole repository, and ci.yml's compiled caches already fill it
+# (25.8 GB in 16 entries on 2026-11-11, scripts/prune-superseded-caches.py):
+# a multi-GB dependency layer there would evict CI's own caches, and the jobs
+# that then restored a foreign tree are how the runners once ran out of disk.
+# ghcr storage is separate from that allowance.
+#
+# Written from main only, by `image-main`, the one job holding `packages:
+# write`. Pull requests and nightly read it and write nothing, so a branch can
+# never put layers into the cache main builds from.
 
 jobs:
   image:
     name: Docker image (${{ matrix.name }})
-    # Not on the Release PR: it changes only versions and changelogs, and its
-    # merge is a push to main, which builds both images.
-    if: ${{ !startsWith(github.head_ref, 'release-plz-') }}
+    # Pull requests and pushes to nightly; main is `image-main` below. Not on
+    # the Release PR: it changes only versions and changelogs, and its merge
+    # is a push to main, which builds both images.
+    if: >-
+      (github.event_name == 'pull_request' || github.event_name == 'push')
+      && github.ref != 'refs/heads/main'
+      && !startsWith(github.head_ref, 'release-plz-')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Read the cache. A fork's token cannot; its build is cold, not red.
+      packages: read
     # A cold release build of the workspace runs ~15 min for the non-TEE image;
     # the enclave build pulls the whole AWS SDK / TEE stack on top. The cap is
     # there to kill a hang, not to bound the normal build.
@@ -63,6 +101,7 @@ jobs:
           - name: non-TEE
             file: Dockerfile
             tag: vta:ci
+            cache: vta
             # `vta` declares `version` in its clap command; `vta-enclave` does
             # not, so only this one can be smoke-tested with --version.
             binary: /usr/local/bin/vta
@@ -70,14 +109,15 @@ jobs:
           - name: nitro
             file: Dockerfile.nitro
             tag: vta-nitro:ci
+            cache: vta-nitro
             binary: /usr/local/bin/vta-enclave
             # The enclave entrypoint needs root for `ip link set lo up` and the
             # socat vsock proxies; Nitro provides hardware isolation instead of
             # a user boundary. Asserting non-root here would be wrong.
             expect_non_root: false
     steps:
-      # Nothing in this workflow pushes, so the checkout keeps no credentials.
-      # By default actions/checkout leaves the job's token in
+      # Nothing in this job pushes to the repository, so the checkout keeps no
+      # credentials. By default actions/checkout leaves the job's token in
       # `.git/config`, where every later step — including a build script and
       # every third-party action in the job — can read it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,47 +131,113 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      # Deliberately NO build cache — neither `type=gha` nor actions/cache.
-      # GitHub's Actions cache is a single ~10 GB allowance shared across the
-      # whole repo, and a Rust dependency layer is multiple GB. ci.yml already
-      # documents what happens when one fat cache lands in it: it evicted every
-      # other job's cache, and the jobs that then restored a foreign tree ran
-      # the runner out of disk. Path-filtering this job is the cheaper lever —
-      # it makes the build rare rather than making it fast.
-      - name: Build image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - name: Log in to ghcr (read the build cache)
+        continue-on-error: true
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
-          context: .
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-image
+        with:
           file: ${{ matrix.file }}
-          push: false
-          load: true
-          tags: ${{ matrix.tag }}
+          tag: ${{ matrix.tag }}
+          cache-ref: ghcr.io/openvtc/vti-buildcache:${{ matrix.cache }}
+          binary: ${{ matrix.binary }}
+          expect-non-root: ${{ matrix.expect_non_root }}
 
-      # Proves more than "the build exited 0": running the binary in the runtime
-      # stage exercises dynamic linking. For the non-TEE image that covers
-      # libdbus-1-3 / ca-certificates in debian-slim. For the enclave image it
-      # covers the far more fragile glibc-on-Alpine path — gcompat plus the
-      # LD_PRELOAD'd __res_init stub — which otherwise fails first inside an
-      # enclave with no shell.
-      #
-      # --entrypoint is required for the Nitro image, whose ENTRYPOINT is the
-      # vsock-proxy setup script rather than the binary.
-      - name: Smoke-test the runtime image
-        env:
-          BINARY: ${{ matrix.binary }}
-          IMAGE: ${{ matrix.tag }}
-        run: |
-          docker run --rm --entrypoint "$BINARY" "$IMAGE" --help > /dev/null
-          echo "binary starts and links cleanly"
+  image-main:
+    name: Docker image (${{ matrix.name }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Writes the registry cache, and nothing else: the images themselves are
+      # still built with `push: false`.
+      packages: write
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # The same two images as `image` above, by hand: the workflow parser
+      # this was first written against did not take YAML anchors.
+      matrix:
+        include:
+          - name: non-TEE
+            file: Dockerfile
+            tag: vta:ci
+            cache: vta
+            binary: /usr/local/bin/vta
+            expect_non_root: true
+          - name: nitro
+            file: Dockerfile.nitro
+            tag: vta-nitro:ci
+            cache: vta-nitro
+            binary: /usr/local/bin/vta-enclave
+            expect_non_root: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Assert the image does not run as root
-        if: matrix.expect_non_root
-        env:
-          IMAGE: ${{ matrix.tag }}
+      - uses: ./.github/actions/add-swap
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to ghcr (write the build cache)
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-image
+        with:
+          file: ${{ matrix.file }}
+          tag: ${{ matrix.tag }}
+          cache-ref: ghcr.io/openvtc/vti-buildcache:${{ matrix.cache }}
+          write-cache: "true"
+          binary: ${{ matrix.binary }}
+          expect-non-root: ${{ matrix.expect_non_root }}
+
+  reproducible:
+    # #2653: is the Nitro image a function of the commit? Its runtime layers
+    # feed PCR0, the enclave's attestation anchor (`pnm bootstrap connect
+    # --expect-pcr0`, the KMS key policy), so a third party should be able to
+    # rebuild a commit and arrive at the same PCR0, and a rebuild should not
+    # lock the enclave out of its own KMS key.
+    #
+    # Builds Dockerfile.nitro twice, each on a FRESH BuildKit builder with no
+    # cache of any kind (a second build on the same builder is a cache hit and
+    # proves nothing), with SOURCE_DATE_EPOCH at the commit time and
+    # `rewrite-timestamp=true` so file times are not a difference, and compares
+    # the two image manifests layer by layer.
+    #
+    # Weekly and by hand, not on every pull request: two cold enclave builds
+    # are ~1 hour of runner time (a cold one is 22-28 minutes), which would
+    # double the cost of every Docker run the registry cache above exists to
+    # cut. What it measures (digest-pinned bases, pinned apk packages, a
+    # deterministic compile) changes rarely and is not specific to a diff.
+    name: Nitro image is reproducible
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/add-swap
+
+      # Two complete builder states (~15 GB each at peak) do not fit beside
+      # the preinstalled toolchains; each builder is removed after its build.
+      # Do NOT remove $AGENT_TOOLSDIRECTORY (see ci.yml's Test job).
+      - name: Free disk space
         run: |
-          uid="$(docker run --rm --entrypoint id "$IMAGE" -u)"
-          if [ "$uid" = "0" ]; then
-            echo "::error::image runs as root (uid 0); expected the unprivileged 'vta' user"
-            exit 1
-          fi
-          echo "image runs as uid $uid"
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build twice on fresh builders and compare
+        run: bash scripts/check-nitro-reproducible.sh

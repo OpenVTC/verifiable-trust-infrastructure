@@ -46,18 +46,14 @@ base64 = { workspace = true }
 hex = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
-subtle = { workspace = true }
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { workspace = true, features = ["derive"] }
 aes-gcm = { workspace = true }
-argon2 = "0.6"
-async-trait = "0.1"
+argon2 = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
-# Path-only on purpose: `cargo publish` strips a versionless path dev-dependency,
-# so publishing vta-backup does not need vta-webvh on crates.io first. With a
-# version it did — and release-plz orders by normal dependencies only, so it
-# published vta-backup before vta-webvh and the release stopped there,
-# stranding vta-service and everything after it (the 0.56 release).
-vta-webvh = { path = "../vta-webvh" }
-tempfile = "3"
+tempfile = { workspace = true }
 toml = { workspace = true }
+
+[lints]
+workspace = true

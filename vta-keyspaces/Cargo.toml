@@ -27,3 +27,6 @@ webvh = []
 [dependencies]
 # For `KeyspaceHandle` in the shared `Keyspaces` handle bundle.
 vti-common = { path = "../vti-common", version = "0.64" }
+
+[lints]
+workspace = true

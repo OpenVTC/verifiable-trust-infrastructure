@@ -28,22 +28,22 @@ vti-mcp-common = { path = "../vti-mcp-common", version = "0.1" }
 # `elicitation` is what lets the bridge put a risky operation back in front of
 # a human: an MCP host approves a *tool*, and once `vtc_call` is approved every
 # Trust Task rides that one approval.
-rmcp = { version = "3", features = ["server", "transport-io", "macros", "schemars", "elicitation"] }
-schemars = "1"
+rmcp = { workspace = true, features = ["server", "transport-io", "macros", "schemars", "elicitation"] }
+schemars = { workspace = true }
 trust-tasks-rs = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-anyhow = "1"
+anyhow = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 # `--mint-did-key`: the dedicated agent identity an administrator enrols.
 ed25519-dalek = { workspace = true }
-getrandom = "0.4"
+getrandom = { workspace = true }
 multibase = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 # Drives `--listen` end to end as an MCP host would.
 reqwest = { workspace = true }
 axum = { workspace = true }

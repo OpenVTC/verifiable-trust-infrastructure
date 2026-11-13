@@ -40,10 +40,10 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
-anyhow = "1"
+anyhow = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 # `vti_rooms::watch::Signals` is an async trait object.
-async-trait = "0.1"
+async-trait = { workspace = true }
 
 # A room host and a VTC serve the same protocol, so they must speak the same
 # wire form: requests and responses are Trust Task documents, not bare JSON.
@@ -170,27 +170,26 @@ dtg-credentials = { workspace = true }
 # rather than a simulator. Everything `tests/carrier.rs` covers is packing,
 # routing, threading and acking — a simulator would be a second opinion about
 # exactly the parts that were wrong.
-affinidi-messaging-test-mediator = { version = "0.50", features = ["tsp"] }
-tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
+affinidi-messaging-test-mediator = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
 
 # The `data_room` example drives this host with the real client, so it needs the
 # client's MLS layer and a throwaway signer. None of this reaches the binary.
 vtc-client = { path = "../vtc-client", features = ["mls"] }
 vta-sdk = { path = "../vta-sdk" }
-openmls_rust_crypto = "0.6"
+openmls_rust_crypto = { workspace = true }
 # Computing chunk digests the way an uploader does, in the room-file tests.
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
 base64 = { workspace = true }
 # A stand-in store that presigns reads, for the direct `rooms/blobs/get/0.2` tests.
-async-trait = "0.1"
+async-trait = { workspace = true }
 # The S3-shaped mock store and its presigner, for the direct-upload tests.
 vti-common = { path = "../vti-common", features = ["blob-presigned", "test-support"] }
 vti-rooms = { path = "../vti-rooms", features = ["test-support"] }
-getrandom = "0.4"
 reqwest = { workspace = true }
 uuid = { workspace = true }
 

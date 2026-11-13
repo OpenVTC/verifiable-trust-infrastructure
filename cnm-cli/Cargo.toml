@@ -63,7 +63,6 @@ toml = { workspace = true }
 tokio = { workspace = true }
 # `cnm actions watch` reads a streamed HTTPS response (binding 0.3 §2.1).
 reqwest = { workspace = true }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
@@ -76,10 +75,10 @@ tracing-subscriber = { workspace = true }
 # is in Dependabot's ignore list for that reason; lift both together when the
 # OpenPGP stack releases on a newer rand.
 rand = "0.8"
-tempfile = "3"
+tempfile = { workspace = true }
 # `vtc::tests` stands up a mock VTC to read the authenticate document `cnm`
 # sends it, and mints the did:key that signs it.
-wiremock = "0.6"
+wiremock = { workspace = true }
 ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
 # `InMemorySessionBackend`: the setup tests drive the session store without the

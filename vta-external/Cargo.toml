@@ -15,17 +15,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.38" }
 vta-keys = { path = "../vta-keys", version = "0.42" }
 vti-common = { path = "../vti-common", version = "0.64" }
 vta-sdk = { path = "../vta-sdk", version = "0.88", features = ["client"] }
-# The generated `external/credentials/issue/0.2` types: a presign batch is read
-# and checked as the specification's own type, never a mirror of it.
-trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
 vti-specs = { path = "../vti-specs", version = "0.13" }
-async-trait = "0.1"
+async-trait = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
@@ -36,12 +32,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 url = { workspace = true }
-zeroize = "1"
+zeroize = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
 
 [lints]
 workspace = true
