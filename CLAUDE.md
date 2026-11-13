@@ -702,10 +702,15 @@ crate a workspace member (the CI cache treats non-members as dependencies).
 
 ## A merge is not evidence that anything passed
 
-The only **required** check on `main` is `DCO`; every CI job is advisory, so a
-PR merges on a red suite as readily as a green one. Read the run's own jobs
-(`gh api repos/.../actions/runs/<id>/jobs`), not the rollup. And don't assume
-a red `main` is your regression — check when it went red first.
+The **required** checks on `main` are `DCO`, `branch rules`, and the cheap
+gates: `Format`, `lockfile resolves`, `lockfile self-pins`, `cargo-deny`,
+`authorization-context types`, `commit lint` and `Clippy` (#2647). Every
+**test** job — `Test (workspace)`, `Test (VTC)`, the Feature combos, Mobile,
+Enclave, Docker — is advisory, so a PR still merges on a red suite as readily
+as a green one. A required job skipped by its `affects` gate counts as passing.
+Read the run's own jobs (`gh api repos/.../actions/runs/<id>/jobs`), not the
+rollup. And don't assume a red `main` is your regression — check when it went
+red first.
 
 ## Cross-service networking & integration discipline
 

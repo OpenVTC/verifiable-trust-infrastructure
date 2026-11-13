@@ -1,0 +1,133 @@
+name: Advisories
+
+# A daily RustSec scan of every lockfile operators actually deploy (#2648).
+#
+# cargo-deny otherwise runs only inside ci.yml, on a push or a pull request. So
+# an advisory published after a release branch was cut was never evaluated
+# against that branch's Cargo.lock until someone happened to open a backport —
+# release/eucalyptus, "supported (N)" in RELEASES.md, had no CI run at all for a
+# month after its cut — and main was covered only incidentally, by its pushes.
+#
+# Each day: `main` and every `release/*` branch, each at its own tip and with
+# its own deny.toml (a release branch's accepted ignores are its own), over the
+# root workspace, deploy/nitro/enclave-proxy and fuzz/ (each where the ref has
+# it). Advisories only: a licence or duplicate finding is a decision for a pull
+# request, not a page; an advisory against shipped code is news.
+#
+# A failure opens an issue labelled `advisory-scan`, or comments on the open
+# one, so it reaches a person instead of a red mark on a scheduled run nobody
+# watches. The issue says which refs and manifests failed and links the run.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refs:
+    name: Branches to scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      refs: ${{ steps.list.outputs.refs }}
+    steps:
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          refs=$(gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[].name' \
+            | grep -E '^(main|release/[a-z]+)$' | jq -Rnc '[inputs]')
+          echo "scanning: $refs"
+          echo "refs=$refs" >> "$GITHUB_OUTPUT"
+
+  scan:
+    name: cargo deny advisories (${{ matrix.ref }})
+    needs: refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(needs.refs.outputs.refs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+
+      # The same release of cargo-deny as ci.yml's cargo-deny-action (0.20),
+      # installed checksummed; the workflow runs no build, only the scan.
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-deny@0.20.2
+
+      # The ref's own deny.toml, passed explicitly: it defaults to the working
+      # directory's, and the enclave-proxy and fuzz manifests sit elsewhere.
+      # `--all-features`, as ci.yml's scan, so feature-gated dependencies count.
+      - name: Scan
+        id: scan
+        env:
+          REF: ${{ matrix.ref }}
+        run: |
+          set -uo pipefail
+          failed=""
+          # fuzz/ keeps no lockfile (see fuzz.yml); resolve it from the root
+          # lock, as its build does, so the scan sees the versions it builds.
+          if [ -f fuzz/Cargo.toml ] && [ ! -f fuzz/Cargo.lock ]; then
+            cp Cargo.lock fuzz/Cargo.lock
+          fi
+          for manifest in Cargo.toml deploy/nitro/enclave-proxy/Cargo.toml fuzz/Cargo.toml; do
+            if [ ! -f "$manifest" ]; then
+              echo "$REF has no $manifest; skipped"
+              continue
+            fi
+            echo "::group::$manifest"
+            if ! cargo deny --manifest-path "$manifest" --all-features --config deny.toml \
+                 check advisories; then
+              failed="$failed $manifest"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::advisories on $REF in:$failed"
+            echo "failed=$failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "no advisories on $REF"
+
+  report:
+    name: Open or update the advisory issue
+    needs: scan
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create advisory-scan --repo "$REPO" --color B60205 \
+            --description "Opened by the daily advisory scan (advisories.yml)" 2>/dev/null || true
+          body=$(printf '%s\n' \
+            "The daily advisory scan failed on $(date -u +%F): $RUN_URL" \
+            "" \
+            "Open the failing \`cargo deny advisories (<ref>)\` job for the advisory IDs and the manifest each was found in." \
+            "A release branch is fixed by a fix on main plus a \`backport release/<name>\` label (RELEASES.md);" \
+            "an advisory with no fix is accepted in that ref's \`deny.toml\` with a reason.")
+          issue=$(gh issue list --repo "$REPO" --state open --label advisory-scan \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "$REPO" --body "$body"
+            echo "commented on #$issue"
+          else
+            gh issue create --repo "$REPO" --label advisory-scan \
+              --title "security: the daily advisory scan found RustSec advisories" --body "$body"
+          fi

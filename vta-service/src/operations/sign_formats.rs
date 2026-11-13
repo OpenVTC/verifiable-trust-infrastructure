@@ -83,9 +83,8 @@ pub fn check_jws_header(header: &Map<String, Value>, key: &JwsKey) -> Result<(),
     }
     for name in ["x5t", "x5t#S256"] {
         if let Some(v) = header.get(name)
-            && !v
-                .as_str()
-                .is_some_and(|s| URL_SAFE_NO_PAD.decode(s).is_ok())
+            && v.as_str()
+                .is_none_or(|s| URL_SAFE_NO_PAD.decode(s).is_err())
         {
             return invalid(format!("header `{name}` must be a base64url string"));
         }
