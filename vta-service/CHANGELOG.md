@@ -2,6 +2,19 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.81.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.81.0...vta-service-v0.81.1) — 2026-11-13
+
+
+### Fixed
+
+- **vta/vtc/voting-service**: Follow-ups to #2676, #2677 and #2678 ([#2684](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2684))
+
+* fix(vta,vtc): keep no copy of further bearer-bearing responses for redelivery
+
+  Follow-up to #2677.
+
+
+
 ## [0.81.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.80.0...vta-service-v0.81.0) — 2026-11-12
 
 
