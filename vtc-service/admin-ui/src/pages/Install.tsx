@@ -635,12 +635,12 @@ export function Install() {
           {phase.via === "wallet" ? (
             <p>
               This DID is now an admin, and your wallet's step-up approver is bound to it.
-              Open the VTC admin UI and sign in with your VTA wallet.
+              Open the operator console and sign in with your VTA wallet.
             </p>
           ) : (
             <p>
               Your passkey is registered, and this DID — your passkey's own key — is
-              now an admin. Open the VTC admin UI and sign in with your passkey.
+              now an admin. Open the operator console and sign in with your passkey.
             </p>
           )}
           <details>

@@ -350,7 +350,7 @@ describe("member portal", () => {
 
   it.each([
     [["did", "oob", "uv"], "Your wallet"],
-    [["did"], "Your VTA (SIOPv2)"],
+    [["did"], "Your VTA"],
     [["passkey"], "Passkey"],
   ])("names how the member signed in (amr %j)", async (amr, label) => {
     stubFetch((url) => {

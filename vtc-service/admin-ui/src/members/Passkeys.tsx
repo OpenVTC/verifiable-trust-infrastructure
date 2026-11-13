@@ -60,7 +60,7 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
         <h2 id="passkeys-heading">Passkeys</h2>
       </div>
       <p className="muted">
-        Sign in to this portal on this device without your VTA. A portal
+        Sign in to this portal on this device without your wallet. A portal
         passkey works here only — never in the operator console.
       </p>
 
@@ -152,7 +152,7 @@ export function Passkeys({ canManage }: { canManage: boolean }) {
       ) : (
         <p className="muted">
           You signed in with a passkey. To add or remove passkeys, sign out and
-          sign in with your VTA.
+          sign in with your wallet.
         </p>
       )}
 

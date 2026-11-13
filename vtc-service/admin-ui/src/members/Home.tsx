@@ -319,5 +319,5 @@ function visibilityLine(
 export function signInMethod(amr: string[]): string {
   if (amr.includes("passkey")) return "Passkey";
   if (amr.includes("oob")) return "Your wallet";
-  return "Your VTA (SIOPv2)";
+  return "Your VTA";
 }

@@ -72,7 +72,7 @@ function describe(err: unknown, method: Method): Phase {
       message: "This community didn't accept that sign-in.",
       hint:
         method === "passkey"
-          ? "Passkeys work once you have added one after signing in with your VTA. " +
+          ? "Passkeys work once you have added one after signing in with your wallet. " +
             NOT_A_MEMBER_HINT
           : NOT_A_MEMBER_HINT,
       ...(err instanceof PresentedDidError ? { presentedDid: err.presentedDid } : {}),
