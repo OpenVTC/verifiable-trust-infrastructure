@@ -805,7 +805,7 @@ enum ContextCommands {
     /// import.
     ///
     /// Reads the local keystore directly — no running VTA or network
-    /// required. Mirrors `pnm context reprovision` but works in
+    /// required. Mirrors `pnm contexts reprovision` but works in
     /// cold-start / air-gapped environments where PNM cannot reach the
     /// VTA.
     ///

@@ -265,7 +265,7 @@ pub async fn run_create_did(
         template: None,
         template_context: None,
         template_vars: std::collections::HashMap::new(),
-        // `pnm did-webvh create` is a runtime integration-DID CLI; it
+        // `pnm did-mgmt dids create` is a runtime integration-DID CLI; it
         // never mints the VTA's own identity (setup wizard does that).
         is_vta_identity: false,
         did_method,

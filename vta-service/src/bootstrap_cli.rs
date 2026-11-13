@@ -1236,7 +1236,7 @@ pub async fn run_context_delete(
 }
 
 /// `vta context reprovision` — offline equivalent of
-/// `pnm context reprovision`.
+/// `pnm contexts reprovision`.
 ///
 /// The DID's operational keys (signing, KA, any pre-rotation) are
 /// auto-included — the operator does not need to enumerate them.
