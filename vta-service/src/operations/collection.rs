@@ -280,6 +280,29 @@ pub struct CollectionControl {
     locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     sessions: std::sync::Mutex<HashMap<String, Arc<dyn CollectingSession>>>,
     kick: tokio::sync::Notify,
+    /// The candidate set as last built, and what it was built from (#2628).
+    candidates: std::sync::Mutex<Option<CachedCandidates>>,
+    /// How many times the candidate set was built — for tests.
+    #[cfg(test)]
+    pub(crate) candidate_builds: std::sync::atomic::AtomicUsize,
+}
+
+/// A built candidate set, valid while nothing it was read from has changed:
+/// the store keyspaces under their write tickets
+/// ([`KeyspaceHandle::cache_ticket`]) and the configuration it reads.
+struct CachedCandidates {
+    key: CandidateInputs,
+    candidates: Arc<Vec<Candidate>>,
+}
+
+/// What [`candidates`] reads: the write tickets of the webvh, ACL, contexts
+/// and collection keyspaces, and the configured identities it excludes.
+#[derive(PartialEq, Eq)]
+struct CandidateInputs {
+    tickets: [u64; 4],
+    vta_did: Option<String>,
+    mediator_did: Option<String>,
+    exclude: Vec<String>,
 }
 
 impl std::fmt::Debug for CollectionControl {
@@ -301,6 +324,9 @@ impl CollectionControl {
             locks: std::sync::Mutex::new(HashMap::new()),
             sessions: std::sync::Mutex::new(HashMap::new()),
             kick: tokio::sync::Notify::new(),
+            candidates: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            candidate_builds: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -422,9 +448,15 @@ impl CollectionControl {
         }
     }
 
-    /// Ask the collector to reconcile now rather than on its next tick.
+    /// Ask the collector to reconcile now rather than on its next tick, and
+    /// rebuild the candidate set when it does.
     pub fn kick(&self) {
+        self.forget_candidates();
         self.kick.notify_one();
+    }
+
+    fn forget_candidates(&self) {
+        *self.candidates.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Resolves when [`kick`](Self::kick) is called.
@@ -559,6 +591,69 @@ pub async fn candidates(
     }
 }
 
+/// What the candidate set is built from, as it stands now; `None` while a
+/// write to any of its keyspaces is in flight (nothing may be cached then).
+async fn candidate_inputs(state: &AppState) -> Option<CandidateInputs> {
+    let tickets = [
+        state.webvh_ks.cache_ticket()?,
+        state.acl_ks.cache_ticket()?,
+        state.contexts_ks.cache_ticket()?,
+        state.collection_ks.cache_ticket()?,
+    ];
+    let config = state.config.read().await;
+    Some(CandidateInputs {
+        tickets,
+        vta_did: config.vta_did.clone(),
+        mediator_did: config.messaging.as_ref().map(|m| m.mediator_did.clone()),
+        exclude: config.collection.exclude.clone(),
+    })
+}
+
+/// [`candidates`] in every context, rebuilt only when something it reads has
+/// changed or the collector was kicked (#2628).
+///
+/// The build walks every ACL entry and every `did:webvh` record and reads each
+/// one's whole log; the collector asked for it every 30 seconds, with nothing to
+/// collect as readily as with something. The set is kept under the write
+/// tickets of the keyspaces it reads and the configuration it reads, so a DID
+/// created or deactivated, an ACL change, a context removed, a provisioned
+/// mark or a claim is seen on the next pass exactly as before, and a quiet
+/// store costs one comparison.
+pub async fn cached_candidates(state: &AppState) -> Result<Arc<Vec<Candidate>>, AppError> {
+    let before = candidate_inputs(state).await;
+    if let Some(key) = &before
+        && let Some(hit) = state
+            .collection
+            .candidates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|c| c.key == *key)
+    {
+        return Ok(Arc::clone(&hit.candidates));
+    }
+    #[cfg(test)]
+    state
+        .collection
+        .candidate_builds
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let built = Arc::new(candidates(state, None).await?);
+    // Kept only if nothing was written while it was being built.
+    if let Some(key) = before
+        && candidate_inputs(state).await.is_some_and(|now| now == key)
+    {
+        *state
+            .collection
+            .candidates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(CachedCandidates {
+            key,
+            candidates: Arc::clone(&built),
+        });
+    }
+    Ok(built)
+}
+
 /// The candidate in `context` that `did` names, in whatever form it is given.
 pub async fn find_candidate(
     state: &AppState,
@@ -570,10 +665,14 @@ pub async fn find_candidate(
     let log_did = crate::webvh_store::log_did_for(&state.webvh_ks, did).await?;
     #[cfg(not(feature = "webvh"))]
     let log_did: Option<String> = None;
-    Ok(candidates(state, Some(context))
+    Ok(cached_candidates(state)
         .await?
-        .into_iter()
-        .find(|c| c.matches(did) || log_did.as_deref().is_some_and(|l| c.matches(l))))
+        .iter()
+        .find(|c| {
+            c.context_id == context
+                && (c.matches(did) || log_did.as_deref().is_some_and(|l| c.matches(l)))
+        })
+        .cloned())
 }
 
 /// Record that `did` was minted for another party, which collects for it
@@ -734,7 +833,7 @@ pub async fn current_plan(
     state: &AppState,
     now: DateTime<Utc>,
 ) -> Result<Vec<(Candidate, Assignment)>, AppError> {
-    let candidates = candidates(state, None).await?;
+    let candidates = cached_candidates(state).await?;
     let claims = all_claims(&state.collection_ks).await?;
     let conflicts = all_conflicts(&state.collection_ks).await?;
     let disabled_contexts = disabled_contexts(&state.collection_ks).await?;
@@ -757,7 +856,7 @@ pub async fn current_plan(
             now,
         },
     );
-    Ok(candidates.into_iter().zip(assignments).collect())
+    Ok(candidates.iter().cloned().zip(assignments).collect())
 }
 
 // ── Claim, release, list ───────────────────────────────────────────────────
