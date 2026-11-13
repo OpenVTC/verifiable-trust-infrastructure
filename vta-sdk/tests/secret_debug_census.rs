@@ -535,3 +535,64 @@ fn the_name_test_reads_names_the_way_a_reviewer_would() {
         assert!(!names_a_secret(not), "{not} does not name a secret");
     }
 }
+
+/// Types whose fields hold secret material by their **role**, not their name —
+/// a cookie's or a header's `value` — which the name test above cannot see.
+/// Each must have a hand-written `Debug` (#2619). `(file, type, what it holds)`.
+const SECRET_BY_ROLE: &[(&str, &str, &str)] = &[
+    (
+        "vti-common/src/vault/mod.rs",
+        "CookieJarEntry",
+        "a captured session cookie's value",
+    ),
+    (
+        "vti-common/src/vault/mod.rs",
+        "RequestHeader",
+        "a session header's value (`Authorization: Bearer …`)",
+    ),
+    (
+        "vti-common/src/vault/mod.rs",
+        "StorageEntry",
+        "a session token an SPA keeps in local or session storage",
+    ),
+    (
+        "vti-common/src/vault/mod.rs",
+        "SessionBlob",
+        "every cookie, header and storage entry of a proxied login",
+    ),
+    (
+        "vti-common/src/vault/mod.rs",
+        "CustomField",
+        "a vault entry's free-form value",
+    ),
+];
+
+/// Whether `file` defines `ty`, and whether that definition derives `Debug`.
+fn find_type(items: &[Item], ty: &str) -> Option<bool> {
+    items.iter().find_map(|item| match item {
+        Item::Struct(s) if s.ident == ty => Some(derives_debug(&s.attrs)),
+        Item::Enum(e) if e.ident == ty => Some(derives_debug(&e.attrs)),
+        Item::Mod(m) => m
+            .content
+            .as_ref()
+            .and_then(|(_, inner)| find_type(inner, ty)),
+        _ => None,
+    })
+}
+
+#[test]
+fn types_holding_secrets_by_role_never_derive_debug() {
+    let root = workspace_root();
+    for (file, ty, holds) in SECRET_BY_ROLE {
+        let text = fs::read_to_string(root.join(file)).expect("source file is readable");
+        let parsed = syn::parse_file(&text).expect("source file parses");
+        match find_type(&parsed.items, ty) {
+            None => panic!("{file} no longer defines {ty}; update SECRET_BY_ROLE"),
+            Some(true) => panic!(
+                "{file} :: {ty} derives `Debug`, which prints {holds}. Write it by hand and \
+                 report the value as `<redacted>`."
+            ),
+            Some(false) => {}
+        }
+    }
+}

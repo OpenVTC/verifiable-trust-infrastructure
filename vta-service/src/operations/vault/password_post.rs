@@ -41,6 +41,8 @@
 
 use std::collections::BTreeMap;
 
+use zeroize::Zeroizing;
+
 use reqwest::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
 use vta_sdk::http::{
     ALLOW_PRIVATE_ENDPOINTS_ENV, EndpointPolicy, foreign_fetch_client_for, guard_foreign_url,
@@ -195,28 +197,34 @@ pub fn validate_login_url_for(
 /// the (Content-Type, serialised body) tuple. JSON uses serde_json's
 /// canonical encoding; form-urlencoded uses `application/x-www-form-
 /// urlencoded` with stable key ordering (BTreeMap iteration).
+///
+/// The body carries the password, so it is returned [`Zeroizing`], and every
+/// copy of a value made on the way is overwritten when dropped (#2619).
 pub fn build_request_body(
     config: &PasswordLoginConfig,
     username: Option<&str>,
     password: &str,
     totp_code: Option<&str>,
-) -> Result<(&'static str, String), PasswordPostError> {
+) -> Result<(&'static str, Zeroizing<String>), PasswordPostError> {
     // Build the field map in a stable order — sorted by key — so the
     // wire shape is deterministic. Some sites do simple integrity
     // checks on body shape; deterministic ordering avoids silent
     // breakage from BTreeMap-vs-HashMap iteration differences.
-    let mut fields: BTreeMap<String, String> = BTreeMap::new();
+    let mut fields: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
     if let Some(u) = username {
-        fields.insert(config.effective_username_field().to_string(), u.to_string());
+        fields.insert(
+            config.effective_username_field().to_string(),
+            Zeroizing::new(u.to_string()),
+        );
     }
     fields.insert(
         config.effective_password_field().to_string(),
-        password.to_string(),
+        Zeroizing::new(password.to_string()),
     );
     if let Some(field) = config.totp_field.as_deref() {
         match totp_code {
             Some(code) => {
-                fields.insert(field.to_string(), code.to_string());
+                fields.insert(field.to_string(), Zeroizing::new(code.to_string()));
             }
             None => {
                 return Err(PasswordPostError::TotpNotImplemented(
@@ -229,28 +237,38 @@ pub fn build_request_body(
     }
     if let Some(extra) = config.extra_fields.as_ref() {
         for (k, v) in extra {
-            fields.insert(k.clone(), v.clone());
+            fields.insert(k.clone(), Zeroizing::new(v.clone()));
         }
     }
 
     match config.format {
         PasswordLoginFormat::Json => {
-            let body = serde_json::to_string(&fields).map_err(|e| {
+            let plain: BTreeMap<&str, &str> = fields
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            let body = serde_json::to_string(&plain).map_err(|e| {
                 PasswordPostError::ResponseParse(format!("serialise JSON body: {e}"))
             })?;
-            Ok(("application/json", body))
+            Ok(("application/json", Zeroizing::new(body)))
         }
         PasswordLoginFormat::FormUrlencoded => {
             // Hand-encode rather than pulling in form_urlencoded just
             // for this — keys + values are utf-8 already.
-            let mut buf = String::new();
+            // Sized up front so the buffer is never reallocated, which would
+            // leave an unzeroed copy of what it held behind.
+            let capacity = fields
+                .iter()
+                .map(|(k, v)| 3 * (k.len() + v.len()) + 2)
+                .sum();
+            let mut buf = Zeroizing::new(String::with_capacity(capacity));
             for (k, v) in &fields {
                 if !buf.is_empty() {
                     buf.push('&');
                 }
                 buf.push_str(&urlencoding::encode(k));
                 buf.push('=');
-                buf.push_str(&urlencoding::encode(v));
+                buf.push_str(&Zeroizing::new(urlencoding::encode(v).into_owned()));
             }
             Ok(("application/x-www-form-urlencoded", buf))
         }
@@ -424,7 +442,9 @@ pub async fn run_password_post_with_policy(
         .post(url.clone())
         .timeout(std::time::Duration::from_secs(POST_TIMEOUT_SECS))
         .header(CONTENT_TYPE, content_type)
-        .body(body)
+        // The HTTP client takes its own copy, which it frees unzeroed; ours
+        // is overwritten when `body` drops.
+        .body(body.as_bytes().to_vec())
         .send()
         .await
         .map_err(|e| PasswordPostError::Transport {
@@ -624,7 +644,10 @@ mod tests {
         assert_eq!(ct, "application/json");
         // BTreeMap iteration is alphabetical, so the JSON has
         // deterministic key order: password, username.
-        assert_eq!(body, r#"{"password":"hunter2","username":"alice"}"#);
+        assert_eq!(
+            body.as_str(),
+            r#"{"password":"hunter2","username":"alice"}"#
+        );
     }
 
     #[test]
@@ -641,7 +664,7 @@ mod tests {
         // url-encoded — '@' → %40, ' ' → %20 (urlencoding crate), '!' → %21
         // Alphabetical ordering by key: email, grantType, password.
         assert_eq!(
-            body,
+            body.as_str(),
             "email=a%40b.com&grantType=password&password=p%20ass%21"
         );
     }
@@ -651,7 +674,7 @@ mod tests {
         let (_ct, body) =
             build_request_body(&cfg_min("https://example.com/login"), None, "secret", None)
                 .unwrap();
-        assert_eq!(body, r#"{"password":"secret"}"#);
+        assert_eq!(body.as_str(), r#"{"password":"secret"}"#);
     }
 
     #[test]
