@@ -336,10 +336,13 @@ Two things must be true, and one of them is not yet:
 - **`RELEASE_PLZ_TOKEN`** — a PAT (contents + pull-requests write) or GitHub App
   token. **Not currently set.** GitHub suppresses workflow runs for events
   authored by the default `GITHUB_TOKEN`, so without it the Release PR opens
-  with no CI on it. Only DCO is a required check, so it would still be
-  mergeable — meaning the one commit that publishes to crates.io would be the
-  one commit CI never built. Until the token exists, close-and-reopen the
-  Release PR to trigger CI before merging.
+  with no CI on it. With only DCO required it used to stay mergeable — the
+  one commit that publishes to crates.io would be the one commit CI never
+  built; with the cheap gates required (#2647) it instead waits on checks that
+  never start. Either way, close-and-reopen the Release PR to trigger CI
+  before merging. The workflows check the token before using it, and use a
+  GitHub App token instead when `RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`
+  are set (`.github/actions/release-token`, #2646).
 - **Trusted Publishing** — already configured. crates.io mints a short-lived
   token per run from the workflow's OIDC identity; no registry token is stored
   in this repo. See `docs/05-design-notes/trusted-publishing.md`.

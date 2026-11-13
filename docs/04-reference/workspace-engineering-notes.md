@@ -183,10 +183,13 @@ a new multi-keyspace fixture should use `open_with_keyspaces`.
 
 ## A merge is not evidence that anything passed
 
-The only **required** status check on `main` is `DCO`. Every job above — the
-build, both test jobs, clippy, fmt, MSRV, `cargo-deny` — is advisory, so a
-pull request merges on a red suite exactly as readily as on a green one, and
-no prompt appears.
+The **required** status checks on `main` are `DCO`, `branch rules` and the
+cheap gates: `Format`, `lockfile resolves`, `lockfile self-pins`,
+`cargo-deny`, `authorization-context types`, `commit lint` and `Clippy`
+(#2647). Every **test** job — both test jobs, the Feature combos, MSRV,
+Mobile, Enclave, Docker — is advisory, so a pull request merges on a red suite
+exactly as readily as on a green one, and no prompt appears. (Until #2647 only
+`DCO` was required, and the incident below happened under that rule.)
 
 This is not hypothetical and it is why the section above exists. On 9 September
 2026 `main` was red for five and a half hours across six consecutive merges —
@@ -204,6 +207,5 @@ Two things follow, and both are habits rather than rules:
   first. It may have been red since before you branched, and the failure you
   are looking at may be somebody else's — or your own, four merges ago.
 
-Whether the CI workflow should be a required check is a repository-settings
-decision that has not been taken. Until it is, the discipline above is what
-stands in for one.
+The test jobs stay advisory until the flaky delivery tests (#918 and its
+kind) are gone; until then the discipline above is what stands in for them.

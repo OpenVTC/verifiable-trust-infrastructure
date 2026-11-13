@@ -166,11 +166,11 @@ impl ResourceGrant {
     /// `effectiveAt`.
     pub fn is_live(&self, now: DateTime<Utc>) -> bool {
         !self.is_lapsed(now)
-            && !self
+            && self
                 .break_glass
                 .as_ref()
                 .and_then(|b| b.effective_at)
-                .is_some_and(|e| e > now)
+                .is_none_or(|e| e <= now)
     }
 
     /// Whether this grant, in effect, confers `cap` at `wanted` (`None` =

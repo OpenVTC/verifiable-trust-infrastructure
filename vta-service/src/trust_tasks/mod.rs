@@ -7419,38 +7419,60 @@ mod vti_08_stack {
     /// regression needed, so a return of it still fails here. 512 KiB fitted only a caller
     /// with no ACL entry, which no running VTA has: with the super admin's entry stored,
     /// the spine's gates read it, and a debug build of the whole workspace needs about
-    /// 600 KiB.
-    const STACK_KIB: usize = 768;
+    /// 600 KiB with the Rust of late 2026. The pinned 1.95 (rust-toolchain.toml) lays
+    /// debug frames out larger: on x86_64 it needs 768 – 896 KiB, which overflowed the
+    /// 768 this was. 960 leaves it room and stays under the 1 MiB a regression needs.
+    const STACK_KIB: usize = 960;
 
     /// A stack overflow aborts the process rather than failing a test, so the
     /// work runs in a child copy of this test binary and the parent reads its
     /// exit status.
-    #[test]
-    fn vti_08_context_create_fits_well_inside_a_default_worker_stack() {
+    /// Runs `contexts/create` in a child on a worker of `kib` KiB.
+    fn fits_in(kib: usize) -> std::process::Output {
         let exe = std::env::current_exe().expect("test binary");
-        let out = std::process::Command::new(exe)
+        std::process::Command::new(exe)
             .args([
                 "--exact",
                 "trust_tasks::vti_08_stack::child_context_create",
                 "--test-threads=1",
             ])
-            .env("VTI_08_CHILD", "1")
+            .env("VTI_08_CHILD", kib.to_string())
             .output()
-            .expect("run child");
-        assert!(
-            out.status.success(),
-            "contexts/create over the spine did not fit a {STACK_KIB} KiB stack: {}",
+            .expect("run child")
+    }
+
+    #[test]
+    fn vti_08_context_create_fits_well_inside_a_default_worker_stack() {
+        let out = fits_in(STACK_KIB);
+        if out.status.success() {
+            return;
+        }
+        // How much this build does need, so a failure says whether it is the
+        // >1 MiB regression or a compiler that lays frames out larger: debug
+        // frame sizes move between Rust releases and targets.
+        let needs = [896, 1024, 1280, 1536, 2048]
+            .into_iter()
+            .find(|&kib| fits_in(kib).status.success())
+            .map_or_else(
+                || "more than 2048 KiB".to_string(),
+                |kib| format!("at most {kib} KiB"),
+            );
+        panic!(
+            "contexts/create over the spine did not fit a {STACK_KIB} KiB stack (this build needs {needs}): {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
 
     #[test]
     fn child_context_create() {
-        if std::env::var_os("VTI_08_CHILD").is_none() {
+        let Some(kib) = std::env::var("VTI_08_CHILD")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+        else {
             return;
-        }
+        };
         let worker = std::thread::Builder::new()
-            .stack_size(STACK_KIB * 1024)
+            .stack_size(kib * 1024)
             .spawn(|| {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()

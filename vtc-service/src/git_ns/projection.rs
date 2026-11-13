@@ -444,7 +444,7 @@ pub async fn role_mapped(state: &AppState) -> Result<Vec<(String, String)>, AppE
             continue;
         };
         let member = crate::members::get_member(&state.members_ks, &entry.did).await?;
-        if !member.is_some_and(|m| m.removed_at.is_none()) {
+        if member.is_none_or(|m| m.removed_at.is_some()) {
             continue;
         }
         out.push((entry.did.clone(), resource.clone()));
