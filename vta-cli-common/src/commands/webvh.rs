@@ -35,6 +35,11 @@ pub async fn cmd_webvh_server_add(
 
 pub async fn cmd_webvh_server_list(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.list_webvh_servers().await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
 
     if resp.servers.is_empty() {
         println!("No WebVH servers configured.");
@@ -700,6 +705,11 @@ pub async fn cmd_webvh_did_list(
     server_id: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.list_dids_webvh(context_id, server_id).await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
 
     if resp.dids.is_empty() {
         println!("No WebVH DIDs found.");
@@ -790,6 +800,11 @@ pub async fn cmd_webvh_did_get(
     did: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let record = client.get_did_webvh(did).await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&record)?;
+        return Ok(());
+    }
     println!("WebVH DID:");
     println!("  DID:             {}", record.did);
     println!("  Context:         {}", record.context_id);

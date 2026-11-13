@@ -323,6 +323,11 @@ pub async fn cmd_key_get(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if secret {
         let resp = client.get_key_secret(key_id).await?;
+        // JSON under --json or off a terminal, like every read (#2588).
+        if crate::render::is_json_output() {
+            crate::render::print_json(&resp)?;
+            return Ok(());
+        }
         println!("Key ID:               {}", resp.key_id);
         println!(
             "Key Type:             {}",
@@ -332,6 +337,11 @@ pub async fn cmd_key_get(
         println!("Secret Key Multibase: {}", resp.private_key_multibase);
     } else {
         let resp = client.get_key(key_id).await?;
+        // JSON under --json or off a terminal, like every read (#2588).
+        if crate::render::is_json_output() {
+            crate::render::print_json(&resp)?;
+            return Ok(());
+        }
         println!("Key ID:          {}", resp.key_id);
         println!("Key Type:        {}", key_type_with_posture(&resp.key_type));
         println!("Derivation Path: {}", resp.derivation_path);
@@ -572,6 +582,11 @@ fn print_next_cursor(next: Option<&str>) {
 
 pub async fn cmd_seeds_list(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.list_seeds().await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
 
     if resp.seeds.is_empty() {
         println!("No seed records found.");

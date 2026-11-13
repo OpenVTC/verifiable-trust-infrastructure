@@ -218,6 +218,11 @@ pub async fn cmd_context_get(
     id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.get_context(id).await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
     render_context_record(&resp);
     Ok(())
 }

@@ -12,6 +12,11 @@ pub async fn cmd_config_get(
     label_prefix: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.get_config().await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp.config)?;
+        return Ok(());
+    }
     // Pad to the longest key so the rate-limit keys line up with the short ones.
     let width = resp
         .config

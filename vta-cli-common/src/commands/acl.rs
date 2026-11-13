@@ -345,6 +345,11 @@ pub async fn cmd_acl_list(
 
 pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn std::error::Error>> {
     let entry = client.get_acl(did).await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&entry)?;
+        return Ok(());
+    }
 
     let mut book = NameBook::new();
     book.insert_opt(&entry.did, entry.label.as_deref(), NameSource::AclLabel);
