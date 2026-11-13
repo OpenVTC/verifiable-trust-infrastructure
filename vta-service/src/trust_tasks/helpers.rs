@@ -1485,3 +1485,39 @@ mod tests {
         );
     }
 }
+
+/// For a hand-written payload type `T` that refuses unknown members (#2621):
+/// every member the pinned schema of `type_uri` declares is one `T` reads — so
+/// `deny_unknown_fields` refuses only what the specification does not define —
+/// and a member it does not declare is refused.
+#[cfg(test)]
+pub(super) fn assert_reads_exactly_the_schema_members<T: serde::de::DeserializeOwned>(
+    type_uri: &str,
+) {
+    let schema: Value = serde_json::from_str(
+        vti_specs::schema_index::schema_for(type_uri)
+            .unwrap_or_else(|| panic!("{type_uri} is not pinned")),
+    )
+    .expect("a pinned schema is JSON");
+    let members = schema["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("{type_uri}: the payload schema names no properties"));
+    for name in members.keys() {
+        let mut one = serde_json::Map::new();
+        one.insert(name.clone(), Value::Null);
+        if let Err(e) = serde_json::from_value::<T>(Value::Object(one)) {
+            assert!(
+                !e.to_string().contains("unknown field"),
+                "{type_uri}: `{name}` is a member of the schema, and the payload type refuses it: {e}"
+            );
+        }
+    }
+    let err = serde_json::from_value::<T>(serde_json::json!({ "notAMember": null }))
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        err.contains("unknown field"),
+        "{type_uri}: a member the schema does not define must be refused, got `{err}`"
+    );
+}

@@ -2146,6 +2146,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     format: None,
                     id: Some("cred-1".into()),
                     context_id: Some("ctx-a".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::ReceiveResponse {
                     id: "cred-1".into(),
@@ -2228,6 +2229,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(cred_vault::CredLifecycleBody {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),
@@ -2244,6 +2246,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(cred_vault::CredLifecycleBody {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),
@@ -2261,6 +2264,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
                     force: true,
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),
@@ -2277,6 +2281,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(cred_vault::CredLifecycleBody {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),
@@ -2293,6 +2298,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(cred_vault::CredLifecycleBody {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),

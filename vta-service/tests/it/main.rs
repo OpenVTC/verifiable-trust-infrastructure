@@ -32,6 +32,7 @@ mod memory_audit;
 mod mock_vta;
 mod openapi_schema_names;
 mod operation_budget;
+mod payload_type_census;
 mod pending_presentation_trust_task;
 mod persona_trust_task;
 mod producer_payload_conformance;

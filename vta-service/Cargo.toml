@@ -429,6 +429,8 @@ hmac = "0.13"
 aws-lc-rs = { version = "1", optional = true }
 
 [dev-dependencies]
+# `tests/it/payload_type_census.rs` reads every Trust Task handler's parse sites.
+syn = { version = "3", features = ["full", "parsing", "visit"] }
 # Reads back the `keys/sign-csr` request and checks its signature.
 x509-parser = { workspace = true }
 # A test CA certifying a VTA-held key, for `keys/sign-jws`'s `x5c` check.
