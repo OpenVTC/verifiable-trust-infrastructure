@@ -383,10 +383,8 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         // Task" — the browser driving the ceremony holds only a bearer
         // from passkey-login, no DID key to sign a Trust Task. Declared in
         // `deprecation::REST_EXCEPTIONS`; DID-holding clients use the
-        // `vta/passkey-vms/*` twins. First-time enrolment expects a
-        // short-lived enrolment-scope JWT minted by
-        // `pnm passkey-enroll-token`; subsequent calls use a
-        // passkey-derived session JWT.
+        // `vta/passkey-vms/*` twins. Every route is gated by an admin
+        // bearer JWT (`AdminAuth`); there is no separate enrolment token.
         .routes(routes!(passkey_vms::enroll_challenge_handler))
         .routes(routes!(
             passkey_vms::enroll_submit_handler,

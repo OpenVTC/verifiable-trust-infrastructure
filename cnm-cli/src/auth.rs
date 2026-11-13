@@ -71,7 +71,7 @@ pub fn loaded_session(keyring_key: &str) -> Option<SessionInfo> {
 /// Show current authentication status.
 ///
 /// The VTA's REST URL isn't shown here — it's derived from the VTA DID
-/// at runtime, not stored. Use `cnm health` or `cnm community info` to
+/// at runtime, not stored. Use `cnm health` or `cnm community status` to
 /// see the resolved URL.
 pub fn status(keyring_key: &str) {
     match store().session_status(keyring_key) {

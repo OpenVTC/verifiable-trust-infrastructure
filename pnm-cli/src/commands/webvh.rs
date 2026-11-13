@@ -1,4 +1,4 @@
-//! Dispatch for `pnm webvh …`.
+//! Dispatch for `pnm did-mgmt …` (the module keeps the retired `webvh` name).
 
 use vta_cli_common::commands::webvh;
 use vta_sdk::client::VtaClient;

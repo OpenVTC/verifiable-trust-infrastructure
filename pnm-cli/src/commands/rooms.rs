@@ -27,7 +27,7 @@ use crate::cli::{
 /// The operator's DID and key, from the session this CLI authenticates with.
 fn signer(keyring_key: &str) -> Result<vta_sdk::session::SessionInfo, Box<dyn std::error::Error>> {
     crate::auth::loaded_session(keyring_key).ok_or_else(|| -> Box<dyn std::error::Error> {
-        "not authenticated — run `pnm auth login` first. A room request is signed by the \
+        "not authenticated — run `pnm setup` first. A room request is signed by the \
          DID your VTA minted the presentation for, so this needs your session."
             .into()
     })

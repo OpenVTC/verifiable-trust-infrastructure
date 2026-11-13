@@ -74,7 +74,7 @@ pub struct EnableDidcommResponse {
     pub mediator_endpoint: String,
     /// The VTA's own DID — subject of the LogEntry this enable
     /// wrote. Carried so the CLI can print follow-up commands like
-    /// `pnm webvh did-log <vta_did>` for serverless deployments.
+    /// `pnm did-mgmt dids get-log <vta_did>` for serverless deployments.
     /// `#[serde(default)]` + elide-when-empty keeps the wire form
     /// back-compat with older servers.
     #[serde(default, skip_serializing_if = "String::is_empty")]

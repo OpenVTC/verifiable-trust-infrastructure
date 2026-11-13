@@ -1032,15 +1032,16 @@ pub(crate) enum RoomCommands {
         reason: Option<String>,
     },
 
-    /// Drop the room's epoch key chain below an epoch (`rooms/epoch/prune`).
+    /// Drop the room's epoch key chain below an epoch (`rooms/epoch/prune/0.2`).
     /// Needs `admin`. IRREVERSIBLE, for every member.
     ///
-    /// The host erases the chain's rungs below `--before-epoch`, so history
-    /// sealed under those epochs can never be opened again by anyone who has
-    /// not already derived its keys — a member who restarts, moves device or
-    /// joins later. The records stay; the ability to open them goes. Members'
-    /// VTAs that already walked the chain keep what they derived: today a prune
-    /// reaches the host only.
+    /// The host erases the chain's rungs below `--before-epoch` and keeps the
+    /// room's epoch floor, so history sealed under those epochs can no longer
+    /// be derived from the host by anyone — a member who restarts, moves device
+    /// or joins later. Members' VTAs discard the rungs they already derived at
+    /// or below the floor as soon as they next learn it, and refuse to derive
+    /// below it. The records stay; the ability to open them goes. Nothing a
+    /// member has already read or copied out is recalled.
     ///
     /// Prints what becomes unreadable and asks before sending; without a
     /// terminal it refuses unless `--yes` is given.
@@ -1664,7 +1665,7 @@ pub(crate) enum RoomKeysCommands {
     ///
     /// Send that file to the room's owner, who admits it with
     /// `pnm rooms owner group-add --key-package`. Its private half stays in your
-    /// VTA for seven days.
+    /// VTA for fourteen days, or until the Welcome that admits you is processed.
     KeyPackage {
         /// The room's DID.
         #[arg(long = "room")]
@@ -2520,17 +2521,16 @@ pub(crate) enum BootstrapCommands {
     /// Mints an ephemeral Ed25519 keypair, persists the seed under
     /// `~/.config/pnm/bootstrap-secrets/<bundle_id>.key`, and writes a
     /// signed VP naming the target DID template (e.g.
-    /// `didcomm-mediator`, `did-hosting-control`, `did-hosting-daemon`, `did-hosting-server`) + variables. Hand the
+    /// `didcomm-mediator`, `did-host-http`, `did-host-http-didcomm`) + variables. Hand the
     /// JSON to the VTA operator. Counterpart to `vta bootstrap
     /// provision-request` — same wire shape, same on-disk layout,
     /// different default seed directory.
     ///
     /// See `docs/02-vta/provision-integration.md` for the flow.
     ProvisionRequest {
-        /// DID template name the VTA should render (e.g.
-        /// `didcomm-mediator`, `did-hosting-control`, `did-hosting-daemon`, `did-hosting-server`, or an
-        /// operator-uploaded custom template).
-        #[arg(long)]
+        /// DID template name the VTA should render: a built-in or an
+        /// operator-uploaded custom template.
+        #[arg(long, long_help = crate::cli::template_name_help())]
         template: String,
         /// Template variable, repeat for each binding. Format `KEY=VALUE`.
         /// Values are parsed as JSON when possible; otherwise treated as
@@ -2625,11 +2625,13 @@ pub(crate) enum DidTemplateCommands {
     /// Scaffold a starter template by forking an embedded built-in.
     ///
     /// Emits JSON on stdout so it can be redirected to a file for editing.
-    /// `kind` accepts either the full built-in name
-    /// (`didcomm-mediator`, `did-hosting-control`, `did-hosting-daemon`, `did-hosting-server`) or a short alias
-    /// (`mediator`, `control`, `did-hosting`, `hosting`, `daemon`, `witness`, `watcher`, `server`).
-    /// The legacy `webvh-*` names were retired after their one-release
-    /// deprecation window — use the canonical `did-host-*` names.
+    /// `kind` accepts either a full built-in name (`pnm did-templates
+    /// list-builtins` lists them) or a short role alias: `mediator`
+    /// (`didcomm-mediator`), `agent` (`ai-agent`), `did-hosting` / `hosting` /
+    /// `daemon` (`did-host-http`), `control` (`did-host-http-didcomm`), and
+    /// `witness` / `watcher` / `server` (`did-host-didcomm`). The legacy
+    /// `webvh-*` and `did-hosting-*` template names were retired — use the
+    /// canonical `did-host-*` names.
     Init {
         /// Built-in kind or alias to fork.
         kind: String,
@@ -2903,7 +2905,7 @@ pub(crate) enum WebvhCommands {
         /// one this DID should live on; otherwise the server resolves
         /// via your ACL default → its system default. An unknown
         /// domain comes back as a `did-management:unknownDomain`
-        /// error. Use `pnm did-mgmt list-domains --server <id>` to
+        /// error. Use `pnm did-mgmt dids list-domains --server <id>` to
         /// see what's configured. Ignored in serverless mode.
         #[arg(long)]
         domain: Option<String>,
@@ -3311,7 +3313,7 @@ pub(crate) enum DidMgmtDidCommands {
         #[arg(long)]
         path: Option<String>,
         /// Optional hosting domain on the target server. Discover
-        /// available values with `pnm did-mgmt list-domains --server <id>`.
+        /// available values with `pnm did-mgmt dids list-domains --server <id>`.
         /// Omit to use the server's caller-default → system-default
         /// resolution chain. Ignored in serverless mode.
         #[arg(long)]
@@ -3463,7 +3465,7 @@ pub(crate) enum DidMgmtDidCommands {
         #[arg(long, default_value_t = false)]
         force: bool,
         /// Optional hosting domain on the target server. Discover
-        /// available values with `pnm did-mgmt list-domains --server <id>`.
+        /// available values with `pnm did-mgmt dids list-domains --server <id>`.
         #[arg(long)]
         domain: Option<String>,
     },
@@ -6755,4 +6757,15 @@ pub(crate) enum WebsCommands {
         #[arg(long)]
         expect_version: Option<String>,
     },
+}
+
+/// Long help for a `--template` flag: the built-ins this build ships, read
+/// from `vta_sdk::did_templates::BUILTIN_NAMES` so the help cannot name a
+/// retired template (#2635).
+pub(crate) fn template_name_help() -> String {
+    format!(
+        "DID template name the VTA should render: a built-in ({}) or an \
+         operator-uploaded custom template.",
+        vta_sdk::did_templates::BUILTIN_NAMES.join(", ")
+    )
 }

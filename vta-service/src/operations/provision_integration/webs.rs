@@ -44,7 +44,7 @@ pub(crate) trait WebsHostSource: Sync {
     ) -> impl std::future::Future<Output = Result<Self::Host<'a>, AppError>> + Send;
 }
 
-/// The did-hosting servers this VTA has registered (`vta webvh add-server`).
+/// The did-hosting servers this VTA has registered (`vta did-mgmt servers add`).
 pub(crate) struct RegisteredWebsHosts;
 
 impl WebsHostSource for RegisteredWebsHosts {
@@ -141,7 +141,7 @@ pub(super) async fn mint<W: WebsHostSource>(
         AppError::Validation(format!(
             "a did:webs integration is published by a did-hosting server, and template \
              '{template_name}' resolved without one: pass `--var WEBVH_SERVER=<id>` (a server \
-             registered with `vta webvh add-server`). A did:webs has no serverless mode, so \
+             registered with `vta did-mgmt servers add`). A did:webs has no serverless mode, so \
              `URL` alone cannot place it."
         ))
     })?;

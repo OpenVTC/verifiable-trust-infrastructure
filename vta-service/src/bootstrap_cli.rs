@@ -141,7 +141,7 @@ pub async fn run_request(
 /// Mints an ephemeral Ed25519 keypair, persists the seed under
 /// `<seed-dir>/bootstrap-secrets/<bundle_id>.key`, and writes a signed
 /// VP naming the target DID template (e.g. `didcomm-mediator`,
-/// `did-hosting-control`, `did-hosting-daemon`, `did-hosting-server`) + variables. Hand
+/// `did-host-http`, `did-host-http-didcomm`) + variables. Hand
 /// the JSON to the VTA
 /// operator; they run `vta bootstrap provision-integration --request
 /// <file>` and return an armored sealed bundle + SHA-256 digest.

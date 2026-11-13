@@ -50,7 +50,7 @@ pub(super) async fn resolve_webvh_server(
     {
         return Err(AppError::NotFound(format!(
             "WEBVH_SERVER '{id}' is not a registered webvh hosting server on this VTA \
-             — register it via `vta webvh add-server` first, or omit `WEBVH_SERVER` \
+             — register it via `vta did-mgmt servers add` first, or omit `WEBVH_SERVER` \
              to self-host at the URL"
         )));
     }

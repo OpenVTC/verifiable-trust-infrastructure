@@ -48,7 +48,7 @@ pub struct ListWebvhServersResultBody {
 /// `list-webvh-server-domains` — relay the registered hosting
 /// server's `did-management/me/domains` response (caller-scoped subset of
 /// hosting domains, with the system default flagged). Used by
-/// `pnm did-mgmt list-domains` and the interactive `--domain`
+/// `pnm did-mgmt dids list-domains` and the interactive `--domain`
 /// prompt in `create-did` / `register-did`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
