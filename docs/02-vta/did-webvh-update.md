@@ -107,7 +107,7 @@ that already exists:
 - The did:scid identity record follows the published document, so a webvh/dids
   task takes the did:scid DID exactly while the alias is listed.
 
-CLI: `pnm did-mgmt dids scid-alias --did <did> --list|--remove [--no-confirm]`.
+CLI: `pnm did-mgmt dids scid-alias --did <did> --list|--remove [--yes]` (`--no-confirm` is still accepted).
 `VtaClient::update_did_webvh_by_did` sends 1.1 only when
 `UpdateDidWebvhBody::scid_also_known_as` is set, and 1.0 otherwise.
 
