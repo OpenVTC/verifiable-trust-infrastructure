@@ -1387,7 +1387,7 @@ async fn get_versioned(
     // Read under the lock every record write holds — and every prune: a 0.2 read names the
     // blobs of the version it returns, and every read's head must be one snapshot with its
     // root, which a prune moves both of (`HeadVersion`).
-    let snapshot = state.files.read_snapshot().await;
+    let snapshot = state.files.read_snapshot(&req.room_id).await;
     match storage::get_record(&state.records, &req.room_id, &req.key).await {
         Ok(record) => {
             audit_room_for(
@@ -1474,7 +1474,7 @@ async fn list_records(
     // short page and a complete room were indistinguishable.
     // Under the record-write lock, which a prune also holds: the page, the head and the
     // room's `lastPrune` are one snapshot.
-    let snapshot = state.files.read_snapshot().await;
+    let snapshot = state.files.read_snapshot(&req.room_id).await;
     match storage::list_records_page_in(
         &state.records,
         &req.room_id,
