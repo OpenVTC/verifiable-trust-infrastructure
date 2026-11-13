@@ -1262,8 +1262,9 @@ pub(crate) enum ExternalCommands {
         /// `put`, `get` or `delete`. Repeat for several.
         #[arg(long = "action")]
         actions: Vec<String>,
-        /// The longest credential lifetime it may request, in seconds.
-        #[arg(long, default_value_t = 900)]
+        /// The longest credential lifetime it may request: `N[s|m|h|d|w]`, or
+        /// seconds.
+        #[arg(long, default_value = "900", value_parser = vta_cli_common::duration::secs_arg_u32)]
         max_ttl: u32,
         /// Issuances per minute.
         #[arg(long, default_value_t = 60)]
@@ -1347,7 +1348,8 @@ pub(crate) enum ExternalCommands {
         /// `s3-static-presign` account. Replaces `--prefix`/`--action`.
         #[arg(long, conflicts_with_all = ["prefix", "actions"])]
         presign: Option<String>,
-        #[arg(long, default_value_t = 900)]
+        /// How long the credential lasts: `N[s|m|h|d|w]`, or seconds.
+        #[arg(long, default_value = "900", value_parser = vta_cli_common::duration::secs_arg_u32)]
         ttl: u32,
     },
 }
@@ -1432,7 +1434,9 @@ pub(crate) enum RoomOwnerCommands {
         #[arg(long, conflicts_with = "valid_for")]
         valid_until: Option<String>,
         /// When the invitation expires, from now: `N[s|m|h|d|w]` (e.g. `7d`).
-        #[arg(long)]
+        /// `--expires`, as every lapsing grant spells it (#2589); `--valid-for`
+        /// is the older name.
+        #[arg(long = "expires", visible_alias = "valid-for", value_name = "DURATION")]
         valid_for: Option<String>,
         /// Where to write the invitation (the credential's JSON).
         #[arg(long)]
@@ -1457,8 +1461,9 @@ pub(crate) enum RoomOwnerCommands {
         /// When it expires, RFC 3339. Absent: no expiry of its own.
         #[arg(long, conflicts_with = "valid_for")]
         valid_until: Option<String>,
-        /// When it expires, from now: `N[s|m|h|d|w]`.
-        #[arg(long)]
+        /// When it expires, from now: `N[s|m|h|d|w]`. `--expires`, as every
+        /// lapsing grant spells it (#2589); `--valid-for` is the older name.
+        #[arg(long = "expires", visible_alias = "valid-for", value_name = "DURATION")]
         valid_for: Option<String>,
         /// Where to write the credential (JSON).
         #[arg(long)]
@@ -1486,15 +1491,17 @@ pub(crate) enum RoomOwnerCommands {
         /// `read`, `write`, `curate` or `admin`. Repeat, or separate with commas.
         #[arg(long = "action", value_delimiter = ',', required = true)]
         actions: Vec<String>,
-        /// When it expires, RFC 3339. One of this or `--valid-for` is required.
+        /// When it expires, RFC 3339. One of this or `--expires` is required.
         #[arg(
             long,
             conflicts_with = "valid_for",
             required_unless_present = "valid_for"
         )]
         valid_until: Option<String>,
-        /// When it expires, from now: `N[s|m|h|d|w]` (e.g. `90d`).
-        #[arg(long)]
+        /// When it expires, from now: `N[s|m|h|d|w]` (e.g. `90d`). `--expires`,
+        /// as every lapsing grant spells it (#2589); `--valid-for` is the older
+        /// name.
+        #[arg(long = "expires", visible_alias = "valid-for", value_name = "DURATION")]
         valid_for: Option<String>,
         /// Where to write the credential (JSON).
         #[arg(long)]
@@ -2185,9 +2192,10 @@ pub(crate) enum CollectionCommands {
         /// The persona DID to collect for.
         #[arg(long, value_name = "DID")]
         identifier: String,
-        /// How long the claim should last, in seconds (60–2592000; the VTA may grant less).
-        /// Twenty-four hours (86400) is the recommended lease.
-        #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(60..=2_592_000))]
+        /// How long the claim should last: `N[s|m|h|d|w]` or seconds, 1m–30d
+        /// (the VTA may grant less). Twenty-four hours (`24h`) is the
+        /// recommended lease.
+        #[arg(long, value_name = "DURATION", value_parser = collection_lease_secs)]
         duration: Option<i64>,
     },
     /// Release the claim for a persona DID: yours ends at once (stop collecting first);
@@ -3971,9 +3979,9 @@ pub(crate) enum DidcommCommands {
         /// Provision this VTA's ACL on the target mediator before the handshake.
         #[arg(long, conflicts_with = "force")]
         setup_acl: bool,
-        /// Drain window for the prior mediator (seconds).
+        /// Drain window for the prior mediator: `N[s|m|h|d|w]` or seconds.
         /// Default: 24h per spec §3.6.
-        #[arg(long, default_value_t = 86_400)]
+        #[arg(long, default_value = "86400", value_parser = vta_cli_common::duration::secs_arg)]
         drain_ttl: u64,
         #[arg(long)]
         force: bool,
@@ -3986,8 +3994,8 @@ pub(crate) enum DidcommCommands {
     Disable {
         /// 0 = immediate teardown over REST transport. Server
         /// enforces a 1h minimum when invoked over DIDComm
-        /// transport (spec §3.6).
-        #[arg(long, default_value_t = 86_400)]
+        /// transport (spec §3.6). `N[s|m|h|d|w]` or seconds.
+        #[arg(long, default_value = "86400", value_parser = vta_cli_common::duration::secs_arg)]
         drain_ttl: u64,
     },
     /// Fail-forward the most recent DIDComm mutation by re-applying
@@ -3996,8 +4004,8 @@ pub(crate) enum DidcommCommands {
     Rollback {
         /// Drain window for the demoted mediator (seconds) when
         /// the rollback dispatches into update / disable. Default:
-        /// 24h. Omitted = use server-side default.
-        #[arg(long)]
+        /// 24h. Omitted = use server-side default. `N[s|m|h|d|w]` or seconds.
+        #[arg(long, value_parser = vta_cli_common::duration::secs_arg)]
         drain_ttl: Option<u64>,
     },
     /// Drain-set management.
@@ -5386,6 +5394,19 @@ pub(crate) fn print_banner() {
 /// process out. Operations like a stuck mediator handshake can hold the
 /// async runtime for tens of seconds even though the runtime itself
 /// observed the signal — without this, the operator has no escape.
+/// `collection claim --duration`: a duration (`24h`) or seconds, held to the
+/// 1-minute – 30-day range the claim takes (#2589).
+fn collection_lease_secs(s: &str) -> Result<i64, String> {
+    let n = vta_cli_common::duration::secs_arg_i64(s)?;
+    if (60..=2_592_000).contains(&n) {
+        Ok(n)
+    } else {
+        Err(format!(
+            "{s} is {n} seconds; a claim lasts 60 to 2592000 (1m to 30d)"
+        ))
+    }
+}
+
 pub(crate) fn install_force_exit_handler() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
