@@ -810,8 +810,8 @@ When adding a flow, add it here and a line to the root index.
   a departed granter's grants go to `acl.grants.review` (`gitGrants`) and are
   withdrawn at the deadline. The old `rights:*` rows are migrated at boot and
   on backup import (`git_ns::migrate`); unmappable ones are kept inert under
-  `rights-unmapped:*` with an acknowledge item. The admin REST routes (`/v1/git-ns/*`) are read-only
-  console projections; the administrator's view, namespace and repository
+  `rights-unmapped:*` with an acknowledge item. The former admin REST routes (`/v1/git-ns/*`) are gone;
+  the administrator's view, namespace and repository
   listings and break-glass list are signed reads (`git-ns/view/0.6`,
   `git-ns/namespace/list`, `git-ns/repo/list` in `git_ns::admin_reads`),
   answered to a namespace's administrators only, never to a bearer session.
@@ -856,7 +856,7 @@ When adding a flow, add it here and a line to the root index.
   The bridge's `event` (0.6) and `result` (0.2) are served at their current
   version only.
 - **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
-  `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
+  `bridge`, `lifecycle`, `admin_reads`),
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.
 - **Docs**: `docs/03-vtc/git-namespaces.md`.
 

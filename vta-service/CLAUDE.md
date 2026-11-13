@@ -365,7 +365,7 @@ When adding a flow, add it here and a line to the root index.
   admin credential.
 - **Derivation**: `m/26'/2'/<ctx_idx>'/<key_idx>'` — the context's BIP-32
   base path is allocated at creation and is immutable.
-- **Code**: `vta-service/src/routes/contexts.rs`,
+- **Code**: `vta-service/src/trust_tasks/contexts.rs`,
   `vta-service/src/operations/contexts.rs`.
 
 ### Provision-integration (template-driven)
@@ -421,10 +421,10 @@ When adding a flow, add it here and a line to the root index.
   opener is refused it by name. Never add a provision wire member for the
   method; a spec change goes to dtgwg-trust-tasks-tf first. Tests inject the
   host through `WebsHostSource` (`provision_integration_with`).
-- **Code**: `vta-service/src/operations/provision_integration.rs`,
+- **Code**: `vta-service/src/operations/provision_integration/` (a module directory),
   `vta-sdk/src/provision_integration/{http,didcomm}.rs`,
-  `vta-service/src/routes/bootstrap.rs:provision_integration`,
-  `vta-service/src/messaging/handlers.rs:handle_provision_integration`.
+  `vta-service/src/trust_tasks/provision_integration.rs` (the
+  `provision/integration/0.3` Trust Task — the only way in; no REST route).
 - **Docs**: `docs/02-vta/provision-integration.md`.
 
 ### Runtime service management
@@ -859,10 +859,10 @@ When adding a flow, add it here and a line to the root index.
   a hosted DID at a different host needs coordinated teardown on
   the old host and is out of scope for this op).
 - **CLI**: `pnm did-mgmt dids register --did <did> --server <id>
-  [--domain <name>]` (online, REST). `vta did-mgmt dids register …`
+  [--domain <name>]` (online, a Trust Task). `vta did-mgmt dids register …`
   (offline; daemon must be stopped, fjall lock; not available in TEE).
-- **Code**: `vta-service/src/operations/did_webvh/register_server.rs`,
-  `vta-service/src/routes/did_webvh.rs::register_did_with_server_handler`,
+- **Code**: `vta-service/src/operations/did_webvh/register_server.rs`
+  (`register_did_with_server`),
   `vta_sdk::client::VtaClient::register_did_with_server`.
 - **Docs**: `docs/02-vta/runtime-service-management.md`
   (walkthrough section).
@@ -893,7 +893,7 @@ When adding a flow, add it here and a line to the root index.
   server before the first create / register.
 - **Code**: `vta-service/src/webvh_host.rs`,
   `vta-service/src/operations/did_webvh/{mod,servers,host,register_server}.rs`,
-  `vta-service/src/routes/did_webvh.rs::list_server_domains_handler`,
+  `vta-service/src/operations/did_webvh/servers.rs::list_webvh_server_domains`,
   `vta_sdk::client::VtaClient::list_webvh_server_domains`,
   `pnm-cli/src/commands/webvh.rs` (interactive prompt +
   list-domains dispatch).
@@ -902,8 +902,9 @@ When adding a flow, add it here and a line to the root index.
 
 ### DID template management
 - **Offline**: `pnm did-templates init <kind>`, `validate`, `list-builtins`.
-- **Online**: `pnm did-templates list/show/create/update/delete` →
-  REST `/did-templates` (global) or `/contexts/{id}/did-templates` (scoped).
+- **Online**: `pnm did-templates list/show/create/update/delete` → the
+  `vta/did-templates/*` Trust Tasks (global, or context-scoped by the payload's
+  `contextId`).
 - **Built-ins** (`vta_sdk::did_templates::BUILTIN_NAMES`, shipped with
   the SDK, always available): `ai-agent`, `ai-agent-peer`,
   `ballot-box`, `did-host-didcomm`, `did-host-http`, `did-host-http-didcomm`,
@@ -919,7 +920,7 @@ When adding a flow, add it here and a line to the root index.
   valid as an *integration kind* and as a service/binary name; it is only
   retired as a template name.)
 - **Code**: `vta-sdk/src/did_templates/`,
-  `vta-service/src/routes/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
+  `vta-service/src/trust_tasks/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
 - **Docs**: `docs/02-vta/did-templates.md`.
 
 ### A room's own profile (`rooms/keys/profile/{read,write}`)

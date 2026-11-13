@@ -53,11 +53,11 @@ members = [
   # `publish = false`, not a default member — a bare `cargo build` of the
   # VTA/VTC need not compile it, and CI's `--workspace` runs still do.
   "vti-witness",
-  # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: `publish = false`,
-  # reached only from `vtc-service`'s off-by-default `vetting-pcs` feature.
+  # Hidden-vetter admission (ZKP): published, because `vta-service` (the VTA's
+  # PCS engine) and `vtc-service` (feature `vetting-pcs`) depend on it.
   "vti-vetting-pcs",
-  # Community voting on PCS (design: community voting, draft VTI-VOT-*):
-  # `publish = false` until its first published consumer, not a default member.
+  # Community voting on PCS (VTI-VOT-*): published, because `vta-service` and
+  # `vtc-service` depend on it; not a default member.
   "vti-voting",
   # The voting service binary (a ballot box host service): `publish = false`,
   # not a default member.
