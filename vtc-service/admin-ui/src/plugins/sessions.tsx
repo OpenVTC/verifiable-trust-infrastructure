@@ -115,6 +115,10 @@ export function Sessions() {
   });
 
   const allSessions = sessionsQuery.data ?? [];
+  // Only a list that loaded may be counted, filtered or called empty: a
+  // refused or failed read is not "nobody is signed in", which is false by
+  // construction while the viewer is (#2606).
+  const loaded = sessionsQuery.isSuccess;
   const myDid = whoami?.session.subject;
   const mySessionId = whoami?.session.id;
 
@@ -167,7 +171,7 @@ export function Sessions() {
   return (
     <section className="page">
       <PageHeader
-        count={sessionsQuery.isPending ? undefined : allSessions.length}
+        count={loaded ? allSessions.length : undefined}
         countLabel={`${allSessions.length} active sessions`}
         lead={
           <>
@@ -184,7 +188,25 @@ export function Sessions() {
         </section>
       )}
 
-      {!sessionsQuery.isPending && (
+      {sessionsQuery.isError && (
+        <section className="card error" role="alert">
+          <h3>Couldn't load the sessions</h3>
+          <p>{(sessionsQuery.error as Error).message}</p>
+          <div>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void sessionsQuery.refetch()}
+              disabled={sessionsQuery.isFetching}
+              aria-busy={sessionsQuery.isFetching}
+            >
+              Retry
+            </button>
+          </div>
+        </section>
+      )}
+
+      {loaded && (
         <section className="card">
           <div className="toolbar">
             <Field label="Filter" inline>
@@ -205,7 +227,7 @@ export function Sessions() {
         </section>
       )}
 
-      {sessions.length === 0 && !sessionsQuery.isPending && (
+      {sessions.length === 0 && loaded && (
         <section className="card">
           <EmptyState
             icon={Smartphone}
