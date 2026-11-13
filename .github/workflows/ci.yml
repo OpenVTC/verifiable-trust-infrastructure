@@ -151,7 +151,7 @@ jobs:
       # version deliberately; install-action knows the versions its own
       # release lists, so bump the action first when a newer one is wanted.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-nextest@0.9.150
 
@@ -235,7 +235,7 @@ jobs:
       # version deliberately; install-action knows the versions its own
       # release lists, so bump the action first when a newer one is wanted.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-nextest@0.9.150
 
@@ -335,7 +335,7 @@ jobs:
       # version deliberately; install-action knows the versions its own
       # release lists, so bump the action first when a newer one is wanted.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-nextest@0.9.150
 
@@ -590,7 +590,7 @@ jobs:
       # every other job (rust-toolchain.toml).
       - name: Install the Rust toolchain
         run: bash scripts/install-rust-toolchain.sh
-      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-machete
       - name: No unused dependencies
@@ -712,7 +712,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
-      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-semver-checks
 
@@ -794,7 +794,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
-      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-semver-checks
 
@@ -1377,7 +1377,7 @@ jobs:
         run: |
           echo "version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)" \
             >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
       - name: vti-rooms-wasm artifact
@@ -1867,7 +1867,7 @@ jobs:
         run: bash scripts/install-rust-toolchain.sh --target "$TARGETS"
 
       - if: matrix.platform == 'android'
-        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-ndk
 
