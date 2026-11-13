@@ -138,7 +138,7 @@ admin-ui = ["website"]
 # enumeration (`vti_secrets::discovery`) both live in `vti-secrets` now, so
 # these features just activate the matching `vti-secrets/<feature>` — the VTC
 # no longer carries the cloud SDKs / kube client directly.
-keyring = ["dep:keyring-core", "vta-sdk/keyring", "vti-secrets/keyring"]
+keyring = ["vta-sdk/keyring", "vti-secrets/keyring"]
 config-secret = ["vti-secrets/config-seed"]
 aws-secrets = ["vti-secrets/aws-secrets"]
 gcp-secrets = ["vti-secrets/gcp-secrets"]
@@ -173,7 +173,7 @@ path = "tests/it/main.rs"
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.21", optional = true }
 vti-voting = { path = "../vti-voting", version = "0.17", optional = true }
-predicate-credential-system = { version = "0.1", optional = true }
+predicate-credential-system = { workspace = true, optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.35" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.37" }
 vti-common = { path = "../vti-common", version = "0.64", features = [
@@ -203,11 +203,10 @@ vti-common = { path = "../vti-common", version = "0.64", features = [
 # object request is then a SigV4 presigned request made here with that scoped
 # credential. `default-features = false` for the reason `vta-tee` gives: the SDKs'
 # default `rustls` feature pulls the legacy rustls 0.21 stack.
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-config = { workspace = true }
 aws-sdk-sts = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", default-features = false, features = ["sign-http", "http1"] }
 aws-credential-types = "1"
-aws-smithy-runtime-api = { version = "1", features = ["client"] }
 # Not called from this crate — a resolver bound, explained in the workspace
 # manifest (`aws-config` above pulls `aws-smithy-json` 0.63).
 aws-smithy-types.workspace = true
@@ -218,7 +217,7 @@ aws-smithy-types.workspace = true
 google-cloud-auth = "1"
 # The same `object_store` `vti-common`'s `blob-gcs` store wraps: named here for its
 # credential hook, which hands each room's store its own downscoped token.
-object_store = { version = "0.14", default-features = false, features = ["gcp"] }
+object_store = { workspace = true, features = ["gcp"] }
 # ECMA-262 regular expressions: a directory field's `pattern` constraint is one
 # (`vtc/directory/_shared/0.1/field-definition`). Already in the graph through
 # trust-tasks-rs's schema validation, which reads `pattern` the same way.
@@ -265,16 +264,13 @@ affinidi-tdk = { workspace = true }
 affinidi-messaging-delivery = { workspace = true }
 affinidi-messaging-core = { workspace = true }
 # `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
-futures-util = "0.3"
+futures-util = { workspace = true }
 # Trust Task document framework — `TrustTask<P>`, `respond_with`,
 # `reject_with`, `RejectReason`, `TypeUri` (join-request ceremony flow).
-# `trust-tasks-https` provides `status_for_code` for the HTTP status of a
-# reject document.
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
 vti-specs = { path = "../vti-specs", version = "0.13" }
-trust-tasks-https = { workspace = true }
 # W3C VC builder + Data Integrity proof signing/verification. Used
 # by `crate::credentials` for VMC + VEC issuance (Phase 2 M2.9).
 # Same crates as `vta-sdk::provision_integration::credential` —
@@ -308,7 +304,7 @@ affinidi-oid4vc-core = { workspace = true, features = ["jwe"] }
 # An EUDI verifier's access certificate: the CSR `vtc oid4vp csr` writes (no
 # crypto backend — the identity's own key signs it) and the chain
 # `vtc oid4vp certificate` checks (`crate::oid4vp::x509`).
-rcgen = { version = "0.14", default-features = false, features = ["pem"] }
+rcgen = { workspace = true, features = ["pem"] }
 x509-parser = { workspace = true }
 # OID4VCI — the issuer side of credential-exchange (offer/request/issue);
 # the body the `credential-exchange/*` Trust Tasks carry (Phase 3 §6).
@@ -335,7 +331,7 @@ subtle = { workspace = true }
 # message handler in `messaging.rs` (M1.8.2). The service crate
 # accepts `Message` / `UnpackMetadata` by value but doesn't
 # re-export them.
-affinidi-messaging-didcomm = "0.15.9"
+affinidi-messaging-didcomm = { workspace = true }
 # Embedded in-process test mediator for the `transport-harness` feature
 # (`MockVtc::start_didcomm`, #436). Optional + feature-gated so it never
 # enters a production build; same crate the e2e suite uses.
@@ -346,14 +342,10 @@ affinidi-messaging-didcomm = "0.15.9"
 # mediator-side twin of the client-side failure this crate's TSP work is about.
 # Always on (not conditioned on this crate's `tsp`): the harness is test-only,
 # and a mediator that can route TSP is harmless to the DIDComm suite.
-affinidi-messaging-test-mediator = { version = "0.50", optional = true, features = [
-    "tsp",
-] }
-tokio-util = { workspace = true, features = ["rt"] }
+affinidi-messaging-test-mediator = { workspace = true, optional = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 base64 = { workspace = true }
 axum = { workspace = true }
-axum-extra = { workspace = true }
 # OpenAPI: `OpenApiRouter` makes the router the source of truth for the served
 # `/openapi.json`; `utoipa` provides `#[utoipa::path]` + `ToSchema` derives.
 utoipa = { workspace = true }
@@ -366,14 +358,14 @@ tower-http = { workspace = true, features = ["cors", "trace", "timeout"] }
 # Every per-IP and per-signer limit: the unauthenticated chain's layer and the
 # HTTPS Trust Task door's own limiters (`routing::trust_task_admission`), which
 # share the layer's per-address budget.
-affinidi-rate-limit = "0.1.4"
+affinidi-rate-limit = { workspace = true }
 ipnetwork = { workspace = true }
 # Local `.mmdb` GeoIP reader (`crate::geoip`) — never a third-party call.
 maxminddb = { workspace = true }
 mime_guess = { version = "2", optional = true }
-unicode-normalization = { version = "0.1", optional = true }
+unicode-normalization = { workspace = true, optional = true }
 tar = { version = "0.4", optional = true }
-flate2 = { version = "1", optional = true }
+flate2 = { workspace = true, optional = true }
 include_dir = { version = "0.7", optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -385,9 +377,8 @@ ed25519-dalek = { workspace = true }
 # SEC1 point validation and compression ONLY, for the did:key of a P-256
 # install passkey (`vtc/install/claim/passkey/finish/0.1` item 5). Already in
 # the dependency graph through vta-keys.
-p256 = "0.14"
+p256 = { workspace = true }
 hex = { workspace = true }
-keyring-core = { workspace = true, optional = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
@@ -401,23 +392,19 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 hkdf = { workspace = true }
 x25519-dalek = { workspace = true }
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { workspace = true, features = ["derive"] }
 multibase = { workspace = true }
 # CBOR decode for the bbs-2023 derived proofValue (extracting the embedded
 # presentation header + pseudonym tag in the verifier). Optional, pulled in by
 # the `bbs` feature; also a dev-dependency for non-bbs test parsing.
-ciborium = { version = "0.2", optional = true }
+ciborium = { workspace = true, optional = true }
 # Rego policy interpreter (Phase 2 M2.1). Hosted in `crate::policy`.
 # Spec §3-J + §7: regorus runs in-process; no external OPA sidecar.
 regorus = { workspace = true }
 url = { workspace = true, optional = true }
-# BIP-39 mnemonic parsing for `vtc admin emergency-bootstrap` (M0.10).
-# Same pin as `vta-service`.
-bip39 = "3"
 # Argon2id for hashing admin-invite claim secrets (the out-of-band
-# code the invitee types alongside the install URL). Same pin as
-# `vta-service`'s backup-password KDF.
-argon2 = "0.6"
+# code the invitee types alongside the install URL).
+argon2 = { workspace = true }
 # AES-256-GCM for the encrypted backup/restore payload (P3.9). Same
 # workspace pin as `vta-service`'s backup feature.
 aes-gcm = { workspace = true }
@@ -429,28 +416,28 @@ gethostname = "1"
 # them through `webauthn-rs::prelude` (which re-exports them but
 # also surfaces ~300 unrelated symbols).
 webauthn-rs = { workspace = true }
-webauthn-rs-proto = "0.5"
+webauthn-rs-proto = { workspace = true }
 # `async_trait` is the dyn-compatibility helper for the
 # `emergency::VtaRecoveryProver` trait so production code +
 # integration tests can swap in their own provers.
-async-trait = "0.1"
+async-trait = { workspace = true }
 # did:key ↔ public-key conversions (X25519 derivation, did:key minting).
 affinidi-crypto = { workspace = true }
 # Optional — only compiled under the `test-support` feature, which the
 # `test_support` module (and downstream harnesses) need for tempdir-
 # backed stores. Also a `[dev-dependencies]` entry for the crate's own
 # `cargo test` (no feature flag) — both must stay in sync.
-tempfile = { version = "3", optional = true }
+tempfile = { workspace = true, optional = true }
 # Renders the community DID as an SVG QR code for the landing page
 # (`GET /v1/community/did-qr.svg`). SVG only — the default `image`
 # feature would pull the whole `image` crate in for nothing.
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+qrcode = { workspace = true }
 
 [dev-dependencies]
 trust-tasks-rs = { workspace = true }
 # Signs ES256K holder signatures in tests; the service only verifies them,
 # through `vta_sdk::jws`.
-k256 = { version = "0.14", features = ["ecdsa"] }# Signed room fixtures. Cargo unifies this feature with the normal dependency
+k256 = {workspace = true, features = ["ecdsa"]}# Signed room fixtures. Cargo unifies this feature with the normal dependency
 # above, so the fixtures reach tests without shipping in the service binary.
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.37", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under
@@ -465,7 +452,7 @@ vtc-service = { path = ".", features = ["test-support", "transport-harness"] }
 # `didcomm`: `tests/backup_didcomm.rs` drives the backup over a live session;
 # `tsp`: `tests/git_ns_vtc_client.rs` drives the git-ns calls over TSP too.
 vtc-client = { path = "../vtc-client", features = ["tsp"] }
-tempfile = "3"
+tempfile = { workspace = true }
 # The voting service itself (`publish = false`, so path-only and stripped from the published
 # package): `tests/it/election_tasks.rs` runs a real ballot box on the harness's mediator and
 # registers, reads and certifies through the community's production link to it.
@@ -485,18 +472,18 @@ affinidi-keri-core = { workspace = true }
 affinidi-keri-crypto = { workspace = true }
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.
-http-body-util = "0.1"
-tower = { version = "0.5", features = ["util"] }
+http-body-util = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 # CBOR encoding for the soft Ed25519 authenticator harness
 # (`tests/common/webauthn_harness.rs`). Produces the CTAP attestation
 # object + COSE public key on the same wire shape `webauthn-rs-core`
 # parses (it uses `serde_cbor_2` internally — `ciborium` is canonical
 # enough for both to agree).
-ciborium = "0.2"
+ciborium = { workspace = true }
 # Local HTTP server for the foreign-fetch hardening tests (P0.4): drives the
 # shared client's redirect-none / timeout / body-cap behaviour against a real
 # socket. Same version the rest of the workspace pins.
-wiremock = "0.6"
+wiremock = { workspace = true }
 
 [lints]
 workspace = true

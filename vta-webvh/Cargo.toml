@@ -28,5 +28,8 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 tokio = { workspace = true }
+
+[lints]
+workspace = true

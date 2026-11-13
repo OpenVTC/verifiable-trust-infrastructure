@@ -30,9 +30,7 @@ tsp = ["vta-sdk/tsp"]
 [dependencies]
 vta-sdk = { path = "../vta-sdk", version = "0.88", features = ["session", "sealed-transfer", "attest-verify", "provision-integration", "crypto-provider", "acl-setup"] }
 affinidi-crypto = { workspace = true }
-base64 = { workspace = true }
 reqwest = { workspace = true }
-sha2 = { workspace = true }
 # `agent-names` powers the global `--resolve-agent-names` flag; without it
 # the flag parses but can never resolve anything.
 vta-cli-common = { path = "../vta-cli-common", version = "0.61", features = [
@@ -50,19 +48,28 @@ dialoguer = { workspace = true }
 affinidi-messaging-mediator-admin = "0.50"
 affinidi-messaging-mediator-tui = "0.50"
 affinidi-secrets-resolver = { workspace = true }
-async-trait = "0.1"
+async-trait = { workspace = true }
 ratatui = { workspace = true }
 ed25519-dalek = { workspace = true }
-hex = "0.4"
+hex = { workspace = true }
 multibase = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-zeroize = "1"
+zeroize = { workspace = true }
 
-[lints]
-workspace = true
+# The workspace lint table with `unsafe_code` at `deny`, not `forbid` (#2658):
+# this crate needs `unsafe` for `std::env::set_var` at startup. Each such
+# statement carries `#[allow(unsafe_code)]` beside its SAFETY comment.
+# `scripts/check-workspace-lints.py` holds this table to `[workspace.lints]`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+needless_pass_by_value = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"

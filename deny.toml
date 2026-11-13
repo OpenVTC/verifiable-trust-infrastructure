@@ -4,28 +4,33 @@
 #   cargo install cargo-deny
 #   cargo deny check
 #
-# Primary purpose today: advisory suppression with documented justification.
-# The ignored GHSAs below are all (a) transitive-only, (b) low severity, and
-# (c) unpatched in the upstream major version we currently depend on. Each
-# entry states the attack surface, why it does not apply to our workloads,
-# and the upstream condition that would let us drop the ignore.
+# Four checks, all enforced in CI (`cargo deny check advisories bans sources
+# licenses`, ci.yml's `cargo-deny` job, which also scans the enclave proxy's
+# separate workspace against this file):
+#
+#   advisories  every ignore states the attack surface, why it does not apply
+#               to our workloads, and the upstream condition that drops it.
+#   bans        no `rsa` or `openssl` beyond the one dependent each is allowed,
+#               no wildcard requirements, and no second version of a crate
+#               without an entry in `skip` saying where it comes from.
+#   sources     crates.io only: no git dependency, no other registry.
+#   licenses    the allow-list below.
 
 [graph]
 # Scan the graph with every feature on, not just the default set.
 #
-# This is a coverage fix, not a preference. The AWS SDK stack — and with it
-# `hyper` 0.14, `h2` 0.3 and `rustls` 0.21, which is where most of the ignores
-# below point — reaches the graph only through the `tee` feature. A
-# default-feature scan therefore never sees those crates, so it was neither
-# enforcing the ignores nor, more importantly, able to catch a NEW advisory
-# anywhere in that path. The advisories most worth catching were the ones not
-# being checked.
+# This is a coverage fix, not a preference. Much of the graph reaches it only
+# through optional features: the AWS SDK stack behind `tee`, OpenMLS's
+# provider behind `vtc-client`'s `mls`, the cloud secret stores behind their
+# `*-secrets` features. A default-feature scan never sees those crates, so it
+# can neither enforce an ignore that points into them nor catch a NEW advisory
+# there — and the advisories most worth catching are the ones not being
+# checked. (When this was added, the AWS stack still carried `hyper` 0.14,
+# `h2` 0.3 and `rustls` 0.21; it no longer does.)
 #
-# The visible symptom was cargo-deny reporting most of the list below as
-# `advisory-not-detected` — which reads as "these are stale, delete them" and
-# is exactly the wrong conclusion: they are live, just out of frame. Turning
-# this on makes the warning mean what it says, so a genuinely stale entry
-# stands out instead of hiding among false ones.
+# It also makes `advisory-not-detected` mean what it says: an ignore reported
+# that way under an all-features scan is stale and is deleted, rather than
+# merely out of frame.
 all-features = true
 
 [advisories]
@@ -64,25 +69,14 @@ ignore = [
   build script, which reads one pinned entry and never extracts); drop with it.
   """ },
 
-  { id = "RUSTSEC-2026-0381", reason = """
-  webpki-roots 0.26.x: bundled roots trust distrusted emSign intermediates.
-  Patched only in >= 1.0.10; there is no fixed 0.26 release.
-
-  0.26.11 is a compatibility shim with no roots of its own: it re-exports
-  webpki-roots 1.x, which Cargo.lock pins at 1.0.10, the patched release. So
-  the roots any 0.26 user (tokio-tungstenite 0.30, under the messaging SDK,
-  the test mediator and vta-mobile-core) actually gets are the fixed ones; the
-  advisory matches on the shim's version number alone.
-
-  Drop when tokio-tungstenite depends on webpki-roots 1.x directly.
-  """ },
 
   { id = "RUSTSEC-2026-0387", reason = """
   crypto-bigint: secret-dependent branches in operations meant to be
   constant-time. Patched only in >= 0.7.6; there is no fixed 0.5 release.
 
-  Cargo.lock pins the 0.7 line at 0.7.6, and that line is what the
-  workspace's own P-256 / secp256k1 keys run on (p256 / k256 0.14). The
+  Cargo.lock pins the 0.7 line at 0.7.11 (0.7.6 was yanked), and that
+  line is what the workspace's own P-256 / secp256k1 keys run on (p256 /
+  k256 0.14). The
   residue is 0.5.5, reached only through elliptic-curve 0.13: OpenMLS's
   provider (vti-rooms, whose ciphersuite is X25519 / Ed25519), rPGP (cnm's
   web-of-trust reader, verify-only), and bls12_381_plus under affinidi-bbs,
@@ -132,14 +126,6 @@ ignore = [
   """ },
 
 
-  { id = "RUSTSEC-2024-0436", reason = """
-  paste 1.0.x is unmaintained. Build-time only: a proc-macro for token
-  pasting pulled by uniffi_core / uniffi_bindgen (again via
-  vta-mobile-core's UniFFI scaffolding). No runtime code; "unmaintained"
-  is the only flagged risk.
-
-  Drop when uniffi (0.28.x) removes its `paste` dependency.
-  """ },
 
   { id = "RUSTSEC-2026-0173", reason = """
   proc-macro-error2 2.0.1 is unmaintained — the author has said so and
@@ -198,4 +184,196 @@ allow = [
   "CDLA-Permissive-2.0",
   "Zlib",
   "MPL-2.0",
+]
+
+# Where a crate may come from: crates.io, nothing else (#2654). A git
+# dependency or an alternate registry is a supply-chain decision, not a
+# convenience; making one means adding it here, in review.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[bans]
+# A `*` requirement accepts any release, including one published tomorrow.
+wildcards = "deny"
+# Path dependencies between workspace members carry no version on purpose
+# where they are dev-only (release-plz ordering; see
+# `scripts/check-workspace-version-reqs.py`), and those read as wildcards.
+allow-wildcard-paths = true
+# A second version of a crate is a second copy of its code to compile and to
+# track for advisories. Each one this workspace carries is listed in `skip`
+# below with the dependents that pull it; a new one fails CI until it is
+# either removed or listed with its reason.
+multiple-versions = "deny"
+# Crates the workspace must not depend on except through the one dependent
+# that needs them. `wrappers` names the only crates allowed to pull each in; a
+# second user — including a member depending on it directly — fails.
+deny = [
+  # CLAUDE.md: "Don't reintroduce `rsa`". rPGP verifies RSA signatures for
+  # `cnm vetting bootstrap-pgp` (public keys only; see RUSTSEC-2023-0071 above).
+  { crate = "rsa", wrappers = ["pgp"], reason = "RUSTSEC-2023-0071 (Marvin); only rPGP's verify-only path may pull it" },
+  # webauthn-rs 0.5 links OpenSSL for attestation parsing. Its 0.6 line drops
+  # it but is blocked (workspace Cargo.toml, `webauthn-rs`).
+  { crate = "openssl", wrappers = ["webauthn-rs-core", "webauthn-attestation-ca"], reason = "only webauthn-rs 0.5 may link OpenSSL; everything else uses aws-lc-rs" },
+]
+# The skip list: every duplicate the graph (and the enclave proxy's graph)
+# carried when `multiple-versions = "deny"` was turned on, grouped by cause.
+# Each entry covers every version below the one the workspace is on, so a
+# patch release on the old line does not fail CI; `reason` names the
+# immediate dependents. When a cause goes away, delete its entries: the root
+# scan reports a skip that no longer matches anything as `unmatched-skip`. (The
+# enclave proxy's scan reads this file too and reports most entries that way,
+# since its graph is far smaller; only the root scan's report is the signal.)
+skip = [
+  # The previous RustCrypto generation (digest 0.10, cipher 0.4, aead 0.5,
+  # elliptic-curve 0.13, signature 2, rand_core 0.6) beside the workspace's own
+  # (digest 0.11, elliptic-curve 0.14, ed25519-dalek 3). Pulled by crates that
+  # have not moved yet: rPGP 0.21 (`cnm`'s web-of-trust reader), OpenMLS's
+  # provider (`openmls_rust_crypto` / `openmls_basic_credential` 0.6 and
+  # `hpke-rs-rust-crypto` 0.7, for `vti-rooms`), `bls12_381_plus` 0.9 under
+  # affinidi-bbs, arkworks 0.6 (PCS), `affinidi-keri-crypto`,
+  # `predicate-credential-system`, `dbus-secret-service` (the Linux keyring),
+  # and in the enclave proxy `affinidi-crypto` 0.2. Drops as each moves; rPGP
+  # and OpenMLS are the long poles.
+  { crate = "aead:<0.6", reason = "via aes-gcm, chacha20poly1305, crypto_secretbox, eax, …" },
+  { crate = "aes:<0.9", reason = "via aes-gcm, aes-kw, dbus-secret-service, pgp" },
+  { crate = "aes-gcm:<0.11", reason = "via hpke-rs-rust-crypto, openmls_rust_crypto, pgp" },
+  { crate = "argon2:<0.6", reason = "via affinidi-keri-crypto, pgp" },
+  { crate = "base16ct:<1", reason = "via elliptic-curve, p521, sec1, serdect" },
+  { crate = "blake2:<0.11", reason = "via affinidi-keri-crypto, argon2" },
+  { crate = "block-buffer:<0.12", reason = "via digest" },
+  { crate = "block-padding:<0.4", reason = "via dbus-secret-service, inout, pgp" },
+  { crate = "cbc:<0.2", reason = "via dbus-secret-service" },
+  { crate = "chacha20:<0.10", reason = "via chacha20poly1305" },
+  { crate = "chacha20poly1305:<0.11", reason = "via hpke-rs-rust-crypto, openmls_rust_crypto" },
+  { crate = "cipher:<0.5", reason = "via aes, aes-gcm, blowfish, camellia, …" },
+  { crate = "const-oid:<0.10", reason = "via der, digest, pgp, rsa" },
+  { crate = "cpufeatures:<0.3", reason = "via aes, argon2, chacha20, curve25519-dalek, …" },
+  { crate = "crypto-bigint:<0.7", reason = "via cx448, elliptic-curve" },
+  { crate = "crypto-common:<0.2", reason = "via aead, cipher, digest, universal-hash" },
+  { crate = "ctr:<0.10", reason = "via aes-gcm, eax, ocb3" },
+  { crate = "curve25519-dalek:<5", reason = "via ed25519-dalek, pgp, x25519-dalek" },
+  { crate = "der:<0.8", reason = "via ecdsa, pkcs1, pkcs8, sec1, …" },
+  { crate = "digest:<0.11", reason = "via ark-ff, ark-serialize, blake2, cmac, …" },
+  { crate = "ecdsa:<0.17", reason = "via k256, p256, p384, p521, …" },
+  { crate = "ed25519:<3", reason = "via ed25519-dalek" },
+  { crate = "ed25519-dalek:<3", reason = "via openmls_basic_credential, openmls_rust_crypto, pgp" },
+  { crate = "elliptic-curve:<0.14", reason = "via bls12_381_plus, cx448, ecdsa, k256, …" },
+  { crate = "ff:<0.14", reason = "via bls12_381_plus, elliptic-curve, elliptic-curve-tools, group" },
+  { crate = "fiat-crypto:<0.3", reason = "via curve25519-dalek" },
+  { crate = "ghash:<0.6", reason = "via aes-gcm" },
+  { crate = "group:<0.14", reason = "via bls12_381_plus, elliptic-curve, elliptic-curve-tools, pairing" },
+  { crate = "hkdf:<0.13", reason = "via dbus-secret-service, elliptic-curve, pgp" },
+  { crate = "hmac:<0.13", reason = "via hkdf, rfc6979" },
+  { crate = "inout:<0.2", reason = "via cipher" },
+  { crate = "k256:<0.14", reason = "via hpke-rs-rust-crypto, pgp, affinidi-crypto" },
+  { crate = "keccak:<0.2", reason = "via sha3" },
+  { crate = "md-5:<0.11", reason = "via pgp" },
+  { crate = "p256:<0.14", reason = "via hpke-rs-rust-crypto, openmls_basic_credential, openmls_rust_crypto, pgp, …" },
+  { crate = "p384:<0.14", reason = "via hpke-rs-rust-crypto, openmls_basic_credential, openmls_rust_crypto, pgp" },
+  { crate = "p521:<0.14", reason = "via pgp" },
+  { crate = "password-hash:<0.6", reason = "via argon2" },
+  { crate = "pem-rfc7468:<1", reason = "via der, elliptic-curve" },
+  { crate = "pkcs8:<0.11", reason = "via cx448, dsa, elliptic-curve, pkcs1, …" },
+  { crate = "poly1305:<0.9", reason = "via chacha20poly1305, crypto_secretbox" },
+  { crate = "polyval:<0.7", reason = "via ghash" },
+  { crate = "primeorder:<0.14", reason = "via p256, p384, p521" },
+  { crate = "rfc6979:<0.6", reason = "via dsa, ecdsa" },
+  { crate = "salsa20:<0.11", reason = "via crypto_secretbox" },
+  { crate = "sec1:<0.8", reason = "via elliptic-curve" },
+  { crate = "serdect:<0.4", reason = "via elliptic-curve, sec1, cx448" },
+  { crate = "sha1:<0.11", reason = "via aws-config, axum, headers, pgp, …" },
+  { crate = "sha2:<0.11", reason = "via affinidi-bbs, affinidi-rdf-encoding, bls12_381_plus, dbus-secret-service, …" },
+  { crate = "sha3:<0.12", reason = "via cx448, pgp, ml-kem" },
+  { crate = "signature:<3", reason = "via cx448, dsa, ecdsa, ed25519, …" },
+  { crate = "spki:<0.8", reason = "via ecdsa, pkcs1, pkcs8, rsa" },
+  { crate = "universal-hash:<0.6", reason = "via poly1305, polyval" },
+  { crate = "x25519-dalek:<3", reason = "via hpke-rs-rust-crypto, pgp" },
+
+  # rand 0.8 and 0.9 beside the workspace's 0.10, with their rand_core /
+  # rand_chacha / getrandom lines. rand 0.8 is a direct dependency of
+  # `vti-vetting-pcs`, `vti-voting` and `cnm-cli` (dev) because arkworks and
+  # rPGP take its traits (dependabot.yml has the detail); 0.9 comes from
+  # governor, metrics-util, tungstenite 0.29 and webauthn-rs-core. getrandom
+  # 0.2 is ring's, jsonwebtoken's and `vti-rooms`' wasm32 shim; 0.3 is
+  # jsonschema's, tempfile's and governor's.
+  { crate = "rand:<0.10", reason = "via ark-std, cnm-cli, num-bigint-dig, pgp, …" },
+  { crate = "rand_chacha:<0.10", reason = "via openmls_rust_crypto, rand, vti-vetting-pcs, vti-voting, …" },
+  { crate = "rand_core:<0.10", reason = "via bls12_381_plus, crypto-bigint, crypto-common, cx448, …" },
+  { crate = "getrandom:<0.4", reason = "via jsonwebtoken, rand_core, redox_users, ring, …" },
+  { crate = "r-efi:<6", reason = "via getrandom" },
+  { crate = "wit-bindgen:<0.57", reason = "via wasip3" },
+
+  # trust-tasks-rs 0.37 is on jsonschema 0.46 (the workspace is on 0.60), and
+  # trust-tasks-build / typify on schemars 0.8 and regress 0.11. Fixed upstream
+  # in trust-tasks-rs (a jsonschema bump is in progress there), not here.
+  { crate = "jsonschema:<0.60", reason = "via trust-tasks-rs" },
+  { crate = "jsonschema-regex:<0.60", reason = "via jsonschema" },
+  { crate = "referencing:<0.60", reason = "via jsonschema" },
+  { crate = "fancy-regex:<0.19", reason = "via jsonschema" },
+  { crate = "fraction:<0.17", reason = "via jsonschema" },
+  { crate = "regress:<0.12", reason = "via trust-tasks-rs, typify-impl" },
+  { crate = "schemars:<1", reason = "via trust-tasks-build, typify-impl, typify-macro" },
+  { crate = "schemars_derive:<1", reason = "via schemars" },
+  { crate = "serde_derive_internals:<0.30", reason = "via schemars_derive" },
+
+  # trust-tasks-https 0.37 is on jsonwebtoken 10 (the workspace is on 11).
+  # Fixed upstream in trust-tasks-https (a bump is in progress there).
+  { crate = "jsonwebtoken:<11", reason = "via trust-tasks-https" },
+
+  # webauthn-rs 0.5 (the VTA's and VTC's passkeys): base64 0.21,
+  # x509-parser 0.16 and its asn1 / der stack, thiserror 1. Its 0.6 line is
+  # blocked (Cargo.toml has the detail); drops with it.
+  { crate = "asn1-rs:<0.7", reason = "via der-parser, oid-registry, x509-parser" },
+  { crate = "asn1-rs-derive:<0.6", reason = "via asn1-rs" },
+  { crate = "der-parser:<10", reason = "via webauthn-rs-core, x509-parser" },
+  { crate = "oid-registry:<0.8", reason = "via x509-parser" },
+  { crate = "x509-parser:<0.18", reason = "via webauthn-rs-core" },
+  { crate = "thiserror:<2", reason = "via asn1-rs, rustify, webauthn-rs-core, x509-parser" },
+  { crate = "thiserror-impl:<2", reason = "via thiserror" },
+  { crate = "pastey:<0.2", reason = "via base64urlsafedata" },
+
+  # The HTTP stack one minor behind in places: axum 0.8 brings
+  # tokio-tungstenite / tungstenite 0.29 (the messaging SDK is on 0.30), and
+  # reqwest 0.13 brings tower-http 0.6 (the workspace is on 0.7). Most of the
+  # ecosystem is still on base64 0.22 (the workspace is on 0.23).
+  { crate = "tokio-tungstenite:<0.30", reason = "via axum" },
+  { crate = "tungstenite:<0.30", reason = "via tokio-tungstenite" },
+  { crate = "tower-http:<0.7", reason = "via reqwest" },
+  { crate = "base64:<0.23", reason = "via base64urlsafedata, webauthn-rs-core, webauthn-rs-proto, axum, …" },
+
+  # Build-time only: proc-macro and bindgen dependencies (syn 1 and 2 beside 3,
+  # darling, synstructure, convert_case, itertools, shlex). Nothing links into
+  # a shipped artifact; they move as the macro crates do.
+  { crate = "syn:<3", reason = "via data-encoding-macro-internal, rustify_derive, synstructure, ark-ff-asm, …" },
+  { crate = "synstructure:<0.13", reason = "via rustify_derive" },
+  { crate = "darling:<0.24", reason = "via derive_builder_core, serde_with_macros" },
+  { crate = "darling_core:<0.24", reason = "via darling, darling_macro" },
+  { crate = "darling_macro:<0.24", reason = "via darling" },
+  { crate = "convert_case:<0.10", reason = "via verus_builtin_macros" },
+  { crate = "itertools:<0.15", reason = "via bindgen, ark-ec, ratatui-core, ratatui-widgets, …" },
+  { crate = "shlex:<2", reason = "via bindgen" },
+
+  # Ordinary ecosystem lag in small utility crates, each pulled at an older
+  # version by one or two dependents (named in `reason`). Not worth a fork;
+  # they move with their parents.
+  { crate = "hashbrown:<0.17", reason = "via dashmap, governor, kasuari, metrics-util, …" },
+  { crate = "parking_lot:<0.13", reason = "via crossterm, governor, moka, object_store, …" },
+  { crate = "parking_lot_core:<0.10", reason = "via dashmap, parking_lot" },
+  { crate = "lock_api:<0.5", reason = "via dashmap, parking_lot, spin, spinning_top" },
+  { crate = "redox_syscall:<0.9", reason = "via parking_lot_core" },
+  { crate = "windows-sys:<0.61", reason = "via ring" },
+  { crate = "core-foundation:<0.10", reason = "via system-configuration" },
+  { crate = "spin:<0.12", reason = "via flume, lazy_static, crc-fast" },
+  { crate = "lru:<0.19", reason = "via ratatui-core" },
+  { crate = "miniz_oxide:<0.9", reason = "via png" },
+  { crate = "nom:<8", reason = "via asn1-rs, cexpr, der-parser, rusticata-macros, …" },
+  { crate = "num-bigint:<0.5", reason = "via ark-ec, ark-ff, ark-ff-macros, ark-serialize, …" },
+  { crate = "ordered-float:<5", reason = "via serde-value" },
+  { crate = "half:<2", reason = "via serde_cbor" },
+  { crate = "quick-xml:<0.42", reason = "via object_store" },
+  { crate = "pem:<4", reason = "via jsonwebtoken, rcgen" },
+  { crate = "untrusted:<0.9", reason = "via aws-lc-rs" },
+  { crate = "serde_json_canonicalizer:<0.4", reason = "via affinidi-data-integrity" },
+
 ]

@@ -322,6 +322,7 @@ fn request_snp_report(report_data: &[u8; 64]) -> Result<Vec<u8>, AppError> {
     // = 0xC020_5300
     const SNP_GET_REPORT: libc::c_ulong = 0xC020_5300;
 
+    #[allow(unsafe_code)]
     let ret = unsafe {
         libc::ioctl(
             dev.as_raw_fd(),

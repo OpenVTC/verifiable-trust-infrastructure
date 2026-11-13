@@ -977,6 +977,7 @@ mod fjall_config_tests {
         // SAFETY: guarded by `ENV_LOCK`, held by every test in this module
         // that touches these vars — no other test in this crate reads or
         // writes the `STORAGE_FJALL_*` names.
+        #[allow(unsafe_code)]
         unsafe {
             for var in FJALL_ENV_VARS {
                 std::env::remove_var(var);
@@ -1159,6 +1160,7 @@ mod fjall_config_tests {
             max_journal: None,
         };
         // SAFETY: serialized by `ENV_LOCK`.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("STORAGE_FJALL_BLOCK_CACHE", "8MiB");
         }
@@ -1196,6 +1198,7 @@ mod fjall_config_tests {
         clear_fjall_env();
 
         // SAFETY: serialized by `ENV_LOCK`.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("STORAGE_FJALL_MAX_JOURNAL", "1KiB");
         }

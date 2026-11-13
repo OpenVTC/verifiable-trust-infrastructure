@@ -55,7 +55,6 @@ vta-sdk = { path = "../vta-sdk", version = "0.88", features = [
 # the shared socket; without it a TSP frame is handed to the DIDComm unpacker.
 affinidi-tdk = { workspace = true, features = ["tsp"] }
 affinidi-messaging-sdk = { workspace = true, features = ["tsp"] }
-affinidi-messaging-core = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 
@@ -64,8 +63,6 @@ trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
 vti-specs = { path = "../vti-specs", version = "0.13" }
-# `ENVELOPE_TYPE`, from the crate that defines the DIDComm binding.
-trust-tasks-didcomm = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -75,11 +72,9 @@ clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-futures-util = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-rand = { workspace = true }
-anyhow = "1"
+anyhow = { workspace = true }
 
 # The witnessing itself (P2). `dtg-credentials` builds the VWC
 # (`new_witnessed_vsc`, `with_task_citation`) and parses the presented
@@ -93,19 +88,25 @@ serde_json_canonicalizer = { workspace = true }
 sha2 = { workspace = true }
 multibase = { workspace = true }
 # `trust_tasks_rs::ReplayGuard` is an `async_trait` trait.
-async-trait = "0.1"
+async-trait = { workspace = true }
 # The session challenge: 32 bytes straight from the OS RNG.
-getrandom = "0.4"
+getrandom = { workspace = true }
 
 # The resolver trait's types: `witness::ObservedResolver` tells a resolution
 # failure from a proof that does not verify. Already in the graph via vta-sdk.
 affinidi-data-integrity = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 # `store::test_fixture`: test stores copied from a pre-built template rather than
 # created keyspace by keyspace (macOS fsyncs every creation).
 vti-common = { path = "../vti-common", features = ["test-support"] }
 
 [lints]
 workspace = true
+
+# Not called from this crate: both are declared to turn their `tsp` feature on
+# (see their entries above); without it a TSP frame on the shared socket is
+# handed to the DIDComm unpacker.
+[package.metadata.cargo-machete]
+ignored = ["affinidi-tdk", "affinidi-messaging-sdk"]

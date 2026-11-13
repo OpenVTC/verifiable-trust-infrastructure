@@ -7,6 +7,9 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+# Not published: a binary an operator builds from this checkout and points an
+# MCP host at, like `vtc-mcp`; its guard lives in `vti-mcp-common`, which is
+# itself `publish = false`, so a crates.io artifact could not resolve.
 publish = false
 
 [features]
@@ -30,14 +33,17 @@ vta-sdk = { path = "../vta-sdk", version = "0.88", features = ["client", "sessio
 # every Trust Task URI rides that one approval, so per-operation consent has to
 # be asked for from this side. Without the feature there is no `Peer::elicit`
 # and `--confirm` could only ever deny.
-rmcp = { version = "3", features = ["server", "transport-io", "macros", "schemars", "elicitation"] }
-schemars = "1"
+rmcp = { workspace = true, features = ["server", "transport-io", "macros", "schemars", "elicitation"] }
+schemars = { workspace = true }
 # The per-operation guard and the call recorder, shared with `vtc-mcp` so a
 # policy fix in one bridge reaches the other.
 vti-mcp-common = { path = "../vti-mcp-common", version = "0.1" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-anyhow = "1"
+anyhow = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true, features = ["env"] }
+
+[lints]
+workspace = true
