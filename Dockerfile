@@ -27,7 +27,14 @@
 # crate needs no edit here.
 # =============================================================================
 
-ARG RUST_VERSION=1.95
+# BASE IMAGES ARE PINNED BY DIGEST (#2653), every `FROM` as `image:tag@sha256:…`.
+# A tag is a name a registry may point at new content at any time, so with
+# tags alone two builds of one commit could start from different bytes. The
+# tag stays for the reader and for Dependabot (docker ecosystem), which moves
+# tag and digest together in one pull request. The Rust version is written in
+# the `FROM` line rather than an ARG for the same reason: Dependabot does not
+# resolve an ARG-interpolated image. Keep it equal to rust-toolchain.toml
+# (scripts/check-toolchain-pins.sh warns when they drift).
 # Pinned: cargo-chef's recipe format is tied to its version, and an unpinned
 # `cargo install` would silently change the cache key across builds.
 ARG CARGO_CHEF_VERSION=0.1.78
@@ -35,7 +42,7 @@ ARG CARGO_CHEF_VERSION=0.1.78
 # -----------------------------------------------------------------------------
 # Stage 1: toolchain + cargo-chef (shared base for planner and builder)
 # -----------------------------------------------------------------------------
-FROM rust:${RUST_VERSION}-bookworm AS chef
+FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS chef
 ARG CARGO_CHEF_VERSION
 RUN cargo install cargo-chef --locked --version ${CARGO_CHEF_VERSION}
 WORKDIR /build
@@ -75,10 +82,14 @@ ARG FEATURES="setup,rest,didcomm,cli-synthesis,aws-secrets,webvh"
 # Dependency layer. No `--locked` here: cook builds from the recipe rather than
 # the real manifests, and the flag buys nothing for a warm-up whose output is
 # discarded. The real build below is locked, which is where it matters.
+#
+# The compiled tree is written INTO the layer, not into a `--mount=type=cache`
+# directory (#2652). A cache mount lives only in the BuildKit instance that
+# made it, so CI's registry cache (docker.yml) would have kept an empty cook
+# layer and every runner would compile the dependency tree again; in the layer,
+# a restored cook is the compiled dependencies. Same as Dockerfile.nitro.
 COPY --from=planner /build/recipe.json recipe.json
-RUN --mount=type=cache,target=/usr/local/cargo/registry,id=vta-cargo-registry \
-    --mount=type=cache,target=/build/target,id=vta-cargo-target,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json \
+RUN cargo chef cook --release --recipe-path recipe.json \
         --package vta-service \
         --no-default-features --features ${FEATURES}
 
@@ -86,16 +97,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=vta-cargo-registry \
 # Cargo.lock and cannot silently resolve a different dependency set than CI
 # tested.
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry,id=vta-cargo-registry \
-    --mount=type=cache,target=/build/target,id=vta-cargo-target,sharing=locked \
-    cargo build --release --locked --package vta-service \
+RUN cargo build --release --locked --package vta-service \
         --no-default-features --features ${FEATURES} && \
     cp target/release/vta /build/vta-bin
 
 # -----------------------------------------------------------------------------
 # Stage 4: runtime
 # -----------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
 
 # libdbus-1-3 is the runtime half of the libdbus-1-dev link above; wget backs
 # the HEALTHCHECK.

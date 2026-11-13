@@ -1656,7 +1656,7 @@ async fn handle_members_remove(
     // already and are never restored, so nothing is asked of the VTA
     // (`vtc/rooms/community/remove/0.1`).
     let closed_for_good = room.status.state.withdrew_everyone_for_good();
-    if !closed_for_good && !(withdrawn && room.visibility == "private") {
+    if !(closed_for_good || (withdrawn && room.visibility == "private")) {
         let Some(holder) = state.community_rooms.key_holder() else {
             return refuse(
                 &doc,

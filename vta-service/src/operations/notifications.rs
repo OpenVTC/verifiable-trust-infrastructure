@@ -629,7 +629,7 @@ pub async fn sweep_lapsed(
     let mut removed = 0;
     for rec in records_in(ks.prefix_iter_raw("held:").await?) {
         let lapsed = rec.lapsed_at.or(rec.valid_until);
-        if !lapsed.is_some_and(|at| at <= horizon) {
+        if lapsed.is_none_or(|at| at > horizon) {
             continue;
         }
         discard(ks, &rec).await?;

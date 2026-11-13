@@ -9,9 +9,13 @@ name: Backport
 #
 # pull_request_target, so it runs with this repository's token even for a PR
 # from a fork. It checks out no PR code to run: the action only cherry-picks
-# the commits a maintainer already merged. The PR is opened with
-# RELEASE_PLZ_TOKEN because one opened with GITHUB_TOKEN triggers no workflows,
-# and the backport needs CI (required on release/**).
+# the commits a maintainer already merged. The PR is opened with the release
+# token (.github/actions/release-token: the release GitHub App when configured,
+# else RELEASE_PLZ_TOKEN) because one opened with GITHUB_TOKEN triggers no
+# workflows, and the backport needs CI (required on release/**).
+#
+# A failed run drops nothing for good: re-run it from the Actions tab once the
+# token is fixed, or remove and re-add the label.
 #
 # The cherry-pick keeps the original author and message, Signed-off-by
 # included, so DCO passes, and keeps the conventional title, so the backport
@@ -35,12 +39,33 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # The base branch only (pull_request_target never checks out PR code),
+      # without credentials, for the release-token action that lives in it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: .github/actions
+
+      # Fails here, naming the token, when it is bad. On 2026-11-10 an invalid
+      # RELEASE_PLZ_TOKEN failed every backport for eleven hours at the
+      # checkout below with `could not read Username`, and any `backport
+      # release/*` label in that window would have been dropped (#2646). No
+      # GITHUB_TOKEN fallback: a backport PR it opened would run no CI, which
+      # is required on release/**, so failing loudly is the better outcome.
+      - name: Release token
+        id: token
+        uses: ./.github/actions/release-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.token.outputs.token }}
       - uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4.7.0
         with:
-          github_token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
           label_pattern: '^backport (release/[a-z]+)$'
           pull_title: '${pull_title}'
           pull_description: |-

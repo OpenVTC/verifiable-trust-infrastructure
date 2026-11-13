@@ -1,0 +1,71 @@
+name: Docker image build
+description: >
+  Build one of the two images with the BuildKit registry cache, then prove the
+  binary starts and (where it should) that the image does not run as root.
+  The steps docker.yml's pull-request job and its main job share.
+inputs:
+  file:
+    description: The Dockerfile.
+    required: true
+  tag:
+    description: The local tag to load the image as.
+    required: true
+  cache-ref:
+    description: The registry cache image, e.g. ghcr.io/openvtc/vti-buildcache:vta.
+    required: true
+  write-cache:
+    description: '"true" to export the cache (main only; needs packages: write).'
+    default: "false"
+  binary:
+    description: The binary to smoke-test with --help.
+    required: true
+  expect-non-root:
+    description: '"true" to assert the image runs as a non-root user.'
+    default: "false"
+runs:
+  using: composite
+  steps:
+    # Every run reads the cache; only main writes it (see docker.yml). A read
+    # that fails (a fork's token, the package not created yet) is a cold build,
+    # not a failure: BuildKit warns and carries on.
+    - name: Build image
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: ${{ inputs.file }}
+        push: false
+        load: true
+        tags: ${{ inputs.tag }}
+        cache-from: type=registry,ref=${{ inputs.cache-ref }}
+        cache-to: ${{ inputs.write-cache == 'true' && format('type=registry,ref={0},mode=max', inputs.cache-ref) || '' }}
+
+    # Proves more than "the build exited 0": running the binary in the runtime
+    # stage exercises dynamic linking. For the non-TEE image that covers
+    # libdbus-1-3 / ca-certificates in debian-slim. For the enclave image it
+    # covers the far more fragile glibc-on-Alpine path — gcompat plus the
+    # LD_PRELOAD'd __res_init stub — which otherwise fails first inside an
+    # enclave with no shell.
+    #
+    # --entrypoint is required for the Nitro image, whose ENTRYPOINT is the
+    # vsock-proxy setup script rather than the binary.
+    - name: Smoke-test the runtime image
+      shell: bash
+      env:
+        BINARY: ${{ inputs.binary }}
+        IMAGE: ${{ inputs.tag }}
+      run: |
+        docker run --rm --entrypoint "$BINARY" "$IMAGE" --help > /dev/null
+        echo "binary starts and links cleanly"
+
+    - name: Assert the image does not run as root
+      if: inputs.expect-non-root == 'true'
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.tag }}
+      run: |
+        uid="$(docker run --rm --entrypoint id "$IMAGE" -u)"
+        if [ "$uid" = "0" ]; then
+          echo "::error::image runs as root (uid 0); expected the unprivileged 'vta' user"
+          exit 1
+        fi
+        echo "image runs as uid $uid"

@@ -126,6 +126,12 @@ updates:
   # Two Dockerfiles at the repo root: the service image and the Nitro enclave
   # image. A stale base is how a patched CVE fails to reach the artifact even
   # when the Rust tree is clean.
+  #
+  # Every `FROM` is `image:tag@sha256:…` (#2653), and Dependabot moves tag and
+  # digest together, including a digest-only republish of the same tag. The
+  # Rust image used to be `rust:${RUST_VERSION}-bookworm`, which this entry
+  # cannot resolve; it is inline now. The Nitro image's apk pins are not
+  # Dependabot's to move: see Dockerfile.nitro, Stage 3.
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -173,3 +179,68 @@ updates:
         update-types:
           - minor
           - patch
+
+  # ── Rust: the fuzz harness ────────────────────────────────────────────
+  # `fuzz/` is its own workspace (cargo-fuzz wants it outside the root graph),
+  # so the `/` entry never reads its manifest (#2658). It keeps no lockfile —
+  # fuzz.yml resolves it from the root Cargo.lock — so what this proposes is a
+  # move of the harness's own requirements (libfuzzer-sys and the rest).
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore"
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Path dependencies on this workspace; they move with it, not here.
+      - dependency-name: "vta-*"
+      - dependency-name: "vti-*"
+
+  # ── npm: the VTC admin console ────────────────────────────────────────
+  # `vtc-service/admin-ui` is built into the bundle the published
+  # `vtc-service` crate ships, so its lockfile is shipped code. Only security
+  # alerts reached it before (#2658); nothing proposed an ordinary bump.
+  - package-ecosystem: npm
+    directory: /vtc-service/admin-ui
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # ── The Rust toolchain ────────────────────────────────────────────────
+  # `rust-toolchain.toml` pins the compiler CI builds with (#2658). This
+  # proposes the next stable as a pull request, where `-D warnings` under the
+  # new clippy is a CI result on that PR instead of main turning red by
+  # itself. Move the Dockerfiles' `FROM rust:` in the same PR
+  # (scripts/check-toolchain-pins.sh warns until they agree); `rust-version`
+  # (the MSRV) moves separately, and only on purpose.
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build"
+      include: scope
