@@ -1,6 +1,7 @@
 # `vti-webauthn` — crate design
 
-**Status:** Draft (Phase 1 design-lock for the trust-task envelope migration initiative).
+**Status:** **implemented** — the `vti-webauthn` crate (published). This was the
+Phase 1 design-lock for the trust-task envelope migration initiative.
 **Date:** 2026-05-20.
 **Crate location:** new workspace member `vti-webauthn/` at the root of
 `verifiable-trust-infrastructure`. Leaf crate (no internal VTI deps),

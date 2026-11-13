@@ -1,5 +1,7 @@
 # Security review v2 — data rooms
 
+Status: **review record** — the current review of design revision 3; findings are tracked against the design, not re-checked here.
+
 Reviewed: `data-rooms.md` **revision 3** (four topologies, DTG credentials,
 MLS group layer, witnessed room DIDs, dual human/agent audience), 2026-09-01.
 Design stage; every finding is cheap now and wire-breaking later.

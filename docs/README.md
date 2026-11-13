@@ -18,6 +18,7 @@ graph LR
     vtc["03-vtc/<br/>(VTC operator + integrator)"]
     ref["04-reference/<br/>(tables, paths, formats)"]
     design["05-design-notes/<br/>(history + implementation)"]
+    hosts["06-witness/, 07-voting/<br/>(host services)"]
 
     concepts --> vta
     concepts --> vtc
@@ -123,8 +124,17 @@ How to operate, deploy, and integrate against a VTA.
   Enclave deployment, KMS bootstrap, vsock store, attestation chain.
 - **[Integration guide](02-vta/integration-guide.md)** —
   building a third-party app that consumes VTA-managed keys.
-- **[DIDComm protocol](02-vta/didcomm-protocol.md)** — message
-  types, schemas, authorization, wire shapes.
+- **[TSP](02-vta/tsp.md)** — the Trust Spanning Protocol transport:
+  how the protocol is chosen (TSP > DIDComm > REST, by service type),
+  enabling it, what a TSP-only build lacks, rollout status.
+- **[Mediator connection](02-vta/mediator-connection.md)** — how a VTA
+  establishes and keeps its mediator connection: the readiness gate,
+  reconnect backoff, `[mediator_readiness]`.
+- **[DIDComm protocol](02-vta/didcomm-protocol.md)** — superseded: the
+  bare-DIDComm message surface is gone; every operation is a Trust Task.
+- **[DIDComm protocol management](02-vta/didcomm-protocol-management.md)** —
+  superseded redirect to runtime service management, with the command
+  rename map.
 - **[DID templates](02-vta/did-templates.md)** — authoring,
   uploading, resolution (context → global → built-in).
 - **[Provision-integration](02-vta/provision-integration.md)** —
@@ -133,6 +143,20 @@ How to operate, deploy, and integrate against a VTA.
 - **[Runtime service management](02-vta/runtime-service-management.md)** —
   enable / disable / migrate REST + DIDComm services on a running
   VTA without rebuilds.
+- **[Backup and restore](02-vta/backup-restore.md)** — the encrypted
+  full-state backup, portable between plain, hardened and Nitro VTAs;
+  what is not in it; staged, boot-applied restore.
+- **[Internal keys](02-vta/internal-keys.md)** — non-extractable signing
+  keys the VTA never gives out, not even in a backup or the mnemonic.
+- **[External accounts](02-vta/external-accounts.md)** — identities a VTA
+  holds at clouds and third-party services (an S3-compatible bucket), used by
+  bound integrations only through short-lived, sealed credentials.
+- **[Claim-type registry](02-vta/claim-type-registry.md)** — the types a
+  holder's attributes carry, and the sensitivity and disclosure each implies.
+- **[Contacts](02-vta/contacts.md)** — what peers disclosed, filed per
+  relationship, and the principal's own stars, petnames and lists.
+- **[Step-up policy](02-vta/step-up-policy.md)** — superseded redirect to
+  Approvals; maps the retired step-up floors to their replacements.
 - **[Approvals](02-vta/approvals.md)** — which tasks require
   re-authentication or human consent before they run, managed at
   runtime with `pnm approvals`.
@@ -174,8 +198,39 @@ How to operate and integrate against a VTC.
   community's first vetter.
 - **[Architecture](03-vtc/architecture.md)** — VTC module layout,
   keyspaces, dependency on the VTA.
+- **[Non-interactive setup](03-vtc/non-interactive-setup.md)** —
+  headless two-phase `vtc setup` for CI, images and Kubernetes.
+- **[Administrator access](03-vtc/admin-access.md)** — who counts as an
+  administrator, roles and capabilities, step-up and approvals, and what
+  stops one administrator taking a community over. Companion infographic:
+  [admin-access-infographic.html](03-vtc/admin-access-infographic.html).
 - **[Community lifecycle](03-vtc/community-lifecycle.md)** —
   member CRUD, join requests, removal dispositions, policies.
+- **[Join criteria](03-vtc/join-criteria.md)** — the community's rules
+  for who may join and how: admission modes, credential, invitation and
+  vetting requirements, the defaults, and how they are changed.
+- **[Member directory](03-vtc/member-directory.md)** — the field schema,
+  members' cards, and how each viewer's projection is decided.
+- **[Community groups](03-vtc/groups.md)** — groups with identities of
+  their own: static and dynamic membership, managers, room and grant
+  bindings.
+- **[Member badges](03-vtc/badges.md)** — community and kudos badges,
+  awards, sharing outside the community.
+- **[Community boards](03-vtc/boards.md)** — ideas, notes, and an election
+  per accepted idea.
+- **[Rooms the community owns](03-vtc/community-rooms.md)** — turning on
+  community-owned data rooms and running one.
+- **[Room storage](03-vtc/room-storage.md)** — storage configs (local, S3,
+  GCS) for rooms' files, assignment and migration.
+- **[Git namespaces](03-vtc/git-namespaces.md)** — governing repositories
+  on the community's forges and publishing the rights to its trust registry.
+- **[Networks](03-vtc/networks.md)** — the community's side of Verifiable
+  Trust Network membership (`vtc/networks/*`).
+- **[OpenID4VP verifier identities](03-vtc/oid4vp-verifier.md)** — the
+  swiyu and EUDI verifier identities a VTC holds at its VTA to request
+  credentials from those wallets.
+- **[Backup and restore](03-vtc/backup-restore.md)** — the community's
+  password-encrypted backup, its scope and the restore.
 - **[Credentials](03-vtc/credentials.md)** — VMC, role VAC, statements (VSC), status
   lists, renewal, DID rotation, custom endorsements.
 - **[Custom policies after the DTG v1 upgrade](03-vtc/policy-upgrade-dtg-v1.md)** —
@@ -221,13 +276,38 @@ How to operate and integrate against a VTC.
 - **[CLI style](04-reference/cli-style.md)** — conventions for
   flags, output, errors, and JSON modes across `vta`, `vtc`, `pnm`,
   `cnm`.
+- **[Workspace engineering notes](04-reference/workspace-engineering-notes.md)** —
+  the long form of the release, test and CI rules in `CLAUDE.md`, with the
+  incidents behind each.
 
 ### Part V — Design notes
 
 In-flight or historical design documents kept for context. These
-are implementer-facing rather than operator-facing.
+are implementer-facing rather than operator-facing, and each carries a status
+line at its top (proposal, implemented, superseded…). **This list is a
+selection**; the [design-notes directory](05-design-notes/) holds all of them.
 
-- **[vtc-mcp](05-design-notes/vtc-mcp.md)** — proposed: a VTC twin of
+Notes the workspace `CLAUDE.md` treats as required reading before changing the
+area they cover:
+
+- **[Key custody](05-design-notes/key-custody.md)** — why choosing a
+  derivation path is holding a key, and the custody rules every
+  network-reachable key path follows.
+- **[TSP enablement](05-design-notes/tsp-enablement.md)** — the rollout
+  design for TSP beside DIDComm, the one client surface, one socket per DID.
+- **[VTC administrative roles](05-design-notes/vtc-admin-roles.md)** —
+  capability-based VTC authority: role ceilings, capabilities, resource
+  qualifiers.
+- **[ACL scope semantics](05-design-notes/acl-scope-semantics.md)** —
+  the *act* vs *confer* axis on an ACL entry.
+- **[Retry and idempotency](05-design-notes/retry-and-idempotency.md)** —
+  which layer owns retry, and the `idempotencyKey` contract.
+- **[vta-service decomposition](05-design-notes/vta-service-decomposition.md)** —
+  how the VTA crate was split, and where the program stops.
+
+Others:
+
+- **[vtc-mcp](05-design-notes/vtc-mcp.md)** — implemented: a VTC twin of
   `vta-mcp`. A native Trust Task client over TSP, then DIDComm (never a
   `cnm` subprocess), one generic `vtc_call` catalogued from the pinned
   specification bundles, an identity ladder (member persona, dedicated agent
@@ -287,20 +367,18 @@ are implementer-facing rather than operator-facing.
   record of the revision-2 review that reshaped the design.)
 - **[Data rooms — files and the VTC experience](05-design-notes/data-rooms-files.md)** —
   encrypted file attachments in a pluggable blob store (local, S3, Walrus), per-room
-  limits set by the hosting VTC, and the console and member-portal surfaces. Proposal.
+  limits set by the hosting VTC, and the console and member-portal surfaces. In progress
+  (its §12 says which phases have landed).
 - **[The VTA as key authority for cloud and third-party accounts](05-design-notes/vta-external-accounts.md)** —
   external accounts (AWS Roles Anywhere, GCP Workload Identity with pinned keys, presigned
   S3, Sui signing) used by integrations through short-lived, downscoped, sealed credentials,
-  managed over Trust Tasks with consent from approvers' own DIDs. Proposal.
+  managed over Trust Tasks with consent from approvers' own DIDs. Partly implemented:
+  the presigned-S3 model is built ([operator guide](02-vta/external-accounts.md)).
 - **[Data rooms — epoch anchoring](05-design-notes/data-rooms-epoch-anchoring.md)** —
   the one open *decision* in the rooms design: §9 says a renewal anchors the MLS
   epoch authenticator and version watermark in the room's witnessed log, but not
   where in the log entry they go. Three candidate shapes, the metadata cost of
   a public anchor, and what settling it unblocks. Open question, not a plan.
-- **[vta-service decomposition](05-design-notes/vta-service-decomposition.md)** —
-  how the ~114k-line VTA crate was split into subsystem crates, the
-  extraction technique, and the rule for where the program stops.
-  **Read this before proposing a further extraction.**
 - **[VTC MVP spec](05-design-notes/vtc-mvp.md)** — full
   specification for the VTC's Phase 0–5 build (the source of truth
   the implementation tracks).
@@ -324,11 +402,6 @@ are implementer-facing rather than operator-facing.
 - **[Runtime service management](05-design-notes/runtime-service-management.md)** —
   design notes for the VTA's enable/disable/migrate REST + DIDComm
   surface.
-- **[Retry and idempotency](05-design-notes/retry-and-idempotency.md)** —
-  which layer owns retry, how a Trust Task is classified for what a
-  lost reply costs it, and the `idempotencyKey` contract.
-  **Read this before adding a retry loop over a `VtaClient` call, or
-  adding a new Trust Task.**
 - **[Store migration](05-design-notes/store-migration.md)** — the
   enum-to-trait migration path for storage backends.
 - **[PNM setup with deferred VTA DID](05-design-notes/pnm-setup-deferred-vta-did.md)** —
@@ -339,8 +412,6 @@ are implementer-facing rather than operator-facing.
 - **[Approvals convergence](05-design-notes/approvals-convergence.md)** —
   why a VTA answers "does this need another human?" in one place
   rather than three, and what was retired to get there.
-- **[ACL scope semantics](05-design-notes/acl-scope-semantics.md)** —
-  the *act* vs *confer* axis on an ACL entry.
 - **[Trigger links](05-design-notes/trigger-link-design.md)** —
   why a trigger link is an `https` URL with its parameters in the fragment,
   not a DIDComm out-of-band or VCALM interaction URL.
@@ -353,6 +424,9 @@ Services a node depends on but does not embody, run apart from any VTA or VTC.
   ten witness identities, provisioned from the operator's VTA with the
   `dtg-witness` template and served over TSP and DIDComm; setup, configuration,
   the correlators it warns about, and what a witness sees.
+- **[The voting service](07-voting/README.md)** — `vti-voting-service`:
+  ballot boxes for community elections, shared by any number of communities,
+  that never learn who voted.
 
 ## Conventions
 
@@ -378,7 +452,10 @@ If you're adding a new document:
 - **Pure reference (tables, paths, formats)?** Add to
   `04-reference/`.
 - **Implementation-detail design brief?** Add to `05-design-notes/`.
-- **A host service's operator guide (the witness)?** Add to `06-witness/`.
+- **A host service's operator guide?** Add to `06-witness/` or `07-voting/`.
+
+`scripts/check-docs.py` fails CI when a page under `01-`–`04-`, `06-` or
+`07-` is missing from this index, or a relative link anywhere is broken.
 
 Update this index when you add or rename a chapter.
 Cross-references in the workspace `README.md` and `CLAUDE.md` may

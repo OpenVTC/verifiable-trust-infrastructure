@@ -1,6 +1,9 @@
 # Spec-Driven Design: TSP enablement across VTI (VTA, VTC, PNM, CNM)
 
-**Status:** DRAFT for review — no code until approved.
+**Status:** **implemented in stages** — TSP ships behind the `tsp` feature (a
+default of `vtc-service`), §3.1 landed in vta-sdk 0.20 (#765), and the §11
+CLAUDE.md flip landed with this note. The current state is in the operator guide,
+[`../02-vta/tsp.md`](../02-vta/tsp.md) (*Current status*). Originally a draft for review.
 **Owner:** Glenn Gore
 **Created:** 2026-06-25
 **Supersedes the decision in:** `docs/05-design-notes/messaging-routing-and-tsp.md`

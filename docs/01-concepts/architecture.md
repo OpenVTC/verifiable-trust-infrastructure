@@ -231,7 +231,7 @@ All data lives in fjall keyspaces:
 
 In TEE deployments the `Store` enum dispatches transparently to a
 `VsockStore` running on the parent EC2 instance instead of a local
-fjall handle. See [`tee-architecture.md`](tee-architecture.md).
+fjall handle. See [`tee-architecture.md`](../02-vta/tee-architecture.md).
 
 ## VTA CLI
 
@@ -412,7 +412,7 @@ add a new variant to the `Store` enum in
 `VaultSeedStore`.
 
 **Custom TEE provider:** Implement the `TeeProvider` trait from
-`vta-service/src/tee/provider.rs`. Pass it wrapped in a `TeeContext`
+`vta-tee/src/provider.rs`. Pass it wrapped in a `TeeContext`
 to `server::run()`. The server uses it for attestation endpoints and
 JWT claims.
 
@@ -433,4 +433,4 @@ vta-service = { path = "../vta-service", default-features = false, features = ["
 - **`vta-enclave/src/main.rs`** — Full TEE front-end. VsockStore
   connection, KMS bootstrap, mnemonic guard, DID auto-generation,
   TEE provider init. ~170 lines of bootstrap code. See
-  [`tee-architecture.md`](tee-architecture.md) for the design.
+  [`tee-architecture.md`](../02-vta/tee-architecture.md) for the design.

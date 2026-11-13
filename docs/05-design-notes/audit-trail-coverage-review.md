@@ -1,5 +1,7 @@
 # VTA Audit-Trail Coverage Review
 
+Status: **review record** — a dated coverage review; findings may since have been fixed. Check the code.
+
 **Scope:** Does every VTA operation that changes/modifies state get written to the
 durable audit trail with a clear record of *what* happened, *who* requested it, and
 *which resource* was modified?

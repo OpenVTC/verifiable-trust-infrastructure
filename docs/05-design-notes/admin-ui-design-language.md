@@ -1,5 +1,7 @@
 # Operator console design language
 
+Status: **current** — describes the console, portal and home page as built.
+
 How the community's three web surfaces look, and where each decision lives in
 code: the operator console (`/admin/*`), the member portal (`/members/*`) and
 the default home page (`vtc-service/website-default/`). The console is the

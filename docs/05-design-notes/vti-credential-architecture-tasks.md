@@ -1,5 +1,9 @@
 # VTI Credential Architecture — task checklist
 
+Status: **not maintained** — boxes are ticked only through Phase 1 and task 3.0,
+but much of Phases 2–5 has since shipped (see
+[`vti-credential-architecture.md`](vti-credential-architecture.md)). Historical.
+
 Companion to `vti-credential-architecture-plan.md`. Phase 0a + Phase 1 are
 task-level (vertical slices, each one complete path). Phases 0b + 2–6 are
 milestone-level and get a full task pass at their gate.
