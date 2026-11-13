@@ -593,7 +593,7 @@ sequenceDiagram
 
     O->>M: VIC (invitation, issued by the room)
     M->>V: rooms/keys/key-package + invitation
-    V-->>M: KeyPackage (private half retained, 7 days)
+    V-->>M: KeyPackage (private half retained, 14 days)
     M->>O: KeyPackage
     O->>OV: rooms/owner/group/add (kp)
     OV->>H: rooms/epoch/mint (admin, link, commit)
@@ -2498,7 +2498,7 @@ hosts as the owner:
 | Default retention | 90 days | host-side default for `retentionDays` |
 | Max chain depth | 8 | `vti_rooms::authz::MAX_CHAIN_DEPTH` |
 | Minted presentation lifetime | 4 hours | `room_oracle::PRESENTATION_LIFETIME` |
-| Unused KeyPackage lifetime | 7 days | `room_group::KEY_PACKAGE_LIFETIME_SECS` |
+| Unused KeyPackage lifetime | 14 days | `trust_tasks::room_group::KEY_PACKAGE_V0_2_LIFETIME_SECS` (vta-service) |
 
 **Crates**
 

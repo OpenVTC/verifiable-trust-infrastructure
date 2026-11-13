@@ -115,8 +115,10 @@ The syncer:
   - `last_sync_at: <iso8601>`
   - `last_failure_reason: <string>`
 
-`registry_status` flips to `degraded` when the queue is ≥1h behind
-(configurable via `registry.degraded_threshold_seconds`).
+`registry_status` flips to `degraded` when a health probe or a sync
+dispatch to the registry fails, and back to `active` on the next success
+(`registry::health`); each flip is audited as `RegistryStatusChanged`. There
+is no lag threshold to configure.
 
 ## Who is published: member consent
 
@@ -332,9 +334,9 @@ git-namespace projection, which keep their own switches.
 [registry]
 did = "did:webvh:Qm…:webvh.example:trust-registry"
 http_timeout_seconds = 30
-health_probe_interval_seconds = 300       # 5 minutes; 0 disables
+health_probe_interval_seconds = 300       # 5 minutes (default 60); 0 disables
+drift_check_interval_seconds = 900        # 15 minutes (the default); 0 disables
 rtbf_batch_window_hours = 24              # daily flush
-degraded_threshold_seconds = 3600         # status flips to degraded after 1h lag
 # url = "https://trust-registry.example.org"   # optional REST arm
 ```
 

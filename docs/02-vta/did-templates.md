@@ -20,8 +20,8 @@ consumer gets the new shape on the next create. No redeploy.
 - **Method-agnostic.** Same format works for `did:webvh`, `did:web`, or
   `did:key` — the loader only knows about `{TOKEN}` placeholders. Method-
   specific details (SCID, log endpoints) are just placeholders the VTA fills.
-- **Single source of truth.** The mediator setup wizard, `pnm webvh
-  create-did --template …`, and any future provisioning surface all go
+- **Single source of truth.** The mediator setup wizard, `pnm did-mgmt
+  dids create --template …`, and any future provisioning surface all go
   through the same template.
 
 ## The format

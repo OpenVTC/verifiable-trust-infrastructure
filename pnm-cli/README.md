@@ -184,9 +184,8 @@ tokens:
    automatically when they expire.
 
 ```sh
-# Apply a sealed admin credential bundle (e.g. a backup-restore handoff
-# or a sealed transfer from another operator)
-pnm auth login --credential-bundle <file>
+# pnm authenticates as the identity `pnm setup` (or `pnm bootstrap connect`)
+# put in the keyring; it has no credential-import command.
 
 # Check auth status
 pnm auth status

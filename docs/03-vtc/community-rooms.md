@@ -58,7 +58,7 @@ can be checked — the VTA verifies the community's own credentials as it stores
   the community mints, rooms and groups alike, without a restart
   ([groups](groups.md#where-group-identities-are-published-at-runtime)).
 - With `webvh_server`, the VTA publishes each room's log on that hosting server
-  (registered at the VTA with `pnm webvh servers register`).
+  (registered at the VTA with `pnm did-mgmt servers add`).
 - Without it, the room's DID is minted serverless at
   `<public_url>/room-dids/<id>/did.jsonl`, and **this VTC serves the log** there, on
   every host, like its own `/.well-known/did.jsonl`. `public_url` must be set.

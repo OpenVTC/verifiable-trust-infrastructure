@@ -439,9 +439,10 @@ When adding a flow, add it here and a line to the root index.
 - **Operator commands** (spec §5.1):
   - `pnm services list` — show currently-advertised services.
   - `pnm services rest {enable,update,disable,rollback}` — manage
-    REST advertisement (`#vta-rest` service entry).
+    REST advertisement (the `VTARest` service, emitted as `#vta-rest`).
   - `pnm services didcomm {enable,update,disable,rollback}` —
-    manage DIDComm mediator advertisement (`#vta-didcomm`).
+    manage DIDComm mediator advertisement (the `DIDCommMessaging`
+    service, emitted as `#vta-didcomm`).
   - `pnm services didcomm drain {list,cancel}` — inspect or cancel
     drain entries.
   - `pnm services report` — per-mediator inbound counts +
@@ -907,7 +908,7 @@ When adding a flow, add it here and a line to the root index.
   the SDK, always available): `ai-agent`, `ai-agent-peer`,
   `ballot-box`, `did-host-didcomm`, `did-host-http`, `did-host-http-didcomm`,
   `did-host-http-tsp`, `did-host-tsp`, `didcomm-mediator`,
-  `dtg-witness`, `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-group`, `vtc-host`, `vtc-host-classical` (`vtc-host` less its post-quantum slot, derived at load: a did:webs VTC's template). The `did-host-*` names encode
+  `dtg-witness`, `push-gateway`, `room`, `room-host`, `swiyu-verifier`, `trust-registry`, `vta-admin`, `vtc-group`, `vtc-host`, `vtc-host-classical` (`vtc-host` less its post-quantum slot, derived at load: a did:webs VTC's template). The `did-host-*` names encode
   the DID-document **shape** (`http` = WebVHHosting, `didcomm` =
   DIDCommMessaging, `tsp` = TSPTransport), so a deployment role maps onto
   a shape: control = `did-host-http-didcomm`, hosting daemon =

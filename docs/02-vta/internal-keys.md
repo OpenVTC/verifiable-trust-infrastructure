@@ -110,11 +110,10 @@ An internal key **requires an explicit `--key-id`-equivalent identity**: it has
 no derivation path to be named after, and minting an unrecoverable key under a
 generated name the operator never chose is a good way to lose it.
 
-Signing works exactly as it does for any other key:
-
-```bash
-pnm keys sign <key-id> --payload <data> --algorithm eddsa
-```
+Signing works exactly as it does for any other key: through the `keys/sign`
+Trust Task (and its narrower siblings `keys/sign-jws`, `keys/sign-csr`,
+`keys/sign-document`), which `VtaClient::sign` and the other `vta_sdk` client
+methods send. `pnm` has no general-purpose `keys sign` command.
 
 Supported types are **ed25519** (EdDSA) and **p256** (ES256). X25519 is refused:
 it is a key-agreement key, and an internal key that cannot sign would be

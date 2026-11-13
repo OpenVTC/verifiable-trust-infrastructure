@@ -1333,22 +1333,22 @@ should) share a host. The in-tree default landing page (no
 Migrating the admin UX to a different base domain forces every
 passkey to re-register. Operator runbook.
 
-## CLI quick reference
+## Quick reference
+
+`cnm` has no website commands. The website is managed from the console, or
+over the admin-gated `/v1/website/*` endpoints in the table under
+[Which of these are Trust Tasks](#which-of-these-are-trust-tasks) above (an admin bearer token or
+session cookie on each):
 
 ```sh
-# Website management
-cnm website files list
-cnm website files show <path>
-cnm website files write <path> --content @file.html
-cnm website files delete <path>
-cnm website deploy --bundle ./site.tar.gz
-
-# Managed mode
-cnm website generations list
-cnm website rollback --to-gen 2
+# Files, deploy and (managed mode) generations: the /v1/website/* endpoints
+curl -H "Authorization: Bearer $TOKEN" -H 'Trust-Task: spec/vtc/website/files/list/0.3' \
+  https://community.example.com/v1/website/files
+curl -H "Authorization: Bearer $TOKEN" --data-binary @site.tar.gz \
+  https://community.example.com/v1/website/deploy
 
 # Admin UX
-cnm admin build-info     # → /admin/build-info.json output
+curl https://community.example.com/admin/build-info.json
 vtc admin-ui export <dir>             # write the built-in console out to customise
 vtc admin-ui export --members <dir>   # the same for the member portal
 ```

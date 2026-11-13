@@ -1715,8 +1715,8 @@ echo "$NEW_PCR0" > /opt/vta/last-pcr0.txt
 | Scenario | Recovery |
 |----------|----------|
 | Enclave restart | Automatic — KMS Decrypt retrieves seed from bootstrap keyspace |
-| EBS volume lost | Use mnemonic backup with `vta tee recover --mnemonic "..."` |
-| KMS key deleted | Use mnemonic to regenerate seed with a new KMS key |
+| EBS volume lost | Boot a fresh enclave VTA and restore the latest encrypted backup into it: `pnm backup import <file> --replace-identity` ([backup-restore.md](../../docs/02-vta/backup-restore.md)). There is no command that rebuilds a TEE VTA from the mnemonic alone |
+| KMS key deleted | As above, on a fresh enclave VTA bound to a new KMS key: the restore commits the backup's seed under the new key |
 | PCR0 mismatch after rebuild | Rolling upgrade with `--old-pcr0`, or fresh deploy |
 | Signing key lost | Generate new key, rebuild + re-sign EIF, update PCR8 in KMS policy |
 

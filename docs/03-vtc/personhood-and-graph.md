@@ -671,16 +671,18 @@ All actor DIDs are HMAC-hashed per the §11.1 PII policy.
 ## CLI quick reference
 
 ```sh
-# Personhood (admin / issuer view)
-cnm members personhood challenge <did>
-cnm members personhood assert <did> --vp ./evidence-vp.json
-cnm members personhood revoke <did>
+# Personhood — revoke a member's personhood credential (admin)
+cnm member revoke-personhood <did>
 
-# Relationships (member view via pnm)
-pnm vtc relationships list
-pnm vtc relationships publish --subject did:key:zOther... --type 'trusts'
-pnm vtc relationships revoke <id>
+# Relationships (a member, as their own DID)
+cnm member relationships list <did>
+cnm member relationships publish ./signed-vrc.json   # a self-issued, signed VRC
+cnm member relationships revoke <id>
 ```
+
+Challenging and asserting personhood has no CLI verb: the member's wallet
+sends `vtc/members/personhood/challenge/0.1` and then
+`vtc/members/personhood/assert/0.2` with the evidence.
 
 ## See also
 

@@ -238,7 +238,7 @@ reprovision:
 
 ```bash
 new install   pnm bootstrap request --out req.json
-operator      pnm context reprovision --id <ctx> --recipient req.json
+operator      pnm contexts reprovision --id <ctx> --recipient req.json
 new install   pnm bootstrap open --bundle <f> --expect-digest <hex>
 ```
 
