@@ -183,8 +183,6 @@ impl ConsentRequest {
         resolver: &crate::trust_task_proof::TrustTaskVmResolver,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<VerifiedConsentRequest, TaskConsentError> {
-        use trust_tasks_rs::validate::ValidatedPayload;
-
         let doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(self.raw.clone())
             .map_err(|e| TaskConsentError::Malformed(e.to_string()))?;
         if doc.type_uri.to_string() != REQUEST_TYPE {
@@ -228,7 +226,7 @@ impl ConsentRequest {
         }
 
         // Read the payload as received, against the schema, before parsing it.
-        request::Payload::validate_value(&doc.payload)
+        crate::schema_cache::check_payload::<request::Payload>(&doc.payload)
             .map_err(|e| TaskConsentError::Malformed(e.to_string()))?;
         let payload: request::Payload = serde_json::from_value(doc.payload.clone())
             .map_err(|e| TaskConsentError::Malformed(e.to_string()))?;

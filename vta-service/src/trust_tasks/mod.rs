@@ -645,7 +645,7 @@ async fn validate_payload(
         return None;
     };
 
-    match trust_tasks_rs::validate::against_schema(schema, &doc.payload) {
+    match vta_sdk::schema_cache::check(schema, &doc.payload) {
         Ok(()) => None,
         Err(e) => {
             // A schema error quotes the offending value. For a task whose payload is text a

@@ -235,6 +235,8 @@ pub mod tee_bootstrap;
 // One TDK + one ATM per process, with a session per identity on it. Every
 // session type in this SDK runs on a hub; the legacy constructors just build a
 // private one (#830).
+/// Trust Task payload schemas compiled once per process, not per call (#2622).
+pub mod schema_cache;
 #[cfg(feature = "session")]
 pub mod session_hub;
 /// The approver's side of task consent: the match code, request verification,

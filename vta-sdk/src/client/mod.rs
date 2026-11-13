@@ -1859,7 +1859,7 @@ impl VtaClient {
         let Some(schema) = vti_specs::schema_index::schema_for(type_uri) else {
             return Ok(());
         };
-        trust_tasks_rs::validate::against_schema(schema, payload).map_err(|e| {
+        crate::schema_cache::check(schema, payload).map_err(|e| {
             VtaError::Protocol(format!(
                 "refusing to send a payload that does not conform to {type_uri}: {e}. \
                  The recipient would reject this as `malformedRequest`. An unset optional \
