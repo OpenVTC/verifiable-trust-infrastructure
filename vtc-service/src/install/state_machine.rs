@@ -54,6 +54,15 @@ const CO_ADMIN_KEY: &[u8] = b"install:co_admin";
 /// ACL writes made offline, daemon stopped, waiting for the daemon to audit
 /// them (`install:break_glass:<uuid>`).
 const BREAK_GLASS_PREFIX: &[u8] = b"install:break_glass:";
+/// The administrator entry a **wallet** invitation wrote at mint, keyed by the
+/// invitation's jti (`install:invite_grant:<jti>`) — see [`InviteGrant`].
+const INVITE_GRANT_PREFIX: &[u8] = b"install:invite_grant:";
+
+fn invite_grant_key(jti: &Uuid) -> Vec<u8> {
+    let mut out = INVITE_GRANT_PREFIX.to_vec();
+    out.extend_from_slice(jti.to_string().as_bytes());
+    out
+}
 
 fn token_key(jti: &Uuid) -> Vec<u8> {
     let mut out = TOKEN_KEY_PREFIX.to_vec();
@@ -167,6 +176,39 @@ impl InvitedAuthority {
             issued_via: issued_via.into(),
             label: Some(label.into()),
         }
+    }
+}
+
+/// The administrator entry a **wallet** invitation wrote when it was issued
+/// (`vtc/admin/invites/create/0.2` item 3 writes it then), recorded beside the
+/// invitation so the entry stays **provisional** until the claim (#2660).
+///
+/// The entry is written with `expires_at` set to the invitation's own expiry,
+/// so an invitation nobody claims leaves an entry that confers nothing once it
+/// lapses. `vtc/install/claim/finish/0.3` makes it permanent, and
+/// `vtc/admin/invites/revoke/0.1` — which withdraws the authority an
+/// invitation confers — removes it. Either acts only on the entry exactly as
+/// the invitation wrote it ([`Self::is_unchanged`]): an entry someone has since
+/// rewritten is theirs, not the invitation's.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InviteGrant {
+    /// The DID the invitation names, whose entry it wrote.
+    pub did: String,
+    /// The entry's `created_at`, as written.
+    pub created_at: u64,
+    /// The entry's `expires_at`, as written — the invitation's expiry.
+    pub expires_at: u64,
+}
+
+impl InviteGrant {
+    /// Whether `entry` is still exactly the provisional entry this invitation
+    /// wrote: same DID and creation time, the invitation's expiry, never
+    /// updated since.
+    pub fn is_unchanged(&self, entry: &crate::acl::VtcAclEntry) -> bool {
+        entry.did == self.did
+            && entry.created_at == self.created_at
+            && entry.expires_at == Some(self.expires_at)
+            && entry.updated_at.is_none()
     }
 }
 
@@ -601,6 +643,49 @@ impl InstallTokenStore {
             self.ks.remove(key).await?;
         }
         out.sort_by_key(|p| p.invoked_at);
+        Ok(out)
+    }
+
+    /// Record the provisional administrator entry wallet invitation `jti`
+    /// wrote ([`InviteGrant`]).
+    pub async fn record_invite_grant(
+        &self,
+        jti: &Uuid,
+        grant: &InviteGrant,
+    ) -> Result<(), AppError> {
+        self.ks.insert(invite_grant_key(jti), grant).await
+    }
+
+    /// Read and delete the provisional-entry record of invitation `jti`, if
+    /// it wrote one.
+    pub async fn take_invite_grant(&self, jti: &Uuid) -> Result<Option<InviteGrant>, AppError> {
+        let Some(raw) = self.ks.take_raw(invite_grant_key(jti)).await? else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_slice(&raw).ok())
+    }
+
+    /// Every provisional-entry record naming `did`, with its invitation's jti.
+    pub async fn invite_grants_for(&self, did: &str) -> Result<Vec<(Uuid, InviteGrant)>, AppError> {
+        let mut out = Vec::new();
+        for (k, v) in self
+            .ks
+            .prefix_iter_raw(INVITE_GRANT_PREFIX.to_vec())
+            .await?
+        {
+            let Some(jti) = k
+                .strip_prefix(INVITE_GRANT_PREFIX)
+                .and_then(|s| std::str::from_utf8(s).ok())
+                .and_then(|s| s.parse::<Uuid>().ok())
+            else {
+                continue;
+            };
+            if let Ok(grant) = serde_json::from_slice::<InviteGrant>(&v)
+                && grant.did == did
+            {
+                out.push((jti, grant));
+            }
+        }
         Ok(out)
     }
 

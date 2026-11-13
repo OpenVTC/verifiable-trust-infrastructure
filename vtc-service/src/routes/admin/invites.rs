@@ -8,7 +8,8 @@
 //! - `create` mints a fresh single-use install URL and claim code. With `did`
 //!   it is a **wallet** invitation: the token names `did`, claimed by signing
 //!   as it (`vtc/install/claim/{start,finish}/0.3`), and an `Admin` ACL grant
-//!   is written for it now if it holds none. Without `did` it is a **passkey**
+//!   is written for it now if it holds none — expiring with the invitation
+//!   until the claim makes it permanent (#2660). Without `did` it is a **passkey**
 //!   invitation: the token names no DID, the administrator's DID is derived
 //!   from the passkey registered at `vtc/install/claim/passkey/finish/0.1`,
 //!   and the authority that entry will carry is recorded with the invitation
@@ -19,7 +20,8 @@
 //!   item 4).
 //! - `list` lists every persisted install-token row with its kind and a
 //!   derived status (`issued` / `consumed` / `expired`).
-//! - `revoke` removes an invite by deleting its install-token row.
+//! - `revoke` removes an invite by deleting its install-token row, and with it
+//!   the provisional entry an unclaimed wallet invitation wrote.
 
 use std::sync::Arc;
 
@@ -267,6 +269,10 @@ pub(crate) async fn check_invite(
         });
     };
     let grants_admin = match get_acl_entry(&state.acl_ks, did).await? {
+        // An entry another invitation wrote and nobody has claimed, or one
+        // that has lapsed, is no standing authority: this invitation grants
+        // the entry afresh, costing what a grant costs (#2660).
+        Some(existing) if replaceable_by_invite(state, &existing).await? => true,
         Some(existing) if existing.is_community_admin() => false,
         Some(_) => {
             return Err(AppError::Conflict(format!(
@@ -342,44 +348,55 @@ pub(crate) async fn commit_invite(
             (minted, InviteKind::Passkey, false)
         }
         Some(did) => {
+            let minted = mint_install_token(signer.as_ref(), &vtc_did, did, ttl_seconds)?;
             let acl_entry_created = if grants_admin {
                 // Re-read under the commit: an entry written for this DID
                 // since the check must not be overwritten by an unrestricted
-                // admin row.
-                if get_acl_entry(&state.acl_ks, did).await?.is_some() {
-                    return Err(AppError::Conflict(format!(
-                        "did {did} gained an ACL entry while this invite was being approved; \
-                         send it again"
-                    ))
-                    .into());
+                // admin row — unless it is itself only provisional.
+                let mut floor = None;
+                if let Some(existing) = get_acl_entry(&state.acl_ks, did).await? {
+                    if !replaceable_by_invite(state, &existing).await? {
+                        return Err(AppError::Conflict(format!(
+                            "did {did} gained an ACL entry while this invite was being \
+                             approved; send it again"
+                        ))
+                        .into());
+                    }
+                    // Never shorten another open invitation's entry.
+                    floor = existing.expires_at;
                 }
                 let label = req
                     .label
                     .clone()
                     .unwrap_or_else(|| "admin invite (web)".into());
-                let entry = VtcAclEntry {
-                    did: did.to_string(),
-                    role: VtcRole::Admin,
-                    label: Some(label),
-                    admin: crate::acl::AdminAuthority::community_admin(),
-                    // A grant is a delegation (vtc-admin-roles.md §6.3).
-                    delegated_by: Some(actor.did.clone()),
-                    created_at: now_epoch(),
-                    created_by: issued_via,
-                    updated_at: None,
-                    updated_by: None,
-                    expires_at: None,
-                    resource_grants: Vec::new(),
-                    group_grants: Vec::new(),
-                    label_set_by_subject: false,
-                    suspension: None,
-                };
-                store_acl_entry(&state.acl_ks, &entry).await?;
+                write_provisional_entry(
+                    state,
+                    &minted.jti,
+                    VtcAclEntry {
+                        did: did.to_string(),
+                        role: VtcRole::Admin,
+                        label: Some(label),
+                        admin: crate::acl::AdminAuthority::community_admin(),
+                        // A grant is a delegation (vtc-admin-roles.md §6.3).
+                        delegated_by: Some(actor.did.clone()),
+                        created_at: now_epoch(),
+                        created_by: issued_via,
+                        updated_at: None,
+                        updated_by: None,
+                        expires_at: None,
+                        resource_grants: Vec::new(),
+                        group_grants: Vec::new(),
+                        label_set_by_subject: false,
+                        suspension: None,
+                    },
+                    expires_at,
+                    floor,
+                )
+                .await?;
                 true
             } else {
                 false
             };
-            let minted = mint_install_token(signer.as_ref(), &vtc_did, did, ttl_seconds)?;
             state
                 .install_store
                 .record_issued(
@@ -494,6 +511,14 @@ pub(crate) async fn revoke_invite(
         return Err(not_found());
     }
 
+    // Revoking an invitation withdraws the authority it confers (create 0.2):
+    // a wallet invitation's entry, written at mint and still unclaimed, goes
+    // with it (#2660). Before the token row, so a crash between the two leaves
+    // a token whose retry still finds it, never an entry nobody can withdraw.
+    if matches!(existed, Some(InstallTokenState::Issued { .. })) {
+        withdraw_invite_grant(state, actor, &jti).await?;
+    }
+
     if !state.install_store.delete_token(&jti).await? {
         // Token vanished between the peek and the delete — another
         // admin raced us. Surface as NotFound so the caller sees
@@ -519,6 +544,121 @@ pub(crate) async fn revoke_invite(
     Ok(RevokeInviteResponse {
         jti: jti.to_string(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// A wallet invitation's provisional entry (#2660)
+// ---------------------------------------------------------------------------
+//
+// `vtc/admin/invites/create/0.2` item 3 writes a wallet invitation's
+// administrator entry when the invitation is issued. Written permanent, that
+// entry outlived the invitation: revoking it, or letting it lapse, left an
+// unexpiring administrator nobody had claimed. So the entry is written to
+// expire with the invitation, recorded beside it (`install::InviteGrant`),
+// made permanent by the claim (`vtc/install/claim/finish/0.3`) and removed by
+// a revocation.
+
+/// Write `entry` for wallet invitation `jti` as a provisional entry expiring
+/// with the invitation at `invite_expires` (or at `floor`, an earlier open
+/// invitation's expiry, when that is later), and record it.
+pub(crate) async fn write_provisional_entry(
+    state: &AppState,
+    jti: &Uuid,
+    entry: VtcAclEntry,
+    invite_expires: DateTime<Utc>,
+    floor: Option<u64>,
+) -> Result<(), AppError> {
+    crate::install::write_invite_entry(
+        &state.acl_ks,
+        &state.install_store,
+        jti,
+        entry,
+        invite_expires,
+        floor,
+    )
+    .await
+}
+
+/// Whether `existing` is no standing authority a new wallet invitation must
+/// leave alone: it has lapsed, or it is another invitation's provisional
+/// entry, unchanged and unclaimed.
+async fn replaceable_by_invite(state: &AppState, existing: &VtcAclEntry) -> Result<bool, AppError> {
+    if existing.role != VtcRole::Admin {
+        return Ok(false);
+    }
+    if existing.is_expired(now_epoch()) {
+        return Ok(true);
+    }
+    Ok(state
+        .install_store
+        .invite_grants_for(&existing.did)
+        .await?
+        .iter()
+        .any(|(_, g)| g.is_unchanged(existing)))
+}
+
+/// At the claim of a wallet invitation for `did`: make the provisional entry
+/// an invitation wrote for it permanent — the DID has now proved itself with
+/// the install token and its claim code. Every provisional-entry record naming
+/// `did` is closed, since the DID's entry is no longer any invitation's to
+/// withdraw. An entry rewritten since is left as it is.
+pub(crate) async fn confirm_invite_grant(state: &AppState, did: &str) -> Result<(), AppError> {
+    let grants = state.install_store.invite_grants_for(did).await?;
+    if grants.is_empty() {
+        return Ok(());
+    }
+    if let Some(mut entry) = get_acl_entry(&state.acl_ks, did).await?
+        && grants.iter().any(|(_, g)| g.is_unchanged(&entry))
+        && !entry.is_expired(now_epoch())
+    {
+        entry.expires_at = None;
+        store_acl_entry(&state.acl_ks, &entry).await?;
+        crate::admin_actions::record_effect(state).await;
+    }
+    for (jti, _) in grants {
+        state.install_store.take_invite_grant(&jti).await?;
+    }
+    Ok(())
+}
+
+/// When wallet invitation `jti` is withdrawn unclaimed (revoked, or voided by
+/// wrong claim codes): remove the provisional entry it wrote, if that entry is
+/// still exactly what it wrote. Returns the DID whose entry went.
+pub(crate) async fn withdraw_invite_grant(
+    state: &AppState,
+    actor: &str,
+    jti: &Uuid,
+) -> Result<Option<String>, AppError> {
+    let Some(grant) = state.install_store.take_invite_grant(jti).await? else {
+        return Ok(None);
+    };
+    let _admin_set = crate::ceremony::lock_admin_set().await;
+    let Some(entry) = get_acl_entry(&state.acl_ks, &grant.did).await? else {
+        return Ok(None);
+    };
+    if !grant.is_unchanged(&entry) {
+        return Ok(None);
+    }
+    crate::acl::delete_acl_entry(&state.acl_ks, &grant.did).await?;
+    crate::admin_actions::record_effect(state).await;
+    drop(_admin_set);
+    crate::routes::auth::revoke_sessions_for_did(&state.sessions_ks, &grant.did).await?;
+    crate::acl::delegation::clear(state, &grant.did).await?;
+    crate::acl::delegation::on_granter_changed(state, &grant.did, None).await?;
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                actor,
+                Some(&grant.did),
+                AuditEvent::AclRevoked(vti_common::audit::AclRevokedData {
+                    did: grant.did.clone(),
+                    prior_role: Some("community-admin".into()),
+                }),
+            )
+            .await?;
+    }
+    info!(%jti, did = %grant.did, "unclaimed admin invitation's entry withdrawn");
+    Ok(Some(grant.did))
 }
 
 // ---------------------------------------------------------------------------
