@@ -115,6 +115,10 @@ mod room_read_marker;
 mod seeds;
 #[cfg(test)]
 mod spec_pin_census;
+// No dispatched response carrying a token, secret or code member is kept in
+// the duplicate-execution record unless it is listed as harmless.
+#[cfg(test)]
+mod response_record_census;
 // `operations::protocol` — every service operation these handlers call — is
 // `#[cfg(feature = "webvh")]`, because advertising a transport means editing
 // the agent's did:webvh document. Without webvh there is no document to edit,
@@ -676,6 +680,37 @@ fn carries_personal_state(type_uri: &str) -> bool {
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_3
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1
+}
+
+/// Responses that carry a bearer artefact whose task is not classed as
+/// disclosing a secret. Kept out of the duplicate-execution record like a
+/// secret, so a redelivery is absorbed with no body rather than handed it:
+///
+/// - the backup initiators' `descriptor.transportToken`, which authorises the
+///   transfer's chunk reads or writes;
+/// - an approved pending presentation's `vp_token`, which its verifier accepts
+///   as presented;
+/// - a PCS proof's or attestation's spent `token`, which a verifier accepts as
+///   presented.
+const BEARER_RESPONSES: &[&str] = &[
+    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1,
+    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1,
+    vta_sdk::protocols::credential_exchange::PENDING_APPROVE,
+    vta_sdk::trust_tasks::TASK_VTA_PCS_PROVE_0_1,
+    vta_sdk::trust_tasks::TASK_VTA_PCS_ATTEST_0_1,
+];
+
+/// Whether a successful response to `type_uri` is kept in the
+/// duplicate-execution record for a redelivery: not when its task discloses a
+/// secret (its class), carries a bearer credential ([`BEARER_RESPONSES`]) or
+/// carries personal state ([`carries_personal_state`]). The census in
+/// `trust_tasks::response_record_census` holds every dispatched response schema
+/// with a token, secret or code member to this.
+fn records_response(type_uri: &str) -> bool {
+    let bare = type_uri.split('#').next().unwrap_or(type_uri);
+    let discloses_secret = class_for(bare)
+        .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
+    !(discloses_secret || BEARER_RESPONSES.contains(&bare) || carries_personal_state(bare))
 }
 
 /// Whether the spine may name a received task in its receipt log. Not a read-marker set:
@@ -1931,9 +1966,7 @@ async fn dispatch_trust_task_validated(
         // body instead. The effect still happened once and the claim still
         // stands, so §7.2 item 11 holds. A member's personal label is not kept
         // either ([`carries_personal_state`]).
-        let discloses_secret = class_for(&type_uri)
-            .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
-        let recorded = if discloses_secret || carries_personal_state(&type_uri) {
+        let recorded = if !records_response(&type_uri) {
             None
         } else {
             serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()

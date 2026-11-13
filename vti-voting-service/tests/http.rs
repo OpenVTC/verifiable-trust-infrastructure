@@ -842,9 +842,16 @@ fn naming_method(mut d: Value, did: &str) -> Value {
 #[tokio::test]
 async fn the_https_door_resolves_only_a_signer_it_has_a_reason_to_know() {
     let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
-    let svc = state(&dir);
-    let service_did = svc.identity.did.clone();
     let community = Identity::from_seed(&[31; 32]).unwrap();
+    // A community this box serves by name: the parties its elections list are vouched for.
+    let svc = state_serving(
+        &dir,
+        CommunitiesConfig {
+            allowed: vec![community.did.clone()],
+            ..CommunitiesConfig::default()
+        },
+    );
+    let service_did = svc.identity.did.clone();
     let auditor = "did:webvh:QmAuditor:audit.example";
     let stranger = "did:webvh:QmStranger:stranger.example";
 
@@ -896,6 +903,68 @@ async fn the_https_door_resolves_only_a_signer_it_has_a_reason_to_know() {
     // A did:key signer still reads.
     let (status, answer) = send(&svc, signed_read).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// On an open box (`allow_any`), anyone can mint a `did:key`, register over HTTPS as that
+/// community and name any DID as an auditor or a trustee. Those parties are not vouched for, so
+/// a request signed as one of them is refused before its DID is fetched.
+#[tokio::test]
+async fn an_open_box_never_resolves_the_parties_a_did_key_community_names() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let svc = state(&dir);
+    let service_did = svc.identity.did.clone();
+    let community = Identity::from_seed(&[34; 32]).unwrap();
+    let named = "did:webvh:QmNamed:someone.example";
+
+    let mut register = registration(&community, &service_did, "e-open");
+    register["manifest"]["board"]["auditors"] = json!([named]);
+    let digest = manifest_digest(&register["manifest"]).unwrap();
+    register["manifestDigest"] = json!(digest_multibase(&digest));
+    let (status, answer) = send(
+        &svc,
+        doc(
+            "election/register",
+            &service_did,
+            Some(&community),
+            register,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    let read = doc(
+        "board/head",
+        &service_did,
+        Some(&community),
+        json!({ "community": community.did, "electionId": "e-open" }),
+    )
+    .await;
+    let (status, answer) = send(&svc, naming_method(read, named)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    assert_eq!(answer["payload"]["code"], "permissionDenied", "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A proof's verification method is a DID URL under the issuer, with a fragment: a bare DID
+/// names no method, and is refused before anything is resolved.
+#[tokio::test]
+async fn a_verification_method_without_a_fragment_is_refused() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let svc = state(&dir);
+    let community = Identity::from_seed(&[35; 32]).unwrap();
+    let mut read = doc(
+        "board/head",
+        &svc.identity.did,
+        Some(&community),
+        json!({ "community": community.did, "electionId": "e1" }),
+    )
+    .await;
+    read["proof"]["verificationMethod"] = json!(community.did);
+    let (status, answer) = send(&svc, read).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

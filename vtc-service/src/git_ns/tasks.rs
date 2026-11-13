@@ -68,6 +68,12 @@ pub(crate) fn serves(type_uri: &str) -> bool {
     GIT_NS.registered_uris().contains(&type_uri)
 }
 
+/// Tasks whose response carries the code a member types at the forge's device
+/// flow (`userCode`). The duplicate-execution record keeps no copy of these; a
+/// redelivery is answered `204`.
+pub(crate) const SECRET_RESPONSES: &[&str] =
+    &[<link::Payload as trust_tasks_rs::Payload>::TYPE_URI];
+
 /// Every URI this family serves. Public so `tests/trust_task_manifest.rs`
 /// can check the admin console's signed-document types against it.
 #[must_use]

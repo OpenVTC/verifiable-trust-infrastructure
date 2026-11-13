@@ -239,14 +239,16 @@ impl Task {
     }
 }
 
-/// The DID of a received proof's `verificationMethod`: the DID verifying it resolves.
-fn proof_method_did(received: &Value) -> Option<&str> {
+/// A received proof's `verificationMethod`: verifying it resolves the DID it names.
+fn proof_method(received: &Value) -> Option<&str> {
     received
         .pointer("/proof/verificationMethod")
         .and_then(Value::as_str)
-        .and_then(|vm| vm.split('#').next())
-        .filter(|d| !d.is_empty())
 }
+
+/// How long verifying one request's proof may take, resolution included. Past it the request
+/// is refused `unavailable`, never left holding a connection on a slow DID host.
+const PROOF_VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// A DID that carries its keys in itself: resolving it fetches nothing.
 fn resolves_locally(did: &str) -> bool {
@@ -274,8 +276,9 @@ fn named_election(task: Task, payload: &Value) -> (&str, &str) {
 /// a transport proved it (TSP, DIDComm — the sender is the issuer, checked above); or, on the
 /// HTTPS binding, which proves nobody, it is a community named in `[communities] allowed`, or a
 /// party the election the request names, held here, names (its community, auditors or
-/// trustees). An open box (`allow_any`) names no community, so a stranger's DID is never
-/// fetched on its HTTPS door.
+/// trustees) — and then only where that election's parties are themselves vouched for
+/// ([`parties_vouched_for`]). An open box (`allow_any`) names no community, so a stranger's
+/// DID is never fetched on its HTTPS door.
 fn resolver_for<'a>(
     state: &'a AppState,
     transport_sender: Option<&str>,
@@ -293,11 +296,27 @@ fn resolver_for<'a>(
         return Some(&state.resolver);
     }
     let (community, election_id) = named_election(task, payload);
+    if !parties_vouched_for(state, community) {
+        return None;
+    }
     let named = state
         .ballot_box
         .lock()
         .is_ok_and(|bb| bb.names_party(community, election_id, signer));
     named.then_some(&state.resolver)
+}
+
+/// Whether the parties an election of `community` names may be resolved on the HTTPS door.
+///
+/// Its manifest's auditors and trustees are whoever the registering community wrote there, so
+/// they are no better known than the community: one named in `[communities] allowed`, or one
+/// whose own DID had to be resolved and proven to register — over TSP or DIDComm, because on
+/// this door an unlisted community's DID is not resolved. A `did:key` or `did:peer` community
+/// is neither: on an open box (`allow_any`) anyone can mint one and register over HTTPS, naming
+/// any DID as an auditor or a trustee. Its parties sign with a `did:key` or `did:peer` on this
+/// door, or reach the box over TSP or DIDComm.
+fn parties_vouched_for(state: &AppState, community: &str) -> bool {
+    state.communities.allowed.iter().any(|c| c == community) || !resolves_locally(community)
 }
 
 fn status_for(code: &TrustTaskCode) -> StatusCode {
@@ -492,11 +511,10 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
     // verification method, so both checks come first: the method must be the issuer's, and the
     // issuer one this service will resolve ([`resolver_for`]).
     let signer = if doc.proof.is_some() {
-        let Some(issuer) = doc
-            .issuer
-            .as_deref()
-            .filter(|i| proof_method_did(&received) == Some(*i))
-        else {
+        let Some(issuer) = doc.issuer.as_deref().filter(|i| {
+            proof_method(&received)
+                .is_some_and(|vm| vti_common::auth::check_issuer_binding(vm, i).is_ok())
+        }) else {
             return refuse(
                 state,
                 &doc,
@@ -516,7 +534,22 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
             )
             .await;
         };
-        match vti_common::auth::verify_trust_task_proof_value(&received, resolver).await {
+        let verified = tokio::time::timeout(
+            PROOF_VERIFY_TIMEOUT,
+            vti_common::auth::verify_trust_task_proof_value(&received, resolver),
+        )
+        .await;
+        let Ok(verified) = verified else {
+            tracing::debug!("a request proof did not verify in time");
+            return refuse(
+                state,
+                &doc,
+                standard("unavailable"),
+                "the signer's verification method did not resolve in time",
+            )
+            .await;
+        };
+        match verified {
             Ok(s) if doc.issuer.as_deref() == Some(s.as_str()) => Some(s),
             Ok(_) => {
                 return refuse(

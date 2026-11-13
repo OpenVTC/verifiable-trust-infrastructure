@@ -1844,12 +1844,12 @@ mod tests {
             .expect("get");
         assert_eq!(got.mode.to_string(), "proxied");
         let download_id = got.download_id.expect("a handle").to_string();
-        for i in 0..sealed.chunks.len() {
+        for (i, expected) in sealed.chunks.iter().enumerate() {
             let chunk = client
                 .download_chunk(&download_id, i as u64, did, secret)
                 .await
                 .unwrap();
-            assert_eq!(chunk, sealed.chunks[i]);
+            assert_eq!(&chunk, expected);
         }
     }
 

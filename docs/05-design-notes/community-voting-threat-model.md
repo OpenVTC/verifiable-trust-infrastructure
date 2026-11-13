@@ -47,7 +47,7 @@ party's report of it.** The board is the evidence; the ballot box is only its ke
 | 18 | A flood of casts holds the box's one lock through every pairing check, stalling every other community | a cast's costly checks run on bounded blocking threads without the lock; what they prove admits that one cast only |
 | 19 | One `voting/board/read` of a board of large entries is an unbounded answer | a page carries at most 256 KiB of entries (at least one), fewer than `limit` |
 | 20 | A box dates its heads ahead, and the community, pacing checkpoints by a head's `issuedAt`, stops taking them — leaving the box free to show different boards in between | checkpoints are paced by when the community last had a head answered, by its own clock |
-| 21 | Any sender on the HTTPS door names a DID of its choosing on a signed read or step, and the box fetches it per request; a signed community or trustee request is accepted at any age | on HTTPS a non-`did:key`/`did:peer` signer is resolved only when `[communities] allowed` names it or the election the request names lists it, and the proof's verification method must be the issuer's before anything resolves; community and trustee requests are held to the VTI acceptance window |
+| 21 | Any sender on the HTTPS door names a DID of its choosing on a signed read or step, and the box fetches it per request; a signed community or trustee request is accepted at any age | on HTTPS a non-`did:key`/`did:peer` signer is resolved only when `[communities] allowed` names it, or the election the request names lists it and that election's community is in `allowed` or is a DID that had to be resolved to register (a `did:key` community on an open box vouches for nobody); the proof's verification method must be a DID URL under the issuer before anything resolves, and verification is bounded at 15 s; community and trustee requests are held to the VTI acceptance window |
 
 Items 1 – 8 changed the wire, as `vta/pcs/trustee/*/0.2`, `vta/pcs/vote-encrypted/0.3`,
 `voting/trustees/authorize/0.1` and CONVENTIONS §3.9 / §9.3 – 9.7. The 0.1 trustee and
@@ -58,6 +58,10 @@ vote-encrypted tasks are retired: their whole design was acting on the box's rep
 None of these lets a single party change a result. Each one weakens privacy or availability, or
 leaves a cost unbounded:
 
+- **An open box's registrants.** With `allow_any`, a community that resolves its own DID over
+  TSP or DIDComm may register and name any DID as an auditor or a trustee, which the box will
+  then resolve when that party signs on the HTTPS door. Name the communities in `allowed` to
+  close it.
 - **The cast door's rate.** The service does not rate-limit the anonymous HTTPS door itself;
   the guide puts that on the reverse proxy in front of it.
 

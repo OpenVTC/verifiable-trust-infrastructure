@@ -2635,6 +2635,63 @@ async fn a_badge_group_is_changed_only_through_its_badge_and_by_its_owners_own_k
     assert_eq!(holding(&fix, &badge_id).await, 1);
 }
 
+/// VTI-BDG-012: a badge's owner — a member managing its group under a grant qualified to
+/// that group, not every group — is refused `vtc/groups/update` and `vtc/groups/delete` on
+/// it, as the group's other managers are.
+#[tokio::test]
+async fn a_badge_owner_who_manages_only_its_group_is_refused_update_and_delete() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["owners"] = json!([fix.member_entry]);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let group_id = doc["payload"]["badge"]["groupId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        doc["payload"]["group"]["managers"],
+        json!([fix.member_entry]),
+        "the member is the badge group's one manager: {doc}"
+    );
+
+    // The owner manages this group, so the refusal is the badge's, not a manager check's.
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("update"),
+        json!({ "groupId": group_id, "joinPolicy": "open" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert!(
+        doc["payload"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("backs a badge")),
+        "{doc}"
+    );
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("delete"),
+        json!({ "groupId": group_id, "reason": "tidying up" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert!(
+        doc["payload"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("backs a badge")),
+        "{doc}"
+    );
+    let stored = vtc_service::groups::get(fix.vtc.state.directory.ks(), &group_id)
+        .await
+        .unwrap()
+        .expect("the badge group is still there");
+    assert_eq!(stored.join_policy, vtc_service::groups::JoinPolicy::Request);
+}
+
 /// VTI-BDG-013: an automatic badge is held by whoever its rule admits, each holding an
 /// award the rule made; opting out of its group declines it.
 #[tokio::test]

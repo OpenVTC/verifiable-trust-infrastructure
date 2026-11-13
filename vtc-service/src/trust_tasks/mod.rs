@@ -593,7 +593,7 @@ impl vti_trust_task_server::Dispatcher for VtcSpine<'_> {
 ///
 /// A response that carries a bearer secret (an invite's claim code, a
 /// session's access and refresh tokens, a setup session token, a backup
-/// transfer's transport token) is recorded as
+/// transfer's transport token, a badge claim code, a forge device code) is recorded as
 /// completed **without** its body, so the secret is not kept for the
 /// acceptance window and is never handed to a redelivery; a redelivery is then
 /// answered `204`. The census in `trust_tasks::response_record_census` holds every served
@@ -607,6 +607,8 @@ pub(crate) fn records_response(type_uri: &str) -> bool {
         || install_tasks::SECRET_RESPONSES.contains(&type_uri)
         || recognise_tasks::SECRET_RESPONSES.contains(&type_uri)
         || backup_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || badge_tasks::SECRET_RESPONSES.contains(&type_uri)
+        || crate::git_ns::tasks::SECRET_RESPONSES.contains(&type_uri)
         || event_tasks::UNRECORDED_RESPONSES.contains(&type_uri))
 }
 

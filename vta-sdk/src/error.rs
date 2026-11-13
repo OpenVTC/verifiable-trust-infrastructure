@@ -680,10 +680,13 @@ impl VtaError {
     /// Returns true if this is a network-level error (retryable).
     pub fn is_network(&self) -> bool {
         #[cfg(feature = "client")]
-        if matches!(self, Self::Network(_)) {
-            return true;
+        {
+            matches!(self, Self::Network(_))
         }
-        false
+        #[cfg(not(feature = "client"))]
+        {
+            false
+        }
     }
 
     /// Returns true if the resource was not found.

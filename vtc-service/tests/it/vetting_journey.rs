@@ -942,11 +942,7 @@ impl Community {
                 .uri(path)
                 .body(Body::empty())
                 .map_err(|e| e.to_string())?;
-            let res = router
-                .clone()
-                .oneshot(req)
-                .await
-                .map_err(|e| e.to_string())?;
+            let Ok(res) = router.clone().oneshot(req).await;
             let (status, body) = read(res).await;
             if status.is_success() {
                 Ok(body)
