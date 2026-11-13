@@ -5,9 +5,9 @@ description: >
 
 # One copy instead of five. When `Feature combos` was split into parallel
 # groups, each group needed the same three steps, and five hand-kept copies of
-# one preamble are how the copies drift. (The apt logic is the case in point:
-# it is still copied inline into several other jobs of ci.yml, while this
-# action and the Test jobs call the one shared script.)
+# one preamble are how the copies drift. (The apt logic was the case in point:
+# it sat copied inline in four ci.yml jobs and two publish.yml jobs until
+# #2659 pointed them all at scripts/install-build-deps.sh.)
 #
 # What is NOT here: anything that decides what a group compiles or tests. Every
 # `cargo` step, and the `rustup target add wasm32-unknown-unknown` the rooms
