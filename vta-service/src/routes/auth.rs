@@ -100,8 +100,8 @@ pub async fn passkey_login_start(
         refresh_expires_at: None,
         tee_attested: false,
         // AAL is unknown at challenge time. passkey_login_finish sets
-        // it to amr=["did","passkey"], acr="aal2" when the assertion
-        // verifies and the session transitions to Authenticated.
+        // it to amr=["passkey"], acr="aal2" when the assertion verifies
+        // and the session transitions to Authenticated.
         amr: Vec::new(),
         acr: String::new(),
         acr_expires_at: None,
@@ -233,14 +233,19 @@ pub async fn passkey_login_finish(
 
     // 6. Mint tokens through the single canonical authenticate path
     //    (`handle_authenticate_with_aal`) rather than re-deriving the
-    //    session/JWT/refresh-token logic here (P1.4). Passkey-login is the
-    //    second factor — the DID-key was challenged first via the challenge
-    //    endpoint, then this WebAuthn assertion proved possession of a passkey
-    //    VM — so we issue `amr=["did","passkey"], acr="aal2"`. The challenge was
-    //    already verified cryptographically above (step 5), so we pass the
-    //    session's own challenge for the handler's constant-time match. Routing
-    //    through the handler also applies the acr-correct (shortened) aal2
-    //    access-token TTL, which the bespoke mint here did not.
+    //    session/JWT/refresh-token logic here (P1.4). The one factor proven
+    //    here is the passkey: `passkey_login_start` takes a bare `did` and
+    //    checks only that it is in the ACL — no DID-key signature is asked for
+    //    on this path — and this WebAuthn assertion proves possession of a
+    //    passkey VM of that DID, with user verification required. So we issue
+    //    `amr=["passkey"]` (#2620): `amr` names the methods actually
+    //    exercised, and a policy reading it must not see a DID-key proof that
+    //    never happened. `acr="aal2"` stands on the user-verified passkey
+    //    (a multi-factor authenticator by itself). The challenge was already
+    //    verified cryptographically above (step 5), so we pass the session's
+    //    own challenge for the handler's constant-time match. Routing through
+    //    the handler also applies the acr-correct (shortened) aal2 access-token
+    //    TTL, which the bespoke mint here did not.
     let backend = crate::auth::VtaAuthBackend::from_state(&state).await?;
     let resp = vti_common::auth::handlers::handle_authenticate_with_aal(
         &backend,
@@ -252,7 +257,7 @@ pub async fn passkey_login_finish(
             session_pubkey_b58btc: None,
             audience: vti_common::auth::AudienceBinding::Transport,
         },
-        vec!["did".to_string(), "passkey".to_string()],
+        vec!["passkey".to_string()],
         "aal2".to_string(),
     )
     .await?;
