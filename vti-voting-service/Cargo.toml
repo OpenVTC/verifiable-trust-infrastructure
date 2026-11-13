@@ -4,8 +4,7 @@ description = "The voting service: a ballot box and board for community election
 version = "0.1.0"
 edition.workspace = true
 # A host service binary, like vti-witness and room-host: nothing consumes it as
-# a library, and it depends on vti-voting, which is unpublished until its first
-# published consumer.
+# a library, so there is nothing to publish.
 publish = false
 authors.workspace = true
 rust-version.workspace = true

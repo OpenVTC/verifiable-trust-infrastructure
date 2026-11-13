@@ -80,7 +80,7 @@ pub async fn authorize_holder(
 /// Currently always approves. Real user verification plugs in here. It is not
 /// the authorization control; [`authorize_holder`] is.
 pub fn step_up_policy_approve(_holder_did: &str, _rp_did: &str) -> bool {
-    // TODO: real user-verification (CLI confirm / passkey-at-VTA / push) plugs in here
+    // TODO(#2702): real user-verification (CLI confirm / passkey-at-VTA / push) plugs in here
     true
 }
 

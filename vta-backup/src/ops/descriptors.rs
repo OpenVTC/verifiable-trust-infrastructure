@@ -165,7 +165,8 @@ pub async fn initiate_export(
     Ok(InitiateExportResultBody {
         descriptor: build_descriptor(&record, token, deps.config).await?,
         completion_hint: format!(
-            "Download with: pnm backup save --bundle-id {bundle_id} --output backup.vtabak"
+            "Download bundle {bundle_id} from the descriptor's URL with its bearer token before \
+             it expires, then complete the export (`pnm backup export` does both)."
         ),
     })
 }
@@ -307,7 +308,8 @@ pub async fn initiate_import(
     Ok(InitiateImportResultBody {
         descriptor: build_descriptor(&record, token, deps.config).await?,
         completion_hint: format!(
-            "Upload with: pnm backup restore --bundle-id {bundle_id} --input <path> --password <pw>"
+            "Upload the backup to the descriptor's URL for slot {bundle_id} with its bearer \
+             token, then finalize the import (`pnm backup import <file>` does both)."
         ),
     })
 }

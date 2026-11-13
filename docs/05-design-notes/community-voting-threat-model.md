@@ -1,5 +1,7 @@
 # Community voting: threat model and the review of October 2026
 
+Status: **current threat model** for the shipped voting code, with the October 2026 review as its record.
+
 Community voting (VTI-VOT-001 – 100) spreads one election over four parties: the **community**
 (registrar: the roll, the tickets, certification), the **ballot box** (`vti-voting-service`:
 casts, the board, the result), the **trustees** (each a persona in its own VTA, holding a share

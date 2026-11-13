@@ -481,9 +481,10 @@ the health probe, and the git-trust capability hooks.
   a typed `NoMatchingProtocol` naming what each side offers. The
   VTC never silently downgrades past what the registry
   advertises.
-- `degraded_threshold_seconds` appears in
-  [trust-registry.md](trust-registry.md) but not in
-  `RegistryConfig`. Setting it has no effect.
+- There is no `degraded_threshold_seconds`: `RegistryConfig` has no such
+  key, and `registry_status` follows probe and dispatch outcomes, not a lag
+  threshold. An older version of [trust-registry.md](trust-registry.md)
+  listed it; a config that still sets it is accepted and the key ignored.
 
 **The registry must authorise the VTC's DID.** Record writes
 require a Data-Integrity proof *and* a sender DID listed in the

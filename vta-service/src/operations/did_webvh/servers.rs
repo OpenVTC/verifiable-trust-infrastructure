@@ -106,7 +106,7 @@ pub async fn list_webvh_servers(
 
 /// Relay the registered hosting server's `did-management/me/domains/0.1`
 /// view to the caller: the domains this VTA may mint into, and the default.
-/// Used by `pnm did-mgmt list-domains` and the interactive `--domain` prompt in
+/// Used by `pnm did-mgmt dids list-domains` and the interactive `--domain` prompt in
 /// `create-did` / `register-did`.
 pub async fn list_webvh_server_domains(
     deps: &crate::operations::did_webvh::WebvhDeps<'_>,

@@ -618,7 +618,7 @@ impl SessionStore {
     /// uses DIDComm authcrypt as the auth: every outbound message is
     /// encrypted to the VTA's recipient key, the VTA decrypts and
     /// reads `from` as the authenticated sender DID, then ACL-checks
-    /// it (see `vta-service/src/messaging/auth.rs::auth_from_message`).
+    /// it (see `vta-service/src/messaging/auth.rs::auth_for_trust_task_envelope`).
     /// No JWT changes hands; no token to expire.
     ///
     /// Pending-rotation parity with the REST path: when the loaded
@@ -884,7 +884,7 @@ impl SessionStore {
         transport: TransportChoice,
     ) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
         let session = self.load_session(key).ok_or(
-            "Not authenticated.\n\nTo authenticate, import a credential:\n  <cli> auth login <credential-string>",
+            "Not authenticated: no session is stored for this VTA.\n\nSet one up with `pnm setup` (pnm) or `cnm auth login --credential-bundle <file>` (cnm).",
         )?;
 
         let session_vta_did = require_vta_did(&session)?.to_string();

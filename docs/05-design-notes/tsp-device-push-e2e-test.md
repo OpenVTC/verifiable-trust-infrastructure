@@ -1,5 +1,7 @@
 # TSP device-push — end-to-end test plan
 
+Status: **test plan** — the device-push behaviour it tests is built (`tsp-outbound-send.md` §4.1).
+
 Verifies "the VTA should use TSP when it can" for the mobile approver: a
 TSP-capable device announces reachability, the VTA learns it, and a task-consent
 / step-up push routes to the device over TSP (falling back to DIDComm). Built on

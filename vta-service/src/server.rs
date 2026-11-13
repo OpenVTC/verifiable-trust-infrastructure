@@ -3460,7 +3460,7 @@ async fn publish_own_webs_identity(state: &AppState) {
                 did = %vta_did,
                 server_id = %record.server_id,
                 "this VTA's did:webs names a hosting server that is not registered; register it \
-                 (`pnm webvh add-server`) and restart"
+                 (`pnm did-mgmt servers add`) and restart"
             );
             return;
         }

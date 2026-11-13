@@ -1022,7 +1022,7 @@ pub async fn set_wake_device(
         None,
     )
     .await;
-    // TODO(gateway): push/provision the allowlist to the gateway DID over
+    // TODO(#2704): push/provision the allowlist to the gateway DID over
     // DIDComm once the gateway's DIDComm surface can authenticate the VTA.
 
     Ok(json!({

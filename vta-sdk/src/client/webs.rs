@@ -126,11 +126,11 @@ pub fn webs_refusal_fix(e: &VtaError) -> Option<&'static str> {
         }
         "serverNotFound" => {
             "no hosting server by that id is registered: list them with \
-             `pnm webvh servers list`, or add one with `pnm webvh servers add`."
+             `pnm did-mgmt servers list`, or add one with `pnm did-mgmt servers add`."
         }
         "domainNotServed" => {
             "the hosting server does not serve that domain for this VTA: see \
-             `pnm webvh servers domains <server-id>`, or leave `--domain` out to use its \
+             `pnm did-mgmt dids list-domains --server <server-id>`, or leave `--domain` out to use its \
              default."
         }
         "versionConflict" => {

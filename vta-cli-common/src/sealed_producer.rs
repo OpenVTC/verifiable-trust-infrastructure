@@ -240,7 +240,7 @@ pub async fn emit_raw_private_key_bundle(
 
 /// Seal a [`vta_sdk::context_provision::ContextProvisionBundle`] to the
 /// given recipient and emit the armored output + stderr banner. Shared
-/// between `pnm context reprovision` and `vta context reprovision` —
+/// between `pnm contexts reprovision` and `vta context reprovision` —
 /// both produce the same bundle shape from different transports.
 ///
 /// When `out` is `Some(path)`, the armor is written to that file; when

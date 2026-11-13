@@ -8,7 +8,7 @@ Release mechanics are in [`RELEASING.md`](../../RELEASING.md).
 
 **Never edit a `version = ` field in a feature PR.** Versions are assigned by
 the Release PR that release-plz maintains; merging that PR is what publishes.
-Merging a feature PR publishes nothing. See [`RELEASING.md`](RELEASING.md).
+Merging a feature PR publishes nothing. See [`RELEASING.md`](../../RELEASING.md).
 
 That includes when the `semver report (informational — never blocks)` check
 goes **red on your PR** (it runs only on a PR labelled `semver-report`; the
@@ -42,19 +42,12 @@ feature, so the default-feature reproduction the report printed never touched
 it. A dependency break of this shape is fixed upstream or by a raised floor,
 never by a change here.
 
-**27 of 37 crates publish.** The ten that do not — `vta-enclave`,
-`vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`,
-`room-host`, `vti-rooms-wasm`, `vti-witness`, `vti-voting-service` — set `publish = false` in their
-own manifest, each with a comment saying why. (The count is the workspace's
-members plus `vti-fuzz`; the excluded `deploy/nitro/enclave-proxy` is a
-deployment helper, not counted.)
-
-The other 27 are `vta-sdk`, `vti-common`, `vti-secrets`, `vta-cli-common`,
-`vtc-client`, `pnm-cli`, `cnm-cli`, `vtc-service` — plus `vta-service` and its
-closure (`vta-audit`, `vta-backup`, `vta-config`, `vta-keys`, `vta-keyspaces`,
-`vta-policy`, `vta-support`, `vta-sweepers`, `vta-tee`, `vta-vault`,
-`vta-webvh`, `vta-persona`, `vti-webauthn`, `vta-external`, `vti-vetting-pcs`,
-`vti-voting`, `vti-rooms`, `vti-rooms-dtg`).
+**36 of 47 crates publish.** The count is of workspace members; the
+authoritative list of the eleven that set `publish = false` is in
+[RELEASING.md](../../RELEASING.md#what-gets-published), and
+`scripts/check-docs.py` holds both to the manifests. (`vti-fuzz` and the
+excluded `deploy/nitro/enclave-proxy` are not members and not counted; both
+are unpublished.)
 
 **`vtc-service` is published as a binary**, so an operator installs the VTC
 with `cargo install vtc-service`; nothing consumes its library, so it carries

@@ -21,8 +21,8 @@ target at its matching folder with `cargo +nightly fuzz run <target> seeds/<dir>
 | `nitro-quote/` | COSE_Sign1 AWS Nitro attestation quote (`.cose`) | `fuzz_nitro_quote`, `fuzz_nitro_verify` |
 
 The verify-path parser entry points are the sync, IO-free cores in
-`vtc-service/src/credentials/exchange.rs` (`parse_sd_jwt_presentation`,
-`flatten_vp_token`, `verify_oid4vci_proof`) and
+`vtc-service/src/credentials/exchange/` (`verify.rs`: `parse_sd_jwt_presentation`,
+`flatten_vp_token`; `issue.rs`: `verify_oid4vci_proof`) and
 `vta-sdk/src/provision_integration/request.rs`
 (`BootstrapRequest::verify`) — all reachable without a tokio runtime or a DID
 resolver, so a libFuzzer harness drives them directly. The Nitro targets drive

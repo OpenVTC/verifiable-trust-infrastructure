@@ -402,7 +402,7 @@ fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppErro
         // The admin private key lands in the terminal scrollback / any
         // session recording the moment it's printed. Make the operator
         // consciously reveal it rather than spilling it by default.
-        // TODO(keyring): write this to the OS keyring instead of stdout.
+        // TODO(#2703): write this to the OS keyring instead of stdout.
         let reveal = Confirm::new()
             .with_prompt(
                 "Display the admin private key now? It's needed for CLI access and is shown only once",

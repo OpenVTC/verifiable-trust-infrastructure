@@ -334,7 +334,7 @@ reach the copy the VTC serves, so you carry the log across.
    in the mediator's own document. Name the same mediator as the
    `#didcomm` entry. For a scripted run, pass the edited document with
    `--document <file> --no-confirm`
-   ([edit walkthrough](../02-vta/runtime-service-management.md#walkthrough-edit-an-existing-did-document)).
+   ([did:webvh update](../02-vta/did-webvh-update.md)).
    For a serverless DID the command ends by printing the two commands
    below.
 

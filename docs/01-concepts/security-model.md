@@ -13,7 +13,7 @@ Nitro Enclave. TEE deployments add hardware isolation, KMS-backed secrets,
 encrypted storage, config locking, and the vsock network controls (layers 1-4, 7).
 
 For TEE implementation details (KMS bootstrap code, encrypted store layer,
-config changes), see [TEE Enclave Security Design](tee-architecture.md).
+config changes), see [TEE Enclave Security Design](../02-vta/tee-architecture.md).
 For the non-TEE hardened configuration, see
 [Hardened configuration](../02-vta/non-interactive-setup.md#hardened-configuration).
 

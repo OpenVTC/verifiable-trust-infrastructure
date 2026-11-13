@@ -29,7 +29,7 @@ The VTA admin creates a context for your application and issues a credential:
 
 ```sh
 # Using the PNM CLI (admin)
-pnm context provision \
+pnm contexts provision \
   --id my-service \
   --name "My Service" \
   --admin-label "Service Admin"
@@ -378,9 +378,11 @@ request passes four gates, in order:
    the subject's *next* sign call — no session revocation, no waiting out a
    token TTL.
 
-The same four gates apply on **every** transport: REST, the DIDComm
-`key-management/1.0/sign-request` protocol, and the `keys/sign` Trust Task all
-funnel through one enforcement point (`operations::keys::sign_payload`).
+The same four gates apply on **every** transport: the `keys/sign` Trust Task
+arrives the same way over TSP, DIDComm or HTTPS (`/trust-tasks`) and funnels
+through one enforcement point (`operations::keys::sign_payload`). (The older
+REST route and the bare-DIDComm `key-management/1.0/sign-request` message are
+gone.)
 
 > **Granularity: per context by default, per key id on request.** Gate 1
 > authorizes a caller for *every* key in a context it holds. If one credential

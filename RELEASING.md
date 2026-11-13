@@ -85,10 +85,20 @@ that branch. See [RELEASES.md](RELEASES.md#what-goes-on-a-release-branch).
 
 ## What gets published
 
-**28 of 37 crates.** The nine that stay internal set `publish = false` in their
-own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
-`vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`, `room-host`,
-`vti-rooms-wasm`, `vti-witness`.
+**36 of 47 crates publish.** This is the authoritative count: the eleven
+workspace members that stay internal set `publish = false` in their own
+`Cargo.toml`, each with a comment saying why, and are listed here —
+`scripts/check-docs.py` fails CI when this list, or any "N of M" count in
+CLAUDE.md or the engineering notes, disagrees with the manifests:
+
+<!-- internal-crates:begin -->
+`didcomm-test`, `room-host`, `vta-enclave`, `vta-mcp`, `vta-mobile-core`,
+`vtc-mcp`, `vti-e2e-tests`, `vti-mcp-common`, `vti-rooms-wasm`,
+`vti-voting-service`, `vti-witness`.
+<!-- internal-crates:end -->
+
+The fuzz crate (`vti-fuzz`, under `fuzz/`) is not a workspace member and is
+`publish = false` too.
 
 | Published | Consumed by |
 |---|---|
@@ -103,8 +113,8 @@ own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
 | `vti-vtn` | `vtc-service`, and the VTN service and `nnm` in OpenVTC/verifiable-trust-network |
 | `vti-trust-task-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
 | `vti-oob-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
-| the subsystem crates (`vta-*`, `vti-webauthn`, `vti-rooms*`, `vti-vetting-pcs`) | nothing directly; they are `vta-service`'s and `vtc-service`'s closure |
-| `vti-specs`, `vti-specs-{rooms,vta,vtc,core}` | `vta-sdk`'s closure: the generated Trust Task types it re-exports as `vta_sdk::specs`. Each package carries its `trust-tasks.lock` and vendored bundles, which its `build.rs` generates from |
+| the subsystem crates (`vta-*` incl. `vta-persona`, `vti-webauthn`, `vti-rooms`, `vti-rooms-dtg`, `vti-vetting-pcs`, `vti-voting`) | nothing directly; they are `vta-service`'s and `vtc-service`'s closure |
+| `vti-specs`, `vti-specs-{rooms,vta,vtc,vtn,core}` | `vta-sdk`'s closure: the generated Trust Task types it re-exports as `vta_sdk::specs`. Each package carries its `trust-tasks.lock` and vendored bundles, which its `build.rs` generates from |
 
 ### npm: `@openvtc/vti-rooms-wasm`
 

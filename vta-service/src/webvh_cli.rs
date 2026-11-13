@@ -265,7 +265,7 @@ pub async fn run_create_did(
         template: None,
         template_context: None,
         template_vars: std::collections::HashMap::new(),
-        // `pnm did-webvh create` is a runtime integration-DID CLI; it
+        // `pnm did-mgmt dids create` is a runtime integration-DID CLI; it
         // never mints the VTA's own identity (setup wizard does that).
         is_vta_identity: false,
         did_method,
@@ -525,7 +525,7 @@ pub async fn run_delete_did(
     Ok(())
 }
 
-/// `vta webvh did-log` — print the raw `did.jsonl` log for a DID the
+/// `vta did-mgmt dids get-log` — print the raw `did.jsonl` log for a DID the
 /// VTA knows (provisioning-time snapshot).
 pub async fn run_did_log(
     config_path: Option<PathBuf>,
@@ -559,7 +559,7 @@ pub async fn run_did_log(
     Ok(())
 }
 
-/// Offline equivalent of `pnm webvh edit-did` — edit a WebVH
+/// Offline equivalent of `pnm did-mgmt dids edit` — edit a WebVH
 /// DID document and publish a new LogEntry. Operates directly on
 /// the local fjall keystore. The VTA daemon must be stopped
 /// (fjall holds an exclusive lock when the daemon is running).
@@ -837,7 +837,7 @@ fn offline_publish_failure(
     text
 }
 
-/// Offline equivalent of `pnm webvh register-did` — promote a
+/// Offline equivalent of `pnm did-mgmt dids register` — promote a
 /// serverless WebVH DID to a server-managed one. Operates directly
 /// on the local fjall keystore. The VTA daemon must be stopped
 /// (fjall holds an exclusive lock when the daemon is running).

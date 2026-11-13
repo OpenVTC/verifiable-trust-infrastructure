@@ -503,6 +503,82 @@ mod tests {
         Cli::try_parse_from(args).expect("should parse")
     }
 
+    /// Every `pnm` command an operator-facing error or help string tells the
+    /// operator to run must parse: a remediation that is itself a parse error
+    /// is worse than none (root CLAUDE.md, "Operator errors should suggest the
+    /// fix"; #2631). Placeholders are filled with sample values. The strings
+    /// live in other crates, so each is copied here with its source.
+    #[test]
+    fn remediation_commands_in_error_and_help_strings_parse() {
+        let commands: &[&[&str]] = &[
+            // vta-sdk/src/client/webs.rs (`serverNotFound`, `domainNotServed`)
+            &["pnm", "did-mgmt", "servers", "list"],
+            &[
+                "pnm",
+                "did-mgmt",
+                "servers",
+                "add",
+                "--id",
+                "host-1",
+                "--did",
+                "did:web:h.example",
+            ],
+            &[
+                "pnm",
+                "did-mgmt",
+                "dids",
+                "list-domains",
+                "--server",
+                "host-1",
+            ],
+            // pnm-cli/src/cli.rs `--domain` help; vta-sdk/src/client/webvh.rs
+            &["pnm", "did-mgmt", "dids", "list-domains", "--server", "id"],
+            // pnm-cli/src/commands/rooms.rs (not authenticated)
+            &["pnm", "setup"],
+            // vti-voting-service/src/setup.rs (remove the setup DID's grant)
+            &[
+                "pnm",
+                "acl",
+                "delete",
+                "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            ],
+            // vta-service/src/operations/did_webvh/register_server.rs
+            &[
+                "pnm",
+                "did-mgmt",
+                "dids",
+                "register",
+                "--did",
+                "did:webvh:x:h.example",
+                "--server",
+                "host-1",
+            ],
+            // vta-sdk/src/protocol/{mod,services}.rs
+            &[
+                "pnm",
+                "did-mgmt",
+                "dids",
+                "get-log",
+                "did:webvh:x:h.example",
+            ],
+        ];
+        for argv in commands {
+            if let Err(e) = Cli::try_parse_from(*argv) {
+                panic!("`{}` does not parse: {e}", argv.join(" "));
+            }
+        }
+    }
+
+    /// `--template` help lists the SDK's built-ins and never a retired name (#2635).
+    #[test]
+    fn template_help_lists_the_builtins() {
+        let help = crate::cli::template_name_help();
+        for name in vta_sdk::did_templates::BUILTIN_NAMES {
+            assert!(help.contains(name), "{name} missing from: {help}");
+        }
+        assert!(!help.contains("did-hosting-"), "{help}");
+    }
+
     #[test]
     fn setup_bare_parses_all_none() {
         let cli = parse(&["pnm", "setup"]);

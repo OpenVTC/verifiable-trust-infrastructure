@@ -359,7 +359,7 @@ pub async fn run_from_file(path: &Path) -> anyhow::Result<()> {
     }
     println!(
         "The setup DID {} keeps its grant until --admin-expires; remove it sooner with \
-         `pnm acl delete --did {}`.",
+         `pnm acl delete {}`.",
         setup_key.did, setup_key.did
     );
     println!(

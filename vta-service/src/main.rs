@@ -570,16 +570,15 @@ enum BootstrapCommands {
     /// return an armored sealed bundle which `vta bootstrap open`
     /// decrypts using the persisted seed.
     ///
-    /// Used by integration operators (mediator, did-hosting-control, did-hosting-daemon,
-    /// did-hosting-server, etc.) to request enrollment from a VTA that may not
+    /// Used by integration operators (mediator, DID-hosting control plane and
+    /// daemon, witness, etc.) to request enrollment from a VTA that may not
     /// yet be network-reachable. See
     /// `docs/02-vta/provision-integration.md` for the end-to-end
     /// flow.
     ProvisionRequest {
-        /// DID template name the VTA should render (e.g.
-        /// `didcomm-mediator`, `did-hosting-control`, `did-hosting-daemon`,
-        /// `did-hosting-server`, or an operator-uploaded custom template).
-        #[arg(long)]
+        /// DID template name the VTA should render: a built-in or an
+        /// operator-uploaded custom template.
+        #[arg(long, long_help = template_name_help())]
         template: String,
         /// Template variable, repeat for each binding. Format `KEY=VALUE`.
         /// Values are parsed as JSON when the value starts with `{`, `[`,
@@ -806,7 +805,7 @@ enum ContextCommands {
     /// import.
     ///
     /// Reads the local keystore directly — no running VTA or network
-    /// required. Mirrors `pnm context reprovision` but works in
+    /// required. Mirrors `pnm contexts reprovision` but works in
     /// cold-start / air-gapped environments where PNM cannot reach the
     /// VTA.
     ///
@@ -916,9 +915,9 @@ enum WebvhCommands {
         /// Print the generated mnemonic to stderr. **Off by default** —
         /// printing puts the master seed in shell history, terminal
         /// scrollback, CI log collectors, and tmux/screen buffers. The
-        /// mnemonic is also persisted via the configured seed-store; if
-        /// you need it for paper backup, run `vta export-mnemonic`
-        /// instead so it goes through the time-bounded export guard.
+        /// mnemonic is also persisted via the configured seed-store. No
+        /// command prints it again later, so if you need a paper backup pass
+        /// this flag deliberately, in a terminal nothing records.
         #[arg(long)]
         print_mnemonic: bool,
     },
@@ -960,7 +959,7 @@ enum WebvhCommands {
         out: Option<PathBuf>,
     },
     /// Edit an existing WebVH DID document. Offline equivalent of
-    /// `pnm webvh edit-did`. Operates directly on the local fjall
+    /// `pnm did-mgmt dids edit`. Operates directly on the local fjall
     /// keystore — VTA daemon must be stopped (fjall lock).
     ///
     /// Interactive mode opens the latest DID document in `$EDITOR`,
@@ -995,7 +994,7 @@ enum WebvhCommands {
     /// hosting server. Pushes the local `did.jsonl` to the host and
     /// flips the DID's `server_id` so future updates auto-publish.
     ///
-    /// Offline equivalent of `pnm webvh register-did`. Operates
+    /// Offline equivalent of `pnm did-mgmt dids register`. Operates
     /// directly on the local fjall keystore — VTA daemon must be
     /// stopped (fjall holds an exclusive lock when the daemon is
     /// running).
@@ -1003,7 +1002,7 @@ enum WebvhCommands {
         /// The serverless WebVH DID to promote.
         #[arg(long)]
         did: String,
-        /// Registered server id (from `vta webvh add-server`).
+        /// Registered server id (from `vta did-mgmt servers add`).
         #[arg(long)]
         server: String,
         /// Take over a slot owned by a different DID. Honoured only
@@ -1119,9 +1118,9 @@ enum DidMgmtDidCommands {
         /// Print the generated mnemonic to stderr. **Off by default** —
         /// printing puts the master seed in shell history, terminal
         /// scrollback, CI log collectors, and tmux/screen buffers. The
-        /// mnemonic is also persisted via the configured seed-store;
-        /// if you need it for paper backup, run `vta export-mnemonic`
-        /// instead so it goes through the time-bounded export guard.
+        /// mnemonic is also persisted via the configured seed-store. No
+        /// command prints it again later, so if you need a paper backup pass
+        /// this flag deliberately, in a terminal nothing records.
         #[arg(long)]
         print_mnemonic: bool,
     },
@@ -3235,6 +3234,17 @@ async fn reconstruct_credential(
     Ok(BASE64.encode(bundle_json.as_bytes()))
 }
 
+/// Long help for `--template`: the built-ins this build ships, read from
+/// `vta_sdk::did_templates::BUILTIN_NAMES` so the help cannot name a retired
+/// template (#2635).
+fn template_name_help() -> String {
+    format!(
+        "DID template name the VTA should render: a built-in ({}) or an \
+         operator-uploaded custom template.",
+        vta_sdk::did_templates::BUILTIN_NAMES.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod removal_verb_tests {
     use super::*;
@@ -3286,6 +3296,37 @@ mod removal_verb_tests {
                 command: ApprovalsCommands::Disable
             })
         ));
+    }
+
+    /// Every `vta` command an operator-facing error string tells the operator
+    /// to run must parse (#2631): `register_server.rs`, `provision_integration`.
+    #[cfg(feature = "webvh")]
+    #[test]
+    fn remediation_commands_in_error_strings_parse() {
+        let commands: &[&[&str]] = &[
+            &[
+                "vta",
+                "did-mgmt",
+                "servers",
+                "add",
+                "--id",
+                "host-1",
+                "--did",
+                "did:web:h.example",
+            ],
+            &[
+                "vta",
+                "did-mgmt",
+                "dids",
+                "get-log",
+                "did:webvh:x:h.example",
+            ],
+        ];
+        for argv in commands {
+            if let Err(e) = Cli::try_parse_from(*argv) {
+                panic!("`{}` does not parse: {e}", argv.join(" "));
+            }
+        }
     }
 
     #[cfg(feature = "webvh")]

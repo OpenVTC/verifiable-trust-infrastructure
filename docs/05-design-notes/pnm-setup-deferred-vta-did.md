@@ -1,6 +1,8 @@
 # Spec: Deferred-VTA-DID `pnm setup` (non-TEE)
 
-Status: Phase 1 / Specify — pending approval to advance to Phase 2 (Plan).
+Status: **implemented** — `pnm setup --name <slug>` / `pnm setup continue <slug>`
+(`pnm-cli/src/setup.rs`; flow in `vta-service/CLAUDE.md`, *Deferred VTA-DID
+setup*). This was the Phase 1 specification.
 Target branch: `sealed-bootstrap` (0.5.0, unreleased).
 
 ## Objective

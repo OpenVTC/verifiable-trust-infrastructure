@@ -122,7 +122,7 @@ runtime state, and `pnm services tsp enable` adds TSP to it.
 | DID templates advertise `#tsp` | ✅ shipped |
 | Health `tsp_enabled` + `services list` | ✅ shipped |
 | Setup: wizard multi-select + `--from` `[services] tsp`, both minting `#tsp` | ✅ shipped |
-| TSP **without** DIDComm (`--features tsp` alone; mediator connects, `#vta-didcomm` not advertised) | ✅ shipped (live run pending) |
+| TSP **without** DIDComm (`--features tsp` alone; mediator connects, no `DIDCommMessaging` service advertised) | ✅ shipped (live run pending) |
 | Per-transport mediators (`[messaging.tsp]`) | ⏳ designed, not built — `transport-neutral-mediator.md` §7 |
 | Inbound: `tsp-message` vault unseal | ✅ shipped (feature-gated; live unpack pending verification) |
 | Inbound: TSP listener (raw-TSP websocket → trust-task spine) | ✅ shipped (feature-gated; live loop pending verification) |

@@ -350,7 +350,7 @@ or matching on key material.
 ## Error taxonomy
 
 The following codes map verification failures to the Trust Tasks
-framework error vocabulary ([SPEC.md §8](../../../SPEC.md)):
+framework error vocabulary ([SPEC.md §8](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/main/SPEC.md)):
 
 | Suite code | Framework code | Retryable | Meaning |
 |---|---|---|---|

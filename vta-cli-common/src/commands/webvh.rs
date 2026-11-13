@@ -195,7 +195,7 @@ pub async fn cmd_webvh_server_remove(
     Ok(())
 }
 
-/// `pnm webvh register-did --did <did> --server <id> [--force]` —
+/// `pnm did-mgmt dids register --did <did> --server <id> [--force]` —
 /// promote a serverless WebVH DID to a server-managed one.
 ///
 /// Pushes the local `did.jsonl` to the host atomically (single
@@ -230,7 +230,7 @@ pub async fn cmd_webvh_did_register_server(
     Ok(())
 }
 
-/// `pnm webvh edit-did --did <did>` — interactive or
+/// `pnm did-mgmt dids edit --did <did>` — interactive or
 /// non-interactive update of an existing WebVH DID document.
 ///
 /// **Interactive (no flags):** fetches the latest published DID

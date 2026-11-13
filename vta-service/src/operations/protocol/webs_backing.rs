@@ -330,7 +330,7 @@ pub(crate) async fn publish(
                 .ok_or_else(|| {
                     UpdateDidWebvhError::Publish(format!(
                         "publish_did: this VTA's did:webs names hosting server `{}`, which is \
-                         not registered (`pnm webvh add-server`)",
+                         not registered (`pnm did-mgmt servers add`)",
                         record.server_id
                     ))
                 })?;

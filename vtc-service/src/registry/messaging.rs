@@ -518,7 +518,7 @@ impl MessagingRegistryClient {
         // (sends an invite) when readiness says we must; the payload rides after
         // it (§3.6) rather than waiting for the accept. Idempotent once related.
         //
-        // TODO(D4): on a *reply* timeout (a silent §7.2.2 drop on the peer looks
+        // TODO(#2705, D4): on a *reply* timeout (a silent §7.2.2 drop on the peer looks
         // exactly like a lost network round-trip), the caller's correlated-reply
         // waiter should `reset_relationship` and retry through here, so a stale
         // local half re-invites. Wired at the wait site, not here, where there is

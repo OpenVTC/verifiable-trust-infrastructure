@@ -124,7 +124,7 @@
     <h2>8. DIDComm auth — POST /auth/ (vti-didcomm-js)</h2>
     <p class="hint">Drives the full <em>legacy</em> auth flow that previously required <code>pnm auth</code>: requests a challenge, authcrypt-packs a DIDComm response to the VTA's keyAgreement key, POSTs it to <code>/auth/</code>, and stores the returned JWT. The ephemeral client DID must already be in the VTA's ACL (the demo prints it so you can run <code>pnm acl create --did &lt;that&gt; --role admin</code> first). Successful auth populates Step 5/6 just like passkey login.</p>
     <label>
-      VTA DID (paste the value from <code>pnm webvh list-dids</code> / the running VTA)
+      VTA DID (paste the value from <code>pnm did-mgmt dids list</code> / the running VTA)
       <input id="daVtaDid" type="text" placeholder="did:webvh:scid:vta.example">
     </label>
     <div class="row">

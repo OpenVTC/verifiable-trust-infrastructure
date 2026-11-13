@@ -546,9 +546,9 @@ pub(crate) async fn provision_integration_with<W: WebsHostSource>(
                          resolved without a 'URL' or 'WEBVH_SERVER' template var. Pass either \
                          `--var URL=https://...` (serverless mode — you publish did.jsonl \
                          yourself) or `--var WEBVH_SERVER=<id>` (route through a webvh \
-                         hosting server registered with `vta webvh add-server`). At least one \
-                         is required for any webvh-method built-in (did-hosting-control, \
-                         did-hosting-daemon, did-hosting-server)."
+                         hosting server registered with `vta did-mgmt servers add`). At least one \
+                         is required for any built-in that mints a did:webvh (e.g. \
+                         `did-host-http`, `did-host-http-didcomm`)."
                         ))
                     })?;
                     (None, Some(url))
@@ -1888,7 +1888,7 @@ mod tests {
         assert!(matches!(err, AppError::NotFound(_)), "got: {err:?}");
         let msg = err.to_string();
         assert!(msg.contains("never-registered"), "got: {msg}");
-        assert!(msg.contains("vta webvh add-server"), "got: {msg}");
+        assert!(msg.contains("vta did-mgmt servers add"), "got: {msg}");
     }
 
     #[tokio::test]
@@ -2862,7 +2862,7 @@ mod tests {
         // `didcomm-mediator` template now publishes verificationMethod
         // ids `#key-0` (signing) and `#key-1` (key-agreement) — matching
         // the VTA's internal storage convention and the other built-in
-        // webvh templates (did-hosting-control / did-hosting-daemon / did-hosting-server).
+        // webvh templates (`did-host-http-didcomm` / `did-host-http` / `did-host-didcomm`).
         // Earlier shapes (`#key-1` / `#key-2`) diverged from both, and
         // consumers couldn't match an inbound JWE for `#key-2` to any
         // private key.

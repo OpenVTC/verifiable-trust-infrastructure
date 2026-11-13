@@ -446,7 +446,7 @@ sudo usermod -aG docker,ne $USER
 **Rust toolchain** (required on the parent EC2 instance):
 
 The `enclave-proxy` binary is built from source on the parent instance
-(see [Step 6](#step-6-start-the-parent-proxy-before-the-enclave)), and the
+(see [Step 6](#step-6-start-the-parent-side-services-before-the-enclave)), and the
 DID resolver sidecar is installed via `cargo install`
 (see [DID Resolution](#did-resolution)). Both require a working Rust
 toolchain — the `enclave-proxy` crate's MSRV is **Rust 1.91.0**.
@@ -1490,7 +1490,7 @@ nitro-cli console \
 > attach a console to an enclave that was started without it. Debug mode
 > enables the console output channel but also **zeros all PCR values** in
 > attestation documents, which breaks KMS attestation conditions. See the
-> warning in [Step 7](#step-7-launch-the-enclave) for the workaround.
+> warning in [Step 7](#step-7-start-the-enclave) for the workaround.
 
 ### Common startup errors
 
@@ -1715,8 +1715,8 @@ echo "$NEW_PCR0" > /opt/vta/last-pcr0.txt
 | Scenario | Recovery |
 |----------|----------|
 | Enclave restart | Automatic — KMS Decrypt retrieves seed from bootstrap keyspace |
-| EBS volume lost | Use mnemonic backup with `vta tee recover --mnemonic "..."` |
-| KMS key deleted | Use mnemonic to regenerate seed with a new KMS key |
+| EBS volume lost | Boot a fresh enclave VTA and restore the latest encrypted backup into it: `pnm backup import <file> --replace-identity` ([backup-restore.md](../../docs/02-vta/backup-restore.md)). There is no command that rebuilds a TEE VTA from the mnemonic alone |
+| KMS key deleted | As above, on a fresh enclave VTA bound to a new KMS key: the restore commits the backup's seed under the new key |
 | PCR0 mismatch after rebuild | Rolling upgrade with `--old-pcr0`, or fresh deploy |
 | Signing key lost | Generate new key, rebuild + re-sign EIF, update PCR8 in KMS policy |
 
