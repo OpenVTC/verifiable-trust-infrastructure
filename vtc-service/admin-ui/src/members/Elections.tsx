@@ -39,6 +39,7 @@ import {
   type WalletElections,
 } from "./wallet-elections";
 import { formatDateTime } from "@/lib/format";
+import { messageOf } from "@/lib/messages";
 
 /** A voting deadline, with its zone (#2613). */
 const when = formatDateTime;
@@ -78,7 +79,7 @@ function WalletError({ error }: { error: unknown }) {
  *  whose membership was not shown (VTI-VOT-015, 025), so it says all three; `indeterminate`
  *  is a check the community could not complete, which records nothing. */
 export function Refusal({ error, memberOf }: { error: unknown; memberOf?: string }) {
-  const said = error instanceof Error ? error.message : String(error);
+  const said = messageOf(error);
   const kind = refusalKind(error);
   if (kind === "other") {
     return (

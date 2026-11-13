@@ -38,6 +38,7 @@ import {
 import { Protected } from "@/components/Protected";
 import { useModal } from "@/components/useModal";
 import { formatDate } from "@/lib/format";
+import { messageOf } from "@/lib/messages";
 
 /** Where the plugin is mounted (`src/plugins/index.ts`). */
 export const REPOS_PATH = "/repos";
@@ -201,11 +202,7 @@ export function errorMessage(err: unknown): string {
   if (errorCode(err)?.endsWith(":notCommunityAdministrator")) {
     return "only a community administrator (an admin not limited to some contexts) can read this";
   }
-  if (err && typeof err === "object" && "message" in err) {
-    const message = (err as { message: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return String(err);
+  return messageOf(err);
 }
 
 export function errorStatus(err: unknown): number | undefined {

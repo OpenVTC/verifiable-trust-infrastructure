@@ -56,6 +56,7 @@ import { electionHref } from "./Elections";
 import { Crumbs } from "./member-card";
 import { declinedInWallet, walletElections } from "./wallet-elections";
 import { formatDate, formatDateTime, parseTime } from "@/lib/format";
+import { messageOf } from "@/lib/messages";
 
 export function boardHref(boardId: string): string {
   return `#/boards/${encodeURIComponent(boardId)}`;
@@ -73,7 +74,7 @@ function problem(e: unknown): string {
   if (e instanceof DirectoryError && e.code === "noKey") {
     return "Sign in with your wallet to use boards: it lets this browser propose ideas and add notes as you, for this session.";
   }
-  return e instanceof Error ? e.message : String(e);
+  return messageOf(e);
 }
 
 function Problem({ error }: { error: unknown }) {

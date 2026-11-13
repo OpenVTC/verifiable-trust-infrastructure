@@ -17,6 +17,7 @@
 // how to get it instead.
 
 import { isThemePreview } from "@/lib/theme-preview";
+import { messageOf } from "@/lib/messages";
 
 /** One election as the community lists it to the member. */
 export interface PageElection {
@@ -235,7 +236,6 @@ const WALLET_OUTCOME_BY_CODE: Readonly<Record<string, WalletOutcome>> = {
 const isKnownCode = (code: string) =>
   Object.hasOwn(REFUSAL_BY_CODE, code) || Object.hasOwn(WALLET_OUTCOME_BY_CODE, code);
 
-const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Which of the community's answers a wallet refusal is: by its `code` when the wallet gives one
  *  this page knows, else — an older wallet, or a code not in the tables — by its words, which

@@ -36,6 +36,7 @@ import {
   type WalletRooms,
 } from "./wallet-rooms";
 import { formatDate, formatDateTime, shortenDid } from "@/lib/format";
+import { messageOf } from "@/lib/messages";
 
 /**
  * Who wrote something, short enough for a list row: "you", a `did:webvh`'s last path
@@ -67,9 +68,7 @@ function useTopbarHeight() {
   }, []);
 }
 
-function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+const errorText = messageOf;
 
 /** A room's address in the portal. */
 export function roomHref(roomId: string): string {
