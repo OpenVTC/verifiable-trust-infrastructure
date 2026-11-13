@@ -16,7 +16,7 @@ repository.workspace = true
 [dependencies]
 # The credential-derivation hook (`derive::CredentialSource`) is an async trait
 # the service implements over the vault, so this crate need not depend on it.
-async-trait = "0.1"
+async-trait = { workspace = true }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.38" }
 vti-common = { path = "../vti-common", version = "0.64", features = ["encryption"] }
 serde = { workspace = true }
@@ -34,7 +34,7 @@ subtle = { workspace = true }
 ulid = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # The generated payload types are the contract this crate stores against.
 # A dev-dependency rather than a real one: storage does not need them, and

@@ -2960,7 +2960,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
- "tracing",
  "tracing-subscriber",
  "trust-tasks-rs",
  "url",
@@ -3305,9 +3304,9 @@ dependencies = [
 
 [[package]]
 name = "crypto-bigint"
-version = "0.7.6"
+version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bb08299a6046833a879ace115697f12fd2bd6c8d3e93c909ffc9e0738e7cae0"
+checksum = "914c195c4d7fbc5ed7f88d14cbf85914d5c664967658d43404b263913a477e82"
 dependencies = [
  "cpubits",
  "ctutils",
@@ -3386,9 +3385,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.5"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
+checksum = "261af4dc7a06ea8a527a8717d8cbba3417530d6ea14e1edb3de6b67806be474f"
 dependencies = [
  "cmov",
  "subtle",
@@ -3595,7 +3594,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.9",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3869,7 +3868,6 @@ dependencies = [
  "clap",
  "ed25519-dalek 3.0.0",
  "hex",
- "multibase",
  "rand 0.10.2",
  "tokio",
  "tracing",
@@ -4160,7 +4158,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d65aa39b3a5c1c9c1b745c9a019234bb7a21b77abcb4f4d266d706e2d577d65"
 dependencies = [
  "base16ct 1.0.0",
- "crypto-bigint 0.7.6",
+ "crypto-bigint 0.7.11",
  "crypto-common 0.2.2",
  "digest 0.11.3",
  "ff 0.14.0",
@@ -8190,7 +8188,6 @@ dependencies = [
  "affinidi-messaging-mediator-tui",
  "affinidi-secrets-resolver",
  "async-trait",
- "base64 0.23.1",
  "chrono",
  "clap",
  "dialoguer",
@@ -8202,10 +8199,8 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.11.1",
  "tokio",
  "toml",
- "tracing",
  "tracing-subscriber",
  "vta-cli-common",
  "vta-sdk",
@@ -8341,7 +8336,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c555a6e4eb7d4e158fcb028c835c3b8642206ddc279b5c6b202ef9a8bdb592f4"
 dependencies = [
- "crypto-bigint 0.7.6",
+ "crypto-bigint 0.7.11",
  "crypto-common 0.2.2",
  "ff 0.14.0",
  "rand_core 0.10.1",
@@ -9098,7 +9093,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4a459cddafb3fe76b31fd8f1108007566c40301feb64dc7b54656eb7388172b"
 dependencies = [
- "crypto-bigint 0.7.6",
+ "crypto-bigint 0.7.11",
  "hmac 0.13.0",
 ]
 
@@ -9211,7 +9206,6 @@ dependencies = [
  "dtg-credentials",
  "ed25519-dalek 3.0.0",
  "futures-util",
- "getrandom 0.4.3",
  "multibase",
  "openmls_rust_crypto",
  "reqwest",
@@ -10445,7 +10439,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -11813,7 +11807,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "subtle",
  "tempfile",
  "tokio",
  "toml",
@@ -11824,7 +11817,6 @@ dependencies = [
  "vta-keyspaces",
  "vta-sdk",
  "vta-support",
- "vta-webvh",
  "vti-common",
  "zeroize",
 ]
@@ -11833,18 +11825,15 @@ dependencies = [
 name = "vta-cli-common"
 version = "0.61.0"
 dependencies = [
- "aes-gcm 0.11.1",
  "affinidi-crypto",
  "base64 0.23.1",
  "chrono",
  "dialoguer",
  "ed25519-dalek 3.0.0",
- "hkdf 0.13.0",
  "multibase",
  "qrcode",
  "rand 0.10.2",
  "ratatui",
- "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -11856,7 +11845,6 @@ dependencies = [
  "vti-common",
  "vti-rooms",
  "vti-specs",
- "x25519-dalek 3.0.0",
  "zeroize",
 ]
 
@@ -11885,15 +11873,12 @@ version = "0.7.7"
 dependencies = [
  "base64 0.23.1",
  "clap",
- "serde_json",
- "sha2 0.11.1",
  "tokio",
  "tokio-vsock",
  "tracing",
  "tracing-subscriber",
  "vta-service",
  "vta-tee",
- "vti-common",
 ]
 
 [[package]]
@@ -11910,13 +11895,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "tempfile",
  "tokio",
- "tracing",
- "trust-tasks-rs",
  "url",
  "vta-keys",
- "vta-keyspaces",
  "vta-sdk",
  "vti-common",
  "vti-specs",
@@ -12120,7 +12101,6 @@ dependencies = [
  "vti-specs",
  "windows-native-keyring-store",
  "wiremock",
- "x25519-dalek 3.0.0",
  "x509-parser 0.18.1",
  "zeroize",
 ]
@@ -12152,15 +12132,11 @@ dependencies = [
  "affinidi-sd-jwt",
  "affinidi-sd-jwt-vc",
  "affinidi-secrets-resolver",
- "affinidi-status-list",
  "affinidi-tdk",
  "affinidi-tdk-common",
  "agent-names",
- "argon2 0.6.0",
  "async-trait",
- "aws-lc-rs",
  "axum",
- "axum-extra",
  "base64 0.23.1",
  "bip39",
  "chrono",
@@ -12171,7 +12147,6 @@ dependencies = [
  "dirs",
  "dtg-credentials",
  "ed25519-dalek 3.0.0",
- "fjall",
  "futures-util",
  "governor",
  "hex",
@@ -12181,7 +12156,6 @@ dependencies = [
  "ipnetwork",
  "jsonwebtoken 11.1.0",
  "keyring-core",
- "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "multibase",
@@ -12189,15 +12163,12 @@ dependencies = [
  "predicate-credential-system",
  "rand 0.10.2",
  "rcgen 0.14.10",
- "regorus",
  "reqwest",
  "room-host",
  "serde",
- "serde_ignored",
  "serde_json",
  "serde_json_canonicalizer 0.4.1",
  "sha2 0.11.1",
- "subtle",
  "syn 3.0.9",
  "tempfile",
  "thiserror 2.0.21",
@@ -12211,7 +12182,6 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-didcomm",
  "trust-tasks-https",
- "trust-tasks-proof",
  "trust-tasks-rs",
  "trust-tasks-tsp",
  "url",
@@ -12289,7 +12259,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "uuid",
  "vta-audit",
  "vta-keyspaces",
  "vta-vault",
@@ -12460,12 +12429,9 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-sts",
  "aws-sigv4",
- "aws-smithy-runtime-api",
  "aws-smithy-types",
  "axum",
- "axum-extra",
  "base64 0.23.1",
- "bip39",
  "chrono",
  "ciborium",
  "clap",
@@ -12488,7 +12454,6 @@ dependencies = [
  "jsonschema 0.60.2",
  "jsonwebtoken 11.1.0",
  "k256 0.14.0",
- "keyring-core",
  "maxminddb",
  "mime_guess",
  "multibase",
@@ -12512,13 +12477,11 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-util",
  "toml",
  "tower",
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
- "trust-tasks-https",
  "trust-tasks-rs",
  "unicode-normalization",
  "url",
@@ -12554,7 +12517,6 @@ name = "vti-common"
 version = "0.64.0"
 dependencies = [
  "aes-gcm 0.11.1",
- "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-core",
  "affinidi-messaging-delivery",
@@ -12566,7 +12528,6 @@ dependencies = [
  "axum",
  "axum-extra",
  "base64 0.23.1",
- "bytes",
  "chrono",
  "dialoguer",
  "ed25519-dalek 3.0.0",
@@ -12618,7 +12579,6 @@ version = "0.6.0"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm",
  "affinidi-messaging-sdk",
  "affinidi-messaging-test-mediator",
  "affinidi-secrets-resolver",
@@ -12638,7 +12598,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-rs",
- "url",
  "uuid",
  "vta-cli-common",
  "vta-sdk",
@@ -12787,7 +12746,6 @@ dependencies = [
  "bytes",
  "ed25519-dalek 3.0.0",
  "futures-util",
- "google-cloud-auth",
  "google-cloud-secretmanager-v1",
  "hex",
  "hkdf 0.13.0",
@@ -13009,7 +12967,6 @@ version = "0.1.0"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-core",
  "affinidi-messaging-sdk",
  "affinidi-secrets-resolver",
  "affinidi-tdk",
@@ -13018,10 +12975,8 @@ dependencies = [
  "chrono",
  "clap",
  "dtg-credentials",
- "futures-util",
  "getrandom 0.4.3",
  "multibase",
- "rand 0.10.2",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -13032,7 +12987,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "trust-tasks-didcomm",
  "trust-tasks-rs",
  "uuid",
  "vta-sdk",

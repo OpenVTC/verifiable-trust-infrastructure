@@ -416,7 +416,19 @@ didwebvh-rs = "0.8.1"
 url = "2"
 
 # Cryptography
-ed25519-dalek = "3"
+#
+# The five crates CLAUDE.md names as crypto deps — `ed25519-dalek`, `hpke`,
+# `jsonwebtoken`, `aes-gcm` and `aws-lc-rs` — carry a full `major.minor.patch`
+# floor, so a resolve can never land below a release we have built and tested
+# against (a CVE fix landing in a patch must not silently regress). Each floor is
+# the patch Cargo.lock held when it was set; raise it when the lock moves past a
+# security fix. They are declared here and nowhere else:
+# `scripts/check-workspace-version-reqs.py` fails on a bare `major` /
+# `major.minor` floor, and on a member declaring one outside the workspace.
+ed25519-dalek = "3.0.0"
+# HPKE for `sealed_transfer` (vta-sdk). The suite is hardcoded (CLAUDE.md,
+# "Sealed-transfer is the only secret-bearing wire format").
+hpke = "0.15.1"
 serde_json_canonicalizer = "0.4"
 sha2 = "0.11"
 # Constant-time byte equality. Used wherever we compare a
@@ -439,7 +451,7 @@ multibase = "0.9"
 # `CryptoProvider` for every algorithm and is already in our dep tree
 # via `aws-sdk-kms`, so we don't add a new transitive. The backend is
 # the AWS-vetted libcrypto fork; same primitives, no `rsa` crate.
-jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 
 # AWS-LC backend used directly by `vti-webauthn` for ECDSA P-256 WebAuthn
 # assertion verification. Already in our dep tree via `jsonwebtoken`'s
@@ -447,7 +459,7 @@ jsonwebtoken = { version = "11", default-features = false, features = ["use_pem"
 # crypto-pin discipline (CLAUDE.md "Versioning & publishing") applies
 # uniformly. Pin minimum patch — CVE landings should not silently
 # regress.
-aws-lc-rs = "1.16"
+aws-lc-rs = "1.19.0"
 
 # Upper bound on `aws-smithy-types`, which we do not use directly.
 #
@@ -877,7 +889,7 @@ dirs = "7"
 hex = "0.4"
 
 # Symmetric crypto helpers used by sealed-transfer + storage encryption.
-aes-gcm = "0.11"
+aes-gcm = "0.11.1"
 hkdf = "0.13"
 
 # HMAC-SHA256 for vti-common's audit-log actor/target identifier
@@ -996,6 +1008,62 @@ apple-native-keyring-store = { version = "1", default-features = false, features
 windows-native-keyring-store = "1"
 dbus-secret-service-keyring-store = { version = "1", default-features = false, features = ["crypto-rust"] }
 
+# ---------------------------------------------------------------------------
+# Shared by several members (#2657). One declaration per crate, so a
+# coordinated bump is one edit. A member inherits with `{ workspace = true }`
+# and adds only its own `features` / `optional`; where an entry turns default
+# features off, a member that wants them asks for `features = ["default"]`.
+# ---------------------------------------------------------------------------
+anyhow = "1"
+async-trait = "0.1"
+tempfile = "3"
+# `derive` and the rest are per member.
+zeroize = "1"
+getrandom = "0.4"
+tower = "0.5"
+http-body-util = "0.1"
+wiremock = "0.6"
+metrics = "0.24"
+schemars = "1"
+flate2 = "1"
+unicode-normalization = "0.1"
+ciborium = "0.2"
+# Argon2id: backup-password KDF (vta-backup), admin-invite claim secrets
+# (vtc-service), the passphrase KEK (vti-secrets).
+argon2 = "0.6"
+bip39 = "3"
+p256 = "0.14"
+k256 = "0.14"
+chacha20poly1305 = "0.11"
+# Off by default here: `vti-voting` builds it without the default set, and a
+# member cannot turn defaults off once the workspace entry has them on.
+curve25519-dalek = { version = "5", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+# Off by default here for the reason `curve25519-dalek` gives: `vtc-service`
+# builds it with `pem` only.
+rcgen = { version = "0.14", default-features = false }
+object_store = { version = "0.14", default-features = false }
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+webauthn-rs-proto = "0.5"
+affinidi-rate-limit = "0.1.4"
+# Pinned to the patch every DIDComm decrypt path in the workspace was built
+# against (ECDH-ES+A256KW + A256CBC-HS512 JWEs from `vta-sdk`'s light client).
+affinidi-messaging-didcomm = "0.15.9"
+# The in-process mediator for end-to-end tests; always with its TSP arm.
+affinidi-messaging-test-mediator = { version = "0.50", features = ["tsp"] }
+openmls_rust_crypto = "0.6"
+# Hidden vetting and community voting (`vti-vetting-pcs`, `vti-voting`, and
+# their hosts).
+predicate-credential-system = "0.1"
+ark-serialize = { version = "0.6.0", default-features = false, features = ["std"] }
+# Stays on the rand 0.8 line with `rand` 0.8 in those crates (dependabot.yml
+# says why).
+rand_chacha = "0.3"
+# MCP SDK for the `*-mcp` bridges; each member names its transports.
+rmcp = "3"
+# Source parsing for the census tests that read a crate's own code.
+syn = "3"
+
 [profile.dev]
 # macOS defaults this profile to `split-debuginfo = "unpacked"`, which leaves one
 # DWARF-bearing .o file per codegen unit in target/debug/deps. Across this
@@ -1040,11 +1108,19 @@ opt-level = "z"
 lto = "fat"
 panic = "abort"
 
-# Workspace-wide lint policy. Each crate inherits via `lints.workspace = true`
-# in its own Cargo.toml. Per-crate `#[allow(...)]` overrides are still possible
-# but visible in review.
+# Workspace-wide lint policy. Every member inherits it with `[lints]
+# workspace = true`, and `scripts/check-workspace-lints.py` fails CI on one that
+# does not. Per-item `#[allow(...)]` overrides are still possible but visible in
+# review.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
+# No `unsafe` unless a crate says why it needs it (#2658). `forbid` cannot be
+# lowered by an inner `#[allow]`, so the few crates that do need it (an FFI
+# call, an ioctl, an `env::set_var` in a test) carry their own `[lints]` table
+# — this one, with `unsafe_code = "deny"` — and put `#[allow(unsafe_code)]` on
+# the one item that needs it. `scripts/check-workspace-lints.py` holds those
+# tables to this one in every other respect and keeps their list short.
+unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 # Style/escape-hatch fences. Crates that want the broader clippy::all

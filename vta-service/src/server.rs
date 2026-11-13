@@ -2484,6 +2484,7 @@ impl VsockRestListener {
         // `bind`/`try_clone` until the listener drops, and `as_raw_fd` always
         // returns that one descriptor. Moving it in makes the `AsyncFd` its sole
         // owner for as long as it is registered.
+        #[allow(unsafe_code)]
         let inner = unsafe { tokio::io::unix::AsyncFd::register(listener) }
             .map_err(|e| e.into_parts().1)?;
         Ok(Self {

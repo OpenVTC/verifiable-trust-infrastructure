@@ -21,7 +21,7 @@ readme = "README.md"
 
 [dependencies]
 # Async trait sugar for the VmResolver seam.
-async-trait = "0.1"
+async-trait = { workspace = true }
 
 # Workspace-hoisted deps.
 base64 = { workspace = true }
@@ -34,11 +34,11 @@ url = { workspace = true }
 
 # Crate-local deps.
 aws-lc-rs = { workspace = true }                # ECDSA verification — workspace crypto policy.
-p256 = "0.14"                                   # SEC1 point decompression ONLY (not signing or
+p256 = {workspace = true}                                   # SEC1 point decompression ONLY (not signing or
                                                 # verifying). aws-lc-rs requires uncompressed
                                                 # points; Multikey carries compressed. Already
                                                 # in the workspace dep tree transitively.
-serde_json_canonicalizer = "0.4"                # RFC 8785 (author: Anders Rundgren).
+serde_json_canonicalizer = {workspace = true}                # RFC 8785 (author: Anders Rundgren).
 unsigned-varint = "0.8"                         # multicodec varint prefix decode.
 
 [dev-dependencies]

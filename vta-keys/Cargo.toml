@@ -44,10 +44,10 @@ vta-sdk = { path = "../vta-sdk", version = "0.88", features = ["sealed-transfer"
 affinidi-tdk = { workspace = true }
 affinidi-crypto = { workspace = true }
 ed25519-dalek = { workspace = true }
-bip39 = "3"
+bip39 = { workspace = true }
 multibase = { workspace = true }
 aes-gcm = { workspace = true }
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { workspace = true, features = ["derive"] }
 hkdf = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
@@ -61,7 +61,10 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 x25519-dalek = { workspace = true }
-p256 = "0.14"
+p256 = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

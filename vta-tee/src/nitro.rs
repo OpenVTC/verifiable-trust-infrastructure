@@ -180,6 +180,7 @@ impl NsmFd {
 
 impl Drop for NsmFd {
     fn drop(&mut self) {
+        #[allow(unsafe_code)]
         unsafe {
             libc::close(self.0);
         }
@@ -190,6 +191,7 @@ fn open_nsm_device() -> Result<NsmFd, AppError> {
     use std::ffi::CString;
 
     let path = CString::new("/dev/nsm").unwrap();
+    #[allow(unsafe_code)]
     let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR) };
     if fd < 0 {
         let err = std::io::Error::last_os_error();
@@ -241,6 +243,7 @@ fn nsm_ioctl(fd: std::os::unix::io::RawFd, request: &[u8]) -> Result<Vec<u8>, Ap
         },
     };
 
+    #[allow(unsafe_code)]
     let ret = unsafe { libc::ioctl(fd, NSM_IOCTL_REQUEST, &mut msg as *mut NsmMessage) };
 
     if ret != 0 {

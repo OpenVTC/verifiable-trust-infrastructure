@@ -53,19 +53,11 @@ ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Wipes an external account secret read at the terminal (`pnm external secret-set`).
-zeroize = "1"
+zeroize = { workspace = true }
 multibase = { workspace = true }
-x25519-dalek = { workspace = true }
 sha2 = { workspace = true }
-hkdf = { workspace = true }
-aes-gcm = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
-# Thin HTTP client used by the `webvh did-log` CLI command to hit the
-# public `GET /did/{did}/log` endpoint. VtaClient handles authenticated
-# endpoints; this one is public so a bare reqwest call is simpler than
-# threading it through VtaClient.
-reqwest = { workspace = true }
 # Interactive prompts ($EDITOR, Confirm, Input) for the
 # `webvh edit-did` command. Already present transitively via
 # vta-service; declaring it here so vta-cli-common can use it directly
@@ -74,7 +66,7 @@ dialoguer = { workspace = true }
 thiserror = { workspace = true }
 # `pnm vta qr`: a DID as a terminal or SVG QR code. SVG only — the default
 # `image` feature would pull the whole `image` crate in for nothing.
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+qrcode = { workspace = true }
 
 [dev-dependencies]
 # `test-util` for `#[tokio::test(start_paused = true)]`: the consent loop sleeps

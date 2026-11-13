@@ -597,6 +597,31 @@ jobs:
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
 
+  manifest-hygiene:
+    # Tier 0 in cost (it reads manifests and sources and compiles nothing),
+    # though not yet in tier 1's `needs`. Two whole-tree
+    # manifest properties nothing else notices (#2656, #2658):
+    #   - a declared dependency no source file uses (cargo-machete). For a
+    #     published crate it is in every consumer's graph too. A deliberate one
+    #     (a version floor, a feature switch) is listed under the crate's
+    #     `[package.metadata.cargo-machete] ignored`, with its reason.
+    #   - a member that does not inherit `[workspace.lints]`, or restates it
+    #     with more than `unsafe_code` changed. See the script header.
+    name: manifest hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-machete
+      - name: No unused dependencies
+        run: cargo machete --with-metadata
+      - name: Every member inherits the workspace lints
+        run: python3 scripts/check-workspace-lints.py
+
   deny:
     # cargo-deny enforces the advisory ignores documented in `deny.toml`
     # and catches new license / source / duplicate-dependency issues

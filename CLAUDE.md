@@ -119,8 +119,7 @@ Layer 7 (longest internal chain 7):
   pnm-cli                → vta-cli-common, vta-sdk
   vta-backup             → vta-config, vta-keys, vta-keyspaces, vta-sdk,
                            vta-support, vti-common
-  vta-external           → vta-keys, vta-keyspaces, vta-sdk, vti-common,
-                           vti-specs
+  vta-external           → vta-keys, vta-sdk, vti-common, vti-specs
   vta-tee                → vta-config, vta-keys, vta-keyspaces, vta-support,
                            vti-common
 
@@ -134,7 +133,7 @@ Layer 8 (longest internal chain 8):
                            vti-webauthn
 
 Layer 9 (longest internal chain 9):
-  vta-enclave            → vta-service, vta-tee, vti-common
+  vta-enclave            → vta-service, vta-tee
 ```
 <!-- crate-map:end -->
 

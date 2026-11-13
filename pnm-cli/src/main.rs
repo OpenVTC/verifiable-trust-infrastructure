@@ -179,6 +179,7 @@ async fn main() {
     {
         // SAFETY: set on the main thread, before any worker / async
         // task that reads PNM_RESOLVER_URL has been spawned.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("PNM_RESOLVER_URL", url);
         }

@@ -62,7 +62,7 @@ affinidi-did-resolver-cache-sdk = { workspace = true }
 # under `assertionMethod` before signing a decision with it.
 affinidi-did-common = { workspace = true }
 # DIDComm v2 authcrypt/anoncrypt pack + unpack. Pinned to vta-sdk's version.
-affinidi-messaging-didcomm = "0.15.9"
+affinidi-messaging-didcomm = { workspace = true }
 # Mediator-connected DIDComm session (ATM): the `MediatorSession` FFI wraps
 # `vta-sdk::DIDCommSession` (connect + receive_next) so the mobile approver can
 # pull VTA-pushed step-up approve-requests off the mediator — reusing the SDK
@@ -114,7 +114,7 @@ vti-common = { path = "../vti-common", features = ["test-support"] }
 vta-sdk = { path = "../vta-sdk", features = ["client", "proof-verify"] }
 dtg-credentials = { workspace = true }
 reqwest = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 uuid = { workspace = true }
 
 [[bin]]
