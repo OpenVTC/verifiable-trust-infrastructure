@@ -5281,6 +5281,17 @@ pub(crate) fn install_force_exit_handler() {
     });
 }
 
+/// Long help for a `--template` flag: the built-ins this build ships, read
+/// from `vta_sdk::did_templates::BUILTIN_NAMES` so the help cannot name a
+/// retired template (#2635).
+pub(crate) fn template_name_help() -> String {
+    format!(
+        "DID template name the VTA should render: a built-in ({}) or an \
+         operator-uploaded custom template.",
+        vta_sdk::did_templates::BUILTIN_NAMES.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod config_update_flag_tests {
     use super::*;
@@ -6757,15 +6768,4 @@ pub(crate) enum WebsCommands {
         #[arg(long)]
         expect_version: Option<String>,
     },
-}
-
-/// Long help for a `--template` flag: the built-ins this build ships, read
-/// from `vta_sdk::did_templates::BUILTIN_NAMES` so the help cannot name a
-/// retired template (#2635).
-pub(crate) fn template_name_help() -> String {
-    format!(
-        "DID template name the VTA should render: a built-in ({}) or an \
-         operator-uploaded custom template.",
-        vta_sdk::did_templates::BUILTIN_NAMES.join(", ")
-    )
 }

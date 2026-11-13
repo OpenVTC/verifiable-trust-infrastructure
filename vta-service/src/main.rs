@@ -3234,6 +3234,17 @@ async fn reconstruct_credential(
     Ok(BASE64.encode(bundle_json.as_bytes()))
 }
 
+/// Long help for `--template`: the built-ins this build ships, read from
+/// `vta_sdk::did_templates::BUILTIN_NAMES` so the help cannot name a retired
+/// template (#2635).
+fn template_name_help() -> String {
+    format!(
+        "DID template name the VTA should render: a built-in ({}) or an \
+         operator-uploaded custom template.",
+        vta_sdk::did_templates::BUILTIN_NAMES.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod removal_verb_tests {
     use super::*;
@@ -3352,15 +3363,4 @@ mod removal_verb_tests {
             );
         }
     }
-}
-
-/// Long help for `--template`: the built-ins this build ships, read from
-/// `vta_sdk::did_templates::BUILTIN_NAMES` so the help cannot name a retired
-/// template (#2635).
-fn template_name_help() -> String {
-    format!(
-        "DID template name the VTA should render: a built-in ({}) or an \
-         operator-uploaded custom template.",
-        vta_sdk::did_templates::BUILTIN_NAMES.join(", ")
-    )
 }
